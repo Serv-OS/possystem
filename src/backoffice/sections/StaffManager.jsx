@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
-import { supabase, isMock } from '../../lib/supabase';
+import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
+import { profileAdmin } from '../../lib/profileAdminClient';
+import { staffScreenLocation } from '../../lib/profileAdmin';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -53,6 +55,7 @@ export default function StaffManager() {
   const [grantForm, setGrantForm] = useState({ email:'', password:'', confirmPassword:'' });
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantError, setGrantError] = useState('');
+  const [staffLocationId, setStaffLocationId] = useState(null);
 
   // Load staff from Supabase on mount (real mode only)
   useEffect(() => {
@@ -61,14 +64,11 @@ export default function StaffManager() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
-      let locationId = profile?.location_id;
-      // Auto-assign first location if none set
-      if (!locationId && profile?.org_id) {
-        const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
-        locationId = locs?.[0]?.id;
-        if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
-      }
+      // 18 Sep 2026 (lockdown step 1): no profile venue is written from here any more (the browser
+      // cannot write user_profiles.location_id). With none set, use the venue Back Office is on.
+      const locationId = staffScreenLocation(profile, getActiveLocationSync());
       if (!locationId) return;
+      setStaffLocationId(locationId);
       // v5.5.17: also SELECT auth_user_id so we can show / toggle BO access.
       // Defensive: if column missing (pre-migration), drop it from the SELECT.
       let { data: rows, error } = await supabase
@@ -97,16 +97,28 @@ export default function StaffManager() {
         // Bulk-fetch profiles for any linked auth users
         const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
         if (linkedIds.length > 0) {
-          let { data: profiles, error: profErr } = await supabase
-            .from('user_profiles')
-            .select('id, email, bo_access')
-            .in('id', linkedIds);
-          // Defensive — fall back without bo_access if column missing
-          if (profErr && /bo_access|column.*not.*exist|PGRST204/i.test(profErr.message || '')) {
-            ({ data: profiles } = await supabase
-              .from('user_profiles')
-              .select('id, email')
-              .in('id', linkedIds));
+          // 18 Sep 2026 (lockdown step 1): a login reads only its own profile now, so the team's
+          // emails come from profile-admin (staff of this venue only). The direct read is the
+          // fallback only while profile-admin is not deployed yet.
+          let profiles = [];
+          try {
+            const r = await profileAdmin('team_profiles', { location_id: locationId, user_ids: linkedIds }, async () => {
+              let { data, error: profErr } = await supabase
+                .from('user_profiles')
+                .select('id, email, bo_access')
+                .in('id', linkedIds);
+              // Defensive — fall back without bo_access if column missing
+              if (profErr && /bo_access|column.*not.*exist|PGRST204/i.test(profErr.message || '')) {
+                ({ data } = await supabase
+                  .from('user_profiles')
+                  .select('id, email')
+                  .in('id', linkedIds));
+              }
+              return { profiles: data || [] };
+            });
+            profiles = r?.profiles || [];
+          } catch (e) {
+            console.warn('[StaffManager] team logins not loaded:', e?.message || e);
           }
           const linkMap = {};
           rows.forEach(r => {
@@ -274,14 +286,8 @@ export default function StaffManager() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not signed in');
       const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
-      // Get location_id — from profile, or find first location in their org
-      let locationId = profile?.location_id;
-      if (!locationId && profile?.org_id) {
-        const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
-        locationId = locs?.[0]?.id;
-        // Also update user profile so we don't have to look this up again
-        if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
-      }
+      // The profile's venue, else the venue Back Office is on (lockdown step 1: no profile write).
+      const locationId = staffScreenLocation(profile, getActiveLocationSync());
       if (!locationId) throw new Error('No location found for this user');
       const { error } = await supabase.from('staff_members').insert({
         location_id: locationId, org_id: profile?.org_id,
@@ -404,10 +410,16 @@ export default function StaffManager() {
     const link = authLinks[staffId];
     if (!link) return;
     const next = !link.boAccess;
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ bo_access: next })
-      .eq('id', link.authUserId);
+    // 18 Sep 2026 (lockdown step 1): bo_access is written by the server (profile-admin: an owner
+    // or manager of this venue, for a login linked to this venue). The direct write is only the
+    // fallback while profile-admin is not deployed yet.
+    let error = null;
+    try {
+      await profileAdmin('set_bo_access', { location_id: staffLocationId || getActiveLocationSync(), user_id: link.authUserId, bo_access: next }, async () => {
+        const r = await supabase.from('user_profiles').update({ bo_access: next }).eq('id', link.authUserId);
+        if (r.error) throw r.error;
+      });
+    } catch (e) { error = e; }
     if (error) {
       if (/bo_access|column.*not.*exist|PGRST204/i.test(error.message || '')) {
         showToast('Run supabase/migrations/20260430_staff_auth_link.sql first — bo_access column missing', 'error');

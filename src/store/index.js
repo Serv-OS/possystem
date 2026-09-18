@@ -30,7 +30,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage } from '../lib/giftCommit';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
@@ -5930,7 +5930,8 @@ export const useStore = create((set, get) => ({
         get().showToast?.('Gift card balance restored — the card machine payment was cancelled.', 'info');
       } else if (!r.ok) {
         console.warn('[reverseTerminalJobGift] gift reversal failed:', r.error);
-        get().showToast?.('Could not restore a gift card from the cancelled card-machine payment — check the balance in Back Office.', 'error');
+        // Lockdown step 1 (f): say what staff can actually do; Back Office cannot restore a balance.
+        get().showToast?.(giftReversalFailedMessage(leg, r.error || 'reversal failed', (m) => money(Number(m || 0) / 100)), 'error');
       }
     } catch (e) {
       console.warn('[reverseTerminalJobGift] gift reversal failed:', e?.message || e);
@@ -6529,9 +6530,9 @@ export const useStore = create((set, get) => ({
             if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
             else {
               console.warn('[refundCheck] gift reversal failed for leg:', r.error);
-              // Round three: gift-reverse-redeem now needs a claimed till or a manager. Say so
-              // instead of losing the customer's balance silently.
-              get().showToast?.(`Gift card balance NOT restored: ${r.error || 'reversal failed'}. Restore it from Back Office.`, 'error');
+              // Round three: gift-reverse-redeem now needs a claimed till or a manager. Say so,
+              // and say what staff can actually do (Back Office cannot restore a balance).
+              get().showToast?.(giftReversalFailedMessage(leg, r.error || 'reversal failed', (m) => money(Number(m || 0) / 100)), 'error');
             }
           }
         } catch (e) {

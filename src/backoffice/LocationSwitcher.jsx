@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase, isMock, platformSupabase, setResolvedLocationId, enforceTenantFence } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
 import { fetchAccessibleLocations } from '../lib/db';
+import { profileAdmin } from '../lib/profileAdminClient';
 
 export default function LocationSwitcher({ onClose }) {
   const [items, setItems] = useState([]);
@@ -128,13 +129,18 @@ export default function LocationSwitcher({ onClose }) {
     // Order matters for a second reason: enforceTenantFence() purges every rpos-* cache
     // key, and that purge cannot be undone. Doing it before the write meant a failed
     // switch left the caches wiped with no way back short of a reload.
+    // 18 Sep 2026 (lockdown step 1): the opening venue is written by the server (profile-admin),
+    // which allows only a venue this login is linked to. The browser can no longer write
+    // user_profiles.location_id (it used to make anyone staff of any venue).
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const { data, error } = await supabase.from('user_profiles')
-          .update({ location_id: opsLocId }).eq('id', user.id).select('id');
-        if (error) throw error;
-        if (!data || data.length === 0) throw new Error('Profile update matched 0 rows — RLS may have blocked it');
+        await profileAdmin('set_active_location', { location_id: opsLocId }, async () => {
+          const { data, error } = await supabase.from('user_profiles')
+            .update({ location_id: opsLocId }).eq('id', user.id).select('id');
+          if (error) throw error;
+          if (!data || data.length === 0) throw new Error('Profile update matched 0 rows — RLS may have blocked it');
+        });
       }
     } catch (e) {
       reportSave('location switch', e);

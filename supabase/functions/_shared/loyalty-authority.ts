@@ -13,7 +13,7 @@
 //     its own devices row by claim_device (pairing code = proof). Staff at the venue pick the
 //     customer, so a device may act for any member of ITS OWN company.
 //   * a Back Office user acting as a till: a real (non anonymous) user with access to the
-//     location by the database's own rule (user_locations UNION user_profiles.location_id, see
+//     location by the database's own rule (user_locations only since 20260918c, see
 //     staffAccess.ts), super_admin, or a company role for the location's company.
 //   * the member themselves: the loyalty session token loyalty-otp minted after the one time
 //     code, and only for THEIR OWN customer id in THAT company.

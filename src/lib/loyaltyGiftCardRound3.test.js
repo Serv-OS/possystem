@@ -2,7 +2,7 @@
 // Pins every rule:
 //   A. the money holes, enforced now: an anonymous session cannot issue, import, bulk create,
 //      fulfil unpaid, reverse, void, configure or enrol; staff can, by the database's own rule
-//   B. staff = user_accessible_locations() (user_locations UNION user_profiles.location_id),
+//   B. staff = user_accessible_locations() (user_locations only since 20260918c),
 //      and a kiosk pairing code is cleared on the row so a second tablet cannot steal the link
 //   C. earn from the server's closed check; refund refuses a member token; the portal refresh
 //      passes under enforce; a bad member token falls back to the device arm; gift-redeem checks
@@ -43,45 +43,46 @@ const PLAT_LOC = '44444444-4444-4444-8444-444444444444';
 const OTHER_LOC = '55555555-5555-4555-8555-555555555555';
 
 const staffFacts = (over = {}) => ({
-  user, role: 'owner', userLocationIds: [], profileLocationId: null, companyRoleCompanyIds: [],
+  user, role: 'owner', userLocationIds: [], companyRoleCompanyIds: [],
   locationKeys: [PLAT_LOC, OPS_LOC], companyId: CO, companyOpsLocationIds: [], ...over,
 });
 
 // ── B1. Staff is the database's own rule ─────────────────────────────────────
-test('staff: the same rule as user_accessible_locations(), plus super_admin and a company role', () => {
+test('staff: the same rule as user_accessible_locations() (user_locations only), plus super_admin and a company role', () => {
   // An anonymous session is never staff, whatever rows it has.
   assert.equal(decideStaffAccess(staffFacts({ user: anon, role: 'super_admin', userLocationIds: [OPS_LOC] })).ok, false);
   assert.equal(decideStaffAccess(staffFacts({ user: null })).ok, false);
   // user_locations row (the Ops id, reached from the Platform id the caller sent).
   assert.deepEqual(decideStaffAccess(staffFacts({ userLocationIds: [OPS_LOC] })), { ok: true, via: 'user_locations' });
-  // THE BLOCKER: a legacy single site owner with ONLY user_profiles.location_id (db.js lets them
-  // into Back Office on it) is staff, so Back Office gift cards keep working on deploy.
-  assert.deepEqual(decideStaffAccess(staffFacts({ profileLocationId: OPS_LOC })), { ok: true, via: 'user_profiles' });
+  // Lockdown step 1 (a): a profile venue is NEVER access. It was self writable, so round three's
+  // user_profiles arm made every gift card admin gate spoofable. A fact of that name is ignored.
+  assert.deepEqual(decideStaffAccess(staffFacts({ profileLocationId: OPS_LOC })), { ok: false, via: null });
+  assert.equal(decideStaffAccess(staffFacts({ locationKeys: [], companyOpsLocationIds: [OPS_LOC], profileLocationId: OPS_LOC })).ok, false);
   assert.deepEqual(decideStaffAccess(staffFacts({ role: 'super_admin' })), { ok: true, via: 'super_admin' });
   assert.deepEqual(decideStaffAccess(staffFacts({ companyRoleCompanyIds: [CO] })), { ok: true, via: 'company_role' });
   // Not staff: another venue's rows, another company's role.
-  assert.equal(decideStaffAccess(staffFacts({ userLocationIds: [OTHER_LOC], profileLocationId: OTHER_LOC, companyRoleCompanyIds: [CO2] })).ok, false);
+  assert.equal(decideStaffAccess(staffFacts({ userLocationIds: [OTHER_LOC], companyRoleCompanyIds: [CO2] })).ok, false);
   // Company level (no location): any of the company's venues, or a company role.
   const co = { locationKeys: [], companyOpsLocationIds: [OPS_LOC] };
-  assert.equal(decideStaffAccess(staffFacts({ ...co, profileLocationId: OPS_LOC })).ok, true);
   assert.equal(decideStaffAccess(staffFacts({ ...co, userLocationIds: [OPS_LOC] })).ok, true);
   assert.equal(decideStaffAccess(staffFacts({ ...co, userLocationIds: [OTHER_LOC] })).ok, false);
-  assert.deepEqual([...accessibleLocations({ userLocationIds: ['a', 'b'], profileLocationId: 'c' })].sort(), ['a', 'b', 'c']);
+  assert.deepEqual([...accessibleLocations({ userLocationIds: ['a', 'b'], profileLocationId: 'c' })].sort(), ['a', 'b']);
 });
 
-test('staff parity: the SQL user_accessible_locations() is user_locations UNION user_profiles.location_id, and callerIsStaffFor reads exactly those', () => {
-  for (const f of ['000_baseline_ops.sql', '20260907b_ops_rls_1_fences_and_rpcs.sql', '20260429_tenant_rls.sql']) {
-    const sql = read(`../../supabase/migrations/${f}`);
-    const i = sql.search(/create or replace function public\.user_accessible_locations\(\)/i);
-    assert.ok(i >= 0, f);
-    const body = sql.slice(i, i + 700).toLowerCase();
-    assert.ok(/from\s+(public\.)?user_locations\s+where\s+user_id\s*=\s*auth\.uid\(\)/.test(body), `${f}: user_locations arm`);
-    assert.ok(/union/.test(body), `${f}: UNION`);
-    assert.ok(/from\s+(public\.)?user_profiles\s+where\s+id\s*=\s*auth\.uid\(\)\s+and\s+location_id\s+is\s+not\s+null/.test(body), `${f}: user_profiles.location_id arm`);
-  }
+test('staff parity: the SQL user_accessible_locations() that runs last (20260918c) is user_locations only, and callerIsStaffFor never reads the profile venue', () => {
+  const sql = read('../../supabase/migrations/20260918c_OPS_profile_venue_lock.sql');
+  const i = sql.search(/create or replace function public\.user_accessible_locations\(\)/i);
+  assert.ok(i >= 0);
+  const body = sql.slice(i, sql.indexOf('$function$;', i)).toLowerCase();
+  assert.ok(/from\s+public\.user_locations\s+where\s+user_id\s*=\s*auth\.uid\(\)/.test(body), 'user_locations arm');
+  assert.ok(!/union/.test(body) && !/user_profiles/.test(body), 'no profile arm');
+  assert.ok(/returns setof text\s+language sql\s+stable/.test(body), 'same signature and stability');
+  assert.ok(!/security definer/.test(body), 'still security invoker');
+  assert.ok(!/profileLocationId/.test(read('../../supabase/functions/_shared/staffAccess.ts')), 'the pure rule has no profile arm');
   const u = code(read('../../supabase/functions/_shared/loyalty-utils.ts'));
   const fn = u.slice(u.indexOf('export async function callerIsStaffFor'), u.indexOf('const UUID_ONLY'));
-  assert.ok(fn.includes("from('user_profiles').select('role, location_id')"), 'reads the profile location');
+  assert.ok(fn.includes("from('user_profiles').select('role').eq('id', user.id)"), 'reads only the role');
+  assert.ok(!/location_id'\)\.eq\('id'/.test(fn) && !/profileLocationId/.test(fn), 'never the profile venue');
   assert.ok(fn.includes("from('user_locations').select('location_id').eq('user_id', user.id)"), 'reads user_locations');
   assert.ok(fn.includes("from('user_company_roles').select('company_id').eq('user_id', user.id)"), 'reads company roles');
   assert.ok(fn.includes('return decideStaffAccess({'), 'decided by the pure rule');
@@ -196,7 +197,7 @@ test('gift-fulfill wiring: authority, then processor proof, then a claim, THEN a
   assert.ok(!src.includes('stripeAccount: String(purchase.stripe_account_id)'));
   // The company check runs for EVERY caller now (the row is anon writable).
   assert.ok(!/if \(callerUserId\) \{\n\s+const \{ data: loc \}/.test(src));
-  assert.ok(src.includes('...(callerUserId ? { code: formatCode(code) } : {}),'), 'the webhook never gets the code');
+  assert.ok(src.includes('...(callerUserId ? { code: formatCode(normalized) } : {}),'), 'the webhook never gets the code');
   assert.ok(/releaseClaim\(\)/.test(src.slice(gen)), 'a failure hands the claim back');
   // The Stripe webhook only marks a PAID session paid.
   const wh = fnSrc('stripe-webhook-connect');
@@ -230,7 +231,7 @@ test('gift-reverse-redeem wiring: authority before any read, the refund row is t
 test('the till refund and the dead card machine job still reverse (device or staff), and say so when refused', () => {
   const store = read('../store/index.js');
   assert.ok(store.includes('const r = await reverseGiftCard(leg, {'), 'refundCheck and the terminal job undo use the shared call');
-  assert.ok(store.includes('Gift card balance NOT restored:'), 'a refused reversal is shown, not swallowed');
+  assert.ok(store.includes('get().showToast?.(giftReversalFailedMessage(leg, r.error'), 'a refused reversal is shown, not swallowed');
   const gc = read('./giftCommit.js');
   assert.ok(gc.includes('...(deviceHint() ? { device_hint: deviceHint() } : {}),'), 'the till names itself for the log');
 });
@@ -244,8 +245,8 @@ test('loyalty-enroll: no longer open; service role, the member, staff or a devic
   assert.ok(svc > 0 && gate > svc && bonus > gate, 'who is decided before any bonus');
   assert.ok(src.includes("modeOverride: 'enforce',"), 'enforced now');
   assert.ok(src.includes("if (!caller && !memberToken) return json({ error: 'Unauthorized' }, 401);"), 'no session at all: 401');
-  assert.ok(src.includes('!orgIds.has(String(customer.org_id))'), "another company's customer is refused");
-  assert.ok(src.indexOf('!orgIds.has(String(customer.org_id))') < bonus);
+  assert.ok(src.includes('if (!customerInCompany(customer, orgIds)) {'), "another company's customer is refused");
+  assert.ok(src.indexOf('if (!customerInCompany(customer, orgIds)) {') < bonus);
   // Its one caller still works: wifi-capture calls it with the service role key.
   const wifi = read('../../supabase/functions/wifi-capture/index.ts');
   assert.ok(/fetch\(`\$\{FN_BASE\}\/loyalty-enroll`, \{\s*method: 'POST', headers: \{ 'Content-Type': 'application\/json', 'Authorization': `Bearer \$\{SERVICE_KEY\}` \}/.test(wifi));

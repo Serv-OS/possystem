@@ -47,6 +47,9 @@ order by calls desc, venue, a.fn;
 -- Fix: Back Office -> Devices (or Kiosks) -> that device -> new pairing code -> type it on the
 -- device. Online checkout rows (channel 'online', no device) are customers, not devices: those
 -- need the member signed in, and are expected until then.
+-- 18 Sep 2026 (lockdown step 1, review item g): also gift-redeem's 'card_id_without_code', a
+-- till or kiosk spending a customer's linked gift card by its id without holding a device claim
+-- (enforced already, so those payments are being REFUSED today).
 with w as (select now() - interval '7 days' as since)
 select
   coalesce(l.name, a.venue_name, a.location_id, '(no venue sent)')   as venue,
@@ -68,7 +71,8 @@ left join public.devices d
 cross join w
 where a.created_at >= w.since
   and a.caller_anonymous is true
-  and a.reason in ('anonymous_no_device', 'anonymous', 'device_other_company', 'member_token_invalid', 'member_token_not_accepted')
+  and a.reason in ('anonymous_no_device', 'anonymous', 'device_other_company', 'member_token_invalid', 'member_token_not_accepted',
+                   'card_id_without_code')
 group by 1, 2, 3, 4, 5, 6, 7, 8
 order by venue, calls desc;
 
@@ -98,16 +102,25 @@ order by calls desc;
 
 
 -- ============================================================================
--- 4. Is it quiet enough to enforce? (per venue, last 24 hours, report mode only)
+-- 4. Is it quiet enough to enforce? (per venue, last 24 hours)
 -- ============================================================================
+-- 18 Sep 2026 (review item g): a till's loyalty earn sends the ORDER TYPE as its channel
+-- ('dine-in', 'takeaway', 'collection', 'delivery', 'bar', ...), never 'pos', so the old
+-- "channel in ('pos', ...)" list missed every till earn. Online checkout, QR and catering are
+-- the customer channels; everything else (including no channel) is a till or kiosk.
+-- The last column counts gift-redeem's enforced 'card_id_without_code' refusals (a linked gift
+-- card spent by id from a till or kiosk with no device claim): those payments fail today.
 select
   coalesce(l.name, a.venue_name, a.location_id, '(no venue sent)')   as venue,
-  count(*) filter (where a.channel in ('pos', 'kiosk', 'bar', 'tables', 'mpos'))  as till_or_kiosk_would_refuse,
-  count(*) filter (where a.channel in ('online', 'qr'))                           as online_would_refuse,
-  count(*)                                                                          as all_would_refuse
+  count(*) filter (where a.outcome = 'would_refuse'
+                     and coalesce(lower(a.channel), '') not in ('online', 'qr', 'catering'))  as till_or_kiosk_would_refuse,
+  count(*) filter (where a.outcome = 'would_refuse'
+                     and lower(a.channel) in ('online', 'qr', 'catering'))                    as online_would_refuse,
+  count(*) filter (where a.outcome = 'would_refuse')                                          as all_would_refuse,
+  count(*) filter (where a.fn = 'gift-redeem' and a.reason = 'card_id_without_code')          as gift_card_by_id_refused
 from public.caller_authority_log a
 left join public.locations l on l.id = a.ops_location_id
 where a.created_at >= now() - interval '24 hours'
-  and a.outcome = 'would_refuse'
+  and (a.outcome = 'would_refuse' or (a.fn = 'gift-redeem' and a.reason = 'card_id_without_code'))
 group by 1
-order by all_would_refuse desc;
+order by all_would_refuse desc, gift_card_by_id_refused desc;

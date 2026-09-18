@@ -295,6 +295,23 @@ export function giftRecordFrom(paymentInfo = {}) {
 }
 
 /**
+ * The till toast when a refund could NOT give a gift card its money back (18 Sep 2026, lockdown
+ * step 1, review item f). It used to say "Restore it from Back Office", but Back Office has no way
+ * to put a balance back on a card. What staff CAN do: give that amount back another way, or
+ * issue the customer a new gift card for it (Back Office, Gift cards, Issue card).
+ * `fmtMinor` formats a minor unit amount in the venue currency (the store passes money()).
+ */
+export function giftReversalFailedMessage(leg, error, fmtMinor = (m) => (Number(m || 0) / 100).toFixed(2)) {
+  const last4 = leg?.code_last4 ? ` ending ${leg.code_last4}` : '';
+  const applied = Number(leg?.applied || 0);
+  const amount = applied > 0 ? `${fmtMinor(applied)} ` : '';
+  const why = error ? ` (${error})` : '';
+  return `Gift card${last4}: ${amount}NOT put back on the card${why}. `
+    + `Give the customer ${amount ? 'that amount' : 'the gift card amount'} another way, `
+    + 'or issue them a new gift card for it in Back Office, Gift cards, Issue card.';
+}
+
+/**
  * Every gift card that paid toward a check — the one reader of the `legs` shape above.
  * A pre-v5.5.902 check has a bare record and no `legs`, so it yields exactly itself.
  */

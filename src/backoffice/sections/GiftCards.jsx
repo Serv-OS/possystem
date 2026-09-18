@@ -8,6 +8,7 @@ import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 import { CUSTOMER_ROOT, customerUrl } from '../../lib/env';
+import { purchasesFromGiftList } from '../../lib/giftPurchasesRead';
 const ASSET_BUCKET = 'receipt-assets';
 
 const BLANK_BRANDING = {
@@ -1260,16 +1261,25 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
   const [fulfillingId, setFulfillingId] = useState(null);
 
   const loadPurchases = useCallback(async () => {
-    if (!companyId || !platformSupabase) { setLoading(false); return; }
+    if (!companyId) { setLoading(false); return; }
     try {
-      const { data, error: qErr } = await platformSupabase
-        .from('gift_card_purchases')
-        .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false })
-        .limit(50);
-      if (qErr) throw qErr;
-      setPurchases(data || []);
+      // 18 Sep 2026 (lockdown step 1): gift_card_purchases is readable by the server only (it held
+      // every online gift card code, open to the public Platform key). Read it through gift-list,
+      // staff only. purchasesFromGiftList falls back to the old direct read ONLY while the
+      // deployed gift-list predates this (it answers with cards, not purchases).
+      const j = await callGift('gift-list', { kind: 'purchases', limit: 50 });
+      const rows = await purchasesFromGiftList(j, async () => {
+        if (!platformSupabase) return [];
+        const { data, error: qErr } = await platformSupabase
+          .from('gift_card_purchases')
+          .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')
+          .eq('company_id', companyId)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (qErr) throw qErr;
+        return data || [];
+      });
+      setPurchases(rows);
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {

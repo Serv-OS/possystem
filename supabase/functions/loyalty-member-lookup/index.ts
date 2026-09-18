@@ -57,14 +57,19 @@ Deno.serve(async (req) => {
 
   // ── Resolve org_id for customer queries ────────────────────────────────
   // Round three: location_id reaches a PostgREST filter, so only a real id gets there.
+  // Lockdown step 1: Platform locations has NO org_id column (the old select failed, so this
+  // always answered 404). The org is on the Ops row (_shared/orgScope.ts).
   const { data: locData } = await platformAdmin
     .from('locations')
-    .select('org_id, ops_location_id')
+    .select('ops_location_id')
     .or(`ops_location_id.eq.${uuidOr0(location_id)},id.eq.${uuidOr0(location_id)}`)
     .limit(1)
     .maybeSingle();
+  const { data: opsLoc } = locData?.ops_location_id
+    ? await opsAdmin.from('locations').select('org_id').eq('id', uuidOr0(locData.ops_location_id)).maybeSingle()
+    : { data: null as any };
 
-  const orgId = locData?.org_id;
+  const orgId = opsLoc?.org_id;
   // Every customer read below is fenced to this venue's org. Without an org nothing is found.
   if (!orgId) return json({ found: false, error: 'Customer not found' }, 404);
 

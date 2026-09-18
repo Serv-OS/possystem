@@ -23,6 +23,7 @@ import {
   cors, json, opsAdmin, platformAdmin, getOrCreateConfig, ensureMembership,
   optionalCaller, isServiceRoleRequest, checkLoyaltyAuthority, deviceHintOf, uuidOr0,
 } from '../_shared/loyalty-utils.ts';
+import { opsIdsOf, companyOrgIds, locationInCompany, customerInCompany } from '../_shared/orgScope.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -59,29 +60,32 @@ Deno.serve(async (req) => {
   }
 
   // ── What: the customer and the location must be this company's ────────
-  const { data: locs } = await platformAdmin
+  // Lockdown step 1 (review round three, deploy blocker b): the Platform locations table has NO
+  // org_id column. Selecting it failed the whole read, so no org matched and every WiFi "Join
+  // rewards" sign up was refused. The org lives on the OPS locations row, as wifi-capture reads
+  // it (_shared/orgScope.ts).
+  const { data: locs, error: locErr } = await platformAdmin
     .from('locations')
-    .select('id, ops_location_id, org_id')
+    .select('id, ops_location_id')
     .eq('company_id', companyId)
     .limit(500);
-  const orgIds = new Set((locs || []).map((l: any) => l.org_id).filter(Boolean).map(String));
-  if (locationId) {
-    const ok = (locs || []).some((l: any) => String(l.id) === locationId || String(l.ops_location_id) === locationId);
-    if (!ok) return json({ error: 'location is not part of this company' }, 403);
+  if (locErr) {
+    console.error('[loyalty-enroll] company locations read failed:', locErr.message);
+    return json({ error: 'Could not check the venue, try again' }, 503);
   }
-  // Ops locations carry the org too (the Platform copy may lag a new venue).
-  const opsIds = (locs || []).map((l: any) => l.ops_location_id).filter(Boolean).map(String);
-  if (opsIds.length) {
-    const { data: opsLocs } = await opsAdmin.from('locations').select('org_id').in('id', opsIds.map(uuidOr0));
-    for (const l of (opsLocs || [])) if (l.org_id) orgIds.add(String(l.org_id));
-  }
+  if (!locationInCompany(locs, locationId)) return json({ error: 'location is not part of this company' }, 403);
+  const opsIds = opsIdsOf(locs);
+  const { data: opsLocs } = opsIds.length
+    ? await opsAdmin.from('locations').select('id, org_id').in('id', opsIds.map(uuidOr0))
+    : { data: [] as any[] };
+  const orgIds = companyOrgIds(opsLocs);
   const { data: customer } = await opsAdmin
     .from('customers')
     .select('id, org_id')
     .eq('id', customerId)
     .is('deleted_at', null)
     .maybeSingle();
-  if (!customer || !customer.org_id || !orgIds.has(String(customer.org_id))) {
+  if (!customerInCompany(customer, orgIds)) {
     return json({ error: 'Customer not found' }, 404);
   }
 

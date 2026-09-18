@@ -25,6 +25,17 @@
 //     refused as unverifiable.
 //   * one issuer: the row is claimed ('fulfilling') before a card is made, released on failure.
 //   * the code is returned only to staff (Back Office shows it); the webhook gets last 4.
+//
+// 18 Sep 2026 (lockdown step 1, review item e):
+//   * ONE card per purchase, whatever happens: the card's id is derived from the purchase id
+//     (_shared/giftFulfilPlan.ts purchaseCardId), so a retry after a killed isolate or a stale
+//     claim takeover finds the card already issued and finishes with it; the issue ledger row
+//     has a fixed idempotency key. A second card can never be made for the same money.
+//   * a processor outage is retryable: 503 { retryable: true } (the webhooks then make Stripe or
+//     Ryft send the event again); a real "not paid" is still a final 402.
+//   * the plaintext code is no longer copied onto gift_card_purchases (code_last4 only). It
+//     lives on the card (gift_cards.code_plain, service role only).
+//   * the buyer's CRM link reads the org from the Ops location (Platform locations has no org_id).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { argon2id } from 'https://esm.sh/hash-wasm@4.11.0';
@@ -36,6 +47,9 @@ import { decideGiftFulfilAuthority } from '../_shared/gift-authority.ts';
 import {
   stripeSessionProvesPurchase, ryftSessionProvesPurchase, purchaseProcessor, type ProofResult,
 } from '../_shared/giftPurchaseProof.ts';
+import {
+  purchaseCardId, issueLedgerKey, proofReasonRetryable, processorErrorReason,
+} from '../_shared/giftFulfilPlan.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -96,8 +110,10 @@ async function provePurchasePaid(purchase: any): Promise<ProofResult> {
     }
     return { ok: false, reason: 'processor_unverifiable' };
   } catch (e) {
+    // An outage (network, 5xx, rate limit) is retryable; the processor refusing THIS request
+    // (unknown session, wrong account) is final. See giftFulfilPlan.processorErrorReason.
     console.warn('[gift-fulfill] processor check failed:', (e as Error)?.message || e);
-    return { ok: false, reason: 'processor_unreachable' };
+    return { ok: false, reason: processorErrorReason(e) };
   }
 }
 
@@ -347,6 +363,14 @@ Deno.serve(async (req) => {
       user: caller, companyId: purchase.company_id, locationId: purchase.location_id,
       detail: { purchase_id: purchase.id, processor: purchase.processor ?? null },
     }));
+    // Lockdown step 1 (e): the processor could not be ASKED (outage). Nothing is issued, and the
+    // answer says "try again" so the webhook makes Stripe or Ryft send the event again.
+    if (proofReasonRetryable(proof.reason)) {
+      return json({
+        error: 'The card processor could not be reached to confirm this payment. It will be tried again.',
+        code: 'processor_unavailable', reason: proof.reason, retryable: true,
+      }, 503);
+    }
     return json({
       error: 'The payment for this gift card has not been confirmed by the card processor, so no card was issued.',
       code: 'payment_not_proven', reason: proof.reason,
@@ -401,59 +425,83 @@ Deno.serve(async (req) => {
     config = newConfig;
   }
 
-  // Generate code + hashes
-  const code = generateCode();
-  const normalized = code.toUpperCase();
-  const last4 = codeLast4(normalized);
-  const [codeHash, lookup] = await Promise.all([
-    hashValue(normalized),
-    hmacLookup(normalized, config.hmac_secret),
-  ]);
+  // ── One card per purchase (lockdown step 1, e) ──────────────────────────
+  // The card id is derived from the purchase id, so the gift_cards primary key allows exactly one
+  // card for this purchase. An earlier attempt that died after inserting the card (before the
+  // purchase said 'fulfilled') left it here: finish the job with THAT card, never issue another.
+  // No email has gone out for it yet (the email is sent only after the purchase is marked).
+  const cardId = await purchaseCardId(purchase.id);
+  const cardCols = 'id, code_plain, code_last4, expires_at';
+  let { data: card } = await platformAdmin.from('gift_cards').select(cardCols).eq('id', cardId).maybeSingle();
+  let issuedNow = false;
 
-  // Check collision
-  const { data: existing } = await platformAdmin
-    .from('gift_cards')
-    .select('id')
-    .eq('code_lookup', lookup)
-    .maybeSingle();
-  if (existing) { await releaseClaim(); return json({ error: 'Code collision, please retry' }, 500); }
+  if (!card) {
+    // Generate code + hashes
+    const code = generateCode();
+    const normalized = code.toUpperCase();
+    const [codeHash, lookup] = await Promise.all([
+      hashValue(normalized),
+      hmacLookup(normalized, config.hmac_secret),
+    ]);
 
-  // Compute expiry from brand config
-  let expiresAt: string | null = null;
-  if (config.default_expiry_months) {
-    const d = new Date();
-    d.setMonth(d.getMonth() + config.default_expiry_months);
-    expiresAt = d.toISOString();
+    // Check collision
+    const { data: existing } = await platformAdmin
+      .from('gift_cards')
+      .select('id')
+      .eq('code_lookup', lookup)
+      .maybeSingle();
+    if (existing) { await releaseClaim(); return json({ error: 'Code collision, please retry', retryable: true }, 500); }
+
+    // Compute expiry from brand config
+    let expiresAt: string | null = null;
+    if (config.default_expiry_months) {
+      const d = new Date();
+      d.setMonth(d.getMonth() + config.default_expiry_months);
+      expiresAt = d.toISOString();
+    }
+
+    // Insert card, with the purchase's own card id. The plaintext code stays on the card only
+    // (service role reads it for Back Office voucher and resend).
+    // v5.5.220: recipient_phone set from sender_phone (self-purchase links to buyer)
+    const { data: inserted, error: cardErr } = await platformAdmin
+      .from('gift_cards')
+      .insert({
+        id: cardId,
+        company_id: purchase.company_id,
+        code_hash: codeHash,
+        code_lookup: lookup,
+        code_last4: codeLast4(normalized),
+        code_plain: normalized,
+        initial_amount_minor: purchase.amount_minor,
+        balance_minor: purchase.amount_minor,
+        status: 'active',
+        expires_at: expiresAt,
+        recipient_name: purchase.recipient_name,
+        recipient_email: purchase.recipient_email,
+        recipient_phone: purchase.sender_phone || null,
+        note: purchase.message || null,
+        source: 'online',
+      })
+      .select(cardCols)
+      .single();
+
+    if (cardErr) {
+      // A racing attempt inserted this purchase's card first: use it.
+      if (cardErr.code === '23505') {
+        ({ data: card } = await platformAdmin.from('gift_cards').select(cardCols).eq('id', cardId).maybeSingle());
+      }
+      if (!card) { await releaseClaim(); return json({ error: `Card creation failed: ${cardErr.message}`, retryable: true }, 500); }
+    } else {
+      card = inserted;
+      issuedNow = true;
+    }
   }
 
-  // Insert card (store plaintext code for back-office voucher/resend)
-  // v5.5.220: recipient_phone set from sender_phone (self-purchase links to buyer)
-  const { data: card, error: cardErr } = await platformAdmin
-    .from('gift_cards')
-    .insert({
-      company_id: purchase.company_id,
-      code_hash: codeHash,
-      code_lookup: lookup,
-      code_last4: last4,
-      code_plain: normalized,
-      initial_amount_minor: purchase.amount_minor,
-      balance_minor: purchase.amount_minor,
-      status: 'active',
-      expires_at: expiresAt,
-      recipient_name: purchase.recipient_name,
-      recipient_email: purchase.recipient_email,
-      recipient_phone: purchase.sender_phone || null,
-      note: purchase.message || null,
-      source: 'online',
-    })
-    .select('id')
-    .single();
+  const normalized = String(card.code_plain || '').toUpperCase();
+  const last4 = card.code_last4 || codeLast4(normalized);
+  const expiresAt: string | null = card.expires_at ?? null;
 
-  if (cardErr) {
-    await releaseClaim(); return json({ error: `Card creation failed: ${cardErr.message}` }, 500);
-  }
-
-  // Insert ledger entry
+  // Ledger entry, once per purchase (fixed idempotency key; a retry's duplicate is fine).
   const { error: txErr } = await platformAdmin
     .from('gift_card_transactions')
     .insert({
@@ -464,25 +512,33 @@ Deno.serve(async (req) => {
       balance_after_minor: purchase.amount_minor,
       location_id: purchase.location_id,
       channel: 'online',
+      idempotency_key: issueLedgerKey(purchase.id),
       note: `Online purchase by ${purchase.sender_name}`,
     });
 
-  if (txErr) {
+  if (txErr && txErr.code !== '23505') {
+    // Nothing has been emailed for this card, so taking it back is safe; the next attempt
+    // recreates it under the same id.
     await platformAdmin.from('gift_cards').delete().eq('id', card.id);
-    await releaseClaim(); return json({ error: `Ledger entry failed: ${txErr.message}` }, 500);
+    await releaseClaim(); return json({ error: `Ledger entry failed: ${txErr.message}`, retryable: true }, 500);
   }
 
-  // Update purchase → fulfilled (store plaintext code for resend capability)
-  await platformAdmin
+  // Update purchase -> fulfilled. code_last4 only: the plaintext code is no longer copied here.
+  const { error: doneErr } = await platformAdmin
     .from('gift_card_purchases')
     .update({
       status: 'fulfilled',
       gift_card_id: card.id,
       code_last4: last4,
-      fulfilled_code: normalized,
       fulfilled_at: new Date().toISOString(),
     })
     .eq('id', purchaseId);
+  if (doneErr) {
+    // The card is issued and stays; the next attempt adopts it by id and finishes here.
+    await releaseClaim();
+    return json({ error: `Could not mark the purchase fulfilled: ${doneErr.message}`, retryable: true }, 503);
+  }
+  if (!issuedNow) console.log('[gift-fulfill] finished an earlier attempt with its own card', purchase.id, card.id);
 
   // v5.5.220: Create/link customer profile for the sender so the purchase
   // shows up in CRM and loyalty. Fire-and-forget — never block card issuance.
@@ -492,11 +548,18 @@ Deno.serve(async (req) => {
         const phoneN = normalisePhone(purchase.sender_phone);
         if (!phoneN) return;
 
-        // Resolve org_id from location
-        const { data: locRow } = await platformAdmin
+        // Resolve org_id from the venue's OPS row (Platform locations has no org_id column, so
+        // the old read here always failed and no buyer was ever linked).
+        const { data: pl } = await platformAdmin
           .from('locations')
-          .select('org_id')
+          .select('ops_location_id')
           .eq('id', purchase.location_id)
+          .maybeSingle();
+        if (!pl?.ops_location_id) return;
+        const { data: locRow } = await opsAdmin
+          .from('locations')
+          .select('id, org_id')
+          .eq('id', pl.ops_location_id)
           .maybeSingle();
         if (!locRow?.org_id) return;
 
@@ -539,7 +602,7 @@ Deno.serve(async (req) => {
         await opsAdmin.from('customer_locations')
           .upsert({
             customer_id: customerId,
-            location_id: purchase.location_id,
+            location_id: locRow.id,
           }, { onConflict: 'customer_id,location_id' });
 
         console.log('[gift-fulfill] customer linked:', customerId, phoneN);
@@ -574,7 +637,7 @@ Deno.serve(async (req) => {
       senderName: purchase.sender_name,
       recipientName: purchase.recipient_name,
       message: purchase.message,
-      code: formatCode(code),
+      code: formatCode(normalized),
       amountFormatted,
       expiresAt,
       venueName,
@@ -634,7 +697,7 @@ Deno.serve(async (req) => {
     card_id: card.id,
     code_last4: last4,
     // Include full code for back-office manual fulfillment display
-    ...(callerUserId ? { code: formatCode(code) } : {}),
+    ...(callerUserId ? { code: formatCode(normalized) } : {}),
   });
 });
 

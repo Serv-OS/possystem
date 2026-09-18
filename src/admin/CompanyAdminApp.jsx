@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { VERSION } from '../lib/version';
 import { supabase } from '../lib/supabase';
+import { profileAdmin } from '../lib/profileAdminClient';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
@@ -48,6 +49,16 @@ async function sbFetch(path, opts = {}) {
   const data = text ? (() => { try { return JSON.parse(text); } catch { return null; } })() : null;
   if (!res.ok) return { data: null, error: { message: data?.message || data?.details || res.statusText } };
   return { data, error: null };
+}
+
+// A login's opening venue (user_profiles.location_id), through profile-admin (super admin only).
+// 18 Sep 2026 (lockdown step 1): the browser can no longer write that column. The direct PATCH is
+// the fallback only while profile-admin is not deployed yet.
+async function setUserOpeningVenue(userId, locationId) {
+  return profileAdmin('admin_set_location', { user_id: userId, location_id: locationId }, async () => {
+    const { error } = await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id: locationId }, prefer:'' });
+    if (error) throw new Error(error.message);
+  });
 }
 
 // The venue's permanent public ID, click to copy. It exists so another system can
@@ -303,8 +314,9 @@ function AdminPanel({ authUser }) {
       await sbFetch(`eighty_six?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
       // Remove user_locations links but keep user_profiles
       await sbFetch(`user_locations?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
-      // Null out primary location_id on any user who had this as primary
-      await sbFetch(`user_profiles?location_id=eq.${locId}`, { method:'PATCH', body:{ location_id: null }, prefer:'' });
+      // A login whose opening venue was this one is cleared by the database itself when the
+      // location row goes (user_profiles.location_id is ON DELETE SET NULL). The browser can no
+      // longer write that column (18 Sep 2026, lockdown step 1).
       await sbFetch(`locations?id=eq.${locId}`, { method:'DELETE', prefer:'' });
       await loadLocations(selectedOrg.id);
       await loadUsers(selectedOrg.id);
@@ -392,7 +404,9 @@ function AdminPanel({ authUser }) {
         const remaining = (u.user_locations || [])
           .map(ul => ul.location_id)
           .filter(id => id && id !== locationId);
-        await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id: remaining[0] || null }, prefer:'' });
+        // 18 Sep 2026 (lockdown step 1): the opening venue is written by the server.
+        try { await setUserOpeningVenue(userId, remaining[0] || null); }
+        catch (e) { err('Access removed, but their opening venue was not changed: ' + e.message); }
       }
     } else {
       const { error } = await sbFetch('user_locations', { method:'POST', body:{ user_id:userId, location_id:locationId } });
@@ -401,7 +415,10 @@ function AdminPanel({ authUser }) {
       // If they already have a primary location (most users do), don't change
       // it — that would silently relocate them away from their original org.
       // Cross-org access is correctly handled by the user_locations row alone.
-      if (!u?.location_id) await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id:locationId }, prefer:'' });
+      if (!u?.location_id) {
+        try { await setUserOpeningVenue(userId, locationId); }
+        catch (e) { err('Access granted, but their opening venue was not set: ' + e.message); }
+      }
     }
     // Refresh both lists so the picker reflects the change immediately.
     await Promise.all([

@@ -47,6 +47,35 @@ Deno.serve(async (req) => {
     return json({ error: authority.error }, authority.status);
   }
 
+  // ── Online purchases (18 Sep 2026, lockdown step 1) ─────────────────────
+  // gift_card_purchases is service role only now (20260918_PLATFORM_gift_purchases_server_only),
+  // so Back Office "Online purchases" reads it here, staff only, company scoped. The code shown
+  // for a fulfilled purchase is the card's own (gift_cards.code_plain), the same code "All
+  // cards" already shows staff; the purchase no longer keeps a copy.
+  if (body.kind === 'purchases') {
+    const { data: rows, error: pErr } = await platformAdmin
+      .from('gift_card_purchases')
+      .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, gift_card_id, created_at, fulfilled_at')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false })
+      .limit(Math.min(Number(body.limit) || 50, 200));
+    if (pErr) return json({ error: pErr.message }, 500);
+    const cardIds = (rows || []).map((r: any) => r.gift_card_id).filter(Boolean);
+    const codes = new Map<string, string>();
+    if (cardIds.length) {
+      const { data: cards } = await platformAdmin.from('gift_cards')
+        .select('id, code_plain').eq('company_id', companyId).in('id', cardIds);
+      for (const c of (cards || [])) if (c.code_plain) codes.set(String(c.id), String(c.code_plain));
+    }
+    const purchases = (rows || []).map((r: any) => ({
+      ...r,
+      // The status the Back Office badge knows ('fulfilling' is a claim in progress).
+      status: r.status === 'fulfilling' ? 'paid' : r.status,
+      fulfilled_code: r.gift_card_id ? (codes.get(String(r.gift_card_id)) ?? null) : null,
+    }));
+    return json({ purchases, total: purchases.length });
+  }
+
   const limit = Math.min(Number(body.limit) || 500, 1000);
 
   let query = platformAdmin

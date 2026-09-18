@@ -85,9 +85,10 @@ export async function callerHasStaffAccess(user: any, opsLocationId: string): Pr
 
 /**
  * Is this signed in, NON anonymous user staff for the location (or, with no location, for the
- * company)? Round three (18 Sep 2026): the SAME rule as the database's user_accessible_locations()
- * (user_locations UNION user_profiles.location_id), plus super_admin and a Platform
- * user_company_roles row for the location's company. The decision is decideStaffAccess
+ * company)? The SAME rule as the database's user_accessible_locations(), which is user_locations
+ * ONLY since 20260918c (lockdown step 1: user_profiles.location_id was self writable, so it is
+ * never access), plus super_admin and a Platform user_company_roles row for the location's
+ * company. The decision is decideStaffAccess
  * (_shared/staffAccess.ts, pure, parity tested against the SQL); this only gathers the facts.
  * The location id may arrive as the Ops id or the Platform id. Never throws: a failed read is
  * "not staff".
@@ -96,7 +97,7 @@ export async function callerIsStaffFor(user: any, locationId: string | null, com
   if (!user || user.is_anonymous || !user.id) return false;
   try {
     const [{ data: prof }, { data: uls }, { data: ucr }] = await Promise.all([
-      opsAdmin.from('user_profiles').select('role, location_id').eq('id', user.id).maybeSingle(),
+      opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
       opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).limit(1000),
       platformAdmin.from('user_company_roles').select('company_id').eq('user_id', user.id).limit(200),
     ]);
@@ -120,7 +121,6 @@ export async function callerIsStaffFor(user: any, locationId: string | null, com
       user,
       role: prof?.role ?? null,
       userLocationIds: (uls || []).map((r: any) => r.location_id).filter(Boolean).map(String),
-      profileLocationId: prof?.location_id ? String(prof.location_id) : null,
       companyRoleCompanyIds: (ucr || []).map((r: any) => r.company_id).filter(Boolean).map(String),
       locationKeys,
       companyId: company,

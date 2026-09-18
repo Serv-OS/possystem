@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { CURRENCIES } from '../../lib/currency';
+import { profileAdmin } from '../../lib/profileAdminClient';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -72,12 +73,17 @@ export default function CompanyAdmin() {
     // with it (user_profiles.org_id stays null) → "no company assigned"
     // after sign-out. Only set it when empty so we never relocate an
     // existing multi-org user.
+    // 18 Sep 2026 (lockdown step 1): the company link is written by the server (profile-admin
+    // claim_org: only a login with no company, only a brand new organisation nobody else is in).
+    // The browser can no longer write user_profiles.org_id (it let a login claim other venues).
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data: profile } = await supabase.from('user_profiles').select('org_id').eq('id', user.id).single();
         if (!profile?.org_id) {
-          await supabase.from('user_profiles').update({ org_id: data.id }).eq('id', user.id);
+          await profileAdmin('claim_org', { org_id: data.id }, async () => {
+            await supabase.from('user_profiles').update({ org_id: data.id }).eq('id', user.id);
+          });
         }
       }
     } catch (e) { console.warn('[CompanyAdmin] link user to org failed:', e?.message); }
@@ -121,17 +127,28 @@ export default function CompanyAdmin() {
     // new location + its org. v5.5.305: also backfill org_id (was previously
     // only setting location_id, leaving the user with "no company assigned")
     // and create a user_locations row so access resolves via the junction.
+    // 18 Sep 2026 (lockdown step 1): linking the creator to the new venue and filling an empty
+    // opening venue / company is done by the server (profile-admin adopt_location: only an
+    // unclaimed venue of the creator's own company). The direct writes are the fallback only
+    // while profile-admin is not deployed yet.
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const { data: profile } = await supabase.from('user_profiles').select('location_id, org_id').eq('id', user.id).single();
-      const patch = {};
-      if (!profile?.location_id) patch.location_id = loc.id;
-      if (!profile?.org_id) patch.org_id = selectedOrg.id;
-      if (Object.keys(patch).length) {
-        await supabase.from('user_profiles').update(patch).eq('id', user.id);
+      try {
+        await profileAdmin('adopt_location', { location_id: loc.id }, async () => {
+          const { data: profile } = await supabase.from('user_profiles').select('location_id, org_id').eq('id', user.id).single();
+          const patch = {};
+          if (!profile?.location_id) patch.location_id = loc.id;
+          if (!profile?.org_id) patch.org_id = selectedOrg.id;
+          if (Object.keys(patch).length) {
+            await supabase.from('user_profiles').update(patch).eq('id', user.id);
+          }
+          await supabase.from('user_locations')
+            .upsert({ user_id: user.id, location_id: loc.id, role: 'owner' }, { onConflict: 'user_id,location_id' });
+        });
+      } catch (e) {
+        console.warn('[CompanyAdmin] link user to new location failed:', e?.message);
+        setError(`Location created, but your login was not linked to it: ${e?.message || e}`);
       }
-      await supabase.from('user_locations')
-        .upsert({ user_id: user.id, location_id: loc.id, role: 'owner' }, { onConflict: 'user_id,location_id' });
     }
 
     // Create a subscription row for this location
