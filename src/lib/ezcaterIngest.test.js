@@ -356,7 +356,8 @@ test('no catering prep time set: the 60 minute fallback, never 0, and the order 
   assert.deepEqual(ezcaterPrepFor(null), { prepMinutes: 60, prepFallback: true, prepSource: 'fallback' });
   assert.deepEqual(ezcaterPrepFor({ prep_time_minutes: 45 }), { prepMinutes: 45, prepFallback: false, prepSource: 'catering_settings' });
 
-  const sb = fakeDb(baseTables([], { catering_site_settings: [] }));
+  // A genuinely new order has no link row yet (round 5: a link with no row means the row was deleted).
+  const sb = fakeDb(baseTables([], { catering_site_settings: [], ezcater_order_links: [] }));
   const venue = await readCateringVenue(sb, null, PROVO);
   assert.equal(venue.prepMinutes, 60);
   assert.equal(venue.prepFallback, true);

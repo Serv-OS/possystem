@@ -8,7 +8,7 @@
 export {
   CATERING_SOURCES, CATERING_SOURCES_PG_LIST, DEFAULT_VENUE_TZ, EZ_COMMITTED, EZ_DEAD, ezEffectiveLifecycle, UNCLAIMABLE_STATUSES_PG,
   isCateringSource, isEzcaterOrder, cateringSourceLabel,
-  liveQueueOrFilter, isFutureCatering, isCancelledUnfiredCatering, keptOutOfLiveQueue,
+  liveQueueOrFilter, isFutureCatering, isServerOwnedQueueRow, tillDeletableOrFilter, isCancelledUnfiredCatering, keptOutOfLiveQueue,
   wallTimeToInstantMs, venueWallClock,
   cateringPrepMinutes, cateringFireMs, cateringPrepSetting, ezcaterPrepFor, EZ_PREP_FALLBACK_MINUTES,
   cateringHoldReason, cateringMayFire, isSentAnyway, cateringReleaseWindow, cateringReleaseDecision,

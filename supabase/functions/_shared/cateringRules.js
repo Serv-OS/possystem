@@ -97,6 +97,27 @@ export function keptOutOfLiveQueue(row, nowMs) {
   return isFutureCatering(row, nowMs) || isCancelledUnfiredCatering(row);
 }
 
+/**
+ * SERVER OWNED ROWS (ezCater review round 5, item 1). An order_queue row of a catering source
+ * (ServOS catering, ezCater) is written by the server: the checkout, the webhook, the release. A
+ * till may drop one from its OWN memory (a held order stays out of the live queue) but never
+ * deletes it in the database: a till delete removed an ezCater order that ezCater had moved later,
+ * before the kitchen ever had it. Staff finishing one on a till is a status change (collected).
+ */
+export function isServerOwnedQueueRow(row) {
+  return !!row && isCateringSource(row.source);
+}
+
+/**
+ * The PostgREST .or() filter EVERY till delete of order_queue carries, so a delete can never touch
+ * a server owned row, even when the till does not know the row's source (a ref it only has in its
+ * latch, a buffered delete replayed later). NULL source is kept explicitly (a NULL never matches
+ * not.in). The database refuses these deletes too (migration 20260918d), for tills on older code.
+ */
+export function tillDeletableOrFilter() {
+  return `source.is.null,source.not.in.${CATERING_SOURCES_PG_LIST}`;
+}
+
 // ── Venue clock ──────────────────────────────────────────────────────────────
 
 const _dtf = new Map();

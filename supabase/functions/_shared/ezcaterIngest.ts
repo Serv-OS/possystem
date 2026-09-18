@@ -49,7 +49,7 @@
 
 import { getOrder } from './ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from './ezcater-map.ts';
-import { ezcaterWritePlan, prefireOutcome, likelyReplacement, lateFirePlan, answerOlderThanRow } from './ezcaterCatering.js';
+import { ezcaterWritePlan, prefireOutcome, likelyReplacement, lateFirePlan, answerOlderThanRow, goneOrderPlan, keepDueFireMoment } from './ezcaterCatering.js';
 import {
   DEFAULT_VENUE_TZ, ezcaterPrepFor, cateringHoldReason, isEzcaterOrder,
   cateringFireMs, venueWallClock, CATERING_STALE_FLOOR_MS,
@@ -342,7 +342,7 @@ export async function writeEzcaterOrder(sb: any, args: {
   match?: { budgetMs?: number } | false;
   extraCustomer?: Record<string, unknown> | ((order: any) => Record<string, unknown>) | null;
   log?: (...a: unknown[]) => void;
-}): Promise<{ ok: true; plan: any; payload: any; isNew: boolean; link: any; attempts: number; stale?: boolean; menuUnseen?: string[] } | { ok: false; error: string }> {
+}): Promise<{ ok: true; plan: any; payload: any; isNew: boolean; link: any; attempts: number; stale?: boolean; gone?: string; menuUnseen?: string[] } | { ok: false; error: string }> {
   const { locationId, nowIso } = args;
   const log = args.log || (() => {});
   let order = args.order;
@@ -393,6 +393,22 @@ export async function writeEzcaterOrder(sb: any, args: {
       };
     }
 
+    // NO RE-CREATION (review round 5, item 2). No row, but the link says the order was written
+    // before: its row was deleted since. What the link says the kitchen had decides
+    // (goneOrderPlan), never "brand new, unfired", or the kitchen would get it twice.
+    let gone: any = { mode: 'new' };
+    if (!existing) {
+      const lk = await sb.from('ezcater_order_links').select('*').eq('location_id', locationId).eq('ref', ref).maybeSingle();
+      if (lk.error) return { ok: false, error: `ezcater_order_links read failed: ${lk.error.message}` };
+      gone = goneOrderPlan(lk.data || null);
+      if (gone.mode === 'skip') {
+        // readExisting reads a failed read as "no row": prove the row is really gone first.
+        const chk = await sb.from('order_queue').select('ref').eq('location_id', locationId).eq('ref', ref).maybeSingle();
+        if (chk.error) return { ok: false, error: `order_queue read failed: ${chk.error.message}` };
+        if (chk.data) continue;   // it is there: read it again and plan against it
+      }
+    }
+
     const venue = venueForExisting(args.venue, existing);
     const built = (order === args.order && venue === args.venue) ? first : build(order, venue);
     const { link } = built;
@@ -411,9 +427,19 @@ export async function writeEzcaterOrder(sb: any, args: {
     let planned = queueRow;
     if (existing && Array.isArray(existing.items)) planned = { ...queueRow, items: carryMatchedItems(queueRow.items, existing.items) };
     const plan = ezcaterWritePlan({ row: planned, existing, terminal, nowIso });
+    if (gone.mode === 'cancelled' || gone.mode === 'unknown' || gone.mode === 'skip') {
+      const recreatedAfterDelete = { at: nowIso, was: gone.mode === 'cancelled' ? 'cancelled' : gone.why || 'unknown', ezcaterSays: ezLifecycle(order) || null };
+      plan.row = { ...plan.row, customer: { ...(plan.row.customer || {}), recreatedAfterDelete } };
+      if (gone.mode === 'cancelled') plan.row.status = 'cancelled';
+      else plan.fired = true;
+    }
     const payload = queuePayload(plan.row, !existing, nowIso, { reschedule: plan.reschedule });
+    // Written back for staff, marked as already sent: no release can claim it and print it again.
+    if (gone.mode === 'unknown') payload.kitchen_routed_at = nowIso;
 
-    if (!existing) {
+    if (!existing && gone.mode === 'skip') {
+      log('the kitchen already had this order and its row was deleted since, not written again:', ref, gone.why);
+    } else if (!existing) {
       const { error } = await sb.from('order_queue').insert(payload);
       if (error && isUniqueViolation(error)) continue;   // written by a parallel notification: plan against it
       if (error) return { ok: false, error: `order_queue insert failed: ${error.message}` };
@@ -442,7 +468,8 @@ export async function writeEzcaterOrder(sb: any, args: {
       const { error: lErr } = await sb.from('ezcater_order_links').upsert({ ...link, updated_at: nowIso }, { onConflict: 'location_id,ref' });
       if (lErr) log('link upsert failed:', lErr.message);
     }
-    return { ok: true, plan, payload, isNew: !existing, link, attempts: attempt, menuUnseen };
+    if (gone.mode === 'skip') return { ok: true, plan, payload: {}, isNew: false, link, attempts: attempt, gone: gone.mode, menuUnseen };
+    return { ok: true, plan, payload, isNew: !existing && (gone.mode === 'new' || gone.mode === 'unfired'), link, attempts: attempt, menuUnseen, ...(gone.mode !== 'new' ? { gone: gone.mode } : {}) };
   }
   return { ok: false, error: 'the order kept changing while it was being written, try again' };
 }
@@ -1026,7 +1053,8 @@ async function retimeForPrep(sb: any, locationId: string, ref: string, venue: an
     if (late) customer.lateFire = late;
     else if (!(c.lateFire && c.lateFire.fireAt === fireAt)) delete customer.lateFire;
     // A released order due now fires now; a held one keeps its real fire moment.
-    const sent_at = released && fireMs < nowMs ? nowIso : fireAt;
+    // Never pushed back (review round 5, item 4): an order already due keeps its sent_at.
+    const sent_at = released ? keepDueFireMoment(row.sent_at, fireMs < nowMs ? nowIso : fireAt, nowMs) : fireAt;
     const g = await guardedUpdate(sb, locationId, ref, row, { customer, sent_at }, { unfiredOnly: true });
     if (g.error) return { retimed: false, late: false };
     if (g.matched) {
