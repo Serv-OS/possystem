@@ -7,6 +7,36 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.7',
+    date: '18 Sep 2026',
+    items: [
+      'The gift card art you upload in Back Office, Appearance, Gift cards now shows on the live gift card page, under your logo, and on the thank you page after purchase. It was saved but the customer pages never read it.',
+      'Gift card art is now company wide, like gift cards themselves: press Save appearance once and every site\'s gift card page shows it. A site can still have its own.',
+      'The Back Office preview now shows exactly what customers see: the same art in the same card shape and the same amounts, instead of a fixed three.',
+      'The amounts offered, and the custom amount box, now follow the minimum and maximum in Gift cards, Settings, the same limits the checkout enforces, so a customer is never offered an amount the payment refuses.',
+    ],
+  },
+  {
+    v: '5.9.6',
+    date: '18 Sep 2026',
+    items: [
+      'Renaming, moving or deleting a table in the floor plan now sticks after a refresh, on every till. Tills used to put the old name back from an older copy of the plan, and a deleted table came back because a device treated "not in the latest copy" as "lost" rather than "deleted".',
+      'A delete is now recorded as a delete, and the newest edit to a table wins, decided by the database\'s own clock, never a device\'s, so a till with its clock set wrong cannot hide a new table or undo an edit.',
+      'Tables are still never lost: a failed or empty load, a till waking up offline, or a second tab can never remove a table nobody deleted.',
+      'Back Office refuses to delete a table that has an open order on it, including split checks and open QR tabs, and says why. If an order ever does end up on a deleted table, the table stays on the till, marked Removed, until the order is closed.',
+      'If a Back Office tab left open from before this update tries to save an old copy of a table, or bring back a deleted one, it is refused with a message to reload, instead of silently overwriting the newer plan.',
+    ],
+  },
+  {
+    v: '5.9.5',
+    date: '18 Sep 2026',
+    items: [
+      'The table QR code downloads in Back Office, Online Ordering now work. Each JPEG button drew the code first and only then started the download, and Safari refuses a download that is not started straight from your click, so nothing happened. The codes are now drawn as soon as the section opens, so a click saves a finished file instantly.',
+      'Download all is now one PDF with every table\'s QR code, one per page, ready to print. It used to start a separate download for every table, which browsers block as a flood of files after the first one or two.',
+      'While the codes are being drawn the buttons say Preparing, and if a code cannot be drawn the section says which table and why.',
+    ],
+  },
+  {
     v: '5.9.4',
     date: '18 Sep 2026',
     items: [

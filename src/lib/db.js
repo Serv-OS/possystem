@@ -21,6 +21,7 @@ import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath
 import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
+import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -426,6 +427,9 @@ export const fetchFloorPlan = async (locationId = null) => {
 
 export const upsertFloorTable = async (table, locationId = null) => {
   if (isMock) return { data: null, error: null };
+  // v5.9.4: a blind upsert can put back a deleted table or an old name. Back Office writes go
+  // through saveFloorTableChecked (compare-and-set); this refuses a retired table outright.
+  if (table?.planRemoved || table?.parentId) return { data: null, error: new Error('Refusing to write a table that is not on the plan') };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
   // v5.5.2: cross-location guard. Floor_tables PK is `id` alone, so an upsert with the same
@@ -474,6 +478,77 @@ export const deleteFloorTable = async (id, locationId = null) => {
   let q = supabase.from('floor_tables').delete().eq('id', id);
   if (locationId && locationId !== 'loc-demo') q = q.eq('location_id', locationId);
   return q;
+};
+
+// ── Table plan (a delete is an explicit marker, edits are compare-and-set, see lib/tablePlan.js) ──
+// floor_table_tombstones: 20260918_OPS_floor_table_tombstones.sql. floor_tables.updated_at, the
+// server-set deleted_at and floor_plan_read(): 20260918b_OPS_floor_tables_server_time.sql. Until
+// Peter runs them every helper here falls back (missing table, column or function reads as
+// "not there yet") and the app keeps working on the machine's observation order instead.
+const TOMBSTONE_ABSENT = ['42P01', 'PGRST205', 'PGRST202', 'PGRST204'];
+const isAbsentTable = (err) => !!err && (TOMBSTONE_ABSENT.includes(err.code)
+  || (/floor_table_tombstones/.test(String(err.message || '')) && /does not exist|schema cache/i.test(String(err.message || ''))));
+
+const resolveLoc = async (locationId) => {
+  if (!locationId || locationId === 'loc-demo') {
+    try { locationId = getActiveLocationSync() || await getLocationId(); } catch { locationId = null; }
+  }
+  return (!locationId || locationId === 'loc-demo') ? null : locationId;
+};
+
+/**
+ * The floor plan WITH its version: { tables, sections, srvReadAt }. srvReadAt is the highest
+ * updated_at the read saw (floor_plan_read), 0 before migration 20260918b (plain select). It is
+ * for diagnosis only: no table is ever removed or blocked by a server time (tablePlan.admits).
+ * `tables` is null when the read failed: absence in a failed read never removes a table.
+ * A missing floor_plan_read is retried after a while (tablePlanDb.readFloorPlan), never latched
+ * for the life of the page.
+ */
+export const fetchFloorPlanVersioned = async (locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await resolveLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No location') };
+  const sectionsP = Promise.resolve(supabase.from('sections').select('*').eq('location_id', locationId).order('sort_order'))
+    .catch(e => ({ data: null, error: e }));
+  const { tables, srvReadAt, error } = await readFloorPlan(supabase, locationId);
+  const s = await sectionsP;
+  return { data: { tables, sections: s.data || null, srvReadAt }, error: error || s.error || null };
+};
+
+export const fetchTableTombstones = async (locationId) => {
+  if (isMock || !supabase || !locationId || locationId === 'loc-demo') return { data: null, error: null };
+  // Newest first, capped. No date filter: that would compare with this device's clock.
+  const res = await supabase.from('floor_table_tombstones')
+    .select('table_id, deleted_at, label').eq('location_id', locationId)
+    .order('deleted_at', { ascending: false }).limit(2000);
+  if (res.error) return { data: null, error: res.error, missing: isAbsentTable(res.error) };
+  return { data: res.data || [], error: null };
+};
+
+// Record a delete. deleted_at is NOT sent: the database sets it (the 20260918 trigger, on insert
+// AND on the upsert of a repeat delete), and the value it chose is read back for this machine.
+export const insertTableTombstone = async (locationId, tableId, label = null) => {
+  if (isMock || !supabase || !locationId || locationId === 'loc-demo' || !tableId) return { error: null, row: null };
+  const res = await supabase.from('floor_table_tombstones').upsert(
+    { location_id: locationId, table_id: tableId, label },
+    { onConflict: 'location_id,table_id' }).select('table_id, deleted_at');
+  if (res.error && !isAbsentTable(res.error)) console.warn('[DB] floor_table_tombstones write failed:', res.error.message);
+  return { error: res.error || null, missing: isAbsentTable(res.error), row: res.data?.[0] || null };
+};
+
+// Back Office compare-and-set write of one table (never a blind upsert). The rules and the
+// queries live in lib/tablePlanDb.js (tested against an in-memory PostgREST double).
+export const saveFloorTableChecked = async (table, locationId = null) => {
+  if (isMock) return { ok: true, row: null };
+  if (!supabase) return { ok: false, error: new Error('No database') };
+  const loc = await resolveLoc(table?.locationId || locationId);
+  return saveTableChecked(supabase, table, loc);
+};
+
+// Everything the Back Office delete guard must see (lib/tablePlanDb.js openOrdersFor).
+export const fetchTableOpenOrders = async (locationId, tableId) => {
+  if (isMock) return { dbRows: [], qrRows: [], failed: [] };
+  return openOrdersFor(supabase, locationId, tableId);
 };
 
 // ── 86 list ───────────────────────────────────────────────────────────────────
