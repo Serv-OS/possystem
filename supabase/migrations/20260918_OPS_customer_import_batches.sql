@@ -7,22 +7,13 @@
 -- drop/add for every policy. Safe to run twice.
 --
 -- ────────────────────────────────────────────────────────────────────────────
--- THE APP WORKS BEFORE THIS FILE RUNS
+-- RUN THIS BEFORE THE FIRST IMPORT. THE IMPORT REFUSES WITHOUT IT.
 -- ────────────────────────────────────────────────────────────────────────────
--- customer-import feature detects this table. A missing table answers 42P01
--- from Postgres, or PGRST205 from PostgREST's schema cache, and the function
--- treats both as "no batch list yet":
---
---   * the people still land in customers
---   * their opt in still lands in customer_consents
---   * their loyalty membership still lands in customer_loyalty
---   * their stamps still land in customer_stamp_cards
---   * every customer still carries its batch tag in customers.sources
---
--- The only thing missing is the list of past imports on the screen, and the
--- reply carries batch_table: false so the screen can say so in one plain line.
--- Nothing crashes and nothing is lost: the batch id is minted by the function
--- either way, and the tag on each customer is the durable record.
+-- customer-import writes this row FIRST, before any customer, consent or
+-- stamp, so every run is on record: the file, who ran it and what it did.
+-- Until this file has run, the import action answers 409 batch_table and the
+-- admin portal screen shows a red box saying to run this migration. Preview
+-- still works, so a file can be checked before the table exists.
 --
 -- ────────────────────────────────────────────────────────────────────────────
 -- WHY THIS TABLE EXISTS
@@ -71,7 +62,7 @@ create table if not exists public.import_batches (
 );
 
 comment on table  public.import_batches           is 'One customer import run. Slices of one file share an id. See 20260918_OPS_customer_import_batches.sql.';
-comment on column public.import_batches.org_id   is 'Ops tenant. Every Coffee Boy site shares one org, so an import reaches all three.';
+comment on column public.import_batches.org_id   is 'Ops tenant. Every Coffee Boy site shares one org, so an import reaches all of them.';
 comment on column public.import_batches.company_id is 'Platform company the loyalty memberships were written under.';
 comment on column public.import_batches.program_id is 'The stamp card the stamps landed on. Null when the file carried no stamps.';
 comment on column public.import_batches.notes    is 'The line the operator typed saying where these people opted in. Copied onto every consent row.';

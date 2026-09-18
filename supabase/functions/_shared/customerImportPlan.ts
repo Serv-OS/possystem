@@ -1189,7 +1189,7 @@ export function chunkAnswer(progress: Progress): Record<string, unknown> {
 export const STAFF_EMAILS_ENV = 'SERVOS_IMPORT_STAFF_EMAILS';
 
 /** What a signed in person is told while nobody is on the list. */
-export const IMPORT_SWITCHED_OFF = 'Import is switched off: no staff emails configured.';
+export const IMPORT_SWITCHED_OFF = 'Import is switched off: no staff emails configured. Add SERVOS_IMPORT_STAFF_EMAILS to the Supabase edge function secrets (Ops project), for example peter@posup.co.uk.';
 
 /**
  * SERVOS_IMPORT_STAFF_EMAILS read into a list: comma separated, trimmed, lower

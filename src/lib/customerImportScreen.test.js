@@ -667,3 +667,10 @@ test('6c: the country line says where the country came from, and flags the Ops d
   assert.match(countryLine('GB', 'ops_currency'), /may only be the default/);
   assert.equal(countrySourceWords('nonsense'), '');
 });
+
+test('a server error shows the server\'s own words when it has them', () => {
+  const m = importErrorMessage(503, { error: 'We could not check who is already on file, so nothing was written. Try again in a minute.', code: 'read_failed' });
+  assert.match(m, /could not check who is already on file/);
+  assert.match(m, /Nothing more was sent/);
+  assert.equal(importErrorMessage(500, null), 'The server had a problem. Nothing more was sent. Try again in a minute.');
+});

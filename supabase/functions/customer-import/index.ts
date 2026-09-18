@@ -168,6 +168,18 @@ async function venueCountry(opsLocationId: string, platformCurrency: unknown): P
 // this read skipped them as well, a person deleted here but still in a stale
 // export would be inserted again as a brand new customer. decideRows sees
 // deleted_at and leaves the row out by name. Never un-deleted, never a twin.
+// A read that fails must STOP the slice, never read as "nobody here". Both
+// unique indexes skip deleted rows, so a person deleted here who is missed by a
+// failed read would be inserted again as a live twin, which item 2 forbids. The
+// slice is refused before anything is written, and the import is safe to retry.
+class ReadFailed extends Error {
+  what: string;
+  constructor(what: string, detail: string) {
+    super(`customers read by ${what} failed: ${detail}`);
+    this.what = what;
+  }
+}
+
 async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingCustomer[]> {
   const { phones, raws, emails } = lookupKeys(rows);
   const found = new Map<string, ExistingCustomer>();
@@ -179,8 +191,9 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
   // customers.phone, under every shape the app, or an older run of this
   // importer, could have stored this number in.
   for (const slice of chunk(phones, READ_CHUNK)) {
-    const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
+    const { data, error } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).in('phone', slice);
+    if (error) throw new ReadFailed('phone', error.message);
     take(data);
   }
   // customers.phone_raw is TEXT AS TYPED ('0161 496 0000'). It is asked for
@@ -188,16 +201,18 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
   // type the same number. See lookupKeys. Back Office saves an edited phone
   // here and nowhere else, which is why this arm is worth having.
   for (const slice of chunk(raws, READ_CHUNK)) {
-    const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
+    const { data, error } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).in('phone_raw', slice);
+    if (error) throw new ReadFailed('phone_raw', error.message);
     take(data);
   }
   // Emails are read WHATEVER CASE they were stored in (see emailIlikeFilter).
   // A deleted Jane@Example.com must be found by jane@example.com, because the
   // unique index on lower(email) skips deleted rows and would let a twin in.
   for (const slice of chunk(emails, EMAIL_READ_CHUNK)) {
-    const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
+    const { data, error } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).or(emailIlikeFilter(slice));
+    if (error) throw new ReadFailed('email', error.message);
     take(data);
   }
   return Array.from(found.values());
@@ -314,7 +329,13 @@ Deno.serve(async (req) => {
   }
   const programVerdict = programmeCheck({ rows: ready, programId, program, companyId });
 
-  const existing = await readExisting(orgId, ready);
+  let existing: ExistingCustomer[];
+  try {
+    existing = await readExisting(orgId, ready);
+  } catch (e) {
+    console.error('[customer-import] existing customer read failed', (e as Error)?.message);
+    return json({ error: 'We could not check who is already on file, so nothing was written. Try again in a minute.', code: 'read_failed' }, 503);
+  }
   const decisions = decideRows(ready, indexExisting(existing, { country: country.country }), { country: country.country });
   const counts = planCounts(decisions);
 

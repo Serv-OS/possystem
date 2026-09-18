@@ -1188,3 +1188,22 @@ test('2: emails are read case blind, so a deleted Jane@Example.com is found by j
   const [d] = decideRows([r], [{ id: 'gone', name: 'Jane', email: 'Jane@Example.COM', deleted_at: '2026-08-01T00:00:00Z' }], GB);
   assert.equal(d.deleted, true);
 });
+
+// Round four review (18 Sep 2026): readExisting only destructured data, so a
+// failed read looked like "nobody on file". Both unique indexes skip deleted
+// rows, so a deleted person missed that way was inserted again as a live twin.
+test('a failed existing customer read stops the slice before anything is written', () => {
+  const src = fs.readFileSync(fileURLToPath(new URL('../../supabase/functions/customer-import/index.ts', import.meta.url)), 'utf8');
+  const i = src.indexOf('async function readExisting(');
+  const fn = src.slice(i, src.indexOf('\n}\n', i));
+  const reads = fn.match(/await opsAdmin\.from\('customers'\)/g) || [];
+  assert.equal(reads.length, 3, 'phone, phone_raw and email are read');
+  assert.equal((fn.match(/const \{ data, error \} = await opsAdmin/g) || []).length, 3, 'every read keeps its error');
+  assert.equal((fn.match(/if \(error\) throw new ReadFailed\(/g) || []).length, 3, 'every failed read throws');
+  const call = src.indexOf('existing = await readExisting(orgId, ready);');
+  assert.ok(call > 0, 'called once');
+  const around = src.slice(call - 80, call + 400);
+  assert.ok(around.includes("code: 'read_failed' }, 503)"), 'refused with a clear 503');
+  const firstWrite = src.search(/\.(insert|upsert|update)\(/);
+  assert.ok(call < firstWrite, 'the read comes before any write');
+});

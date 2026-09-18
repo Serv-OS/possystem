@@ -566,7 +566,12 @@ export function importErrorMessage(status, body) {
   if (code === 409 && body && typeof body === 'object' && typeof body.error === 'string') return 'It stopped: ' + body.error;
   if (code === 413) return 'That was too much in one go. Split the file and try again.';
   if (code === 429) return 'The server asked us to slow down. Wait a minute and try again.';
-  if (code >= 500) return 'The server had a problem. Nothing more was sent. Try again in a minute.';
+  if (code >= 500) {
+    // The server's own words when it has them ("We could not check who is already
+    // on file, so nothing was written"), so the operator is not left to retry blind.
+    const why = body && typeof body === 'object' && typeof body.error === 'string' ? body.error.trim() : '';
+    return why ? 'It stopped: ' + why + ' Nothing more was sent.' : 'The server had a problem. Nothing more was sent. Try again in a minute.';
+  }
   const plain = (body && typeof body === 'object' && typeof body.error === 'string') ? body.error : '';
   return plain ? 'It stopped: ' + plain : 'It stopped and we do not know why. Nothing more was sent.';
 }
