@@ -1326,14 +1326,16 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
     hubrise:{ icon: '🛵', label: 'Delivery', bg: '#e8a020' },  // amber
   };
   const isCancel = alert.kind === 'cancel';
-  const m = isCancel
-    ? { icon: '⚠️', label: alert.who || 'Channel', bg: '#dc2626' }
+  // 18 Sep 2026: a catering (ezCater) order changed after the kitchen had it (lib/cateringAlerts.js).
+  const isChanged = alert.kind === 'changed';
+  const m = isCancel || isChanged
+    ? { icon: '⚠️', label: alert.who || 'Channel', bg: isCancel ? '#dc2626' : '#d97706' }
     : (SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' });
   const total = Number(alert.total || 0);
 
   // A channel order that the operator still has to accept/reject (auto-accept off
   // → it arrives 'received'/'new', not yet 'prep').
-  const needsDecision = !isCancel && alert.source === 'hubrise'
+  const needsDecision = !isCancel && !isChanged && alert.source === 'hubrise'
     && !['prep', 'ready', 'collected', 'cancelled'].includes(alert.status);
 
   const accept = () => { acceptOrderByRef?.(alert.ref); onDismiss(); };
@@ -1364,7 +1366,7 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>{m.icon}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', opacity: 0.9 }}>
-              {isCancel ? 'Order cancelled' : `New ${m.label} order`}
+              {isCancel ? 'Order cancelled' : isChanged ? 'Order changed' : `New ${m.label} order`}
             </div>
             <div style={{ fontSize: 21, fontWeight: 900, lineHeight: 1.2, marginTop: 2,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1389,9 +1391,11 @@ function OrderAlert({ alert, onDismiss, setSurface }) {
             {items.length > 12 && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>+{items.length - 12} more…</div>}
           </div>
         )}
-        {isCancel && (
+        {(isCancel || isChanged) && (
           <div style={{ padding: '16px 20px', fontSize: 13.5, color: 'var(--t2)', borderBottom: '1px solid var(--bdr)' }}>
-            This order was cancelled on the channel. If the kitchen has started it, stop and reconcile.
+            {alert.message ? `${alert.message}. ` : ''}{isCancel
+              ? 'This order was cancelled on the channel. If the kitchen has started it, stop and reconcile.'
+              : 'The kitchen already has the old version. Check the order in Orders and tell the kitchen what changed.'}
           </div>
         )}
 

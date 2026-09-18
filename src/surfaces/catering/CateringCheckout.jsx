@@ -19,6 +19,7 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/qu
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
+import { wallTimeToInstantMs, cateringFireMs, cateringPrepMinutes } from '../../lib/cateringRules';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
@@ -31,22 +32,9 @@ const wideId = () => (
     : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 );
 
-// Build the UTC instant for a wall-clock time in the VENUE timezone (not the customer's
-// browser). Used for the kitchen fire time (sent_at) and the sale date (closed_at) so a
-// catering order fires + reports on the venue's clock regardless of where it was placed.
-function wallTimeToInstantMs(dateStr, timeStr, tz) {
-  if (!dateStr) return NaN;
-  const [y, mo, d] = dateStr.split('-').map(Number);
-  const [h, mi] = (timeStr || '12:00').split(':').map(Number);
-  const guess = Date.UTC(y, (mo || 1) - 1, d || 1, h || 0, mi || 0, 0);
-  if (!tz) return guess;
-  try {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const p = {}; dtf.formatToParts(new Date(guess)).forEach(x => { if (x.type !== 'literal') p[x.type] = +x.value; });
-    const seen = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-    return guess - (seen - guess);   // shift the guess by the venue's offset at that wall time
-  } catch { return guess; }
-}
+// The venue clock and the kitchen fire time are the ONE catering rule set in lib/cateringRules.js
+// (wallTimeToInstantMs + cateringFireMs), shared with the ezCater webhook so an ezCater order fires
+// into the kitchen at exactly the moment one of ours would.
 const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
@@ -200,9 +188,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   // future catering); the master "release due catering" tick fires it via routeKioskOrderPrints
   // (atomic kitchen_routed_at claim → once across devices). status stays 'received' (BO Catering
   // reads kitchen_routed_at, not status, for "In kitchen"). Sales date to the event day (eventMs).
-  const prepMin = Math.max(0, Number(cfg?.prep_time_minutes) || 0);
+  // The food is ready at the event time; cateringFireMs takes the venue's prep time off it.
   const eventMs = wallTimeToInstantMs(eventDate, eventTime || '12:00', cfg?.venue_timezone);
-  const fireMs = isNaN(eventMs) ? NaN : eventMs - prepMin * 60000;
+  const fireMs = cateringFireMs(eventMs, cateringPrepMinutes(cfg));
   const queueRow = (paid, pay) => {
     return {
       ref, location_id: opsId, type: fulfilment, status: 'received', source: 'catering',

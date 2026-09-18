@@ -211,6 +211,7 @@ export const SOURCE_LABEL = {
   online:   '🌐 Online',
   qr:       '📱 QR Code',
   catering: '🍽 Catering',
+  ezcater:  '🍽 ezCater catering',
   delivery: '🛵 Delivery',
   hubrise:  '🛵 Delivery apps',
 };

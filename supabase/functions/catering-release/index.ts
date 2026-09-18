@@ -15,9 +15,15 @@
 // via the KDS row + the claim, and the POS surfaces it once any device is on.
 //
 // Auth: service-role bearer, OR x-run-secret == CATERING_RELEASE_SECRET (the Vercel cron path).
+//
+// 18 Sep 2026: every CATERING source (_shared/cateringRules.js), so an ezCater order has the same
+// backstop as one of ours. A cancelled order, or an ezCater order not yet accepted in ezCater, is
+// never fired (cateringMayFire). A ServOS courier is never booked for an ezCater order
+// (mayBookOurCourier): the caterer's own fleet or ezCater Dispatch delivers those.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
+import { CATERING_SOURCES, cateringMayFire, mayBookOurCourier, cateringSourceLabel, isEzcaterOrder } from '../_shared/cateringRules.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -39,15 +45,18 @@ Deno.serve(async (req) => {
   const cutoff = new Date(Date.now() - GRACE_MIN * 60_000).toISOString();
   // Due (fire time + grace passed), not yet fired by any device, not finished. Oldest first.
   const { data, error } = await sb.from('order_queue')
-    .select('ref, location_id, type, total, items, customer, sent_at')
-    .eq('source', 'catering').is('kitchen_routed_at', null).neq('status', 'collected')
+    .select('ref, location_id, source, status, type, total, items, customer, sent_at')
+    .in('source', CATERING_SOURCES).is('kitchen_routed_at', null).not('status', 'in', '(collected,cancelled)')
     .lte('sent_at', cutoff)
     .order('sent_at', { ascending: true })
     .limit(BATCH);
   if (error) return json({ error: error.message }, 500);
 
   let fired = 0;
+  let held = 0;
   for (const row of (data || [])) {
+    // Not accepted on ezCater yet: stays held and visible, fires once the accepted notification lands.
+    if (!cateringMayFire(row)) { held++; continue; }
     // Atomic claim — only one firer (this cron OR a device) ever proceeds for a given order.
     const claim = await sb.from('order_queue')
       .update({ kitchen_routed_at: new Date().toISOString() })
@@ -59,7 +68,7 @@ Deno.serve(async (req) => {
     // this order → no device will dispatch the courier either. If it's an uber-mode delivery,
     // dispatch server-side now (idempotent on order_ref, so a device that comes online won't
     // double-send). Self-delivery just gets the KDS ticket below. Independent of KDS success.
-    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber') {
+    if (mayBookOurCourier(row)) {
       try {
         const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', row.location_id).maybeSingle();
         if (cfg?.enabled) {
@@ -70,11 +79,12 @@ Deno.serve(async (req) => {
     }
 
     // Consolidated KDS ticket (all items, centre_id null → shows on the all-items KDS view).
-    const who = row.customer?.name || 'Catering';
+    const label = cateringSourceLabel(row.source) || 'Catering';
+    const who = row.customer?.name || label;
     const ticket = {
       id: `kds-cat-${row.ref}`,
       location_id: row.location_id,
-      table_label: `Catering ${row.ref}`,
+      table_label: `${label} ${row.ref}`,
       items: row.items || [],
       status: 'pending', course: 'main', centre_id: null,
       server: who, covers: 1,
@@ -83,10 +93,11 @@ Deno.serve(async (req) => {
     // v5.8.66: order type, name, number and source for the redesigned KDS. Same shape as
     // buildTicketMeta in src/lib/kds/kdsTicket.js. Catering refs (CA-XXXXX) show in full.
     const meta = {
-      v: 1, channel: 'catering', isTable: false,
+      v: 1, channel: row.source || 'catering', isTable: false,
       orderType: ['takeaway', 'collection', 'delivery'].includes(row.type) ? row.type : 'collection',
       customerName: row.customer?.name || null,
-      orderNo: row.ref, source: 'Catering', staff: null,
+      // ezCater's own order number (HKX77V) is what the caterer and driver quote.
+      orderNo: (isEzcaterOrder(row) && row.customer?.ezcater_order_number) || row.ref, source: label, staff: null,
       note: (typeof row.customer?.notes === 'string' && row.customer.notes.trim()) || null,
     };
     let { error: kErr } = await sb.from('kds_tickets').insert({ ...ticket, meta });
@@ -98,5 +109,5 @@ Deno.serve(async (req) => {
     if (kErr) { console.warn('[catering-release] kds insert', row.ref, kErr.message); continue; }
     fired++;
   }
-  return json({ ok: true, scanned: data?.length || 0, fired });
+  return json({ ok: true, scanned: data?.length || 0, fired, held });
 });

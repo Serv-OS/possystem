@@ -47,9 +47,9 @@ export const KDS_STATUS = {
 };
 
 /** Channel refs that the legacy label carries after a word: "Kiosk R17". */
-const CHANNEL_WORDS = { kiosk: 'kiosk', online: 'online', qr: 'qr', hubrise: 'hubrise', catering: 'catering' };
-/** The till name shown for orders that did not come from a till. */
-export const CHANNEL_SOURCE = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise', catering: 'Catering' };
+const CHANNEL_WORDS = { kiosk: 'kiosk', online: 'online', qr: 'qr', hubrise: 'hubrise', catering: 'catering', ezcater: 'ezcater' };
+/** The till name shown for orders that did not come from a till. ezCater is catering and keeps its own name. */
+export const CHANNEL_SOURCE = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise', catering: 'Catering', ezcater: 'ezCater' };
 
 const clean = (v) => {
   const s = v == null ? '' : String(v).replace(/\s+/g, ' ').trim();
@@ -155,12 +155,12 @@ export function parseLegacyTicket(row) {
   if (m) {
     return { ...buildTicketMeta({ channel: 'bar', customerName: m[1], staff: server }), legacy: true };
   }
-  m = /^(Kiosk|Online|QR|HubRise|Catering)\s+(\S+)$/i.exec(label);
+  m = /^(Kiosk|Online|QR|HubRise|Catering|ezCater)\s+(\S+)$/i.exec(label);
   if (m) {
     const channel = CHANNEL_WORDS[m[1].toLowerCase()];
     // routeKioskOrderPrints wrote the customer name into `server`, or the label again
     // when there was no name. catering-release writes the name (or 'Catering').
-    const name = server && server !== label && server.toLowerCase() !== 'catering' ? server : null;
+    const name = server && server !== label && !['catering', 'ezcater'].includes(server.toLowerCase()) ? server : null;
     return {
       ...buildTicketMeta({ channel, customerName: name, orderRef: m[2], source: CHANNEL_SOURCE[channel] }),
       orderType: null, orderRef: m[2], legacy: true,
@@ -190,7 +190,7 @@ export function needsTypeLookup(meta) {
 /** Used only when order_queue has no row for a legacy channel ticket. */
 export function fallbackTypeForChannel(channel) {
   if (channel === 'hubrise') return 'delivery';
-  if (channel === 'online' || channel === 'catering') return 'collection';
+  if (channel === 'online' || channel === 'catering' || channel === 'ezcater') return 'collection';
   return 'dine-in';
 }
 

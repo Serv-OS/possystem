@@ -1,13 +1,15 @@
 // src/backoffice/sections/CateringOrders.jsx
 //
 // Back office → Channels → "Catering orders". The kitchen-planning view of all catering pre-orders
-// (order_queue rows tagged source='catering'), grouped by event date with filters. Big scheduled
+// (order_queue rows from every catering source in lib/cateringRules.js: our own catering site and
+// ezCater, plus online advance orders), grouped by event date with filters. Big scheduled
 // orders are easy to miss in the live hub, so this gives the team forward visibility. Read-only over
 // order_queue (RLS allows the BO user). The release-to-hub / fire-to-kitchen lifecycle is separate.
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
+import { CATERING_SOURCES, cateringSourceLabel, advanceListStatus, inAdvanceList, changedAfterFireText } from '../../lib/cateringRules';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -23,7 +25,9 @@ const S = {
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 const todayISO = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fmtDay = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); } catch { return iso; } };
-const statusLabel = (o) => o.status === 'cancelled' ? 'Cancelled' : o.status === 'prep' || o.kitchen_routed_at ? 'In kitchen' : o.status === 'done' ? 'Completed' : 'Scheduled';
+// The one status rule for this list (lib/cateringRules.js advanceListStatus), so an ezCater order
+// that is not accepted yet, or was changed after the kitchen had it, says so.
+const statusLabel = (o) => advanceListStatus(o);
 
 const RANGES = [['upcoming', 'Upcoming'], ['today', 'Today'], ['week', 'Next 7 days'], ['past', 'Past'], ['all', 'All']];
 
@@ -38,14 +42,15 @@ export default function CateringOrders() {
 
   const load = async (id) => {
     const [{ data }, { data: cfg }] = await Promise.all([
-      supabase.from('order_queue').select('*').eq('location_id', id).in('source', ['catering', 'online']).order('sent_at', { ascending: true }).limit(2000),
+      supabase.from('order_queue').select('*').eq('location_id', id).in('source', [...CATERING_SOURCES, 'online']).order('sent_at', { ascending: true }).limit(2000),
       supabase.from('catering_site_settings').select('currency').eq('location_id', id).maybeSingle(),
     ]);
     // v5.8.18: online advance orders alongside catering. An online row has no
     // event_date, so derive the day from customer.collection_at (venue tz).
     let tz = 'Europe/London';
     try { tz = (await getLocationConfig(id))?.timezone || tz; } catch { /* default */ }
-    const rows = (data || []).map((o) => {
+    // A catering order cancelled before it fired has left the plan (inAdvanceList).
+    const rows = (data || []).filter(inAdvanceList).map((o) => {
       if (o.event_date) return o;
       const inst = o.customer?.collection_at ? new Date(o.customer.collection_at) : (o.sent_at ? new Date(o.sent_at) : null);
       const event_date = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleDateString('en-CA', { timeZone: tz }) : null;
@@ -83,6 +88,8 @@ export default function CateringOrders() {
   }, [filtered]);
 
   const totalValue = filtered.reduce((s, o) => s + Number(o.total || 0), 0);
+  // ezCater orders carry their own currency (ezCater's figures, never converted).
+  const rowCur = (o) => (o.source === 'ezcater' && o.customer?.totals?.currency ? String(o.customer.totals.currency).toLowerCase() : cur);
   const itemsCount = (o) => (o.items || []).reduce((n, i) => n + (i.qty || 1), 0);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -113,9 +120,9 @@ export default function CateringOrders() {
             return (
               <div key={o.ref} style={S.card}>
                 <div style={S.row} onClick={() => setOpen(isOpen ? null : o.ref)}>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)' }}>{o.collection_time || '—'}<div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>{o.ref}</div></div>
-                  <div style={{ minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name || 'Customer'}</div><div style={{ fontSize: 12, color: 'var(--t3)' }}>{c.fulfilment === 'delivery' ? 'Delivery' : 'Collection'} · {itemsCount(o)} items{c.phone ? ` · ${c.phone}` : ''}</div></div>
-                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 13.5, color: 'var(--t1)' }}>{money(o.total, cur)}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)' }}>{o.collection_time || 'No time'}<div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>{o.source === 'ezcater' ? (c.ezcater_order_number || o.ref) : o.ref}</div></div>
+                  <div style={{ minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.source === 'ezcater' && <span style={{ ...S.pill, marginRight: 6, fontSize: 10, color: '#e4572e', borderColor: '#e4572e' }}>{cateringSourceLabel(o.source)}</span>}{c.name || 'Customer'}</div><div style={{ fontSize: 12, color: 'var(--t3)' }}>{(c.fulfilment || o.type) === 'delivery' ? 'Delivery' : 'Collection'} · {itemsCount(o)} items{c.phone ? ` · ${c.phone}` : ''}</div></div>
+                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 13.5, color: 'var(--t1)' }}>{money(o.total, rowCur(o))}</div>
                   <div style={{ textAlign: 'center' }}><span style={{ ...S.pill, color: o.paid ? 'var(--grn)' : 'var(--amber, #d98a00)', borderColor: o.paid ? 'var(--grn)' : 'var(--amber, #d98a00)' }}>{o.paid ? 'Paid' : 'Pay later'}</span></div>
                   <div style={{ textAlign: 'right' }}><span style={{ ...S.pill }}>{statusLabel(o)}</span></div>
                 </div>
@@ -123,7 +130,13 @@ export default function CateringOrders() {
                   <div style={{ borderTop: '1px solid var(--bdr2)', padding: '12px 14px', background: 'var(--bg2)' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12.5, color: 'var(--t2)', marginBottom: 10 }}>
                       <div><b>Contact:</b> {c.name || '—'}{c.email ? ` · ${c.email}` : ''}{c.phone ? ` · ${c.phone}` : ''}</div>
-                      <div><b>Fulfilment:</b> {c.fulfilment === 'delivery' ? `Delivery${c.address ? ` — ${c.address.line1}, ${c.address.postcode}` : ''}` : 'Collection'}</div>
+                      <div><b>Fulfilment:</b> {(c.fulfilment || o.type) === 'delivery' ? `Delivery${c.address ? `: ${c.address.line1}, ${c.address.postcode}` : ''}` : 'Collection'}</div>
+                      {o.source === 'ezcater' && (
+                        <div style={{ gridColumn: '1 / -1' }}><b>ezCater:</b> order {c.ezcater_order_number || o.ref}
+                          {c.ready_time ? ` · food ready ${c.ready_time}` : ''}{c.fire_time ? ` · fires to the kitchen ${c.fire_time}` : ''}
+                          {c.prepMinutes != null ? ` (${c.prepMinutes} min prep)` : ''}{c.thirdPartyDelivery ? ' · ezCater Dispatch delivers' : ((c.fulfilment || o.type) === 'delivery' ? ' · your own driver delivers' : '')}</div>
+                      )}
+                      {changedAfterFireText(c.changedAfterFire) && <div style={{ gridColumn: '1 / -1', color: '#dc2626', fontWeight: 700 }}>{changedAfterFireText(c.changedAfterFire)}</div>}
                       {c.promo_code && <div><b>Promo:</b> {c.promo_code}{c.promo_discount ? ` (−${money(c.promo_discount, cur)})` : ''}</div>}
                       {c.tax_id && <div><b>Tax/VAT id:</b> {c.tax_id}</div>}
                       {c.notes && <div style={{ gridColumn: '1 / -1' }}><b>Notes:</b> {c.notes}</div>}

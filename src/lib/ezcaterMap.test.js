@@ -226,7 +226,9 @@ test('delivery order maps to an order_queue row', () => {
   assert.equal(row.source, 'ezcater');
   assert.equal(row.location_id, LOC);
   assert.equal(row.type, 'delivery');
-  assert.equal(row.status, 'prep');          // accepted
+  // accepted lands HELD, exactly as a ServOS catering order does (CateringCheckout writes
+  // 'received'); the catering release moves it on at its kitchen fire time.
+  assert.equal(row.status, 'received');
   assert.equal(row.paid, true);              // ezCater always takes the payment
   assert.equal(row.is_asap, false);          // a catering order is never ASAP
   assert.equal(row.total, 412.75);           // catererTotalDue, the number the venue banks
@@ -281,7 +283,11 @@ test('delivery order maps to an order_queue row', () => {
   assert.equal(link.order_type, 'DELIVERY');
   assert.equal(link.ez_lifecycle, 'accepted');
   assert.equal(link.accepted_count, 1);
-  assert.equal(link.fire_at, '2026-09-04T11:30:00-04:00');
+  // fire_at is the KITCHEN fire instant: the handoff (food must be ready) minus the venue's
+  // catering prep time, which is 0 when no venue settings are given.
+  assert.equal(link.fire_at, '2026-09-04T15:15:00.000Z');
+  assert.equal(row.fire_at, '2026-09-04T15:15:00.000Z');
+  assert.equal(row.customer.readySource, 'catererHandoffFoodTime');
 });
 
 // ── 2. takeout ──────────────────────────────────────────────────────────────
@@ -617,7 +623,8 @@ test('lifecycle is read from orderIsCurrently, the field that actually exists', 
   // Reading lifecycle.value gave '' for every order, so every order looked
   // 'received' and a cancelled one would have gone to the kitchen.
   const { row } = orderToQueueRow({ ...DELIVERY_ORDER, lifecycle: { orderIsCurrently: 'accepted' } }, LOC);
-  assert.equal(row.status, 'prep');
+  assert.equal(row.status, 'received');   // accepted, held like any catering order
+  assert.equal(row.customer.ezcater_lifecycle, 'accepted');
   // The older shapes remain as a net, never as the reason a bad name looks fine.
   assert.equal(ezLifecycle({ lifecycleValue: 'SUBMITTED' }), 'submitted');
   assert.equal(ezLifecycle({ lifecycle: 'cancelled' }), 'cancelled');
@@ -683,7 +690,7 @@ test('a midnight event does not render as hour 24', () => {
 
 // ── the write payload ───────────────────────────────────────────────────────
 
-test('queuePayload writes only baseline columns and stamps sent_at with the event time', () => {
+test('queuePayload writes only baseline columns and stamps sent_at with the KITCHEN FIRE time', () => {
   const { row } = orderToQueueRow(DELIVERY_ORDER, LOC);
   const now = '2026-08-22T08:00:00.000Z';
 
@@ -694,16 +701,25 @@ test('queuePayload writes only baseline columns and stamps sent_at with the even
   ]);
   assert.equal(fresh.source, 'ezcater');
   assert.equal(fresh.paid, true);
-  // An ezCater order sits for days. sent_at is the EVENT instant, not now.
-  assert.equal(fresh.sent_at, '2026-09-04T11:30:00-04:00');
+  // An ezCater order sits for days. sent_at is the kitchen fire instant (handoff minus prep),
+  // the same meaning as on a ServOS catering order, never now and never the delivery time.
+  assert.equal(fresh.sent_at, '2026-09-04T15:15:00.000Z');
   // An ezCater Order has NO createdAt, so the row's own arrival time is the
   // only honest answer. Inventing one made every ticket claim a false age.
   assert.equal(fresh.created_at, now);
 
-  // An update must not restamp created_at or sent_at.
+  // An update must not restamp created_at or sent_at, nor move the date and time the kitchen
+  // was given, unless the webhook asks it to reschedule an order that has not fired yet.
   const update = queuePayload(row, false, now);
   assert.equal('created_at' in update, false);
   assert.equal('sent_at' in update, false);
+  assert.equal('event_date' in update, false);
+  assert.equal('collection_time' in update, false);
+  const moved = queuePayload(row, false, now, { reschedule: true });
+  assert.equal(moved.sent_at, '2026-09-04T15:15:00.000Z');
+  assert.equal(moved.event_date, row.event_date);
+  assert.equal(moved.collection_time, row.collection_time);
+  assert.equal('created_at' in moved, false);
 });
 
 // ── webhook signature ───────────────────────────────────────────────────────
@@ -1023,7 +1039,7 @@ test('ezCater own sample order maps end to end', () => {
 
   assert.equal(row.ref, 'EZ-your-ezcater-order-id');
   assert.equal(row.type, 'delivery');
-  assert.equal(row.status, 'prep');            // accepted
+  assert.equal(row.status, 'received');        // accepted, held like any catering order
   assert.equal(row.total, 171.02);             // catererTotalDue, what the venue banks
 
   // The timestamp is UTC with no offset, so the IANA zone is what makes it local.

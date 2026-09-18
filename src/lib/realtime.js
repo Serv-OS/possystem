@@ -16,6 +16,7 @@ import { isSessionClosed } from '../sync/sessionClosure';
 import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
+import { cateringChangeAlert } from './cateringAlerts';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -23,6 +24,8 @@ import { capClosedChecks } from '../store';
 import { getLocationConfig, clearLocationConfigCache } from './locationTime';
 
 let channels = [];
+// Catering changes already alerted on this till (lib/cateringAlerts.js keys), bounded by the session.
+const _cateringAlerted = new Set();
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
 
 // v5.5.311: apply a stock_levels row to the store, keeping dailyCounts AND
@@ -560,6 +563,20 @@ export function startRealtime(store, locationId = LOCATION_ID) {
               // order re-read from the queue prints as if it had just arrived.
               created_at: row.created_at,
             });
+          }
+        }
+      }
+      // 18 Sep 2026: an ezCater (or any catering) order changed or cancelled AFTER the kitchen
+      // had it. The webhook never moves a fired order's time; it stamps
+      // customer.changedAfterFire instead, and this is where staff are told, loudly, once per
+      // change on this till (lib/cateringAlerts.js decides; the key is the change's own time).
+      if (payload.eventType === 'UPDATE') {
+        const alert = cateringChangeAlert(payload.new, payload.old);
+        if (alert && !_cateringAlerted.has(alert.key)) {
+          _cateringAlerted.add(alert.key);
+          if (orderNotificationsEnabled()) {
+            playOrderChime();
+            store.getState().showOrderAlert?.(alert.alert);
           }
         }
       }

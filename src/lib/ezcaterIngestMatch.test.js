@@ -994,8 +994,13 @@ test('the webhook calls the matcher, inside a try, before the order_queue upsert
 });
 
 test('the upsert writes the matched row, and the status logic is untouched', () => {
-  assert.ok(WEBHOOK.includes('queuePayload({ ...queueRow, status }'), 'the matched row is what reaches order_queue');
-  assert.ok(WEBHOOK.includes("? (terminal ? 'cancelled' : existing.status)"), 'a cancellation still always wins');
+  // 18 Sep 2026: the status and timing rules for an existing row moved into the pure
+  // _shared/ezcaterCatering.js (ezcaterWritePlan, unit tested in cateringRules.test.js). The
+  // matched row still goes in, and the rule a cancellation always wins is unchanged there.
+  assert.ok(WEBHOOK.includes('ezcaterWritePlan({ row: queueRow, existing, terminal, nowIso: writeNow })'), 'the matched row is what reaches order_queue');
+  assert.ok(WEBHOOK.includes('queuePayload(plan.row, !existing, writeNow, { reschedule: plan.reschedule })'));
+  const PLAN = fs.readFileSync(new URL('../../supabase/functions/_shared/ezcaterCatering.js', import.meta.url), 'utf8');
+  assert.ok(PLAN.includes("const status = terminal ? 'cancelled' : existing.status;"), 'a cancellation still always wins');
   assert.ok(WEBHOOK.includes('let queueRow = row;'), 'the fallback value is the mapper row itself');
 });
 

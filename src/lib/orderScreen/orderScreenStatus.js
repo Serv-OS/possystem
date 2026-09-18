@@ -4,7 +4,8 @@
 // NO imports, so node:test can load it and the Back Office preview and the TV share it.
 //
 // This file MIRRORS supabase/migrations/20260911_OPS_order_status_displays.sql, with the
-// feed as 20260911c_OPS_order_screen_names_follow_the_section.sql replaces it, and the type
+// feed as 20260911c_OPS_order_screen_names_follow_the_section.sql replaces it (and
+// 20260918_OPS_ezcater_catering_order_screens.sql after it: ezCater is catering), and the type
 // key and name helpers as 20260917_OPS_drive_thru_order_screens.sql replaces them:
 //   channelKeyOf      = _osd_channel_key
 //   orderTypeKey      = _osd_type_key   (20260917 adds drive thru)
@@ -445,7 +446,8 @@ export function evaluateOrder(order, display, nowMs) {
   if (collectedAt != null) bucket = 'collected';
   else if (departed || status === 'collected') reason = 'removed';
   else if (status === 'received' || status === 'scheduled') {
-    if ((o.source === 'hubrise' || o.source === 'ezcater') && !showUnacceptedPlatform) reason = 'unaccepted';
+    // ezCater is catering (20260918): accepted in ezCater, never on our till, so only HubRise waits.
+    if (o.source === 'hubrise' && !showUnacceptedPlatform) reason = 'unaccepted';
     else bucket = 'received';
   } else if (status === 'prep') bucket = 'preparing';
   else if (status === 'ready') bucket = 'ready';
@@ -479,8 +481,8 @@ export function evaluateOrder(order, display, nowMs) {
   }
   // A till pre order waits as scheduled with no fire time. It shows once the till fires it.
   if (status === 'scheduled' && sentAt == null) return hidden('future', row);
-  const allowance = o.source === 'ezcater' ? 60 * MIN : 0;
-  if (sentAt != null && sentAt > now + allowance) return hidden('future', row);
+  // sent_at is the kitchen fire time for every catering order, ezCater included (20260918): no early allowance.
+  if (sentAt != null && sentAt > now) return hidden('future', row);
   const base = sentAt != null ? Math.min(sentAt, now) : (createdAt ?? now);
   if (base < now - maxAge * HOUR) return hidden('stale', row);
   if (!section.statuses.includes(bucket)) return hidden('status_off', row);

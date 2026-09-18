@@ -14,6 +14,8 @@ import { receiptOverride } from '../../lib/itemDisplay';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
+// Per day capacity counts every catering order the kitchen has that day, ezCater included.
+import { CATERING_SOURCES } from '../../lib/cateringRules';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, FIXED, BODY_FONT, DISPLAY_FONT } from '../menu/menuTheme';
 
@@ -128,7 +130,7 @@ export default function CateringSurface({ location }) {
     if (!eventDate || !cfg) { setDayLoad(null); return; }
     let live = true;
     (async () => {
-      const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', eventDate);
+      const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', eventDate);
       if (!live) return;
       const rows = (data || []).filter((r) => r.status !== 'cancelled');
       setDayLoad({ count: rows.length, value: rows.reduce((s, r) => s + Number(r.total || 0), 0) });
@@ -214,7 +216,7 @@ export default function CateringSurface({ location }) {
         if (dateClosed(ds)) continue;
         const lim = cfg.capacity_overrides?.[ds] ?? cfg.capacity_per_day;
         if (lim == null || lim === '') { found = ds; break; }
-        const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', ds);
+        const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', ds);
         const rows = (data || []).filter((r) => r.status !== 'cancelled');
         const used = cfg.capacity_mode === 'value' ? rows.reduce((s, r) => s + Number(r.total || 0), 0) : rows.length;
         const cap = cfg.capacity_mode === 'value' ? Number(lim) / 100 : Number(lim);

@@ -5,6 +5,7 @@
  * holds the creds. Returns { ok, deliveryId, trackingUrl, status, deferred?, reason? }.
  */
 import { toE164 } from './manifest.js';
+import { isEzcaterOrder } from '../cateringRules.js';
 
 async function invoke(action, payload) {
   const { supabase } = await import('../supabase.js');
@@ -23,6 +24,8 @@ async function invoke(action, payload) {
  */
 export async function dispatchDelivery({ opsLocationId, order, quote }, deps = {}) {
   const send = deps.invoke || invoke;
+  // Never a ServOS courier for an ezCater order (lib/cateringRules.js). The server refuses too.
+  if (isEzcaterOrder(order)) return { ok: false, reason: 'ezcater_order', error: 'ezCater orders are delivered by the caterer or ezCater Dispatch' };
   // Send the raw order + accepted quote; the edge fn builds the manifest / HubRise order
   // server-side and dispatches idempotently (same path the catering fire-time cron uses).
   return send('create_delivery', { ops_location_id: opsLocationId, order_ref: order?.ref || null, order, quote });

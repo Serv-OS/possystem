@@ -48,6 +48,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
+import { ezcaterWritePlan } from '../_shared/ezcaterCatering.js';
+import { DEFAULT_VENUE_TZ, cateringPrepMinutes } from '../_shared/cateringRules.js';
 import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
 
 const cors = {
@@ -61,8 +63,14 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 // secret can live in the function config and we never touch the database before
 // the body is proven authentic. Without it we fall back to the stored secrets.
 const ENV_SECRET = Deno.env.get('EZCATER_SIGNING_SECRET') ?? '';
+// The Platform DB holds locations.timezone, the venue clock (reference_venue_clock_invariant).
+const PLATFORM_URL = Deno.env.get('PLATFORM_SUPABASE_URL') ?? '';
+const PLATFORM_KEY = Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('PLATFORM_SERVICE_KEY') ?? '';
 
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+const platform = PLATFORM_URL && PLATFORM_KEY
+  ? createClient(PLATFORM_URL, PLATFORM_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+  : null;
 
 const ok = () => new Response('ok', { status: 200, headers: cors });
 const retry = (why: string) => new Response(why, { status: 503, headers: cors });
@@ -121,6 +129,64 @@ async function readConnection(connId: string): Promise<any | null> {
   if (!first.error) return first.data || null;
   const again = await sb.from('ezcater_connections').select('id, api_token').eq('id', connId).maybeSingle();
   return again.data || null;
+}
+
+/**
+ * The venue's clock and catering prep time: the SAME settings a ServOS catering order is timed
+ * by (CateringCheckout reads catering_site_settings.prep_time_minutes for this Ops location).
+ *
+ * Timezone, in order: Platform locations.timezone joined on ops_location_id (then on id, for
+ * legacy rows where the two are equal), exactly as src/lib/locationTime.js resolves it; then
+ * Ops locations.timezone, which is what catering_public_settings returns to the storefront;
+ * then Europe/London. Never ezCater's own zone and never this function's UTC clock.
+ *
+ * Fail soft: a read that errors falls through to the next source, and no catering settings
+ * row means a prep time of 0, the same answer CateringCheckout gives a blank setting.
+ */
+async function readCateringVenue(opsLocationId: string): Promise<{ timeZone: string; prepMinutes: number; tzSource: string; hasCateringSettings: boolean }> {
+  let timeZone = '';
+  let tzSource = 'default';
+  if (platform) {
+    try {
+      const a = await platform.from('locations').select('timezone').eq('ops_location_id', opsLocationId).maybeSingle();
+      let tz = a.data?.timezone || '';
+      if (!tz && !a.data) {
+        const b = await platform.from('locations').select('timezone').eq('id', opsLocationId).maybeSingle();
+        tz = b.data?.timezone || '';
+      }
+      if (tz) { timeZone = tz; tzSource = 'platform'; }
+    } catch (e) { console.warn('[ezcater-webhook] platform timezone read failed:', e instanceof Error ? e.message : String(e)); }
+  }
+  if (!timeZone) {
+    try {
+      const { data } = await sb.from('locations').select('timezone').eq('id', opsLocationId).maybeSingle();
+      if (data?.timezone) { timeZone = data.timezone; tzSource = 'ops'; }
+    } catch { /* default below */ }
+  }
+  let prepMinutes = 0;
+  let hasCateringSettings = false;
+  try {
+    const { data } = await sb.from('catering_site_settings').select('prep_time_minutes').eq('location_id', opsLocationId).maybeSingle();
+    if (data) { hasCateringSettings = true; prepMinutes = cateringPrepMinutes(data); }
+  } catch { /* no settings: 0, as CateringCheckout */ }
+  return { timeZone: timeZone || DEFAULT_VENUE_TZ, prepMinutes, tzSource, hasCateringSettings };
+}
+
+/**
+ * The existing order_queue row, if any. kitchen_routed_at is the release's claim, so it is what
+ * says whether the kitchen has this order yet. Asked for defensively: a venue without the column
+ * still gets its order written, it simply cannot tell fired from not fired (and so never moves
+ * the fire time of an order it cannot prove is unfired).
+ */
+async function readExisting(locationId: string, ref: string): Promise<any | null> {
+  const full = await sb.from('order_queue')
+    .select('ref, status, sent_at, kitchen_routed_at, customer, event_date, collection_time')
+    .eq('location_id', locationId).eq('ref', ref).maybeSingle();
+  if (!full.error) return full.data || null;
+  const bare = await sb.from('order_queue')
+    .select('ref, status, sent_at, customer')
+    .eq('location_id', locationId).eq('ref', ref).maybeSingle();
+  return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;
 }
 
 Deno.serve(async (req) => {
@@ -274,10 +340,18 @@ Deno.serve(async (req) => {
       return ok();   // stale retry, current state is newer
     }
 
+    // THE CATERING RULE (18 Sep 2026). An ezCater order is timed exactly like a ServOS catering
+    // order: on the venue's clock, fired to the kitchen at (food ready time) minus the venue's
+    // catering prep time, and held until then. See ezCateringTiming in _shared/ezcater-map.ts.
+    const venue = await readCateringVenue(locationId);
     const { row, link } = orderToQueueRow(order, locationId, {
       priorAcceptedCount: Number(priorLink?.accepted_count) || 0,
       eventAt,
+      venue: { timeZone: venue.timeZone, prepMinutes: venue.prepMinutes },
     });
+    console.log('[ezcater-webhook] timing', row.ref,
+      `ready ${row.customer?.readyAt} (${row.customer?.readySource}), prep ${venue.prepMinutes} min`,
+      `${venue.hasCateringSettings ? '' : '(no catering settings, so 0) '}fires ${row.fire_at} on ${venue.timeZone} (${venue.tzSource})`);
 
     const lifecycle = ezLifecycle(order);
     const terminal = EZ_TERMINAL.has(lifecycle);
@@ -316,16 +390,22 @@ Deno.serve(async (req) => {
     // 7) Upsert. onConflict is (location_id, ref): order_queue's primary key has
     // spanned both since 20260806k and a bare 'ref' throws 42P10, which is how
     // inbound channel orders got dropped on the floor once already.
-    const { data: existing } = await sb.from('order_queue')
-      .select('ref, status').eq('location_id', locationId).eq('ref', row.ref).maybeSingle();
+    const existing = await readExisting(locationId, row.ref);
 
-    // An order already in preparation keeps its progress. A cancellation always wins.
-    const status = existing
-      ? (terminal ? 'cancelled' : existing.status)
-      : row.status;
+    // What this notification does to the row (_shared/ezcaterCatering.js, unit tested):
+    //   * an order already in preparation keeps its progress, a cancellation always wins;
+    //   * NOT fired yet (kitchen_routed_at null): a changed time moves the fire time, event date
+    //     and time, a cancel just marks it cancelled (the advance list and the release skip it);
+    //   * ALREADY fired: sent_at never moves, and any change (items, time, cancel) is stamped on
+    //     customer.changedAfterFire so the Orders Hub and every till shows it plainly.
+    const writeNow = new Date().toISOString();
+    const plan = ezcaterWritePlan({ row: queueRow, existing, terminal, nowIso: writeNow });
+    if (plan.changedAfterFire) {
+      console.warn('[ezcater-webhook] CHANGED AFTER THE KITCHEN HAD IT:', row.ref, plan.changedAfterFire.kinds.join(', '));
+    }
 
     const { error: qErr } = await sb.from('order_queue')
-      .upsert(queuePayload({ ...queueRow, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
+      .upsert(queuePayload(plan.row, !existing, writeNow, { reschedule: plan.reschedule }), { onConflict: 'location_id,ref' });
     if (qErr) {
       await failEvent(`order_queue upsert failed: ${qErr.message}`, 'error');
       return retry('queue write failed');
@@ -349,7 +429,7 @@ Deno.serve(async (req) => {
     // re-querying an order immediately before it goes to the kitchen, because
     // catering orders get edited for days and a "Cancelled for Replacement"
     // sends NO notification at all for the original. ezcater_order_links.fire_at
-    // is the column that cron keys on.
+    // is the column that cron keys on, and it is now the KITCHEN fire instant.
     return ok();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

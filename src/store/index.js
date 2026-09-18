@@ -29,6 +29,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
+import { CATERING_SOURCES, cateringMayFire, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier } from '../lib/cateringRules';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
@@ -2955,22 +2956,30 @@ export const useStore = create((set, get) => ({
       // ago — a long-offline master must not auto-dump a stale backlog. Genuinely-due catering is
       // still fired server-side by the catering-release cron; anything older stays visible in the
       // Orders Hub for manual release. (The routeKioskOrderPrints backstop is the belt-and-braces.)
-      const floorIso = new Date(Date.now() - STALE_ORDER_FLOOR_MS).toISOString();
+      // The due window (lib/cateringRules.js cateringReleaseWindow): due now, not older than the floor.
+      const { fromIso: floorIso, toIso: dueIso } = cateringReleaseWindow(Date.now(), STALE_ORDER_FLOOR_MS);
       const PAGE = 200;
       for (let i = 0; i < 10; i++) {   // safety cap ≤ 2000/tick
         const { data, error } = await supabase.from('order_queue')
-          .select('ref, type, source, total, items, customer, sent_at, collection_time, is_asap')
+          .select('ref, type, source, status, total, items, customer, sent_at, collection_time, is_asap')
           // v5.8.16: online pre-orders too. Their fire timer lives only in memory, so a
           // till reload before the fire moment lost it and the order never reached the
           // kitchen. Same due-and-unrouted filter; routeKioskOrderPrints dedups by claim.
-          .eq('location_id', locId).in('source', ['catering', 'online'])
-          .is('kitchen_routed_at', null).neq('status', 'collected')
-          .lte('sent_at', new Date().toISOString())
+          // 18 Sep 2026: every CATERING source (lib/cateringRules.js), so an ezCater order is
+          // released at its kitchen fire time exactly like one of ours. A cancelled order is
+          // never fired.
+          .eq('location_id', locId).in('source', [...CATERING_SOURCES, 'online'])
+          .is('kitchen_routed_at', null).not('status', 'in', '(collected,cancelled)')
+          .lte('sent_at', dueIso)
           .gte('sent_at', floorIso)
           .order('sent_at', { ascending: true })
           .limit(PAGE);
         if (error || !data?.length) break;
+        let attempted = 0;
         for (const row of data) {
+          // An ezCater order not yet accepted in ezCater stays held (and visible) until it is.
+          if (!cateringMayFire(row)) continue;
+          attempted++;
           await get().routeKioskOrderPrints?.({
             ref: row.ref, source: row.source || 'catering',
             type: row.type || null,                          // v5.8.63: production centres by order type
@@ -2982,14 +2991,16 @@ export const useStore = create((set, get) => ({
           // dispatches its courier now (event day), not at order time. Master-only (this fn is
           // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
           // Self-delivery orders just fire to the kitchen above (no dispatch).
-          if (row.source === 'catering' && row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && !isTrainingMode()) {
+          // Never for ezCater: the caterer's own fleet or ezCater Dispatch delivers those.
+          if (row.source === 'catering' && mayBookOurCourier(row) && !isTrainingMode()) {
             const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', dispatchable: true, quoteId: null };
             dispatchDelivery({ opsLocationId: locId, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote })
               .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: locId, phone: row.customer?.phone, trackingUrl: res.trackingUrl, ref: row.ref }); })
               .catch(() => {});
           }
         }
-        if (data.length < PAGE) break;
+        // A page of nothing but held rows would come back identical next time round.
+        if (data.length < PAGE || !attempted) break;
       }
     } catch (e) { console.warn('[releaseDueCateringOrders]', e?.message); }
     finally { useStore._cateringReleaseRunning = false; }
@@ -7180,8 +7191,9 @@ export const useStore = create((set, get) => ({
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
       // the previous "Kiosk" wording when source is unknown.
-      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise', catering: 'Catering' };
-      const srcLabel = SRC_LABEL[order.source] || 'Kiosk';
+      const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise' };
+      // Catering from any channel keeps its channel name: 'Catering' or 'ezCater' (lib/cateringRules.js).
+      const srcLabel = cateringSourceLabel(order.source) || SRC_LABEL[order.source] || 'Kiosk';
       // Kiosk orders: the table the customer picked (closed_checks.kiosk_table_number, the only
       // place a kiosk table is stored) and CHECK ID when the order has alcohol (the Challenge 21
       // categories, only while Challenge 21 is switched on). Both best effort and capped at 3s
@@ -7294,7 +7306,9 @@ export const useStore = create((set, get) => ({
         isTable: ticketIsTable,
         customerName: order.customer?.name,
         orderRef: order.ref,
-        appCode: order.source === 'hubrise' ? order.customer?.collectionCode : null,
+        // ezCater's own order number (HKX77V) is what the caterer and the driver quote.
+        appCode: order.source === 'hubrise' ? order.customer?.collectionCode
+          : (isEzcaterOrder(order) ? (order.customer?.ezcater_order_number || null) : null),
         source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel) : srcLabel,
         note: flagNote ? joinNotes(flagNote, order.customer?.notes) : order.customer?.notes,
       });

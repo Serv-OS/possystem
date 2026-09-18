@@ -11,6 +11,7 @@
 import { getAccessToken, createDelivery, parseDeliveryResp, mapUberStatus } from './uber.ts';
 import { createOrder as createHubriseOrder } from './hubrise.ts';
 import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus, classifyStuartError } from './stuart.ts';
+import { isEzcaterOrder } from './cateringRules.js';
 
 const ENV = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
 const CLIENT_ID = Deno.env.get('UBER_DIRECT_CLIENT_ID') ?? '';
@@ -77,6 +78,10 @@ export function buildManifestServer(order: any, quote: any, cfg: any) {
  * sends" window. Returns a result the caller can act on (e.g. a tracking SMS). Never throws.
  */
 export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc: string; cfg: any; order: any; quote: any }) {
+  // NEVER a ServOS courier for an ezCater order (_shared/cateringRules.js). The caterer's own fleet
+  // (DELIVERY) or ezCater Dispatch (THIRD_PARTY_DELIVERY) delivers it; a second driver would be
+  // paid for nothing. Refused here, the one door every dispatch goes through, whoever asked.
+  if (isEzcaterOrder(order)) return { ok: false, reason: 'ezcater_order', error: 'ezCater orders are delivered by the caterer or ezCater Dispatch' };
   const orderRef = order?.ref || null;
 
   // 1) Reserve the order_ref (atomic via the unique index). A conflict means someone already

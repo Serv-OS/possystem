@@ -10,6 +10,7 @@
 // As with Shifts, hours are derived until clock-in/out data lands.
 
 import { useMemo, useState } from 'react';
+import { isCateringSource } from '../../../lib/cateringRules';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';
 import { pctDelta } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
@@ -31,7 +32,7 @@ function rollUp(checks) {
   checks.forEach(c => {
     // Catering has no real server (server:'Catering' is a channel label) — exclude it
     // so it doesn't masquerade as a top-performing staff member.
-    if ((c.source || '') === 'catering') return;
+    if (isCateringSource(c.source)) return;   // catering from any channel, ezCater included
     const s = c.server || c.staff || 'Unknown';
     if (!map[s]) map[s] = {
       server: s, checks: 0, covers: 0, revenue: 0, tips: 0,

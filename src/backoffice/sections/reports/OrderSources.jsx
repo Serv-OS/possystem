@@ -7,6 +7,7 @@
 // Layout mirrors Order types: tiles → stacked time chart → per-source table → CSV.
 
 import { useMemo } from 'react';
+import { CATERING_SOURCES } from '../../../lib/cateringRules';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { pctDelta } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
@@ -27,7 +28,8 @@ const PLATFORM_COLORS = ['#ef4444', '#3b82f6', '#84cc16', '#ec4899', '#14b8a6', 
 // payment-path stamps (e.g. pos_send_to_terminal, pax_table_pay from the terminal-job
 // flows) — those are ordinary POS sales and must never appear as their own "source".
 // Only genuine customer surfaces keep their own bucket; everything else is POS.
-const CUSTOMER_SOURCES = new Set(['kiosk', 'online', 'qr', 'catering']);
+// ezCater is catering and keeps its own bucket (lib/cateringRules.js CATERING_SOURCES).
+const CUSTOMER_SOURCES = new Set(['kiosk', 'online', 'qr', ...CATERING_SOURCES]);
 export const srcKey = (c) => c.source === 'hubrise'
   ? (c.customer?.channel || 'Delivery channel')
   : (CUSTOMER_SOURCES.has(c.source) ? c.source : 'pos');

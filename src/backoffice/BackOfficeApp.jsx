@@ -1107,6 +1107,7 @@ const SOURCE_META = [
   { key:'online',   label:'Online ordering', color:'#22c55e' },
   { key:'qr',       label:'QR table',        color:'#e8a020' },
   { key:'catering', label:'Catering',        color:'#14b8a6' },
+  { key:'ezcater',  label:'ezCater catering', color:'#e4572e' },
   { key:'delivery', label:'Delivery apps',   color:'#ef4444' },
 ];
 const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter', 'drive-thru':'Drive thru' };
@@ -1209,7 +1210,7 @@ function BOOverview({ setSection, orgCtx }) {
       // v5.5.862: whitelist, not passthrough — `source` can carry internal payment-path
       // stamps (pos_send_to_terminal, pax_table_pay); those are POS sales.
       const _raw = (c.source || 'pos').toLowerCase();
-      const _src = ['kiosk', 'online', 'qr', 'catering', 'hubrise'].includes(_raw) ? _raw : 'pos';
+      const _src = ['kiosk', 'online', 'qr', 'catering', 'ezcater', 'hubrise'].includes(_raw) ? _raw : 'pos';
       const _bucket = _src === 'hubrise' ? `hr:${c.customer?.channel || 'Delivery apps'}` : _src;
       sources[_bucket] = (sources[_bucket] || 0) + (c.total || 0);
       const u = c.server || 'Unknown';

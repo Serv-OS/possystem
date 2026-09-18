@@ -270,7 +270,10 @@ test('evaluateOrder: delivery apps hide until accepted unless the setting is on'
   const on = ev(hr, allDisplay({ showUnacceptedPlatform: true }));
   assert.equal(on.visible, true);
   assert.equal(on.row.bucket, 'received');
-  assert.equal(ev({ ...hr, source: 'ezcater' }).reason, 'unaccepted');
+  // ezCater is catering (20260918): accepted in ezCater, so a received ezCater order shows like catering.
+  const ez = ev({ ...hr, source: 'ezcater' });
+  assert.equal(ez.visible, true);
+  assert.equal(ez.row.bucket, 'received');
 });
 
 test('evaluateOrder: live collected lingers from the status change', () => {
@@ -340,12 +343,14 @@ test('evaluateOrder: an order already picked up does not come back when staff cl
   assert.equal(canceled.row.expiresAtMs, NOW - 10000 + 2 * MIN);
 });
 
-test('evaluateOrder: future pre orders and ezCater allowance', () => {
+test('evaluateOrder: future pre orders, and ezCater shows at its fire time like catering', () => {
   const online = ev({ source: 'online', type: 'collection', status: 'prep', sentAt: NOW + 20 * MIN });
   assert.equal(online.visible, false);
   assert.equal(online.reason, 'future');
-  assert.equal(ev({ source: 'ezcater', type: 'delivery', status: 'prep', sentAt: NOW + 45 * MIN }).visible, true);
-  assert.equal(ev({ source: 'ezcater', type: 'delivery', status: 'prep', sentAt: NOW + 75 * MIN }).reason, 'future');
+  // sent_at is now the kitchen fire time, so the old 60 minute ezCater allowance is gone.
+  assert.equal(ev({ source: 'ezcater', type: 'delivery', status: 'received', sentAt: NOW + 45 * MIN }).reason, 'future');
+  assert.equal(ev({ source: 'catering', type: 'delivery', status: 'received', sentAt: NOW + 45 * MIN }).reason, 'future');
+  assert.equal(ev({ source: 'ezcater', type: 'delivery', status: 'received', sentAt: NOW - MIN }).visible, true);
 });
 
 test('evaluateOrder: stale rows use the fire time when there is one', () => {

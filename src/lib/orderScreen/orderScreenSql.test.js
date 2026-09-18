@@ -309,3 +309,36 @@ test('20260917: replaces two functions and nothing else, idempotent, guarded, no
   const firstStatement = sqlDrive.split('\n').find(x => x.trim() && !x.trim().startsWith('--'));
   assert.equal(firstStatement, "set lock_timeout = '3s';");
 });
+
+// ── 20260918: ezCater is catering on the order status TVs ────────────────────────────
+// The ezCater webhook now writes an ezCater order as catering checkout writes one: status
+// 'received', sent_at = the kitchen fire time. The feed drops its two ezCater exceptions and
+// nothing else moves.
+const sqlEz = fs.readFileSync(new URL('../../../supabase/migrations/20260918_OPS_ezcater_catering_order_screens.sql', import.meta.url), 'utf8');
+
+test('20260918: exactly two feed lines change, both ezCater exceptions, and nothing else moves', () => {
+  const base = feedCode(sqlFollow);
+  const next = feedCode(sqlEz);
+  assert.equal(base.length, next.length);
+  const changed = base.map((line, i) => [line, next[i]]).filter(([a, b]) => a !== b);
+  assert.deepEqual(changed, [
+    ["            case when j.source in ('hubrise','ezcater') and not v_unaccepted then null else 'received' end",
+     "            case when j.source = 'hubrise' and not v_unaccepted then null else 'received' end"],
+    ["                 or b.sent_at <= v_now + case when b.source = 'ezcater' then interval '60 minutes' else interval '0 minutes' end)",
+     "                 or b.sent_at <= v_now)"],
+  ]);
+  // The ezCater channel and number helpers are not touched: ezCater stays visible as a channel.
+  const l = sqlEz.toLowerCase();
+  assert.equal((l.match(/create or replace function/g) || []).length, 1);
+  assert.ok(l.includes('create or replace function public.order_status_feed(p_screen_id uuid)'));
+  for (const word of ['drop table', 'drop function', 'alter table', 'create table', 'create policy', 'drop policy', 'grant ', 'revoke ', 'create trigger', 'insert into', 'update public', 'delete from', 'alter publication']) {
+    assert.equal(l.includes(word), false, `the file must not contain ${word}`);
+  }
+  assert.ok(sqlEz.includes("to_regclass('public.order_status_displays') is null"));
+  assert.ok(sqlEz.includes('tbetcegmszzotrwdtqhi'));
+  assert.ok(l.includes('by hand'));
+  assert.ok(!sqlEz.includes(String.fromCharCode(0x2014)) && !sqlEz.includes(String.fromCharCode(0x2013)), 'no dashes');
+  const from = sqlEz.indexOf('CREATE OR REPLACE FUNCTION');
+  const head = sqlEz.slice(from, sqlEz.indexOf('$function$')).toLowerCase();
+  assert.ok(head.includes('stable security definer') && head.includes("set search_path to 'public'"));
+});

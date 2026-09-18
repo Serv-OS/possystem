@@ -12,6 +12,7 @@
 // Plan: EZCATER_INTEGRATION_PLAN.md.
 
 import { subunitsToNumber, moneyToAmount, moneyCurrency, dollarsToNumber } from './ezcater.ts';
+import { cateringFireMs, venueWallClock, DEFAULT_VENUE_TZ } from './cateringRules.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  TAX. READ THIS BEFORE CHANGING ANYTHING BELOW.
@@ -400,6 +401,60 @@ export function withMatchedItems(row: any, lines: any): any {
 }
 
 /**
+ * WHEN AN ezCater ORDER HITS THE KITCHEN. The same rule as a ServOS catering order
+ * (supabase/functions/_shared/cateringRules.js cateringFireMs): the moment the food must be
+ * READY, minus the venue's catering prep_time_minutes.
+ *
+ * Which ezCater time means "ready":
+ *   * event.catererHandoffFoodTime, documented as "The UTC timestamp indicating when the caterer
+ *     must be ready to give prepared food to the customer or delivery partner". On a DELIVERY it
+ *     is the moment the food must leave, on a TAKEOUT the moment the customer collects, on a
+ *     THIRD_PARTY_DELIVERY the ezCater Dispatch pickup time. It is the one we use.
+ *   * event.timestamp ("when the customer expects to receive food") only when there is no
+ *     handoff time. On a delivery that is later than the food must leave, so readySource says
+ *     which one was used and the ticket can show it.
+ *
+ * Both are ABSOLUTE instants, so they are converted to the VENUE's clock (venue.timeZone, from
+ * locations.timezone under the venue clock rule), never copied from ezCater's own zone, which is
+ * the caterer's and can differ from the venue's. With no venue zone given (a caller from before
+ * this rule) the old behaviour stands: ezCater's timeZoneIdentifier, then the default venue zone.
+ */
+export function ezCateringTiming(
+  order: any,
+  venue: { timeZone?: string | null; prepMinutes?: number | null } | null = null,
+): {
+  timeZone: string;
+  eventAt: string | null; eventMs: number;
+  readyAt: string | null; readyMs: number; readySource: 'catererHandoffFoodTime' | 'event.timestamp' | null;
+  fireAt: string | null; fireMs: number; prepMinutes: number;
+  event_date: string | null; event_time: string | null; ready_time: string | null; fire_time: string | null;
+} {
+  const ev = order?.event || {};
+  const ms = (v: unknown) => { const s = str(v); if (!s) return NaN; const t = new Date(s).getTime(); return Number.isFinite(t) ? t : NaN; };
+  const eventMs = ms(ev?.timestamp);
+  const handoffMs = ms(ev?.catererHandoffFoodTime);
+  const readyMs = Number.isFinite(handoffMs) ? handoffMs : eventMs;
+  const readySource = Number.isFinite(handoffMs) ? 'catererHandoffFoodTime' as const
+    : (Number.isFinite(eventMs) ? 'event.timestamp' as const : null);
+  const prep = Number(venue?.prepMinutes);
+  const prepMinutes = Number.isFinite(prep) && prep > 0 ? Math.round(prep) : 0;
+  const fireMs = cateringFireMs(readyMs, prepMinutes);
+  const timeZone = str(venue?.timeZone) || str(ev?.timeZoneIdentifier) || DEFAULT_VENUE_TZ;
+  const at = (m: number) => (Number.isFinite(m) ? venueWallClock(m, timeZone) : null);
+  const evW = at(eventMs); const rdW = at(readyMs); const frW = at(fireMs);
+  return {
+    timeZone,
+    eventAt: Number.isFinite(eventMs) ? new Date(eventMs).toISOString() : null, eventMs,
+    readyAt: Number.isFinite(readyMs) ? new Date(readyMs).toISOString() : null, readyMs, readySource,
+    fireAt: Number.isFinite(fireMs) ? new Date(fireMs).toISOString() : null, fireMs, prepMinutes,
+    event_date: evW ? evW.date : null,
+    event_time: evW ? evW.time : null,
+    ready_time: rdW ? rdW.time : null,
+    fire_time: frW ? frW.time : null,
+  };
+}
+
+/**
  * Map one ezCater order onto an order_queue row plus an ezcater_order_links row.
  *
  *   ref     'EZ-' + order.uuid
@@ -420,7 +475,12 @@ export function withMatchedItems(row: any, lines: any): any {
 export function orderToQueueRow(
   order: any,
   locationId: string,
-  opts: { priorAcceptedCount?: number; eventAt?: string | null } = {},
+  opts: {
+    priorAcceptedCount?: number; eventAt?: string | null;
+    // The venue's clock and catering prep time. The webhook always passes both (locations.timezone
+    // and catering_site_settings.prep_time_minutes); see ezCateringTiming.
+    venue?: { timeZone?: string | null; prepMinutes?: number | null } | null;
+  } = {},
 ): { row: any; link: any } {
   const uuid = str(order?.uuid);
   const ref = `EZ-${uuid}`;
@@ -439,7 +499,11 @@ export function orderToQueueRow(
 
   const lifecycle = ezLifecycle(order);
   const terminal = EZ_TERMINAL.has(lifecycle);
-  const status = ezStatusToQueueStatus(lifecycle);
+  // A live ezCater order lands exactly as a ServOS catering order does (CateringCheckout writes
+  // 'received'): held, visible in the advance list, fired to the kitchen by the release at its
+  // fire time. 'prep' is what the release and staff move it to, never what it arrives as.
+  const mapped = ezStatusToQueueStatus(lifecycle);
+  const status = mapped === 'prep' ? 'received' : mapped;
 
   const items = orderItemsToLines(cart?.orderItems);
   // The exact pennies across the lines, summed as integers. Recorded so nothing
@@ -502,10 +566,18 @@ export function orderToQueueRow(
   };
 
   // ── Timing ────────────────────────────────────────────────────────────────
-  const when = eventTimeParts(ev?.timestamp, ev?.timeZoneIdentifier);
+  // With a venue given, every date and time below is on the VENUE's clock (ezCateringTiming).
+  // Without one, the pre 18 Sep behaviour: ezCater's own zone.
+  const venueTz = str(opts.venue?.timeZone) || null;
+  const timing = ezCateringTiming(order, opts.venue ?? null);
+  const when = venueTz
+    ? (timing.event_date ? { date: timing.event_date, time: timing.event_time as string, local: true } : null)
+    : eventTimeParts(ev?.timestamp, ev?.timeZoneIdentifier);
   // When the food must be HANDED OVER, which on a delivery is earlier than the
   // time the customer expects it. This is the kitchen's real deadline.
-  const handoff = eventTimeParts(ev?.catererHandoffFoodTime, ev?.timeZoneIdentifier);
+  const handoff = venueTz
+    ? (timing.readySource === 'catererHandoffFoodTime' ? { time: timing.ready_time as string } : null)
+    : eventTimeParts(ev?.catererHandoffFoodTime, ev?.timeZoneIdentifier);
 
   // ── Contact and address ───────────────────────────────────────────────────
   // EventContact is name and phone ONLY, and OrderCustomer is firstName,
@@ -558,6 +630,15 @@ export function orderToQueueRow(
     eventTimeIsLocal: when ? when.local : null,
     handoff_time: handoff ? handoff.time : null,
     handoffAt: str(ev?.catererHandoffFoodTime) || null,
+    // The catering timing, on the venue's clock. readySource says which ezCater time was taken
+    // as "food must be ready"; fireAt is the kitchen fire moment written to order_queue.sent_at.
+    venueTimeZone: timing.timeZone,
+    readyAt: timing.readyAt,
+    readySource: timing.readySource,
+    ready_time: timing.ready_time,
+    fireAt: timing.fireAt,
+    fire_time: timing.fire_time,
+    prepMinutes: timing.prepMinutes,
 
     // Plates, napkins and cups ezCater has promised the customer. The kitchen
     // packs these, so they belong on the ticket.
@@ -639,9 +720,10 @@ export function orderToQueueRow(
     // An ezCater Order has NO createdAt. queuePayload stamps the row's own
     // arrival time instead, which is the only honest answer we have.
     created_at: null,
-    // The raw event instant, kept on the row so queuePayload can stamp sent_at
-    // with a real point in time rather than a reassembled local string.
-    fire_at: str(ev?.timestamp) || null,
+    // THE KITCHEN FIRE INSTANT (ezCateringTiming): food ready time minus the venue's catering
+    // prep time. queuePayload writes it to sent_at, which is what the catering release fires on.
+    // An order with no parseable time falls back to its arrival (queuePayload), as ServOS does.
+    fire_at: timing.fireAt,
   };
 
   const link = {
@@ -655,9 +737,11 @@ export function orderToQueueRow(
     accepted_count: acceptedCount,
     modification_seen_at: isModification ? (opts.eventAt || null) : null,
     event_at: opts.eventAt || null,
-    // The instant the food is needed, in UTC, for the phase 3 pre fire re-query.
-    // Only trustworthy when the timestamp carried its own offset or zone.
-    fire_at: str(ev?.timestamp) || null,
+    // The KITCHEN FIRE instant (18 Sep 2026), the same value as order_queue.sent_at. It used to
+    // be the event time, which is when the customer eats, not when the kitchen starts. The
+    // phase 3 pre fire re-query keys on this, so it re-asks ezCater right before the kitchen
+    // would start, as ezCater advises.
+    fire_at: timing.fireAt,
     sales_tax: salesTax,
     sales_tax_remitted: salesTaxRemittance,
     taxable_state: taxableState,
@@ -670,8 +754,18 @@ export function orderToQueueRow(
  * The subset of the row that is safe to write to order_queue on every venue.
  * Same guarantee as hubrise-ingest's queuePayload: only columns that exist in
  * the ops baseline, so an insert can never fail on a missing column.
+ *
+ * sent_at is the KITCHEN FIRE instant (row.fire_at, see ezCateringTiming), the same meaning it
+ * has on a ServOS catering order. It is written:
+ *   * on a new order, falling back to now when ezCater gave no parseable time;
+ *   * on an existing order ONLY when opts.reschedule is true, which the webhook sets while the
+ *     order has not fired yet (kitchen_routed_at still null). A changed event time then moves
+ *     the fire time. After the kitchen has it, sent_at never moves: the change is shown to
+ *     staff instead (customer.changedAfterFire).
+ * event_date and collection_time follow the same rule, so an order that has fired keeps the
+ * date and time the kitchen was given.
  */
-export function queuePayload(row: any, isNew: boolean, nowIso: string): any {
+export function queuePayload(row: any, isNew: boolean, nowIso: string, opts: { reschedule?: boolean } = {}): any {
   const p: any = {
     ref: row.ref,
     location_id: row.location_id,
@@ -682,21 +776,17 @@ export function queuePayload(row: any, isNew: boolean, nowIso: string): any {
     status: row.status,
     source: 'ezcater',
     is_asap: row.is_asap,
-    collection_time: row.collection_time,
     paid: true,
-    event_date: row.event_date,
   };
   if (isNew) {
     p.created_at = row.created_at || nowIso;
-    // sent_at is what QueueSync's scheduled order test reads. An ezCater order
-    // sits for days, so it is stamped with the EVENT instant rather than now,
-    // otherwise it lands in the live queue the moment it arrives.
-    //
-    // NOTE for phase 2: QueueSync's _isFutureCatering currently tests
-    // source === 'catering' only, so this stamp alone does NOT keep an ezCater
-    // order out of the live queue. That predicate has to be widened front end
-    // side, which is deliberately not touched here.
     p.sent_at = row.fire_at || nowIso;
+  } else if (opts.reschedule && row.fire_at) {
+    p.sent_at = row.fire_at;
+  }
+  if (isNew || opts.reschedule) {
+    p.collection_time = row.collection_time;
+    p.event_date = row.event_date;
   }
   return p;
 }

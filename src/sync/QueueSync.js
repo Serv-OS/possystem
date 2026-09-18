@@ -22,6 +22,7 @@ import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
+import { isFutureCatering, liveQueueOrFilter } from '../lib/cateringRules';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
 export const QUEUE_ROW_CAP = 500;
@@ -69,7 +70,9 @@ let _bootCaptured = false;
 // and are released into the live flow at their fire time by releaseDueCateringOrders.
 // Gate on sent_at (the venue-tz fire INSTANT, a UTC timestamptz) — NOT a local date — so the
 // visibility boundary is identical to the fire boundary and immune to per-device clock/tz skew.
-const _isFutureCatering = (row) => row?.source === 'catering' && row?.sent_at && new Date(row.sent_at).getTime() > Date.now() && row?.status !== 'collected';
+// 18 Sep 2026: every catering source (lib/cateringRules.js), so a held ezCater order stays out
+// of the live queue until its kitchen fire time, exactly like one of ours.
+const _isFutureCatering = (row) => isFutureCatering(row, Date.now());
 
 // numeric(10,2) columns: round here so the row we hash is the row the server echoes back
 // (a float such as 35.199999 would otherwise never match its own echo).
@@ -262,7 +265,7 @@ export function whenQueueBootSettled() { return _bootGate || Promise.resolve(); 
 
 /** The server's open rows for a venue: the same shape every reader uses (boot, reconciler). */
 export function openQueueQuery(locationId, columns = '*') {
-  return supabase.from('order_queue').select(columns).eq('location_id', locationId).neq('status', 'collected').or(`source.is.null,source.neq.catering,sent_at.lte.${new Date().toISOString()}`).order('created_at', { ascending: false });
+  return supabase.from('order_queue').select(columns).eq('location_id', locationId).neq('status', 'collected').or(liveQueueOrFilter(new Date().toISOString())).order('created_at', { ascending: false });
 }
 export function openTabQuery(locationId, columns = '*') {
   return supabase.from('bar_tabs').select(columns).eq('location_id', locationId).neq('status', 'closed').order('opened_at', { ascending: false });

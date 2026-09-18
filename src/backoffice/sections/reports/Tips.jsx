@@ -14,6 +14,7 @@
 // Export CSV for payroll with net tips per person.
 
 import { useMemo, useState, useEffect, useRef } from 'react';
+import { CATERING_SOURCES } from '../../../lib/cateringRules';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
@@ -35,7 +36,7 @@ const MODE_TO_POLICY = { shared: 'pool', none: 'direct', tipout: 'hybrid' };
 // single server who earned the tip — so their tips must NOT be parked under a
 // phantom "server" who then keeps/excludes them. They go into a "house" bucket
 // that always feeds the pool (contributes 100%, never receives).
-const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr', 'catering']);
+const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr', ...CATERING_SOURCES]);
 
 function serverTips(checks) {
   const map = {};
