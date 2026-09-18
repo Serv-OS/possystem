@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerUrl } from '../../lib/env';
 import { money } from '../../lib/currency';
+import { groupCategoriesByName, isGroupSelected, toggleGroup, selectedGroupCount } from '../../lib/stampCategoryGroups';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -1647,12 +1648,16 @@ function StampCardsPanel({ menuItems = [] }) {
   const [editing, setEditing] = useState(null);   // null = list view, 'new' = create, program object = edit
   const [companyId, setCompanyId] = useState(null);
   const [categories, setCategories] = useState([]);
+  const categoryGroups = useMemo(() => groupCategoriesByName(categories), [categories]);
 
   // Load programs + categories
   useEffect(() => {
     (async () => {
       try {
         const locId = getActiveLocationSync() || await getLocationId();
+        // Stamp cards are per COMPANY, menus are per SITE (18 Sep 2026): list categories from
+        // every site of the company so the picker is not limited to the site you are logged into.
+        let siteIds = locId ? [locId] : [];
         // Resolve company_id
         if (platformSupabase && locId) {
           const { data: loc } = await platformSupabase
@@ -1669,14 +1674,24 @@ function StampCardsPanel({ menuItems = [] }) {
               .eq('company_id', loc.company_id)
               .order('created_at', { ascending: false });
             setPrograms(progs || []);
+            try {
+              const { data: sites } = await platformSupabase
+                .from('locations')
+                .select('id, ops_location_id')
+                .eq('company_id', loc.company_id);
+              // Ops and Platform ids can differ per venue, so ask for both.
+              for (const site of sites || []) {
+                for (const sid of [site.ops_location_id, site.id]) if (sid && !siteIds.includes(sid)) siteIds.push(sid);
+              }
+            } catch (e) { console.warn('[StampCards] company sites:', e?.message); }
           }
         }
-        // Fetch menu categories for qualifier picker
-        if (supabase && locId) {
+        // Fetch menu categories for qualifier picker (every site of the company)
+        if (supabase && siteIds.length) {
           const { data: cats } = await supabase
             .from('menu_categories')
-            .select('id, label, parent_id')
-            .eq('location_id', locId)
+            .select('id, label, parent_id, location_id')
+            .in('location_id', siteIds)
             .order('sort_order');
           setCategories(cats || []);
         }
@@ -1705,7 +1720,7 @@ function StampCardsPanel({ menuItems = [] }) {
       <StampCardForm
         program={editing === 'new' ? null : editing}
         companyId={companyId}
-        categories={categories}
+        categoryGroups={categoryGroups}
         menuItems={menuItems}
         onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); reload(); }}
@@ -1741,7 +1756,7 @@ function StampCardsPanel({ menuItems = [] }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {programs.map(p => (
-            <StampCardRow key={p.id} program={p} onEdit={() => setEditing(p)} onToggle={async () => {
+            <StampCardRow key={p.id} program={p} categoryGroups={categoryGroups} onEdit={() => setEditing(p)} onToggle={async () => {
               await platformSupabase.from('stamp_card_programs').update({ active: !p.active, updated_at: new Date().toISOString() }).eq('id', p.id);
               reload();
             }} />
@@ -1752,8 +1767,9 @@ function StampCardsPanel({ menuItems = [] }) {
   );
 }
 
-function StampCardRow({ program: p, onEdit, onToggle }) {
-  const catCount = (p.qualifying_category_ids || []).length;
+function StampCardRow({ program: p, categoryGroups = [], onEdit, onToggle }) {
+  // Counts category NAMES: one "Hot Coffee" saved for 4 sites is 1 category, not 4.
+  const catCount = selectedGroupCount(p.qualifying_category_ids || [], categoryGroups);
   return (
     <div style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 14, padding: 16, marginBottom: 0 }}>
       <div style={{ width: 48, height: 48, borderRadius: 12, background: p.active ? 'var(--acc-d)' : 'var(--bg3)',
@@ -1792,7 +1808,7 @@ function StampCardRow({ program: p, onEdit, onToggle }) {
   );
 }
 
-function StampCardForm({ program, companyId, categories, menuItems = [], onClose, onSaved }) {
+function StampCardForm({ program, companyId, categoryGroups = [], menuItems = [], onClose, onSaved }) {
   const isNew = !program;
   const [name, setName] = useState(program?.name || '');
   const [description, setDescription] = useState(program?.description || '');
@@ -1806,10 +1822,9 @@ function StampCardForm({ program, companyId, categories, menuItems = [], onClose
   const [error, setError] = useState('');
   const [showIconPicker, setShowIconPicker] = useState(false);
 
-  const toggleCat = (catId) => {
-    setSelectedCatIds(prev =>
-      prev.includes(catId) ? prev.filter(id => id !== catId) : [...prev, catId]
-    );
+  // One chip per category NAME across every site; toggling saves or clears every site's id.
+  const toggleCat = (group) => {
+    setSelectedCatIds(prev => toggleGroup(group, prev, categoryGroups));
   };
 
   const save = async () => {
@@ -1862,9 +1877,10 @@ function StampCardForm({ program, companyId, categories, menuItems = [], onClose
     }
   };
 
-  // Separate top-level and subcategories
-  const topCats = categories.filter(c => !c.parent_id);
-  const subCats = categories.filter(c => c.parent_id);
+  // Separate top-level and subcategories (grouped by name across the company's sites)
+  const topCats = categoryGroups.filter(g => !g.parentKey);
+  const subCats = categoryGroups.filter(g => g.parentKey);
+  const siteNote = (g) => (g.siteCount > 1 ? ` \u00b7 ${g.siteCount} sites` : '');
 
   return (
     <div>
@@ -1975,15 +1991,16 @@ function StampCardForm({ program, companyId, categories, menuItems = [], onClose
           <label style={S.label}>Qualifying categories</label>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 8, lineHeight: 1.4 }}>
             Select which menu categories earn stamps. If none are selected, <b>all items</b> qualify.
+            A category counts at every site with the same name, including sites added later.
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {topCats.map(cat => {
-              const isSelected = selectedCatIds.includes(cat.id);
-              const children = subCats.filter(sc => sc.parent_id === cat.id);
+              const isSelected = isGroupSelected(cat, selectedCatIds, categoryGroups);
+              const children = subCats.filter(sc => sc.parentKey === cat.key);
               return (
-                <div key={cat.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div key={cat.groupId} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <button
-                    onClick={() => toggleCat(cat.id)}
+                    onClick={() => toggleCat(cat)}
                     style={{
                       padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
                       border: `1px solid ${isSelected ? 'var(--acc)' : 'var(--bdr2)'}`,
@@ -1991,13 +2008,13 @@ function StampCardForm({ program, companyId, categories, menuItems = [], onClose
                       color: isSelected ? 'var(--acc)' : 'var(--t3)',
                     }}
                   >
-                    {cat.label}
+                    {cat.label}{siteNote(cat)}
                   </button>
                   {children.map(sc => {
-                    const subSel = selectedCatIds.includes(sc.id);
+                    const subSel = isGroupSelected(sc, selectedCatIds, categoryGroups);
                     return (
-                      <button key={sc.id}
-                        onClick={() => toggleCat(sc.id)}
+                      <button key={sc.groupId}
+                        onClick={() => toggleCat(sc)}
                         style={{
                           padding: '3px 10px', borderRadius: 16, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                           marginLeft: 12,
@@ -2006,7 +2023,7 @@ function StampCardForm({ program, companyId, categories, menuItems = [], onClose
                           color: subSel ? 'var(--acc)' : 'var(--t4)',
                         }}
                       >
-                        {sc.label}
+                        {sc.label}{siteNote(sc)}
                       </button>
                     );
                   })}
