@@ -285,8 +285,9 @@ test('QueueSync uses the rule at boot, stamps every confirmed row, and the recon
   assert.ok(qs.includes("if (at >= (createdAt.get(String(c.ref)) || 0)) out.add(String(c.ref));"), 'only a check closed after this copy was created counts (order numbers are re used)');
   assert.ok(qs.includes('export function noteQueueRemovals(') && qs.includes('export function isFinishedAfter(') && qs.includes('export function noteAdopted('), 'removals and adoptions are recorded when they happen');
   assert.ok(qs.includes('if (v.adoptedAt !== undefined && at >= v.adoptedAt) return false;'), 'a write buffered after the row came back replays again');
-  assert.equal((qs.match(/queueWrite\(\{ type: 'update', table: '(order_queue|bar_tabs)'/g) || []).length, 2, 'confirmed rows are updated, never upserted');
-  assert.equal((qs.match(/\.update\(row\)\.eq\(/g) || []).length, 2, 'the live write for a confirmed row is an update');
+  // 3: a confirmed order, a confirmed tab, and (ezCater review round 4) every ezCater order.
+  assert.equal((qs.match(/queueWrite\(\{ type: 'update', table: '(order_queue|bar_tabs)'/g) || []).length, 3, 'confirmed rows are updated, never upserted');
+  assert.ok(qs.includes("supabase.from('order_queue').update(write).eq('location_id', _locationId).eq('ref', row.ref)") && (qs.match(/\.update\(row\)\.eq\(/g) || []).length === 1, 'the live write for a confirmed row is an update');
   assert.ok(qs.includes('if (!confirmedAt.has(k)) return row;'), 'an update the server did not return stamps nothing');
   assert.equal((qs.match(/keepIfPending: \(\) => true/g) || []).length, 1, 'tabs with unsent changes are kept at boot');
   assert.ok(qs.includes('export function scheduleQueueFlush(immediate = false)') && qs.includes('export function hasNewUnsentRows('), 'a new order or tab is flushed at once');

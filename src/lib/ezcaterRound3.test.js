@@ -359,9 +359,9 @@ test('C: a Dispatch pickup moved EARLIER is caught by the scheduled re-ask: fire
   const r = await recheckOrder(sb, null, { locationId: PROVO, ref: REF, nowIso, fetchFor: answers(earlier) });
   assert.equal(r.outcome, 'checked');
   assert.equal(r.late, true);
-  assert.equal(r.dueNow, true, 'the cron fires it in the same run');
+  assert.equal('dueNow' in r, false, 'round 4: a re-ask never tells the cron to fire (the till fires it)');
   const row = sb.db.order_queue[0];
-  assert.equal(row.sent_at, nowIso, 'fire now');
+  assert.equal(row.sent_at, nowIso, 'sent_at moves to now, so the till release fires it');
   assert.equal(row.kitchen_routed_at, null, 'the re-ask never fires itself');
   assert.equal(row.customer.lateFire.minutesLate, 40);
   assert.equal(row.customer.ezcaterRecheck.ok, true);
@@ -370,15 +370,14 @@ test('C: a Dispatch pickup moved EARLIER is caught by the scheduled re-ask: fire
   assert.match(alert.alert.message, /LATE/);
   // Reported once: the same late moment again is not a new alert.
   const again = await recheckOrder(sb, null, { locationId: PROVO, ref: REF, nowIso: '2026-09-23T16:42:00.000Z', fetchFor: answers(earlier) });
-  assert.equal(again.late, true);
-  assert.equal(sb.db.order_queue[0].customer.lateFire.at, nowIso);
+  assert.equal(again.late, false, 'round 4: nothing moved this time, so it is not a new late');
+  assert.equal(sb.db.order_queue[0].customer.lateFire.at, nowIso, 'the first flag stays on the order');
 });
 
 test('C: a pickup moved LATER is re-timed ahead of the old fire time, not fired early', async () => {
   const sb = fakeDb(baseTables([heldRow()]));
   const later = ezOrder({ event: { ...ezOrder().event, catererHandoffFoodTime: '2026-09-23T20:00:00Z' } });
   const r = await recheckOrder(sb, null, { locationId: PROVO, ref: REF, nowIso: '2026-09-23T12:00:00.000Z', fetchFor: answers(later) });
-  assert.equal(r.dueNow, false);
   assert.equal(r.late, false);
   assert.equal(sb.db.order_queue[0].sent_at, '2026-09-23T18:30:00.000Z');
   assert.equal(sb.db.order_queue[0].customer.lateFire, undefined);
@@ -434,19 +433,20 @@ test('C: a longer prep time set later re-times held orders; one already past fir
   assert.equal(sb.db.order_queue.find((x) => x.ref === 'EZ-fired').customer.prepMinutes, 90, 'a fired order never moves');
   // Run again: nothing left to re-time.
   assert.equal((await recomputePrepForVenue(sb, null, { locationId: PROVO, nowIso })).retimed, 0);
-  // Wired: Back Office after a save, and the cron every run.
-  assert.ok(read('../backoffice/sections/CateringSettings.jsx').includes('ezcaterRecomputePrep(locId)'));
+  // Wired: Back Office after a save ONLY (round 4: the cron's automatic sweep is gone).
+  assert.ok(read('../backoffice/sections/CateringSettings.jsx').includes('await ezcaterRecomputePrep(locId)'));
   assert.ok(read('../../supabase/functions/ezcater-connect/index.ts').includes("case 'recompute_prep': {"));
   const cron = read('../../supabase/functions/catering-release/index.ts');
-  assert.ok(cron.indexOf('recomputePrepSweep(sb, platform') < cron.indexOf(".from('order_queue')"));
+  assert.equal(cron.includes('recomputePrep'), false, 'no prep sweep in the cron');
   assert.ok(cron.indexOf('recheckUpcoming(sb, platform') < cron.indexOf(".from('order_queue')"));
 });
 
 test('C: the late plan and its words', () => {
-  assert.equal(lateFirePlan('2026-09-23T17:00:00Z', '2026-09-23T17:00:30.000Z', null), null, 'under a minute is on time');
-  const l = lateFirePlan('2026-09-23T16:00:00.000Z', '2026-09-23T16:25:00.000Z', null);
+  const was = '2026-09-23T17:00:00.000Z';
+  assert.equal(lateFirePlan({ fireAt: '2026-09-23T17:00:00Z', prevFireAt: was, nowIso: '2026-09-23T17:00:30.000Z' }), null, 'under a minute is on time');
+  const l = lateFirePlan({ fireAt: '2026-09-23T16:00:00.000Z', prevFireAt: was, nowIso: '2026-09-23T16:25:00.000Z' });
   assert.equal(l.minutesLate, 25);
-  assert.equal(lateFirePlan('2026-09-23T16:00:00.000Z', '2026-09-23T16:30:00.000Z', l), l, 'the same late moment is reported once');
+  assert.equal(lateFirePlan({ fireAt: '2026-09-23T16:00:00.000Z', prevFireAt: was, nowIso: '2026-09-23T16:30:00.000Z', prevLate: l }), l, 'the same late moment is reported once');
   assert.match(lateFireText(l), /25 minutes earlier/);
   // A held (not accepted) order is not "late": it is held, and D says so instead.
   const { row } = orderToQueueRow(lifecycle('submitted'), PROVO, { venue: LONDON });
@@ -466,7 +466,8 @@ test('D: a held order whose accepted notification was missed is re-asked and rel
   assert.equal(cateringHoldReason(sb.db.order_queue[0]), 'awaiting_ezcater_acceptance');
   const r = await recheckOrder(sb, null, { locationId: PROVO, ref: REF, nowIso: '2026-09-23T17:05:00.000Z', fetchFor: answers(ezOrder()) });
   assert.equal(r.lifecycle, 'accepted');
-  assert.equal(r.dueNow, true, 'due, so the cron fires it now');
+  assert.equal(sb.db.order_queue[0].sent_at, '2026-09-23T17:05:00.000Z', 'released and due: sent_at is now, the till fires it');
+  assert.equal(sb.db.order_queue[0].kitchen_routed_at, null, 'the re-ask never fires');
   assert.equal(cateringHoldReason(sb.db.order_queue[0]), null);
 });
 
@@ -475,7 +476,6 @@ test('D: a held order still NOT accepted as it nears its fire time is shown to s
   const nowIso = '2026-09-23T16:45:00.000Z';                // 15 minutes before 17:00Z
   const r = await recheckOrder(sb, null, { locationId: PROVO, ref: REF, nowIso, fetchFor: answers(lifecycle('submitted')) });
   assert.equal(r.unaccepted, true);
-  assert.equal(r.dueNow, false);
   const row = sb.db.order_queue[0];
   assert.equal(row.customer.unacceptedAlert.fireAt, '2026-09-23T17:00:00.000Z');
   assert.match(ezcaterOrderWarnings(row).join(' '), /Still NOT accepted on ezCater/);
@@ -572,7 +572,7 @@ test('F: staff means super_admin, a user_locations row, or a company role that g
   assert.ok(GRANTING_COMPANY_ROLES.includes('admin'));
   // The till arm (resync, undo) is a paired device plus an active staff PIN: no user_profiles.
   const till = fakeDb({ devices: [{ id: 'd1', device_uid: 'till-1', location_id: PROVO, status: 'active' }], staff_members: [{ id: 's1', location_id: PROVO, pin: '1234', active: true }] });
-  assert.deepEqual(await staffActor(till, null, { id: 'till-1', is_anonymous: true }, PROVO, '1234'), { ok: true, by: 'staff:s1' });
+  assert.deepEqual(await staffActor(till, null, { id: 'till-1', is_anonymous: true }, PROVO, '1234'), { ok: true, by: 'staff:s1', name: null });
   const src = read('../../supabase/functions/_shared/staffAuthority.ts');
   assert.equal(/select\('role, location_id'\)/.test(src), false, 'location_id is not even read');
 });
@@ -595,11 +595,12 @@ test('F: the ezCater token is only ever the caterer\'s own connection, never ano
 
 test('F: ezcater-connect config actions are fenced to the venue\'s own company', () => {
   const s = read('../../supabase/functions/ezcater-connect/index.ts');
-  const fn = s.slice(s.indexOf('async function connectionForLocation('), s.indexOf('/** SCRUBBED projection.'));
-  assert.ok(fn.includes('if (await connectionCompany(c) === company) return c;'));
-  assert.ok(fn.includes('if (!company) return null;'));
-  assert.equal(/order\('connected_at', \{ ascending: true \}\)\.limit\(1\)\.maybeSingle\(\)/.test(fn), false, 'the oldest connected row is gone');
-  assert.ok(s.includes('company_id: await venueCompany(opsLocationId),'), 'connect_token records the company');
+  // Round 4: the lookup lives in _shared/ezcaterConnections.ts, filtered by company in the query
+  // (tested for behaviour in ezcaterRound4.test.js).
+  const fn = read('../../supabase/functions/_shared/ezcaterConnections.ts');
+  assert.ok(fn.includes("if (!company) return null;"));
+  assert.ok(s.includes('connectionForLocationOf(sb, platform, opsLocationId)'));
+  assert.ok(s.includes('company_id: co.companyId,'), 'connect_token records the company');
   assert.ok(s.includes("That ezCater caterer is mapped to another venue. Unmap it there first."));
   assert.ok(s.includes("That ezCater caterer belongs to another ezCater connection."));
   assert.ok(s.includes(".is('location_id', null).eq('connection_id', conn.id)"), 'unmapped caterers of this company only');
@@ -632,7 +633,8 @@ test('G: the cron re-asks in parallel inside one budget and fires every unreache
   const cron = read('../../supabase/functions/catering-release/index.ts');
   assert.ok(cron.includes('await runWithBudget(needCheck, (r: any) => prefireCheck(sb, platform, { locationId: r.location_id, ref: r.ref, log }),'));
   assert.ok(cron.includes('{ concurrency: PREFIRE_CONCURRENCY, budgetMs: PREFIRE_BUDGET_MS }'));
-  assert.ok(cron.includes('const f = await flagUnchecked(sb, row.location_id, row.ref, why, nowIso);'));
+  // Round 4: the flag is written in fireOne, inside the fire budget and in parallel.
+  assert.ok(cron.includes('const f = await flagUnchecked(sb, row.location_id, row.ref, row._uncheckedWhy, nowIso);'));
   assert.equal(/for \(let row of \(data \|\| \[\]\)\) \{[\s\S]*await prefireCheck/.test(cron), false, 'no serial re-ask loop');
   // The flag itself: only ezcaterCheck, only while unfired.
   const sb = fakeDb(baseTables([heldRow()]));

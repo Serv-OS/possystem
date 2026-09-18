@@ -987,7 +987,7 @@ test('the webhook calls the matcher, inside a try, before the order_queue upsert
   const insert = WRITE.indexOf(".from('order_queue').insert(");
   // Review round 3: every update of an existing row is the guarded update (updated_at and
   // kitchen_routed_at conditions), called from the write loop after matching.
-  const update = WRITE.indexOf('await guardedUpdate(sb, locationId, row.ref, existing, payload');
+  const update = WRITE.indexOf('await guardedUpdate(sb, locationId, ref, existing, payload');
   assert.ok(call > 0, 'the matcher is never called');
   assert.ok(insert > call && update > call, 'matching must happen before the row is written');
 
@@ -998,7 +998,7 @@ test('the webhook calls the matcher, inside a try, before the order_queue upsert
   const after = WRITE.slice(call);
   const catchAt = after.indexOf('} catch');
   assert.ok(catchAt > 0);
-  assert.ok(/queueRow = row;/.test(after.slice(catchAt, catchAt + 400)), 'the catch must fall back to the unmatched row');
+  assert.ok(/matched = first.row;/.test(after.slice(catchAt, catchAt + 400)), 'the catch must fall back to the unmatched row');
 });
 
 test('the upsert writes the matched row, and the status logic is untouched', () => {
@@ -1010,7 +1010,7 @@ test('the upsert writes the matched row, and the status logic is untouched', () 
   assert.ok(WRITE.includes('queuePayload(plan.row, !existing, nowIso, { reschedule: plan.reschedule })'));
   const PLAN = fs.readFileSync(new URL('../../supabase/functions/_shared/ezcaterCatering.js', import.meta.url), 'utf8');
   assert.ok(PLAN.includes("if (terminal) status = 'cancelled';"), 'a cancellation still always wins');
-  assert.ok(WRITE.includes('let queueRow = row;'), 'the fallback value is the mapper row itself');
+  assert.ok(WRITE.includes('let matched = first.row;'), 'the fallback value is the mapper row itself');
 });
 
 test('the webhook still answers ezCater the same way it did', () => {

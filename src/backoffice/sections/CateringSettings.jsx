@@ -147,10 +147,22 @@ export default function CateringSettings() {
       if (s.enabled && need.length) { setSave({ err: `Complete setup before turning the site on: ${need.join(', ')}.` }); return; }
       const { error } = await supabase.from('catering_site_settings').upsert(toRow(s), { onConflict: 'location_id' });
       if (error) throw error;
-      // The prep time may have changed: re-time every ezCater order the kitchen does not have yet,
-      // now, instead of waiting for the catering-release cron's sweep (up to 5 minutes).
-      // Best effort: the cron does the same, so a failure here loses nothing.
-      if (locId) ezcaterRecomputePrep(locId).catch(() => {});
+      // The prep time may have changed: re-time every ezCater order the kitchen does not have yet.
+      // This save is the ONLY thing that does it (ezCater review round 4: the cron's automatic
+      // sweep was removed), and the server changes nothing unless it read the prep time you just
+      // saved. If it could not, say so plainly: saving again retries it.
+      let prepNote = null;
+      if (locId) {
+        try {
+          const r = await ezcaterRecomputePrep(locId);
+          if (r?.ok === false && r?.why) prepNote = `Saved. ezCater orders were not re-timed: ${r.why}. Save again to retry.`;
+        } catch (e) {
+          // No answer at all (most venues have no ezCater, and the call is fenced to venue staff):
+          // logged, not shown. The server answers ok:false itself whenever orders were waiting.
+          console.warn('[CateringSettings] ezCater re-time:', e?.message || e);
+        }
+      }
+      if (prepNote) { setSave({ err: prepNote }); return; }
       setSave({ done: true }); setTimeout(() => setSave((v) => (v.done ? {} : v)), 2500);
     } catch (e) { setSave({ err: e.message || 'Save failed' }); }
   };

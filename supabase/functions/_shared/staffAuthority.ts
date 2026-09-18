@@ -92,13 +92,13 @@ export async function staffByPin(sb: any, opsLocationId: string, pin: unknown): 
  * this venue together with the PIN of an active staff member here. Returns who, for the log.
  */
 export async function staffActor(sb: any, platform: any, user: any, opsLocationId: string, pin: unknown): Promise<
-  { ok: true; by: string } | { ok: false; status: number; error: string }
+  { ok: true; by: string; name: string | null } | { ok: false; status: number; error: string }
 > {
   if (!user) return { ok: false, status: 401, error: 'Sign in first.' };
-  if (await staffForLocation(sb, platform, user, opsLocationId)) return { ok: true, by: `user:${user.id}` };
+  if (await staffForLocation(sb, platform, user, opsLocationId)) return { ok: true, by: `user:${user.id}`, name: user.email ?? null };
   if (await deviceAtLocation(sb, user, opsLocationId)) {
     const op = await staffByPin(sb, opsLocationId, pin);
-    if (op) return { ok: true, by: `staff:${op.id}` };
+    if (op) return { ok: true, by: `staff:${op.id}`, name: op.name };
     return { ok: false, status: 403, error: 'A staff PIN for this venue is needed.' };
   }
   return { ok: false, status: 403, error: 'Only staff of this venue can do that.' };
