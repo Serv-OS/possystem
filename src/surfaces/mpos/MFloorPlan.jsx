@@ -22,12 +22,15 @@ const STATUS_COLOR = {
 export default function MFloorPlan({ section, onPickTable }) {
   const { tables = [], deviceConfig, staff } = useStore();
   const myName = staff?.name?.toLowerCase();
-  const restrictedSection = deviceConfig?.assignedSection || null;
   const sections = useMemo(() => {
     const s = new Set();
     tables.forEach(t => { if (t.section) s.add(t.section); });
     return Array.from(s);
   }, [tables]);
+  // An assigned section with no tables left (removed after its tables moved) falls back to the
+  // first section with tables, never an empty canvas.
+  const assignedSection = deviceConfig?.assignedSection || null;
+  const restrictedSection = assignedSection && sections.includes(assignedSection) ? assignedSection : null;
   // Internal section state so the tabs are interactive. Default to the prop /
   // profile restriction / first available section so the canvas never shows
   // every section's tables jumbled together.

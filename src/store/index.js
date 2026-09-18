@@ -17,6 +17,7 @@ import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
+import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSections, resolveSections, normaliseSections, sectionsSignature } from '../lib/sectionPlan';
 // Same import shape bookingsSlice already uses; SessionSync touches the store
 // only at call time, so the module cycle is benign.
 import { persistTransfer } from '../sync/SessionSync';
@@ -792,10 +793,22 @@ export const useStore = create((set, get) => ({
     // non-empty-object guard — `{}` is truthy too and would wipe the routing table.
     const hasEntries = (o) => !!o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length > 0;
 
+    // Sections (lib/sectionPlan.js, 18 Sep 2026): the venue's SAVED list (public.sections, this
+    // device's copy of the last read) wins over the pushed one; the pushed list applies only when
+    // the venue has none saved, and an absent or EMPTY pushed list is a no-op (it used to replace
+    // on `[]`, which is truthy). A push is followed by a fresh read (TablePlanSync), which brings
+    // the newest saved list in.
+    const secLoc = snap.locationId || getActiveLocationSync() || null;
+    const savedSecs = loadSavedSections(secLoc);
+    const nextSecs = pickPushedSections({ pushed: snap.locationSections, saved: savedSecs, current: useStore.getState().locationSections });
+    const sectionsPatch = nextSecs === useStore.getState().locationSections ? {} : {
+      locationSections: nextSecs,
+      ...(secLoc ? { _sectionsLocationId: secLoc } : {}),
+    };
+
     set({
       tables: updatedTables,
-      // Sections
-      locationSections: snap.locationSections || useStore.getState().locationSections,
+      ...sectionsPatch,
       // Menu items — full replace with pushed version
       ...(snap.menuItems?.length ? { menuItems: snap.menuItems } : {}),
       // Menus list
@@ -865,17 +878,47 @@ export const useStore = create((set, get) => ({
     }
     try { sessionStorage.setItem('rpos-config-version', String(snap.version)); } catch {}
   },
-  locationSections: [
-    { id:'main',  label:'Main dining', color:'#3b82f6', icon:'🍽' },
-    { id:'bar',   label:'Bar',         color:'#e8a020', icon:'🍸' },
-    { id:'patio', label:'Patio',       color:'#22c55e', icon:'🌿' },
-  ],
+  // The built in defaults (lib/sectionPlan.js DEFAULT_SECTIONS) until the venue's saved list is
+  // read. 18 Sep 2026: Back Office section edits are SAVED straight away (FloorPlanBuilder, whole list
+  // to public.sections); these setters only change the screen.
+  locationSections: defaultSections(),
+  _sectionsLocationId: null,          // the venue locationSections belongs to (null = not known)
+  _sectionsBase: null,                // { loc, sig }: the saved list this tab last read or wrote
+  // Apply a read of public.sections for `loc` (rows, or null when the read failed). A failed or
+  // empty read never replaces a saved list this device already has; a venue with nothing saved
+  // keeps what it shows (or gets the defaults when the store belongs to another venue).
+  applySavedSections: (loc, rows) => {
+    if (!loc || loc === 'loc-demo') return;
+    const st = useStore.getState();
+    const r = resolveSections({ loc, read: rows, current: st.locationSections, currentLoc: st._sectionsLocationId, cached: loadSavedSections(loc) });
+    if (Array.isArray(rows) && rows.length) storeSavedSections(loc, r.sections);
+    const patch = { _sectionsLocationId: loc };
+    if (sectionsSignature(r.sections) !== sectionsSignature(st.locationSections)) patch.locationSections = r.sections;
+    if (r.base !== undefined) patch._sectionsBase = { loc, sig: r.base };
+    else if (st._sectionsBase?.loc !== loc) patch._sectionsBase = null;
+    set(patch);
+  },
+  // A save went through: the list on screen is the venue's saved list.
+  markSectionsSaved: (loc, list) => {
+    const n = normaliseSections(list);
+    if (!loc || !n || !n.length) return;
+    storeSavedSections(loc, n);
+    // Also put the saved list back on screen: a plan read that landed while the save was in
+    // flight may have shown the old rows, and the next edit would then save over this change.
+    set({ locationSections: n, _sectionsLocationId: loc, _sectionsBase: { loc, sig: sectionsSignature(n) } });
+  },
+  setLocationSections: (list) => {
+    const n = normaliseSections(list);
+    if (n && n.length) set({ locationSections: n });
+  },
   addSection: (section) => set(s => ({ locationSections: [...s.locationSections, { id:`sec-${Date.now()}`, ...section }] })),
   updateSection: (id, patch) => set(s => ({ locationSections: s.locationSections.map(sec => sec.id===id ? { ...sec, ...patch } : sec) })),
+  // 18 Sep 2026: removes the section only. It used to move the section's tables to 'main' in memory
+  // (never saved, and 'main' may not exist any more). FloorPlanBuilder refuses to remove a section
+  // that still has tables (sectionPlan.removeSectionRefusal); a table whose section is gone still
+  // shows on every till (under All, and under Other).
   removeSection: (id) => set(s => ({
     locationSections: s.locationSections.filter(sec => sec.id !== id),
-    // Move tables in deleted section to 'main'
-    tables: s.tables.map(t => t.section===id ? { ...t, section:'main' } : t),
   })),
   // v4.6.56: reorder a section by moving it up or down within the array.
   moveSection: (id, direction) => set(s => {

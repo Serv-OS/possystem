@@ -70,7 +70,13 @@ export async function refreshTablePlan({ locationId = null, mode = 'full', reaso
       }
       const changed = next !== all && (next.length !== all.length || next.some((t, i) => t !== all[i]));
       if (changed) useStore.setState({ tables: next });
-      return { applied: !!read, changed, sections: fp?.data?.sections || null };
+      // Sections (lib/sectionPlan.js): the venue's saved list wins over the built in defaults and
+      // any pushed list. A failed read passes null and an empty one [], and neither ever replaces
+      // a saved list this device already has. Every plan read (push, online, foreground, the
+      // interval, Back Office load, useSupabaseInit) comes through here.
+      const secRows = Array.isArray(fp?.data?.sections) ? fp.data.sections : null;
+      useStore.getState().applySavedSections?.(loc, secRows);
+      return { applied: !!read, changed, sections: secRows };
     } catch (e) {
       console.warn('[TablePlanSync] refresh failed:', e?.message || e);
       return { applied: false, changed: false, sections: null };
