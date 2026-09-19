@@ -1,4 +1,4 @@
--- 20260918e_OPS_ezcater_menu_sync_v1.sql
+-- 20260919m_OPS_ezcater_menu_sync_v1.sql
 --
 -- OPS project (tbetcegmszzotrwdtqhi) ONLY. Peter runs this by hand in the SQL editor.
 -- Claude cannot apply production DDL by any route.
@@ -14,9 +14,12 @@
 --
 -- WHAT THIS FILE ADDS
 --   ezcater_item_links, four columns (all nullable or defaulted):
---     ez_ids        text[]       the PUBLISHED ezCater ids on the menu now (a size id on an item
---                                row, a value id on an option row). They change on every
---                                republish; each sync replaces them.
+--     ez_ids        text[]       the PUBLISHED ezCater ids (a size id on an item row, a value
+--                                id on an option row). They change on every republish; each
+--                                sync ADDS the new ones and keeps the old ones, so an order
+--                                placed before a republish still matches when it is changed.
+--                                (The order's menuItemSizeId IS the menu's sizes.id, proven on
+--                                HKX77V; the order's item id is never matched.)
 --     ez_size_name  text         set only on a row for ONE size of an item with several sizes
 --                                (its key is '<item>|size:<size>'). A sized order line resolves
 --                                ONLY through such a row, by its published size id.
@@ -31,10 +34,14 @@
 -- Item matching card lists what it always listed, and "Sync ezCater menu" says this file has to
 -- be run first.
 --
--- RUN ORDER
---   1. Run this file.
---   2. Deploy ezcater-connect and ezcater-webhook (edge functions do not deploy with the web app).
---      A schedule pointing at an older ezcater-connect just gets a 400 an hour until step 2.
+-- RUN ORDER (docs/EZCATER_V1_RELEASE.md, section 4)
+--   1. Deploy ezcater-connect, then ezcater-webhook (edge functions do not deploy with the web
+--      app). Both work before this file runs: they prove the columns are missing and keep the
+--      old rules.
+--   2. Run this file. From then on a sized order line matches only through a synced size row.
+--   3. Straight away, press "Sync ezCater menu" on Item matching, so sized lines have rows to
+--      match. Until then they print by name.
+--   Needs 20260917_OPS_ezcater_item_links.sql first (checked below).
 
 set lock_timeout = '3s';
 

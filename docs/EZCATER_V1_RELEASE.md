@@ -114,3 +114,18 @@ grep -a -c "retry('event read failed')" "$LIVE/ezcater-webhook.eszip"
 ## Known gap
 
 - **Sales reports.** ezCater sales are not written to `closed_checks`, so they are in no sales report. This is older than this work and is not fixed here.
+
+# Menu sync, a later release
+
+- **Outside service only.** Both of these, not just Sync.
+  - Outside service, or when no ezCater order is due to fire.
+- **Run migration `20260919m`** first.
+  - `20260919m_OPS_ezcater_menu_sync_v1.sql` in the SQL editor.
+  - OPS project only. Needs `20260917_OPS_ezcater_item_links.sql` first.
+  - It switches sized line matching on, and it schedules the hourly sync.
+  - So running it is itself outside service.
+  - `ezcater-connect` and `ezcater-webhook` both work before it. They keep the old matching rules.
+- **Then press Sync.** It is Sync ezCater menu on Item matching.
+  - Until then sized lines print by name.
+- **Only exact matches link automatically.** Check the rest by hand.
+  - Each single size item shows its one size, so you never match blind.

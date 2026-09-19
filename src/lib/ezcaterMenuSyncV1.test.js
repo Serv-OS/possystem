@@ -16,9 +16,10 @@ import assert from 'node:assert/strict';
 import {
   flattenMenus, planMenuSync, autoTargetFor, sizeRowKey, sizeRouteFor, indexPublishedIds,
   currentMenus, venueDate, readCatererMenus, readAllLinks, MENU_QUERY, MENU_QUERY_NO_OPTIONS,
-  LINK_PAGE_SIZE,
+  LINK_PAGE_SIZE, exactName, singleSizeExactName, isMissingSyncColumn, isMissingLinksTable,
 } from '../../supabase/functions/_shared/ezcaterMenuSync.ts';
-import { runMenuSync, dueLocations } from '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts';
+import { runMenuSync, dueLocations, runDueSyncs, CRON_BUDGET_MS, MIGRATION_FILE } from '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { planLineMatches, readMatchInputs } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
 import { buildLinkKey } from '../../supabase/functions/_shared/ezcaterMatch.ts';
 import { toRow, saveBody, theirLabel, suggestionsFor } from './ezcaterItemRows.js';
@@ -224,7 +225,9 @@ test('exact names auto link: a plain item, a size by its full name, an option', 
     locationId: LOC, nowIso: NOW, complete: true, menuOk: true,
   });
   const by = (k) => plan.inserts.find((r) => r.ez_key === k);
-  assert.equal(by(buildLinkKey({ name: 'Farmhouse Salad' }, 'item')).menu_item_id, 'm-salad');
+  // Their "Farmhouse Salad" is sold only as "Serves 1": its full name is "Farmhouse Salad
+  // Serves 1", which is not our "Farmhouse Salad" exactly, so staff decide (exact means exact).
+  assert.equal(by(buildLinkKey({ name: 'Farmhouse Salad' }, 'item')).menu_item_id, null);
   assert.equal(by(sizeRowKey('A Wreck', 'Original')).menu_item_id, 'm-wreck-orig');
   assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).menu_item_id, 'm-wreck-big');
   assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).matched_by, 'name');
@@ -361,7 +364,7 @@ test('sync writes every row once; syncing twice duplicates nothing and keeps sta
   const skinny = row(sb, sizeRowKey('A Wreck', 'Skinny'));
   assert.equal(skinny.menu_item_id, 'm-wreck-orig', 'the staff match is kept');
   assert.equal(skinny.matched_by, 'user-7');
-  assert.deepEqual(skinny.ez_ids, ['s-wreck-skinny-v2'], 'the published id follows the republish');
+  assert.deepEqual(skinny.ez_ids, ['s-wreck-skinny-v2', 's-wreck-skinny'], 'the new published id first, the old one kept');
   const big = row(sb, sizeRowKey('A Wreck', 'Bigs'));
   assert.equal(big.matched_by, 'ignored', '"Not on our menu" is kept');
   assert.equal(big.menu_item_id, null);
@@ -457,4 +460,253 @@ test('a size row shows its size, suggests on item and size, and saves by its syn
   const plain = saveBody(toRow({ kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad' }), { menuItemId: 'm' }).body;
   assert.equal(plain.size_row, undefined);
   assert.equal(plain.ez_key, 'farmhouse salad');
+});
+
+// ── Review round (18 Sep 2026): exact means exact ──────────────────────────────────────────
+
+const menuOf = (...items) => ({ id: 'm-x', name: 'X', startDate: null, endDate: null,
+  categories: [{ id: 'c', name: 'Cat', items }] });
+const syncPlan = (menus, ourItems, extra = {}) => planMenuSync({
+  entries: flattenMenus(menus), existing: [], ourItems, ourGroups: [], locationId: LOC, nowIso: NOW,
+  complete: true, menuOk: true, ...extra,
+});
+
+test('exact means exact: the two reproduced wrong links no longer happen (real flattened plain rows)', () => {
+  // 1. ezCater single size "Sandwich Platter Large" used to auto link our "Sandwich Platter"
+  //    (normaliseItemName dropped "large").
+  const platter = menuOf({ id: 'i-p', name: 'Sandwich Platter Large', sizes: [size('s-p', 'Serves 12')] });
+  const pRows = flattenMenus([platter]);
+  assert.equal(pRows.length, 1);
+  assert.equal(pRows[0].ezSizeName, null, 'a single size item is still one plain row');
+  assert.equal(pRows[0].exactName, 'sandwich platter large serves 12');
+  assert.equal(syncPlan([platter], [{ id: 'm-plat', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
+  // The same item whose only size repeats its own size word, or has no size at all.
+  const platter2 = menuOf({ id: 'i-p2', name: 'Sandwich Platter Large', sizes: [size('s-p2', 'Large')] });
+  assert.equal(syncPlan([platter2], [{ id: 'm-plat', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
+  assert.equal(syncPlan([platter2], [{ id: 'm-plat-l', name: 'Sandwich Platter Large' }]).inserts[0].menu_item_id, 'm-plat-l');
+  const bare = menuOf({ id: 'i-p3', name: 'Sandwich Platter Large', sizes: [] });
+  assert.equal(syncPlan([bare], [{ id: 'm-plat', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
+
+  // 2. ezCater "Caesar Salad" with its only size "Large" used to auto link our "Caesar Salad
+  //    Small" (the flattener threw the only size name away).
+  const caesar = menuOf({ id: 'i-c', name: 'Caesar Salad', sizes: [size('s-c', 'Large')] });
+  const cRows = flattenMenus([caesar]);
+  assert.equal(cRows.length, 1);
+  assert.equal(cRows[0].ezKey, 'caesar salad');
+  assert.equal(cRows[0].exactName, 'caesar salad large', 'the only size takes part in the name');
+  assert.equal(syncPlan([caesar], [{ id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, null);
+  assert.equal(syncPlan([caesar], [{ id: 'm-c', name: 'Caesar Salad' }]).inserts[0].menu_item_id, null,
+    'nor our plain Caesar Salad: Large is on their side only');
+  assert.equal(syncPlan([caesar], [{ id: 'm-cl', name: 'Caesar Salad (Large)' }, { id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, 'm-cl',
+    'the same words, only punctuation differs: linked');
+  // A container word on ONE side is a different name too, both ways round.
+  const tray = menuOf({ id: 'i-t', name: 'Caesar Salad Half Tray', sizes: [] });
+  assert.equal(syncPlan([tray], [{ id: 'm-ch', name: 'Caesar Salad Half' }]).inserts[0].menu_item_id, null);
+  assert.equal(syncPlan([menuOf({ id: 'i-t2', name: 'Caesar Salad Half', sizes: [] })], [{ id: 'm-cht', name: 'Caesar Salad Half Tray' }]).inserts[0].menu_item_id, null);
+});
+
+test('exact means exact: the Potbelly shape (Italian Boxed Lunch, only size Box) still auto links', () => {
+  // HKX77V's line: item "Italian Boxed Lunch", its only size "Box", serves 1.
+  const potbelly = menuOf({ id: '279b6bf4', name: 'Italian Boxed Lunch', originalItemId: 'b4d95922', sizes: [
+    size('0226b68c-492c-5a38-b528-fd62a1c1e828', 'Box', { serves: 1, originalItemSizeId: 'b4fb83a2' }),
+  ] });
+  const rows = flattenMenus([potbelly]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].exactName, 'italian boxed lunch', '"Box" repeats "Boxed", so it adds nothing');
+  assert.deepEqual(rows[0].ids, ['0226b68c-492c-5a38-b528-fd62a1c1e828'], 'the size id, never the item id');
+  const p = syncPlan([potbelly], [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }, { id: 'm-it', name: 'Italian' }]);
+  assert.equal(p.inserts[0].menu_item_id, 'm-ibl');
+  // The rule for container words: a Box (or Tray) the item name does not already say is part of
+  // the name, so "Turkey Sandwich" sold only as a Box is not our plain "Turkey Sandwich".
+  assert.equal(singleSizeExactName('Turkey Sandwich', 'Box'), 'turkey sandwich box');
+  const turkey = menuOf({ id: 'i-ts', name: 'Turkey Sandwich', sizes: [size('s-ts', 'Box')] });
+  assert.equal(syncPlan([turkey], [{ id: 'm-ts', name: 'Turkey Sandwich' }]).inserts[0].menu_item_id, null);
+  assert.equal(syncPlan([turkey], [{ id: 'm-tsb', name: 'Turkey Sandwich Box' }]).inserts[0].menu_item_id, 'm-tsb');
+  const trayOf = menuOf({ id: 'i-it', name: 'Italian Boxed Lunch', sizes: [size('s-tray', 'Tray')] });
+  assert.equal(syncPlan([trayOf], [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }]).inserts[0].menu_item_id, null,
+    'a Tray of the boxed lunch is not the boxed lunch');
+  assert.equal(singleSizeExactName('Cookie Trays', 'Tray'), 'cookie trays');
+  assert.equal(exactName('  Crème  Brûlée & Chef’s (Large) '), 'creme brulee and chefs large');
+});
+
+test('exact means exact: one key described two ways, two of ours with one name, and multi size rows', () => {
+  // "Sandwich Platter Tray" and "Sandwich Platter" share the key "sandwich platter" (the key drops
+  // a trailing tray). Which one is ours is a guess, so the merged row is never auto linked.
+  const two = menuOf(
+    { id: 'a', name: 'Sandwich Platter', sizes: [] },
+    { id: 'b', name: 'Sandwich Platter Tray', sizes: [] },
+  );
+  const rows = flattenMenus([two]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].noAuto, true);
+  assert.equal(syncPlan([two], [{ id: 'm-sp', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
+  // Two of ours with the same exact name: never a guess.
+  assert.equal(syncPlan([menuOf({ id: 'c', name: 'Brownie', sizes: [] })],
+    [{ id: 'm1', name: 'Brownie' }, { id: 'm2', name: 'brownie' }]).inserts[0].menu_item_id, null);
+  // A multi size row links only its full name; a container word on one side links nothing.
+  const multi = menuOf({ id: 'd', name: 'Caesar Salad', sizes: [size('s-h', 'Half Tray'), size('s-f', 'Full Tray')] });
+  const mp = syncPlan([multi], [{ id: 'm-half', name: 'Caesar Salad Half' }, { id: 'm-full', name: 'Caesar Salad Full Tray' }]);
+  assert.equal(mp.inserts.find((r) => r.ez_key === sizeRowKey('Caesar Salad', 'Half Tray')).menu_item_id, null,
+    'our "Caesar Salad Half" lacks their Tray');
+  assert.equal(mp.inserts.find((r) => r.ez_key === sizeRowKey('Caesar Salad', 'Full Tray')).menu_item_id, 'm-full');
+});
+
+// ── Review round: the order time id rule, failed reads, kept ids ───────────────────────────
+
+test('order time matches on the SIZE id only, never the order line item id (HKX77V)', () => {
+  const synced = [{ kind: 'item', ez_key: sizeRowKey('Italian Boxed Lunch', 'Box'), ez_name: 'Italian Boxed Lunch', ez_size_name: 'Box',
+    ez_ids: ['0226b68c-492c-5a38-b528-fd62a1c1e828'], menu_item_id: 'm-ibl', option_id: null, source: 'auto', matched_by: 'name', seen_count: 0 }];
+  const idx = indexPublishedIds(synced);
+  const hk = { name: 'Italian Boxed Lunch', sizeName: 'Box', ezItemId: '5f5b503b', ezSizeId: '0226b68c-492c-5a38-b528-fd62a1c1e828' };
+  assert.equal(sizeRouteFor(hk, idx).mode, 'size');
+  // An item id that happens to be on a row matches nothing: only ezSizeId is read.
+  const byItemId = indexPublishedIds([{ ...synced[0], ez_ids: ['5f5b503b'] }]);
+  assert.equal(sizeRouteFor(hk, byItemId).mode, 'unmatched');
+  assert.equal(sizeRouteFor({ ...hk, ezSizeId: null }, byItemId).mode, 'unmatched');
+});
+
+test('a failed link read never falls back to name guessing; only a proven missing column does', async () => {
+  const failing = (error) => ({
+    from: (name) => {
+      const b = {
+        select() { return b; }, eq() { return b; }, order() { return b; }, range() { return b; },
+        is() { return b; }, not() { return b; }, in() { return b; },
+        then(ok, no) {
+          const out = name === 'ezcater_item_links' ? { data: null, error }
+            : { data: name === 'menu_items' ? MENU_ROWS : GROUP_ROWS, error: null };
+          return Promise.resolve(out).then(ok, no);
+        },
+      };
+      return b;
+    },
+  });
+  // A timeout, a permission fault, a network fault, an unrelated error that names a column:
+  // sizeIds stays true, nothing is written, every sized line is unmatched.
+  for (const error of [
+    { code: '57014', message: 'canceling statement due to statement timeout' },
+    { code: '42501', message: 'permission denied for table ezcater_item_links' },
+    { message: 'FetchError: network down' },
+    { code: 'XX000', message: 'something about column ez_ids broke' },
+  ]) {
+    const input = await readMatchInputs(failing(error), LOC);
+    assert.equal(input.sizeIds, true, error.message);
+    assert.equal(input.linksOk, false);
+    const p = planLineMatches({ lines: [line('A Wreck Original', 's-anything', 'Original'), line('Farmhouse Salad', null, null)],
+      ...input, locationId: LOC, nowIso: NOW });
+    assert.equal(p.lines[0].itemId, null, 'a sized line prints by name: ' + error.message);
+    assert.equal(p.lines[1].itemId, 'm-salad', 'an unsized line keeps the old name rule');
+    // linksOk false: matchQueueRow saves none of the plan's writes.
+  }
+  // A read that throws is no different.
+  const throwing = { from: () => { throw new Error('boom'); } };
+  assert.equal((await readMatchInputs(throwing, LOC)).sizeIds, true);
+  // The missing column, PROVEN: the rules before the migration, including the name match of a sized line.
+  const sb = fakeSb(TABLES(SYNCED.map(({ ez_ids, ez_size_name, ...r }) => ({ ...r, location_id: LOC }))), { noSyncColumns: true });
+  const before = await readMatchInputs(sb, LOC);
+  assert.equal(before.sizeIds, false);
+  assert.equal(before.linksOk, true);
+  const bp = planLineMatches({ lines: [line('A Wreck', 's-x', 'Original')], ...before, locationId: LOC, nowIso: NOW });
+  assert.equal(bp.lines[0].itemId, 'm-wreck-orig');
+  // No links table at all (20260917 not run) is proven too: no sync can have run.
+  const noTable = await readMatchInputs(failing({ code: '42P01', message: 'relation "public.ezcater_item_links" does not exist' }), LOC);
+  assert.equal(noTable.sizeIds, false);
+  assert.equal(isMissingSyncColumn({ code: '42703', message: 'column ezcater_item_links.ez_ids does not exist' }), true);
+  assert.equal(isMissingSyncColumn({ code: 'PGRST204', message: "Could not find the 'ez_size_name' column of 'ezcater_item_links' in the schema cache" }), true);
+  assert.equal(isMissingSyncColumn({ code: 'XX000', message: 'something about column ez_ids broke' }), false);
+  assert.equal(isMissingSyncColumn({ code: '57014', message: 'statement timeout' }), false);
+  assert.equal(isMissingLinksTable({ code: '42P01', message: 'relation "public.menu_items" does not exist' }), false, 'another table is not proof');
+});
+
+test('a republish keeps the old size id: an order matched before it still matches when modified later', async () => {
+  const sb = fakeSb(TABLES());
+  const first = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => fakeAsk([POTBELLY]), nowMs: NOW_MS });
+  assert.equal(first.ok, true, first.message);
+  // The caterer republishes: every published size id changes.
+  const repub = JSON.parse(JSON.stringify(POTBELLY));
+  for (const c of repub.categories) for (const it of c.items) for (const z of it.sizes) z.id = z.id + '-v2';
+  const second = await runMenuSync(sb, LOC, { reason: 'daily', makeAsk: () => fakeAsk([repub]), nowMs: NOW_MS + 86_400_000 });
+  assert.equal(second.status, 'ok', 'a complete read');
+  const big = row(sb, sizeRowKey('A Wreck', 'Bigs'));
+  assert.deepEqual(big.ez_ids, ['s-wreck-big-v2', 's-wreck-big'], 'a complete sync adds, never replaces');
+  // The order placed before the republish carries the OLD id; ezCater sends a change later.
+  const input = await readMatchInputs(sb, LOC);
+  const oldLine = planLineMatches({ lines: [line('A Wreck', 's-wreck-big', 'Bigs')], ...input, locationId: LOC, nowIso: NOW });
+  assert.equal(oldLine.lines[0].itemId, 'm-wreck-big', 'the old id still routes');
+  const newLine = planLineMatches({ lines: [line('A Wreck', 's-wreck-big-v2', 'Bigs')], ...input, locationId: LOC, nowIso: NOW });
+  assert.equal(newLine.lines[0].itemId, 'm-wreck-big');
+  // Should an id ever sit on two rows, the existing checks still answer unmatched.
+  const clash = indexPublishedIds([
+    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['new', 'shared'], menu_item_id: 'm1' },
+    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['shared'], menu_item_id: 'm2' },
+    { kind: 'item', ez_key: 'c', ez_size_name: null, ez_ids: ['plain-and-size'], menu_item_id: 'm3' },
+    { kind: 'item', ez_key: 'c|size:z', ez_size_name: 'Z', ez_ids: ['plain-and-size'], menu_item_id: 'm3' },
+  ]);
+  assert.deepEqual(sizeRouteFor({ ezSizeId: 'shared', sizeName: 'X' }, clash), { mode: 'unmatched', reason: 'size rows disagree' });
+  assert.deepEqual(sizeRouteFor({ ezSizeId: 'plain-and-size', sizeName: 'Z' }, clash), { mode: 'unmatched', reason: 'id on a plain row and a size row' });
+  assert.equal(sizeRouteFor({ ezSizeId: 'new', sizeName: 'X' }, clash).mode, 'size');
+});
+
+test('a null menu is a partial read: status partial, nothing replaced', async () => {
+  // ezCater lists two current menus but answers the second with menu: null.
+  const ask = async (op, q, vars) => {
+    if (op === 'ServOsEzMenus') return { menus: { nodes: [{ id: 'menu-1', name: 'P' }, { id: 'menu-null', name: 'Gone' }] } };
+    if (vars.id === 'menu-null') return { menu: null };
+    return fakeAsk([POTBELLY])(op, q, vars);
+  };
+  const got = await readCatererMenus(ask, 'cat-1', '2026-09-18');
+  assert.equal(got.missing, 1);
+  assert.equal(got.menus.length, 1);
+  assert.equal((await readCatererMenus(fakeAsk([POTBELLY]), 'cat-1', '2026-09-18')).missing, 0);
+  const sb = fakeSb(TABLES([
+    { location_id: LOC, kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', menu_item_id: 'm-salad', option_id: null, source: 'manual', matched_by: 'u', seen_count: 2, ez_ids: ['s-salad-lunch'] },
+  ]));
+  const r = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => ask, nowMs: NOW_MS });
+  assert.equal(r.ok, true);
+  assert.equal(r.status, 'partial');
+  assert.match(r.message, /no menu for 1 current menu/);
+  assert.deepEqual(row(sb, 'farmhouse salad').ez_ids.sort(), ['s-salad', 's-salad-lunch'], 'nothing taken away');
+  assert.equal(row(sb, 'farmhouse salad').menu_item_id, 'm-salad');
+});
+
+test('the daily run stays under call_edge_fn 25 s timeout; the rest wait for the next run', async () => {
+  assert.ok(CRON_BUDGET_MS < 25_000);
+  assert.equal(CRON_BUDGET_MS, 18_000);
+  const venues = (n) => Array.from({ length: n }, (_, i) => 'v' + (i + 1));
+  const sbOf = (n) => fakeSb({ ezcater_caterers: venues(n).map((v) => ({ location_id: v, active: true })), ezcater_menu_syncs: [] });
+  let t = 0;
+  const ran = [];
+  const takes = (ms) => async (_sb, loc) => { ran.push(loc); t += ms; return { ok: true, status: 'ok', message: '' }; };
+  // 7 s a venue: v1 from 0 s, v2 from 7 s; at 14 s the slowest (7 s) would end past 18 s: stop.
+  const out = await runDueSyncs(sbOf(5), () => null, { clock: () => t, runOne: takes(7_000) });
+  assert.deepEqual(ran, ['v1', 'v2']);
+  assert.equal(out.stoppedForTime, true);
+  assert.equal(out.left, 3, 'three venues wait for the next hourly run');
+  assert.equal(out.due, 5);
+  assert.ok(t < 25_000);
+  // A bigger budget is refused (it can only shrink): 3 s a venue, starts at 0..15 s, never at 18 s.
+  t = 0; ran.length = 0;
+  const big = await runDueSyncs(sbOf(10), () => null, { clock: () => t, runOne: takes(3_000), budgetMs: 600_000 });
+  assert.equal(big.ran.length, 6);
+  assert.equal(big.left, 4);
+  assert.ok(t < 25_000, 'finished at ' + t);
+  // A spent budget starts nothing.
+  t = 0; ran.length = 0;
+  const none = await runDueSyncs(sbOf(5), () => null, { clock: () => t, runOne: takes(1), budgetMs: 0 });
+  assert.equal(none.ran.length, 0);
+  assert.equal(none.left, 5);
+});
+
+test('the sync migration is 20260919m and every reference names it', () => {
+  const root = new URL('../../', import.meta.url);
+  assert.equal(MIGRATION_FILE, '20260919m_OPS_ezcater_menu_sync_v1.sql');
+  assert.ok(existsSync(new URL('supabase/migrations/' + MIGRATION_FILE, root)));
+  assert.ok(!existsSync(new URL('supabase/migrations/20260918e_OPS_ezcater_menu_sync_v1.sql', root)));
+  const same = readdirSync(new URL('supabase/migrations/', root)).filter((f) => f.startsWith('20260919m'));
+  assert.deepEqual(same, [MIGRATION_FILE], 'nothing else uses 20260919m');
+  for (const f of ['supabase/functions/_shared/ezcaterMenuSync.ts', 'supabase/functions/_shared/ezcater-match-ingest.ts',
+    'supabase/functions/_shared/ezcaterMenuSyncRun.ts', 'supabase/functions/ezcater-connect/index.ts', 'DECISIONS.md',
+    'supabase/migrations/' + MIGRATION_FILE]) {
+    const text = readFileSync(new URL(f, root), 'utf8');
+    assert.ok(!text.includes('20260918e'), f + ' still names 20260918e');
+  }
 });

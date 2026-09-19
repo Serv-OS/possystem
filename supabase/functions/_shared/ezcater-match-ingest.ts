@@ -61,7 +61,7 @@ import {
 import { withMatchedItems } from './ezcater-map.ts';
 // The synced menu (feat/ezcater-menu-sync-v1): the published size id rule and the paged link read.
 import {
-  indexPublishedIds, sizeRouteFor, readAllLinks, isMissingSyncColumn,
+  indexPublishedIds, sizeRouteFor, readAllLinks, isMissingSyncColumn, isMissingLinksTable,
   LINK_COLUMNS, LINK_COLUMNS_WITH_SYNC,
 } from './ezcaterMenuSync.ts';
 
@@ -253,7 +253,7 @@ export function planLineMatches(input: {
   menuOk?: boolean;
   /**
    * true when the links were read WITH the menu sync columns (ez_ids, ez_size_name), i.e.
-   * migration 20260918e has run. Then the published size id rule applies (sizeRouteFor): a
+   * migration 20260919m has run. Then the published size id rule applies (sizeRouteFor): a
    * sized line resolves only through a synced size row that has a decision, and any other
    * sized line stays unmatched. false or absent is the behaviour before this change.
    */
@@ -448,7 +448,12 @@ export interface MatchInputs {
    * the whole answer and no new link may be written.
    */
   menuOk: boolean;
-  /** true when the links came with ez_ids and ez_size_name (migration 20260918e has run). */
+  /**
+   * false ONLY when the read proved the sync columns (or the links table) are not there, so the
+   * rules before migration 20260919m apply. true when the links came with ez_ids and
+   * ez_size_name, AND when the read failed for any other reason: then no sized line may be
+   * matched by a name guess.
+   */
   sizeIds?: boolean;
 }
 
@@ -518,7 +523,12 @@ export async function readMatchInputs(
   locationId: string,
   opts: { deadline?: number | null } = {},
 ): Promise<MatchInputs> {
-  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false, sizeIds: false };
+  // sizeIds starts TRUE: a sized line may fall back to the old name rules ONLY when the read
+  // PROVED the sync columns (or the whole table) are not there. Any other failed read (a
+  // timeout, a network fault, a permission error) leaves every sized line unmatched, printing
+  // by name: a venue that HAS synced size rows must never get a name guess because one read
+  // failed.
+  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false, sizeIds: true };
   if (!sb || !locationId) return out;
   const deadline = opts.deadline == null ? null : opts.deadline;
 
@@ -528,14 +538,15 @@ export async function readMatchInputs(
   // PAGED (feat/ezcater-menu-sync-v1): a synced menu can pass PostgREST's 1000 row cap, and a
   // row cut off by the cap would read as "never seen". An incomplete read keeps the rows it got
   // but writes nothing (linksOk false), the same answer as a failed read.
-  // The sync columns are asked for first; before 20260918e runs they are not there, and the
+  // The sync columns are asked for first; before 20260919m runs they are not there, and the
   // read is repeated without them (sizeIds false: the rules before this change).
   try {
     let res = await readAllLinks(sb, locationId, LINK_COLUMNS_WITH_SYNC, deadline);
     if (!res.ok && isMissingSyncColumn(res.error)) {
+      out.sizeIds = false;
       res = await readAllLinks(sb, locationId, LINK_COLUMNS, deadline);
-    } else if (res.ok) {
-      out.sizeIds = true;
+    } else if (!res.ok && isMissingLinksTable(res.error)) {
+      out.sizeIds = false;
     }
     if (!res.ok) {
       const error = res.error || {};

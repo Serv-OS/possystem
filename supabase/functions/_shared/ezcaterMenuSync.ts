@@ -13,12 +13,21 @@
 //   1. reads the CURRENT menus (venue date, venue clock) of every caterer mapped to the venue
 //   2. writes one ezcater_item_links row per item (one per SIZE when an item has several sizes,
 //      one per option value when values are readable), each carrying its published ids (ez_ids)
-//   3. auto links ONLY an exact name match to our menu, never across a size clash; everything
-//      else is left for staff, who get suggestions on the Item matching card
+//   3. auto links ONLY an EXACT name match to our menu (exactName below: case, accents, spaces
+//      and punctuation folded, nothing else dropped); everything else is left for staff, who get
+//      suggestions on the Item matching card
 //   It never deletes a row, never changes a decision (a staff match, "Not on our menu", a staff
 //   clear, or an earlier auto link) and never touches seen_count. Syncing twice writes no new row.
 //
-// THE ORDER TIME RULE (sizeRouteFor, used by ezcater-match-ingest.ts), kept deliberately simple:
+// THE ORDER TIME RULE (sizeRouteFor, used by ezcater-match-ingest.ts), kept deliberately simple.
+// It matches on the line's SIZE id only (ezSizeId, which ezcater-map.ts takes from the order's
+// menuItemSizeId), never on the line's item id. PROVEN on the live test order HKX77V (Claude,
+// read only, 18 Sep 2026): its line carried ezSizeId 0226b68c-492c-5a38-b528-fd62a1c1e828, and
+// the menu read has exactly that id as categories[0].items[1].sizes[0].id (size "Box", serves 1).
+// The same line's item id (ezItemId 5f5b503b-...) was NEITHER the menu's item id (279b6bf4-...)
+// NOR its originalItemId (b4d95922-...), so an order's item id can never be matched against a
+// synced row.
+//
 //   * a line whose published size id is on a synced SIZE row resolves to that row's decision,
 //     and only when the row HAS one (a staff match or an exact auto link)
 //   * a line whose size id is on a synced single size (plain) row, or that carries no size at
@@ -29,7 +38,7 @@
 // Pure functions first (tested under node), then the database and ezCater side. The ezCater call
 // is passed in (ask), so nothing here needs Deno globals.
 
-import { autoLinkDecision, buildLinkKey, normaliseKeyName } from './ezcaterMatch.ts';
+import { buildLinkKey } from './ezcaterMatch.ts';
 
 const s = (v: unknown): string => (v == null ? '' : String(v).trim());
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
@@ -52,6 +61,57 @@ export function sizeKeyPart(sizeName: unknown): string {
 export function sizeRowKey(itemName: unknown, sizeName: unknown): string {
   const item = buildLinkKey({ name: s(itemName) }, 'item');
   return item ? `${item}|size:${sizeKeyPart(sizeName)}` : '';
+}
+
+// ── Exact names ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The EXACT form of a name, the only form an auto link compares: lower case, accents off, '&' read
+ * as 'and', apostrophes dropped, every other run of punctuation or space one space. NOTHING else
+ * is dropped: no size word, no container word (tray, pan, box), no "serves 10", no bracketed
+ * part. The scorer and the order time name rules (normaliseItemName, normaliseKeyName) drop some
+ * of those on purpose to FIND candidates; an auto link must not, because the dropped word is
+ * exactly what tells "Sandwich Platter Large" from our "Sandwich Platter". So any size or
+ * container word on one side that the other side does not have means the names differ, and
+ * nothing is linked without a person.
+ */
+export function exactName(value: unknown): string {
+  return s(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ').replace(/['\u2018\u2019\u02bc`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Container words in their plural and "-ed" forms, folded to one word, used ONLY to tell whether a
+ * single size item's size name repeats what its item name already says ("Boxed" and "Box").
+ */
+const CONTAINER_FOLD: Record<string, string> = Object.freeze({
+  box: 'box', boxes: 'box', boxed: 'box',
+  tray: 'tray', trays: 'tray',
+  pan: 'pan', pans: 'pan',
+  platter: 'platter', platters: 'platter',
+  bag: 'bag', bags: 'bag', bagged: 'bag',
+  bowl: 'bowl', bowls: 'bowl',
+}) as Record<string, string>;
+const foldWord = (w: string): string => CONTAINER_FOLD[w] || w;
+
+/**
+ * The full exact name of an item with ONE size (or none), the name an auto link compares.
+ * The only size takes part exactly as a multi size item's sizes do: the full name is
+ * '<item> <size>'. The one allowance: a size name whose every word the item name already says
+ * adds nothing, so the full name is the item name. "Italian Boxed Lunch" with its only size
+ * "Box" is "italian boxed lunch" (Box repeats Boxed); "Turkey Sandwich" with its only size "Box"
+ * is "turkey sandwich box", and "Caesar Salad" with its only size "Large" is "caesar salad large".
+ * '' when the item has no usable name.
+ */
+export function singleSizeExactName(itemName: unknown, sizeName: unknown): string {
+  const item = exactName(itemName);
+  if (!item) return '';
+  const size = exactName(sizeName);
+  if (!size) return item;
+  const said = new Set(item.split(' ').map(foldWord));
+  const adds = size.split(' ').some((w) => !said.has(foldWord(w)));
+  return adds ? `${item} ${size}` : item;
 }
 
 // ── The ezCater side ─────────────────────────────────────────────────────────────────────────
@@ -121,16 +181,19 @@ export function looksLikeSchemaError(e: any): boolean {
 /**
  * One caterer's current menus, read whole. Throws when the menu list or a menu cannot be read,
  * so the caller knows the read was not complete. `optionsRead` is false when ezCater refused
- * the option values and the menus were read without them.
+ * the option values and the menus were read without them. `missing` counts current menus that
+ * ezCater listed but then answered with no menu (null): that read is PARTIAL too, and the caller
+ * must treat it exactly like a failed one.
  */
 export async function readCatererMenus(
   ask: EzAsk, catererId: string, today: string,
   isSchemaError: (e: unknown) => boolean = looksLikeSchemaError,
-): Promise<{ menus: any[]; optionsRead: boolean }> {
+): Promise<{ menus: any[]; optionsRead: boolean; missing: number }> {
   const list = await ask('ServOsEzMenus', MENUS_QUERY, { catererId });
   const nodes = currentMenus(list?.menus?.nodes, today);
   const menus: any[] = [];
   let optionsRead = true;
+  let missing = 0;
   for (const node of nodes) {
     let data: any;
     if (optionsRead) {
@@ -143,8 +206,9 @@ export async function readCatererMenus(
     }
     if (!optionsRead) data = await ask('ServOsEzMenu', MENU_QUERY_NO_OPTIONS, { catererId, id: s(node.id) });
     if (data?.menu) menus.push(data.menu);
+    else missing++;
   }
-  return { menus, optionsRead };
+  return { menus, optionsRead, missing };
 }
 
 // ── Flattening ───────────────────────────────────────────────────────────────────────────────
@@ -159,7 +223,15 @@ export interface MenuEntry {
   ezCategory: string | null;
   /** Published ids: a size id for an item row, a value id for an option row. */
   ids: string[];
-  /** A size row whose size name adds nothing its siblings do not: never auto linked. */
+  /**
+   * The full EXACT name an auto link compares (exactName): '<item> <size>' for a size row,
+   * singleSizeExactName for a plain row. '' links nothing.
+   */
+  exactName?: string;
+  /**
+   * Never auto linked: a size row whose full name a sibling shares, or a plain row the menus
+   * describe two different ways (the same key with two different full names).
+   */
   noAuto: boolean;
 }
 
@@ -176,7 +248,9 @@ export function flattenMenus(menus: any): MenuEntry[] {
     const prev = out.get(k);
     if (!prev) { out.set(k, { ...e, ids: Array.from(new Set(e.ids)) }); return; }
     for (const id of e.ids) if (!prev.ids.includes(id)) prev.ids.push(id);
-    prev.noAuto = prev.noAuto || e.noAuto;
+    // One key, two different full names ("Sandwich Platter Tray" and "Sandwich Platter" key the
+    // same): which one is ours is a guess, so neither is auto linked.
+    prev.noAuto = prev.noAuto || e.noAuto || (prev.exactName || '') !== (e.exactName || '');
   };
   for (const menu of arr(menus)) {
     for (const cat of arr(menu?.categories)) {
@@ -188,20 +262,25 @@ export function flattenMenus(menus: any): MenuEntry[] {
         if (sizes.length <= 1) {
           const key = buildLinkKey({ name }, 'item');
           if (key) {
+            // The only size is NOT thrown away: it is part of the exact name an auto link needs
+            // (singleSizeExactName), so "Caesar Salad" sold only as "Large" is never our
+            // "Caesar Salad Small", nor our plain "Caesar Salad".
             put({ kind: 'item', ezKey: key, ezName: name, ezGroup: null, ezSizeName: null, ezCategory: category,
-              ids: sizes.length && s(sizes[0].id) ? [s(sizes[0].id)] : [], noAuto: false });
+              ids: sizes.length && s(sizes[0].id) ? [s(sizes[0].id)] : [],
+              exactName: singleSizeExactName(name, sizes.length ? sizes[0].name : ''), noAuto: false });
           }
         } else {
-          // Two sizes whose full names key the same ("Serves 10" and "Serves 20" both lose their
-          // size to the noise rule) cannot be told apart by name, so neither is auto linked.
-          const full = sizes.map((z) => normaliseKeyName(`${name} ${s(z.name)}`));
+          // Two sizes whose full exact names are the same cannot be told apart by name, so
+          // neither is auto linked. A size with no usable name adds nothing, so it is not either.
+          const item = exactName(name);
+          const full = sizes.map((z) => (exactName(z.name) ? exactName(`${name} ${s(z.name)}`) : ''));
           for (let i = 0; i < sizes.length; i++) {
             const z = sizes[i];
             const key = sizeRowKey(name, z.name);
             if (!key) continue;
-            const clash = full.filter((f) => f === full[i]).length > 1;
+            const clash = !full[i] || full[i] === item || full.filter((f) => f === full[i]).length > 1;
             put({ kind: 'item', ezKey: key, ezName: name, ezGroup: null, ezSizeName: s(z.name) || 'unnamed',
-              ezCategory: category, ids: s(z.id) ? [s(z.id)] : [], noAuto: clash });
+              ezCategory: category, ids: s(z.id) ? [s(z.id)] : [], exactName: full[i], noAuto: clash });
           }
         }
         for (const z of sizes) {
@@ -213,7 +292,7 @@ export function flattenMenus(menus: any): MenuEntry[] {
               const key = buildLinkKey({ name: vName, groupLabel: group }, 'option');
               if (!key) continue;
               put({ kind: 'option', ezKey: key, ezName: vName, ezGroup: group || null, ezSizeName: null,
-                ezCategory: category, ids: s(v?.id) ? [s(v.id)] : [], noAuto: false });
+                ezCategory: category, ids: s(v?.id) ? [s(v.id)] : [], exactName: exactName(vName), noAuto: false });
             }
           }
         }
@@ -225,41 +304,49 @@ export function flattenMenus(menus: any): MenuEntry[] {
 
 // ── Exact name auto links ────────────────────────────────────────────────────────────────────
 
-const NO_CODES = new Map();
+/** The names one of ours can be known by: name, menuName, label. */
+const ourNamesOf = (x: any): string[] => ['name', 'menuName', 'label']
+  .map((k) => x?.[k]).filter((n) => typeof n === 'string' && n.trim()) as string[];
+
+/** The full exact name of one entry: the one flattenMenus worked out, or built from its parts. */
+export function entryExactName(entry: MenuEntry): string {
+  if (typeof entry.exactName === 'string') return entry.exactName;
+  if (entry.kind === 'option') return exactName(entry.ezName);
+  return entry.ezSizeName ? exactName(`${entry.ezName} ${entry.ezSizeName}`) : exactName(entry.ezName);
+}
 
 /**
- * Our target for one synced row, or null. EXACT NAMES ONLY, never across a size clash.
- *   plain item  autoLinkDecision with no saved links and no codes: one exact name of ours and no
- *               size clash, which is the same rule an order line has always used
- *   size row    exactly one of our items whose KEY name (size word kept) equals '<item> <size>',
- *               and only when the size really is in that key (a size lost to the noise rule, or
- *               shared with a sibling, links nothing)
- *   option      autoLinkDecision's option arm, one exact option name, no size clash
+ * Our target for one synced row, or null. EXACT MEANS EXACT.
+ *   item (plain or size)  exactly ONE of our items whose name (or menu name) has the SAME exact
+ *                         name as the row's full name: item name plus its size, see
+ *                         singleSizeExactName. Any size or container word on one side only
+ *                         ("Large", "Small", "Tray", "Box") means different names, so no link.
+ *   option                exactly ONE of our options, in any group, with the same exact name
+ *   anything marked noAuto, or with no exact name, links nothing
+ * The order time name rules (autoLinkDecision) are NOT used here: they compare names with the
+ * size words dropped, which is right for suggestions and wrong for a link nobody checks.
  */
 export function autoTargetFor(entry: MenuEntry, ourItems: any[], ourGroups: any[]):
   { menuItemId: string | null; optionId: string | null } | null {
+  if (!entry || entry.noAuto) return null;
+  const want = entryExactName(entry);
+  if (!want) return null;
   if (entry.kind === 'option') {
-    if (!arr(ourGroups).length) return null;
-    const d: any = autoLinkDecision({ name: entry.ezName, groupLabel: entry.ezGroup || '' }, ourGroups, [],
-      { kind: 'option', itemCodes: NO_CODES });
-    if (d.action !== 'linked' || d.source !== 'auto' || !d.optionId) return null;
-    return { menuItemId: d.itemId != null ? String(d.itemId) : null, optionId: String(d.optionId) };
+    const hits = new Map<string, any>();
+    for (const g of arr(ourGroups)) {
+      for (const o of arr(g?.options)) {
+        if (!o || o.id == null) continue;
+        if (ourNamesOf(o).some((n) => exactName(n) === want)) hits.set(String(o.id), o);
+      }
+    }
+    if (hits.size !== 1) return null;
+    const [id, o] = Array.from(hits.entries())[0];
+    return { menuItemId: o.itemId != null && s(o.itemId) ? String(o.itemId) : null, optionId: id };
   }
-  if (!arr(ourItems).length) return null;
-  if (!entry.ezSizeName) {
-    const d: any = autoLinkDecision({ name: entry.ezName }, ourItems, [], { kind: 'item', itemCodes: NO_CODES });
-    if (d.action !== 'linked' || d.source !== 'auto' || d.itemId == null) return null;
-    return { menuItemId: String(d.itemId), optionId: null };
-  }
-  if (entry.noAuto) return null;
-  const want = normaliseKeyName(`${entry.ezName} ${entry.ezSizeName}`);
-  if (!want || want === normaliseKeyName(entry.ezName)) return null;
   const hits = new Set<string>();
   for (const it of arr(ourItems)) {
     if (!it || it.id == null) continue;
-    for (const n of [it.name, it.menuName]) {
-      if (typeof n === 'string' && n.trim() && normaliseKeyName(n) === want) { hits.add(String(it.id)); break; }
-    }
+    if (ourNamesOf(it).some((n) => exactName(n) === want)) hits.add(String(it.id));
   }
   return hits.size === 1 ? { menuItemId: Array.from(hits)[0], optionId: null } : null;
 }
@@ -282,12 +369,21 @@ export interface SyncPlan {
   counts: { items: number; sizes: number; options: number; inserted: number; refreshed: number; autoLinked: number; toDecide: number };
 }
 
+/** Published ids kept per row, newest first. Only reached after this many republishes. */
+export const MAX_IDS_PER_ROW = 200;
+
 /**
  * What a sync writes. PURE.
- * `complete` false (a caterer or a menu could not be read) keeps every id already on a row and
- * adds the new ones, so a partial read can never take a live id away. `menuOk` false (our own
- * menu was only partly read) writes no auto link at all: "nothing else of ours has that name"
- * is not a claim a partial menu can make.
+ * IDS ARE ONLY EVER ADDED: every sync keeps the ids already on a row and puts the newly published
+ * ones first, complete read or not. An order placed before the caterer republished carries the
+ * OLD size id, and when ezCater later sends a change to that order it still carries that id; it
+ * must still find its row. Published ids are UUIDs, so an old id cannot come back meaning
+ * something else, and if one ever did sit on two rows, sizeRouteFor already answers unmatched
+ * ("size rows disagree", "id on a plain row and a size row").
+ * `complete` false (a caterer or a menu could not be read, or came back empty) is reported, and
+ * a partial read can never take anything away because nothing is ever taken away.
+ * `menuOk` false (our own menu was only partly read) writes no auto link at all: "nothing else of
+ * ours has that name" is not a claim a partial menu can make.
  */
 export function planMenuSync(input: {
   entries: MenuEntry[]; existing: any[]; ourItems: any[]; ourGroups: any[];
@@ -317,7 +413,7 @@ export function planMenuSync(input: {
       if (target) plan.counts.autoLinked++; else plan.counts.toDecide++;
       continue;
     }
-    const ids = input.complete ? e.ids : Array.from(new Set([...idsOf(prev.ez_ids), ...e.ids]));
+    const ids = Array.from(new Set([...e.ids, ...idsOf(prev.ez_ids)])).slice(0, MAX_IDS_PER_ROW);
     plan.refreshes.push({
       location_id: input.locationId, kind: e.kind, ez_key: e.ezKey,
       ez_name: s(prev.ez_name) || e.ezName,
@@ -363,6 +459,8 @@ export type SizeRoute =
  *   unmatched  nothing decides; the line prints by name
  */
 export function sizeRouteFor(line: any, idIdx: Map<string, any[]>): SizeRoute {
+  // The SIZE id only (the order's menuItemSizeId IS the menu's sizes.id, proven on HKX77V, see
+  // the top of this file). Never line.ezItemId: an order's item id is not the menu's item id.
   const id = s(line?.ezSizeId);
   const rows = id ? idIdx.get(id) || [] : [];
   if (rows.length) {
@@ -393,9 +491,24 @@ export const LINK_COLUMNS_WITH_SYNC = LINK_COLUMNS + ', ez_ids, ez_size_name';
 export function isMissingSyncColumn(err: any): boolean {
   if (!err) return false;
   const code = String(err.code || '');
-  const msg = String(err.message || err.details || '');
+  const msg = String(err.message || '') + ' ' + String(err.details || '');
   if (!/ez_ids|ez_size_name|ez_category|synced_at/i.test(msg)) return false;
-  return code === '42703' || code === 'PGRST204' || /column/i.test(msg);
+  // Proven only by Postgres' undefined column code, PostgREST's schema cache code, or its words.
+  return code === '42703' || code === 'PGRST204'
+    || /column\b.*\b(does not exist|could not find)|could not find the .*column/i.test(msg);
+}
+
+/**
+ * True when a read failed because ezcater_item_links itself is not there (20260917 not run):
+ * Postgres 42P01 or PostgREST PGRST205, naming that table. No table means no sync ever ran.
+ */
+export function isMissingLinksTable(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const msg = String(err.message || '') + ' ' + String(err.details || '');
+  if (!/ezcater_item_links/i.test(msg)) return false;
+  return code === '42P01' || code === 'PGRST205'
+    || /relation .*does not exist|could not find the table/i.test(msg);
 }
 
 /**
@@ -455,7 +568,7 @@ export async function writeSyncPlan(sb: any, locationId: string, plan: SyncPlan,
 }
 
 /**
- * The one sync per venue lock. ezcater_menu_sync_claim (migration 20260918e) is a single
+ * The one sync per venue lock. ezcater_menu_sync_claim (migration 20260919m) is a single
  * conditional upsert: it returns a claim id, or null when another sync of this venue is running
  * and started less than `staleSeconds` ago. Returns { claim: null, error } when the function is
  * not there (the migration has not been run).

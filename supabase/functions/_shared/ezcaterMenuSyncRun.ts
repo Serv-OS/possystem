@@ -12,7 +12,7 @@ import {
   type EzAsk,
 } from './ezcaterMenuSync.ts';
 
-export const MIGRATION_FILE = '20260918e_OPS_ezcater_menu_sync_v1.sql';
+export const MIGRATION_FILE = '20260919m_OPS_ezcater_menu_sync_v1.sql';
 
 export interface SyncResult {
   ok: boolean;
@@ -86,6 +86,9 @@ export async function runMenuSync(
         menus.push(...got.menus);
         optionsRead = optionsRead && got.optionsRead;
         read++;
+        // A menu ezCater listed as current but then sent back empty is a PARTIAL read, exactly
+        // like one that failed: complete goes false below.
+        if (got.missing) problems.push(`ezCater sent back no menu for ${got.missing} current menu${got.missing === 1 ? '' : 's'}`);
       } catch (e) {
         console.warn('[ezcater-menu-sync] menu read failed for', s(cat.caterer_uuid), ':', errText(e));
         problems.push('ezCater did not answer for one caterer: ' + errText(e));
@@ -140,27 +143,51 @@ export function dueLocations(locationIds: string[], syncRows: any[], nowMs: numb
 }
 
 /**
+ * The daily pass's time budget. pg_cron reaches ezcater-connect through public.call_edge_fn,
+ * whose pg_net request times out at 25 s (20260805b_edge_cron_bridge.sql); menu-translate keeps
+ * its cron runs to 18 s for the same reason. No new venue is started once 18 s have gone, nor
+ * when the slowest venue so far would not fit in what is left. Venues not reached stay due and
+ * run on the next hour.
+ */
+export const CRON_BUDGET_MS = 18_000;
+
+/**
  * The daily pass, called hourly by pg_cron: every venue with a mapped caterer that is due gets a
  * sync, one at a time, until the time budget is spent (the rest are due on the next hour).
+ * `budgetMs` can only make the budget SMALLER than CRON_BUDGET_MS. `clock` and `runOne` are for
+ * the tests.
  */
 export async function runDueSyncs(
-  sb: any, makeAsk: (conn: any) => EzAsk, opts: { budgetMs?: number; nowMs?: number; isSchemaError?: (e: unknown) => boolean } = {},
-): Promise<{ ran: Array<{ location_id: string; status: string }>; due: number }> {
-  const started = Date.now();
-  const budget = Number.isFinite(opts.budgetMs as number) ? (opts.budgetMs as number) : 90_000;
+  sb: any, makeAsk: (conn: any) => EzAsk,
+  opts: {
+    budgetMs?: number; nowMs?: number; isSchemaError?: (e: unknown) => boolean;
+    clock?: () => number;
+    runOne?: (sb: any, locationId: string, o: any) => Promise<SyncResult>;
+  } = {},
+): Promise<{ ran: Array<{ location_id: string; status: string }>; due: number; left: number; stoppedForTime: boolean }> {
+  const clock = typeof opts.clock === 'function' ? opts.clock : () => Date.now();
+  const runOne = typeof opts.runOne === 'function' ? opts.runOne : runMenuSync;
+  const started = clock();
+  const budget = Number.isFinite(opts.budgetMs as number)
+    ? Math.max(0, Math.min(opts.budgetMs as number, CRON_BUDGET_MS)) : CRON_BUDGET_MS;
   const nowMs = Number.isFinite(opts.nowMs as number) ? (opts.nowMs as number) : Date.now();
   const { data: cats } = await sb.from('ezcater_caterers').select('location_id, active').not('location_id', 'is', null);
   const locs = (Array.isArray(cats) ? cats : []).filter((c: any) => c && c.active !== false).map((c: any) => s(c.location_id));
-  if (!locs.length) return { ran: [], due: 0 };
+  if (!locs.length) return { ran: [], due: 0, left: 0, stoppedForTime: false };
   const { data: rows, error } = await sb.from('ezcater_menu_syncs')
     .select('location_id, last_ok_at, started_at').in('location_id', Array.from(new Set(locs)));
-  if (error) return { ran: [], due: 0 };
+  if (error) return { ran: [], due: 0, left: 0, stoppedForTime: false };
   const due = dueLocations(locs, rows || [], nowMs);
   const ran: Array<{ location_id: string; status: string }> = [];
+  let slowest = 0;
+  let stoppedForTime = false;
   for (const loc of due) {
-    if (Date.now() - started > budget) break;
-    const r = await runMenuSync(sb, loc, { reason: 'daily', makeAsk, isSchemaError: opts.isSchemaError });
+    const spent = clock() - started;
+    if (spent >= budget || (ran.length > 0 && spent + slowest > budget)) { stoppedForTime = true; break; }
+    const t0 = clock();
+    const r = await runOne(sb, loc, { reason: 'daily', makeAsk, isSchemaError: opts.isSchemaError });
+    slowest = Math.max(slowest, clock() - t0);
     ran.push({ location_id: loc, status: r.status });
   }
-  return { ran, due: due.length };
+  return { ran, due: due.length, left: due.length - ran.length, stoppedForTime };
 }
