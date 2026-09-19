@@ -10,6 +10,7 @@
 
 import { getAccessToken, createDelivery, parseDeliveryResp, mapUberStatus } from './uber.ts';
 import { createOrder as createHubriseOrder } from './hubrise.ts';
+import { mayBookOurCourier } from './ezcaterCatering.js';
 import { getStuartToken, buildStuartJob, createStuartJob, parseStuartJob, mapStuartStatus, classifyStuartError } from './stuart.ts';
 
 const ENV = (Deno.env.get('UBER_DIRECT_ENV') ?? 'sandbox') as 'sandbox' | 'prod';
@@ -78,6 +79,10 @@ export function buildManifestServer(order: any, quote: any, cfg: any) {
  */
 export async function dispatchCourier(sb: any, { loc, cfg, order, quote }: { loc: string; cfg: any; order: any; quote: any }) {
   const orderRef = order?.ref || null;
+
+  // NEVER book our courier for an ezCater order (customer.channel 'ezcater'): the caterer
+  // delivers it with its own driver, or ezCater sends one. Refused before anything is reserved.
+  if (!mayBookOurCourier(order)) return { ok: false, reason: 'ezcater_delivers' };
 
   // 1) Reserve the order_ref (atomic via the unique index). A conflict means someone already
   //    claimed/dispatched it → skip (return the existing row).

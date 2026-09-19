@@ -28,6 +28,7 @@ import { buildChannelCloseFields } from '../lib/channelMoney';
 import CourierTrackingQR from '../components/CourierTrackingQR';
 import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
+import { isPrepaidByChannel, ezcaterBadge, ezcaterFlagText, isAwaitingEzcaterAcceptance, cateringChannelLabel, AWAITING_LABEL } from '../lib/ezcaterCatering';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -82,7 +83,9 @@ function dayKeyOf(source, tz) {
 // catering pay-later, an unpaid walk-in/phone order, an unpaid (test/cash) HubRise order — still
 // owes money, so it must be CHARGED before it can be marked collected (never silently cleared).
 const PREPAID_CHANNELS = ['online', 'kiosk'];
-const isOrderPaid = (o) => !!(o?.paid || o?.customer?.paid || PREPAID_CHANNELS.includes(o?.source));
+// An ezCater order (a catering order with customer.channel 'ezcater') was paid through ezCater:
+// it never reads as unpaid, so it is never routed to the till pay flow.
+const isOrderPaid = (o) => !!(o?.paid || o?.customer?.paid || PREPAID_CHANNELS.includes(o?.source) || isPrepaidByChannel(o));
 
 function elapsed(date) {
   if (!date) return '';
@@ -863,7 +866,7 @@ export default function OrdersHub() {
     // reach the queue, so even if the paid flag is missing (older rows / column absent on a venue)
     // they must never re-open into the editable pay flow. Catering (can be pay-later), QR (open
     // tabs) and HubRise (test/manual orders) stay flag-driven so genuinely unpaid ones remain payable.
-    else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source)) { setViewOrder(o); }
+    else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source) || isPrepaidByChannel(o)) { setViewOrder(o); }
     else {
       // v5.5.853: an unpaid / PART-PAID channel order must charge exactly what is still
       // OWED — never a cart recomputation. The generic walk-in load fed channel items
@@ -1110,9 +1113,11 @@ export default function OrdersHub() {
                 and reprints can still quote the identity the DB stores. Every called-out number
                 (card titles, the header above, toasts) is the short form. */}
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:12 }}>
-              {viewOrder.ref} · {viewOrder.source === 'catering' ? 'Catering' : viewOrder.channel}
+              {viewOrder.ref} · {ezcaterBadge(viewOrder) || cateringChannelLabel(viewOrder) || viewOrder.channel}
               {viewOrder.customer?.event_date ? ` · ${viewOrder.customer.event_date}${(viewOrder.customer?.event_time || viewOrder.collectionTime) ? ` at ${viewOrder.customer.event_time || viewOrder.collectionTime}` : ''}` : ''}
             </div>
+            {ezcaterFlagText(viewOrder) && <div style={{ fontSize:12.5, fontWeight:800, color:'#ef4444', marginBottom:10 }}>⚠ {ezcaterFlagText(viewOrder)}</div>}
+            {isAwaitingEzcaterAcceptance(viewOrder) && <div style={{ fontSize:12.5, fontWeight:700, color:'#f59e0b', marginBottom:10 }}>{AWAITING_LABEL}: it will not go to the kitchen until ezCater accepts it.</div>}
             {viewOrder.customer && (viewOrder.customer.name || viewOrder.customer.phone || viewOrder.customer.address) && (
               <div style={{ fontSize:12.5, color:'var(--t2)', marginBottom:12, lineHeight:1.5 }}>
                 {viewOrder.customer.name && <div>{viewOrder.customer.name}</div>}
@@ -1455,10 +1460,14 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'kiosk' && order.customer?.kioskTable && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>Table {order.customer.kioskTable}</span>}
             {order.source === 'kiosk' && order.customer?.idCheck && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444466', color:'#ef4444', letterSpacing:'.03em' }}>CHECK ID</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
+            {/* An ezCater order is a catering order: the channel and ezCater's own number, plus the hold */}
+            {ezcaterBadge(order) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f9731618', border:'1px solid #f9731655', color:'#f97316', letterSpacing:'.03em' }}>{ezcaterBadge(order).toUpperCase()}</span>}
+            {isAwaitingEzcaterAcceptance(order) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b55', color:'#f59e0b' }}>{AWAITING_LABEL.toUpperCase()}</span>}
             {(order.paid || order.customer?.paid) && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}
             {/* v5.5.850: a HubRise partial payment no longer reads as PAID — amber badge with the balance due */}
             {!(order.paid || order.customer?.paid) && Number(order.customer?.paidAmount) > 0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>PART-PAID · {money(Number(order.customer?.due) || 0)} due</span>}
           </div>
+          {ezcaterFlagText(order) && <div style={{ marginTop:4, fontSize:11, fontWeight:800, color:'#ef4444' }}>⚠ {ezcaterFlagText(order)}</div>}
           <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
             {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}>👤 {order.server}</span>}
             {order.covers  && <span style={{ fontSize:10, color:'var(--t3)' }}>🧑 {order.covers}</span>}

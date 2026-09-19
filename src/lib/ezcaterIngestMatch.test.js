@@ -976,10 +976,12 @@ const read = (p) => fs.readFileSync(new URL('../../' + p, import.meta.url), 'utf
 const WEBHOOK = read('supabase/functions/ezcater-webhook/index.ts');
 const INGEST = read('supabase/functions/_shared/ezcater-match-ingest.ts');
 
-test('the webhook calls the matcher, inside a try, before the order_queue upsert', () => {
+// 18 Sep 2026: the order is written as a catering order through ezcaterWritePlan (insert or a
+// conditional update) instead of one upsert. The guards below are the same guards on that path.
+test('the webhook calls the matcher, inside a try, before the order_queue write', () => {
   assert.ok(WEBHOOK.includes("from '../_shared/ezcater-match-ingest.ts'"));
   const call = WEBHOOK.indexOf('await matchQueueRow(');
-  const upsert = WEBHOOK.indexOf(".from('order_queue')\n      .upsert(");
+  const upsert = WEBHOOK.indexOf("sb.from('order_queue').insert(");
   assert.ok(call > 0, 'the matcher is never called');
   assert.ok(upsert > call, 'matching must happen before the row is written');
 
@@ -993,9 +995,9 @@ test('the webhook calls the matcher, inside a try, before the order_queue upsert
   assert.ok(/queueRow = row;/.test(after.slice(catchAt, catchAt + 400)), 'the catch must fall back to the unmatched row');
 });
 
-test('the upsert writes the matched row, and the status logic is untouched', () => {
-  assert.ok(WEBHOOK.includes('queuePayload({ ...queueRow, status }'), 'the matched row is what reaches order_queue');
-  assert.ok(WEBHOOK.includes("? (terminal ? 'cancelled' : existing.status)"), 'a cancellation still always wins');
+test('the write carries the matched row, and a cancellation still always wins', () => {
+  assert.ok(WEBHOOK.includes('ezcaterCateringRow(queueRow, {'), 'the matched row is what reaches order_queue');
+  assert.ok(WEBHOOK.includes('ezcaterWritePlan({ next, existing,'), 'status is decided by the tested write plan (cancel wins, staff progress kept)');
   assert.ok(WEBHOOK.includes('let queueRow = row;'), 'the fallback value is the mapper row itself');
 });
 

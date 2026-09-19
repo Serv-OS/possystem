@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
+import { advanceStatusLabel, ezcaterBadge, ezcaterFlagText, isPrepaidByChannel } from '../../lib/ezcaterCatering';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -23,7 +24,9 @@ const S = {
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
 const todayISO = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fmtDay = (iso) => { try { return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); } catch { return iso; } };
-const statusLabel = (o) => o.status === 'cancelled' ? 'Cancelled' : o.status === 'prep' || o.kitchen_routed_at ? 'In kitchen' : o.status === 'done' ? 'Completed' : 'Scheduled';
+// Our own orders read exactly as before; an ezCater order can also read 'Awaiting ezCater
+// acceptance' or 'Changed / Cancelled after kitchen' (lib/ezcaterCatering advanceStatusLabel).
+const statusLabel = advanceStatusLabel;
 
 const RANGES = [['upcoming', 'Upcoming'], ['today', 'Today'], ['week', 'Next 7 days'], ['past', 'Past'], ['all', 'All']];
 
@@ -46,7 +49,8 @@ export default function CateringOrders() {
     let tz = 'Europe/London';
     try { tz = (await getLocationConfig(id))?.timezone || tz; } catch { /* default */ }
     const rows = (data || []).map((o) => {
-      if (o.event_date) return o;
+      // An ezCater order (a catering order, customer.channel 'ezcater') is paid through ezCater.
+      if (o.event_date) return isPrepaidByChannel(o) ? { ...o, paid: true } : o;
       const inst = o.customer?.collection_at ? new Date(o.customer.collection_at) : (o.sent_at ? new Date(o.sent_at) : null);
       const event_date = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleDateString('en-CA', { timeZone: tz }) : null;
       const event_time = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }) : (o.collection_time || null);
@@ -113,7 +117,7 @@ export default function CateringOrders() {
             return (
               <div key={o.ref} style={S.card}>
                 <div style={S.row} onClick={() => setOpen(isOpen ? null : o.ref)}>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)' }}>{o.collection_time || '—'}<div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>{o.ref}</div></div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)' }}>{o.collection_time || '—'}<div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>{ezcaterBadge(o) || o.ref}</div></div>
                   <div style={{ minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name || 'Customer'}</div><div style={{ fontSize: 12, color: 'var(--t3)' }}>{c.fulfilment === 'delivery' ? 'Delivery' : 'Collection'} · {itemsCount(o)} items{c.phone ? ` · ${c.phone}` : ''}</div></div>
                   <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 13.5, color: 'var(--t1)' }}>{money(o.total, cur)}</div>
                   <div style={{ textAlign: 'center' }}><span style={{ ...S.pill, color: o.paid ? 'var(--grn)' : 'var(--amber, #d98a00)', borderColor: o.paid ? 'var(--grn)' : 'var(--amber, #d98a00)' }}>{o.paid ? 'Paid' : 'Pay later'}</span></div>
@@ -127,6 +131,8 @@ export default function CateringOrders() {
                       {c.promo_code && <div><b>Promo:</b> {c.promo_code}{c.promo_discount ? ` (−${money(c.promo_discount, cur)})` : ''}</div>}
                       {c.tax_id && <div><b>Tax/VAT id:</b> {c.tax_id}</div>}
                       {c.notes && <div style={{ gridColumn: '1 / -1' }}><b>Notes:</b> {c.notes}</div>}
+                      {ezcaterBadge(o) && <div style={{ gridColumn: '1 / -1' }}><b>Channel:</b> {ezcaterBadge(o)} · paid through ezCater · our ref {o.ref}</div>}
+                      {ezcaterFlagText(o) && <div style={{ gridColumn: '1 / -1', color: 'var(--red, #ef4444)', fontWeight: 800 }}>⚠ {ezcaterFlagText(o)}</div>}
                     </div>
                     <div style={{ fontSize: 12.5 }}>
                       {(o.items || []).map((i, idx) => (

@@ -35,6 +35,13 @@
 // the window before Peter runs the 20260917 migration, the mapper's own row goes
 // through unchanged and the ticket is plain text, exactly as it was before.
 //
+// FILED AS A CATERING ORDER (18 Sep 2026, Peter chose "the simpler version"). The order_queue
+// row is written in EXACTLY the shape CateringCheckout.jsx writes for one of our own catering
+// orders (source 'catering', status 'received', venue clock event_date and collection_time,
+// sent_at = the catering fire time from the venue's catering prep time, paid true), marked as
+// ezCater only by customer.channel = 'ezcater'. Every catering path then handles it unchanged.
+// The rules and the write plan are pure and tested: _shared/ezcaterCatering.js.
+//
 // Lifecycle quirks handled here:
 //   * a MODIFICATION arrives as a SECOND accepted notification for the same
 //     order id, because there is no modified event. accepted_count on
@@ -47,8 +54,14 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
-import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
+import { orderToQueueRow, ezLifecycle } from '../_shared/ezcater-map.ts';
 import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
+import {
+  ezcaterCateringRow, ezcaterWritePlan, ezcaterPrep, ezcaterBadge,
+  ezcaterPriorLink, ezcaterQueueWrittenBefore, ezcaterEventError, EZ_QUEUE_WRITTEN_MARKER,
+  NOT_RELEASABLE_STATUSES_PG,
+} from '../_shared/ezcaterCatering.js';
+import { DEFAULT_VENUE_TZ } from '../_shared/cateringRules.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -154,6 +167,10 @@ Deno.serve(async (req) => {
     return ok();
   }
 
+  // Set from the event row below: an earlier attempt at THIS notification wrote the queue row but
+  // not the link. Kept on every error this attempt records, and read by the write plan.
+  let queueWrittenBefore = false;
+
   try {
     // 2) DEDUPE AND DURABILITY, BEFORE ANY NETWORK CALL. The raw notification
     // lands here whole. If the order fetch below dies, this row is the replay.
@@ -172,16 +189,23 @@ Deno.serve(async (req) => {
       return retry('event write failed');
     }
 
-    const { data: prior } = await sb.from('ezcater_events')
-      .select('status, attempts').eq('notification_id', notificationId).maybeSingle();
+    // A FAILED READ IS NOT "NO PRIOR EVENT". Read as none, a retry after a failed link write would
+    // lose EZ_QUEUE_WRITTEN_MARKER and could file a finished order again, so it is retried instead.
+    const { data: prior, error: priorErr } = await sb.from('ezcater_events')
+      .select('status, attempts, error').eq('notification_id', notificationId).maybeSingle();
+    if (priorErr) {
+      console.error('[ezcater-webhook] could not read the notification back:', priorErr.message);
+      return retry('event read failed');
+    }
     if (!inserted?.length && prior?.status === 'processed') return ok();   // genuine duplicate
+    queueWrittenBefore = ezcaterQueueWrittenBefore(prior);
     await sb.from('ezcater_events')
       .update({ attempts: (Number(prior?.attempts) || 0) + 1 })
       .eq('notification_id', notificationId);
 
     const failEvent = async (msg: string, status: 'error' | 'skipped') => {
       await sb.from('ezcater_events')
-        .update({ status, error: msg.slice(0, 2000) })
+        .update({ status, error: ezcaterEventError(msg, queueWrittenBefore) })
         .eq('notification_id', notificationId);
     };
 
@@ -264,8 +288,17 @@ Deno.serve(async (req) => {
     // 5) Monotonic guard plus the modification count. A modification is a
     // SECOND accepted for an order we have already seen accepted, because
     // ezCater has no modified event.
-    const { data: priorLink } = await sb.from('ezcater_order_links')
-      .select('accepted_count, event_at, ez_lifecycle').eq('ez_order_id', order.uuid).maybeSingle();
+    // A FAILED READ IS NOT "NO LINK". Read as no link, a finished order would be filed again
+    // (linkKnown false) and the modification count would restart, so the notification is retried
+    // instead. No maybeSingle: should more than one row ever come back, ANY row means known
+    // (ezcaterPriorLink), where maybeSingle would have errored.
+    const { data: linkRows, error: linkReadErr } = await sb.from('ezcater_order_links')
+      .select('accepted_count, event_at, ez_lifecycle').eq('ez_order_id', order.uuid).limit(10);
+    if (linkReadErr) {
+      await failEvent(`link read failed: ${linkReadErr.message}`, 'error');
+      return retry('link read failed');
+    }
+    const priorLink: any = ezcaterPriorLink(linkRows);
 
     if (priorLink?.event_at && eventAt && new Date(eventAt) < new Date(priorLink.event_at)) {
       await sb.from('ezcater_events')
@@ -280,7 +313,6 @@ Deno.serve(async (req) => {
     });
 
     const lifecycle = ezLifecycle(order);
-    const terminal = EZ_TERMINAL.has(lifecycle);
     if (link.accepted_count > 1) {
       console.warn('[ezcater-webhook] MODIFICATION on', row.ref,
         `- accepted seen ${link.accepted_count} times. Accepting this needs acceptModification: true.`);
@@ -313,28 +345,130 @@ Deno.serve(async (req) => {
       queueRow = row;
     }
 
-    // 7) Upsert. onConflict is (location_id, ref): order_queue's primary key has
-    // spanned both since 20260806k and a bare 'ref' throws 42P10, which is how
-    // inbound channel orders got dropped on the floor once already.
-    const { data: existing } = await sb.from('order_queue')
-      .select('ref, status').eq('location_id', locationId).eq('ref', row.ref).maybeSingle();
+    // 7) THE CATERING SETTINGS our own catering orders are timed by: the venue's timezone and
+    // its catering prep time. Read whether or not the catering website is switched on, because
+    // the prep time is the kitchen's. A failed read never fails the order: the default zone and
+    // the flagged fallback prep time are used, and the order says so (customer.prep_fallback).
+    let venueTz = DEFAULT_VENUE_TZ;
+    let prepSettings: any = null;
+    try {
+      const [{ data: locRow }, { data: catSet }] = await Promise.all([
+        sb.from('locations').select('timezone').eq('id', locationId).maybeSingle(),
+        sb.from('catering_site_settings').select('prep_time_minutes').eq('location_id', locationId).maybeSingle(),
+      ]);
+      if (locRow?.timezone) venueTz = String(locRow.timezone);
+      prepSettings = catSet || null;
+    } catch (e) {
+      console.warn('[ezcater-webhook] catering settings read failed, using defaults:', e instanceof Error ? e.message : String(e));
+    }
+    const { prepMinutes, prepFallback } = ezcaterPrep(prepSettings);
 
-    // An order already in preparation keeps its progress. A cancellation always wins.
-    const status = existing
-      ? (terminal ? 'cancelled' : existing.status)
-      : row.status;
+    // 8) Write it as a catering order. The plan is pure (ezcaterWritePlan): insert on first
+    // sight, replace in place before the kitchen has it, leave it alone and flag staff after.
+    // "Before" writes only land while kitchen_routed_at is still null, so a release that claims
+    // the row between our read and our write wins, and we read again and flag instead.
+    // Refs are per venue (the primary key is location_id + ref), so every read and write is
+    // scoped by both.
+    const selectCols = 'ref, source, status, kitchen_routed_at, customer, items, total, type, event_date, collection_time';
+    const readExisting = async () => {
+      const { data, error } = await sb.from('order_queue')
+        .select(selectCols).eq('location_id', locationId).eq('ref', row.ref).maybeSingle();
+      if (error) throw new Error(`order_queue read failed: ${error.message}`);
+      return data || null;
+    };
 
-    const { error: qErr } = await sb.from('order_queue')
-      .upsert(queuePayload({ ...queueRow, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
-    if (qErr) {
-      await failEvent(`order_queue upsert failed: ${qErr.message}`, 'error');
-      return retry('queue write failed');
+    let written = false;
+    let flagged: any = null;
+    let rowOnFile = false;   // a queue row exists for this order now (written here or found)
+    for (let attempt = 0; attempt < 3 && !written; attempt++) {
+      const existing = await readExisting();
+      const next = ezcaterCateringRow(queueRow, {
+        venueTz, prepMinutes, prepFallback, nowMs: Date.now(), lifecycle,
+        priorAccepted: Number(priorLink?.accepted_count) || 0,
+        prevLifecycle: existing?.customer?.ezcater_lifecycle ?? priorLink?.ez_lifecycle ?? null,
+      });
+      // linkKnown: priorLink was read in step 5, BEFORE this run writes its own link below, so
+      // the first notification of a new order is never blocked by it. A known order with no
+      // queue row was finished by staff and is not brought back (ezcaterWritePlan). A retry of a
+      // notification whose queue write landed but whose link write failed counts as known too
+      // (queueWrittenBefore), so a row staff removed in between is never inserted a second time.
+      // queueWrittenBefore and linkLifecycle also let a retried cancel after firing ring the bell
+      // the failed first attempt never rang (see ezcaterWritePlan).
+      const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString(), linkKnown: !!priorLink || queueWrittenBefore,
+        queueWrittenBefore, linkLifecycle: priorLink?.ez_lifecycle ?? null,
+      });
+      if (existing || plan.kind !== 'skip') rowOnFile = true;
+
+      if (plan.kind === 'skip') {
+        console.log('[ezcater-webhook]', row.ref, 'queue row not written:', plan.reason);
+        written = true;
+        // A retried cancel after firing: the row is already cancelled, but the bell is still owed.
+        if (plan.flag) flagged = plan.flag;
+      } else if (plan.kind === 'insert') {
+        const { error } = await sb.from('order_queue').insert(plan.row);
+        if (!error) { written = true; continue; }
+        // A duplicate notification racing this one inserted first: read it and plan again.
+        if (!/23505|duplicate key/i.test(`${error.code || ''} ${error.message || ''}`)) {
+          await failEvent(`order_queue insert failed: ${error.message}`, 'error');
+          return retry('queue write failed');
+        }
+      } else if (plan.kind === 'unfired') {
+        const { data: upd, error } = await sb.from('order_queue').update(plan.patch)
+          .eq('location_id', locationId).eq('ref', row.ref)
+          .is('kitchen_routed_at', null).not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+          .select('ref');
+        if (error) {
+          await failEvent(`order_queue update failed: ${error.message}`, 'error');
+          return retry('queue write failed');
+        }
+        if (upd?.length) written = true;   // else it fired, was cancelled or was collected meanwhile: plan again
+      } else if (plan.kind === 'fired') {
+        const { error } = await sb.from('order_queue').update(plan.patch)
+          .eq('location_id', locationId).eq('ref', row.ref);
+        if (error) {
+          await failEvent(`order_queue update failed: ${error.message}`, 'error');
+          return retry('queue write failed');
+        }
+        written = true;
+        flagged = plan.flag;
+      }
+    }
+    if (!written) {
+      await failEvent('order_queue write lost three races in a row, will retry', 'error');
+      return retry('queue write contended');
     }
 
+    // THE LINK IS WRITTEN BEFORE THE EVENT COUNTS AS PROCESSED. It is what tells a later
+    // notification that this order is known (never filed twice) and carries the modification
+    // count. A failed write marks the event error and asks ezCater to retry. Written before the
+    // staff alert below, so a retry raises that alert once, not twice. When a queue row is on
+    // file, the event error carries EZ_QUEUE_WRITTEN_MARKER: the retry then treats the order as
+    // known even with no link, and the queue insert (only on no row, primary key location_id +
+    // ref, 23505 re-plans) plus the notification_id dedupe still hold.
     const nowIso = new Date().toISOString();
     const { error: lErr } = await sb.from('ezcater_order_links')
       .upsert({ ...link, updated_at: nowIso }, { onConflict: 'location_id,ref' });
-    if (lErr) console.warn('[ezcater-webhook] link upsert failed:', lErr.message);
+    if (lErr) {
+      console.error('[ezcater-webhook] link upsert failed, will retry:', row.ref, lErr.message);
+      const msg = `link write failed: ${lErr.message}`;
+      await failEvent(rowOnFile ? `${EZ_QUEUE_WRITTEN_MARKER}; ${msg}` : msg, 'error');
+      return retry('link write failed');
+    }
+
+    // Staff see a change or a cancel that came in after the kitchen already had it (the bell in
+    // the till's shift bar). A NEW order gets no entry from here: the order_queue_activity
+    // trigger already logs every insert ("Catering order"), and a second entry was a duplicate.
+    // Best effort: the order itself is already written.
+    if (flagged) {
+      const badge = ezcaterBadge({ customer: { channel: 'ezcater', ezcater_order_number: link.order_number } }) || 'ezCater';
+      try {
+        await sb.from('activity_events').insert({
+          location_id: locationId, kind: 'order', severity: 'urgent',
+          title: `${badge}: ${flagged.text}`, body: null,
+          ref_type: 'order', ref_id: row.ref,
+        });
+      } catch { /* the feed is best effort */ }
+    }
 
     if (cat.connection_id) {
       await sb.from('ezcater_connections')
@@ -345,17 +479,16 @@ Deno.serve(async (req) => {
       status: 'processed', location_id: locationId, error: null, processed_at: nowIso,
     }).eq('notification_id', notificationId);
 
-    // Reminder for phase 3, not a TODO in this file: ezCater explicitly advises
-    // re-querying an order immediately before it goes to the kitchen, because
-    // catering orders get edited for days and a "Cancelled for Replacement"
-    // sends NO notification at all for the original. ezcater_order_links.fire_at
-    // is the column that cron keys on.
+    // Deliberately left out of v1 (DECISIONS.md, ADR-023): ezCater advises re-querying an
+    // order just before it goes to the kitchen, because a "Cancelled for Replacement" sends NO
+    // notification for the original. No scheduled re-asks, no pre fire re-check and no
+    // replacement detection were built; ezcater_order_links.fire_at is kept for when they are.
     return ok();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[ezcater-webhook] unhandled:', msg);
     await sb.from('ezcater_events')
-      .update({ status: 'error', error: msg.slice(0, 2000) })
+      .update({ status: 'error', error: ezcaterEventError(msg, queueWrittenBefore) })
       .eq('notification_id', notificationId).then(() => {}, () => {});
     return retry('error');
   }

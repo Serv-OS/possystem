@@ -14,6 +14,7 @@
 // frequency-capped so asks stay welcome (and don't get Google-filtered as spam).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -62,7 +63,7 @@ async function scanLocation(opsLocationId: string, opts: { test?: boolean } = {}
   const now = Date.now();
   const delayMs = Number(cfg.ask_delay_minutes ?? 45) * 60000;
   const { data: checks } = await opsAdmin.from('closed_checks')
-    .select('id, customer, customer_phone, total, closed_at')
+    .select('id, source, customer, customer_phone, total, closed_at')
     .eq('location_id', opsLocationId)
     .gte('closed_at', new Date(now - 24 * 3600 * 1000).toISOString())
     .lte('closed_at', new Date(now - delayMs).toISOString())
@@ -72,6 +73,8 @@ async function scanLocation(opsLocationId: string, opts: { test?: boolean } = {}
   for (const c of checks || []) {
     const phone = c.customer_phone || (c.customer && c.customer.phone) || null;
     if (!phone || Number(c.total) <= 0) continue;
+    // ezCater owns an ezCater order's customer: we never text them for a review.
+    if (!mayMessageCustomer(c)) continue;
     considered++;
     const { data: dup } = await opsAdmin.from('review_requests').select('id').eq('location_id', opsLocationId).eq('source_kind', 'closed_check').eq('source_ref', c.id).maybeSingle();
     if (dup) continue;

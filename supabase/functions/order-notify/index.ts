@@ -11,6 +11,7 @@
 // Because it fires from the DATABASE, every order channel is covered with no client changes:
 // online, kiosk, QR, POS phone orders — anything that writes order_queue. Exclusions:
 //   - source 'hubrise' (3rd-party channels handle their own customer messaging)
+//   - an ezCater order (customer.channel 'ezcater', filed as catering): nothing at all
 //   - source 'catering' for 'confirmed' only (catering sends its own branded confirmation email)
 //   - 'ready' is skipped for delivery orders (they get courier tracking SMS instead)
 //   - 'ready' for a drive-thru order (a till type, 16 Sep 2026; it rarely carries a phone) says
@@ -33,6 +34,7 @@ import {
   parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
 } from '../_shared/orderNotifyScope.js';
+import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -202,6 +204,9 @@ Deno.serve(async (req) => {
 
   const source = String(order.source || '');
   if (source === 'hubrise') return json({ ok: true, skipped: '3rd-party channel' });
+  // An ezCater order is filed as a catering order (customer.channel 'ezcater'). ezCater owns
+  // that customer: we send it nothing, neither the confirmation nor the ready message.
+  if (!mayMessageCustomer(order)) return json({ ok: true, skipped: 'ezCater owns this customer' });
   if (event === 'confirmed' && source === 'catering') return json({ ok: true, skipped: 'catering has its own confirmation' });
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
   // Drive thru (16 Sep 2026): keyed on the literal type, so every other order reads exactly as before.

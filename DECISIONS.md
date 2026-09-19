@@ -241,3 +241,26 @@ Short ADR entries for non-obvious choices in the codebase.
 **Decision:** Delete it (v5.5.806, owner-confirmed 18 Jul 2026). Do not mount a second item editor. MenuManager's Items tab (`ItemsLibrary` in `MenuManager.jsx`) is the single item-management surface.
 
 **Consequences:** One write path and one UI for item edits — avoids a UI-level "two save paths" divergence (the same failure mode as the `sbUpsertCategory`/`upsertMenuItem` gotcha). If a simpler, focused item-library UX is wanted later (the original food-hall pitch), build it against the current editor/feature set rather than resurrecting the v4.6 file (recoverable from git history before v5.5.806 if ever needed).
+
+---
+
+## ADR-023: ezCater orders are filed as ServOS catering orders (v1, the simpler version)
+
+**Context:** Peter's live ezCater test order HKX77V (18 Sep 2026) never reached the Back Office advance list or the till: it was written as `source 'ezcater'`, status `prep`, with `sent_at` = the delivery time, and every catering path (advance list, till release, catering-release cron, QueueSync's future catering test) keys on `source 'catering'`. A branch that taught every path about a second catering source (`fix/ezcater-catering-rules`) went through five review rounds and kept finding edge cases in the till queue code. Peter chose the simpler version.
+
+**Decision:**
+- The ezCater webhook writes `order_queue` in exactly the shape `CateringCheckout.jsx` writes: `source 'catering'`, status `received`, `event_date` and `collection_time` on the venue clock, `sent_at` = the kitchen fire time from `supabase/functions/_shared/cateringRules.js` (moved out of the checkout verbatim) with the venue's catering prep time, `kitchen_routed_at` null, `paid` true. It is marked only by `customer.channel = 'ezcater'` plus the ezCater order id and number (`_shared/ezcaterCatering.js`).
+- The only differences, all keyed on `customer.channel`: no order-notify messages, no ServOS courier, no review ask, never unpaid, never refunded through our processors, and an order ezCater has not accepted is held (`customer.ezcater_awaiting_acceptance`, which the two release queries filter on) and shown as "Awaiting ezCater acceptance".
+- Cancels and changes: cancelled sets status `cancelled` (before or after firing; after firing staff get a plain flag). A change before firing replaces items, times and totals in place; after firing the row is left alone and staff are flagged "Changed on ezCater after it went to the kitchen: see ezCater". A rejected modification is not a cancel.
+- A venue with no catering prep time set gets a 60 minute fallback, flagged on the order (`customer.prep_fallback`).
+
+**Deliberately left out of v1:** scheduled re-asks of ezCater, a re-check of the order just before it fires (ezCater recommends one), and detection of "cancelled for replacement" orders (ezCater sends no notification for the original). If ezCater replaces an order, the original stays in our queue until staff cancel it. Also not changed: the order screen (TV) SQL, so an ezCater order shows there as a catering order.
+
+**Consequences:** No new catering path. There IS one queue code change: the kitchen claim in `routeKioskOrderPrints` (`src/store/index.js`) now refuses a cancelled row for every source, not only ezCater, and a collected row too (``.or(`status.is.null,status.not.in.${NOT_RELEASABLE_STATUSES_PG}`)``, the same `(collected,cancelled)` the release reads exclude; the `catering-release` cron claim uses `.not('status', 'in', NOT_RELEASABLE_STATUSES_PG)`), so a cancel, or staff marking it collected, that lands between a release's read and its claim never reaches the kitchen. Nothing else is cancelled or collected before it is routed today, so every other order behaves as before; a row with no status still claims, and a forced re-send from the Orders Hub goes on without the claim as it always did. The row written before this change (HKX77V, `source 'ezcater'`) is left exactly as it is by the webhook; staff cancel it by hand.
+
+**Review round (18 Sep 2026):**
+- A finished order is never brought back: when `ezcater_order_links` already knows the order and there is no queue row (staff collected or removed it), a later notification writes nothing. A new order has no link until after its first write, so it still inserts.
+- An ezCater order cancelled AFTER it went to the kitchen raises the same red cancel popup and chime a HubRise cancel does (`channelCancelAlert`). HubRise is unchanged.
+- An ezCater order still awaiting acceptance when its fire time passes gets one urgent activity entry from the catering-release cron, stamped once per order (`customer.ezcater_hold_alerted_at`).
+- The webhook no longer writes its own "new order" activity entry; the `order_queue_activity` trigger already logs every insert, as "Catering order". Showing "ezCater" there would need SQL, so it was left.
+- Release steps: `docs/EZCATER_V1_RELEASE.md`. ezCater sales are not written to `closed_checks`, so they are in no sales report (older than this work, not fixed here).

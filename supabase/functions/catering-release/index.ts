@@ -18,6 +18,10 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
+import {
+  NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, isEzcaterOrder, ezcaterOrderNumber,
+  ezcaterHoldAlertDue, ezcaterHoldAlertText,
+} from '../_shared/ezcaterCatering.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -40,7 +44,11 @@ Deno.serve(async (req) => {
   // Due (fire time + grace passed), not yet fired by any device, not finished. Oldest first.
   const { data, error } = await sb.from('order_queue')
     .select('ref, location_id, type, total, items, customer, sent_at')
-    .eq('source', 'catering').is('kitchen_routed_at', null).neq('status', 'collected')
+    .eq('source', 'catering').is('kitchen_routed_at', null)
+    // 18 Sep 2026: ezCater orders are catering orders. One cancelled before it fired, or not yet
+    // accepted by ezCater, is never released. Our own rows carry no hold key: unchanged for them.
+    .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+    .or(RELEASABLE_OR_FILTER)
     .lte('sent_at', cutoff)
     .order('sent_at', { ascending: true })
     .limit(BATCH);
@@ -52,6 +60,9 @@ Deno.serve(async (req) => {
     const claim = await sb.from('order_queue')
       .update({ kitchen_routed_at: new Date().toISOString() })
       .eq('ref', row.ref).eq('location_id', row.location_id).is('kitchen_routed_at', null)
+      // A cancel, or staff marking it collected, landing between the read above and this claim
+      // must not reach the kitchen. The same statuses the read excludes.
+      .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
       .select('ref');
     if (claim.error || !claim.data?.length) continue;   // a device just claimed it — leave the routed fire to them
 
@@ -59,7 +70,8 @@ Deno.serve(async (req) => {
     // this order → no device will dispatch the courier either. If it's an uber-mode delivery,
     // dispatch server-side now (idempotent on order_ref, so a device that comes online won't
     // double-send). Self-delivery just gets the KDS ticket below. Independent of KDS success.
-    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber') {
+    // Never for an ezCater order: the caterer or ezCater delivers it.
+    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && mayBookOurCourier(row)) {
       try {
         const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', row.location_id).maybeSingle();
         if (cfg?.enabled) {
@@ -71,10 +83,13 @@ Deno.serve(async (req) => {
 
     // Consolidated KDS ticket (all items, centre_id null → shows on the all-items KDS view).
     const who = row.customer?.name || 'Catering';
+    // An ezCater order shows ezCater and ezCater's own order number (customer.channel).
+    const ez = isEzcaterOrder(row);
+    const ezNo = ez ? ezcaterOrderNumber(row) : null;
     const ticket = {
       id: `kds-cat-${row.ref}`,
       location_id: row.location_id,
-      table_label: `Catering ${row.ref}`,
+      table_label: `Catering ${ezNo || row.ref}`,
       items: row.items || [],
       status: 'pending', course: 'main', centre_id: null,
       server: who, covers: 1,
@@ -86,7 +101,7 @@ Deno.serve(async (req) => {
       v: 1, channel: 'catering', isTable: false,
       orderType: ['takeaway', 'collection', 'delivery'].includes(row.type) ? row.type : 'collection',
       customerName: row.customer?.name || null,
-      orderNo: row.ref, source: 'Catering', staff: null,
+      orderNo: ezNo || row.ref, source: ez ? 'ezCater' : 'Catering', staff: null,
       note: (typeof row.customer?.notes === 'string' && row.customer.notes.trim()) || null,
     };
     let { error: kErr } = await sb.from('kds_tickets').insert({ ...ticket, meta });
@@ -98,5 +113,61 @@ Deno.serve(async (req) => {
     if (kErr) { console.warn('[catering-release] kds insert', row.ref, kErr.message); continue; }
     fired++;
   }
-  return json({ ok: true, scanned: data?.length || 0, fired });
+
+  // HELD PAST ITS FIRE TIME (18 Sep 2026). An ezCater order ezCater has not accepted is never
+  // released above, correctly, but once its fire time passes somebody must be told. One urgent
+  // activity entry per order, ever: customer.ezcater_hold_alerted_at is stamped first with a
+  // conditional update, so two overlapping runs never both write it. Best effort: a failure
+  // here never fails the release.
+  let holdAlerts = 0;
+  try {
+    holdAlerts = await alertHeldEzcaterOrders();
+  } catch (e) { console.warn('[catering-release] held ezCater alert', (e as Error)?.message); }
+
+  return json({ ok: true, scanned: data?.length || 0, fired, holdAlerts });
 });
+
+async function alertHeldEzcaterOrders(): Promise<number> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const { data, error } = await sb.from('order_queue')
+    .select('ref, location_id, source, status, sent_at, kitchen_routed_at, customer')
+    .eq('source', 'catering').is('kitchen_routed_at', null)
+    .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+    .eq('customer->>ezcater_awaiting_acceptance', 'true')
+    .is('customer->>ezcater_hold_alerted_at', null)
+    .lte('sent_at', nowIso)
+    .order('sent_at', { ascending: true })
+    .limit(BATCH);
+  if (error) { console.warn('[catering-release] held ezCater read', error.message); return 0; }
+
+  let n = 0;
+  for (const row of (data || [])) {
+    if (!ezcaterHoldAlertDue(row, nowMs)) continue;   // the pure rule, the filters above mirror it
+    // Claim: only while still held, unrouted and not yet alerted.
+    const claim = await sb.from('order_queue')
+      .update({ customer: { ...(row.customer || {}), ezcater_hold_alerted_at: nowIso } })
+      .eq('ref', row.ref).eq('location_id', row.location_id)
+      .is('kitchen_routed_at', null)
+      .eq('customer->>ezcater_awaiting_acceptance', 'true')
+      .is('customer->>ezcater_hold_alerted_at', null)
+      .select('ref');
+    if (claim.error || !claim.data?.length) continue;
+    const { error: aErr } = await sb.from('activity_events').insert({
+      location_id: row.location_id, kind: 'order', severity: 'urgent',
+      title: ezcaterHoldAlertText(row), body: null,
+      ref_type: 'order', ref_id: row.ref,
+    });
+    if (aErr) {
+      // Take the stamp back off so the next run tries again (only if it is still ours).
+      console.warn('[catering-release] held ezCater alert write', row.ref, aErr.message);
+      await sb.from('order_queue').update({ customer: row.customer || {} })
+        .eq('ref', row.ref).eq('location_id', row.location_id)
+        .eq('customer->>ezcater_hold_alerted_at', nowIso)
+        .then(() => {}, () => {});
+      continue;
+    }
+    n++;
+  }
+  return n;
+}
