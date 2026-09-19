@@ -7,11 +7,19 @@
 //   • the scanned invoice image/PDF (invoice-scans bucket) is attached to the bill
 //   • idempotent per invoice via xero_sync_log (kind='bill', ref_id=invoice id)
 //
+// v5.9.11: the log row is claimed (a lock), marked 'sending' before the bill goes out and
+// updated in place with every attempt kept in detail.history (_shared/syncRun.ts). Until
+// now a failed push wrote NO log at all and a success deleted the old row first, so a
+// failure left no trace and the history was lost. The PUT carries an Idempotency-Key, so
+// a retry after a lost answer returns the first bill instead of creating a second one.
+//
 //   POST { locationId, invoiceId, dryRun? } -> { ok, xeroInvoiceID, link, attached }
 // Deploy --no-verify-jwt (own auth, location-fenced).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi, XERO_API } from '../_shared/xero.ts';
+import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
+import { shortHash } from '../_shared/xeroPostingPlan.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -23,6 +31,8 @@ const CLIENT_SECRET = Deno.env.get('XERO_CLIENT_SECRET') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
 const money = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+
+class HttpError extends Error { status: number; constructor(msg: string, status: number) { super(msg); this.status = status; } }
 
 async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true } | { ok: false; res: Response }> {
   const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
@@ -69,19 +79,27 @@ Deno.serve(async (req) => {
   const acc = await requireAccess(req, locationId);
   if (!acc.ok) return acc.res;
 
+  const logKey = { table: 'xero_sync_log', locationId, kind: 'bill', refId: String(invoiceId) };
+  let run: any = null;
   try {
     // Idempotency
-    const { data: prior } = await sb.from('xero_sync_log').select('status,detail,xero_id').eq('location_id', locationId).eq('kind', 'bill').eq('ref_id', invoiceId).maybeSingle();
+    const prior = await readSyncRow(sb, logKey);
     if (prior && prior.status === 'ok') return json({ ok: true, already: true, xeroInvoiceID: prior.xero_id, detail: prior.detail });
+    if (!dryRun) {
+      const claim = await claimSyncRun(sb, logKey);
+      if (claim.done) return json({ ok: true, already: true, xeroInvoiceID: claim.done.xero_id, detail: claim.done.detail });
+      if (!claim.run) return json({ error: 'This bill is being sent to Xero right now. Try again in a minute.', busy: true }, 409);
+      run = claim.run;
+    }
 
     // Load the invoice + lines + supplier
     const { data: inv } = await sb.from('supplier_invoices').select('*').eq('id', invoiceId).eq('location_id', locationId).maybeSingle();
-    if (!inv) return json({ error: 'Invoice not found' }, 404);
+    if (!inv) throw new HttpError('Invoice not found', 404);
     // v5.5.923 — server-side gate to match the UI's. A REVIEW row is PO-attached paperwork
     // with a null total; pushing it created an AUTHORISED £0 bill and the sync-log dedupe
     // above then blocked the real push forever. The button is gated too, but a money-writing
     // endpoint never trusts a button.
-    if ((inv.status || '').toUpperCase() !== 'POSTED') return json({ error: 'Invoice not posted yet — post it before sending to Xero' }, 400);
+    if ((inv.status || '').toUpperCase() !== 'POSTED') throw new HttpError('Invoice not posted yet — post it before sending to Xero', 400);
     const [{ data: lines }, { data: supplier }] = await Promise.all([
       sb.from('supplier_invoice_lines').select('*').eq('invoice_id', invoiceId).order('sort_order'),
       inv.supplier_id ? sb.from('suppliers').select('name,payment_terms_days').eq('id', inv.supplier_id).maybeSingle() : Promise.resolve({ data: null }),
@@ -124,8 +142,22 @@ Deno.serve(async (req) => {
       LineItems: li,
       Status: 'AUTHORISED',
     }] };
-    const res = await xeroApi(accessToken, tenantId, '/Invoices', { method: 'PUT', body: JSON.stringify(payload) });
-    const bill = res?.Invoices?.[0];
+    // The last attempt sent this bill and never heard back: look for it before sending again
+    // (a supplier invoice number is the one field Xero can find an ACCPAY bill by).
+    let bill: any = null;
+    if (run.postings.bill?.status === 'sending' && inv.invoice_number) {
+      const where = `Type=="ACCPAY" AND Contact.ContactID==guid("${contactId}") AND InvoiceNumber=="${String(inv.invoice_number).replace(/"/g, '')}" AND Status!="DELETED" AND Status!="VOIDED"`;
+      const found = await xeroApi(accessToken, tenantId, `/Invoices?where=${encodeURIComponent(where)}`).catch(() => null);
+      bill = found?.Invoices?.[0] || null;
+    }
+    if (!bill) {
+      await run.setPosting('bill', { status: 'sending', reference: `ServOS invoice ${String(invoiceId).slice(0, 8)}` });
+      // The key carries a hash of the bill, so a bill Xero refused (fixed and sent again)
+      // is a new request, while a plain retry of the same bill returns the first answer.
+      const idem = `servos-bill-${locationId}-${invoiceId}-${shortHash(JSON.stringify(payload))}`;
+      const res = await xeroApi(accessToken, tenantId, '/Invoices', { method: 'PUT', body: JSON.stringify(payload), idempotencyKey: idem });
+      bill = res?.Invoices?.[0];
+    }
     if (!bill?.InvoiceID) throw new Error('Xero did not return a bill id');
 
     // Attach the scanned image/PDF (best-effort — the bill exists either way).
@@ -148,12 +180,13 @@ Deno.serve(async (req) => {
     }
 
     const link = `https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=${bill.InvoiceID}`;
-    await sb.from('xero_sync_log').delete().eq('location_id', locationId).eq('kind', 'bill').eq('ref_id', invoiceId);
-    await sb.from('xero_sync_log').insert({ location_id: locationId, kind: 'bill', ref_id: invoiceId, xero_id: bill.InvoiceID, status: 'ok', detail: { supplierName, total: bill.Total, attached, link }, updated_at: new Date().toISOString() });
+    await run.finish('ok', { xero_id: bill.InvoiceID, detail: { postings: { ...run.postings, bill: { status: 'posted', id: bill.InvoiceID } }, supplierName, total: bill.Total, attached, link, error: null } }, { ok: true });
     return json({ ok: true, xeroInvoiceID: bill.InvoiceID, total: bill.Total, supplierName, attached, link });
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
     console.error('[xero-bills]', msg);
-    return json({ error: msg }, 500);
+    // A failure is recorded too (it used to leave no trace), with the attempt in history.
+    if (run && !run.lost) await run.finish('error', { detail: { error: msg } }, { ok: false, error: msg }).catch(() => {});
+    return json({ error: msg }, (e as any)?.status || 500);
   }
 });

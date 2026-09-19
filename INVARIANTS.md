@@ -162,6 +162,15 @@ Tables MUST never be lost between updates. These safeguards exist:
 - **One platform Google OAuth client for reviews, never per-customer.** The Google client secret lives only in Supabase Edge Function env (`GOOGLE_OAUTH_CLIENT_SECRET`) — never in the repo, bundle, or client. Venues connect by signing in; the platform never holds venue Google passwords.
 - **Edge functions enforce their own tenant fence.** `trading-report` / `owner-snapshot` / `review-*` run `verify_jwt=false` and must validate the caller (`user_locations` / super_admin / service-role) before returning a location's data — RLS is not doing it for them.
 
+## Accounting days (Xero now, QuickBooks next; ADR-025, v5.9.11)
+
+- **Money is booked by the VENUE BUSINESS DAY** (`supabase/functions/_shared/businessDay.js`: platform `locations.timezone` + `business_day_start`, DST safe), never a UTC day or the device clock. A day that has not ended is never posted.
+- **Every closed_checks write records `tenders`** built where the payment was taken (`src/lib/accounting/tenders.js`), listing everything that settled the bill (money, gift card, booking credit, loyalty and promo credit). Never derive tenders from a surface's `total` alone: the till books gross, kiosk, online and terminal jobs book net of credits.
+- **Every closed_checks insert or upsert goes through `writeClosedCheckRow`** (`src/lib/closedCheckWrite.js`), and every camelCase check becomes a row through `closedCheckRow` (`src/lib/closedCheckRow.js`). No hand copies of the row map.
+- **Loyalty and promo credit are discounts, never takings.** Tips are never revenue by default.
+- **Refunds are booked on the day of the refund** (`refunds[].timestamp`), not the check's close.
+- **The accounting sync log is never deleted.** `xero_sync_log` rows are claimed, updated in place and keep their history (`_shared/syncRun.ts`); a posting is marked sending before the request and posted after it.
+
 ## Menu board / screen pairing (`menu_board_screens`)
 
 - **A menu-board device never writes its own `location_id`/`board_id`.** Those are set only by the SECURITY DEFINER RPCs (`claim_menu_board_screen` / `set_menu_board_screen`) after validating the caller's location access, and `location_id` is always taken from the chosen board's row (never device-supplied, never a default). The table has **no UPDATE policy** — do not add one; route all mutations through the RPCs. (Same "resolve real locationId" rule as everywhere else.)

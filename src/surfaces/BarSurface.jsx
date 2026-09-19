@@ -14,6 +14,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { giftRecordFrom } from '../lib/giftCommit';
+import { singleTender } from '../lib/accounting/tenders';
 import { computeOrderTaxUnified } from '../lib/taxCompute';
 
 const CAT_META = {
@@ -427,6 +428,9 @@ export default function BarSurface() {
       // Only stamped when the bill has an exclusive component - see tabBillWithTax.
       ...(bill.taxBreakdown ? { taxAmount: bill.taxBreakdown.totalTax ?? null, taxBreakdown: bill.taxBreakdown } : {}),
       method: payInfo?.method || 'card',
+      // v5.9.11: what paid the tab, per tender. CheckoutModal hands over the exact list;
+      // the held-card capture passes the card amount it actually captured.
+      ...(payInfo?.tenders ? { tenders: payInfo.tenders } : {}),
       // v5.5.902: giftRecordFrom also folds in the per-portion legs of a SPLIT bar tab,
       // which used to be dropped here entirely (nothing to reverse on a refund).
       giftCard: giftRecordFrom(payInfo || {}),
@@ -579,6 +583,9 @@ export default function BarSurface() {
         processor: tab.preAuthProcessor || 'stripe',
         stripePaymentIntentId: tab.preAuthPaymentIntentId,
         paymentIntents: [{ id: tab.preAuthPaymentIntentId, amountMinor: capturedMinor }],
+        // v5.9.11: the card tender is what the hold CAPTURED, which can be short of the bill,
+        // and never more than was asked for (Stripe's `amount` is the hold, not the capture).
+        tenders: singleTender('card', Math.min(capturedMinor, captureMinor) / 100, 0, { pspRef: tab.preAuthPaymentIntentId, processor: tab.preAuthProcessor || 'stripe' }),
       });
       setHoldClose(null); setHoldCloseState('idle');
       const shortfallMinor = totalMinor - capturedMinor;

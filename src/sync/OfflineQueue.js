@@ -9,6 +9,7 @@
  */
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
+import { missingColumnOf } from '../lib/closedCheckWrite';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -158,7 +159,17 @@ export async function bufferedUpsertKeys(table) {
 async function replayItem(supabase, item) {
   try {
     if (item.type === 'upsert') {
-      const { error } = await supabase.from(item.table).upsert(item.payload, { onConflict: item.onConflict || 'id' });
+      let payload = item.payload;
+      let { error } = await supabase.from(item.table).upsert(payload, { onConflict: item.onConflict || 'id' });
+      // v5.9.11: a buffered SALE (MPOS close recovery) must not be refused forever because
+      // the database lacks a newer optional column (tenders before its migration). Drop the
+      // column PostgREST names and send the rest, as every closed_checks writer now does.
+      for (let n = 0; error && item.table === 'closed_checks' && n < 4; n++) {
+        const col = missingColumnOf(error);
+        if (!col || !(col in payload) || col === 'id' || col === 'location_id') break;
+        payload = { ...payload }; delete payload[col];
+        ({ error } = await supabase.from(item.table).upsert(payload, { onConflict: item.onConflict || 'id' }));
+      }
       if (error) throw error;
     } else if (item.type === 'insert') {
       const { error } = await supabase.from(item.table).insert(item.payload);

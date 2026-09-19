@@ -15,6 +15,7 @@ import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
+import { tillTenders, splitTenders } from '../lib/accounting/tenders';
 import { declineLine } from '../lib/declineMessage';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
@@ -1672,10 +1673,27 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         })?.catch?.(() => {});
       } catch { /* a drawer that will not open must never lose the sale */ }
     }
+    // v5.9.11 — WHAT PAID THIS CHECK, per tender, from the figures actually taken here:
+    // booking credit, the gift card as DEBITED (not as staged), loyalty and promo credit,
+    // each card reader leg, and the till's own cash or card leg (dueAfterGift, its tip on
+    // it). closed_checks.tenders; the accounting layer posts each to its own account.
+    const tenders = tillTenders({
+      method,
+      tillMoney: dueAfterGift,
+      tip,
+      giftRecord,
+      loyaltyCredit,
+      promoCredit,
+      bookingPayment: bookingRecord,
+      readerLegs: legs,
+      pspRef: stripePaymentIntentId,
+      processor: paidProcessor || (splitWithReader ? 'adyen' : 'stripe'),
+    });
     onComplete({
       method: finalMethod,
       tip: bookedTip,
       grand: bookedGrand,
+      tenders,
       tendered,
       printReceipt,
       // v5.5.902: the store adopts this as the closed_check id, so it matches the id the
@@ -2705,7 +2723,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             const tipTotal = +((portions||[]).reduce((s,p)=>s+legTip(p),0)).toFixed(2);
             // v5.5.808: stamp which processor took the card legs — refunds route
             // by check.processor, so a Ryft split must not default to 'stripe'.
-            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
+            // v5.9.11: the portions ARE the tenders. Until now they were handed up here and
+            // dropped by the store's row map, so a split check said only 'split' and no
+            // accounts system could tell its card money from its cash.
+            const tenders = splitTenders(portions, { legTip, giftLegs, processor: cardProcessor || 'stripe' });
+            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
               closedCheckId: getCheckId(),
               // v5.5.902: split gift legs — the store folds these into the check's
               // gift_card jsonb so a refund can reverse every card that part-paid it.

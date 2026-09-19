@@ -27,6 +27,8 @@ import { isTrainingMode } from '../lib/trainingMode';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { closedCheckRow } from '../lib/closedCheckRow';
+import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -405,6 +407,7 @@ function MPOSRouter() {
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,
       taxBreakdown,
       method:     paymentInfo?.method || 'card',
+      tenders:    tendersFromPaymentInfo(paymentInfo || {}, { total: paymentInfo?.grand || subtotal, tip: paymentInfo?.tip || 0 }),   // v5.9.11
       giftCard:   paymentInfo?.giftCard || null,
       stripePaymentIntentId: paymentInfo?.stripePaymentIntentId || paymentInfo?.paymentIntentId || null,
       processor:  paymentInfo?.processor || 'stripe',
@@ -437,7 +440,7 @@ function MPOSRouter() {
         onConflict: 'id',
         kind: 'closed_check',
         label: `MPOS ${money(Number(paymentInfo?.grand) || 0)} — close failed after card approval`,
-        payload: recoveryCheckRow(record, locationId),
+        payload: closedCheckRow(record, locationId),
       });
       return true;
     } catch (e) {
@@ -941,45 +944,8 @@ function recoveryQueueId(checkId) {
   return `mpos-recovery-${checkId}`;
 }
 
-// snake_case row for the recovery write in queueCloseRecovery. This MIRRORS
-// closedCheckRow() in src/lib/db.js, which is module-private there — if a column is
-// added to that map it has to be added here too. It only ever runs on the path where
-// the alternative is no row at all.
-function recoveryCheckRow(check, locationId) {
-  return {
-    id:            check.id,
-    location_id:   locationId,
-    ref:           check.ref,
-    server:        check.server,
-    staff_id:      check.staffId || null,
-    covers:        check.covers,
-    order_type:    check.orderType,
-    customer:      check.customer,
-    items:         check.items,
-    discounts:     check.discounts,
-    subtotal:      check.subtotal,
-    service:       check.service,
-    tip:           check.tip,
-    tax_amount:    check.taxAmount != null ? check.taxAmount : null,
-    tax_breakdown: check.taxBreakdown || null,
-    total:         check.total,
-    method:        check.method,
-    drawer_id:     check.drawerId || null,
-    shift_id:      check.shiftId || null,
-    closed_at:     check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
-    seated_at:     check.seatedAt ? new Date(check.seatedAt).toISOString() : null,
-    status:        check.status || 'paid',
-    refunds:       check.refunds || [],
-    table_id:      check.tableId || null,
-    table_label:   check.tableLabel || null,
-    gift_card:     check.giftCard || null,
-    loyalty:       check.loyalty || null,
-    source:        check.source || null,
-    stripe_payment_intent_id: check.stripePaymentIntentId || null,
-    payment_intents: check.paymentIntents || null,
-    processor:     check.processor || 'stripe',
-  };
-}
+// The recovery write in queueCloseRecovery uses the shared lib/closedCheckRow.js map
+// (v5.9.11; this file used to keep a hand copy of it that had to be kept in step).
 
 // v5.5.977 — the card was APPROVED and the sale did not record. Deliberately a
 // dead end: there is no rollback, so the one thing the operator must not be given

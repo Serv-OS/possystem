@@ -21,6 +21,8 @@ import { clearStashedTab } from '../../lib/qrTabStorage';
 import { money } from '../../lib/currency';
 import { ryftTab } from '../../lib/payments/ryft';
 import { adyenTab } from '../../lib/payments/adyenTab';
+import { singleTender } from '../../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
@@ -150,7 +152,7 @@ export default function TabResumeScreen({
       const allItems = (rounds || []).flatMap(r => r.items || []);
       const tabTip = +(rounds || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
       try {
-        await supabase.from('closed_checks').insert({
+        const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.tab_ref,
           location_id: rounds?.[0]?.location_id || null,
@@ -165,6 +167,8 @@ export default function TabResumeScreen({
           service: 0, tip: tabTip, tax_amount: null,
           total: runningTotal,
           method: 'card',
+          // v5.9.11: one card tender for the tab, its tip on it.
+          tenders: singleTender('card', runningTotal, tabTip, { pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tab.processor || (isRyft ? 'ryft' : 'stripe') }),
           // Refund routing (refundCheck reads top-level processor + payment_intents).
           processor: isRyft ? 'ryft' : 'stripe',
           stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
@@ -175,7 +179,8 @@ export default function TabResumeScreen({
           table_id: null,
           table_label: tab.table_label ? `Table ${tab.table_label}` : (tableLabel ? `Table ${tableLabel}` : null),
           source: 'qr',
-        });
+        }, { tag: 'TabResume' });
+        if (ccErr) console.warn('[TabResume] closed_checks insert:', ccErr.message);
       } catch (e) { console.warn('[TabResume] closed_checks insert:', e?.message); }
 
       clearStashedTab(slug, tableId);

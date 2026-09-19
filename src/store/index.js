@@ -32,6 +32,8 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quote
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+import { tendersFromPaymentInfo, channelTenders, finishTenders, tender, giftTenders, bookingTenders } from '../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
@@ -5530,6 +5532,10 @@ export const useStore = create((set, get) => ({
       total:      paymentInfo.grand || session.total || 0,
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
+      // v5.9.11: what paid the check, per tender (lib/accounting/tenders.js). CheckoutModal
+      // hands over the exact list; other callers (MPOS card, a table closed with no payment
+      // info, the terminal reconciler's termPay) get it derived from their payment info.
+      tenders:    tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand || session.total || 0, tip: paymentInfo.tip || 0 }),
       giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
@@ -5692,7 +5698,19 @@ export const useStore = create((set, get) => ({
       entryMode: c.entry_mode || c.entryMode || null,
     } : null;
 
+    // v5.9.11: every tender the occupation was paid with: this leg and each earlier reader
+    // leg (charge includes its tip), the gift card and booking credit taken before dispatch.
+    const jobTenders = finishTenders([
+      ...bookingTenders(d.bookingPayment),
+      ...giftTenders(d.giftCard),
+      tender('card', ((job.charge_minor ?? 0) - (job.tip_minor ?? 0)) / 100, (job.tip_minor ?? 0) / 100,
+        { pspRef: job.transaction_id, processor: job.processor || 'ryft' }),
+      ...priorLegs.map(l => tender('card', (Number(l.chargeMinor) - (Number(l.tipMinor) || 0)) / 100, (Number(l.tipMinor) || 0) / 100,
+        { pspRef: l.transactionId, processor: job.processor || 'ryft' })),
+    ]);
+
     const termPay = {
+      tenders: jobTenders,
       // v5.6.68 — reader splits: the final leg books the WHOLE occupation as one
       // 'split' check (full items, every card leg a payment intent), mirroring
       // the POS SplitModal's single-check model so reports/refunds treat both
@@ -5744,6 +5762,7 @@ export const useStore = create((set, get) => ({
         total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
         taxAmount: null,
         method: priorLegs.length ? 'split' : 'card',
+        tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
         processor: job.processor || 'ryft',
@@ -6011,6 +6030,13 @@ export const useStore = create((set, get) => ({
       staffId: record.staffId || staff?.id || null,   // v4.6.19
       ...record,
     };
+    // v5.9.11: a caller that did not hand over tenders gets them derived from the record.
+    if (!fullRecord.tenders) {
+      fullRecord.tenders = tendersFromPaymentInfo({
+        method: fullRecord.method, giftCard: fullRecord.giftCard, bookingPayment: fullRecord.bookingPayment,
+        stripePaymentIntentId: fullRecord.stripePaymentIntentId, processor: fullRecord.processor,
+      }, { total: fullRecord.total || 0, tip: fullRecord.tip || 0 });
+    }
     set(s => ({ closedChecks: capClosedChecks([fullRecord, ...s.closedChecks]) }));
     insertClosedCheck(fullRecord).catch(()=>{});
     depleteForSale(fullRecord);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
@@ -6076,6 +6102,11 @@ export const useStore = create((set, get) => ({
           taxAmount: f.taxAmount,
           taxBreakdown: f.taxBreakdown,
           method: paymentInfo.method || 'card',
+          // v5.9.11: the platform's payments (paid out by the platform) plus what the till took.
+          tenders: finishTenders([
+            ...(channelTenders(f.payments, { tip: f.tip, channel: o.customer?.channel || null }) || []),
+            ...(tendersFromPaymentInfo(paymentInfo, { total: f.due, tip: 0 }) || []),
+          ]),
           giftCard: giftRecordFrom(paymentInfo),
           stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,
           processor: paymentInfo.processor || 'stripe',
@@ -6159,6 +6190,7 @@ export const useStore = create((set, get) => ({
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
+      tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand || subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
       giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
@@ -7844,7 +7876,7 @@ export const useStore = create((set, get) => ({
       const locId = getActiveLocationSync();
       const { menuItems = [], taxRates = [] } = get();
       const f = buildChannelCloseFields(o, { menuItems, taxRates, taxCtx: get().getTaxContext() });
-      const { error } = await supabase.from('closed_checks').insert({
+      const { error } = await writeClosedCheckRow(supabase, {
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
         order_type: o._raw?.type || o.type || 'delivery',
@@ -7854,10 +7886,14 @@ export const useStore = create((set, get) => ({
         service: f.service, tip: f.tip,
         tax_amount: f.taxAmount, tax_breakdown: f.taxBreakdown, total: f.total,
         method: f.channelPaid ? 'card' : 'cash',
+        // v5.9.11: prepaid = the platform's payments (the platform pays them out); unpaid = cash.
+        tenders: f.channelPaid
+          ? channelTenders(f.payments, { tip: f.tip, channel: o.customer?.channel || null })
+          : finishTenders([tender('cash', f.total - f.tip, f.tip)]),
         closed_at: new Date().toISOString(), status: 'paid', refunds: [], table_id: null,
         table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
         source: 'hubrise',
-      });
+      }, { tag: 'bookChannelSale' });
       // v5.5.971: PostgREST RESOLVES with { error }, so the old bare try/catch caught
       // nothing at all — a duplicate AND an RLS refusal looked identical (silence), and
       // an unbooked channel sale is revenue missing from every report. Only 23505

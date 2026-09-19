@@ -1,3 +1,12 @@
+# Session, 19 Sep 2026, v5.9.11, accounting day fixes (Xero, groundwork for QuickBooks)
+
+- Branch fix/accounting-sales-day. ADR-025, INVARIANTS "Accounting days".
+- Neutral layer in supabase/functions/_shared: businessDay.js (venue business day, DST safe), accountingDay.js (per tender sums, refunds by refund date, legacy fallbacks), xeroPostingPlan.js, accountingData.ts (paged reads, venue clock), syncRun.ts (lock, progress, history). xero-sales rewritten on it; xero-bills logs failures; xero-config lists tender methods and the venue day; xero.ts refresh compare and set.
+- closed_checks.tenders written by every writer except the kiosk (guarded card path; read from its own fields). All writers go through src/lib/closedCheckWrite.js (drops a missing column, retries).
+- MIGRATION PENDING (Peter): supabase/migrations/20260919n_OPS_closed_checks_tenders.sql (tenders column, Xero job hourly). Safe in either order.
+- DEPLOY PENDING (Peter's OK): xero-sales, xero-config, xero-bills, xero-connect.
+- Not verified against live data: production reads were blocked in this session. After deploy, use Back Office, Xero, Check figures first on a quiet day.
+
 # Session, 14 Sep 2026, v5.8.66, KDS redesign
 
 - Built design_handoff_kds (Peter's Downloads) after 25 answered questions (project memory project_kds_redesign). New code: src/surfaces/kds/ (KDSSurface, KdsTicketCard, KdsSettingsSheet, kdsStyles), src/lib/kds/ (kdsTicket, kdsSettings, kdsFit, 33 tests). OtherSurfaces.jsx re-exports KDSSurface.

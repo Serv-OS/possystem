@@ -33,6 +33,8 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
+import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
@@ -1080,6 +1082,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
+          // v5.9.11: what paid the order, per tender: the gift card as DEBITED and the loyalty
+          // and promo credit (discounts, never money). No card was charged on this path.
+          tenders: finishTenders([
+            ...giftTenders(giftApplied ? giftCardCheckRecord(giftApplied, giftCommit) : null),
+            tender('loyalty', rewardDiscountMinor / 100),
+            tender('promo', promoAppliedMinor / 100),
+          ]),
           drawer_id: null,
           shift_id: null,
           closed_at: new Date().toISOString(),
@@ -1103,7 +1112,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+        const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
@@ -1220,6 +1229,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
+          // v5.9.11: what paid the order, per tender. `total` above is the CARD amount (tip
+          // and delivery included); the gift card (as debited), loyalty and promo sit beside it.
+          tenders: finishTenders([
+            ...giftTenders(giftApplied ? giftCardCheckRecord(giftApplied, giftCommit) : null),
+            tender('loyalty', rewardDiscountMinor / 100),
+            tender('promo', promoAppliedMinor / 100),
+            tender('card', (remainingMinor - Math.min(tipMinor, remainingMinor)) / 100, Math.min(tipMinor, remainingMinor) / 100, { pspRef: payId, processor }),
+          ]),
           stripe_payment_intent_id: payId,
           payment_intents: payId ? [{ id: payId, amountMinor: remainingMinor }] : null,
           processor,   // 'stripe' | 'ryft' — refund routes by this
@@ -1252,7 +1269,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+        const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
         if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
         // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
         depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
