@@ -85,3 +85,5 @@ select t.relname as t, r.rolname as role,
 --   ('gift_card_purchases','location_reader_settings','locations','gift_cards','billing_state')
 -- schema/p_policies.json (PLATFORM): the policies query above with
 --   ('gift_card_purchases','location_reader_settings','locations','gift_cards')
+-- schema/p_grants.json (PLATFORM): the grants query above with the same four tables
+--   ('gift_card_purchases','location_reader_settings','locations','gift_cards')

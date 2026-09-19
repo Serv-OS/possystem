@@ -6,10 +6,10 @@ The SQL is in `supabase/migrations`:
 
 | File | Project | When |
 |---|---|---|
-| `20260919a_OPS_fence_1_safe_now.sql` | Ops | Before this release. It creates every server function below, and it is safe with the app that is live today. |
-| `20260919b_OPS_fence_2_after_app.sql` | Ops | After this release is live on every device and on the customer pages. It refuses to run until the devices report `fence_v1` and no customer page has written `order_queue` directly for 24 hours. |
-| `20260919c_PLATFORM_fence_1_safe_now.sql` | Platform | Any time. Safe today. |
-| `20260919d_PLATFORM_fence_2_after_app.sql` | Platform | After P2 and P3 below are live. |
+| `20260919a_OPS_fence_1_safe_now.sql` | Ops | AFTER this release is on every till (fix round, 19 Sep: the release goes first). It creates every server function below. |
+| `20260919b_OPS_fence_2_after_app.sql` | Ops | A full day after file A. It refuses to run until every active device reports `fence_v1` and holds its device secret, no unlinked device is switched on, no old customer page wrote `order_queue` for 24 hours, and at least one order went through `place_public_order` in 7 days. |
+| `20260919c_PLATFORM_fence_1_safe_now.sql` | Platform | After this release and its edge functions (it closes `location_reader_settings` browser writes, so P2 must be live). |
+| `20260919d_PLATFORM_fence_2_after_app.sql` | Platform | After P3 below is live. |
 
 Peter runs every SQL file himself, outside service. The runbook is `docs/FENCE_STAGE_1.md`.
 
@@ -39,24 +39,26 @@ All return `jsonb` unless noted. `ok: false` always carries `reason` and a plain
 | Function | Who calls it | What it does |
 |---|---|---|
 | `claim_device(p_code text) returns uuid` | old code only | Kept for old WebViews. Same signature. NULL means not paired. |
-| `claim_device_v2(p_code text)` | pairing screen, kiosk | Binds this session to the device with that live code. Returns `{ok, already_bound, device_id, location_id, name, type, status, profile_id, centre_id, receipt_printer_id, device_secret, location: {id, name, org_id, timezone}}`. `device_secret` is shown ONCE: store it. Reasons: `not_found`, `expired`, `already_paired`, `locked`. Codes are compared without spaces or dashes, in capitals. |
+| `claim_device_v2(p_code text)` | pairing screen, kiosk | Binds this session to the device with that live code. Returns `{ok, already_bound, device_id, location_id, name, type, status, profile_id, centre_id, receipt_printer_id, device_secret, location: {id, name, org_id, timezone}}`. `device_secret` is shown ONCE: store it. Reasons: `not_found`, `expired`, `already_paired`, `locked`. Codes are compared without spaces or dashes, in capitals. A code that is not in the server format (every code from before file A) always answers `not_found` ("no longer valid") and is never counted as a miss. There is no re-link by an old saved code any more: only the device secret re-links. |
 | `reclaim_device(p_device_id uuid, p_device_secret text)` | boot, wake, after a 42501 | Re-links a till whose login changed. Reasons: `invalid`, `locked`. |
 | `device_issue_secret()` | boot, once, on a till that is bound but has no secret | Gives an already paired till its secret, so grandfathered tills never need a code again. Reason: `not_bound`. |
 | `device_status()` | boot, wake, after a 42501 | Read only: `{bound, device_id, location_id, status, name, has_secret}`. |
-| `device_heartbeat(p_app_version text, p_caps text[])` | every device, every 60 s | Updates last_seen, version and the capability list. Returns the same shape as `device_status`. File 2 waits for `p_caps` to contain `fence_v1` on every active device. |
-| `issue_pairing_code(p_device_id uuid, p_force boolean default false)` | Back Office | Returns `{ok, code, expires_at}` (a 12 symbol server code shown `XXXX-XXXX-XXXX`, 60 minutes). For a device that is paired right now it returns `ok:false, reason 'paired'` unless `p_force` is true. |
+| `device_heartbeat(p_app_version text, p_caps text[], p_device_id uuid default null)` | every device, every 60 s | Updates last_seen, version and the capability list. Returns the same shape as `device_status`. File 2 waits for `p_caps` to contain `fence_v1` on every active device. `p_device_id` (fix round, A13): the device id saved locally; when this session is NOT linked to it the call is recorded, so file 2 can see a till or kiosk that is switched on but unpaired. |
+| `issue_pairing_code(p_device_id uuid, p_force boolean default false)` | Back Office | Returns `{ok, code, expires_at}` (a 12 symbol server code shown `XXXX-XXXX-XXXX`, 60 minutes). For a device that is paired right now it returns `ok:false, reason 'paired'` unless `p_force` is true. A code is readable (devices.pairing_code) ONLY by Back Office of that venue and the super admin; a row holding a live code is hidden from everyone else, tills of the same venue included. A code any other writer puts on the row is replaced by a server code. |
 
 **Customer pages**
 
 | Function | Key the customer holds | What it does |
 |---|---|---|
-| `place_public_order(p_location_id uuid, p_order jsonb, p_check jsonb default null, p_proof_ids uuid[] default '{}')` | a session, and payment proofs | Writes the `order_queue` row (and the `closed_checks` row when paid). Returns `{ok, ref, paid, status, payment_unverified, track_token, tab_join_code, check_id}` or `ok:false` with `reason` in `no_session, venue, source, ref, ref_taken, items, customer, total, rate, tab_not_verified, tab_closed`. A retry by the same session returns the first answer with `idempotent: true`. |
+| `place_public_order(p_location_id uuid, p_order jsonb, p_check jsonb default null, p_proof_ids uuid[] default '{}')` | a session, and payment proofs | Writes the `order_queue` row (and the `closed_checks` row when paid). Returns `{ok, ref, paid, status, payment_unverified, track_token, tab_join_code, check_id, due_minor}` or `ok:false` with `reason` in `no_session, venue, source, ref, ref_taken, items, customer, total, rate, payment, tab_not_verified, tab_closed, tab_not_yours, locked`. A retry by the same session returns the first answer with `idempotent: true`. PAID IS DECIDED BY THE SERVER (fix round): the amount due is the largest of `p_order.total`, `p_check.total` and the value of the lines less the discounts the order declares (`p_order.discounts`, see C15); paid means card plus gift proofs cover it. The paid check books the verified card amount. Unproven: `payment_unverified`, `customer.payment_state = 'checking'`, `customer.payment_ref` and `payment_processor` set, the check kept for `verify_public_order_payment`. |
+| `verify_public_order_payment(p_location_id uuid, p_ref text, p_proof_ids uuid[] default '{}')` | the session that placed the order, or a till or Back Office of the venue | For an order in `payment_state 'checking'`: counts the proofs named plus any proof of the payments its check names; when they cover the amount due it writes the kept paid check, marks the order paid and `payment_state 'verified'`. Returns `{ok, paid, check_id}`, `{ok: true, paid: false, due_minor, proven_minor}` while still unproven, or `reason` `not_found` / `no_check` (a pay later order: take payment on the till). |
+| `confirm_public_order_payment(p_location_id uuid, p_ref text, p_note text default null)` | a till or Back Office of the venue (never a customer) | Staff saw the payment in the processor but no proof arrived: writes the kept check as paid (the card amount the order still needed), `payment_state 'confirmed_by_staff'`, and who confirmed it. Put it behind a manager PIN. |
 | `settle_qr_tab(p_location_id uuid, p_payment_intent_id text, p_check jsonb default '{}', p_proof_ids uuid[] default '{}')` | the tab's card payment id, plus a capture proof | Marks the tab's rounds collected and writes ONE closed check for what was really captured. Returns `{ok, closed, check_id, booked, shortfall}`; `reason` in `no_session, missing, not_captured, already_closed`. |
-| `order_track_row(p_location_id text, p_ref text, p_key text)` | tracking token, or the QR card payment id, or the last 4 phone digits (old links) | The tracker row: `ref, status, total, items, collection_time, is_asap, type, source, sent_at, updated_at, paid, customer {delivery_mode, collection_at, tip, tableLabel, phone (last 4 only)}`. NULL when the key is wrong. 10 wrong keys per order per hour lock that order's tracker for an hour. |
+| `order_track_row(p_location_id text, p_ref text, p_key text)` | tracking token, or the QR card payment id, or the last 4 phone digits (old links) | The tracker row: `ref, status, total, items, collection_time, is_asap, type, source, sent_at, updated_at, paid, payment_state, customer {delivery_mode, collection_at, tip, tableLabel, phone (last 4 only)}`. NULL when the key is wrong. 10 wrong keys per order per hour lock only that order's last 4 path; a token or payment id always works. |
 | `order_track_check(p_location_id text, p_ref text, p_key text) returns boolean` | same | The gate only. |
 | `qr_table_open_tabs(p_location_id text, p_table_id text)` | the table (QR code) | `[{tab_handle, tab_ref, table_label, opened_at, processor, total, rounds, has_join_code}]`. No payment ids, no names, no codes. |
-| `qr_tab_rounds(p_location_id text, p_payment_intent_id text)` | the tab's card payment id (the opener's stash) | `{tab: {payment_intent_id, processor, stripe_account, payment_session_id, ryft_customer_id, ryft_payment_method_id, payment_method_id, pre_auth_amount, tab_ref, table_id, table_label, tab_join_code, opened_at}, rounds: [{ref, status, items, total, created_at, sent_at, location_id, customer: {tip, service_charge, tableId, tableLabel, round_ref, processor, pre_auth_amount, payment_intent_id}}]}` or NULL. |
-| `qr_tab_join(p_location_id text, p_tab_handle text, p_join_code text)` | the handle plus the 6 digit table code | `{ok: true, tab, rounds}` (same shape). Reasons: `wrong_code`, `locked` (8 wrong per tab per hour), `staff_only` (an old tab with no code), `no_tab`. |
+| `qr_tab_rounds(p_location_id text, p_payment_intent_id text)` | the tab's card payment id (the opener's stash) | `{tab: {payment_intent_id, processor, stripe_account, payment_session_id, ryft_customer_id, ryft_payment_method_id, payment_method_id, pre_auth_amount, tab_ref, table_id, table_label, tab_join_code, has_join_code, opened_at}, rounds: [{ref, status, items, total, created_at, sent_at, location_id, customer: {tip, service_charge, tableId, tableLabel, round_ref, processor, pre_auth_amount, payment_intent_id}}]}` or NULL. `tab_join_code` only comes back to the tab's opener session or a member (fix round); anyone else who only holds the payment id gets `has_join_code`. Only rows with `tab_open` count as rounds (a pay now order never joins a tab). |
+| `qr_tab_join(p_location_id text, p_tab_handle text, p_join_code text)` | the handle plus the 6 digit table code | `{ok: true, tab, rounds}` (same shape, with the code). Reasons: `wrong_code`, `locked` (8 wrong per tab per hour), `staff_only` (an old tab with no code), `no_tab`. Called WITH a session, it remembers this session as a member: its rounds need no code afterwards (C16). |
 | `qr_table_tab_count(p_location_id text, p_table_id text) returns integer` | the table | Distinct open tabs, for sub numbering. |
 | `catering_day_load(p_location_id text, p_date date)` | the venue | `table(order_count integer, order_value numeric)`. |
 
@@ -74,7 +76,7 @@ Line numbers are `main`. "Refused" below means PostgREST error code `42501` (or 
 1. `ensureAuthToken()`.
 2. If `dev.deviceSecret` is set: `rpc('reclaim_device', { p_device_id: dev.id, p_device_secret: dev.deviceSecret })`.
 3. Else: `rpc('device_status')`. If `bound` is true: `rpc('device_issue_secret')` and save `device_secret` into `rpos-device` as `deviceSecret`.
-4. Else, if `dev.pairingCode` is set (tills paired before this release): `rpc('claim_device_v2', { p_code: dev.pairingCode })`; on `ok` save `device_secret`. This path only works until file 2 (codes are single use after it).
+4. Else, if `dev.pairingCode` is set (tills paired before this release): `rpc('claim_device_v2', { p_code: dev.pairingCode })`; on `ok` save `device_secret`. Fix round: this NEVER works after file A (every code issued before it is retired and there is no re-link by code); see A15.
 5. Delete the `select('pairing_code')` read at `:205` (after file 1 bound rows have no readable code).
 6. Any refusal: dispatch `window` event `rpos-device-link-lost` with the reason (A7 shows the banner). On success dispatch `rpos-device-relinked` (A8 replays parked writes).
 7. Then `rpc('device_heartbeat', { p_app_version: VERSION, p_caps: FENCE_CAPS })` (A10).
@@ -101,7 +103,7 @@ Keep `claimPairedDeviceOnBoot` and `whenDeviceClaimed` (`store/index.js:4829-483
 - `:22-23` delete `genCode` (Math.random, 90,000 values).
 - `:450-453` shows `d.pairing_code` for unpaired rows: keep (the new code is readable by Back Office of that venue).
 - `src/backoffice/sections/KioskRegistry.jsx:76-103` (insert: already shows `data.pairing_code` from the returned row; drop `pairing_code: code` and call `issue_pairing_code` after the insert, show its code) and `:105-118` (regenerate: `issue_pairing_code(id, true)` and show the returned code, not the one the browser made at `:115`). Delete `generatePairingCode` (`:26-31`).
-- After file 2 a browser made code is replaced by the server anyway; these changes make Back Office show the code that works.
+- Since the fix round, file A already replaces a browser made code with a server code (and hides every live code from anyone but that venue's Back Office and the super admin); these changes make Back Office show the code that works.
 
 **A7. The lapse banner (pairing map section 3).** New component mounted by every till surface (POS, bar, tables, MPOS, KDS, kiosk, clock). It shows, fixed and red: "This till is not linked to {venue}. Your open orders are safe on this till. Ask a manager to pair it again." Drive it from `device_status()` at boot, on `visibilitychange` (visible), on `online`, on `rpos-device-link-lost`, and on any write refused with code `42501` (add a hook in the Supabase error paths of SessionSync, QueueSync, OfflineQueue, DataSafe, printer.js, db.js). When `reclaim_device` succeeds it hides itself. Say plainly that hidden bar tabs come back after re-pairing (QueueReconciler hides confirmed rows after 3 empty reads, `src/sync/QueueReconciler.js:41`, `:94-101`).
 
@@ -199,7 +201,7 @@ A device may send `p_caps` containing `fence_v1` only when its build has A1 to A
 
 ## 10. Built (app release, 18 Sep 2026) and the stage 1 cleanup list
 
-**Order of release.** The app release works BEFORE and AFTER file 1. Every new server call falls back to today's path when PostgREST answers "function not found" (PGRST202 / 42883), or when an edge function or action is not deployed yet. So the release can go live first, file 1 can go first, or the two can land in either order. File 2 (and Platform file D) still come last, as the runbook says.
+**Order of release.** The app release works BEFORE and AFTER file 1: every new server call falls back to today's path when PostgREST answers "function not found" (PGRST202 / 42883), or when an edge function or action is not deployed yet. Since the fix round (19 Sep) the release MUST go first and be on every till before file 1: file 1 retires every old pairing code and hides live codes, so a till still on the old app can neither re-link after a login change nor pair at all. File 2 (and Platform file D) still come last, as the runbook says.
 
 **Where the rules live.** Pure, tested: `src/lib/deviceFence.js` (tills), `src/lib/publicOrder.js` (customer pages), `supabase/functions/_shared/paymentProofRules.js` (C0), `_shared/readerSettingsPatch.js` (P2), `_shared/companyStaffAccess.js` (P3). Wiring: `src/lib/supabase.js` (`linkDevice`, `sendDeviceHeartbeat`), `src/lib/deviceLink.js` (link state, monitor, heartbeat), `src/components/DeviceLinkBanner.jsx`, `src/lib/publicOrderClient.js`, `src/lib/readerSettingsClient.js`, `src/backoffice/sections/PrintAgentKeys.jsx`.
 
@@ -211,6 +213,53 @@ A device may send `p_caps` containing `fence_v1` only when its build has A1 to A
 - Loyalty proofs record amount 1 (a marker): the loyalty ledgers hold points, not money. Enough for `place_public_order`, which only needs a gift or loyalty proof above zero for a zero total check.
 - Back Office can revoke only print agent keys issued from that browser (it remembers ids, never keys): file 1 has no list function for `print_agent_tokens`.
 - Online gift purchases through `gift-list` no longer carry `fulfilled_code` (P3), so the Back Office list shows the last 4 digits and no Voucher button for them.
-- **SQL note for the SQL agent (not changed here):** `place_public_order` stamps `closed_at = now()`. The old catering path dated a paid catering check to the EVENT day, so catering sales now report on the day they were placed once the RPC path is live.
+- **SQL note (fixed in the fix round):** `place_public_order` now keeps a paid catering check's `closed_at` from the page (the event time, within a year ahead), like the old catering path; every other public check is dated now.
 
 **STAGE 1 CLEANUP (after 20260919b has run on Ops, and D on Platform).** Delete every branch tagged `FENCE STAGE 1 FALLBACK` (grep the tag): `runDeviceLink` legacy branch and `linkDevice` `readLegacyCode` / `saveLegacyCode`; `decideDeviceRefresh` statusSupported false branch; `PairingScreen.legacyPair`; `KioskSurface.legacyKioskPair` and the loadPaired no-row probe; `DeviceRegistry.genCode` / `KioskRegistry.generatePairingCode` and their `legacyIssue`; `updateDeviceHeartbeat` direct write; `placePublicOrderWithFallback` legacy and `proofUnavailable` branches and every `legacyInsert` / `legacySettle` / `publicRead` legacy read in the customer pages; the legacy mode of both print agents; `saveReaderSettingsWithFallback` legacy write; the `GiftCards.jsx` direct purchases read. Also remove the `syncQrTableSession` calls in `QrCheckout.jsx` (2) and `OrdersHub.jsx` (1), and the device `pairingCode` field from old `rpos-device` records.
+
+## 11. Fix round (19 Sep 2026): app changes the new SQL needs
+
+Three reviewers checked stage 1; the SQL was fixed on this branch (files A to D, harness `supabase/tests/fence_stage_1`, runbook). What changed in the SQL, in one line each:
+
+- **Devices**: a device's venue is pinned (moves only by super admin or a Back Office login of BOTH venues, and a move unpairs it); only the claim functions link a device; a linked till writes only its heartbeat columns.
+- **Codes**: readable only by that venue's Back Office and the super admin, even in file A; every old code is retired; there is no re-link by an old saved code at all (device secret only); throttles never refuse a live code.
+- **Paid**: decided by the server from the order's own amount due and verified money; an unproven order is `payment_state 'checking'` with its check kept for `verify_public_order_payment` or `confirm_public_order_payment`.
+- **QR tabs**: only the opener, a member (joined with the code) or a round carrying the code may add a round; a pay now order never carries another tab's payment id.
+- **Order of release**: this release goes FIRST, on every till, then file A.
+
+Everything below is for the app agent. Each item names the file and the line on this branch.
+
+**Tills**
+
+- **A12. Parked writes after a re-pair.** After "Pair again" (or any pairing) the page reloads and the boot link answers `linked`, not `relinked`, so `rpos-device-relinked` never fires and OfflineQueue keeps permission refused writes (for example bar tab writes made while unlinked) parked for good. Release them on `rpos-device-linked` as well (`src/sync/OfflineQueue.js`, next to the `rpos-device-relinked` listener at `:431`). DataSafe needs nothing: it resends kept sales at boot and every 30 s. Test: a parked permission item is released on `rpos-device-linked`, and `before()` / `keep()` still hold.
+- **A13. Heartbeat names the device.** `sendDeviceHeartbeat` (`src/lib/supabase.js:267`) passes `p_device_id: readLocalDevice()?.id` (the kiosk its kiosk id). File B refuses to run while a device that is not linked is switched on (a kiosk that would take money it can no longer save), and this is how it knows.
+- **A14. The version is visible before file A.** When `device_heartbeat` does not exist yet (`unsupported`), `deviceHeartbeat()` in `src/lib/deviceLink.js` writes `devices.app_version` and `last_seen` on its own row directly, for POS, bar, tables, MPOS, clock and kiosk (the KDS already does this in `src/lib/db.js` `updateDeviceHeartbeat`). The runbook's step 2 query reads it to prove every till is on the release before file A. FENCE STAGE 1 FALLBACK.
+- **A15. Saved pairing codes are dead.** After file A every code issued before it is retired and there is no re-link by code, so `runDeviceLink` step 3 (`claim_device_v2` with `dev.pairingCode`) and `readLegacyCode` / `saveLegacyCode` can never succeed. Once `device_status` is supported, delete `pairingCode` from `rpos-device` and skip step 3. Harmless meanwhile: the server answers an old format code `not_found` and never counts it as a miss.
+- **A16. Old WebViews cannot pair after file A.** The old pairing screen reads the code off the devices table, and codes are hidden now. No change in this release can fix an old build; the runbook says force stop and reopen. Nothing to build.
+
+**Customer pages**
+
+- **C15. Online order total and declared discounts** (`src/surfaces/online/OnlineCheckout.jsx` `queueRow` at `:1045` and `:1212`):
+  - `total` must be what the customer is charged across card and gift card: `(remainingMinor + giftAppliedMinor) / 100` (net of the promo code and the loyalty reward; auto discounts are already net).
+  - Add a top level `discounts` to `p_order`: `[{type: 'auto', label, amount_minor}]` for each auto discount, `{type: 'promo', label: code, amount_minor: promoAppliedMinor}`, `{type: 'loyalty', label: reward name, amount_minor: rewardDiscountMinor}`. The server subtracts them from the value of the lines and writes the result into `customer.order_pricing` for staff to see.
+  - The card path must redeem the loyalty reward BEFORE placing and attach its `loyalty` proof, as the gift only path does (`:1075`): a declared loyalty discount counts only with a redemption proof.
+  - The card path must also send the gift card proof (`payment-proof` kind `gift` with `giftCommit.idempotency_key`, after `commitGift` at `:1252`), as the gift only path does (`:1090`): card plus gift must cover the order total.
+  - Without these, every order with a gift card, a promo code or a reward arrives "Payment being checked" (safe, but staff must confirm each one). A promo that covers the whole bill has no payment to prove at stage 1 and always arrives "Payment being checked".
+- **C16. QR rounds and joining** (`src/surfaces/qr/QrCheckout.jsx:222-265` `addToExistingTab`, `src/surfaces/online/OnlineSurface.jsx` `JoinTabScreen` `onJoin`):
+  - Stop stripping the code: send `p_order.tab_join_code` = the tab's code (the stash's `tab_join_code`, or `tab.tab_join_code` from `qr_tab_join`).
+  - Call `ensureCustomerSession()` BEFORE `qr_tab_join`, so the server remembers this phone as a member.
+  - Handle `reason: 'tab_not_yours'` ("Ask the person who opened this tab for the table code") and `'locked'`.
+  - `qr_tab_rounds` returns `tab_join_code` only to the opener and members; the resume screen keeps reading the code from the stash.
+- **C17. "The venue is confirming your payment".** After `place_public_order` answers `payment_unverified`, keep checking in the background for about 3 minutes: `payment-proof` again for the same payment, then `verify_public_order_payment(p_location_id, ref, [proof_id])`. Show "Your order is in. The venue is confirming your payment." and the same in the tracker while `order_track_row` says `payment_state: 'checking'`. Never ask the customer to pay again.
+- **C18. payment-proof binds a payment to its order** (`supabase/functions/payment-proof/index.ts`, `_shared/paymentProofRules.js`): record the processor's own order reference in `meta.order_ref` (Stripe `payment_intent.metadata.ref`, which every customer page already sets; Adyen the `merchantReference` in `adyen_payments.raw`; Ryft the session metadata when it has one). The server then never lets a payment made for one order pay another. For a loyalty redemption with a fixed money value (`reward_value.amount_minor`), record that value as `amount_minor` (the server caps a declared loyalty discount at it); otherwise keep the marker 1.
+- **C19. `reason: 'payment'`.** A QR order with no payment (not a tab, no check) is refused. No current flow sends one; show the message if it happens.
+
+**Staff**
+
+- **S3. "Payment being checked" in the Orders Hub** (`src/surfaces/OrdersHub.jsx` `isOrderPaid` at `:85`, the charge step at `:1582`): an order with `customer.payment_state === 'checking'` is neither paid nor unpaid.
+  - Show an amber "Payment being checked" badge. Never offer the charge step or "take payment" for it (today an unverified QR or catering order looks unpaid and invites a second charge; an unverified online order looks paid and never gets its closed check).
+  - "Check payment": `payment-proof` with `customer.payment_processor`, `customer.payment_ref`, kind `card`, then `verify_public_order_payment` with the proof id.
+  - "Confirm payment" (manager PIN): `confirm_public_order_payment` with a note.
+  - Both write the kept paid check for reports. Pin it with a test (a helper that answers 'paid', 'unpaid' or 'checking').
+- **S4. INVARIANTS.md** ("Database fence stage 1"): add that a device's venue never changes while it is linked (moving it unpairs it); pairing codes are readable only by that venue's Back Office and the super admin; "paid" on a public order is decided by the server from verified money against the amount due; `payment_state 'checking'` is a third state that is never charged again.
+

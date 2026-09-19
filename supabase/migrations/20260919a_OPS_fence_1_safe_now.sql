@@ -3,7 +3,8 @@
 -- ############################################################################
 -- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
 -- #  DATABASE FENCE, STAGE 1, FILE 1 OF 2 (Ops).                              #
--- #  Safe with the app that is live today (v5.9.8). Run it OUTSIDE SERVICE.   #
+-- #  ONLY AFTER the app release in docs/FENCE_STAGE_1_APP.md is on EVERY till #
+-- #  (the runbook says how to check). Run it OUTSIDE SERVICE.                 #
 -- #  Peter pastes it into the Ops SQL editor and presses Run. Claude never    #
 -- #  runs it. The runbook is docs/FENCE_STAGE_1.md.                           #
 -- ############################################################################
@@ -21,45 +22,58 @@
 --   * ul_update_self let a login move its own venue link to any venue.
 --   * anon and authenticated held TRUNCATE on 168 of 190 tables (TRUNCATE ignores RLS).
 --
--- WHAT THIS FILE CHANGES (all of it works with the live app):
---   0. Guards: right project, 3 second lock wait.
+-- WHY THE APP GOES FIRST: the live app (v5.9.8) can swap a till's login when a token
+-- refresh fails on the network, and it pairs by reading the code off the devices table.
+-- After this file neither works any more (codes are hidden, old codes are retired), so a
+-- till still on the old app that loses its login stays unlinked with no banner. The
+-- release never swaps a till's login, re-links with a device secret, and shows a red
+-- banner with "Pair again" whenever a till is not linked.
+--
+-- WHAT THIS FILE CHANGES:
+--   0. Guards: right project; STOPS if file 2 (20260919b) has already run; takes its
+--      locks up front, busy tables first, so it can never deadlock with a till; 3 second
+--      lock wait with a plain "press Run again" message.
 --   1. Grants: TRUNCATE, REFERENCES, TRIGGER taken from anon and authenticated on
 --      every table (and for future tables). The raw anon key (no login at all) loses
---      INSERT, UPDATE, DELETE on devices, organisations, locations, user_locations and
---      user_profiles.
---   2. Private support tables (no browser access at all): fence_attempts (throttles),
---      device_heal_codes, device_claim_log, payment_proofs, public_order_tokens,
+--      INSERT, UPDATE, DELETE on devices, organisations and locations.
+--   2. Private support tables (no browser access at all): fence_state, fence_attempts
+--      (throttles), device_claim_log, device_unlinked_pings, payment_proofs,
+--      public_order_tokens, public_order_pending_checks, qr_tab_members,
 --      print_agent_tokens.
 --   3. Identity: venue access is user_locations only, plus every venue for a verified
 --      super admin. user_profiles.location_id is only "the venue Back Office opens on".
---      Profiles are row scoped. A login can never move a venue link, change its own
---      company, or give itself Back Office access. A new venue can only be claimed by
---      the login that created it (created_by, written by the server).
+--      Profiles are row scoped; teammates are logins linked to the same venue (a staff
+--      record alone never reaches a login). A login can never move a venue link, change
+--      its own company, or give itself Back Office access. A new venue can only be
+--      claimed by the login that created it (created_by, written by the server).
 --   4. organisations and locations: no more "allow all". Read rules unchanged for
 --      venues (customer pages need them). Writes: the venue's own Back Office logins;
 --      create: a real login inside a company it created; delete: super admin only.
 --   5. devices: no more forged rows. Only Back Office adds, edits or removes a device.
---      A till may only touch its own heartbeat columns. pos_can_access() trusts a
---      devices row only when it was bound by a claim (bound_via is set). Pairing codes
---      last 60 minutes, are single use, are not readable once used, and wrong codes are
---      throttled (per session and platform wide). A till that is already paired can
---      never be taken by someone who read its old code: the live app's "re-link with
---      my saved code after my login changed" still works, but only when the till's
---      old login has been idle for 75 minutes AND the new login signed in from the
---      same venue network. Existing tills used in the last 14 days keep working
---      (grandfathered); the rest must be paired again (listed at the end).
---   6. New server functions the app release will call (they change nothing until
---      called): claim_device_v2, reclaim_device, device_issue_secret, issue_pairing_code,
---      device_heartbeat, device_status, place_public_order, settle_qr_tab,
---      order_track_row, order_track_check, qr_table_open_tabs, qr_tab_rounds,
---      qr_tab_join, qr_table_tab_count, catering_day_load, print agent functions.
---   7. closed_checks now accepts source 'qr' (QR paid checks were silently refused).
+--      A device's venue is PINNED: it moves only by super admin, or by a Back Office
+--      login that manages BOTH venues, and a move always unlinks it (pair it again).
+--      Only the claim functions link a device to a session. A linked till may only
+--      touch its own heartbeat columns. pos_can_access() trusts a devices row only when
+--      a claim bound it (bound_via is set). Pairing codes are made by the server (about
+--      60 bits), last 60 minutes, are single use, and NOBODY but that venue's Back
+--      Office and the super admin can read them. Every code issued before this file is
+--      retired: an old code never links a till again. Wrong codes are throttled per
+--      session; per network and platform wide counters refuse only wrong codes, never a
+--      live one. Existing tills used in the last 14 days keep working (grandfathered)
+--      and collect a device secret on their first check; the rest must be paired again.
+--   6. New server functions the app release calls: claim_device_v2, reclaim_device,
+--      device_issue_secret, issue_pairing_code, device_heartbeat, device_status,
+--      place_public_order, verify_public_order_payment, confirm_public_order_payment,
+--      settle_qr_tab, order_track_row, order_track_check, qr_table_open_tabs,
+--      qr_tab_rounds, qr_tab_join, qr_table_tab_count, catering_day_load, print agent
+--      functions.
+--   7. closed_checks accepts source 'qr' (QR paid checks were silently refused), and
+--      every order_queue row records who wrote it (placed_via: rpc, staff, server or
+--      public), which file 2 checks before it closes the table.
 --
--- WHAT IT DOES NOT CHANGE YET (file 2, 20260919b, after the app release):
+-- WHAT IT DOES NOT CHANGE YET (file 2, 20260919b, a day after this file):
 --   order_queue, kds_tickets, active_sessions, table_reservations keep "allow all";
---   print_jobs keeps its open policies; closed_checks keeps its open insert; the
---   devices table stays readable. Closing those before the app handles a till that
---   briefly loses its link would lose kitchen tickets and tables.
+--   print_jobs keeps its open policies; closed_checks keeps its open insert.
 --
 -- RULES OF THE FILE: no begin or commit (the SQL editor runs the whole paste as one
 -- transaction, so any error means NOTHING changed and you can simply run it again);
@@ -69,11 +83,13 @@
 
 
 -- ============================================================================
--- 0. Guards
+-- 0. Guards, locks, and the two busy tables first
 -- ============================================================================
 set lock_timeout = '3s';
 
 do $guard$
+declare
+  v_file_b boolean := false;
 begin
   if to_regclass('public.user_locations') is null
      or to_regclass('public.devices') is null
@@ -86,8 +102,84 @@ begin
      or to_regprocedure('public.pos_can_access(text)') is null then
     raise exception 'is_super_admin(), is_anon_session() or pos_can_access() is missing. This is not the database the fence was written for. Nothing was changed.';
   end if;
+  -- File 2 closes the orders and tables. Running this file again after it would put back
+  -- things file 2 finished, so it refuses.
+  if to_regclass('public.fence_state') is not null then
+    execute 'select exists (select 1 from public.fence_state where key = ''file_b'')' into v_file_b;
+  end if;
+  if v_file_b
+     or exists (select 1 from pg_policies where schemaname = 'public'
+                 and policyname in ('order_queue_staff', 'kds_tickets_staff', 'closed_checks_insert_staff')) then
+    raise exception 'STOPPED, NOTHING WAS CHANGED. File 2 (20260919b) has already run on this database, so this file must not run again. Nothing is wrong: there is nothing to do here.';
+  end if;
 end
 $guard$;
+
+-- 0b. Every lock this file needs, taken now, in one fixed order: the two busy tables a
+-- till writes first, then the identity tables its policies read. A till always takes
+-- them in that same order (the table it writes, then the identity tables), so the two
+-- can never wait on each other in a circle (a deadlock). If a till holds one of them for
+-- more than 3 seconds the file stops, changes nothing, and says so.
+do $locks$
+begin
+  lock table public.closed_checks, public.order_queue, public.locations, public.organisations,
+             public.user_profiles, public.user_locations, public.devices
+    in access exclusive mode;
+exception when lock_not_available then
+  raise exception 'STOPPED, NOTHING WAS CHANGED. A till was busy with the orders or devices tables for more than 3 seconds. Wait 10 seconds and press Run again.';
+end
+$locks$;
+
+-- 0c. closed_checks accepts QR (gap G15). closed_checks_source_check had no 'qr', so
+-- every QR paid check was refused and never reached reports. Widening a check cannot
+-- break an existing row.
+alter table public.closed_checks drop constraint if exists closed_checks_source_check;
+alter table public.closed_checks add constraint closed_checks_source_check
+  check (source = any (array['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise', 'pax_table_pay',
+                             'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr']));
+
+-- 0d. order_queue remembers who wrote each row, set by the database, never by the
+-- writer: 'rpc' (place_public_order), 'staff' (a linked till, kiosk or Back Office of
+-- that venue), 'server' (an edge function, for example ezCater or HubRise) or 'public'
+-- (anyone else, which today means an old customer page). File 2 refuses to close the
+-- table while 'public' rows still arrive. It never changes once written.
+alter table public.order_queue add column if not exists placed_via text;
+comment on column public.order_queue.placed_via is
+  '20260919a fence: who wrote the row, set by order_queue_placed_via: rpc (place_public_order), staff (linked device or Back Office of the venue), server (service role or the SQL editor) or public (anyone else). Never changes.';
+
+create or replace function public.order_queue_placed_via_tg()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $fn$
+declare
+  v_role text := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '');
+begin
+  if tg_op = 'UPDATE' then
+    new.placed_via := old.placed_via;
+    return new;
+  end if;
+  if coalesce(current_setting('servos.public_order', true), '') = 'on' then
+    new.placed_via := 'rpc';
+  elsif v_role not in ('anon', 'authenticated') then
+    new.placed_via := 'server';
+  else
+    begin
+      new.placed_via := case when public.pos_can_access(new.location_id) then 'staff' else 'public' end;
+    exception when others then
+      new.placed_via := 'public';
+    end;
+  end if;
+  return new;
+end;
+$fn$;
+revoke all on function public.order_queue_placed_via_tg() from public, anon, authenticated;
+
+drop trigger if exists order_queue_placed_via on public.order_queue;
+create trigger order_queue_placed_via
+  before insert or update of placed_via on public.order_queue
+  for each row execute function public.order_queue_placed_via_tg();
 
 
 -- ============================================================================
@@ -101,6 +193,8 @@ alter default privileges in schema public revoke truncate, references, trigger o
 -- The raw anon key (no session at all) never writes these five. Every real writer
 -- has a session: Back Office logins, paired tills (anonymous session), the admin
 -- portal (super admin session). Checkout and print agent tables are left for file 2.
+-- (On 18 Sep anon already had no INSERT, UPDATE or DELETE on user_locations and
+-- user_profiles; revoking again is harmless, and the roll back does not give them.)
 revoke insert, update, delete on table public.devices, public.organisations, public.locations,
   public.user_locations, public.user_profiles from anon;
 
@@ -108,6 +202,15 @@ revoke insert, update, delete on table public.devices, public.organisations, pub
 -- ============================================================================
 -- 2. Private support tables (service role and definer functions only)
 -- ============================================================================
+
+-- Which fence files have run (file 1 refuses to run again once file 2 has).
+create table if not exists public.fence_state (
+  key    text primary key,
+  value  text,
+  set_at timestamptz not null default now()
+);
+insert into public.fence_state (key, value) values ('file_a', '20260919a')
+on conflict (key) do update set value = excluded.value, set_at = now();
 
 -- Throttle buckets: wrong pairing codes, wrong tracking keys, wrong table codes,
 -- public order spam. One row per bucket.
@@ -119,17 +222,16 @@ create table if not exists public.fence_attempts (
   updated_at        timestamptz not null default now()
 );
 
--- The pairing code a till used, kept only as a salted hash so the live app can
--- re-link a till whose login changed (it re-sends the code it saved). Deleted by
--- file 2, which switches every till to a device secret.
-create table if not exists public.device_heal_codes (
-  device_id            uuid primary key references public.devices(id) on delete cascade,
-  code_hash            text not null,
-  salt                 text not null,
-  created_at           timestamptz not null default now(),
-  heal_count           integer not null default 0,
-  heal_window_start    timestamptz,
-  last_heal_at         timestamptz
+-- A running app that says "I am device X" while its session is NOT linked to X (the
+-- heartbeat carries its local device id). File 2 refuses to run while a device that is
+-- not linked was switched on in the last 24 hours (a till or kiosk that would take
+-- money it can no longer save). Only real device ids are recorded.
+create table if not exists public.device_unlinked_pings (
+  device_id   uuid primary key references public.devices(id) on delete cascade,
+  uid         uuid,
+  last_at     timestamptz not null default now(),
+  app_version text,
+  caps        text[]
 );
 
 -- Every bind, re-link, refusal and fence action on a device, for review.
@@ -175,6 +277,33 @@ create table if not exists public.public_order_tokens (
   primary key (location_id, ref)
 );
 
+-- The paid check of a public order whose payment could not be proven yet (for example
+-- the card processor's webhook was late). The order reaches the venue marked "payment
+-- being checked"; verify_public_order_payment writes this check once a proof covers the
+-- amount due, or confirm_public_order_payment when staff confirm it by hand.
+create table if not exists public.public_order_pending_checks (
+  location_id  text not null,
+  ref          text not null,
+  check_row    jsonb not null,
+  due_minor    bigint not null,
+  client_total numeric,
+  payment_refs text[] not null default '{}',
+  placed_by    uuid,
+  created_at   timestamptz not null default now(),
+  primary key (location_id, ref)
+);
+
+-- Phones that joined a QR tab with its table code (qr_tab_join), so their rounds are
+-- accepted without sending the code again. The tab is named by an md5 of its card
+-- payment id, never the id itself.
+create table if not exists public.qr_tab_members (
+  location_id text not null,
+  pi_hash     text not null,
+  uid         uuid not null,
+  joined_at   timestamptz not null default now(),
+  primary key (location_id, pi_hash, uid)
+);
+
 -- Print agent keys, one per agent install, issued from Back Office. Stored hashed.
 create table if not exists public.print_agent_tokens (
   id           uuid primary key default gen_random_uuid(),
@@ -191,8 +320,9 @@ do $private$
 declare
   t text;
 begin
-  foreach t in array array['fence_attempts', 'device_heal_codes', 'device_claim_log', 'payment_proofs',
-                           'public_order_tokens', 'print_agent_tokens'] loop
+  foreach t in array array['fence_state', 'fence_attempts', 'device_unlinked_pings', 'device_claim_log',
+                           'payment_proofs', 'public_order_tokens', 'public_order_pending_checks',
+                           'qr_tab_members', 'print_agent_tokens'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on table public.%I from public, anon, authenticated', t);
     execute format('grant all on table public.%I to service_role', t);
@@ -264,6 +394,39 @@ immutable
 set search_path = pg_catalog
 as $fn$
   select coalesce(p, '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+$fn$;
+
+-- A code in the server format: 12 symbols from the alphabet _fence_random_code uses.
+-- Every code issued before this file is retired, so anything else can never match: it
+-- is a till re-sending an old saved code, not a guess, and is never counted as a miss.
+create or replace function public._fence_is_server_code(p_norm text)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog
+as $fn$
+  select coalesce(p_norm, '') ~ '^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{12}$';
+$fn$;
+
+-- The caller's network address as the API gateway reports it (Cloudflare first). Used
+-- only to scope throttles, never to grant anything. NULL when there is no request.
+create or replace function public._fence_client_ip()
+returns text
+language plpgsql
+stable
+set search_path = pg_catalog
+as $fn$
+declare
+  h jsonb;
+begin
+  begin
+    h := coalesce(nullif(current_setting('request.headers', true), ''), '{}')::jsonb;
+  exception when others then
+    return null;
+  end;
+  return nullif(left(btrim(coalesce(h ->> 'cf-connecting-ip', h ->> 'x-real-ip',
+                                    split_part(coalesce(h ->> 'x-forwarded-for', ''), ',', 1))), 64), '');
+end;
 $fn$;
 
 -- Random code from an alphabet with no 0 O 1 I. Bytes come from gen_random_uuid()
@@ -359,6 +522,7 @@ begin
   foreach f in array array[
     'public._fence_api_role()', 'public._fence_bypass()', 'public._fence_norm_code(text)',
     'public._fence_num(text)', 'public._fence_bool(text)', 'public._fence_is_uuid(text)',
+    'public._fence_is_server_code(text)', 'public._fence_client_ip()',
     'public._fence_random_code(integer)', 'public._fence_random_digits(integer)', 'public._fence_is_locked(text)',
     'public._fence_count(text, integer, interval, interval)', 'public._fence_clear(text)'] loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
@@ -458,9 +622,12 @@ revoke all on function public.user_accessible_orgs() from public;
 grant execute on function public.user_accessible_locations() to anon, authenticated, service_role;
 grant execute on function public.user_accessible_orgs() to anon, authenticated, service_role;
 
--- 4d. Teammates: logins linked to, or staff at, a venue the caller can manage in
+-- 4d. Teammates: logins LINKED (user_locations) to a venue the caller can manage in
 -- Back Office. Used so the Staff screen can still show a teammate's email and switch
--- their Back Office access.
+-- their Back Office access. A staff record (staff_members.auth_user_id) is never
+-- trusted on its own: any till or owner can write one naming any login, so it would
+-- reach logins at other venues. A real staff login always has a venue link too
+-- (create-user makes one), so the Staff screen loses nothing.
 create or replace function public.bo_teammate_ids()
 returns setof uuid
 language sql
@@ -470,16 +637,13 @@ set search_path = public
 as $fn$
   select ul.user_id
     from public.user_locations ul
-   where ul.location_id::text in (select public.user_accessible_locations())
-  union
-  select sm.auth_user_id::uuid
-    from public.staff_members sm
-   where public._fence_is_uuid(sm.auth_user_id)
-     and sm.location_id::text in (select public.user_accessible_locations());
+   where ul.location_id::text in (select public.user_accessible_locations());
 $fn$;
 
--- Logins whose Back Office access the caller may switch: teammates at a venue where
--- the caller is owner, or where the caller is manager and the teammate is not an owner.
+-- Logins whose Back Office access the caller may switch: teammates linked to a venue
+-- where the caller is owner, or where the caller is manager and the teammate is not an
+-- owner of any venue (Back Office access is one switch for the whole login). Again
+-- only venue links count, never a staff record.
 create or replace function public.bo_manageable_ids()
 returns setof uuid
 language sql
@@ -492,15 +656,10 @@ as $fn$
     join public.user_locations other on other.location_id = me.location_id
    where me.user_id = auth.uid()
      and not public.is_anon_session()
-     and (me.role = 'owner' or (me.role = 'manager' and other.role <> 'owner'))
-  union
-  select sm.auth_user_id::uuid
-    from public.user_locations me
-    join public.staff_members sm on sm.location_id = me.location_id
-   where me.user_id = auth.uid()
-     and not public.is_anon_session()
-     and me.role in ('owner', 'manager')
-     and public._fence_is_uuid(sm.auth_user_id);
+     and (me.role = 'owner'
+          or (me.role = 'manager'
+              and not exists (select 1 from public.user_locations o
+                               where o.user_id = other.user_id and o.role = 'owner')));
 $fn$;
 
 revoke all on function public.bo_teammate_ids() from public;
@@ -808,7 +967,7 @@ alter table public.devices add column if not exists client_caps        text[];
 alter table public.devices add column if not exists last_heartbeat_at  timestamptz;
 
 comment on column public.devices.bound_via is
-  '20260919a fence: how device_uid was bound: code (Back Office pairing code), heal (the live app re-sent its saved code after its login changed), secret (device secret), grandfathered (bound before the fence and used in the last 14 days). NULL = not trusted. Only the claim functions write it.';
+  '20260919a fence: how device_uid was bound: code (a server pairing code from Back Office), secret (the device secret, reclaim_device), grandfathered (bound before the fence and used in the last 14 days). NULL = not trusted. Only the claim functions write it.';
 comment on column public.devices.pairing_expires_at is '20260919a fence: a pairing code works until this time (60 minutes after Back Office issued it). NULL = no live code.';
 comment on column public.devices.client_caps is '20260919a fence: what the running app on this device can do (reported by device_heartbeat). File 2 waits until every active device reports fence_v1.';
 
@@ -821,19 +980,24 @@ comment on column public.devices.client_caps is '20260919a fence: what the runni
 --     itself linked to that venue, OR to the super admin. A login bound as a till at a
 --     venue it is NOT linked to would give that login a venue it has no link for, so
 --     that row must be paired again with a fresh code.
--- Everything else loses its link and is marked 'removed', which is the one status the
--- live app acts on: that till shows the pairing screen on its next boot (loud, never a
--- till that half works). Back Office "Regenerate" brings it back with a fresh code.
--- On 18 Sep: 11 kept, 9 lose their link (7 not seen for 14 days or more, and 2 tills
--- signed in with a Back Office login that is not linked to that venue), plus 3 rows
--- marked active that no till ever claimed (not seen for 30 days): 12 to pair again.
--- Codes of kept tills leave the table and are kept only as a salted hash (see 6f).
+-- Everything else loses its link:
+--   * a row seen in the last 14 days at a venue (a till in use this week, for example
+--     one signed in with a Back Office login that is not linked to that venue) becomes
+--     'unpaired' ('awaiting_pairing' for a kiosk). With the release on it, that till
+--     cannot read its row any more and shows the red "not linked" banner, keeps every
+--     open table and unsent order, and is paired again with "Pair again" and a new code
+--     (Back Office: "New pairing code"). It is never thrown to a blank pairing screen.
+--   * everything older, or with no venue, becomes 'removed'.
+-- Every pairing code on the table before this file was readable by anyone, so NONE is
+-- kept, not even as a hash: a kept till re-links with its device secret (it collects
+-- one on its first check with the release), never with an old code.
+-- On 18 Sep (read only dry run, the runbook has the query): 10 kept, 13 to pair again.
 -- Runs once per row: rows already handled (bound_via set) are skipped on a re-run.
 do $grandfather$
 declare
   r        record;
-  v_salt   text;
   v_keep   boolean;
+  v_recent boolean;
   v_reason text;
 begin
   perform set_config('servos.fence_bypass', 'on', true);
@@ -864,6 +1028,8 @@ begin
       from judged j
   loop
     v_keep := r.eligible and r.rn = 1;
+    v_recent := r.location_id is not null and r.status in ('active', 'online')
+                and r.seen_at is not null and r.seen_at > now() - interval '14 days';
     if v_keep then
       update public.devices
          set bound_via = 'grandfathered',
@@ -871,12 +1037,6 @@ begin
              pairing_code = null,
              pairing_expires_at = null
        where id = r.id;
-      if r.pairing_code is not null then
-        v_salt := replace(gen_random_uuid()::text, '-', '');
-        insert into public.device_heal_codes (device_id, code_hash, salt)
-        values (r.id, encode(sha256(convert_to(v_salt || ':' || public._fence_norm_code(r.pairing_code), 'UTF8')), 'hex'), v_salt)
-        on conflict (device_id) do nothing;
-      end if;
       insert into public.device_claim_log (device_id, location_id, event, new_uid, detail)
       values (r.id, r.location_id, 'grandfathered', r.device_uid, 'kept by the 20260919a fence');
     else
@@ -889,7 +1049,8 @@ begin
       update public.devices
          set device_uid = null, bound_via = null, bound_at = null,
              device_secret_hash = null, secret_issued_at = null,
-             status = 'removed',
+             status = case when not v_recent then 'removed'
+                           when r.type = 'kiosk' then 'awaiting_pairing' else 'unpaired' end,
              pairing_code = null, pairing_expires_at = null, session_token = null
        where id = r.id;
       insert into public.device_claim_log (device_id, location_id, event, old_uid, detail)
@@ -899,19 +1060,28 @@ begin
 
   -- Rows marked active or online that no till ever claimed (no link to keep): the
   -- same, so a till still using one is told to pair.
-  for r in select id, location_id from public.devices where device_uid is null and status in ('active', 'online') loop
+  for r in
+    select d.id, d.location_id, d.type,
+           greatest(d.last_seen, (select max(h.last_seen) from public.device_heartbeats h where h.device_id = d.id::text)) as seen_at
+      from public.devices d
+     where d.device_uid is null and d.status in ('active', 'online')
+  loop
+    v_recent := r.location_id is not null and r.seen_at is not null and r.seen_at > now() - interval '14 days';
     update public.devices
-       set status = 'removed', pairing_code = null, pairing_expires_at = null
+       set status = case when not v_recent then 'removed'
+                         when r.type = 'kiosk' then 'awaiting_pairing' else 'unpaired' end,
+           pairing_code = null, pairing_expires_at = null
      where id = r.id;
     insert into public.device_claim_log (device_id, location_id, event, detail)
     values (r.id, r.location_id, 'unbound_by_fence', 'marked active but never claimed by a till');
   end loop;
 
-  -- Old browser codes that were never used (no expiry means issued before the fence):
-  -- retired. Back Office issues a fresh one when that device is set up.
+  -- Every other code issued before this file (no expiry means a browser made it, and
+  -- anyone could read it): retired. Back Office issues a fresh one when that device is
+  -- set up.
   update public.devices
      set pairing_code = null
-   where device_uid is null and pairing_code is not null and pairing_expires_at is null;
+   where pairing_code is not null and pairing_expires_at is null;
 
   perform set_config('servos.fence_bypass', 'off', true);
 end
@@ -923,6 +1093,21 @@ create unique index if not exists devices_one_link_per_session
   where device_uid is not null;
 
 -- 6c. The trigger that guards devices for API callers and runs the pairing lifecycle.
+-- THE VENUE IS PINNED (blocker 1 of the 18 Sep review: a login paired itself as a till,
+-- then pointed its devices row at another venue and became staff there):
+--   * device_uid, bound_via, bound_at, the secret and the caps are written ONLY by the
+--     claim functions. Back Office and the super admin can only clear a link, never set
+--     one. No caller can change a row's id (super admin excepted).
+--   * location_id changes only for the super admin, or a Back Office login that manages
+--     BOTH the old and the new venue, and a move always unlinks the device (pair it
+--     again at the new venue). Whatever else the caller may do, including a real login
+--     that is itself the linked till.
+--   * a linked till writing its own row may change ONLY its heartbeat columns:
+--     last_seen, app_version, status (active or online), session_token, kds_settings,
+--     paired_at, and clearing its own pairing code. Everything else must stay as it is.
+-- Every writer goes through this, whether it updates, upserts (insert on conflict do
+-- update) or inserts: an insert never carries a link, and its venue must be one the
+-- caller manages (policy devices_insert_bo).
 create or replace function public.devices_fence_tg()
 returns trigger
 language plpgsql
@@ -931,22 +1116,26 @@ set search_path = public, pg_temp
 as $fn$
 declare
   v_api     boolean := public._fence_api_role() in ('authenticated', 'anon');
+  v_uid     uuid := auth.uid();
   v_admin   boolean := false;
-  v_bo      boolean := false;
+  v_bo_old  boolean := false;
+  v_bo_new  boolean := false;
   v_self    boolean := false;
+  v_self_cols constant text[] := array['last_seen', 'app_version', 'status', 'session_token', 'kds_settings',
+                                       'paired_at', 'pairing_code', 'pairing_expires_at'];
 begin
   -- The claim functions set everything themselves.
   if public._fence_bypass() then
     return case when tg_op = 'DELETE' then old else new end;
   end if;
   if tg_op = 'DELETE' then
-    return old;   -- who may delete is the policy's job; heal codes go by foreign key
+    return old;   -- who may delete is the policy's job
   end if;
 
   if v_api then
     v_admin := public.is_super_admin();
     if tg_op = 'INSERT' then
-      if public.is_anon_session() then
+      if v_uid is null or public.is_anon_session() then
         raise exception 'Only Back Office can add a device' using errcode = '42501';
       end if;
       new.device_uid := null;
@@ -960,45 +1149,56 @@ begin
         new.status := case when new.type = 'kiosk' then 'awaiting_pairing' else 'unpaired' end;
       end if;
     else
-      v_self := old.device_uid is not null and old.device_uid = auth.uid();
-      v_bo := not public.is_anon_session()
-              and old.location_id is not null
-              and old.location_id::text in (select public.user_accessible_locations());
-      if not v_admin and not v_bo then
-        -- The till itself: its heartbeat, session token, screen settings, and clearing
-        -- its own used code. Nothing that decides which venue it belongs to.
+      v_self := old.device_uid is not null and old.device_uid = v_uid and old.bound_via is not null;
+      v_bo_old := v_uid is not null and not public.is_anon_session()
+                  and old.location_id is not null
+                  and old.location_id::text in (select public.user_accessible_locations());
+      v_bo_new := v_uid is not null and not public.is_anon_session()
+                  and new.location_id is not null
+                  and new.location_id::text in (select public.user_accessible_locations());
+
+      -- 1. Links are made only by the claim functions.
+      if new.id is distinct from old.id and not v_admin then
+        raise exception 'A device id cannot change' using errcode = '42501';
+      end if;
+      if new.device_uid is not null and new.device_uid is distinct from old.device_uid then
+        raise exception 'A device is linked to a till only by pairing it with a code' using errcode = '42501';
+      end if;
+      if (new.bound_via is not null and new.bound_via is distinct from old.bound_via)
+         or (new.bound_at is not null and new.bound_at is distinct from old.bound_at)
+         or (new.device_secret_hash is not null and new.device_secret_hash is distinct from old.device_secret_hash)
+         or (new.secret_issued_at is not null and new.secret_issued_at is distinct from old.secret_issued_at)
+         or new.client_caps is distinct from old.client_caps
+         or new.last_heartbeat_at is distinct from old.last_heartbeat_at then
+        raise exception 'These device columns are written only by the pairing functions' using errcode = '42501';
+      end if;
+
+      -- 2. The venue is pinned.
+      if new.location_id is distinct from old.location_id then
+        if not (v_admin or (v_bo_old and v_bo_new)) then
+          raise exception 'A device moves to another venue only in Back Office, by someone who manages both venues' using errcode = '42501';
+        end if;
+        insert into public.device_claim_log (device_id, location_id, event, old_uid, detail)
+        values (old.id, old.location_id, 'unbound_moved_venue', old.device_uid,
+                'moved to venue ' || coalesce(new.location_id::text, 'none') || ': pair it again there');
+        new.device_uid := null;
+        new.pairing_code := null;
+        new.pairing_expires_at := null;
+        new.session_token := null;
+        new.status := case when new.type = 'kiosk' then 'awaiting_pairing' else 'unpaired' end;
+      end if;
+
+      -- 3. Everyone who is not Back Office of the device's venue: only the linked till
+      -- itself, and only its heartbeat columns.
+      if not v_admin and not v_bo_old then
         if not v_self then
           raise exception 'This device row belongs to another till' using errcode = '42501';
         end if;
-        if new.id is distinct from old.id
-           or new.location_id is distinct from old.location_id
-           or new.device_uid is distinct from old.device_uid
-           or new.bound_via is distinct from old.bound_via
-           or new.bound_at is distinct from old.bound_at
-           or new.device_secret_hash is distinct from old.device_secret_hash
-           or new.secret_issued_at is distinct from old.secret_issued_at
-           or new.client_caps is distinct from old.client_caps
-           or new.name is distinct from old.name
-           or new.type is distinct from old.type
-           or new.profile_id is distinct from old.profile_id
-           or new.centre_id is distinct from old.centre_id
-           or new.receipt_printer_id is distinct from old.receipt_printer_id
-           or new.created_at is distinct from old.created_at
+        if (to_jsonb(new) - v_self_cols) is distinct from (to_jsonb(old) - v_self_cols)
+           or (new.status is distinct from old.status and new.status not in ('active', 'online'))
            or (new.pairing_code is not null and new.pairing_code is distinct from old.pairing_code)
-           or (new.status is distinct from old.status and new.status not in ('active', 'online')) then
+           or (new.pairing_expires_at is not null and new.pairing_expires_at is distinct from old.pairing_expires_at) then
           raise exception 'A till can only update its own heartbeat. Everything else is set in Back Office.' using errcode = '42501';
-        end if;
-      else
-        -- Back Office (or super admin): never links a device to a login directly.
-        if new.device_uid is not null and new.device_uid is distinct from old.device_uid then
-          raise exception 'A device is linked to a till only by pairing it with a code' using errcode = '42501';
-        end if;
-        if (new.bound_via is not null and new.bound_via is distinct from old.bound_via)
-           or (new.bound_at is not null and new.bound_at is distinct from old.bound_at)
-           or (new.device_secret_hash is not null and new.device_secret_hash is distinct from old.device_secret_hash)
-           or (new.secret_issued_at is not null and new.secret_issued_at is distinct from old.secret_issued_at)
-           or new.client_caps is distinct from old.client_caps then
-          raise exception 'These device columns are written only by the pairing functions' using errcode = '42501';
         end if;
       end if;
     end if;
@@ -1008,7 +1208,14 @@ begin
   if new.pairing_code is not null
      and (tg_op = 'INSERT' or new.pairing_code is distinct from old.pairing_code) then
     -- A new code means "pair this again": it lasts 60 minutes and drops the old link.
-    new.pairing_code := upper(btrim(new.pairing_code));
+    -- Only issue_pairing_code keeps its own code; any other code (an old Back Office tab
+    -- that makes codes in the browser) is replaced by a server code, which that tab
+    -- shows after a reload. So a code is always about 60 bits and never guessable.
+    if coalesce(current_setting('servos.device_issue', true), '') = 'on' then
+      new.pairing_code := upper(btrim(new.pairing_code));
+    else
+      new.pairing_code := public._device_gen_pairing_code();
+    end if;
     new.pairing_expires_at := now() + interval '60 minutes';
     if tg_op = 'UPDATE' and old.device_uid is not null then
       insert into public.device_claim_log (device_id, location_id, event, old_uid, detail)
@@ -1019,9 +1226,6 @@ begin
     new.bound_at := null;
     new.device_secret_hash := null;
     new.secret_issued_at := null;
-    if tg_op = 'UPDATE' then
-      delete from public.device_heal_codes where device_id = new.id;
-    end if;
   elsif tg_op = 'UPDATE' and new.pairing_code is null and old.pairing_code is not null then
     new.pairing_expires_at := null;
   end if;
@@ -1042,7 +1246,7 @@ begin
     new.bound_at := null;
     new.device_secret_hash := null;
     new.secret_issued_at := null;
-    delete from public.device_heal_codes where device_id = new.id;
+    new.client_caps := null;
   end if;
   return new;
 end;
@@ -1221,12 +1425,11 @@ begin
   for r in select id, location_id from public.devices where device_uid = p_uid and id <> p_keep loop
     update public.devices
        set device_uid = null, bound_via = null, bound_at = null,
-           device_secret_hash = null, secret_issued_at = null,
+           device_secret_hash = null, secret_issued_at = null, client_caps = null,
            status = case when status in ('active', 'online')
                          then case when type = 'kiosk' then 'awaiting_pairing' else 'unpaired' end
                          else status end
      where id = r.id;
-    delete from public.device_heal_codes where device_id = r.id;
     insert into public.device_claim_log (device_id, location_id, event, old_uid, detail)
     values (r.id, r.location_id, 'unbound_moved', p_uid, 'the same till was paired to another device row');
   end loop;
@@ -1234,70 +1437,45 @@ end;
 $fn$;
 revoke all on function public._device_unbind_others(uuid, uuid) from public, anon, authenticated;
 
--- May a till whose login changed re-link with its saved code? Every pairing code was
--- readable by anyone before this file, so a saved code alone proves nothing. The
--- re-link is allowed only when BOTH hold:
---   * the till's current login is idle: no auth session refresh in 75 minutes (a
---     running till refreshes about every hour; a till that woke up with a new login
---     left its old one behind);
---   * the new login signed in from the same network the old login used (same public
---     address, or the same IPv6 /64), i.e. from inside the venue.
--- Returns NULL when allowed, or the reason it is not.
-create or replace function public._device_heal_block_reason(p_old_uid uuid, p_new_uid uuid)
-returns text
+-- A miss (wrong, expired or taken code): counted per session (6 in 10 minutes lock that
+-- session for 15 minutes), per network (30 in 10 minutes) and platform wide (5000 in 10
+-- minutes, a circuit breaker far above normal use, which is a handful a day). The
+-- network and platform counters only ever turn away wrong codes: a live code on a free
+-- device always pairs (gap G22 and the 18 Sep throttle finding). Returns true when the
+-- caller should be told 'locked'.
+create or replace function public._device_claim_miss(p_uid uuid, p_ip text)
+returns boolean
 language plpgsql
-stable
 security definer
 set search_path = public
 as $fn$
-declare
-  v_claims jsonb := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb);
-  v_sid    uuid;
-  v_ip     inet;
 begin
-  if p_old_uid is null or p_new_uid is null then
-    return 'missing';
+  perform public._fence_count('claim:uid:' || p_uid::text, 6, interval '10 minutes', interval '15 minutes');
+  if p_ip is not null then
+    perform public._fence_count('claim:ip:' || p_ip, 30, interval '10 minutes', interval '15 minutes');
   end if;
-  if exists (select 1 from auth.sessions s
-              where s.user_id = p_old_uid
-                and greatest(s.updated_at, s.created_at, coalesce(s.refreshed_at at time zone 'UTC', s.created_at))
-                    > now() - interval '75 minutes') then
-    return 'old_login_active';
-  end if;
-  if public._fence_is_uuid(v_claims ->> 'session_id') then
-    v_sid := (v_claims ->> 'session_id')::uuid;
-  end if;
-  select s.ip into v_ip
-    from auth.sessions s
-   where s.user_id = p_new_uid and (v_sid is null or s.id = v_sid)
-   order by s.created_at desc
-   limit 1;
-  if v_ip is null then
-    return 'no_network';
-  end if;
-  if not exists (select 1 from auth.sessions s
-                  where s.user_id = p_old_uid
-                    and s.ip is not null
-                    and (host(s.ip) = host(v_ip)
-                         or (family(s.ip) = 6 and family(v_ip) = 6
-                             and network(set_masklen(s.ip, 64)) = network(set_masklen(v_ip, 64))))) then
-    return 'different_network';
-  end if;
-  return null;
+  perform public._fence_count('claim:global', 5000, interval '10 minutes', interval '10 minutes');
+  return public._fence_is_locked('claim:uid:' || p_uid::text)
+      or (p_ip is not null and public._fence_is_locked('claim:ip:' || p_ip))
+      or public._fence_is_locked('claim:global');
 end;
 $fn$;
-revoke all on function public._device_heal_block_reason(uuid, uuid) from public, anon, authenticated;
+revoke all on function public._device_claim_miss(uuid, text) from public, anon, authenticated;
 
 -- The core. Refusals RETURN (never raise) so the miss counters are kept.
 -- Order of checks:
---   1. the caller is already bound: idempotent (old tills re-send their saved code
---      on every boot, gap B8), and v2 callers can collect a device secret;
---   2. throttles: 6 misses in 10 minutes locks this session for 15 minutes; 40 misses
---      in 10 minutes across the platform pauses code claims for 10 minutes (gap G22);
---   3. a live code on an unbound row: bind, clear the code (single use), keep only a
---      salted hash of it so the live app can re-link after a login change;
---   4. a saved code of a bound till (re-link, "heal"): only when the old login is idle
---      and the new one is on the same network (above), at most 3 times a day.
+--   1. the caller is already bound: idempotent (tills re-send their saved code on every
+--      boot, gap B8), and v2 callers can collect a device secret;
+--   2. this session is locked (6 misses in 10 minutes): refused, even a right code;
+--   3. a code that is not in the server format can never match (every code issued
+--      before this file was retired), so it is "not found" and NOT counted: that is a
+--      till re-sending an old saved code, not a guess;
+--   4. a live code on a free device: bind, clear the code (single use). Never refused by
+--      the network or platform counters;
+--   5. anything else is a miss.
+-- There is NO re-link by an old code any more (18 Sep review): every code on the table
+-- before this file was readable by anyone. A till whose login changed re-links with its
+-- device secret (reclaim_device), or is paired again.
 create or replace function public._device_claim_core(p_code text, p_mint_secret boolean)
 returns jsonb
 language plpgsql
@@ -1307,18 +1485,15 @@ as $fn$
 declare
   v_uid     uuid := auth.uid();
   v_norm    text := public._fence_norm_code(p_code);
+  v_ip      text := public._fence_client_ip();
   v_own     public.devices%rowtype;
   v_row     public.devices%rowtype;
-  v_heal    public.device_heal_codes%rowtype;
   v_secret  text := null;
-  v_salt    text;
-  v_bucket  text;
-  v_block   text;
+  v_locked  boolean;
 begin
   if v_uid is null then
     raise exception 'no auth session' using errcode = '28000';
   end if;
-  v_bucket := 'claim:uid:' || v_uid::text;
   perform set_config('servos.fence_bypass', 'on', true);
 
   select * into v_own
@@ -1327,15 +1502,17 @@ begin
    order by d.bound_at desc nulls last
    limit 1;
 
-  if v_norm <> '' then
+  if public._fence_is_server_code(v_norm) then
     select * into v_row
       from public.devices d
-     where public._fence_norm_code(d.pairing_code) = v_norm and d.status <> 'removed'
+     where d.pairing_code is not null
+       and public._fence_norm_code(d.pairing_code) = v_norm
+       and d.status <> 'removed'
      limit 1
      for update;
   end if;
 
-  -- 1. Already bound, and the code is its own, used, or unknown: nothing to do.
+  -- 1. Already bound, and the code is its own, used, old or unknown: nothing to do.
   if v_own.id is not null and (v_row.id is null or v_row.id = v_own.id) then
     if p_mint_secret then
       v_secret := replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
@@ -1356,123 +1533,75 @@ begin
     return public._device_claim_refusal('not_found', 'Enter the pairing code from Back Office.');
   end if;
 
-  -- 2. Throttles.
-  if public._fence_is_locked(v_bucket) or public._fence_is_locked('claim:global') then
+  -- 2. This session made too many wrong tries.
+  if public._fence_is_locked('claim:uid:' || v_uid::text) then
     perform set_config('servos.fence_bypass', 'off', true);
     return public._device_claim_refusal('locked', 'Too many pairing attempts. Wait 15 minutes and try again.');
   end if;
 
-  if v_row.id is null then
-    -- 4. Maybe the saved code of a bound till whose login changed.
-    select h.* into v_heal
-      from public.device_heal_codes h
-      join public.devices d on d.id = h.device_id
-     where h.code_hash = encode(sha256(convert_to(h.salt || ':' || v_norm, 'UTF8')), 'hex')
-       and d.status in ('active', 'online')
-     limit 1;
-    if v_heal.device_id is null then
-      perform public._fence_count(v_bucket, 6, interval '10 minutes', interval '15 minutes');
-      perform public._fence_count('claim:global', 40, interval '10 minutes', interval '10 minutes');
-      insert into public.device_claim_log (event, new_uid, detail) values ('refused_not_found', v_uid, 'code not found');
-      perform set_config('servos.fence_bypass', 'off', true);
-      return public._device_claim_refusal('not_found', 'Pairing code not found. Check the code in Back Office.');
-    end if;
-    select * into v_row from public.devices where id = v_heal.device_id for update;
-    v_block := public._device_heal_block_reason(v_row.device_uid, v_uid);
-    if v_block is not null then
-      -- Counted like a wrong code: it is exactly what someone holding an old code
-      -- would try. The answer looks like "not found", on purpose.
-      perform public._fence_count(v_bucket, 6, interval '10 minutes', interval '15 minutes');
-      perform public._fence_count('claim:global', 40, interval '10 minutes', interval '10 minutes');
-      insert into public.device_claim_log (device_id, location_id, event, old_uid, new_uid, detail)
-      values (v_row.id, v_row.location_id, 'refused_relink', v_row.device_uid, v_uid, v_block);
-      perform set_config('servos.fence_bypass', 'off', true);
-      return public._device_claim_refusal('not_found', 'Pairing code not found or already used. Issue a new code in Back Office.');
-    end if;
-    if v_heal.heal_window_start is not null and v_heal.heal_window_start > now() - interval '24 hours'
-       and v_heal.heal_count >= 3 then
-      insert into public.device_claim_log (device_id, location_id, event, old_uid, new_uid, detail)
-      values (v_row.id, v_row.location_id, 'refused_heal_limit', v_row.device_uid, v_uid, 'more than 3 re-links in 24 hours');
-      perform set_config('servos.fence_bypass', 'off', true);
-      return public._device_claim_refusal('heal_limit', 'This till was re-linked too many times today. Ask a manager to pair it again from Back Office.');
-    end if;
-    perform public._device_unbind_others(v_uid, v_row.id);
-    update public.devices
-       set device_uid = v_uid, bound_via = 'heal', bound_at = now(), last_seen = now(),
-           device_secret_hash = case when p_mint_secret then device_secret_hash else null end,
-           secret_issued_at = case when p_mint_secret then secret_issued_at else null end
-     where id = v_row.id;
-    update public.device_heal_codes
-       set heal_count = case when heal_window_start is null or heal_window_start < now() - interval '24 hours' then 1 else heal_count + 1 end,
-           heal_window_start = case when heal_window_start is null or heal_window_start < now() - interval '24 hours' then now() else heal_window_start end,
-           last_heal_at = now()
-     where device_id = v_row.id;
+  -- 3. An old code (not the server format): it was retired by this file. Not a guess.
+  if not public._fence_is_server_code(v_norm) then
+    insert into public.device_claim_log (event, new_uid, detail) values ('refused_old_code', v_uid, 'a code from before the fence');
+    perform set_config('servos.fence_bypass', 'off', true);
+    return public._device_claim_refusal('not_found', 'That pairing code is no longer valid. Ask a manager for a new code from Back Office.');
+  end if;
+
+  -- 4. A live code on a free device: pair.
+  if v_row.id is not null and v_row.device_uid is null
+     and v_row.pairing_expires_at is not null and v_row.pairing_expires_at > now() then
     if p_mint_secret then
       v_secret := replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
-      update public.devices
-         set device_secret_hash = encode(sha256(convert_to(v_secret, 'UTF8')), 'hex'), secret_issued_at = now()
-       where id = v_row.id;
     end if;
-    perform public._fence_clear(v_bucket);
-    insert into public.device_claim_log (device_id, location_id, event, old_uid, new_uid, detail)
-    values (v_row.id, v_row.location_id, 'healed', v_row.device_uid, v_uid, 're-linked with the saved pairing code');
+    perform public._device_unbind_others(v_uid, v_row.id);
+    delete from public.device_unlinked_pings where uid = v_uid or device_id = v_row.id;
+    update public.devices
+       set device_uid         = v_uid,
+           bound_via          = 'code',
+           bound_at           = now(),
+           status             = case when type = 'kiosk' then 'online' else 'active' end,
+           paired_at          = now(),
+           last_seen          = now(),
+           session_token      = null,
+           pairing_code       = null,
+           pairing_expires_at = null,
+           client_caps        = null,
+           device_secret_hash = case when v_secret is null then null else encode(sha256(convert_to(v_secret, 'UTF8')), 'hex') end,
+           secret_issued_at   = case when v_secret is null then null else now() end
+     where id = v_row.id;
+    perform public._fence_clear('claim:uid:' || v_uid::text);
+    insert into public.device_claim_log (device_id, location_id, event, new_uid, detail)
+    values (v_row.id, v_row.location_id, 'bound', v_uid, 'paired with a Back Office code');
     perform set_config('servos.fence_bypass', 'off', true);
     return public._device_claim_result(v_row.id, false, v_secret);
   end if;
 
-  -- 3. A code on a row. It must be live, and the row must not belong to another till.
-  if v_row.device_uid is not null and v_row.device_uid <> v_uid then
-    perform public._fence_count(v_bucket, 6, interval '10 minutes', interval '15 minutes');
+  -- 5. A miss.
+  v_locked := public._device_claim_miss(v_uid, v_ip);
+  if v_row.id is null then
+    insert into public.device_claim_log (event, new_uid, detail) values ('refused_not_found', v_uid, 'code not found');
+  elsif v_row.device_uid is not null then
     insert into public.device_claim_log (device_id, location_id, event, old_uid, new_uid, detail)
     values (v_row.id, v_row.location_id, 'refused_already_paired', v_row.device_uid, v_uid, 'code of a till that is paired');
-    perform set_config('servos.fence_bypass', 'off', true);
-    return public._device_claim_refusal('already_paired', 'This device is already paired to another till. Issue a new code in Back Office to move it.');
-  end if;
-  if v_row.pairing_expires_at is null or v_row.pairing_expires_at <= now() then
-    perform public._fence_count(v_bucket, 6, interval '10 minutes', interval '15 minutes');
-    perform public._fence_count('claim:global', 40, interval '10 minutes', interval '10 minutes');
+  else
     insert into public.device_claim_log (device_id, location_id, event, new_uid, detail)
     values (v_row.id, v_row.location_id, 'refused_expired', v_uid, 'code expired');
-    perform set_config('servos.fence_bypass', 'off', true);
-    return public._device_claim_refusal('expired', 'This pairing code has expired. Issue a new one in Back Office.');
   end if;
-
-  if p_mint_secret then
-    v_secret := replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
-  end if;
-  perform public._device_unbind_others(v_uid, v_row.id);
-  update public.devices
-     set device_uid         = v_uid,
-         bound_via          = 'code',
-         bound_at           = now(),
-         status             = case when type = 'kiosk' then 'online' else 'active' end,
-         paired_at          = now(),
-         last_seen          = now(),
-         session_token      = null,
-         pairing_code       = null,
-         pairing_expires_at = null,
-         device_secret_hash = case when v_secret is null then null else encode(sha256(convert_to(v_secret, 'UTF8')), 'hex') end,
-         secret_issued_at   = case when v_secret is null then null else now() end
-   where id = v_row.id;
-  -- Keep only a salted hash of the used code, so the LIVE app (which saved the code
-  -- and re-sends it at boot) can re-link after its login changes. File 2 deletes these.
-  v_salt := replace(gen_random_uuid()::text, '-', '');
-  insert into public.device_heal_codes (device_id, code_hash, salt)
-  values (v_row.id, encode(sha256(convert_to(v_salt || ':' || v_norm, 'UTF8')), 'hex'), v_salt)
-  on conflict (device_id) do update
-     set code_hash = excluded.code_hash, salt = excluded.salt, created_at = now(),
-         heal_count = 0, heal_window_start = null, last_heal_at = null;
-  perform public._fence_clear(v_bucket);
-  insert into public.device_claim_log (device_id, location_id, event, new_uid, detail)
-  values (v_row.id, v_row.location_id, 'bound', v_uid, 'paired with a Back Office code');
   perform set_config('servos.fence_bypass', 'off', true);
-  return public._device_claim_result(v_row.id, false, v_secret);
+  if v_locked then
+    return public._device_claim_refusal('locked', 'Too many pairing attempts. Wait 15 minutes and try again.');
+  end if;
+  if v_row.id is null then
+    return public._device_claim_refusal('not_found', 'Pairing code not found. Check the code in Back Office.');
+  elsif v_row.device_uid is not null then
+    return public._device_claim_refusal('already_paired', 'This device is already paired to another till. Issue a new code in Back Office to move it.');
+  end if;
+  return public._device_claim_refusal('expired', 'This pairing code has expired. Issue a new one in Back Office.');
 end;
 $fn$;
 revoke all on function public._device_claim_core(text, boolean) from public, anon, authenticated;
 
--- Same name, arguments and return type as the live function, so the live pairing
--- screen, kiosk and boot re-claim keep working. NULL means "not paired".
+-- Same name, arguments and return type as the live function, so an old WebView's boot
+-- claim still gets its idempotent answer. NULL means "not paired".
 create or replace function public.claim_device(p_code text)
 returns uuid
 language plpgsql
@@ -1490,8 +1619,8 @@ begin
 end;
 $fn$;
 
--- For the app release (contract A10, A11): returns the device, its venue and a one
--- time device secret, or ok=false with a reason and a message to show.
+-- For the app release (contract A3, A4): returns the device, its venue and a one time
+-- device secret, or ok=false with a reason and a message to show.
 create or replace function public.claim_device_v2(p_code text)
 returns jsonb
 language plpgsql
@@ -1503,8 +1632,9 @@ begin
 end;
 $fn$;
 
--- Re-link with the device secret when the login changed (contract A12). A wrong
--- secret counts as a miss like a wrong code.
+-- Re-link with the device secret when the login changed (contract A2). A wrong
+-- secret counts as a miss like a wrong code. The venue never changes: the secret re-links
+-- the same row, at the same venue.
 create or replace function public.reclaim_device(p_device_id uuid, p_device_secret text)
 returns jsonb
 language plpgsql
@@ -1544,6 +1674,7 @@ begin
   else
     update public.devices set last_seen = now() where id = v.id;
   end if;
+  delete from public.device_unlinked_pings where uid = v_uid or device_id = v.id;
   perform public._fence_clear(v_bucket);
   perform set_config('servos.fence_bypass', 'off', true);
   return public._device_claim_result(v.id, v.device_uid = v_uid, null);
@@ -1551,7 +1682,7 @@ end;
 $fn$;
 
 -- A till that is already bound (every grandfathered till) collects a device secret
--- on its first boot of the new app, so it never needs a pairing code again.
+-- on its first check with the release, so it never needs a pairing code again.
 create or replace function public.device_issue_secret()
 returns jsonb
 language plpgsql
@@ -1584,9 +1715,10 @@ begin
 end;
 $fn$;
 
--- Back Office: issue a server code for a device you manage (contract P1). A device
+-- Back Office: issue a server code for a device you manage (contract A6). A device
 -- that is paired right now is only moved when p_force is true (the Back Office asks
--- "this till will be disconnected" first).
+-- "this till will be disconnected" first). The code is readable by that venue's Back
+-- Office and the super admin only (policy devices_read).
 create or replace function public.issue_pairing_code(p_device_id uuid, p_force boolean default false)
 returns jsonb
 language plpgsql
@@ -1625,9 +1757,13 @@ begin
 end;
 $fn$;
 
--- The running app reports itself (contract A15). The last_seen, version and what the
--- app can do are what file 2's release gate checks.
-create or replace function public.device_heartbeat(p_app_version text default null, p_caps text[] default null)
+-- The running app reports itself (contract A10). The last_seen, version and what the
+-- app can do are what file 2's release gate checks. p_device_id is the device id the
+-- app has saved locally: when this session is NOT linked to it, the call is recorded in
+-- device_unlinked_pings (only for a real device id), so file 2 can see a till or kiosk
+-- that is switched on but no longer linked.
+create or replace function public.device_heartbeat(p_app_version text default null, p_caps text[] default null,
+                                                   p_device_id uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -1644,6 +1780,15 @@ begin
    where device_uid = v_uid and bound_via is not null
    order by bound_at desc nulls last limit 1;
   if v.id is null or v.status not in ('active', 'online') then
+    if p_device_id is not null then
+      insert into public.device_unlinked_pings (device_id, uid, last_at, app_version, caps)
+      select d.id, v_uid, now(), left(p_app_version, 40), p_caps[1:20]
+        from public.devices d
+       where d.id = p_device_id
+      on conflict (device_id) do update
+         set uid = excluded.uid, last_at = excluded.last_at,
+             app_version = excluded.app_version, caps = excluded.caps;
+    end if;
     return jsonb_build_object('bound', false, 'reason', case when v.id is null then 'not_bound' else 'status_' || v.status end);
   end if;
   perform set_config('servos.fence_bypass', 'on', true);
@@ -1654,12 +1799,26 @@ begin
          client_caps = coalesce(p_caps[1:20], client_caps)
    where id = v.id;
   perform set_config('servos.fence_bypass', 'off', true);
+  delete from public.device_unlinked_pings where device_id = v.id;
+  if p_device_id is not null and p_device_id <> v.id then
+    -- The app thinks it is another device, which is not linked to this session (it
+    -- shows the red banner): that device counts as switched on but unpaired.
+    insert into public.device_unlinked_pings (device_id, uid, last_at, app_version, caps)
+    select d.id, v_uid, now(), left(p_app_version, 40), p_caps[1:20]
+      from public.devices d
+     where d.id = p_device_id
+    on conflict (device_id) do update
+       set uid = excluded.uid, last_at = excluded.last_at,
+           app_version = excluded.app_version, caps = excluded.caps;
+  else
+    delete from public.device_unlinked_pings where uid = v_uid;
+  end if;
   return jsonb_build_object('bound', true, 'device_id', v.id, 'location_id', v.location_id,
                             'status', v.status, 'name', v.name, 'has_secret', v.device_secret_hash is not null);
 end;
 $fn$;
 
--- Read only: "am I still the paired till for my venue?" for the lapse banner (contract A16).
+-- Read only: "am I still the paired till for my venue?" for the lapse banner (contract A7).
 create or replace function public.device_status()
 returns jsonb
 language sql
@@ -1683,7 +1842,7 @@ declare
 begin
   foreach f in array array['public.claim_device(text)', 'public.claim_device_v2(text)',
                            'public.reclaim_device(uuid, text)', 'public.device_issue_secret()',
-                           'public.issue_pairing_code(uuid, boolean)', 'public.device_heartbeat(text, text[])',
+                           'public.issue_pairing_code(uuid, boolean)', 'public.device_heartbeat(text, text[], uuid)',
                            'public.device_status()'] loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
     execute format('grant execute on function %s to authenticated, service_role', f);
@@ -1692,18 +1851,29 @@ end
 $claim_grants$;
 
 -- 6g. devices policies. INSERT and DELETE: Back Office of that venue (or super admin).
--- UPDATE: the bound till on its own row (the trigger limits the columns), or Back
--- Office. SELECT stays open until file 2, ONLY because the live pairing screen looks a
--- code up before claiming and a till whose login changed must still read its own row
--- (otherwise the live app wipes its pairing, gap B3). Used codes are no longer on the
--- table, so what stays visible is: device names, and codes issued in the last 60
--- minutes that nobody has used yet.
+-- UPDATE: the bound till on its own row (the trigger limits it to the heartbeat
+-- columns), or Back Office of the device's venue (the trigger pins the venue).
+-- SELECT (blocker 2 of the 18 Sep review): a pairing code is readable ONLY by the Back
+-- Office of that venue and the super admin, ever. A row that holds a live code is hidden
+-- from everyone else, tills of the same venue included (a code is a capability: whoever
+-- reads it first can pair). Rows without a code: the till reads its own row and its
+-- venue's devices (the status drawer lists the venue's KDS screens); nobody outside the
+-- venue reads any row, so device ids and links stay private too. The release reads
+-- nothing else: it pairs with claim_device_v2 alone, and treats a hidden own row as
+-- "unknown", never as "removed" (contract A5). A till still on the OLD app cannot pair
+-- after this file (its pairing screen looks the code up first): force stop and reopen
+-- it so it loads the release.
 alter table public.devices enable row level security;
 
 drop policy if exists devices_read_interim on public.devices;
-create policy devices_read_interim on public.devices
+drop policy if exists devices_read on public.devices;
+create policy devices_read on public.devices
   for select
-  using (true);
+  using ((pairing_code is null
+          and (device_uid = (select auth.uid())
+               or location_id in (select public.pos_accessible_location_ids())))
+         or (not (select public.is_anon_session()) and location_id::text in (select public.user_accessible_locations()))
+         or (select public.is_super_admin()));
 
 drop policy if exists devices_insert_bo on public.devices;
 create policy devices_insert_bo on public.devices
@@ -1738,13 +1908,14 @@ drop policy if exists devices_delete on public.devices;
 -- Every one is keyed to something the customer really holds: the tracking token
 -- (or, for old links, the last 4 phone digits, throttled), the card payment id of
 -- their own tab, or the table code the tab owner shared. None returns another
--- customer's name, phone, email, address or card ids. (The new order_queue column they
--- use, placed_via, is added in section 9, last, so the busy order table is locked for
--- the shortest time.)
+-- customer's name, phone, email, address or card ids.
 
--- 7a. The order tracker. p_key is the tracking token from place_public_order, the
--- tab's card payment id (QR), or the last 4 digits of the phone (old share links:
--- 10 wrong tries per order per hour, then that order locks for an hour, gap G6).
+-- 7a. The order tracker. p_key is the tracking token from place_public_order (128 bits),
+-- the tab's card payment id (QR), or the last 4 digits of the phone (old share links).
+-- Only the guessable last 4 path is throttled: 10 wrong tries per order per hour lock
+-- that order's last 4 path for an hour (gap G6), and a platform wide breaker far above
+-- normal use (20000 in 10 minutes) turns away only last 4 guesses. A token or payment id
+-- always works, so nobody can lock a customer out of their own tracker.
 create or replace function public._order_track_ok(p_location_id text, p_ref text, p_key text)
 returns boolean
 language plpgsql
@@ -1759,25 +1930,29 @@ begin
   if coalesce(p_location_id, '') = '' or coalesce(p_ref, '') = '' or coalesce(p_key, '') = '' then
     return false;
   end if;
-  if public._fence_is_locked(v_bucket) or public._fence_is_locked('track:global') then
-    return false;
-  end if;
   select * into v_q from public.order_queue q where q.location_id = p_location_id and q.ref = p_ref;
   if v_q.ref is not null then
     if exists (select 1 from public.public_order_tokens t
                 where t.location_id = p_location_id and t.ref = p_ref and t.token = p_key) then
       return true;
     end if;
-    if length(p_key) >= 12 and coalesce(v_q.customer ->> 'payment_intent_id', '') = p_key then
-      return true;
-    end if;
-    if length(v_digits) = 4 and length(p_key) <= 8
-       and right(regexp_replace(coalesce(v_q.customer ->> 'phone', ''), '\D', '', 'g'), 4) = v_digits then
+    if length(p_key) >= 12
+       and (coalesce(v_q.customer ->> 'payment_intent_id', '') = p_key
+            or coalesce(v_q.customer ->> 'payment_ref', '') = p_key) then
       return true;
     end if;
   end if;
+  if length(v_digits) = 4 and length(p_key) <= 8 then
+    if public._fence_is_locked(v_bucket) or public._fence_is_locked('track:last4:global') then
+      return false;
+    end if;
+    if v_q.ref is not null
+       and right(regexp_replace(coalesce(v_q.customer ->> 'phone', ''), '\D', '', 'g'), 4) = v_digits then
+      return true;
+    end if;
+    perform public._fence_count('track:last4:global', 20000, interval '10 minutes', interval '5 minutes');
+  end if;
   perform public._fence_count(v_bucket, 10, interval '1 hour', interval '1 hour');
-  perform public._fence_count('track:global', 3000, interval '10 minutes', interval '5 minutes');
   return false;
 end;
 $fn$;
@@ -1793,7 +1968,8 @@ as $fn$
 $fn$;
 
 -- What the tracker page renders, and nothing else. The share link needs the last
--- 4 phone digits, so 'phone' carries only those.
+-- 4 phone digits, so 'phone' carries only those. payment_state 'checking' means the
+-- venue is still confirming the payment (the page says so, never "unpaid").
 create or replace function public.order_track_row(p_location_id text, p_ref text, p_key text)
 returns jsonb
 language plpgsql
@@ -1809,6 +1985,7 @@ begin
              'ref', q.ref, 'status', q.status, 'total', q.total, 'items', q.items,
              'collection_time', q.collection_time, 'is_asap', q.is_asap, 'type', q.type,
              'source', q.source, 'sent_at', q.sent_at, 'updated_at', q.updated_at, 'paid', q.paid,
+             'payment_state', q.customer ->> 'payment_state',
              'customer', jsonb_strip_nulls(jsonb_build_object(
                  'delivery_mode', q.customer ->> 'delivery_mode',
                  'collection_at', q.customer ->> 'collection_at',
@@ -1821,7 +1998,10 @@ end;
 $fn$;
 
 -- 7b. QR tabs. The handle is an opaque md5 of the tab's card payment id: it names a
--- tab without revealing the payment id, the table code or any name (gap G4).
+-- tab without revealing the payment id, the table code or any name (gap G4). A tab is
+-- the set of open QR rows with tab_open true and the same card payment id; a pay now
+-- order never counts as a round of anyone's tab (18 Sep review: a public order could
+-- carry another tab's payment id and add itself to that tab).
 create or replace function public.qr_table_open_tabs(p_location_id text, p_table_id text)
 returns jsonb
 language sql
@@ -1850,10 +2030,34 @@ as $fn$
     ) t;
 $fn$;
 
--- The tab and its rounds, for a caller who has proven the tab (internal).
--- The tab block carries the fields the close path needs (gap G16): payment id,
--- processor, Stripe account, Ryft ids, saved card id, hold amount, tab ref, code.
-create or replace function public._qr_tab_payload(p_location_id text, p_pi text)
+-- Is this session the tab's opener, or a phone that joined it with the table code?
+create or replace function public._qr_tab_is_member(p_location_id text, p_pi text, p_uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  select p_uid is not null and (
+         exists (select 1 from public.qr_tab_members m
+                  where m.location_id = p_location_id and m.pi_hash = md5(p_pi) and m.uid = p_uid)
+      or exists (select 1
+                   from public.order_queue q
+                   join public.public_order_tokens t on t.location_id = q.location_id and t.ref = q.ref
+                  where q.location_id = p_location_id and q.source = 'qr'
+                    and public._fence_bool(q.customer ->> 'tab_open')
+                    and q.customer ->> 'payment_intent_id' = p_pi
+                    and coalesce(q.customer ->> 'tab_ref', q.ref) = q.ref
+                    and t.placed_by = p_uid));
+$fn$;
+revoke all on function public._qr_tab_is_member(text, text, uuid) from public, anon, authenticated;
+
+-- The tab and its rounds, for a caller who has proven the tab (internal). The tab block
+-- carries the fields the close path needs (gap G16): payment id, processor, Stripe
+-- account, Ryft ids, saved card id, hold amount, tab ref. The table code is included
+-- only for the tab's opener and its members (p_with_code): anyone else holding the
+-- payment id must not learn the code that lets a phone add rounds.
+create or replace function public._qr_tab_payload(p_location_id text, p_pi text, p_with_code boolean)
 returns jsonb
 language sql
 stable
@@ -1866,6 +2070,7 @@ as $fn$
      where q.location_id = p_location_id
        and q.source = 'qr'
        and q.status <> 'collected'
+       and public._fence_bool(q.customer ->> 'tab_open')
        and q.customer ->> 'payment_intent_id' = p_pi
   ), first_round as (
     select * from r order by created_at limit 1
@@ -1883,7 +2088,8 @@ as $fn$
               'tab_ref', coalesce(f.customer ->> 'tab_ref', f.ref),
               'table_id', f.customer ->> 'tableId',
               'table_label', f.customer ->> 'tableLabel',
-              'tab_join_code', f.customer ->> 'tab_join_code',
+              'tab_join_code', case when p_with_code then (select max(x.customer ->> 'tab_join_code') from r x) end,
+              'has_join_code', exists (select 1 from r x where coalesce(x.customer ->> 'tab_join_code', '') <> ''),
               'opened_at', coalesce(f.customer ->> 'tab_opened_at', f.created_at::text)))
               from first_round f),
     'rounds', (select coalesce(jsonb_agg(jsonb_build_object(
@@ -1901,9 +2107,10 @@ as $fn$
                   order by x.created_at), '[]'::jsonb)
                  from r x)) end;
 $fn$;
-revoke all on function public._qr_tab_payload(text, text) from public, anon, authenticated;
+revoke all on function public._qr_tab_payload(text, text, boolean) from public, anon, authenticated;
 
--- The tab's owner, who holds its card payment id (their own stash).
+-- The tab's owner, who holds its card payment id (their own stash). The table code
+-- comes back only to the opener's session or a member.
 create or replace function public.qr_tab_rounds(p_location_id text, p_payment_intent_id text)
 returns jsonb
 language sql
@@ -1912,12 +2119,14 @@ security definer
 set search_path = public
 as $fn$
   select case when coalesce(p_payment_intent_id, '') = '' then null
-              else public._qr_tab_payload(p_location_id, p_payment_intent_id) end;
+              else public._qr_tab_payload(p_location_id, p_payment_intent_id,
+                                          public._qr_tab_is_member(p_location_id, p_payment_intent_id, auth.uid())) end;
 $fn$;
 
 -- Another phone at the table, with the table code the owner shared (gap G5).
 -- 8 wrong codes per tab per hour lock that tab for an hour. A tab with no code (old
--- tabs) cannot be joined by phone; staff can add to it or close it.
+-- tabs) cannot be joined by phone; staff can add to it or close it. A phone that joins
+-- with a session is remembered as a member, so its rounds need no code again.
 create or replace function public.qr_tab_join(p_location_id text, p_tab_handle text, p_join_code text)
 returns jsonb
 language plpgsql
@@ -1941,6 +2150,7 @@ begin
    where q.location_id = p_location_id
      and q.source = 'qr'
      and q.status <> 'collected'
+     and public._fence_bool(q.customer ->> 'tab_open')
      and md5(q.customer ->> 'payment_intent_id') = p_tab_handle
    group by q.customer ->> 'payment_intent_id'
    limit 1;
@@ -1955,7 +2165,12 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'wrong_code', 'message', 'That code did not match.');
   end if;
   perform public._fence_clear(v_bucket);
-  return jsonb_build_object('ok', true) || public._qr_tab_payload(p_location_id, v_pi);
+  if auth.uid() is not null then
+    insert into public.qr_tab_members (location_id, pi_hash, uid)
+    values (p_location_id, md5(v_pi), auth.uid())
+    on conflict do nothing;
+  end if;
+  return jsonb_build_object('ok', true) || public._qr_tab_payload(p_location_id, v_pi, true);
 end;
 $fn$;
 
@@ -1995,15 +2210,217 @@ $fn$;
 --   * a session is needed (anonymous is fine); 30 orders per session per 10 minutes;
 --   * insert only: an order that exists is never changed (a retry by the same
 --     session gets the same answer back);
---   * "paid" needs proof: payment_proofs rows written by the payment-proof edge
---     function after it asked the processor. Card proofs must cover the check total;
---     a zero total needs a gift or loyalty proof. Without proof the order still
---     reaches the kitchen (money may have been taken) but as UNPAID, marked
---     payment_unverified, with no closed check, so staff check it;
---   * a QR tab (open or a new round) needs a preauth proof for its card payment id;
---     the table code is minted here, never by the phone (gap G5);
+--   * "paid" is decided by the SERVER (18 Sep review: a 95 pound order with a check
+--     total of 1p and a 1p card proof came back paid). The server works out the amount
+--     due as the largest of: the order total staff see on the till, the check total,
+--     and the value of the order's own lines (price plus options, times quantity)
+--     less the discounts the order declares (declared discounts are written on the
+--     order for staff to see). Paid means the verified money (card and gift card
+--     proofs, read from the processor or our ledger by the payment-proof edge
+--     function) covers that amount. A loyalty reward is a discount, never money: it
+--     lowers the line value only when a loyalty redemption proof is attached. A bill
+--     of zero needs a gift or loyalty proof. The paid check books the verified card
+--     amount, never a number the phone sent;
+--   * without proof the order still reaches the venue (money may have been taken), but
+--     UNPAID and marked payment_state 'checking' (the till shows "Payment being
+--     checked", never "unpaid"), with its paid check kept aside until
+--     verify_public_order_payment proves it or staff confirm it
+--     (confirm_public_order_payment);
+--   * a QR tab (open or a new round) needs a preauth proof for its card payment id, and
+--     a new round is accepted only from the tab's opener, a phone that joined it with
+--     the table code, or a round that carries the code (18 Sep review: rounds could be
+--     added to someone else's tab). The table code is minted here (gap G5);
+--   * a card payment id stays on a pay now order only when it is the order's own proven
+--     payment, so no order can pose as part of another customer's tab;
 --   * nothing the customer sends can set staff, the venue, the status, paid, or a
 --     server field. Numbers that are not numbers become 0 (gaps G10, G11).
+
+-- The value of the lines, worked out the way the tills and customer pages do: (price
+-- plus the price of each option) times quantity, voided lines left out. In pence.
+create or replace function public._public_order_goods_minor(p_items jsonb)
+returns bigint
+language sql
+immutable
+set search_path = public
+as $fn$
+  select coalesce(sum(round(
+           (public._fence_num(it ->> 'price')
+            + coalesce((select sum(public._fence_num(m ->> 'price'))
+                          from jsonb_array_elements(case when jsonb_typeof(it -> 'mods') = 'array' then it -> 'mods' else '[]'::jsonb end) m), 0))
+           * (case when public._fence_num(it ->> 'qty') > 0 then least(public._fence_num(it ->> 'qty'), 999) else 1 end)
+           * 100)), 0)::bigint
+    from jsonb_array_elements(case when jsonb_typeof(p_items) = 'array' then p_items else '[]'::jsonb end) it
+   where jsonb_typeof(it) = 'object'
+     and not public._fence_bool(it ->> 'voided');
+$fn$;
+
+-- The discounts an order declares, in pence: p_order.discounts when the page sends
+-- them ([{type, label, amount_minor}] for the release), else the check's discounts
+-- (auto discounts carry value, a catering promo carries amount, both in pounds). A
+-- loyalty discount counts only with a loyalty redemption proof, and never above that
+-- proof's money value when the proof carries one.
+create or replace function public._public_order_discount_minor(p_order jsonb, p_check jsonb, p_loyalty_ok boolean, p_loyalty_cap bigint)
+returns bigint
+language plpgsql
+immutable
+set search_path = public
+as $fn$
+declare
+  v_list   jsonb := '[]'::jsonb;
+  v_sum    bigint := 0;
+  v_amt    bigint;
+  v_listed boolean := false;
+  e        jsonb;
+begin
+  if jsonb_typeof(p_order -> 'discounts') = 'array' then
+    v_list := p_order -> 'discounts';
+  elsif p_check is not null and jsonb_typeof(p_check -> 'discounts') = 'array' then
+    v_list := p_check -> 'discounts';
+  end if;
+  for e in select x from jsonb_array_elements(v_list) as t(x) loop
+    continue when jsonb_typeof(e) <> 'object';
+    v_amt := case when e ? 'amount_minor' then round(public._fence_num(e ->> 'amount_minor'))::bigint
+                  else round(public._fence_num(coalesce(e ->> 'amount', e ->> 'value')) * 100)::bigint end;
+    v_amt := greatest(0, least(v_amt, 10000000));
+    if lower(coalesce(e ->> 'type', '')) = 'loyalty' then
+      v_listed := true;
+      continue when not p_loyalty_ok;
+      if p_loyalty_cap > 0 then v_amt := least(v_amt, p_loyalty_cap); end if;
+    end if;
+    v_sum := v_sum + v_amt;
+  end loop;
+  if not v_listed and p_loyalty_ok and p_check is not null and jsonb_typeof(p_check -> 'loyalty') = 'object' then
+    v_amt := greatest(0, least(round(public._fence_num(p_check -> 'loyalty' ->> 'discount_value'))::bigint, 10000000));
+    if p_loyalty_cap > 0 then v_amt := least(v_amt, p_loyalty_cap); end if;
+    v_sum := v_sum + v_amt;
+  end if;
+  return v_sum;
+end;
+$fn$;
+
+-- The payment references a check names (card payment ids, gift and loyalty ledger
+-- keys). verify_public_order_payment finds a late proof by them.
+create or replace function public._public_order_payment_refs(p_check jsonb, p_pi text)
+returns text[]
+language sql
+immutable
+set search_path = public
+as $fn$
+  select coalesce(array_agg(distinct x) filter (where coalesce(x, '') <> ''), '{}'::text[])
+    from (
+      select p_check ->> 'stripe_payment_intent_id' as x
+      union all select p_pi
+      union all select p_check -> 'gift_card' ->> 'idempotency_key'
+      union all select p_check -> 'loyalty' ->> 'idempotency_key'
+      union all select e ->> 'id'
+        from jsonb_array_elements(case when jsonb_typeof(p_check -> 'payment_intents') = 'array' then p_check -> 'payment_intents' else '[]'::jsonb end) e
+      union all select l ->> 'idempotency_key'
+        from jsonb_array_elements(case when jsonb_typeof(p_check -> 'gift_card' -> 'legs') = 'array' then p_check -> 'gift_card' -> 'legs' else '[]'::jsonb end) l
+    ) refs;
+$fn$;
+
+-- The closed check of a public order, built from what the page sent but with every
+-- server field forced. id, total, status and closed_at are added when it is written.
+create or replace function public._public_order_check_row(p_loc text, p_ref text, p_source text, p_type text,
+                                                          p_check jsonb, p_items jsonb, p_customer jsonb)
+returns jsonb
+language sql
+stable
+set search_path = public
+as $fn$
+  select jsonb_build_object(
+      'id', left(coalesce(nullif(btrim(p_check ->> 'id'), ''), 'chk-' || p_source || '-' || p_ref), 80),
+      'ref', p_ref,
+      'location_id', p_loc,
+      'table_id', left(p_check ->> 'table_id', 80),
+      'table_label', left(p_check ->> 'table_label', 80),
+      'staff_name', null,
+      'items', case when jsonb_typeof(p_check -> 'items') = 'array' then p_check -> 'items' else p_items end,
+      'subtotal', round(public._fence_num(p_check ->> 'subtotal'), 2),
+      'tax', round(public._fence_num(p_check ->> 'tax'), 2),
+      'payment_method', left(p_check ->> 'payment_method', 200),
+      'covers', greatest(1, least(99, public._fence_num(p_check ->> 'covers')::int)),
+      'voided', false,
+      'refunded', false,
+      'server', left(coalesce(nullif(p_check ->> 'server', ''), initcap(p_source)), 40),
+      'order_type', left(coalesce(nullif(p_check ->> 'order_type', ''), p_type), 40),
+      'customer', case when jsonb_typeof(p_check -> 'customer') = 'object'
+                       then (p_check -> 'customer') - 'paid' - 'staff' - 'payment_state' - 'payment_unverified'
+                            - 'payment_confirmed_by' - 'order_pricing' - 'placed_via'
+                       else p_customer end,
+      'discounts', case when jsonb_typeof(p_check -> 'discounts') = 'array' then p_check -> 'discounts' else '[]'::jsonb end,
+      'service', round(public._fence_num(p_check ->> 'service'), 2),
+      'tip', round(public._fence_num(p_check ->> 'tip'), 2),
+      'method', left(coalesce(nullif(p_check ->> 'method', ''), 'card'), 40),
+      'refunds', '[]'::jsonb,
+      'tax_breakdown', case when jsonb_typeof(p_check -> 'tax_breakdown') = 'array' then p_check -> 'tax_breakdown' else '[]'::jsonb end,
+      'tax_amount', case when p_check ? 'tax_amount' and p_check ->> 'tax_amount' is not null
+                         then round(public._fence_num(p_check ->> 'tax_amount'), 2) end,
+      'source', p_source,
+      'gift_card', case when jsonb_typeof(p_check -> 'gift_card') = 'object' then p_check -> 'gift_card' end,
+      'loyalty', case when jsonb_typeof(p_check -> 'loyalty') = 'object' then p_check -> 'loyalty' end,
+      'promo', case when jsonb_typeof(p_check -> 'promo') = 'object' then p_check -> 'promo' end,
+      'stripe_payment_intent_id', left(p_check ->> 'stripe_payment_intent_id', 120),
+      'payment_intents', case when jsonb_typeof(p_check -> 'payment_intents') = 'array' then p_check -> 'payment_intents' end,
+      'processor', case when p_check ->> 'processor' in ('stripe', 'ryft', 'adyen') then p_check ->> 'processor' else 'stripe' end,
+      'customer_phone', left(p_check ->> 'customer_phone', 40),
+      'closed_at_wanted', p_check ->> 'closed_at');
+$fn$;
+
+-- Write a public order's paid check: total = the verified card amount (in pence). A
+-- catering check keeps the event time as its sales date (the old catering page did
+-- this), within a year ahead; every other check is dated now.
+create or replace function public._public_order_write_check(p_cc jsonb, p_total_minor bigint, p_extra_customer jsonb)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_id     text := left(coalesce(nullif(p_cc ->> 'id', ''), 'chk-' || coalesce(p_cc ->> 'ref', 'public')), 80);
+  v_closed timestamptz := now();
+  v_want   timestamptz;
+  v_row    jsonb;
+begin
+  if p_cc ->> 'source' = 'catering' then
+    begin
+      v_want := nullif(p_cc ->> 'closed_at_wanted', '')::timestamptz;
+    exception when others then
+      v_want := null;
+    end;
+    if v_want is not null and v_want > now() - interval '1 day' and v_want < now() + interval '400 days' then
+      v_closed := v_want;
+    end if;
+  end if;
+  if exists (select 1 from public.closed_checks c where c.id = v_id) then
+    v_id := left(v_id, 75) || '-' || public._fence_random_code(4);
+  end if;
+  v_row := (p_cc - 'closed_at_wanted')
+           || jsonb_build_object('id', v_id, 'total', round(greatest(0, p_total_minor) / 100.0, 2),
+                                 'status', 'paid', 'closed_at', v_closed);
+  if coalesce(p_extra_customer, '{}'::jsonb) <> '{}'::jsonb then
+    v_row := jsonb_set(v_row, '{customer}', coalesce(v_row -> 'customer', '{}'::jsonb) || p_extra_customer);
+  end if;
+  insert into public.closed_checks
+  select * from jsonb_populate_record(null::public.closed_checks, v_row);
+  return v_id;
+end;
+$fn$;
+
+do $order_helper_grants$
+declare
+  f text;
+begin
+  foreach f in array array['public._public_order_goods_minor(jsonb)',
+                           'public._public_order_discount_minor(jsonb, jsonb, boolean, bigint)',
+                           'public._public_order_payment_refs(jsonb, text)',
+                           'public._public_order_check_row(text, text, text, text, jsonb, jsonb, jsonb)',
+                           'public._public_order_write_check(jsonb, bigint, jsonb)'] loop
+    execute format('revoke all on function %s from public, anon, authenticated', f);
+  end loop;
+end
+$order_helper_grants$;
+
 create or replace function public.place_public_order(
   p_location_id uuid,
   p_order       jsonb,
@@ -2020,27 +2437,42 @@ declare
   v_loc         text := p_location_id::text;
   v_source      text := lower(coalesce(p_order ->> 'source', ''));
   v_ref         text := btrim(coalesce(p_order ->> 'ref', ''));
-  v_customer    jsonb := case when jsonb_typeof(p_order -> 'customer') = 'object' then p_order -> 'customer' else '{}'::jsonb end;
+  v_raw         jsonb := case when jsonb_typeof(p_order -> 'customer') = 'object' then p_order -> 'customer' else '{}'::jsonb end;
+  v_customer    jsonb;
   v_items       jsonb := case when jsonb_typeof(p_order -> 'items') = 'array' then p_order -> 'items' else '[]'::jsonb end;
   v_total       numeric := round(public._fence_num(p_order ->> 'total'), 2);
   v_type        text := left(coalesce(nullif(p_order ->> 'type', ''), 'collection'), 40);
+  v_check       jsonb := case when jsonb_typeof(p_check) = 'object' then p_check end;
+  v_ip          text := public._fence_client_ip();
   v_tab         boolean;
   v_pi          text;
   v_proof_ids   uuid[] := coalesce(p_proof_ids, '{}'::uuid[]);
   v_card_minor  bigint := 0;
-  v_other_minor bigint := 0;
-  v_need_minor  bigint := 0;
+  v_gift_minor  bigint := 0;
+  v_loyal_n     integer := 0;
+  v_loyal_cap   bigint := 0;
+  v_card_refs   text[] := '{}'::text[];
+  v_goods_minor bigint := 0;
+  v_disc_minor  bigint := 0;
+  v_floor_minor bigint := 0;
+  v_due_minor   bigint := 0;
   v_paid        boolean := false;
   v_unverified  boolean := false;
   v_status      text;
   v_token       text;
   v_join        text := null;
+  v_tab_ref     text;
   v_check_id    text := null;
   v_sent_at     timestamptz;
   v_event_date  date;
   v_existing    public.public_order_tokens%rowtype;
+  v_first       public.order_queue%rowtype;
+  v_hold        public.payment_proofs%rowtype;
+  v_code_given  text;
+  v_bucket      text;
   v_cc          jsonb;
-  v_check_total numeric;
+  v_pay_ref     text;
+  v_processor   text;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'reason', 'no_session', 'message', 'Please reload the page and try again.');
@@ -2060,10 +2492,12 @@ begin
   select * into v_existing from public.public_order_tokens t where t.location_id = v_loc and t.ref = v_ref;
   if v_existing.ref is not null then
     if v_existing.placed_by = v_uid then
-      return jsonb_build_object('ok', true, 'idempotent', true, 'ref', v_ref, 'paid', v_existing.paid,
-                                'track_token', v_existing.token,
-                                'tab_join_code', (select q.customer ->> 'tab_join_code' from public.order_queue q
-                                                   where q.location_id = v_loc and q.ref = v_ref));
+      return (select jsonb_build_object('ok', true, 'idempotent', true, 'ref', v_ref, 'paid', q.paid,
+                                        'status', q.status,
+                                        'payment_unverified', coalesce(q.customer ->> 'payment_state', '') = 'checking',
+                                        'track_token', v_existing.token,
+                                        'tab_join_code', q.customer ->> 'tab_join_code')
+                from public.order_queue q where q.location_id = v_loc and q.ref = v_ref);
     end if;
     return jsonb_build_object('ok', false, 'reason', 'ref_taken');
   end if;
@@ -2074,7 +2508,7 @@ begin
   if jsonb_array_length(v_items) = 0 or jsonb_array_length(v_items) > 200 or pg_column_size(v_items) > 262144 then
     return jsonb_build_object('ok', false, 'reason', 'items');
   end if;
-  if pg_column_size(v_customer) > 32768 then
+  if pg_column_size(v_raw) > 32768 then
     return jsonb_build_object('ok', false, 'reason', 'customer');
   end if;
   if v_total < 0 or v_total > 100000 then
@@ -2084,28 +2518,46 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders from this device. Please wait a few minutes.');
   end if;
 
-  -- Server fields a phone must never set.
-  v_customer := v_customer - 'paid' - 'payment_verified' - 'payment_unverified' - 'tab_join_code' - 'staff' - 'placed_via';
-  v_tab := v_source = 'qr' and public._fence_bool(v_customer ->> 'tab_open');
-  v_pi := nullif(btrim(coalesce(v_customer ->> 'payment_intent_id', '')), '');
+  -- Server fields a phone must never set, on any order. Tab fields and the card payment
+  -- id are put back below only where the server has checked them.
+  v_customer := v_raw - 'paid' - 'payment_verified' - 'payment_unverified' - 'payment_state' - 'payment_ref'
+                      - 'payment_processor' - 'payment_confirmed_by' - 'payment_confirmed_note'
+                      - 'payment_verified_at' - 'order_pricing' - 'tab_join_code' - 'staff' - 'placed_via'
+                      - 'tab_open' - 'tab_ref' - 'round_ref' - 'tab_opened_at' - 'pre_auth_amount'
+                      - 'tab_running_total' - 'payment_intent_id';
+  v_tab := v_source = 'qr' and public._fence_bool(v_raw ->> 'tab_open');
+  v_pi := nullif(left(btrim(coalesce(v_raw ->> 'payment_intent_id', '')), 200), '');
 
-  -- Money proofs named by the caller, for this venue, not used before.
+  -- Money proofs named by the caller: this venue, not used before, and not a payment
+  -- the processor says belongs to another order.
   perform 1 from public.payment_proofs p where p.id = any(v_proof_ids) for update;
   select coalesce(sum(p.amount_minor) filter (where p.kind = 'card'), 0),
-         coalesce(sum(p.amount_minor) filter (where p.kind in ('gift', 'loyalty')), 0)
-    into v_card_minor, v_other_minor
+         coalesce(sum(p.amount_minor) filter (where p.kind = 'gift'), 0),
+         (count(*) filter (where p.kind = 'loyalty'))::int,
+         coalesce(sum(p.amount_minor) filter (where p.kind = 'loyalty' and p.amount_minor > 1), 0),
+         coalesce(array_agg(p.payment_ref) filter (where p.kind = 'card'), '{}'::text[])
+    into v_card_minor, v_gift_minor, v_loyal_n, v_loyal_cap, v_card_refs
     from public.payment_proofs p
    where p.id = any(v_proof_ids)
      and p.location_id = v_loc
      and p.kind in ('card', 'gift', 'loyalty')
      and p.used_by_ref is null
-     and p.verified_at > now() - interval '24 hours';
+     and p.verified_at > now() - interval '24 hours'
+     and coalesce(p.meta ->> 'order_ref', v_ref) = v_ref;
 
   if v_tab then
-    -- Open a tab or add a round: the card hold must be proven by the server.
-    if v_pi is null or not exists (
-         select 1 from public.payment_proofs p
-          where p.kind = 'preauth' and p.payment_ref = v_pi and p.location_id = v_loc) then
+    -- A QR tab: the card hold must be proven by the server.
+    if v_pi is null then
+      return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
+                                'message', 'We could not confirm the card hold for this tab. Please ask a member of staff.');
+    end if;
+    select * into v_hold
+      from public.payment_proofs p
+     where p.kind = 'preauth' and p.payment_ref = v_pi and p.location_id = v_loc
+     order by p.verified_at desc
+     limit 1
+     for update;
+    if v_hold.id is null then
       return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
                                 'message', 'We could not confirm the card hold for this tab. Please ask a member of staff.');
     end if;
@@ -2115,34 +2567,126 @@ begin
       return jsonb_build_object('ok', false, 'reason', 'tab_closed',
                                 'message', 'This tab is already closed. Please start a new order.');
     end if;
-    select max(q.customer ->> 'tab_join_code') into v_join
+    select * into v_first
       from public.order_queue q
      where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
-       and q.customer ->> 'payment_intent_id' = v_pi;
-    if v_join is null then
+       and public._fence_bool(q.customer ->> 'tab_open')
+       and q.customer ->> 'payment_intent_id' = v_pi
+     order by q.created_at
+     limit 1;
+    if v_first.ref is not null then
+      -- A new round on an open tab: only the tab's opener, a phone that joined it with
+      -- the table code, or a round that carries the code.
+      select max(q.customer ->> 'tab_join_code') into v_join
+        from public.order_queue q
+       where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
+         and public._fence_bool(q.customer ->> 'tab_open')
+         and q.customer ->> 'payment_intent_id' = v_pi;
+      if not public._qr_tab_is_member(v_loc, v_pi, v_uid) then
+        v_bucket := 'join:' || v_loc || ':' || md5(v_pi);
+        if public._fence_is_locked(v_bucket) then
+          return jsonb_build_object('ok', false, 'reason', 'locked', 'message', 'Too many wrong codes. Ask a member of staff.');
+        end if;
+        v_code_given := nullif(public._fence_norm_code(coalesce(p_order ->> 'tab_join_code', v_raw ->> 'tab_join_code')), '');
+        if v_code_given is null or coalesce(v_join, '') = '' or v_code_given <> public._fence_norm_code(v_join) then
+          if v_code_given is not null then
+            perform public._fence_count(v_bucket, 8, interval '1 hour', interval '1 hour');
+          end if;
+          return jsonb_build_object('ok', false, 'reason', 'tab_not_yours',
+                                    'message', 'Ask the person who opened this tab for the table code.');
+        end if;
+        insert into public.qr_tab_members (location_id, pi_hash, uid)
+        values (v_loc, md5(v_pi), v_uid)
+        on conflict do nothing;
+      end if;
+      v_tab_ref := coalesce(v_first.customer ->> 'tab_ref', v_first.ref);
+      v_customer := v_customer || jsonb_build_object('tab_opened_at',
+                      coalesce(v_first.customer ->> 'tab_opened_at', v_first.created_at::text));
+    else
+      -- Opening a tab. The hold must have been checked in the last 30 minutes (the
+      -- phone asks for the proof just before it places the first round) and must not
+      -- have opened another tab already (a tab whose rounds were all collected).
+      if v_hold.used_by_ref is not null then
+        return jsonb_build_object('ok', false, 'reason', 'tab_closed',
+                                  'message', 'This tab is already closed. Please start a new order.');
+      end if;
+      if v_hold.verified_at < now() - interval '30 minutes' then
+        return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
+                                  'message', 'We could not confirm the card hold for this tab. Please try again.');
+      end if;
+      update public.payment_proofs set used_by_ref = v_loc || ':' || v_ref, used_at = now() where id = v_hold.id;
       v_join := public._fence_random_digits(6);
+      v_tab_ref := v_ref;
+      v_customer := v_customer || jsonb_build_object('tab_opened_at', now());
     end if;
-    v_customer := v_customer || jsonb_build_object('tab_join_code', v_join);
+    v_customer := v_customer || jsonb_build_object(
+                    'tab_open', true, 'payment_intent_id', v_pi, 'tab_join_code', v_join,
+                    'tab_ref', v_tab_ref, 'round_ref', v_ref,
+                    'pre_auth_amount', round(v_hold.amount_minor / 100.0, 2));
     v_paid := false;
     v_status := 'prep';
-  elsif p_check is not null and jsonb_typeof(p_check) = 'object' then
-    v_check_total := round(public._fence_num(p_check ->> 'total'), 2);
-    v_need_minor := round(v_check_total * 100)::bigint;
-    if v_need_minor > 0 then
-      v_paid := v_card_minor >= v_need_minor;
-    else
-      v_paid := v_other_minor > 0;
-    end if;
-    v_unverified := not v_paid;
-    v_status := case when not v_paid then 'received' when v_source = 'catering' then 'received' else 'prep' end;
   else
-    -- Pay later (no payment taken online): the venue collects on collection.
-    v_paid := false;
-    v_status := 'received';
+    -- QR has no pay later: a QR order is either paid now or a round of a tab. Online
+    -- always pays too; an online order that arrives without its check (the page could
+    -- not build it) is treated as paid now with an empty check, so it is proven or
+    -- checked like any other. Only catering has pay later.
+    if v_check is null and v_source = 'qr' then
+      return jsonb_build_object('ok', false, 'reason', 'payment', 'message', 'Please pay for your order to send it.');
+    end if;
+    if v_check is null and v_source = 'online' then
+      v_check := '{}'::jsonb;
+    end if;
+    -- The card payment id stays only when it is this order's own proven payment.
+    if v_pi is not null and v_pi = any(v_card_refs) then
+      v_customer := v_customer || jsonb_build_object('payment_intent_id', v_pi);
+    end if;
+    v_goods_minor := public._public_order_goods_minor(v_items);
+    v_disc_minor := least(v_goods_minor, public._public_order_discount_minor(p_order, v_check, v_loyal_n > 0, v_loyal_cap));
+    v_floor_minor := greatest(0, v_goods_minor - v_disc_minor - (jsonb_array_length(v_items) + 2));
+    v_due_minor := greatest(round(v_total * 100)::bigint,
+                            case when v_check is not null
+                                 then round(greatest(0, public._fence_num(v_check ->> 'total')) * 100)::bigint else 0 end,
+                            v_floor_minor);
+    if v_check is not null then
+      if v_due_minor > 0 then
+        v_paid := (v_card_minor + v_gift_minor) >= v_due_minor;
+      else
+        v_paid := (v_card_minor + v_gift_minor) > 0 or v_loyal_n > 0;
+      end if;
+      v_unverified := not v_paid;
+      v_status := case when v_paid and v_source <> 'catering' then 'prep' else 'received' end;
+      -- Money may have been taken: never refused for the venue, but one network can
+      -- only send so many orders it cannot prove.
+      if v_unverified and v_ip is not null and public._fence_is_locked('order:unproven:ip:' || v_ip) then
+        return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders from this network. Please ask a member of staff.');
+      end if;
+    else
+      -- Catering pay later: no money taken, so the venue collects it later.
+      v_paid := false;
+      v_status := 'received';
+      if (v_ip is not null and public._fence_is_locked('order:later:ip:' || v_ip))
+         or public._fence_is_locked('order:later:loc:' || v_loc) then
+        return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders right now. Please try again in a few minutes.');
+      end if;
+    end if;
+    v_customer := v_customer || jsonb_build_object('order_pricing', jsonb_build_object(
+                    'goods_minor', v_goods_minor, 'discount_minor', v_disc_minor,
+                    'due_minor', v_due_minor, 'proven_minor', v_card_minor + v_gift_minor));
   end if;
 
+  if v_check is not null then
+    v_cc := public._public_order_check_row(v_loc, v_ref, v_source, v_type, v_check, v_items, v_customer);
+    v_pay_ref := coalesce(nullif(v_check ->> 'stripe_payment_intent_id', ''),
+                          case when jsonb_typeof(v_check -> 'payment_intents') = 'array'
+                               then nullif(v_check -> 'payment_intents' -> 0 ->> 'id', '') end,
+                          v_pi);
+    v_processor := case when coalesce(v_check ->> 'processor', v_raw ->> 'processor') in ('stripe', 'ryft', 'adyen')
+                        then coalesce(v_check ->> 'processor', v_raw ->> 'processor') end;
+  end if;
   if v_unverified then
-    v_customer := v_customer || jsonb_build_object('payment_unverified', true);
+    v_customer := v_customer || jsonb_strip_nulls(jsonb_build_object(
+                    'payment_unverified', true, 'payment_state', 'checking',
+                    'payment_ref', left(v_pay_ref, 200), 'payment_processor', v_processor));
   end if;
 
   begin
@@ -2162,64 +2706,31 @@ begin
     v_event_date := null;
   end if;
 
+  perform set_config('servos.public_order', 'on', true);
   insert into public.order_queue
     (ref, location_id, type, customer, items, total, status, staff, sent_at, collection_time, is_asap,
-     source, paid, payment_method, event_date, placed_via)
+     source, paid, payment_method, event_date)
   values
     (v_ref, v_loc, v_type, v_customer, v_items, v_total, v_status, null, v_sent_at,
      left(nullif(p_order ->> 'collection_time', ''), 40), public._fence_bool(p_order ->> 'is_asap'),
      v_source, v_paid, case when v_paid then left(coalesce(nullif(p_order ->> 'payment_method', ''), 'card'), 40) else null end,
-     v_event_date, 'rpc');
+     v_event_date);
+  perform set_config('servos.public_order', 'off', true);
 
-  if v_paid and p_check is not null and jsonb_typeof(p_check) = 'object' then
-    v_check_id := left(coalesce(nullif(btrim(p_check ->> 'id'), ''), 'chk-' || v_source || '-' || v_ref), 80);
-    if exists (select 1 from public.closed_checks c where c.id = v_check_id) then
-      v_check_id := v_check_id || '-' || public._fence_random_code(4);
-    end if;
-    v_cc := jsonb_build_object(
-      'id', v_check_id,
-      'ref', v_ref,
-      'location_id', v_loc,
-      'table_id', left(p_check ->> 'table_id', 80),
-      'table_label', left(p_check ->> 'table_label', 80),
-      'staff_name', null,
-      'items', case when jsonb_typeof(p_check -> 'items') = 'array' then p_check -> 'items' else v_items end,
-      'subtotal', round(public._fence_num(p_check ->> 'subtotal'), 2),
-      'tax', round(public._fence_num(p_check ->> 'tax'), 2),
-      'total', v_check_total,
-      'payment_method', left(p_check ->> 'payment_method', 200),
-      'covers', greatest(1, least(99, public._fence_num(p_check ->> 'covers')::int)),
-      'closed_at', now(),
-      'voided', false,
-      'refunded', false,
-      'server', left(coalesce(nullif(p_check ->> 'server', ''), initcap(v_source)), 40),
-      'order_type', left(coalesce(nullif(p_check ->> 'order_type', ''), v_type), 40),
-      'customer', case when jsonb_typeof(p_check -> 'customer') = 'object'
-                       then (p_check -> 'customer') - 'paid' - 'staff' else v_customer end,
-      'discounts', case when jsonb_typeof(p_check -> 'discounts') = 'array' then p_check -> 'discounts' else '[]'::jsonb end,
-      'service', round(public._fence_num(p_check ->> 'service'), 2),
-      'tip', round(public._fence_num(p_check ->> 'tip'), 2),
-      'method', left(coalesce(nullif(p_check ->> 'method', ''), 'card'), 40),
-      'status', 'paid',
-      'refunds', '[]'::jsonb,
-      'tax_breakdown', case when jsonb_typeof(p_check -> 'tax_breakdown') = 'array' then p_check -> 'tax_breakdown' else '[]'::jsonb end,
-      'tax_amount', case when p_check ? 'tax_amount' and p_check ->> 'tax_amount' is not null
-                         then round(public._fence_num(p_check ->> 'tax_amount'), 2) end,
-      'source', v_source,
-      'gift_card', case when jsonb_typeof(p_check -> 'gift_card') = 'object' then p_check -> 'gift_card' end,
-      'loyalty', case when jsonb_typeof(p_check -> 'loyalty') = 'object' then p_check -> 'loyalty' end,
-      'promo', case when jsonb_typeof(p_check -> 'promo') = 'object' then p_check -> 'promo' end,
-      'stripe_payment_intent_id', left(p_check ->> 'stripe_payment_intent_id', 120),
-      'payment_intents', case when jsonb_typeof(p_check -> 'payment_intents') = 'array' then p_check -> 'payment_intents' end,
-      'processor', case when p_check ->> 'processor' in ('stripe', 'ryft', 'adyen') then p_check ->> 'processor' else 'stripe' end,
-      'customer_phone', left(p_check ->> 'customer_phone', 40));
-    insert into public.closed_checks
-    select * from jsonb_populate_record(null::public.closed_checks, v_cc);
-
+  if v_paid and v_check is not null then
+    v_check_id := public._public_order_write_check(v_cc, least(v_card_minor, v_due_minor), '{}'::jsonb);
     update public.payment_proofs
        set used_by_ref = v_loc || ':' || v_ref, used_at = now()
      where id = any(v_proof_ids) and location_id = v_loc
-       and kind in ('card', 'gift', 'loyalty') and used_by_ref is null;
+       and kind in ('card', 'gift', 'loyalty') and used_by_ref is null
+       and coalesce(meta ->> 'order_ref', v_ref) = v_ref;
+  elsif v_check is not null then
+    insert into public.public_order_pending_checks
+      (location_id, ref, check_row, due_minor, client_total, payment_refs, placed_by)
+    values
+      (v_loc, v_ref, v_cc, v_due_minor, round(public._fence_num(v_check ->> 'total'), 2),
+       public._public_order_payment_refs(v_check, v_pi), v_uid)
+    on conflict (location_id, ref) do nothing;
   end if;
 
   v_token := replace(gen_random_uuid()::text, '-', '');
@@ -2227,17 +2738,170 @@ begin
   values (v_loc, v_ref, v_token, v_uid, v_paid);
 
   perform public._fence_count('order:uid:' || v_uid::text, 30, interval '10 minutes', interval '10 minutes');
+  if v_unverified and v_ip is not null then
+    perform public._fence_count('order:unproven:ip:' || v_ip, 60, interval '10 minutes', interval '10 minutes');
+  end if;
+  if not v_tab and v_check is null then
+    if v_ip is not null then
+      perform public._fence_count('order:later:ip:' || v_ip, 20, interval '10 minutes', interval '10 minutes');
+    end if;
+    perform public._fence_count('order:later:loc:' || v_loc, 200, interval '10 minutes', interval '10 minutes');
+  end if;
 
   return jsonb_build_object('ok', true, 'ref', v_ref, 'paid', v_paid, 'status', v_status,
                             'payment_unverified', v_unverified, 'track_token', v_token,
-                            'tab_join_code', v_join, 'check_id', v_check_id);
+                            'tab_join_code', v_join, 'check_id', v_check_id,
+                            'due_minor', case when v_tab then null else v_due_minor end);
 end;
 $fn$;
 
--- 7e. Closing a QR tab from the customer's phone after the card was captured
+-- 7e. A public order whose payment was being checked. verify_public_order_payment is
+-- called by the page that placed it (retrying while the processor catches up) or by a
+-- till or Back Office of the venue ("Check payment" after payment-proof wrote the
+-- proof). It counts the proofs named plus any proof of the payments the order's check
+-- names; when they cover the amount due it writes the paid check (the verified card
+-- amount), marks the order paid and the state 'verified'. Nothing else about the order
+-- changes (the till moves it on as usual).
+create or replace function public.verify_public_order_payment(p_location_id uuid, p_ref text, p_proof_ids uuid[] default '{}'::uuid[])
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_uid      uuid := auth.uid();
+  v_loc      text := p_location_id::text;
+  v_q        public.order_queue%rowtype;
+  v_pend     public.public_order_pending_checks%rowtype;
+  v_ids      uuid[];
+  v_card     bigint := 0;
+  v_gift     bigint := 0;
+  v_loyal    integer := 0;
+  v_paid     boolean;
+  v_check_id text;
+  v_pi       text;
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session');
+  end if;
+  select * into v_q from public.order_queue q where q.location_id = v_loc and q.ref = p_ref for update;
+  if v_q.ref is null
+     or not (exists (select 1 from public.public_order_tokens t
+                      where t.location_id = v_loc and t.ref = p_ref and t.placed_by = v_uid)
+             or public.pos_can_access(v_loc) or public.is_super_admin()) then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+  if v_q.paid then
+    return jsonb_build_object('ok', true, 'paid', true, 'already', true);
+  end if;
+  select * into v_pend from public.public_order_pending_checks c
+   where c.location_id = v_loc and c.ref = p_ref for update;
+  if v_pend.ref is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_check',
+                              'message', 'This order was not paid online. Take the payment on the till.');
+  end if;
+  select coalesce(array_agg(p.id), '{}'::uuid[]) into v_ids
+    from public.payment_proofs p
+   where p.location_id = v_loc
+     and p.kind in ('card', 'gift', 'loyalty')
+     and p.used_by_ref is null
+     and p.verified_at > now() - interval '7 days'
+     and coalesce(p.meta ->> 'order_ref', p_ref) = p_ref
+     and (p.id = any(coalesce(p_proof_ids, '{}'::uuid[])) or p.payment_ref = any(v_pend.payment_refs));
+  perform 1 from public.payment_proofs p where p.id = any(v_ids) for update;
+  select coalesce(sum(p.amount_minor) filter (where p.kind = 'card'), 0),
+         coalesce(sum(p.amount_minor) filter (where p.kind = 'gift'), 0),
+         (count(*) filter (where p.kind = 'loyalty'))::int,
+         max(p.payment_ref) filter (where p.kind = 'card')
+    into v_card, v_gift, v_loyal, v_pi
+    from public.payment_proofs p
+   where p.id = any(v_ids);
+  v_paid := case when v_pend.due_minor > 0 then (v_card + v_gift) >= v_pend.due_minor
+                 else (v_card + v_gift) > 0 or v_loyal > 0 end;
+  if not v_paid then
+    return jsonb_build_object('ok', true, 'paid', false, 'due_minor', v_pend.due_minor,
+                              'proven_minor', v_card + v_gift,
+                              'message', 'The payment is not confirmed yet.');
+  end if;
+  v_check_id := public._public_order_write_check(v_pend.check_row, least(v_card, v_pend.due_minor),
+                                                 jsonb_build_object('payment_verified_at', now()));
+  update public.payment_proofs set used_by_ref = v_loc || ':' || p_ref, used_at = now() where id = any(v_ids);
+  update public.order_queue
+     set paid = true,
+         payment_method = coalesce(payment_method, left(coalesce(nullif(v_pend.check_row ->> 'method', ''), 'card'), 40)),
+         customer = (customer - 'payment_unverified')
+                    || jsonb_build_object('payment_state', 'verified', 'payment_verified_at', now())
+                    || case when source = 'qr' and v_pi is not null and v_pi = customer ->> 'payment_ref'
+                            then jsonb_build_object('payment_intent_id', v_pi) else '{}'::jsonb end
+   where location_id = v_loc and ref = p_ref;
+  update public.public_order_tokens set paid = true where location_id = v_loc and ref = p_ref;
+  delete from public.public_order_pending_checks where location_id = v_loc and ref = p_ref;
+  return jsonb_build_object('ok', true, 'paid', true, 'check_id', v_check_id);
+end;
+$fn$;
+
+-- Staff of the venue saw the money (for example in the card processor's dashboard) but
+-- no proof arrived. Writes the kept check as paid for the card amount the order still
+-- needed, and records who confirmed it and why. Tills and Back Office of the venue only,
+-- never the customer.
+create or replace function public.confirm_public_order_payment(p_location_id uuid, p_ref text, p_note text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_uid      uuid := auth.uid();
+  v_loc      text := p_location_id::text;
+  v_q        public.order_queue%rowtype;
+  v_pend     public.public_order_pending_checks%rowtype;
+  v_gift     bigint := 0;
+  v_check_id text;
+begin
+  if v_uid is null or not (public.pos_can_access(v_loc) or public.is_super_admin()) then
+    raise exception 'Only staff of this venue can confirm a payment' using errcode = '42501';
+  end if;
+  select * into v_q from public.order_queue q where q.location_id = v_loc and q.ref = p_ref for update;
+  if v_q.ref is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+  if v_q.paid then
+    return jsonb_build_object('ok', true, 'paid', true, 'already', true);
+  end if;
+  select * into v_pend from public.public_order_pending_checks c
+   where c.location_id = v_loc and c.ref = p_ref for update;
+  if v_pend.ref is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_check',
+                              'message', 'This order was not paid online. Take the payment on the till.');
+  end if;
+  select coalesce(sum(p.amount_minor), 0) into v_gift
+    from public.payment_proofs p
+   where p.location_id = v_loc and p.kind = 'gift' and p.used_by_ref is null
+     and p.payment_ref = any(v_pend.payment_refs);
+  v_check_id := public._public_order_write_check(
+                  v_pend.check_row, greatest(0, v_pend.due_minor - v_gift),
+                  jsonb_strip_nulls(jsonb_build_object('payment_confirmed_by', v_uid, 'payment_confirmed_at', now(),
+                                                       'payment_confirmed_note', left(p_note, 200))));
+  update public.order_queue
+     set paid = true,
+         payment_method = coalesce(payment_method, left(coalesce(nullif(v_pend.check_row ->> 'method', ''), 'card'), 40)),
+         customer = (customer - 'payment_unverified')
+                    || jsonb_strip_nulls(jsonb_build_object('payment_state', 'confirmed_by_staff',
+                                                            'payment_confirmed_by', v_uid,
+                                                            'payment_confirmed_note', left(p_note, 200)))
+   where location_id = v_loc and ref = p_ref;
+  update public.public_order_tokens set paid = true where location_id = v_loc and ref = p_ref;
+  delete from public.public_order_pending_checks where location_id = v_loc and ref = p_ref;
+  insert into public.device_claim_log (location_id, event, new_uid, detail)
+  values (p_location_id, 'payment_confirmed_by_staff', v_uid, left('order ' || p_ref || coalesce(': ' || p_note, ''), 300));
+  return jsonb_build_object('ok', true, 'paid', true, 'check_id', v_check_id);
+end;
+$fn$;
+
+-- 7f. Closing a QR tab from the customer's phone after the card was captured
 -- (gap G17: only after a capture the server has seen). Marks the tab's rounds
 -- collected and writes one closed check for what was really taken; a shortfall is
--- recorded for staff, never booked as paid.
+-- recorded for staff, never booked as paid. Only rounds of that tab (tab_open) count.
 create or replace function public.settle_qr_tab(
   p_location_id       uuid,
   p_payment_intent_id text,
@@ -2276,11 +2940,13 @@ begin
    for update;
   perform 1 from public.order_queue q
    where q.location_id = v_loc and q.source = 'qr'
+     and public._fence_bool(q.customer ->> 'tab_open')
      and q.customer ->> 'payment_intent_id' = p_payment_intent_id
    for update;
   select array_agg(q.ref order by q.created_at) into v_refs
     from public.order_queue q
    where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
+     and public._fence_bool(q.customer ->> 'tab_open')
      and q.customer ->> 'payment_intent_id' = p_payment_intent_id;
   if v_refs is null then
     return jsonb_build_object('ok', true, 'closed', 0, 'reason', 'already_closed');
@@ -2361,12 +3027,15 @@ begin
 end;
 $fn$;
 
--- 7f. QR tabs on the floor plan, worked out on the server from the open QR rounds
+-- 7g. QR tabs on the floor plan, worked out on the server from the open QR rounds
 -- (gap G17: no public function writes active_sessions). Only ever writes or deletes a
 -- session whose source is 'qr', so a till's own session on that table is never
--- touched (tables must never be lost). Never waits on a till: a locked row is left
--- for the next order change. File 2 attaches it as a trigger on order_queue, when the
--- phone's own sync (src/lib/qrTableSession.js) is gone.
+-- touched (tables must never be lost). Only rounds of an open tab and paid pay now
+-- orders count: an order whose payment is still being checked never puts a guest on
+-- the floor plan. If a till is writing that table's row it waits up to 2 seconds for
+-- it (a till's write takes milliseconds), so a closed tab does not stay on the floor
+-- as a ghost. File 2 attaches it as a trigger on order_queue, when the phone's own sync
+-- (src/lib/qrTableSession.js) is gone.
 create or replace function public._qr_sync_table_session(p_location_id uuid, p_table_id text)
 returns void
 language plpgsql
@@ -2381,6 +3050,7 @@ declare
   v_subtotal numeric := 0;
   v_existing public.active_sessions%rowtype;
   v_session  jsonb;
+  v_timeout  text;
 begin
   if p_location_id is null or coalesce(btrim(p_table_id), '') = '' then
     return;
@@ -2405,16 +3075,22 @@ begin
          and q.source = 'qr'
          and q.status <> 'collected'
          and q.customer ->> 'tableId' = p_table_id
+         and (q.paid or public._fence_bool(q.customer ->> 'tab_open'))
     ) x;
 
-  select * into v_existing
-    from public.active_sessions a
-   where a.location_id = p_location_id and a.table_id = v_floor
-   for update skip locked;
-  if not found and exists (select 1 from public.active_sessions a
-                            where a.location_id = p_location_id and a.table_id = v_floor) then
-    return;   -- a till is writing this table right now; the next order change catches up
-  end if;
+  v_timeout := current_setting('lock_timeout');
+  perform set_config('lock_timeout', '2s', true);
+  begin
+    select * into v_existing
+      from public.active_sessions a
+     where a.location_id = p_location_id and a.table_id = v_floor
+     for update;
+  exception when lock_not_available then
+    perform set_config('lock_timeout', v_timeout, true);
+    raise notice 'QR floor sync skipped table % at %: a till held it for 2 seconds', v_floor, p_location_id;
+    return;
+  end;
+  perform set_config('lock_timeout', v_timeout, true);
 
   if jsonb_array_length(v_items) = 0 then
     if v_existing.id is not null and coalesce(v_existing.session ->> 'source', '') = 'qr' then
@@ -2430,7 +3106,7 @@ begin
            (public._fence_num(it ->> 'price')
             + coalesce((select sum(public._fence_num(m ->> 'price'))
                           from jsonb_array_elements(case when jsonb_typeof(it -> 'mods') = 'array' then it -> 'mods' else '[]'::jsonb end) m), 0))
-           * greatest(1, public._fence_num(it ->> 'qty'))), 0)
+           * (case when public._fence_num(it ->> 'qty') > 0 then least(public._fence_num(it ->> 'qty'), 999) else 1 end)), 0)
     into v_subtotal
     from jsonb_array_elements(v_items) it;
 
@@ -2465,7 +3141,8 @@ begin
      or not public._fence_is_uuid(v_row.location_id) then
     return null;
   end if;
-  if tg_op = 'UPDATE' and new.status is not distinct from old.status and new.items is not distinct from old.items then
+  if tg_op = 'UPDATE' and new.status is not distinct from old.status and new.items is not distinct from old.items
+     and new.paid is not distinct from old.paid then
     return null;
   end if;
   begin
@@ -2490,9 +3167,12 @@ begin
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated, service_role', f);
   end loop;
-  -- Writes need a session (anonymous sign in first).
+  -- Writes need a session (anonymous sign in first). confirm_public_order_payment checks
+  -- inside that the caller is staff of the venue.
   foreach f in array array['public.place_public_order(uuid, jsonb, jsonb, uuid[])',
-                           'public.settle_qr_tab(uuid, text, jsonb, uuid[])'] loop
+                           'public.settle_qr_tab(uuid, text, jsonb, uuid[])',
+                           'public.verify_public_order_payment(uuid, text, uuid[])',
+                           'public.confirm_public_order_payment(uuid, text, text)'] loop
     execute format('revoke all on function %s from public, anon', f);
     execute format('grant execute on function %s to authenticated, service_role', f);
   end loop;
@@ -2505,7 +3185,7 @@ $public_grants$;
 -- ============================================================================
 -- print-agent.js and rpos-print-agent.js use the bare anon key with no session.
 -- File 2 closes print_jobs, so they move to these functions with a key issued in
--- Back Office (contract C1, C2). On 16 Sep no venue ran an agent.
+-- Back Office (contract G1 to G3). On 16 Sep no venue ran an agent.
 create or replace function public.issue_print_agent_token(p_location_id uuid, p_label text default null)
 returns jsonb
 language plpgsql
@@ -2550,6 +3230,9 @@ begin
 end;
 $fn$;
 
+-- A key is 256 random bits, so a wrong key can never be guessed into a right one, and
+-- a right key ALWAYS works: no platform wide lock that one caller could trip to stop
+-- every venue's agents (18 Sep review). Wrong keys are only counted, for review.
 create or replace function public._print_agent_location(p_token text)
 returns uuid
 language plpgsql
@@ -2560,12 +3243,11 @@ declare
   v_loc uuid;
 begin
   if coalesce(p_token, '') = '' then return null; end if;
-  if public._fence_is_locked('print_agent:global') then return null; end if;
   select t.location_id into v_loc
     from public.print_agent_tokens t
    where t.token_hash = encode(sha256(convert_to(p_token, 'UTF8')), 'hex') and t.revoked_at is null;
   if v_loc is null then
-    perform public._fence_count('print_agent:global', 200, interval '10 minutes', interval '10 minutes');
+    perform public._fence_count('print_agent:bad_keys', 1000000000, interval '1 day', interval '1 second');
     return null;
   end if;
   update public.print_agent_tokens set last_used_at = now()
@@ -2669,31 +3351,17 @@ end
 $agent_grants$;
 
 
--- ============================================================================
--- 9. The two busy tables, last (they are locked only for the end of the run)
--- ============================================================================
--- 9a. closed_checks accepts QR (gap G15). closed_checks_source_check had no 'qr', so
--- every QR paid check was refused and never reached reports. Widening a check cannot
--- break an existing row.
-alter table public.closed_checks drop constraint if exists closed_checks_source_check;
-alter table public.closed_checks add constraint closed_checks_source_check
-  check (source = any (array['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise', 'pax_table_pay',
-                             'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr']));
-
--- 9b. order_queue remembers which rows place_public_order wrote (file 2 checks that the
--- customer pages really use it before it closes the table).
-alter table public.order_queue add column if not exists placed_via text;
-comment on column public.order_queue.placed_via is '20260919a fence: rpc when place_public_order wrote the row; NULL for till, kiosk and server writes.';
-
 reset lock_timeout;
 
 
 -- ============================================================================
 -- V. Verification (read only). The editor shows this last result.
 -- ============================================================================
--- Expect: allow_all_left = active_sessions, kds_tickets, order_queue,
--- table_reservations (file 2 closes those); devices_kept and devices_to_pair match
--- the runbook; truncate_left = 0; profile_policy_left = 0; self_move_left = 0.
+-- Expect: allow_all_left = active_sessions, kds_tickets, order_queue, table_reservations
+-- (file 2 closes those); devices_kept about 10 and to_pair_in_use / removed as the
+-- runbook's pre-check listed them; codes_readable_by_strangers = false;
+-- truncate_left = 0; profile_policy_left = 0; self_move_left = 0;
+-- untrusted_links_left = 0; placed_via_trigger = true.
 select
   (select string_agg(tablename, ', ' order by tablename) from pg_policies
     where schemaname = 'public' and policyname = 'allow all'
@@ -2703,8 +3371,13 @@ select
   (select string_agg(coalesce(l.name, 'no venue') || ': ' || d.name || ' (' || coalesce(d.type, '?') || ')', '; '
                      order by l.name, d.name)
      from public.devices d left join public.locations l on l.id = d.location_id
-    where d.device_uid is null
-      and d.id in (select device_id from public.device_claim_log where event = 'unbound_by_fence'))          as devices_to_pair,
+    where d.device_uid is null and d.status in ('unpaired', 'awaiting_pairing')
+      and d.id in (select device_id from public.device_claim_log where event = 'unbound_by_fence'))          as to_pair_in_use,
+  (select count(*) from public.devices d
+    where d.status = 'removed'
+      and d.id in (select device_id from public.device_claim_log where event = 'unbound_by_fence'))          as removed_not_used,
+  exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'devices'
+           and cmd in ('SELECT', 'ALL') and btrim(coalesce(qual, '')) = 'true')                             as codes_readable_by_strangers,
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r'
       and (has_table_privilege('anon', c.oid, 'TRUNCATE') or has_table_privilege('authenticated', c.oid, 'TRUNCATE'))) as truncate_left,
@@ -2712,7 +3385,8 @@ select
       and policyname in ('Allow authenticated access', 'allow all'))                                          as profile_policy_left,
   (select count(*) from pg_policies where schemaname = 'public' and tablename = 'user_locations'
       and policyname = 'ul_update_self')                                                                      as self_move_left,
-  (select count(*) from public.devices where device_uid is not null and bound_via is null)                    as untrusted_links_left;
+  (select count(*) from public.devices where device_uid is not null and bound_via is null)                    as untrusted_links_left,
+  exists (select 1 from pg_trigger where tgname = 'order_queue_placed_via' and not tgisinternal)             as placed_via_trigger;
 
 -- More checks you can paste one by one (all read only):
 --
@@ -2728,9 +3402,11 @@ select
 --   from public.devices d left join public.locations l on l.id = d.location_id
 --  order by l.name, d.name;
 --
--- 3. The trust test for a till still works (expect true, run as any bound till by
---    opening the till and checking tables still load). From the editor:
--- select count(*) from public.devices where bound_via is not null and status in ('active','online');
+-- 3. Kept tills that have not collected their device secret yet (expect this to empty
+--    within a minute of each till being switched on):
+-- select l.name as venue, d.name, d.type, d.last_seen
+--   from public.devices d left join public.locations l on l.id = d.location_id
+--  where d.bound_via is not null and d.device_secret_hash is null order by 1, 2;
 --
 -- 4. The claim functions and who may call them (anon must be false):
 -- select p.proname, has_function_privilege('anon', p.oid, 'execute') as anon,
@@ -2739,6 +3415,7 @@ select
 --  where n.nspname = 'public'
 --    and p.proname in ('claim_device','claim_device_v2','reclaim_device','device_issue_secret',
 --                      'issue_pairing_code','device_heartbeat','device_status','place_public_order',
+--                      'verify_public_order_payment','confirm_public_order_payment',
 --                      'settle_qr_tab','_device_claim_core','_fence_count')
 --  order by 1;
 
@@ -2746,18 +3423,23 @@ select
 -- ============================================================================
 -- ROLL BACK (only if something is wrong; paste in the Ops SQL editor)
 -- ============================================================================
--- It puts back the open policies. It does NOT put back pairing codes (they were
--- retired on purpose: issue new ones in Back Office) or links the fence removed from
--- old devices (pair those devices again).
+-- Remove the "-- " at the start of each line, paste, Run. It puts back exactly the
+-- policies, functions and write grants this file changed (as they were on 18 Sep),
+-- and can run twice. It does NOT put back pairing codes (they were retired on purpose:
+-- issue new ones in Back Office) or links the fence removed from old devices (pair
+-- those devices again). TRUNCATE, REFERENCES and TRIGGER are not given back (nothing
+-- uses them). The new tables, columns and functions stay: nothing needs them gone.
 --
 -- set lock_timeout = '3s';
 -- -- identity
--- create policy "Allow authenticated access" on public.user_profiles for all to public using (auth.role() = 'authenticated');
 -- drop policy if exists up_select_scoped on public.user_profiles;
 -- drop policy if exists up_update_scoped on public.user_profiles;
 -- drop policy if exists up_insert_super_admin on public.user_profiles;
 -- drop policy if exists up_delete_super_admin on public.user_profiles;
+-- drop policy if exists "Allow authenticated access" on public.user_profiles;
+-- create policy "Allow authenticated access" on public.user_profiles for all to public using (auth.role() = 'authenticated');
 -- drop trigger if exists user_profiles_fence_guard on public.user_profiles;
+-- drop policy if exists ul_update_self on public.user_locations;
 -- create policy ul_update_self on public.user_locations for update to public
 --   using ((user_id = auth.uid()) and (not is_anon_session())) with check ((user_id = auth.uid()) and (not is_anon_session()));
 -- drop trigger if exists user_locations_fence_guard on public.user_locations;
@@ -2775,11 +3457,34 @@ select
 --      and exists (select 1 from public.locations l join public.user_profiles up on up.id = auth.uid()
 --                   where l.id = p_location_id and up.org_id is not null and l.org_id = up.org_id); $f$;
 -- -- organisations and locations
+-- drop policy if exists organisations_select on public.organisations;
+-- drop policy if exists organisations_insert on public.organisations;
+-- drop policy if exists organisations_update on public.organisations;
+-- drop policy if exists organisations_delete on public.organisations;
+-- drop policy if exists "allow all" on public.organisations;
+-- drop policy if exists "Allow authenticated access" on public.organisations;
 -- create policy "allow all" on public.organisations for all to public using (true) with check (true);
+-- create policy "Allow authenticated access" on public.organisations for all to public using (auth.role() = 'authenticated');
+-- drop policy if exists locations_read on public.locations;
+-- drop policy if exists locations_update on public.locations;
+-- drop policy if exists locations_insert on public.locations;
+-- drop policy if exists locations_delete on public.locations;
+-- drop policy if exists "allow all" on public.locations;
+-- drop policy if exists "Allow authenticated access" on public.locations;
+-- drop policy if exists "Users can update own location settings" on public.locations;
 -- create policy "allow all" on public.locations for all to public using (true) with check (true);
+-- create policy "Allow authenticated access" on public.locations for all to public using (auth.role() = 'authenticated');
+-- create policy "Users can update own location settings" on public.locations for update to public
+--   using (id in (select user_profiles.location_id from user_profiles where user_profiles.id = auth.uid()))
+--   with check (id in (select user_profiles.location_id from user_profiles where user_profiles.id = auth.uid()));
 -- drop trigger if exists organisations_fence_guard on public.organisations;
 -- drop trigger if exists locations_fence_guard on public.locations;
 -- -- devices
+-- drop policy if exists devices_read on public.devices;
+-- drop policy if exists devices_insert_bo on public.devices;
+-- drop policy if exists devices_update_own_or_bo on public.devices;
+-- drop policy if exists devices_delete_bo on public.devices;
+-- drop policy if exists "allow all" on public.devices;
 -- create policy "allow all" on public.devices for all to public using (true) with check (true);
 -- drop trigger if exists devices_fence_tg on public.devices;
 -- drop index if exists public.devices_one_link_per_session;
@@ -2797,8 +3502,9 @@ select
 --   if exists (select 1 from public.devices d where d.device_uid = auth.uid() and d.status in ('active','online') and d.location_id = p_loc) then return true; end if;
 --   return exists (select 1 from public.ops_devices o where o.device_uid = auth.uid() and o.active and o.location_id = p_loc);
 --   end $f$;
--- grant insert, update, delete on table public.devices, public.organisations, public.locations,
---   public.user_locations, public.user_profiles to anon;
+-- -- the raw anon key had INSERT, UPDATE and DELETE on these three only (user_locations and
+-- -- user_profiles never had them, so they are not given)
+-- grant insert, update, delete on table public.devices, public.organisations, public.locations to anon;
 -- -- claim_device back to the live body of 13 Jul
 -- create or replace function public.claim_device(p_code text) returns uuid language plpgsql security definer
 --   set search_path to 'public' as $f$ declare v_loc uuid; v_id uuid; begin
@@ -2806,9 +3512,10 @@ select
 --   select id, location_id into v_id, v_loc from public.devices where pairing_code = upper(trim(p_code)) and status <> 'removed' limit 1;
 --   if v_id is null then return null; end if;
 --   update public.devices set device_uid = auth.uid(), last_seen = now() where id = v_id;
---   return v_loc; end $f$;
+--   return v_loc; end; $f$;
 -- grant execute on function public.claim_device(text) to anon, authenticated;
+-- -- order_queue: the who-wrote-it stamp stops (the column stays)
+-- drop trigger if exists order_queue_placed_via on public.order_queue;
 -- reset lock_timeout;
 --
--- The new tables, columns and functions can stay: nothing calls them until the app
--- release. The closed_checks 'qr' value should stay (it is a fix).
+-- The closed_checks 'qr' value stays (it is a fix).

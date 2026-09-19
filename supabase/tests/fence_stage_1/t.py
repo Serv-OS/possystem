@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tiny test driver for the LOCAL throwaway Postgres (127.0.0.1:55432). Never Supabase."""
+"""Tiny test driver for the LOCAL throwaway Postgres (127.0.0.1:55432 unless FENCE_PGHOST /
+FENCE_PGPORT say otherwise). Never Supabase."""
 import json, subprocess, sys, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +15,7 @@ UID = {
     'super': '20000000-0000-4000-8000-000000000004',
     'newbie': '20000000-0000-4000-8000-000000000005',
     'staff1': '20000000-0000-4000-8000-000000000006',
+    'mallory': '20000000-0000-4000-8000-000000000007',
     'dev1': '30000000-0000-4000-8000-000000000001',
     'dev2': '30000000-0000-4000-8000-000000000002',
     'dev3': '30000000-0000-4000-8000-000000000003',
@@ -23,10 +25,12 @@ UID = {
     'customer': '30000000-0000-4000-8000-00000000000a',
     'newtill': '30000000-0000-4000-8000-00000000000b',
     'dev1b': '30000000-0000-4000-8000-00000000000c',
+    'joiner': '30000000-0000-4000-8000-00000000000d',
+    'stranger': '30000000-0000-4000-8000-00000000000e',
 }
 SID = {'dev1b': '50000000-0000-4000-8000-00000000000c', 'attacker': '50000000-0000-4000-8000-000000000009',
        'dev1': '50000000-0000-4000-8000-000000000001'}
-ANON = {'dev1', 'dev2', 'dev3', 'dev4', 'dup', 'attacker', 'customer', 'newtill', 'dev1b'}
+ANON = {'dev1', 'dev2', 'dev3', 'dev4', 'dup', 'attacker', 'customer', 'newtill', 'dev1b', 'joiner', 'stranger'}
 L1 = '10000000-0000-4000-8000-000000000001'
 L2 = '10000000-0000-4000-8000-000000000002'
 L3 = '10000000-0000-4000-8000-000000000003'
@@ -38,14 +42,46 @@ def run(sql, db='ops', check=True):
         raise RuntimeError(p.stderr.strip())
     return p.stdout.strip(), p.stderr.strip(), p.returncode
 
+def run_file(path, db='ops'):
+    """Run a whole file as ONE transaction, the way the Supabase SQL editor runs a paste."""
+    p = subprocess.run(PSQL + ['-d', db, '-1', '-f', path], capture_output=True, text=True)
+    return p.stdout.strip(), p.stderr.strip(), p.returncode
+
 def reset():
     run('drop database if exists ops', db='postgres')
     run('create database ops', db='postgres')
     run(open(os.path.join(HERE, '.baseline.sql')).read())
     run(open(os.path.join(HERE, 'seed.sql')).read())
 
-def apply(fname):
-    return run(open(os.path.join(MIG, fname)).read(), check=False)
+def apply(fname, db='ops'):
+    return run_file(os.path.join(MIG, fname), db=db)
+
+def rollback_sql(fname):
+    """The ROLL BACK block at the end of a migration, uncommented: from its
+    "-- set lock_timeout" line to its "-- reset lock_timeout;" line."""
+    lines = open(os.path.join(MIG, fname)).read().split('\n')
+    start = max(i for i, l in enumerate(lines) if l.strip().upper().startswith('-- ROLL BACK'))
+    out, on = [], False
+    for l in lines[start:]:
+        if l.startswith("-- set lock_timeout"):
+            on = True
+        if on:
+            if not l.startswith('--'):
+                break
+            out.append(l[3:] if l.startswith('-- ') else l[2:])
+            if l.startswith('-- reset lock_timeout;'):
+                break
+    if not out:
+        raise RuntimeError('no roll back block in ' + fname)
+    return '\n'.join(out) + '\n'
+
+def apply_rollback(fname, db='ops'):
+    path = os.path.join(HERE, '.rollback_' + fname)
+    open(path, 'w').write(rollback_sql(fname))
+    try:
+        return run_file(path, db=db)
+    finally:
+        os.remove(path)
 
 def claims(who):
     if who == 'rawanon':
@@ -57,20 +93,19 @@ def claims(who):
         c['session_id'] = SID[who]
     return json.dumps(c)
 
-def as_(who, sql):
-    """Run sql as a PostgREST caller, in a transaction that is always rolled back."""
+def _body(who, sql, ip, end):
     role = 'anon' if who == 'rawanon' else ('service_role' if who == 'service' else 'authenticated')
     c = claims(who).replace("'", "''")
-    body = f"begin;\nset local role {role};\nselect set_config('request.jwt.claims', '{c}', true);\n{sql}\nrollback;\n"
-    out, err, rc = run(body, check=False)
-    lines = [l for l in out.splitlines() if l != '' and not l.startswith('{') or l.startswith('{"')]
-    return out, err, rc
+    h = json.dumps({'cf-connecting-ip': ip} if ip else {}).replace("'", "''")
+    return (f"begin;\nset local role {role};\nselect set_config('request.jwt.claims', '{c}', true);\n"
+            f"select set_config('request.headers', '{h}', true);\n{sql}\n{end};\n")
 
-def as_commit(who, sql):
-    role = 'anon' if who == 'rawanon' else ('service_role' if who == 'service' else 'authenticated')
-    c = claims(who).replace("'", "''")
-    body = f"begin;\nset local role {role};\nselect set_config('request.jwt.claims', '{c}', true);\n{sql}\ncommit;\n"
-    return run(body, check=False)
+def as_(who, sql, ip=None):
+    """Run sql as a PostgREST caller, in a transaction that is always rolled back."""
+    return run(_body(who, sql, ip, 'rollback'), check=False)
+
+def as_commit(who, sql, ip=None):
+    return run(_body(who, sql, ip, 'commit'), check=False)
 
 RESULTS = []
 def expect(name, cond, detail=''):
@@ -78,6 +113,11 @@ def expect(name, cond, detail=''):
     print(('PASS ' if cond else 'FAIL ') + name + (('  | ' + detail) if (detail and not cond) else ''))
 
 def last(out):
-    """last non empty line of output (psql prints set_config result first)."""
+    """last non empty line of output (psql prints set_config results first)."""
     ls = [l for l in out.splitlines() if l.strip() != '']
     return ls[-1] if ls else ''
+
+def finish():
+    fails = [n for n, ok, d in RESULTS if not ok]
+    print(f"\n{len(RESULTS) - len(fails)} passed, {len(fails)} failed")
+    sys.exit(1 if fails else 0)

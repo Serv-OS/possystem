@@ -16,7 +16,8 @@ insert into auth.users (id, email, is_anonymous) values
   ('20000000-0000-4000-8000-000000000003', 'owner2@x.test', false),   -- owner at L3
   ('20000000-0000-4000-8000-000000000004', 'super@x.test', false),    -- super admin, linked L2
   ('20000000-0000-4000-8000-000000000005', 'newbie@x.test', false),   -- no links, no org
-  ('20000000-0000-4000-8000-000000000006', 'staff1@x.test', false),   -- staff login at L1 via staff_members only
+  ('20000000-0000-4000-8000-000000000006', 'staff1@x.test', false),   -- staff login at L1 (venue link role staff, and a staff record)
+  ('20000000-0000-4000-8000-000000000007', 'mallory@x.test', false),  -- a stranger who signs up with a real login
   ('30000000-0000-4000-8000-000000000001', null, true),  -- dev1 POS L1 seen now
   ('30000000-0000-4000-8000-000000000002', null, true),  -- dev2 KDS L1 seen 20 days ago
   ('30000000-0000-4000-8000-000000000003', null, true),  -- dev3 POS L3 seen 2 days
@@ -25,7 +26,9 @@ insert into auth.users (id, email, is_anonymous) values
   ('30000000-0000-4000-8000-000000000009', null, true),  -- attacker
   ('30000000-0000-4000-8000-00000000000a', null, true),  -- customer
   ('30000000-0000-4000-8000-00000000000b', null, true),  -- new till
-  ('30000000-0000-4000-8000-00000000000c', null, true);  -- rotated uid of dev1
+  ('30000000-0000-4000-8000-00000000000c', null, true),  -- rotated uid of dev1
+  ('30000000-0000-4000-8000-00000000000d', null, true),  -- a friend who joins a QR tab
+  ('30000000-0000-4000-8000-00000000000e', null, true);  -- another phone in the venue
 
 insert into public.user_profiles (id, org_id, location_id, full_name, role, email, bo_access) values
   ('20000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', '10000000-0000-4000-8000-000000000001', 'Owner One', 'owner', 'owner1@x.test', true),
@@ -34,6 +37,7 @@ insert into public.user_profiles (id, org_id, location_id, full_name, role, emai
   ('20000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-0000000000a1', '10000000-0000-4000-8000-000000000003', 'Super', 'super_admin', 'super@x.test', true),
   ('20000000-0000-4000-8000-000000000005', null, null, 'Newbie', 'owner', 'newbie@x.test', true),
   ('20000000-0000-4000-8000-000000000006', '00000000-0000-4000-8000-0000000000a1', null, 'Staff One', 'owner', 'staff1@x.test', false),
+  ('20000000-0000-4000-8000-000000000007', null, null, 'Mallory', 'owner', 'mallory@x.test', true),
   ('30000000-0000-4000-8000-000000000001', null, null, null, 'owner', null, false),
   ('30000000-0000-4000-8000-000000000002', null, null, null, 'owner', null, false),
   ('30000000-0000-4000-8000-000000000003', null, null, null, 'owner', null, false),
@@ -42,13 +46,16 @@ insert into public.user_profiles (id, org_id, location_id, full_name, role, emai
   ('30000000-0000-4000-8000-000000000009', null, null, null, 'owner', null, false),
   ('30000000-0000-4000-8000-00000000000a', null, null, null, 'owner', null, false),
   ('30000000-0000-4000-8000-00000000000b', null, null, null, 'owner', null, false),
-  ('30000000-0000-4000-8000-00000000000c', null, null, null, 'owner', null, false);
+  ('30000000-0000-4000-8000-00000000000c', null, null, null, 'owner', null, false),
+  ('30000000-0000-4000-8000-00000000000d', null, null, null, 'owner', null, false),
+  ('30000000-0000-4000-8000-00000000000e', null, null, null, 'owner', null, false);
 
 insert into public.user_locations (user_id, location_id, role) values
   ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'owner'),
   ('20000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'manager'),
   ('20000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000003', 'owner'),
-  ('20000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000002', 'owner');
+  ('20000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000002', 'owner'),
+  ('20000000-0000-4000-8000-000000000006', '10000000-0000-4000-8000-000000000001', 'staff');
 
 insert into public.staff_members (id, location_id, org_id, name, role, pin, auth_user_id, active)
 select gen_random_uuid(), '10000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', 'Staff One', 'server', '1234', '20000000-0000-4000-8000-000000000006', true;
