@@ -4,7 +4,8 @@
 -- Claude cannot apply production DDL by any route.
 --
 -- Idempotent: add column if not exists, create table if not exists, create or replace function,
--- unschedule then schedule. Safe to run twice. Nothing existing is changed or removed.
+-- alter column set default, unschedule then schedule. Safe to run twice. Nothing is removed, and
+-- no row is edited; the one change to an existing column is a default on `source`.
 --
 -- "SYNC ezCater MENU", the conservative version (feat/ezcater-menu-sync-v1, 18 Sep 2026).
 -- The connected ezCater token can read the caterer's menus (proven live, read only). A sync
@@ -13,7 +14,8 @@
 -- only exact name matches. Everything else is left for staff on the Item matching card.
 --
 -- WHAT THIS FILE ADDS
---   ezcater_item_links, four columns (all nullable or defaulted):
+--   ezcater_item_links, five columns (all nullable or defaulted), and a default of 'auto' on
+--   source so the refresh upsert (which never names source) is accepted, see below:
 --     ez_ids        text[]       the PUBLISHED ezCater ids (a size id on an item row, a value
 --                                id on an option row). They change on every republish; each
 --                                sync ADDS the new ones and keeps the old ones, so an order
@@ -21,8 +23,11 @@
 --                                (The order's menuItemSizeId IS the menu's sizes.id, proven on
 --                                HKX77V; the order's item id is never matched.)
 --     ez_size_name  text         set only on a row for ONE size of an item with several sizes
---                                (its key is '<item>|size:<size>'). A sized order line resolves
---                                ONLY through such a row, by its published size id.
+--                                (its key is '<item>|size:<size>'). An order line whose published
+--                                size id is on a synced row (size or plain) takes ONLY that row's
+--                                staff match or exact auto link (matched_by 'exact').
+--     ez_only_size  text         the ONE size name of a single size item, on its plain row. A
+--                                display value for the Item matching card, never in the key.
 --     ez_category   text         the ezCater category, for the screen
 --     synced_at     timestamptz  when a sync last wrote this row's ezCater facts
 --   ezcater_menu_syncs: one row per venue, the last sync, and the ONE SYNC PER VENUE lock.
@@ -34,11 +39,11 @@
 -- Item matching card lists what it always listed, and "Sync ezCater menu" says this file has to
 -- be run first.
 --
--- RUN ORDER (docs/EZCATER_V1_RELEASE.md, section 4)
+-- RUN ORDER (docs/EZCATER_V1_RELEASE.md, step 7)
 --   1. Deploy ezcater-connect, then ezcater-webhook (edge functions do not deploy with the web
 --      app). Both work before this file runs: they prove the columns are missing and keep the
 --      old rules.
---   2. Run this file. From then on a sized order line matches only through a synced size row.
+--   2. Run this file. From then on a line on a synced row matches only by that row's decision.
 --   3. Straight away, press "Sync ezCater menu" on Item matching, so sized lines have rows to
 --      match. Until then they print by name.
 --   Needs 20260917_OPS_ezcater_item_links.sql first (checked below).
@@ -58,6 +63,16 @@ alter table public.ezcater_item_links add column if not exists ez_ids text[] not
 alter table public.ezcater_item_links add column if not exists ez_size_name text;
 alter table public.ezcater_item_links add column if not exists ez_category text;
 alter table public.ezcater_item_links add column if not exists synced_at timestamptz;
+alter table public.ezcater_item_links add column if not exists ez_only_size text;
+
+-- THE REFRESH NEEDS THIS. A sync refreshes an existing row with an upsert that names ONLY the
+-- ezCater fact columns (ids, size, category, synced_at), never `source`, so a staff match keeps
+-- source 'manual'. But Postgres builds the full INSERT tuple before ON CONFLICT DO UPDATE runs,
+-- and `source` is NOT NULL: with no default that tuple is rejected, every refresh of an existing
+-- row fails, and after a republish new size ids never arrive. With a default the tuple is
+-- accepted and DO UPDATE sets only the columns the upsert named, so each row keeps its own
+-- source. 'auto' is also what every automatic insert already writes. Idempotent.
+alter table public.ezcater_item_links alter column source set default 'auto';
 
 -- "Which row holds this published id", for support queries. The functions read a venue's rows
 -- whole (paged) and index them in memory.
@@ -142,10 +157,13 @@ end;
 $$;
 
 -- ── Verify after applying ───────────────────────────────────────────────────
---   four rows expected:
+--   five rows expected:
 --   select column_name from information_schema.columns
 --    where table_schema = 'public' and table_name = 'ezcater_item_links'
---      and column_name in ('ez_ids','ez_size_name','ez_category','synced_at');
+--      and column_name in ('ez_ids','ez_size_name','ez_only_size','ez_category','synced_at');
+--   'auto'::text expected:
+--   select column_default from information_schema.columns
+--    where table_schema = 'public' and table_name = 'ezcater_item_links' and column_name = 'source';
 --   select to_regprocedure('public.ezcater_menu_sync_claim(text, text, integer)');
 --   select jobname, schedule, active from cron.job where jobname = 'ezcater-menu-sync-hourly';
 --   select location_id, status, reason, last_ok_at, counts, error from public.ezcater_menu_syncs;
@@ -156,8 +174,10 @@ $$;
 -- drop function if exists public.ezcater_menu_sync_claim(text, text, integer);
 -- drop table if exists public.ezcater_menu_syncs;
 -- drop index if exists public.ezcater_item_links_ez_ids_idx;
+-- alter table public.ezcater_item_links alter column source drop default;
 -- alter table public.ezcater_item_links drop column if exists synced_at,
---   drop column if exists ez_category, drop column if exists ez_size_name, drop column if exists ez_ids;
+--   drop column if exists ez_category, drop column if exists ez_only_size,
+--   drop column if exists ez_size_name, drop column if exists ez_ids;
 -- commit;
 -- Rows a sync inserted stay (ordinary matched or unmatched rows). Size rows (keys with '|size:')
 -- are then never looked up by an order and can be deleted by hand:

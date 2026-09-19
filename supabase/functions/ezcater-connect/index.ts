@@ -547,7 +547,8 @@ Deno.serve(async (req) => {
         // PAGED: a synced menu passes PostgREST's 1000 row cap. The sync columns are asked for
         // first and dropped when 20260919m has not run yet (menu_sync_ready false).
         const base = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
-        let res = await readAllLinks(sb, opsLocationId, base + ', ez_size_name, ez_category, synced_at');
+        // ez_only_size: the one size of a single size item, shown so staff never match blind.
+        let res = await readAllLinks(sb, opsLocationId, base + ', ez_size_name, ez_only_size, ez_category, synced_at');
         let syncReady = true;
         if (!res.ok && isMissingSyncColumn(res.error)) {
           syncReady = false;

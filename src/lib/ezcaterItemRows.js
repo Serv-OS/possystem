@@ -119,14 +119,27 @@ export function toRow(dbRow) {
   const optionId = first(dbRow, 'option_id', 'optionId');
   const matchedBy = first(dbRow, 'matched_by', 'matchedBy');
 
+  const source = first(dbRow, 'source', 'source') || 'auto';
+  const syncedAt = first(dbRow, 'synced_at', 'syncedAt');
+
+  // EXACT MEANS EXACT (mirrors trustedTarget in supabase/functions/_shared/ezcaterMenuSync.ts).
+  // On a SYNCED row only a staff match or an exact auto link (matched_by 'exact') routes an
+  // order. An old order time name link on a synced row (matched_by 'name') routes nothing, so
+  // the card lists it as not matched yet, never as done.
+  const untrusted = !!syncedAt && (menuItemId || optionId)
+    && !(source === 'manual' || (source === 'auto' && matchedBy === 'exact'));
+
   let state = 'unmatched';
-  if (menuItemId || optionId) state = 'matched';
-  else if (matchedBy === 'ignored') state = 'ignored';
+  if ((menuItemId || optionId) && !untrusted) state = 'matched';
+  else if (!menuItemId && !optionId && matchedBy === 'ignored') state = 'ignored';
 
   // A synced SIZE row: one size of an item ezCater sells in several sizes. Its key comes from
   // the menu sync ('<item>|size:<size>'), so it is saved by that key (saveBody), never rebuilt.
   const ezSizeName = kind === 'item' ? first(dbRow, 'ez_size_name', 'ezSizeName') : null;
   const sizeRow = !!ezSizeName && ezKey.indexOf('|size:') !== -1;
+  // A single size item's ONE size, on its plain row (ez_only_size). Display only, never a key:
+  // staff see "Turkey Sandwich, sold only as Box" and never match blind.
+  const ezOnlySize = kind === 'item' && !sizeRow ? first(dbRow, 'ez_only_size', 'ezOnlySize') : null;
 
   return {
     kind,
@@ -134,13 +147,15 @@ export function toRow(dbRow) {
     ezName,
     ezSizeName: sizeRow ? ezSizeName : null,
     sizeRow,
+    ezOnlySize,
     ezCategory: first(dbRow, 'ez_category', 'ezCategory'),
-    syncedAt: first(dbRow, 'synced_at', 'syncedAt'),
+    syncedAt,
     ezGroup: first(dbRow, 'ez_group', 'ezGroup'),
     menuItemId,
     optionId,
-    source: first(dbRow, 'source', 'source') || 'auto',
+    source,
     matchedBy,
+    untrusted: !!untrusted,
     seenCount: seenOf(dbRow),
     lastSeenAt: first(dbRow, 'last_seen_at', 'lastSeenAt'),
     state,
@@ -224,10 +239,15 @@ export function outstandingLine(counts, kind) {
   return `${n} of their ${noun} are not matched yet.`;
 }
 
-/** Their name as the screen shows it: a size row carries its size. */
+/**
+ * Their name as the screen shows it: a size row carries its size, and a single size item says
+ * the one size it is sold as, so nobody matches "Turkey Sandwich" not knowing it is a Box.
+ */
 export function theirLabel(row) {
   if (!row) return '';
-  return row.sizeRow && row.ezSizeName ? `${row.ezName} (${row.ezSizeName})` : row.ezName;
+  if (row.sizeRow && row.ezSizeName) return `${row.ezName} (${row.ezSizeName})`;
+  if (row.ezOnlySize) return `${row.ezName}, sold only as ${row.ezOnlySize}`;
+  return row.ezName;
 }
 
 /**
@@ -374,7 +394,10 @@ export function suggestionsFor(row, ourItems, ourGroups, opts) {
   const prices = pricesById(ourItems);
   // A size row is suggested on its item AND size, so "Caesar Salad" "Half Tray" puts our
   // "Caesar Salad Half" first. Suggestions only: a person still picks.
-  const theirName = row.sizeRow && row.ezSizeName ? `${row.ezName} ${row.ezSizeName}` : row.ezName;
+  // A single size item is suggested on its item and its one size too ("Turkey Sandwich" "Box"
+  // puts our "Turkey Sandwich Box" first).
+  const theirName = row.sizeRow && row.ezSizeName ? `${row.ezName} ${row.ezSizeName}`
+    : (row.ezOnlySize ? `${row.ezName} ${row.ezOnlySize}` : row.ezName);
   return suggestMatches({ name: theirName }, ourItems, { limit }).map((s) => ({
     id: s.itemId,
     name: s.name,

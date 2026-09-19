@@ -17,10 +17,11 @@ import {
   flattenMenus, planMenuSync, autoTargetFor, sizeRowKey, sizeRouteFor, indexPublishedIds,
   currentMenus, venueDate, readCatererMenus, readAllLinks, MENU_QUERY, MENU_QUERY_NO_OPTIONS,
   LINK_PAGE_SIZE, exactName, singleSizeExactName, isMissingSyncColumn, isMissingLinksTable,
+  writeSyncPlan, trustedTarget, isSyncedRow,
 } from '../../supabase/functions/_shared/ezcaterMenuSync.ts';
 import { runMenuSync, dueLocations, runDueSyncs, CRON_BUDGET_MS, MIGRATION_FILE } from '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { planLineMatches, readMatchInputs } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
+import { planLineMatches, readMatchInputs, saveLinkWrites, matchQueueRow } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
 import { buildLinkKey } from '../../supabase/functions/_shared/ezcaterMatch.ts';
 import { toRow, saveBody, theirLabel, suggestionsFor } from './ezcaterItemRows.js';
 
@@ -86,6 +87,63 @@ const OUR_GROUPS = [{ id: 'g-bread', name: 'Bread', options: [
 const MENU_ROWS = OUR_ITEMS.map((i) => ({ ...i, location_id: LOC, menu_name: null, pricing: { base: 9 }, archived: false }));
 const GROUP_ROWS = OUR_GROUPS.map((g) => ({ ...g, location_id: LOC }));
 
+// ── The real schema, read from the migrations ──────────────────────────────────────────────
+// Every column of a table as the migrations leave it, in file order: NOT NULL or not, and
+// whether it has a default. The fake below rejects an insert or upsert exactly as Postgres does:
+// ON CONFLICT builds the whole insert tuple first, so a NOT NULL column with no default that the
+// payload leaves out fails the statement even when the row already exists.
+
+const MIGRATIONS_DIR = new URL('../../supabase/migrations/', import.meta.url);
+
+function schemaOf(table, files) {
+  const list = files || readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const cols = new Map();
+  const t = table.replace(/[^a-z0-9_]/gi, '');
+  for (const f of list) {
+    const sql = readFileSync(new URL(f, MIGRATIONS_DIR), 'utf8').replace(/--[^\n]*/g, '');
+    const create = sql.match(new RegExp(`create table if not exists public\\.${t}\\s*\\(([\\s\\S]*?)\\n\\);`, 'i'));
+    if (create) {
+      for (const raw of create[1].split('\n')) {
+        const line = raw.trim().replace(/,$/, '');
+        const pk = line.match(/^primary key\s*\(([^)]*)\)/i);
+        if (pk) { for (const c of pk[1].split(',')) { const e = cols.get(c.trim()); if (e) e.notNull = true; } continue; }
+        const cm = line.match(/^([a-z_][a-z0-9_]*)\s+(.+)$/i);
+        if (!cm || /^(constraint|unique|check|foreign|primary)$/i.test(cm[1])) continue;
+        cols.set(cm[1], { notNull: /\bnot null\b|\bprimary key\b/i.test(cm[2]), hasDefault: /\bdefault\b/i.test(cm[2]) });
+      }
+    }
+    const alter = `alter table (?:if exists )?(?:only )?public\\.${t}\\s+`;
+    for (const m of sql.matchAll(new RegExp(alter + 'add column (?:if not exists )?([a-z_][a-z0-9_]*)\\s+([^;]*);', 'gi'))) {
+      if (!cols.has(m[1])) cols.set(m[1], { notNull: /\bnot null\b/i.test(m[2]), hasDefault: /\bdefault\b/i.test(m[2]) });
+    }
+    for (const m of sql.matchAll(new RegExp(alter + 'alter column ([a-z_][a-z0-9_]*)\\s+(set|drop) (default|not null)', 'gi'))) {
+      const c = cols.get(m[1]);
+      if (!c) continue;
+      if (m[3].toLowerCase() === 'default') c.hasDefault = m[2].toLowerCase() === 'set';
+      else c.notNull = m[2].toLowerCase() === 'set';
+    }
+  }
+  return cols;
+}
+
+/**
+ * Postgres' answer to one insert or upsert of `rows` (PostgREST sends the union of the rows'
+ * keys as the column list: a key another row has becomes NULL, a key no row has takes the
+ * column default). null when every row is accepted, else the error.
+ */
+function notNullError(schema, rows) {
+  if (!schema || !schema.size) return null;
+  const named = new Set(rows.flatMap((r) => Object.keys(r || {})));
+  for (const r of rows) {
+    for (const [col, c] of schema) {
+      if (!c.notNull) continue;
+      const v = named.has(col) ? (r[col] === undefined ? null : r[col]) : (c.hasDefault ? 'default' : null);
+      if (v === null) return { code: '23502', message: `null value in column "${col}" of relation violates not-null constraint` };
+    }
+  }
+  return null;
+}
+
 // ── Fake ezCater and fake Supabase ─────────────────────────────────────────────────────────
 
 function fakeAsk(menus, { refuseValues = false, calls = [] } = {}) {
@@ -105,7 +163,8 @@ function fakeAsk(menus, { refuseValues = false, calls = [] } = {}) {
   };
 }
 
-function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = false } = {}) {
+function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = false, failLinkPageFrom = null,
+  schemas = { ezcater_item_links: schemaOf('ezcater_item_links') } } = {}) {
   const store = JSON.parse(JSON.stringify(tables));
   const calls = [];
   const from = (name) => {
@@ -116,6 +175,9 @@ function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = fa
       && Object.entries(st.ins).every(([k, v]) => v.map(String).includes(String(r[k])));
     const sameKey = (a, b) => a.location_id === b.location_id && a.kind === b.kind && a.ez_key === b.ez_key;
     const run = () => {
+      if (failLinkPageFrom != null && name === 'ezcater_item_links' && st.op === 'select' && st.range && st.range[0] >= failLinkPageFrom) {
+        return { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } };
+      }
       if (noSyncColumns && st.op === 'select' && /ez_ids|ez_size_name/.test(st.cols)) {
         return { data: null, error: { code: '42703', message: 'column ezcater_item_links.ez_ids does not exist' } };
       }
@@ -131,11 +193,18 @@ function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = fa
       if (st.op === 'upsert') {
         const rows = Array.isArray(st.rows) ? st.rows : [st.rows];
         calls.push({ op: 'upsert', table: name, n: rows.length, ignore: !!st.opts?.ignoreDuplicates });
+        // The insert tuple is checked BEFORE conflict resolution, for every row, as Postgres does.
+        const bad = notNullError(schemas[name], rows);
+        if (bad) return { data: null, error: bad };
+        const defaults = schemas[name] ? { source: 'auto' } : {};
+        const named = new Set(rows.flatMap((r) => Object.keys(r || {})));
         for (const r of rows) {
           const prev = list.find((e) => sameKey(e, r));
+          // DO UPDATE sets only the columns the payload named; DO NOTHING sets none.
           if (prev) { if (!st.opts?.ignoreDuplicates) Object.assign(prev, r); continue; }
-          if (!r.source) return { data: null, error: { message: 'null value in column "source"' } };
-          list.push({ ...r });
+          const fresh = { ...r };
+          for (const [k, v] of Object.entries(defaults)) if (!named.has(k) && schemas[name].get(k)?.hasDefault) fresh[k] = v;
+          list.push(fresh);
         }
         return { data: null, error: null };
       }
@@ -230,7 +299,7 @@ test('exact names auto link: a plain item, a size by its full name, an option', 
   assert.equal(by(buildLinkKey({ name: 'Farmhouse Salad' }, 'item')).menu_item_id, null);
   assert.equal(by(sizeRowKey('A Wreck', 'Original')).menu_item_id, 'm-wreck-orig');
   assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).menu_item_id, 'm-wreck-big');
-  assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).matched_by, 'name');
+  assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).matched_by, 'exact', 'a sync auto link is marked exact');
   assert.equal(by(buildLinkKey({ name: 'Multigrain', groupLabel: 'Bread' }, 'option')).option_id, 'o-multi');
   // Every new row is a not yet ordered row carrying its published ids.
   for (const r of plan.inserts) {
@@ -272,8 +341,9 @@ test('size clashes and guesses do not auto link', () => {
 // ── The order time rule ────────────────────────────────────────────────────────────────────
 
 const SYNCED = [
-  { kind: 'item', ez_key: sizeRowKey('A Wreck', 'Bigs'), ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', option_id: null, source: 'auto', matched_by: 'name', seen_count: 0 },
+  { kind: 'item', ez_key: sizeRowKey('A Wreck', 'Bigs'), ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 },
   { kind: 'item', ez_key: sizeRowKey('A Wreck', 'Skinny'), ez_name: 'A Wreck', ez_size_name: 'Skinny', ez_ids: ['s-wreck-skinny'], menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 },
+  // A plain single size row, synced, holding an OLD order time name link (matched_by 'name').
   { kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_size_name: null, ez_ids: ['s-salad'], menu_item_id: 'm-salad', option_id: null, source: 'auto', matched_by: 'name', seen_count: 3 },
   // An OLD name match made before sizes were synced, by a person: "A Wreck" -> the Original.
   { kind: 'item', ez_key: 'a wreck', ez_name: 'A Wreck', ez_size_name: null, ez_ids: [], menu_item_id: 'm-wreck-orig', option_id: null, source: 'manual', matched_by: 'user-1', seen_count: 9 },
@@ -306,11 +376,22 @@ test('a sized line with an unknown published id stays unmatched: no guess, no ol
   assert.equal(plan([line('A Wreck', 's-republished-999', 'Original')], { menuOk: false }).lines[0].itemId, null);
 });
 
-test('a plain item matches by name as today, synced single size or no size at all', () => {
-  // Single size item: its size id is on the plain row, so the name rules decide.
-  assert.equal(plan([line('Farmhouse Salad', 's-salad', 'Serves 1')]).lines[0].itemId, 'm-salad');
-  // No size on the line: name rules, exactly as before.
-  assert.equal(plan([line('Farmhouse Salad', null, null)]).lines[0].itemId, 'm-salad');
+test('a synced plain row decides by its own trusted decision only; a line with no synced row keeps the name rules', () => {
+  // Single size item: its size id is on the synced plain row, whose only link is an OLD order time
+  // name link. That is not a trusted decision (exact means exact), so the line is unmatched.
+  const p1 = plan([line('Farmhouse Salad', 's-salad', 'Serves 1')]);
+  assert.equal(p1.lines[0].itemId, null);
+  assert.equal(p1.writes.length + p1.upgrades.length, 0);
+  // The same row with a staff match, or an exact auto link from a sync, routes.
+  const trusted = (patch) => SYNCED.map((r) => (r.ez_key === 'farmhouse salad' ? { ...r, ...patch } : r));
+  assert.equal(plan([line('Farmhouse Salad', 's-salad', 'Serves 1')], { links: trusted({ source: 'manual', matched_by: 'u-1' }) }).lines[0].itemId, 'm-salad');
+  assert.equal(plan([line('Farmhouse Salad', 's-salad', 'Serves 1')], { links: trusted({ matched_by: 'exact' }) }).lines[0].itemId, 'm-salad');
+  // No size on the line, but its name key finds the synced row: the row decides, not the name rule.
+  assert.equal(plan([line('Farmhouse Salad', null, null)]).lines[0].itemId, null);
+  assert.equal(plan([line('Farmhouse Salad', null, null)], { links: trusted({ matched_by: 'exact' }) }).lines[0].itemId, 'm-salad');
+  // A line with no synced row at all keeps the name rules, exactly as before.
+  const other = plan([line('Chicken Salad Small', null, null)]);
+  assert.equal(other.lines[0].itemId, 'm-chick-small');
   // Before the migration (no sync columns) nothing changes: an unknown sized line still matches
   // by name, the behaviour this branch started from.
   const before = planLineMatches({ lines: [line('A Wreck', 's-x', 'Original')], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
@@ -320,10 +401,10 @@ test('a plain item matches by name as today, synced single size or no size at al
 
 test('sizeRouteFor: conflicting rows and gone items never guess', () => {
   const idx = indexPublishedIds([
-    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['dup'], menu_item_id: 'm1' },
-    { kind: 'item', ez_key: 'a', ez_size_name: null, ez_ids: ['dup'], menu_item_id: 'm2' },
-    { kind: 'item', ez_key: 'b|size:x', ez_size_name: 'X', ez_ids: ['two'], menu_item_id: 'm1' },
-    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['two'], menu_item_id: 'm3' },
+    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['dup'], menu_item_id: 'm1', source: 'manual' },
+    { kind: 'item', ez_key: 'a', ez_size_name: null, ez_ids: ['dup'], menu_item_id: 'm2', source: 'manual' },
+    { kind: 'item', ez_key: 'b|size:x', ez_size_name: 'X', ez_ids: ['two'], menu_item_id: 'm1', source: 'manual' },
+    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['two'], menu_item_id: 'm3', source: 'manual' },
   ]);
   assert.equal(sizeRouteFor({ ezSizeId: 'dup', sizeName: 'X' }, idx).mode, 'unmatched');
   assert.equal(sizeRouteFor({ ezSizeId: 'two', sizeName: 'X' }, idx).mode, 'unmatched');
@@ -423,7 +504,7 @@ test('link reads page past 1000 rows, for the sync and for orders', async () => 
     many.push({ location_id: LOC, kind: 'item', ez_key: 'item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + i,
       menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0, ez_ids: ['id-' + i], ez_size_name: null });
   }
-  many.push({ ...many[0], ez_key: 'a wreck|size:bigs', ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', matched_by: 'name' });
+  many.push({ ...many[0], ez_key: 'a wreck|size:bigs', ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', matched_by: 'exact' });
   const sb = fakeSb(TABLES(many));
   const all = await readAllLinks(sb, LOC, 'kind, ez_key');
   assert.equal(all.rows.length, 2501);
@@ -555,10 +636,10 @@ test('exact means exact: one key described two ways, two of ours with one name, 
 
 test('order time matches on the SIZE id only, never the order line item id (HKX77V)', () => {
   const synced = [{ kind: 'item', ez_key: sizeRowKey('Italian Boxed Lunch', 'Box'), ez_name: 'Italian Boxed Lunch', ez_size_name: 'Box',
-    ez_ids: ['0226b68c-492c-5a38-b528-fd62a1c1e828'], menu_item_id: 'm-ibl', option_id: null, source: 'auto', matched_by: 'name', seen_count: 0 }];
+    ez_ids: ['0226b68c-492c-5a38-b528-fd62a1c1e828'], menu_item_id: 'm-ibl', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 }];
   const idx = indexPublishedIds(synced);
   const hk = { name: 'Italian Boxed Lunch', sizeName: 'Box', ezItemId: '5f5b503b', ezSizeId: '0226b68c-492c-5a38-b528-fd62a1c1e828' };
-  assert.equal(sizeRouteFor(hk, idx).mode, 'size');
+  assert.equal(sizeRouteFor(hk, idx).mode, 'synced');
   // An item id that happens to be on a row matches nothing: only ezSizeId is read.
   const byItemId = indexPublishedIds([{ ...synced[0], ez_ids: ['5f5b503b'] }]);
   assert.equal(sizeRouteFor(hk, byItemId).mode, 'unmatched');
@@ -591,11 +672,12 @@ test('a failed link read never falls back to name guessing; only a proven missin
     const input = await readMatchInputs(failing(error), LOC);
     assert.equal(input.sizeIds, true, error.message);
     assert.equal(input.linksOk, false);
+    assert.equal(input.linksFailed, true, error.message);
     const p = planLineMatches({ lines: [line('A Wreck Original', 's-anything', 'Original'), line('Farmhouse Salad', null, null)],
       ...input, locationId: LOC, nowIso: NOW });
     assert.equal(p.lines[0].itemId, null, 'a sized line prints by name: ' + error.message);
-    assert.equal(p.lines[1].itemId, 'm-salad', 'an unsized line keeps the old name rule');
-    // linksOk false: matchQueueRow saves none of the plan's writes.
+    assert.equal(p.lines[1].itemId, null, 'an unsized line prints by name too: no name matching for ANY line');
+    assert.equal(p.writes.length + p.bumps.length + p.upgrades.length, 0, 'nothing written');
   }
   // A read that throws is no different.
   const throwing = { from: () => { throw new Error('boom'); } };
@@ -636,14 +718,14 @@ test('a republish keeps the old size id: an order matched before it still matche
   assert.equal(newLine.lines[0].itemId, 'm-wreck-big');
   // Should an id ever sit on two rows, the existing checks still answer unmatched.
   const clash = indexPublishedIds([
-    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['new', 'shared'], menu_item_id: 'm1' },
-    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['shared'], menu_item_id: 'm2' },
-    { kind: 'item', ez_key: 'c', ez_size_name: null, ez_ids: ['plain-and-size'], menu_item_id: 'm3' },
-    { kind: 'item', ez_key: 'c|size:z', ez_size_name: 'Z', ez_ids: ['plain-and-size'], menu_item_id: 'm3' },
+    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['new', 'shared'], menu_item_id: 'm1', source: 'manual' },
+    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['shared'], menu_item_id: 'm2', source: 'manual' },
+    { kind: 'item', ez_key: 'c', ez_size_name: null, ez_ids: ['plain-and-size'], menu_item_id: 'm3', source: 'manual' },
+    { kind: 'item', ez_key: 'c|size:z', ez_size_name: 'Z', ez_ids: ['plain-and-size'], menu_item_id: 'm3', source: 'manual' },
   ]);
   assert.deepEqual(sizeRouteFor({ ezSizeId: 'shared', sizeName: 'X' }, clash), { mode: 'unmatched', reason: 'size rows disagree' });
   assert.deepEqual(sizeRouteFor({ ezSizeId: 'plain-and-size', sizeName: 'Z' }, clash), { mode: 'unmatched', reason: 'id on a plain row and a size row' });
-  assert.equal(sizeRouteFor({ ezSizeId: 'new', sizeName: 'X' }, clash).mode, 'size');
+  assert.equal(sizeRouteFor({ ezSizeId: 'new', sizeName: 'X' }, clash).mode, 'synced');
 });
 
 test('a null menu is a partial read: status partial, nothing replaced', async () => {
@@ -709,4 +791,281 @@ test('the sync migration is 20260919m and every reference names it', () => {
     const text = readFileSync(new URL(f, root), 'utf8');
     assert.ok(!text.includes('20260918e'), f + ' still names 20260918e');
   }
+});
+
+// ── Review round 2 (18 Sep 2026): the refresh upsert, exact at order time, failed reads ────
+
+test('the fake enforces the real NOT NULL columns: source had no default, so every refresh failed', async () => {
+  const before = schemaOf('ezcater_item_links', ['20260917_OPS_ezcater_item_links.sql']);
+  assert.deepEqual(before.get('source'), { notNull: true, hasDefault: false }, '20260917 alone: source NOT NULL, no default');
+  const now = schemaOf('ezcater_item_links');
+  assert.deepEqual(now.get('source'), { notNull: true, hasDefault: true }, '20260919m gives source a default');
+  assert.ok(now.has('ez_only_size'));
+  // After every migration the columns a write MUST name: the key and the name, nothing else.
+  const required = [...now].filter(([, c]) => c.notNull && !c.hasDefault).map(([k]) => k).sort();
+  assert.deepEqual(required, ['ez_key', 'ez_name', 'kind', 'location_id']);
+
+  const staff = { location_id: LOC, kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_group: null,
+    menu_item_id: 'm-salad', option_id: null, source: 'manual', matched_by: 'user-1', seen_count: 2, ez_ids: ['s-old'] };
+  const plan = planMenuSync({ entries: flattenMenus([POTBELLY]), existing: [staff], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
+    locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.ok(plan.refreshes.length === 1 && !('source' in plan.refreshes[0]), 'the refresh never names source');
+  // With the schema as 20260917 left it (no default), Postgres rejects the refresh.
+  const old = fakeSb(TABLES([{ ...staff }]), { schemas: { ezcater_item_links: before } });
+  const bad = await writeSyncPlan(old, LOC, plan, NOW);
+  assert.ok(bad.errors.some((e) => /^refresh: null value in column "source"/.test(e)), bad.errors.join('; '));
+  assert.deepEqual(row(old, 'farmhouse salad').ez_ids, ['s-old'], 'and the new ids never arrived');
+  // With 20260919m: accepted, the new id added, and the row keeps its OWN source.
+  const sb = fakeSb(TABLES([{ ...staff }]));
+  const good = await writeSyncPlan(sb, LOC, plan, NOW);
+  assert.deepEqual(good.errors, []);
+  assert.equal(row(sb, 'farmhouse salad').source, 'manual');
+  assert.equal(row(sb, 'farmhouse salad').menu_item_id, 'm-salad');
+  assert.deepEqual(row(sb, 'farmhouse salad').ez_ids, ['s-salad', 's-old']);
+  // Every other write the sync and the webhook make passes the same check.
+  assert.equal(notNullError(now, plan.inserts), null, 'sync inserts');
+  const lp = planLineMatches({ lines: [line('Chicken Salad Small', null, null), line('Something New', null, null)],
+    ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS, links: [], locationId: LOC, nowIso: NOW, sizeIds: true });
+  assert.ok(lp.writes.length >= 1);
+  assert.equal(notNullError(now, lp.writes), null, 'webhook sighting inserts');
+  // The same check on the schema before 20260919m: the webhook inserts name source themselves.
+  assert.equal(notNullError(before, lp.writes), null);
+});
+
+// End to end, as production runs it: flattenMenus, planMenuSync and writeSyncPlan into the fake
+// (real NOT NULL rules), then readMatchInputs, planLineMatches and saveLinkWrites for one order
+// line, and again through matchQueueRow. Returns what the line became and every link row before
+// and after the order (counters stripped: seen_count and last_seen_at are the only columns an
+// order may move on a synced row).
+async function endToEnd(ezItem, ourItems, orderLine, { existing = [] } = {}) {
+  const build = async () => {
+    const t = TABLES(existing.map((r) => ({ ...r })));
+    t.menu_items = ourItems.map((i) => ({ ...i, location_id: LOC, menu_name: null, pricing: { base: 9 }, archived: false }));
+    t.modifier_groups = [];
+    const sb = fakeSb(t);
+    const synced = await readMatchInputs(sb, LOC);
+    const plan = planMenuSync({ entries: flattenMenus([menuOf(ezItem)]), existing: synced.links, ourItems: synced.ourItems,
+      ourGroups: synced.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: synced.menuOk });
+    const wrote = await writeSyncPlan(sb, LOC, plan, NOW);
+    assert.deepEqual(wrote.errors, []);
+    return sb;
+  };
+  const decisions = (sb) => links(sb).map(({ seen_count, last_seen_at, updated_at, ...r }) => r);
+  const sb = await build();
+  const before = decisions(sb);
+  const input = await readMatchInputs(sb, LOC);
+  assert.equal(input.linksFailed, false);
+  const lp = planLineMatches({ lines: [orderLine], ...input, locationId: LOC, nowIso: NOW });
+  await saveLinkWrites(sb, LOC, lp.writes, lp.bumps, NOW, lp.upgrades);
+  const sb2 = await build();
+  const q = await matchQueueRow(sb2, LOC, { ref: 'EZ-1', items: [orderLine], customer: {} }, { nowIso: NOW, budgetMs: 0 });
+  return { line: lp.lines[0], plan: lp, before, after: decisions(sb), queued: q.row.items[0], after2: decisions(sb2) };
+}
+
+const PROBES = [
+  { name: 'ezCater "Sandwich Platter Large" (only size Serves 12) vs our "Sandwich Platter"',
+    item: { id: 'i-p', name: 'Sandwich Platter Large', sizes: [size('s-p', 'Serves 12')] },
+    ours: [{ id: 'm-sp', name: 'Sandwich Platter' }], line: line('Sandwich Platter Large', 's-p', 'Serves 12') },
+  { name: 'ezCater "Turkey Sandwich" (only size Box) vs our "Turkey Sandwich" (ADR-024: a Box the item name does not say is part of the name)',
+    item: { id: 'i-t', name: 'Turkey Sandwich', sizes: [size('s-t', 'Box')] },
+    ours: [{ id: 'm-t', name: 'Turkey Sandwich' }], line: line('Turkey Sandwich', 's-t', 'Box') },
+  { name: 'ezCater "Italian Boxed Lunch" (only size Tray) vs our "Italian Boxed Lunch"',
+    item: { id: 'i-i', name: 'Italian Boxed Lunch', sizes: [size('s-i', 'Tray')] },
+    ours: [{ id: 'm-i', name: 'Italian Boxed Lunch' }], line: line('Italian Boxed Lunch', 's-i', 'Tray') },
+  { name: 'ezCater "Caesar Salad" (only size Large) vs our "Caesar Salad"',
+    item: { id: 'i-c', name: 'Caesar Salad', sizes: [size('s-c', 'Large')] },
+    ours: [{ id: 'm-c', name: 'Caesar Salad' }], line: line('Caesar Salad', 's-c', 'Large') },
+  { name: 'ezCater unsized "Caesar Salad Half Tray" vs our "Caesar Salad"',
+    item: { id: 'i-h', name: 'Caesar Salad Half Tray', sizes: [] },
+    ours: [{ id: 'm-c', name: 'Caesar Salad' }], line: line('Caesar Salad Half Tray', null, null) },
+];
+
+for (const probe of PROBES) {
+  test('exact at order time, end to end: ' + probe.name + ' ends UNMATCHED and writes nothing', async () => {
+    const r = await endToEnd(probe.item, probe.ours, probe.line);
+    assert.equal(r.line.itemId, null, 'planLineMatches');
+    assert.equal(r.line.match.matched, false);
+    assert.equal(r.queued.itemId, null, 'matchQueueRow');
+    assert.equal(r.plan.writes.length, 0, 'no link row written');
+    assert.equal(r.plan.upgrades.length, 0, 'no row filled or upgraded');
+    assert.deepEqual(r.after, r.before, 'no decision column changed');
+    assert.deepEqual(r.after2, r.before, 'no decision column changed (matchQueueRow)');
+    const synced = r.after.find((x) => x.ez_name === probe.item.name);
+    assert.ok(synced && isSyncedRow(synced), 'the sync wrote the row');
+    assert.equal(synced.menu_item_id, null);
+    assert.equal(synced.matched_by, null);
+    // The order line's size id reaches the row it was synced under (not for the unsized probe).
+    if (probe.line.ezSizeId) assert.deepEqual(synced.ez_ids, [probe.line.ezSizeId]);
+  });
+
+  test('exact at order time, end to end: ' + probe.name + ', with an OLD order time name link already on the row, ends UNMATCHED', async () => {
+    const key = flattenMenus([menuOf(probe.item)])[0].ezKey;
+    const loose = { location_id: LOC, kind: 'item', ez_key: key, ez_name: probe.item.name, ez_group: null,
+      menu_item_id: probe.ours[0].id, option_id: null, source: 'auto', matched_by: 'name', seen_count: 3, last_seen_at: NOW, ez_ids: [] };
+    const r = await endToEnd(probe.item, probe.ours, probe.line, { existing: [loose] });
+    assert.equal(r.line.itemId, null);
+    assert.equal(r.queued.itemId, null);
+    // The sync decided it again by the exact rule and cleared it for staff.
+    const rowNow = r.after.find((x) => x.ez_key === key);
+    assert.equal(rowNow.menu_item_id, null);
+    assert.equal(rowNow.matched_by, null);
+    assert.equal(rowNow.source, 'auto');
+    assert.deepEqual(r.after, r.before, 'the order changed nothing');
+  });
+}
+
+test('exact at order time, end to end: the exact ones still route (Potbelly Box, Turkey Sandwich Box), by the synced row', async () => {
+  const ibl = await endToEnd({ id: 'i-b', name: 'Italian Boxed Lunch', sizes: [size('0226b68c', 'Box')] },
+    [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }], line('Italian Boxed Lunch', '0226b68c', 'Box'));
+  assert.equal(ibl.line.itemId, 'm-ibl');
+  assert.equal(ibl.line.match.source, 'menuSync');
+  assert.equal(ibl.queued.itemId, 'm-ibl');
+  assert.equal(ibl.before.find((x) => x.ez_name === 'Italian Boxed Lunch').matched_by, 'exact');
+  const tsb = await endToEnd({ id: 'i-t', name: 'Turkey Sandwich', sizes: [size('s-t', 'Box')] },
+    [{ id: 'm-t', name: 'Turkey Sandwich' }, { id: 'm-tb', name: 'Turkey Sandwich Box' }], line('Turkey Sandwich', 's-t', 'Box'));
+  assert.equal(tsb.line.itemId, 'm-tb');
+  // A loose old link that IS the exact match is kept and marked exact by the sync.
+  const same = await endToEnd({ id: 'i-b', name: 'Italian Boxed Lunch', sizes: [size('0226b68c', 'Box')] },
+    [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }], line('Italian Boxed Lunch', '0226b68c', 'Box'),
+    { existing: [{ location_id: LOC, kind: 'item', ez_key: 'italian boxed lunch', ez_name: 'Italian Boxed Lunch', menu_item_id: 'm-ibl',
+      option_id: null, source: 'auto', matched_by: 'name', seen_count: 1, ez_ids: [] }] });
+  assert.equal(same.before.find((x) => x.ez_key === 'italian boxed lunch').matched_by, 'exact');
+  assert.equal(same.line.itemId, 'm-ibl');
+});
+
+test('a sync recheck never overwrites a person who saved first', async () => {
+  const loose = { location_id: LOC, kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_group: null,
+    menu_item_id: 'm-c', option_id: null, source: 'auto', matched_by: 'name', seen_count: 3, ez_ids: [] };
+  const sb = fakeSb(TABLES([{ ...loose }]));
+  const plan = planMenuSync({ entries: flattenMenus([menuOf({ id: 'i-c', name: 'Caesar Salad', sizes: [size('s-c', 'Large')] })]),
+    existing: [loose], ourItems: [{ id: 'm-c', name: 'Caesar Salad' }], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.equal(plan.rechecks.length, 1);
+  assert.equal(plan.counts.rechecked, 1);
+  // A person matches it while the sync runs.
+  Object.assign(row(sb, 'caesar salad'), { menu_item_id: 'm-c', source: 'manual', matched_by: 'user-9' });
+  await writeSyncPlan(sb, LOC, plan, NOW);
+  assert.equal(row(sb, 'caesar salad').menu_item_id, 'm-c');
+  assert.equal(row(sb, 'caesar salad').matched_by, 'user-9');
+  // A partial menu read rechecks nothing.
+  const partial = planMenuSync({ entries: flattenMenus([menuOf({ id: 'i-c', name: 'Caesar Salad', sizes: [size('s-c', 'Large')] })]),
+    existing: [loose], ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: false });
+  assert.equal(partial.rechecks.length, 0);
+});
+
+test('the order time name rule never fills or upgrades a synced row; a staff match there still routes', () => {
+  const bare = { kind: 'item', ez_key: 'caesar salad half', ez_name: 'Caesar Salad Half Tray', ez_size_name: null, ez_ids: [],
+    synced_at: NOW, menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 };
+  const opt = { kind: 'option', ez_key: buildLinkKey({ name: 'Multigrain', groupLabel: 'Bread' }, 'option'), ez_name: 'Multigrain', ez_group: 'Bread',
+    ez_ids: ['v-multi'], synced_at: NOW, menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 };
+  const withMod = { ...line('Caesar Salad Half Tray', null, null), mods: [{ name: 'Multigrain', groupLabel: 'Bread', itemId: null }] };
+  const ours = [{ id: 'm-c', name: 'Caesar Salad' }];
+  const p = planLineMatches({ lines: [withMod], ourItems: ours, ourGroups: OUR_GROUPS, links: [bare, opt],
+    locationId: LOC, nowIso: NOW, sizeIds: true });
+  assert.equal(p.lines[0].itemId, null, 'the loose name rule would have said Caesar Salad');
+  assert.equal(p.lines[0].mods[0].optionId, null, 'nor fills a synced option row by name');
+  assert.equal(p.writes.length, 0);
+  assert.equal(p.upgrades.length, 0);
+  assert.deepEqual(p.bumps.map((b) => b.ezKey).sort(), [bare.ez_key, opt.ez_key].sort(), 'only the counters move');
+  // A person matched them: they route.
+  const staff = planLineMatches({ lines: [withMod], ourItems: ours, ourGroups: OUR_GROUPS,
+    links: [{ ...bare, menu_item_id: 'm-c', source: 'manual', matched_by: 'u' }, { ...opt, option_id: 'o-multi', source: 'manual', matched_by: 'u' }],
+    locationId: LOC, nowIso: NOW, sizeIds: true });
+  assert.equal(staff.lines[0].itemId, 'm-c');
+  assert.equal(staff.lines[0].mods[0].optionId, 'o-multi');
+  // The partial menu path (menuOk false) keeps the same rule for customizations.
+  const partial = planLineMatches({ lines: [withMod], ourItems: ours, ourGroups: OUR_GROUPS,
+    links: [bare, { ...opt, option_id: 'o-multi', source: 'auto', matched_by: 'name' }], locationId: LOC, nowIso: NOW, sizeIds: true, menuOk: false });
+  assert.equal(partial.lines[0].mods[0].optionId, null, 'an old name link on a synced option row is not trusted');
+  assert.equal(trustedTarget({ menu_item_id: 'x', source: 'auto', matched_by: 'name' }), null);
+  assert.deepEqual(trustedTarget({ menu_item_id: 'x', source: 'auto', matched_by: 'exact' }), { menuItemId: 'x', optionId: null });
+});
+
+test('a failed or partial link read matches NOTHING by name on any line, and writes nothing', async () => {
+  const many = [];
+  for (let i = 0; i < 1500; i++) {
+    many.push({ location_id: LOC, kind: 'item', ez_key: 'item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + i,
+      menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0, ez_ids: ['id-' + i], ez_size_name: null });
+  }
+  const orderRow = { ref: 'EZ-2', customer: {}, items: [
+    line('Chicken Salad Small', null, null),            // our exact name, no synced row
+    line('A Wreck Original', 's-anything', 'Original'), // sized
+    line('Brand New Thing', null, null),                // would be a new sighting row
+  ] };
+  // (a) the second page of links fails: a PARTIAL read.
+  const sb = fakeSb(TABLES(many.map((r) => ({ ...r }))), { failLinkPageFrom: 1000 });
+  const input = await readMatchInputs(sb, LOC);
+  assert.equal(input.linksFailed, true);
+  assert.equal(input.links.length, 0);
+  const p = planLineMatches({ lines: orderRow.items, ...input, locationId: LOC, nowIso: NOW });
+  assert.ok(p.lines.every((l) => l.itemId === null), 'every line prints by name');
+  assert.equal(p.writes.length + p.bumps.length + p.upgrades.length, 0);
+  const before = JSON.stringify(links(sb));
+  const out = await matchQueueRow(sb, LOC, orderRow, { nowIso: NOW, budgetMs: 0 });
+  assert.equal(out.ran, false);
+  assert.equal(out.row, orderRow, 'the order goes through exactly as ezCater sent it');
+  assert.equal(JSON.stringify(links(sb)), before, 'nothing written');
+  assert.ok(!sb.calls.some((c) => (c.op === 'upsert' || c.op === 'update') && c.table === 'ezcater_item_links'));
+  // (b) the budget runs out mid read: also partial.
+  const cut = await readMatchInputs(fakeSb(TABLES()), LOC, { deadline: 0 });
+  assert.equal(cut.linksFailed, true);
+  // (c) a proven missing table is NOT a failure: the rules from before the migrations, no writes.
+  const noTable = { from: (name) => {
+    const b = { select() { return b; }, eq() { return b; }, order() { return b; }, range() { return b; },
+      then(ok, no) {
+        const res = name === 'ezcater_item_links' ? { data: null, error: { code: '42P01', message: 'relation "public.ezcater_item_links" does not exist' } }
+          : { data: name === 'menu_items' ? MENU_ROWS : GROUP_ROWS, error: null };
+        return Promise.resolve(res).then(ok, no);
+      } };
+    return b;
+  } };
+  const nt = await readMatchInputs(noTable, LOC);
+  assert.equal(nt.linksFailed, false);
+  assert.equal(planLineMatches({ lines: [line('Chicken Salad Small', null, null)], ...nt, locationId: LOC, nowIso: NOW }).lines[0].itemId, 'm-chick-small');
+});
+
+test('a single size item carries its one size to the Item matching card, and into suggestions', () => {
+  const entries = flattenMenus([menuOf({ id: 'i-t', name: 'Turkey Sandwich', sizes: [size('s-t', 'Box')] },
+    { id: 'i-m', name: 'Italian', sizes: [size('a', 'Small'), size('b', 'Large')] })]);
+  const plain = entries.find((e) => e.ezKey === 'turkey sandwich');
+  assert.equal(plain.ezOnlySize, 'Box');
+  assert.equal(plain.ezKey, 'turkey sandwich', 'the size is not in the key');
+  const plan = planMenuSync({ entries, existing: [], ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.equal(plan.inserts.find((r) => r.ez_key === 'turkey sandwich').ez_only_size, 'Box');
+  assert.ok(plan.inserts.filter((r) => r.ez_size_name).every((r) => r.ez_only_size === null), 'size rows carry no only size');
+  // The refresh keeps it current.
+  const again = planMenuSync({ entries, existing: plan.inserts, ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.equal(again.refreshes.find((r) => r.ez_key === 'turkey sandwich').ez_only_size, 'Box');
+  // The card.
+  const r = toRow({ kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', ez_only_size: 'Box', synced_at: NOW, seen_count: 0 });
+  assert.equal(r.ezOnlySize, 'Box');
+  assert.equal(r.sizeRow, false);
+  assert.equal(theirLabel(r), 'Turkey Sandwich, sold only as Box');
+  const sug = suggestionsFor(r, [{ id: 'plain', name: 'Turkey Sandwich' }, { id: 'box', name: 'Turkey Sandwich Box' }], [], { limit: 2 });
+  assert.equal(sug[0].id, 'box', 'suggested on its item AND its one size');
+  assert.equal(saveBody(r, { menuItemId: 'box' }).body.ez_key, 'turkey sandwich', 'saved by its plain key as before');
+  // A synced row holding only an old order time name link is listed as not matched yet.
+  const loose = toRow({ kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW,
+    menu_item_id: 'm-c', source: 'auto', matched_by: 'name' });
+  assert.equal(loose.state, 'unmatched');
+  assert.equal(toRow({ kind: 'item', ez_key: 'x', ez_name: 'X', synced_at: NOW, menu_item_id: 'm', source: 'auto', matched_by: 'exact' }).state, 'matched');
+  assert.equal(toRow({ kind: 'item', ez_key: 'x', ez_name: 'X', menu_item_id: 'm', source: 'auto', matched_by: 'name' }).state, 'matched',
+    'an unsynced row is shown as before');
+  // items_list reads the column.
+  const connect = readFileSync(new URL('../../supabase/functions/ezcater-connect/index.ts', import.meta.url), 'utf8');
+  assert.match(connect, /ez_size_name, ez_only_size, ez_category, synced_at/);
+});
+
+test('ADR-024 records the one key limit and the order time rule; 20260919m carries the default and the column', () => {
+  const adr = readFileSync(new URL('../../DECISIONS.md', import.meta.url), 'utf8');
+  const a24 = adr.slice(adr.indexOf('## ADR-024'));
+  assert.match(a24, /Known limit/);
+  assert.match(a24, /differ only by a trailing tray or pan word/);
+  assert.match(a24, /share one key row/);
+  assert.match(a24, /only a staff match can join them/);
+  assert.match(a24, /matched_by 'exact'/);
+  assert.doesNotMatch(a24, /[–—]/);
+  const sql = readFileSync(new URL('../../supabase/migrations/' + MIGRATION_FILE, import.meta.url), 'utf8');
+  assert.match(sql, /alter table public\.ezcater_item_links alter column source set default 'auto';/);
+  assert.match(sql, /add column if not exists ez_only_size text;/);
+  assert.doesNotMatch(sql, /[–—]/);
 });

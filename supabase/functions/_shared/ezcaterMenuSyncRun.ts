@@ -105,7 +105,7 @@ export async function runMenuSync(
     problems.push(...wrote.errors);
 
     const status = problems.length ? 'partial' : 'ok';
-    const counts = { ...plan.counts, inserted: wrote.inserted, refreshed: wrote.refreshed, filled: wrote.filled, menus: menus.length };
+    const counts = { ...plan.counts, inserted: wrote.inserted, refreshed: wrote.refreshed, filled: wrote.filled, rechecked: wrote.rechecked, menus: menus.length };
     const bits = [
       `${plan.counts.items + plan.counts.sizes} items and sizes`,
       optionsRead ? `${plan.counts.options} options` : 'options could not be read',
