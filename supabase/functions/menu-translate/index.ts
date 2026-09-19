@@ -41,6 +41,7 @@ import {
   MENU_LANGS, RUN_LIMIT, menuEntities, planTranslations, batchPlan, splitBatch, orphanedRows,
   translationPrompt, parseTranslations, TRANSLATE_TOOL,
 } from '../_shared/menuTranslate.js';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -85,6 +86,7 @@ async function readAll(build: () => any): Promise<{ data: Row[] | null; error: {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: Body = {};

@@ -39,6 +39,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { argon2id } from 'https://esm.sh/hash-wasm@4.11.0';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { getPaymentSession } from '../_shared/ryft.ts';
 import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
@@ -284,6 +285,7 @@ function isLightColor(hex: string): boolean {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   // Auth: accept service_role key (webhook) OR user JWT (back office)

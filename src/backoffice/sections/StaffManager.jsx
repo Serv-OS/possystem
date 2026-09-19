@@ -3,6 +3,8 @@ import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
+import { MIN_PASSWORD_LENGTH } from '../../lib/secondStep/rules';
+import { currentAccessToken } from '../../lib/secondStep/client';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -337,7 +339,7 @@ export default function StaffManager() {
   const grantBOAccess = async (staffId) => {
     setGrantError('');
     if (!grantForm.email.trim()) { setGrantError('Email required'); return; }
-    if (grantForm.password.length < 8) { setGrantError('Password must be at least 8 characters'); return; }
+    if (grantForm.password.length < MIN_PASSWORD_LENGTH) { setGrantError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
     if (grantForm.password !== grantForm.confirmPassword) { setGrantError('Passwords do not match'); return; }
     if (isMock) { setGrantError('Mock mode — auth user creation not available'); return; }
 
@@ -349,11 +351,12 @@ export default function StaffManager() {
       const locId = meProfile?.location_id;
       if (!orgId) { setGrantError('Your account is not linked to an org — cannot create users'); setGrantBusy(false); return; }
 
-      const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+      // The CURRENT (refreshed, aal2 after the second step) token, not a raw localStorage read.
+      const token = await currentAccessToken(supabase);
       const member = staffMembers.find(s => s.id === staffId);
       const resp = await fetch('https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/create-user', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${auth?.access_token}` },
+        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
         body: JSON.stringify({
           email: grantForm.email.trim(),
           password: grantForm.password,
@@ -709,7 +712,7 @@ export default function StaffManager() {
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Password *</label>
-                <input style={inp} type="password" value={grantForm.password} onChange={e=>setGrantForm(f=>({...f,password:e.target.value}))} placeholder="Min 8 characters"/>
+                <input style={inp} type="password" value={grantForm.password} onChange={e=>setGrantForm(f=>({...f,password:e.target.value}))} placeholder={`Min ${MIN_PASSWORD_LENGTH} characters`}/>
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Confirm password *</label>

@@ -68,6 +68,7 @@ import {
   hasSuccessfulCapture, isUncapturedPayment, isCountedPayment, venueFeeFor, venueReceivesFor, summarizeVenueFees,
   venuePayoutLine, summarizeVenuePayout, venueTimeZoneFor, venueCurrentMonth, venueMonthBoundsIso,
 } from '../_shared/venueFees.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -134,6 +135,7 @@ const isAwaitingEnablement = (status: number) => status === 401 || status === 40
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   // ── Auth: signed-in Ops user WITH access to this location (payments-onboard fence)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
@@ -6,6 +6,10 @@ import SupportChat from '../components/SupportChat';
 import { broadcastConfigPush } from '../sync/SyncBridge';
 import { supabase, isMock, platformSupabase, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
 import BOLogin from './BOLogin';
+import SecondStepGate from '../components/secondStep/SecondStepGate';
+import SignInSecurity from './sections/SignInSecurity';
+import { isRealLogin, sessionAal } from '../lib/secondStep/rules';
+import { hasWeakPasswordNote } from '../lib/secondStep/client';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
@@ -151,6 +155,7 @@ const NAV = [
   { id: 'workflows', label: 'Automations', icon: '\u{1F500}', group: 'Analytics' },
   { id: 'marketing-reports', label: 'Marketing report', icon: '\u{1F4C8}', group: 'Analytics' },
   { id: 'compliance', label: 'Marketing compliance', icon: '\u{1F6E1}', group: 'Analytics' },
+  { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Analytics' },
 ];
 
 // v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
@@ -172,7 +177,7 @@ const NAV_IA = [
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Card payments', icon:'card',   single:'card-payments' },
-  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
+  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['security','Sign in security'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
 
 // v5.5.951 — the "Premium Sauces vanished" guard. Menu writers used to log failures
@@ -202,6 +207,33 @@ function BackOfficeToast() {
     <div className="toast" key={toast.key}
       style={{ background:c.bg, border:`1px solid ${c.bdr}`, color:c.color, zIndex:100003 }}>
       {toast.msg}
+    </div>
+  );
+}
+
+// Supabase flags a password that is too short or appears in a known data leak at sign in
+// (BOLogin notes it). Peter: "a lot of people using basic passwords". Stays until changed.
+function WeakPasswordBanner({ onFix }) {
+  const [show, setShow] = useState(() => hasWeakPasswordNote());
+  useEffect(() => {
+    const hide = () => setShow(false);
+    window.addEventListener('rpos-weak-password-cleared', hide);
+    return () => window.removeEventListener('rpos-weak-password-cleared', hide);
+  }, []);
+  if (!show) return null;
+  return (
+    <div data-testid="weak-password-banner" style={{
+      display:'flex', alignItems:'center', gap:14, flexWrap:'wrap', padding:'10px 24px',
+      background:'rgba(245,166,35,0.12)', borderBottom:'1px solid rgba(245,166,35,0.45)',
+      color:'var(--t1)', fontSize:13.5, lineHeight:1.5,
+    }}>
+      <span style={{ flex:1, minWidth:240 }}>
+        <strong>Your password is weak.</strong> It is too short or has appeared in a data leak. Please change it now.
+      </span>
+      <button onClick={onFix} style={{
+        padding:'7px 14px', borderRadius:9, border:'none', background:'var(--acc)', color:'#06130C',
+        fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
+      }}>Change password</button>
     </div>
   );
 }
@@ -286,6 +318,12 @@ export default function BackOfficeApp() {
   const [authUser, setAuthUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(isMock);
   const [recovering, setRecovering] = useState(false); // v5.5.343: password-reset link landing
+  // SECOND SIGN IN STEP (docs/SECOND_STEP.md): nothing of the Back Office loads until the
+  // SecondStepGate says this sign in did Face ID, fingerprint or an authenticator code (aal2).
+  // It closes again if the session ever drops back to password only (a reset by an owner).
+  const [secondStepOk, setSecondStepOk] = useState(isMock);
+  const [recoveryStepOk, setRecoveryStepOk] = useState(false);
+  const bootedPasswordOnly = useRef(false);
   const [section, setSection] = useState('overview');
   const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
@@ -313,6 +351,10 @@ export default function BackOfficeApp() {
     const cleanAnon = (u) => { if (u && u.is_anonymous) { supabase.auth.signOut().catch(() => {}); return true; } return false; };
     supabase.auth.getSession().then(({ data }) => {
       const u = data?.session?.user;
+      // A page that STARTS on a password only sign in (reloaded mid second step): the rest of
+      // the page (SyncBridge, realtime) booted with a token the database may refuse, so once
+      // the gate passes we reload for a clean start on the finished sign in.
+      bootedPasswordOnly.current = !!(data?.session && isRealLogin(data.session) && sessionAal(data.session) !== 'aal2');
       if (!cleanAnon(u)) setAuthUser(realUser(u));
       setAuthChecked(true);
     });
@@ -327,7 +369,11 @@ export default function BackOfficeApp() {
       if (event === 'SIGNED_OUT') {
         localStorage.removeItem('rpos-bo-location');
         clearResolvedLocationId();
+        setSecondStepOk(false);
       }
+      // Second step: a real login whose token is back to password only (aal1) must pass the
+      // gate again. Never re-opened here: only SecondStepGate calls setSecondStepOk(true).
+      if (session && isRealLogin(session) && sessionAal(session) !== 'aal2') setSecondStepOk(false);
       // Ignore anonymous sessions entirely (and don't re-sign-out on the
       // SIGNED_IN(anon) event — ensureAuthToken no longer creates them in
       // office mode, so this only guards legacy/edge cases).
@@ -338,9 +384,10 @@ export default function BackOfficeApp() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load org/location context once user is known
+  // Load org/location context once user is known AND has passed the second step
+  // (before that the database refuses a password only sign in once enforcement is on).
   useEffect(() => {
-    if (!authUser || isMock) return;
+    if (!authUser || isMock || !secondStepOk) return;
     (async () => {
       // v5.5.241: profile query rewrite. Previous versions used PostgREST
       // embedded resource syntax (organisations(name), locations(name)) which
@@ -460,7 +507,7 @@ export default function BackOfficeApp() {
         loadLocationData(effectiveLocId);
       }
     })();
-  }, [authUser]);
+  }, [authUser, secondStepOk]);
 
   const loadLocationData = async (locationId) => {
     if (!locationId) return;
@@ -576,11 +623,30 @@ export default function BackOfficeApp() {
     </div>
   );
 
-  // v5.5.343: password-reset landing — set-new-password form, then back to login.
+  // Sign out from the second step screens: this browser only (a person abandoning the step
+  // must not sign themselves out of every other device), then back to the password screen.
+  const signOutHere = () => {
+    localStorage.removeItem('rpos-bo-location');
+    clearResolvedLocationId();
+    supabase.auth.signOut({ scope: 'local' }).finally(() => window.location.reload());
+  };
+
+  // v5.5.343: password-reset landing: set-new-password form, then back to login. A login that
+  // has a second step passes it FIRST (a reset link alone must never take over an account; the
+  // auth server also refuses the password change without it).
+  if (recovering && !isMock && !recoveryStepOk) {
+    return <SecondStepGate supabase={supabase} mode="recovery" area="Back Office" onPassed={() => setRecoveryStepOk(true)} onSignOut={signOutHere} />;
+  }
   if (recovering) return <BOLogin recovery onResetDone={() => { setRecovering(false); window.location.replace(window.location.pathname + '?mode=office'); }} />;
 
   // Show login screen if not authenticated
   if (!authUser && !isMock) return <BOLogin onLogin={setAuthUser} />;
+
+  // The second step: Face ID, fingerprint or an authenticator app code. Cannot be skipped.
+  if (!isMock && authUser && !secondStepOk) {
+    const passed = () => { if (bootedPasswordOnly.current) window.location.reload(); else setSecondStepOk(true); };
+    return <SecondStepGate supabase={supabase} mode="login" area="Back Office" onPassed={passed} onSignOut={signOutHere} />;
+  }
 
   // v5.5.15: gate access to the back office on the bo_access flag.
   // While orgCtx is null we're still loading the profile — show spinner.
@@ -822,8 +888,10 @@ export default function BackOfficeApp() {
             the inner page wrapper to max-width 1600px, applies fluid
             padding (16px → 48px), and overrides any per-section maxWidth
             via !important so we don't have to edit 20 files individually. */}
+        <WeakPasswordBanner onFix={() => setSection('security')} />
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
+          {section === 'security'   && <SignInSecurity orgCtx={orgCtx} />}
           {section === 'reviews'    && <ReviewManager />}
           {section === 'wifi'       && <WifiManager />}
           {section === 'promotions' && <Promotions />}

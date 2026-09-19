@@ -9,7 +9,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot } from './supabase';
+import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot, isLoginSurfaceMode } from './supabase';
 import {
   fetchMenuItems, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
@@ -25,6 +25,8 @@ import { refreshTablePlan } from '../sync/TablePlanSync';
 // The flag flips synchronously before any await, so the second mount is a clean no-op.
 // Neither call site is removed (each is load-bearing for a different device mode).
 let _initRan = false;
+// The sign out heal listener below is registered once per page (see the second effect).
+let _healRegistered = false;
 
 export default function useSupabaseInit() {
   const { menuItems, setMenuItems } = useStore.getState?.() || {};
@@ -42,8 +44,12 @@ export default function useSupabaseInit() {
       // closed_checks, etc., the anon key (role='anon') gets blocked. Ensure we
       // have an authenticated session BEFORE any data fetching — uses existing
       // BO session if present, otherwise falls back to signInAnonymously().
-      try { await ensureAuthToken(); } catch (e) {
-        console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
+      // Never on a surface where a PERSON signs in (Back Office, admin, Owner, Staff): an
+      // anonymous session there is not theirs (docs/SECOND_STEP.md, lib/supabase.js).
+      if (!isLoginSurfaceMode()) {
+        try { await ensureAuthToken(); } catch (e) {
+          console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
+        }
       }
       // v5.5.758: (re)bind an already-paired POS-family device to its location server-side
       // so the RLS cutover link survives without a manual re-pair. Best-effort, non-blocking.
@@ -298,5 +304,25 @@ export default function useSupabaseInit() {
     }
 
     init().catch(err => console.warn('[Supabase] Init failed:', err));
+  }, []);
+
+  // SECOND SIGN IN STEP side effect (docs/SECOND_STEP.md). Some tills run on a Back Office
+  // sign in instead of their own device session (someone signed in to Office on the till).
+  // When that person sets up their second step, the auth server signs out their other
+  // password only sessions, including the till's. Heal at once instead of at the next reload:
+  // take a fresh device session and claim the till again with its saved pairing code (a till
+  // with no pairing record, a host stand, TV or phone app is untouched: the claim is a no-op).
+  // Never on a surface where a person signs in (Back Office, admin, Owner, Staff).
+  // Registered ONCE per page (this hook mounts twice on MPOS): two listeners would race two
+  // anonymous sign ins and two claims.
+  useEffect(() => {
+    if (isMock || !supabase || _healRegistered) return;
+    _healRegistered = true;
+    supabase.auth.onAuthStateChange((event) => {
+      if (event !== 'SIGNED_OUT' || isLoginSurfaceMode()) return;
+      ensureAuthToken()
+        .then(() => claimPairedDeviceOnBoot())
+        .catch((e) => console.warn('[Supabase] session heal after sign out failed:', e?.message || e));
+    });
   }, []);
 }

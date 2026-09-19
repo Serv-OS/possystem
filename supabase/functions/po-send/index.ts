@@ -13,6 +13,7 @@
 //   npx supabase functions deploy po-send --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 // CORS is inlined per-function in this codebase — there is no shared cors module.
 const corsHeaders = {
@@ -32,6 +33,7 @@ const esc = (s: unknown) => String(s ?? '').replace(/[&<>"]/g, (c) =>
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   let body: { po_id?: string; location_id?: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const { po_id, location_id } = body;

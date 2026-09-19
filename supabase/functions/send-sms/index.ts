@@ -22,6 +22,7 @@
 // Deploys to Ops DB project (tbetcegmszzotrwdtqhi).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID') ?? '';
 const AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN') ?? '';
@@ -62,6 +63,7 @@ async function authorize(req: Request): Promise<boolean> {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
   if (!(await authorize(req))) return json({ error: 'unauthorized' }, 401);
 
