@@ -308,7 +308,7 @@ export function planLineMatches(input: {
  *                   menu's sizes.id on HKX77V) is on that row, and
  *                   that row holds a trusted decision (trustedTarget: a staff match made for that
  *                   name, or an exact auto link a sync made)
- *   a customization  likewise, by its group and value and its published id (ezItemId, the
+ *   a customization  likewise, by the line it is on, its group and value, and its published id (ezItemId, the
  *                 order's customizationId), on the synced option row keyed by them
  *   everything else  no match. It prints by name.
  *
@@ -357,7 +357,7 @@ export function planSyncedLineMatches(input: {
 
     const mods = (Array.isArray(line.mods) ? line.mods : []).map((rawMod: any) => {
       const mod = rawMod || {};
-      const o = optionRouteFor(mod, optIdx);
+      const o = optionRouteFor(mod, optIdx, line);
       let optionId: string | null = o.mode === 'synced' && o.optionId ? String(o.optionId) : null;
       let modItemId: string | null = o.mode === 'synced' && o.itemId ? String(o.itemId) : null;
       if (optionId && knownOptions && !knownOptions.has(optionId)) { optionId = null; modItemId = null; }

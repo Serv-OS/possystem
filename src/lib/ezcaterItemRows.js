@@ -139,7 +139,11 @@ export function toRow(dbRow, opts) {
   const source = first(dbRow, 'source', 'source') || 'auto';
   const syncedAt = first(dbRow, 'synced_at', 'syncedAt');
   // A row a menu sync wrote: keyed by its exact full name (SYNC_KEY_PREFIX).
-  const synced = ezKey.indexOf(SYNC_KEY_PREFIX) === 0;
+  // An option row is keyed by its item, group and value ('exact:item|group|value', review round
+  // 5). One keyed by group and value alone was written by an earlier sync: orders never use it
+  // (isCurrentSyncKey in _shared/ezcaterMenuSync.ts), so it is listed with the older rows.
+  const synced = ezKey.indexOf(SYNC_KEY_PREFIX) === 0
+    && (kind !== 'option' || ezKey.slice(SYNC_KEY_PREFIX.length).split('|').length === 3);
 
   // EXACT MEANS EXACT (mirrors trustedTarget in supabase/functions/_shared/ezcaterMenuSync.ts).
   // On a SYNCED row only a staff match or an exact auto link (matched_by 'exact') routes an
@@ -182,6 +186,8 @@ export function toRow(dbRow, opts) {
     synced,
     gone,
     ezGroup: first(dbRow, 'ez_group', 'ezGroup'),
+    // The ezCater item a synced option customizes: its match is for that item only.
+    ezItemName: kind === 'option' && synced ? first(dbRow, 'ez_item_name', 'ezItemName') : null,
     menuItemId,
     optionId,
     source,
@@ -362,6 +368,8 @@ export function theirLabel(row) {
   if (!row) return '';
   if (row.sizeRow && row.ezSizeName) return `${row.ezName} (${row.ezSizeName})`;
   if (row.ezOnlySize) return `${row.ezName}, sold only as ${row.ezOnlySize}`;
+  // An option is matched for one item: "Large, on Pizza" is not Large on Salad.
+  if (row.kind === 'option' && row.ezItemName) return `${row.ezName}, on ${row.ezItemName}`;
   return row.ezName;
 }
 
@@ -687,6 +695,8 @@ export function saveBody(row, choice) {
         option_id: optionId,
         ignored,
         seen_size: kind === 'item' ? (row.ezSizeName || row.ezOnlySize || null) : null,
+        // The item this screen showed the option on: part of what the match was made for.
+        seen_item: kind === 'option' ? (row.ezItemName || null) : null,
       },
     };
   }

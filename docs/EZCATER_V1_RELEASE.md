@@ -123,7 +123,8 @@ Nothing in it is needed for v5.9.9. Switch it on in exactly this order.
 ## 1. Merge and let the app deploy
 
 - **Merge to main.** Claude sets the version number at the merge.
-- **Wait for the app to deploy.** It deploys itself from main.
+- **Then Claude pushes main to develop**, as in step 1 above. Back Office loads the develop build.
+- **Wait for the app to deploy.** Vercel deploys develop by itself.
 - **Reload every Back Office tab** that shows 3rd Party orders.
   - An old tab saves matches that orders do not use.
   - After step 3 an old tab's save is refused, and it says to reload.
@@ -153,7 +154,7 @@ for fn in ezcater-connect ezcater-webhook; do
   curl -sf -H "Authorization: Bearer $TOKEN" -H "User-Agent: Mozilla/5.0" \
     "https://api.supabase.com/v1/projects/tbetcegmszzotrwdtqhi/functions/$fn/body" -o "$LIVE/$fn.eszip"
 done
-grep -a -c 'no synced row with this exact name' "$LIVE"/*.eszip
+grep -a -c 'no synced option on this item with this exact name' "$LIVE"/*.eszip
 ```
 
   - **Both must count at least 1.** Only the new code has that text.
@@ -165,6 +166,7 @@ grep -a -c 'no synced row with this exact name' "$LIVE"/*.eszip
 - **Outside service only**, or when no ezCater order is due to fire.
 - **Run `20260919m_OPS_ezcater_menu_sync_v1.sql`** in the SQL editor.
   - OPS project only. Needs `20260917_OPS_ezcater_item_links.sql` first.
+  - **Ran an older copy of it before?** Run this one anyway. It is safe to run twice.
 - **From here until step 4** every ezCater line prints by name.
 
 ## 4. Press Sync straight away
@@ -172,6 +174,22 @@ grep -a -c 'no synced row with this exact name' "$LIVE"/*.eszip
 - **Item matching: press Sync ezCater menu.**
 - **Only exact names match themselves.** Match the rest by hand.
   - Each item shows its size, so you never match blind.
+  - Each option shows its item. A match on "Large, on Pizza" is for Pizza only.
+
+### If the first Sync fails
+
+- **Orders are safe.** Every ezCater line prints by name, as plain text.
+  - Nothing is routed to the wrong item. The kitchen reads the name.
+- **Press Sync ezCater menu again.** Wait a minute first if it says a sync is running.
+- **Where to see the error:**
+  - The message shown straight after you press Sync.
+  - The grey line under the Sync button: "The last try did not complete", then the reason.
+- **Call Claude if:**
+  - The second Sync fails too.
+  - It says "Menu sync is not switched on yet". Step 3 did not run, or ran an older copy.
+  - It says "Could not read the saved matches" or "No ezCater caterer is linked".
+  - It says "Some of it did not complete" and names a column.
+- **Claude reads** the `ezcater_menu_syncs` row for the venue (status and error), then fixes it.
 
 ## 5. Check your earlier matches once
 

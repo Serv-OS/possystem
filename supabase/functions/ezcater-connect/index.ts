@@ -551,8 +551,15 @@ Deno.serve(async (req) => {
         // first and dropped when 20260919m has not run yet (menu_sync_ready false).
         const base = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
         // ez_only_size: the one size of a single size item, shown so staff never match blind.
+        // ez_item_name: the item an option row customizes (options are scoped to their item).
         // decided_as: what a person saw when they saved the row, for "look again" below.
-        let res = await readAllLinks(sb, opsLocationId, base + ', ez_size_name, ez_only_size, ez_category, synced_at, decided_as');
+        const syncCols = ', ez_size_name, ez_only_size, ez_category, synced_at, decided_as';
+        let res = await readAllLinks(sb, opsLocationId, base + syncCols + ', ez_item_name');
+        // A copy of 20260919m from before review round 5 has every sync column but ez_item_name:
+        // still the synced side (option rows then show without their item until it is run again).
+        if (!res.ok && isMissingSyncColumn(res.error) && /ez_item_name/i.test(String(res.error?.message || '') + ' ' + String(res.error?.details || ''))) {
+          res = await readAllLinks(sb, opsLocationId, base + syncCols);
+        }
         let syncReady = true;
         if (!res.ok && isMissingSyncColumn(res.error)) {
           syncReady = false;
@@ -648,8 +655,11 @@ Deno.serve(async (req) => {
           // name, size or group their screen showed, sent back by the card), never read back
           // from the row: a match made for a different name than the row's exact full name is
           // then flagged to look at again (lookAgainOf), and orders do not use it until it is.
+          // An option's item (seen_item) is part of what the person saw: a match on "Size: Large"
+          // is made for ONE item's Size: Large (review round 5).
           const decidedAs = fullNameOf({
             kind, name: ezName, group: ezGroup || '', sizeName: kind === 'item' ? String(body?.seen_size || '').trim() : '',
+            item: kind === 'option' ? String(body?.seen_item || '').trim() : '',
           }).slice(0, 500);
           const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
             .update({

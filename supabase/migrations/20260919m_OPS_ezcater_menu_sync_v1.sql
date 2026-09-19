@@ -22,6 +22,13 @@
 -- decision on one is copied to the synced row of the same product when the sync first writes it.
 -- No new column is needed for that: ez_key is text.
 --
+-- REVIEW ROUND 5. The exact form keeps every letter and number in any script, number fractions
+-- and every symbol or emoji ("Ziti ½ Pan" is not "Ziti ¼ Pan", "Pho 大" is not "Pho"), and an
+-- option row is scoped to its ITEM: 'exact:<item>|<group>|<value>', so one staff match on
+-- "Size: Large" never routes Size: Large on another item. ez_item_name (added below) is that
+-- item's name, for the Item matching card. A copy of this file run before round 5 lacks it:
+-- run this file again (idempotent) before the next sync, or the sync's writes fail and say so.
+--
 -- ONCE THIS FILE HAS RUN, ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, AND ONLY FOR THE EXACT
 -- NAME THEY WERE MADE FOR: an order line matches only when its exact full name (its name plus its
 -- size name) is a synced row's, its published size id is on that row, and the row holds a staff
@@ -29,7 +36,7 @@
 -- other line prints by name.
 --
 -- WHAT THIS FILE ADDS
---   ezcater_item_links, six columns (all nullable or defaulted), and a default of 'auto' on
+--   ezcater_item_links, seven columns (all nullable or defaulted), and a default of 'auto' on
 --   source so the refresh upsert (which never names source) is accepted, see below:
 --     ez_ids        text[]       the PUBLISHED ezCater ids (a size id on an item row, a value
 --                                id on an option row). They change on every republish; each
@@ -55,6 +62,8 @@
 --                                showed. When it is not the row's exact full name the Item
 --                                matching card asks staff to look at it again, and orders do not
 --                                use the decision until they have.
+--     ez_item_name  text         set only on an OPTION row: the ezCater item it customizes,
+--                                part of its exact full name ('exact:<item>|<group>|<value>').
 --   ezcater_menu_syncs: one row per venue, the last sync, and the ONE SYNC PER VENUE lock.
 --   ezcater_menu_sync_claim(): takes that lock in one statement (service role only).
 --   pg_cron 'ezcater-menu-sync-hourly': asks ezcater-connect for the venues that are due (no
@@ -90,6 +99,7 @@ alter table public.ezcater_item_links add column if not exists ez_category text;
 alter table public.ezcater_item_links add column if not exists synced_at timestamptz;
 alter table public.ezcater_item_links add column if not exists ez_only_size text;
 alter table public.ezcater_item_links add column if not exists decided_as text;
+alter table public.ezcater_item_links add column if not exists ez_item_name text;
 
 -- THE REFRESH NEEDS THIS. A sync refreshes an existing row with an upsert that names ONLY the
 -- ezCater fact columns (names, ids, size, category, synced_at), never `source`, so a staff match keeps
@@ -183,10 +193,10 @@ end;
 $$;
 
 -- ── Verify after applying ───────────────────────────────────────────────────
---   six rows expected:
+--   seven rows expected:
 --   select column_name from information_schema.columns
 --    where table_schema = 'public' and table_name = 'ezcater_item_links'
---      and column_name in ('ez_ids','ez_size_name','ez_only_size','ez_category','synced_at','decided_as');
+--      and column_name in ('ez_ids','ez_size_name','ez_only_size','ez_category','synced_at','decided_as','ez_item_name');
 --   'auto'::text expected:
 --   select column_default from information_schema.columns
 --    where table_schema = 'public' and table_name = 'ezcater_item_links' and column_name = 'source';
@@ -201,7 +211,7 @@ $$;
 -- drop table if exists public.ezcater_menu_syncs;
 -- drop index if exists public.ezcater_item_links_ez_ids_idx;
 -- alter table public.ezcater_item_links alter column source drop default;
--- alter table public.ezcater_item_links drop column if exists decided_as,
+-- alter table public.ezcater_item_links drop column if exists ez_item_name, drop column if exists decided_as,
 --   drop column if exists synced_at,
 --   drop column if exists ez_category, drop column if exists ez_only_size,
 --   drop column if exists ez_size_name, drop column if exists ez_ids;
