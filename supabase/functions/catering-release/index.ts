@@ -60,8 +60,9 @@ Deno.serve(async (req) => {
     const claim = await sb.from('order_queue')
       .update({ kitchen_routed_at: new Date().toISOString() })
       .eq('ref', row.ref).eq('location_id', row.location_id).is('kitchen_routed_at', null)
-      // A cancel landing between the read above and this claim must not reach the kitchen.
-      .neq('status', 'cancelled')
+      // A cancel, or staff marking it collected, landing between the read above and this claim
+      // must not reach the kitchen. The same statuses the read excludes.
+      .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
       .select('ref');
     if (claim.error || !claim.data?.length) continue;   // a device just claimed it — leave the routed fire to them
 

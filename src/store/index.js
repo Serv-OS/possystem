@@ -7183,10 +7183,12 @@ export const useStore = create((set, get) => ({
         .eq('ref', order.ref)
         .eq('location_id', locId)
         .is('kitchen_routed_at', null)
-        // 18 Sep 2026: a cancel (an ezCater order cancelled on ezCater) that lands between the
-        // release's read and this claim must not reach the kitchen. Nothing else is cancelled
-        // before it is routed, so every other claim is exactly as before.
-        .or('status.is.null,status.neq.cancelled')
+        // 18 Sep 2026: a cancel (an ezCater order cancelled on ezCater), or staff marking the
+        // order collected, that lands between the release's read and this claim must not reach
+        // the kitchen: the same statuses the release read excludes (NOT_RELEASABLE_STATUSES_PG).
+        // A row with no status still claims, as before. A forced re-send (Orders Hub) goes on
+        // without the claim, exactly as before.
+        .or(`status.is.null,status.not.in.${NOT_RELEASABLE_STATUSES_PG}`)
         // v5.8.63: `type` comes back with the claim so the order type rule works even when
         // a caller passed no type. Free, and it covers any future caller too.
         .select('ref, type');

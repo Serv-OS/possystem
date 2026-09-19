@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { relativeSpecifiers, sharedDepsOf, deployPathsOf } from '../../scripts/edgeFnDeps.mjs';
+import { relativeSpecifiers, sharedDepsOf, deployPathsOf, staleFunctions } from '../../scripts/edgeFnDeps.mjs';
 
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -80,11 +80,60 @@ test('the six ezCater release functions: each ships _shared/ezcaterCatering.js w
   assert.equal(connect.includes('supabase/functions/_shared/ezcaterCatering.js'), false);
 });
 
-test('check-deploys dates each function by its folder AND its _shared files', () => {
+test('check-deploys hands its decision to staleFunctions with this checkout\'s git log', () => {
   const src = read('../../scripts/check-deploys.mjs');
-  assert.match(src, /import \{ deployPathsOf \} from '\.\/edgeFnDeps\.mjs';/);
-  assert.match(src, /for \(const p of deployPathsOf\(fn\.slug\)\.slice\(1\)\) \{/);
-  assert.match(src, /if \(t > committed\) \{ committed = t; newestPath = p; \}/);
-  assert.match(src, /const hours = \(committed - deployed\) \/ 3600;/);
-  assert.match(src, /stale\.push\(\{ slug: fn\.slug, hours, newestPath \}\)/);
+  assert.match(src, /import \{ staleFunctions \} from '\.\/edgeFnDeps\.mjs';/);
+  assert.match(src, /git log -1 --format=%ct -- "\$\{p\}"/);
+  assert.match(src, /const stale = staleFunctions\(await res\.json\(\), lastCommitOf\);/);
+  // The deploy it offers keeps JWT checking off: ezCater's notifications carry no Supabase JWT.
+  assert.match(src, /functions deploy \$\{s\.slug\} --project-ref \$\{PROJECT\} --no-verify-jwt/);
+});
+
+test('staleFunctions: a change made ONLY in _shared reports every importing function as not live', () => {
+  // A made up tree: two functions import the rules through _shared, one does not.
+  const io = fakeIo({
+    'supabase/functions/catering-release/index.ts': "import { r } from '../_shared/rules.js';",
+    'supabase/functions/uber-direct/index.ts': "import { d } from '../_shared/dispatch.ts';",
+    'supabase/functions/_shared/dispatch.ts': "import { r } from './rules.js';",
+    'supabase/functions/_shared/rules.js': 'export const r = 1;',
+    'supabase/functions/gift-redeem/index.ts': "import { g } from '../_shared/gift.ts';",
+    'supabase/functions/_shared/gift.ts': 'export const g = 1;',
+  });
+  const H = 3600;
+  const deployedAt = 1_800_000_000;                   // unix seconds, every function deployed then
+  // A made up git history: each folder was last committed BEFORE its deploy. The only newer
+  // commit is to _shared/rules.js, two days after the deploy.
+  const history = {
+    'supabase/functions/catering-release': deployedAt - 10 * H,
+    'supabase/functions/uber-direct': deployedAt - 10 * H,
+    'supabase/functions/gift-redeem': deployedAt - 10 * H,
+    'supabase/functions/_shared/dispatch.ts': deployedAt - 10 * H,
+    'supabase/functions/_shared/gift.ts': deployedAt - 10 * H,
+    'supabase/functions/_shared/rules.js': deployedAt + 48 * H,
+  };
+  const calls = [];
+  const lastCommitOf = (p) => { calls.push(p); return history[p] || 0; };
+  const live = ['catering-release', 'uber-direct', 'gift-redeem', 'not-in-repo']
+    .map((slug) => ({ slug, updated_at: deployedAt * 1000 }));
+
+  const stale = staleFunctions(live, lastCommitOf, io);
+  assert.deepEqual(stale.map((s) => s.slug).sort(), ['catering-release', 'uber-direct']);
+  for (const s of stale) {
+    assert.equal(s.newestPath, 'supabase/functions/_shared/rules.js', s.slug);
+    assert.equal(s.hours, 48, s.slug);
+  }
+  // uber-direct reaches the rules only through another _shared file, and is still caught.
+  assert.ok(calls.includes('supabase/functions/_shared/rules.js'));
+  // A function whose folder has no commit is not in this repo: skipped, never reported.
+  assert.equal(stale.some((s) => s.slug === 'not-in-repo'), false);
+
+  // Control: the same history without the _shared commit reports nothing.
+  const quiet = { ...history, 'supabase/functions/_shared/rules.js': deployedAt - 10 * H };
+  assert.deepEqual(staleFunctions(live, (p) => quiet[p] || 0, io), []);
+  // Deploy then commit a few minutes later is noise, not drift.
+  const noise = { ...history, 'supabase/functions/_shared/rules.js': deployedAt + 0.5 * H };
+  assert.deepEqual(staleFunctions(live, (p) => noise[p] || 0, io), []);
+  // Redeployed after the _shared change: live again.
+  const redeployed = live.map((f) => ({ ...f, updated_at: (deployedAt + 49 * H) * 1000 }));
+  assert.deepEqual(staleFunctions(redeployed, lastCommitOf, io), []);
 });

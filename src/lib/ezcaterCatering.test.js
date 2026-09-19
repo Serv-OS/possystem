@@ -421,11 +421,54 @@ test('the release filters: held and cancelled ezCater rows are never read; ours 
   const cron = read('../../supabase/functions/catering-release/index.ts');
   assert.match(cron, /\.eq\('source', 'catering'\)\.is\('kitchen_routed_at', null\)/);
   assert.match(cron, /\.not\('status', 'in', NOT_RELEASABLE_STATUSES_PG\)\s*\n\s*\.or\(RELEASABLE_OR_FILTER\)/);
-  // A cancel landing between the read and the claim never reaches the kitchen.
-  assert.match(cron, /\.is\('kitchen_routed_at', null\)\s*\n\s*\/\/[^\n]*\n\s*\.neq\('status', 'cancelled'\)/);
-  assert.match(store, /\.is\('kitchen_routed_at', null\)\n(\s*\/\/[^\n]*\n)+\s*\.or\('status\.is\.null,status\.neq\.cancelled'\)/);
+  // A cancel, or a collect, landing between the read and the claim never reaches the kitchen.
+  assert.match(cron, /\.is\('kitchen_routed_at', null\)\s*\n(\s*\/\/[^\n]*\n)+\s*\.not\('status', 'in', NOT_RELEASABLE_STATUSES_PG\)/);
+  assert.doesNotMatch(cron, /\.neq\('status', 'cancelled'\)/);
+  assert.match(store, /\.is\('kitchen_routed_at', null\)\n(\s*\/\/[^\n]*\n)+\s*\.or\(`status\.is\.null,status\.not\.in\.\$\{NOT_RELEASABLE_STATUSES_PG\}`\)/);
+  assert.doesNotMatch(store, /status\.neq\.cancelled/);
   // In memory mirror: ours are always releasable when due.
   assert.equal(cateringMayRelease({ source: 'catering', status: 'received', customer: { name: 'Sam' } }), true);
+});
+
+test('both release claims refuse a row that turned collected OR cancelled after the read', () => {
+  // PostgREST semantics of the two claim filters, per status value (SQL: NULL NOT IN (...) is
+  // not true, so the cron's plain .not() skips a NULL status; the till's .or() keeps it).
+  const list = NOT_RELEASABLE_STATUSES_PG.replace(/^\(|\)$/g, '').split(',');
+  const cronClaims = (status) => status != null && !list.includes(status);
+  const tillOr = `status.is.null,status.not.in.${NOT_RELEASABLE_STATUSES_PG}`;
+  const tillClaims = (status) => {
+    // The or() string: split on the commas outside parentheses, then evaluate each branch.
+    const parts = []; let depth = 0, cur = '';
+    for (const ch of tillOr) {
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+    }
+    parts.push(cur);
+    return parts.some((p) => {
+      if (p === 'status.is.null') return status == null;
+      const m = p.match(/^status\.not\.in\.\((.*)\)$/);
+      assert.ok(m, `unexpected branch ${p}`);
+      return status != null && !m[1].split(',').includes(status);
+    });
+  };
+  for (const status of ['collected', 'cancelled']) {
+    assert.equal(cronClaims(status), false, `cron claims ${status}`);
+    assert.equal(tillClaims(status), false, `till claims ${status}`);
+  }
+  for (const status of ['received', 'prep', 'ready']) {
+    assert.equal(cronClaims(status), true, `cron claims ${status}`);
+    assert.equal(tillClaims(status), true, `till claims ${status}`);
+  }
+  // A row with no status still claims on the till, exactly as before.
+  assert.equal(tillClaims(null), true);
+  // The claims read the shared constant, so they can never drift from the release reads.
+  const cron = read('../../supabase/functions/catering-release/index.ts');
+  const claim = cron.slice(cron.indexOf('const claim = await'), cron.indexOf(".select('ref');"));
+  assert.match(claim, /\.not\('status', 'in', NOT_RELEASABLE_STATUSES_PG\)/);
+  const store = read('../store/index.js');
+  const route = store.slice(store.indexOf('routeKioskOrderPrints: async'), store.indexOf(".select('ref, type');"));
+  assert.ok(route.includes('.or(`status.is.null,status.not.in.${NOT_RELEASABLE_STATUSES_PG}`)'));
 });
 
 test('QueueSync, the advance list and capacity key on source catering, which the row carries', () => {
@@ -622,8 +665,10 @@ test('E. ADR-023 says the claim refuses cancelled rows for every source, and the
   const d = read('../../DECISIONS.md');
   assert.doesNotMatch(d, /no queue code change/);
   assert.match(d, /refuses a cancelled row for every source/);
+  assert.match(d, /and a collected row too/);
+  assert.doesNotMatch(d, /status\.neq\.cancelled/);
   const store = read('../store/index.js');
-  assert.match(store, /\.or\('status\.is\.null,status\.neq\.cancelled'\)/);
+  assert.ok(store.includes('.or(`status.is.null,status.not.in.${NOT_RELEASABLE_STATUSES_PG}`)'));
   const note = read('../../docs/EZCATER_V1_RELEASE.md');
   for (const fn of ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-connect', 'ezcater-webhook']) {
     assert.match(note, new RegExp('`' + fn + '`'), fn);
@@ -635,15 +680,20 @@ test('E. ADR-023 says the claim refuses cancelled rows for every source, and the
   assert.doesNotMatch(note, /[\u2013\u2014]/);
 });
 
-test('E2. release note steps in Peter\'s order: merge, prep time, tills on the new version, functions, HKX77V, fresh order, menu sync', () => {
+test('E2. release note steps in Peter\'s order: merge, prep time, tills on the new version, functions, HKX77V, fresh order; menu sync later', () => {
   const note = read('../../docs/EZCATER_V1_RELEASE.md');
   const steps = [...note.matchAll(/^## (\d)\. /gm)].map((m) => Number(m[1]));
-  assert.deepEqual(steps, [1, 2, 3, 4, 5, 6, 7]);
+  // This branch ships ALONE as v5.9.9. Menu sync is a later release and adds its own step back.
+  assert.deepEqual(steps, [1, 2, 3, 4, 5, 6]);
+  assert.doesNotMatch(note, /## 7\./);
+  assert.doesNotMatch(note, /20260919m/);
+  assert.doesNotMatch(note, /press Sync/);
+  assert.match(note, /\*\*Menu sync comes in a later release\.\*\*/);
   const at = (re) => { const i = note.search(re); assert.ok(i >= 0, String(re)); return i; };
   const order = [
     at(/Merge to main/), at(/## 2\. Set the catering prep time/), at(/NEW version number/),
     at(/## 4\. Deploy the edge functions/), at(/## 5\. The old test order HKX77V/),
-    at(/## 6\. Place a fresh test order/), at(/## 7\. Menu sync/),
+    at(/## 6\. Place a fresh test order/), at(/Menu sync comes in a later release/), at(/## Known gap/),
   ];
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], `step ${i + 1} after step ${i}`);
   // Step 3: the master till and every Sunmi, where Peter sees it, why, and a stop.
@@ -656,6 +706,12 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   assert.doesNotMatch(note, /v5\.8\.100/);
   assert.match(note, /A reload is not enough/);
   assert.match(note, /Force stop the app:\*\* swipe it away, or Settings, Apps, the app, Force stop\./);
+  // The app by name (android/app strings.xml), and the master done outside service.
+  assert.match(read('../../android/app/src/main/res/values/strings.xml'), /<string name="app_name">Serv OS POS<\/string>/);
+  assert.match(note, /The app is "Serv OS POS"\./);
+  assert.match(note, /Do the master till outside service\*\*, or in a quiet minute\./);
+  assert.match(note, /no kiosk, online, QR or delivery app order reaches the kitchen/);
+  assert.match(note, /no catering order is released/);
   assert.match(note, /Then reopen it\*\* and read the version again/);
   assert.match(note, /releases held orders and cancelled orders/);
   assert.match(note, /Do not go further until every till shows it/);
@@ -667,21 +723,34 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   assert.ok(note.indexOf('node scripts/check-deploys.mjs') > note.indexOf('`ezcater-webhook`'), 'check after the webhook');
   assert.match(note, /Claude runs the deploys, and Claude checks them/);
   assert.match(note, /every `_shared` file it imports/);
-  // The live proof: a line only the new code has, and it really is in the shared code.
-  assert.match(note, /npx supabase functions download <name>/);
-  const marker = note.match(/must contain `([^`]+)`\. Only the new code has that text\./);
+  // The exact deploy command for each of the six, in order, each with --no-verify-jwt.
+  const six = ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-connect', 'ezcater-webhook'];
+  const cmds = [...note.matchAll(/^npx supabase functions deploy (\S+) --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt$/gm)].map((m) => m[1]);
+  assert.deepEqual(cmds, six);
+  // No deploy line anywhere without the flag.
+  for (const line of note.split('\n').filter((l) => /functions deploy /.test(l))) assert.match(line, /--no-verify-jwt/, line);
+  assert.match(note, /every ezCater notification gets a 401/);
+  // The live proof reads what Supabase SERVES into a fresh empty folder, never the checkout.
+  assert.match(note, /Claude checks the LIVE code\*\*, not the checkout/);
+  assert.match(note, /^LIVE=\$\(mktemp -d\)$/m);
+  assert.match(note, /https:\/\/api\.supabase\.com\/v1\/projects\/tbetcegmszzotrwdtqhi\/functions\/\$fn\/body" -o "\$LIVE\/\$fn\.eszip"/);
+  const loop = note.match(/^for fn in (.+); do$/m);
+  assert.ok(loop, 'the download loop');
+  assert.deepEqual(loop[1].split(' '), six);
+  assert.doesNotMatch(note, /functions download/);
+  // Every search names the live folder only.
+  for (const line of note.split('\n').filter((l) => /^grep -a/.test(l))) assert.match(line, /"\$LIVE/, line);
+  // The markers: only the new code has them, and they really are in the files the note names.
+  const marker = note.match(/must each count at least 1 for `([^`]+)`\. Only the new code has that text\./);
   assert.ok(marker, 'marker line');
   assert.ok(read('../../supabase/functions/_shared/ezcaterCatering.js').includes(marker[1]), 'marker is in the shared code');
+  assert.ok(note.includes(`grep -a -c '${marker[1]}' "$LIVE"/*.eszip`), 'the grep searches for that same text');
+  assert.match(note, /The text\*\* comes from `supabase\/functions\/_shared\/ezcaterCatering\.js`/);
   assert.ok(read('../../supabase/functions/ezcater-webhook/index.ts').includes("retry('event read failed')"));
+  assert.ok(note.includes(`grep -a -c "retry('event read failed')" "$LIVE/ezcater-webhook.eszip"`));
   assert.match(note, /`ezcater-webhook` must also contain `event read failed`/);
-  // Step 7: running the migration is itself outside service, then Sync.
-  const step7 = note.slice(note.indexOf('## 7. Menu sync'), note.indexOf('## Known gap'));
-  assert.ok(step7.indexOf('Outside service only') < step7.indexOf('20260919m'), 'outside service covers the migration');
-  assert.ok(step7.indexOf('Then press Sync') > step7.indexOf('20260919m'));
-  assert.match(step7, /switches sized line matching on, and it schedules the hourly sync/);
-  assert.match(step7, /So running it is itself outside service/);
-  assert.match(note, /Outside service, or when no ezCater order is due to fire/);
-  assert.match(note, /Only exact matches link automatically/);
+  // The five named are exactly the functions that ship the shared file (edgeFnDeps.test.js).
+  assert.match(note, /Those five: `catering-release`, `order-notify`, `review-request`, `uber-direct`, `ezcater-webhook`\./);
   // No dashes used as punctuation (list bullets are fine).
   assert.doesNotMatch(note, /\S - \S/);
 });
