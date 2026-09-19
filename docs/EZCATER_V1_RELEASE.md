@@ -117,21 +117,75 @@ grep -a -c "retry('event read failed')" "$LIVE/ezcater-webhook.eszip"
 
 # Menu sync, a later release
 
-- **Outside service only.** Both of these, not just Sync.
-  - Outside service, or when no ezCater order is due to fire.
-- **Run migration `20260919m`** first.
-  - `20260919m_OPS_ezcater_menu_sync_v1.sql` in the SQL editor.
+This part ships later, as its own release, after v5.9.9 above (ADR-024).
+Nothing in it is needed for v5.9.9. Switch it on in exactly this order.
+
+## 1. Merge and let the app deploy
+
+- **Merge to main.** Claude sets the version number at the merge.
+- **Wait for the app to deploy.** It deploys itself from main.
+- **Reload every Back Office tab** that shows 3rd Party orders.
+  - An old tab saves matches that orders do not use.
+  - After step 3 an old tab's save is refused, and it says to reload.
+- **The tills do not change.** No force stop this time.
+
+## 2. Deploy the two edge functions
+
+- **Claude runs the deploys, and Claude checks them.**
+- **From the merged commit only**, as in step 4 above.
+  - Fetch first. `git rev-parse HEAD` must equal the merge commit.
+- **Every deploy has `--no-verify-jwt`.** Without it no ezCater order arrives.
+- **In this order:** `ezcater-connect` first, then `ezcater-webhook` last.
+  - Both work before step 3. They keep the old matching rules until then.
+
+```
+npx supabase functions deploy ezcater-connect --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+npx supabase functions deploy ezcater-webhook --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+```
+
+- **Then Claude runs** `node scripts/check-deploys.mjs`. Both must match.
+- **Then Claude checks the LIVE code**, the same way as step 4 above.
+
+```
+LIVE=$(mktemp -d)
+TOKEN=$(grep -o 'sbp_[A-Za-z0-9_]*' ~/.zshenv | tail -1)
+for fn in ezcater-connect ezcater-webhook; do
+  curl -sf -H "Authorization: Bearer $TOKEN" -H "User-Agent: Mozilla/5.0" \
+    "https://api.supabase.com/v1/projects/tbetcegmszzotrwdtqhi/functions/$fn/body" -o "$LIVE/$fn.eszip"
+done
+grep -a -c 'no synced row with this exact name' "$LIVE"/*.eszip
+```
+
+  - **Both must count at least 1.** Only the new code has that text.
+    - It comes from `supabase/functions/_shared/ezcaterMenuSync.ts`, which both ship.
+  - **A 0 means old code is serving.** Deploy that one again, then check again.
+
+## 3. Run the migration, outside service
+
+- **Outside service only**, or when no ezCater order is due to fire.
+- **Run `20260919m_OPS_ezcater_menu_sync_v1.sql`** in the SQL editor.
   - OPS project only. Needs `20260917_OPS_ezcater_item_links.sql` first.
-  - It switches sized line matching on, and it schedules the hourly sync.
-  - So running it is itself outside service.
-  - `ezcater-connect` and `ezcater-webhook` both work before it. They keep the old matching rules.
-- **The new rule.** After the sync is set up, orders only use matches made before the order: exact names found by the sync, or matches staff saved.
-  - Nothing is guessed from a name when an order arrives.
-  - Anything not matched prints by name, as plain text.
-- **Then press Sync.** It is Sync ezCater menu on Item matching.
-  - Until then every ezCater line prints by name.
-- **Only exact matches link automatically.** Check the rest by hand.
-  - Each single size item shows its one size, so you never match blind.
-- **Check again.** If ezCater changes a name or size you matched, the card says so.
-  - Tap Still right, or Change.
-  - Until then that item prints by name.
+- **From here until step 4** every ezCater line prints by name.
+
+## 4. Press Sync straight away
+
+- **Item matching: press Sync ezCater menu.**
+- **Only exact names match themselves.** Match the rest by hand.
+  - Each item shows its size, so you never match blind.
+
+## 5. Check your earlier matches once
+
+- **Your earlier matches carry over.**
+- **Where the ezCater name now says a size**, the card asks you to check it once.
+  - For example: Turkey Sandwich, now sold only as Box.
+  - Most single size items are like this.
+  - Tap **Still right**, or **Change**.
+  - Until you do, that item prints by name.
+
+## The new rule
+
+- **Orders only use matches made before the order.** Exact names found by the sync, or matches staff saved.
+- **A match is used only for the exact name and size it was made for.**
+  - And only when ezCater's id for it is on that match.
+- **Nothing is guessed from a name.** Anything else prints by name, as plain text.
+- **When ezCater renames an item or a size**, press Sync. The new name needs its own match.

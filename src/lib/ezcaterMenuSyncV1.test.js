@@ -1,21 +1,26 @@
 /**
  * ezcaterMenuSyncV1.test.js
  *
- * "Sync ezCater menu", the conservative version (feat/ezcater-menu-sync-v1), after review round 3:
- *   supabase/functions/_shared/ezcaterMenuSync.ts      rules: rows, keys, exact auto links, id routes
+ * "Sync ezCater menu", the conservative version (feat/ezcater-menu-sync-v1), after review round 4
+ * (exact by construction):
+ *   supabase/functions/_shared/ezcaterMenuSync.ts      rules: one row per exact full name, exact auto links, routes
  *   supabase/functions/_shared/ezcaterMenuSyncRun.ts   the job: claim, read, plan, write
  *   supabase/functions/_shared/ezcater-match-ingest.ts the order time rules, paged link reads
  *
  * THE RULES UNDER TEST
- *   A  once 20260919m has run, orders only use matches made before the order: a line matches only
- *      by its published size id on a synced row holding a staff match or an exact auto link from a
- *      sync. No name matching at order time at all; nothing written but seen counters.
+ *   A  once 20260919m has run, orders only use matches made before the order, and only for the
+ *      exact name they were made for: a line matches only when its exact full name (its name plus
+ *      its size name) is a synced row's, its published size id is on that row, and the row holds a
+ *      staff match or an exact auto link from a sync. No guessing; nothing written but seen counters.
  *   B  every sync decides every automatic row again from the whole menu (kept, moved or cleared);
- *      a staff decision is never changed, and one whose ezCater name or size changed since the
- *      staff saved it is flagged for staff to look at again (and orders do not use it until then)
+ *      a staff decision is never changed
  *   C  an option auto links only when its group AND its value are exact
  *   D  what the earlier rounds fixed: failed or partial link reads print by name, ids kept across a
  *      republish, the NOT NULL source default, the 18 s cron budget, the migration name 20260919m
+ *   E  exact by construction (review round 4): one row per exact full name, so two ezCater products
+ *      never share a row, its ids or a decision (the round 3 reviewer's repro cases); the re-decide
+ *      writes its ids in the same statement; the bail paths take ezCater's own ids off; a staff
+ *      decision from before the sync is carried over as it was, or flagged to look at again
  *
  * No live ezCater call: ezCater is a fake `ask` answering in the shape proven live on 18 Sep 2026.
  * Run: `npm test`, or `node --test src/lib/ezcaterMenuSyncV1.test.js`.
@@ -25,27 +30,37 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  flattenMenus, planMenuSync, autoTargetFor, sizeRowKey, sizeRouteFor, optionRouteFor, indexPublishedIds,
+  flattenMenus, flattenMenusWithNotes, planMenuSync, autoTargetFor, sizeRouteFor, optionRouteFor, indexSyncedRows,
   currentMenus, venueDate, readCatererMenus, readAllLinks, MENU_QUERY, MENU_QUERY_NO_OPTIONS,
   LINK_PAGE_SIZE, exactName, singleSizeExactName, sizeAddsWords, fullNameOf, lookAgainOf,
-  isMissingSyncColumn, isMissingLinksTable, writeSyncPlan, trustedTarget, isSyncedRow,
+  isMissingSyncColumn, isMissingLinksTable, writeSyncPlan, trustedTarget, isSyncedRow, finishSync,
+  itemIdentity, optionIdentity, syncKeyOf, isSyncKey, identityOfKey, lineIdentity, modIdentity, shownIdentity,
+  SYNC_KEY_PREFIX, oldKeysOf, carryOverFor,
 } from '../../supabase/functions/_shared/ezcaterMenuSync.ts';
 import { runMenuSync, dueLocations, runDueSyncs, CRON_BUDGET_MS, MIGRATION_FILE } from '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import {
   planLineMatches, planSyncedLineMatches, planNameMatches, readMatchInputs, saveLinkWrites, matchQueueRow,
+  withoutPosIds, linesWithoutPosIds,
 } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
 import { buildLinkKey } from '../../supabase/functions/_shared/ezcaterMatch.ts';
 import { orderItemsToLines } from '../../supabase/functions/_shared/ezcater-map.ts';
+import { sharedDepsOf } from '../../scripts/edgeFnDeps.mjs';
 import {
   toRow, rowsFrom, saveBody, applySaved, theirLabel, suggestionsFor, countRows,
-  liveRows, offMenuRows, lookAgainCount, lookAgainNote, offMenuLine,
+  liveRows, offMenuRows, lookAgainCount, lookAgainNote, offMenuLine, olderNote, seenLine, goneCount, goneLine,
+  SYNC_KEY_PREFIX as CLIENT_SYNC_KEY_PREFIX,
 } from './ezcaterItemRows.js';
 
 const NOW = '2026-09-18T15:00:00.000Z';
 const NOW_MS = Date.parse(NOW);
 const LOC = 'loc-1';
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+
+/** The key of the synced row for an item sold under this name and size (or no size). */
+const K = (name, sizeName = '') => syncKeyOf(itemIdentity(name, sizeName));
+/** The key of the synced row for an option. */
+const OK = (group, value) => syncKeyOf(optionIdentity(group, value));
 
 // ── A Potbelly shaped ezCater menu ─────────────────────────────────────────────────────────
 // Sandwiches in three sizes, a single size salad, a tray whose two sizes are both only noise,
@@ -192,11 +207,14 @@ function fakeAsk(menus, { refuseValues = false, calls = [] } = {}) {
 }
 
 /**
- * `failUpdate(table, patch, eq)` returns the error one update should fail with, or null.
+ * `failUpdate(table, patch, eq)` and `failUpsert(table, rows, opts)` return the error one write
+ * should fail with, or null. `failLinkRead(columns)` the error a link read should fail with.
+ * `failTable` maps a table to the error every read of it fails with.
  * `noSyncColumns` is the database before 20260919m: a select naming a sync column fails whole.
  */
 function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = false, failLinkPageFrom = null, failUpdate = null,
-  noApiUrl = false, schemas = { ezcater_item_links: schemaOf('ezcater_item_links') } } = {}) {
+  failUpsert = null, failLinkRead = null, failTable = {}, noApiUrl = false,
+  schemas = { ezcater_item_links: schemaOf('ezcater_item_links') } } = {}) {
   const store = JSON.parse(JSON.stringify(tables));
   const calls = [];
   const from = (name) => {
@@ -213,6 +231,11 @@ function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = fa
       if (noSyncColumns && st.op === 'select' && /ez_ids|ez_size_name|decided_as/.test(st.cols)) {
         return { data: null, error: { code: '42703', message: 'column ezcater_item_links.ez_ids does not exist' } };
       }
+      if (failLinkRead && name === 'ezcater_item_links' && st.op === 'select') {
+        const e = failLinkRead(st.cols);
+        if (e) return { data: null, error: e };
+      }
+      if (failTable[name] && st.op === 'select') return { data: null, error: failTable[name] };
       if (noApiUrl && name === 'ezcater_connections' && st.op === 'select' && /api_url/.test(st.cols)) {
         return { data: null, error: { code: '42703', message: 'column ezcater_connections.api_url does not exist' } };
       }
@@ -227,7 +250,9 @@ function fakeSb(tables, { claim = 'claim-1', rpcError = null, noSyncColumns = fa
       }
       if (st.op === 'upsert') {
         const rows = Array.isArray(st.rows) ? st.rows : [st.rows];
-        calls.push({ op: 'upsert', table: name, n: rows.length, ignore: !!st.opts?.ignoreDuplicates });
+        calls.push({ op: 'upsert', table: name, n: rows.length, ignore: !!st.opts?.ignoreDuplicates, keys: rows.map((r) => r.ez_key) });
+        const refusedUp = failUpsert ? failUpsert(name, rows, st.opts) : null;
+        if (refusedUp) return { data: null, error: refusedUp };
         // The insert tuple is checked BEFORE conflict resolution, for every row, as Postgres does.
         const bad = notNullError(schemas[name], rows);
         if (bad) return { data: null, error: bad };
@@ -293,36 +318,31 @@ const COUNTERS = ['seen_count', 'last_seen_at', 'updated_at'];
 const row = (sb, key) => links(sb).find((r) => r.ez_key === key);
 const menuOf = (...items) => ({ id: 'm-x', name: 'X', startDate: null, endDate: null,
   categories: [{ id: 'c', name: 'Cat', items }] });
+const item = (id, name, sizes) => ({ id, name, sizes });
 const syncPlan = (menus, ourItems, extra = {}) => planMenuSync({
   entries: flattenMenus(menus), existing: [], ourItems, ourGroups: [], locationId: LOC, nowIso: NOW,
   complete: true, menuOk: true, ...extra,
 });
-/** An order line as ezcater-map.ts builds it: the published size id and size name, no item match. */
+/** An order line as ezcater-map.ts builds it: its name, the published size id and size name, no item match. */
 const line = (name, ezSizeId, sizeName, extra = {}) => ({ itemId: null, name, ezSizeId, sizeName, qty: 1, price: 10, mods: [], ...extra });
 
 /**
- * What ezcater-connect items_save writes for one Item matching card save (the edge function is
- * Deno and cannot be imported here; a static test below holds this mirror to it): the card's
- * saveBody, then an existing row UPDATED by its key (never renamed: a sync may have refreshed its
- * name since the screen loaded), a name with no row yet inserted, both recording what the screen
- * showed as decided_as (fullNameOf).
+ * What ezcater-connect items_save writes for one Item matching card save after 20260919m (the edge
+ * function is Deno and cannot be imported here; a static test below holds this mirror to it): the
+ * card's saveBody, then the SYNCED row with that key UPDATED (never created, never renamed),
+ * recording what the screen showed as decided_as (fullNameOf).
  */
 function itemsSave(sb, dbRow, choice, userId = 'user-1') {
   const shown = toRow({ ...dbRow, look_again: lookAgainOf(dbRow).lookAgain }, { syncReady: true });
-  const body = saveBody(shown, choice).body;
+  const built = saveBody(shown, choice);
+  assert.ok(built.body, built.error);
+  const body = built.body;
+  assert.equal(body.synced, true, 'after 20260919m the card saves only synced rows');
   const matchedBy = body.ignored ? 'ignored' : ((body.menu_item_id || body.option_id) ? userId : null);
-  if (body.size_row) {
-    const hit = links(sb).find((x) => x.kind === 'item' && x.ez_key === body.ez_key && x.ez_size_name);
-    Object.assign(hit, { menu_item_id: body.menu_item_id, option_id: null, source: 'manual', matched_by: matchedBy,
-      decided_as: fullNameOf({ kind: 'item', name: body.ez_name, sizeName: body.seen_size || body.ez_key.split('|size:')[1] }) });
-    return body;
-  }
-  const key = buildLinkKey({ name: body.ez_name, groupLabel: body.ez_group || '' }, body.kind);
-  const decision = { menu_item_id: body.menu_item_id, option_id: body.option_id, source: 'manual', matched_by: matchedBy,
-    decided_as: fullNameOf({ kind: body.kind, name: body.ez_name, group: body.ez_group || '', onlySize: body.kind === 'item' ? (body.seen_size || '') : '' }) };
-  const hit = links(sb).find((x) => x.kind === body.kind && x.ez_key === key);
-  if (hit) Object.assign(hit, decision);
-  else links(sb).push({ location_id: LOC, kind: body.kind, ez_key: key, ez_name: body.ez_name, ez_group: body.ez_group, seen_count: 0, ...decision });
+  const hit = links(sb).find((x) => x.kind === body.kind && x.ez_key === body.ez_key && x.synced_at);
+  assert.ok(hit, 'the edge function only ever updates a synced row');
+  Object.assign(hit, { menu_item_id: body.menu_item_id, option_id: body.option_id, source: 'manual', matched_by: matchedBy,
+    decided_as: fullNameOf({ kind: body.kind, name: body.ez_name, group: body.ez_group || '', sizeName: body.kind === 'item' ? (body.seen_size || '') : '' }) });
   return body;
 }
 
@@ -374,32 +394,32 @@ async function orderThrough(sb, lines) {
 
 // ── Rows ───────────────────────────────────────────────────────────────────────────────────
 
-test('a Potbelly shaped menu flattens to every row once: plain items, each size, each option', () => {
+test('a Potbelly shaped menu flattens to one row per exact full name: single size items, each size, each option', () => {
   const entries = flattenMenus([POTBELLY, LUNCH]);
   const keys = entries.map((e) => e.kind + ':' + e.ezKey);
   assert.equal(new Set(keys).size, keys.length, 'no key twice');
   assert.deepEqual(keys.sort(), [
-    'item:' + sizeRowKey('A Wreck', 'Bigs'),
-    'item:' + sizeRowKey('A Wreck', 'Original'),
-    'item:' + sizeRowKey('A Wreck', 'Skinny'),
-    'item:' + buildLinkKey({ name: 'Chicken Salad Large' }, 'item'),
-    'item:' + sizeRowKey('Cookie Tray', 'Serves 10'),
-    'item:' + sizeRowKey('Cookie Tray', 'Serves 20'),
-    'item:' + buildLinkKey({ name: 'Farmhouse Salad' }, 'item'),
-    'item:' + sizeRowKey('Italian', 'Large'),
-    'item:' + sizeRowKey('Italian', 'Small'),
-    'option:' + buildLinkKey({ name: 'Multigrain', groupLabel: 'Bread' }, 'option'),
-    'option:' + buildLinkKey({ name: 'White', groupLabel: 'Bread' }, 'option'),
+    'item:' + K('A Wreck', 'Bigs'), 'item:' + K('A Wreck', 'Original'), 'item:' + K('A Wreck', 'Skinny'),
+    'item:' + K('Chicken Salad Large', 'Regular'),
+    'item:' + K('Cookie Tray', 'Serves 10'), 'item:' + K('Cookie Tray', 'Serves 20'),
+    'item:' + K('Farmhouse Salad', 'Serves 1'),
+    'item:' + K('Italian', 'Large'), 'item:' + K('Italian', 'Small'),
+    'option:' + OK('Bread', 'Multigrain'), 'option:' + OK('Bread', 'White'),
   ].sort());
   const salad = entries.find((e) => e.ezName === 'Farmhouse Salad');
-  assert.deepEqual(salad.ids.sort(), ['s-salad', 's-salad-2'], 'the same plain item on two menus: one row, both ids');
+  assert.deepEqual(salad.ids.sort(), ['s-salad', 's-salad-2'], 'the same exact name on two menus: one row, both ids');
+  assert.equal(salad.ezOnlySize, 'Serves 1');
   assert.equal(salad.ezSizeName, null);
-  const big = entries.find((e) => e.ezKey === sizeRowKey('A Wreck', 'Bigs'));
+  const big = entries.find((e) => e.ezKey === K('A Wreck', 'Bigs'));
   assert.deepEqual(big.ids, ['s-wreck-big']);
   assert.equal(big.ezSizeName, 'Bigs');
   const multi = entries.find((e) => e.ezName === 'Multigrain');
   assert.deepEqual(multi.ids, ['v-multi'], 'one value id, seen under three sizes, kept once');
-  assert.equal(sizeRowKey('A Wreck', 'Bigs'), 'a wreck|size:bigs');
+  // The key is the exact full name: nothing folded away.
+  assert.equal(K('A Wreck', 'Bigs'), 'exact:a wreck bigs');
+  assert.equal(K('Caesar Salad (Serves 20)', 'Half Tray'), 'exact:caesar salad serves 20 half tray');
+  assert.equal(OK('Bread', 'White'), 'exact:bread|white');
+  assert.ok(entries.every((e) => isSyncKey(e.ezKey)));
 });
 
 test('only current menus are read, on the venue date', () => {
@@ -409,21 +429,39 @@ test('only current menus are read, on the venue date', () => {
   assert.equal(venueDate(Date.parse('2026-09-19T03:00:00Z'), 'America/Chicago'), '2026-09-18');
 });
 
-test('full names: what a person sees, what "changed" compares, and what an exact link needs', () => {
+test('full names and exact full names: what a person sees, what decided_as stores, what a row is keyed by', () => {
   assert.equal(fullNameOf({ kind: 'item', name: 'Turkey Sandwich', onlySize: 'Box' }), 'Turkey Sandwich Box');
-  assert.equal(fullNameOf({ kind: 'item', name: 'Italian Boxed Lunch', onlySize: 'Box' }), 'Italian Boxed Lunch', 'Box repeats Boxed');
+  assert.equal(fullNameOf({ kind: 'item', name: 'Italian Boxed Lunch', onlySize: 'Box' }), 'Italian Boxed Lunch Box', 'the full name keeps every word');
   assert.equal(fullNameOf({ kind: 'item', name: 'Caesar Salad', sizeName: 'Half Tray' }), 'Caesar Salad Half Tray');
   assert.equal(fullNameOf({ kind: 'item', name: 'Turkey Sandwich' }), 'Turkey Sandwich');
   assert.equal(fullNameOf({ kind: 'option', name: 'White', group: 'Bread' }), 'Bread: White');
+  assert.equal(itemIdentity('Italian Boxed Lunch', 'Box'), 'italian boxed lunch box');
+  assert.equal(itemIdentity('', 'Box'), '', 'no item name, no row');
+  assert.notEqual(optionIdentity('Bread White', 'Roll'), optionIdentity('Bread', 'White Roll'), 'the group and the value stay apart');
+  assert.equal(shownIdentity('option', 'Bread: White Roll'), optionIdentity('Bread', 'White Roll'));
+  assert.equal(shownIdentity('option', 'White'), optionIdentity('', 'White'));
+  assert.equal(shownIdentity('item', 'Italian Boxed Lunch Box'), itemIdentity('Italian Boxed Lunch', 'Box'));
   assert.equal(sizeAddsWords('Cookie Trays', 'Tray'), false);
   assert.equal(sizeAddsWords('Caesar Salad', ''), false, 'a size with no name adds nothing');
   assert.equal(singleSizeExactName('Caesar Salad', 'Large'), 'caesar salad large');
+  assert.equal(singleSizeExactName('Italian Boxed Lunch', 'Box'), 'italian boxed lunch', 'the Boxed allowance is in the auto link name only');
   assert.equal(exactName('  Crème  Brûlée & Chef\u2019s (Large) '), 'creme brulee and chefs large');
+  assert.equal(isSyncKey('exact:x'), true);
+  assert.equal(isSyncKey('x'), false);
+  assert.equal(isSyncKey('exact:'), false);
+  assert.equal(identityOfKey('exact:bread|white'), 'bread|white');
+  assert.equal(identityOfKey('bread|white'), '');
+  // ezCater's own documented example line: "Margherita Pizza" sold as a "12\" Pizza".
+  assert.equal(lineIdentity({ name: 'Margherita Pizza', sizeName: '12" Pizza' }), itemIdentity('Margherita Pizza', '12" Pizza'));
+  assert.equal(lineIdentity({ name: 'Margherita Pizza', sizeName: null }), 'margherita pizza');
+  assert.equal(modIdentity({ label: 'White', groupLabel: 'Bread' }), 'bread|white');
+  // The client mirror of the prefix is the same string.
+  assert.equal(CLIENT_SYNC_KEY_PREFIX, SYNC_KEY_PREFIX);
 });
 
 // ── Exact names auto link; size clashes do not ─────────────────────────────────────────────
 
-test('exact names auto link: a plain item, a size by its full name, an option', () => {
+test('exact names auto link: a single size item, a size by its full name, an option', () => {
   const plan = planMenuSync({
     entries: flattenMenus([POTBELLY]), existing: [], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
     locationId: LOC, nowIso: NOW, complete: true, menuOk: true,
@@ -431,19 +469,21 @@ test('exact names auto link: a plain item, a size by its full name, an option', 
   const by = (k) => plan.inserts.find((r) => r.ez_key === k);
   // Their "Farmhouse Salad" is sold only as "Serves 1": its full name is "Farmhouse Salad
   // Serves 1", which is not our "Farmhouse Salad" exactly, so staff decide (exact means exact).
-  assert.equal(by(buildLinkKey({ name: 'Farmhouse Salad' }, 'item')).menu_item_id, null);
-  assert.equal(by(sizeRowKey('A Wreck', 'Original')).menu_item_id, 'm-wreck-orig');
-  assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).menu_item_id, 'm-wreck-big');
-  assert.equal(by(sizeRowKey('A Wreck', 'Bigs')).matched_by, 'exact', 'a sync auto link is marked exact');
-  assert.equal(by(buildLinkKey({ name: 'Multigrain', groupLabel: 'Bread' }, 'option')).option_id, 'o-multi');
+  assert.equal(by(K('Farmhouse Salad', 'Serves 1')).menu_item_id, null);
+  assert.equal(by(K('A Wreck', 'Original')).menu_item_id, 'm-wreck-orig');
+  assert.equal(by(K('A Wreck', 'Bigs')).menu_item_id, 'm-wreck-big');
+  assert.equal(by(K('A Wreck', 'Bigs')).matched_by, 'exact', 'a sync auto link is marked exact');
+  assert.equal(by(OK('Bread', 'Multigrain')).option_id, 'o-multi');
   // Every new row is a not yet ordered row carrying its published ids.
   for (const r of plan.inserts) {
     assert.equal(r.seen_count, 0);
     assert.equal(r.last_seen_at, null);
     assert.equal(r.source, 'auto');
+    assert.equal(r.decided_as, null);
     assert.ok(Array.isArray(r.ez_ids));
+    assert.ok(isSyncKey(r.ez_key));
   }
-  assert.deepEqual(by(sizeRowKey('A Wreck', 'Bigs')).ez_ids, ['s-wreck-big']);
+  assert.deepEqual(by(K('A Wreck', 'Bigs')).ez_ids, ['s-wreck-big']);
 });
 
 test('size clashes and guesses do not auto link', () => {
@@ -453,18 +493,18 @@ test('size clashes and guesses do not auto link', () => {
   });
   const by = (k) => plan.inserts.find((r) => r.ez_key === k);
   // Their single size "Chicken Salad Large" vs our only "Chicken Salad Small": a size clash.
-  assert.equal(by(buildLinkKey({ name: 'Chicken Salad Large' }, 'item')).menu_item_id, null);
+  assert.equal(by(K('Chicken Salad Large', 'Regular')).menu_item_id, null);
   // Their "Italian" Large, and we only sell Italian Small.
-  assert.equal(by(sizeRowKey('Italian', 'Large')).menu_item_id, null);
-  assert.equal(by(sizeRowKey('Italian', 'Small')).menu_item_id, 'm-italian-small');
+  assert.equal(by(K('Italian', 'Large')).menu_item_id, null);
+  assert.equal(by(K('Italian', 'Small')).menu_item_id, 'm-italian-small');
   // Skinny: nothing of ours has that name. Never linked to plain "A Wreck" either.
-  assert.equal(by(sizeRowKey('A Wreck', 'Skinny')).menu_item_id, null);
+  assert.equal(by(K('A Wreck', 'Skinny')).menu_item_id, null);
   // Cookie Tray Serves 10 and Serves 20: never linked to our one Cookie Tray.
-  assert.equal(by(sizeRowKey('Cookie Tray', 'Serves 10')).menu_item_id, null);
-  assert.equal(by(sizeRowKey('Cookie Tray', 'Serves 20')).menu_item_id, null);
-  // A single size item never links a size row of ours either way round.
+  assert.equal(by(K('Cookie Tray', 'Serves 10')).menu_item_id, null);
+  assert.equal(by(K('Cookie Tray', 'Serves 20')).menu_item_id, null);
+  // A size lost in our plain name is not the same size.
   assert.equal(autoTargetFor({ kind: 'item', ezKey: 'x', ezName: 'Italian', ezGroup: null, ezSizeName: 'Large', ezCategory: null, ids: [], noAuto: false },
-    [{ id: 'a', name: 'Italian' }], []), null, 'a size lost in our plain name is not the same size');
+    [{ id: 'a', name: 'Italian' }], []), null);
   // Our menu read only in part: nothing auto links at all.
   const partial = planMenuSync({
     entries: flattenMenus([POTBELLY]), existing: [], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
@@ -477,13 +517,14 @@ test('exact means exact: a size or container word on one side only never links',
   // ezCater single size "Sandwich Platter Large" is not our "Sandwich Platter".
   const platter = menuOf({ id: 'i-p', name: 'Sandwich Platter Large', sizes: [size('s-p', 'Serves 12')] });
   assert.equal(flattenMenus([platter])[0].exactName, 'sandwich platter large serves 12');
+  assert.equal(flattenMenus([platter])[0].ezKey, K('Sandwich Platter Large', 'Serves 12'));
   assert.equal(syncPlan([platter], [{ id: 'm-plat', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
   const platter2 = menuOf({ id: 'i-p2', name: 'Sandwich Platter Large', sizes: [size('s-p2', 'Large')] });
   assert.equal(syncPlan([platter2], [{ id: 'm-plat', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([platter2], [{ id: 'm-plat-l', name: 'Sandwich Platter Large' }]).inserts[0].menu_item_id, 'm-plat-l');
   // "Caesar Salad" sold only as "Large" is neither our "Caesar Salad Small" nor our plain "Caesar Salad".
   const caesar = menuOf({ id: 'i-c', name: 'Caesar Salad', sizes: [size('s-c', 'Large')] });
-  assert.equal(flattenMenus([caesar])[0].ezKey, 'caesar salad');
+  assert.equal(flattenMenus([caesar])[0].ezKey, 'exact:caesar salad large');
   assert.equal(syncPlan([caesar], [{ id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([caesar], [{ id: 'm-c', name: 'Caesar Salad' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([caesar], [{ id: 'm-cl', name: 'Caesar Salad (Large)' }, { id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, 'm-cl',
@@ -496,29 +537,44 @@ test('exact means exact: a size or container word on one side only never links',
   assert.equal(syncPlan([turkey], [{ id: 'm-ts', name: 'Turkey Sandwich' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([turkey], [{ id: 'm-tsb', name: 'Turkey Sandwich Box' }]).inserts[0].menu_item_id, 'm-tsb');
   const p = syncPlan([HKX77V_MENU], [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }, { id: 'm-it', name: 'Italian' }]);
-  assert.equal(p.inserts[0].menu_item_id, 'm-ibl');
+  assert.equal(p.inserts[0].ez_key, 'exact:italian boxed lunch box', 'the key keeps Box');
+  assert.equal(p.inserts[0].menu_item_id, 'm-ibl', 'the auto link allows a Box that repeats Boxed');
   assert.deepEqual(p.inserts[0].ez_ids, [HKX77V_SIZE_ID], 'the size id, never the item id');
 });
 
-test('exact means exact: one key described two ways, two of ours with one name, and multi size rows', () => {
-  // "Sandwich Platter Tray" and "Sandwich Platter" share the key "sandwich platter" (the key drops
-  // a trailing tray). Which one is ours is a guess, so the merged row is never auto linked, and it
-  // shows the same description whatever order the menus come in.
+test('exact by construction: names the old keys folded together are separate rows, and what no name can tell apart is never linked', () => {
+  // "Sandwich Platter Tray" and "Sandwich Platter" shared the old key "sandwich platter" (it
+  // dropped a trailing tray). Now they are two rows, each decided on its own exact name.
   const a = { id: 'a', name: 'Sandwich Platter', sizes: [] };
   const b = { id: 'b', name: 'Sandwich Platter Tray', sizes: [] };
   const rows = flattenMenus([menuOf(a, b)]);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].noAuto, true);
-  assert.equal(rows[0].ezName, flattenMenus([menuOf(b, a)])[0].ezName, 'stable whatever the menu order');
-  assert.equal(syncPlan([menuOf(a, b)], [{ id: 'm-sp', name: 'Sandwich Platter' }]).inserts[0].menu_item_id, null);
+  assert.deepEqual(rows.map((r) => [r.ezKey, r.noAuto]), [[K('Sandwich Platter'), false], [K('Sandwich Platter Tray'), false]]);
+  const p = syncPlan([menuOf(a, b)], [{ id: 'm-sp', name: 'Sandwich Platter' }]);
+  assert.equal(p.inserts.find((r) => r.ez_key === K('Sandwich Platter')).menu_item_id, 'm-sp');
+  assert.equal(p.inserts.find((r) => r.ez_key === K('Sandwich Platter Tray')).menu_item_id, null, 'the Tray is not our Sandwich Platter');
   // Two of ours with the same exact name: never a guess.
   assert.equal(syncPlan([menuOf({ id: 'c', name: 'Brownie', sizes: [] })],
     [{ id: 'm1', name: 'Brownie' }, { id: 'm2', name: 'brownie' }]).inserts[0].menu_item_id, null);
   // A multi size row links only its full name; a container word on one side links nothing.
   const multi = menuOf({ id: 'd', name: 'Caesar Salad', sizes: [size('s-h', 'Half Tray'), size('s-f', 'Full Tray')] });
   const mp = syncPlan([multi], [{ id: 'm-half', name: 'Caesar Salad Half' }, { id: 'm-full', name: 'Caesar Salad Full Tray' }]);
-  assert.equal(mp.inserts.find((r) => r.ez_key === sizeRowKey('Caesar Salad', 'Half Tray')).menu_item_id, null);
-  assert.equal(mp.inserts.find((r) => r.ez_key === sizeRowKey('Caesar Salad', 'Full Tray')).menu_item_id, 'm-full');
+  assert.equal(mp.inserts.find((r) => r.ez_key === K('Caesar Salad', 'Half Tray')).menu_item_id, null);
+  assert.equal(mp.inserts.find((r) => r.ez_key === K('Caesar Salad', 'Full Tray')).menu_item_id, 'm-full');
+  // One exact full name the menus describe with two different auto link names: never auto linked.
+  const boxed = flattenMenus([menuOf({ id: 'x', name: 'Italian Boxed Lunch', sizes: [size('s1', 'Box')] }, { id: 'y', name: 'Italian Boxed Lunch Box', sizes: [] })]);
+  assert.equal(boxed.length, 1);
+  assert.equal(boxed[0].noAuto, true);
+  assert.equal(boxed[0].ezName, 'Italian Boxed Lunch', 'the description that sorts first, whatever the menu order');
+  // Two sizes of ONE item with the same name: no row, no ids, and the sync says so.
+  const same = flattenMenusWithNotes([menuOf({ id: 'z', name: 'Cookies', sizes: [size('c1', 'Dozen'), size('c2', 'dozen')] },
+    { id: 'u', name: 'X', sizes: [size('u1', ''), size('u2', '')] })]);
+  assert.deepEqual(same.entries, []);
+  assert.deepEqual(same.notes.sameName, ['Cookies (Dozen)', 'Cookies (dozen)', 'X (no size name)', 'X (no size name)']);
+  // The size with no name of an item with named sizes: its own row, never auto linked.
+  const unnamed = flattenMenus([menuOf({ id: 'i', name: 'Italian', sizes: [size('it-0', ''), size('it-l', 'Large')] })]);
+  assert.deepEqual(unnamed.map((e) => [e.ezKey, e.ezSizeName, e.noAuto]), [[K('Italian'), null, true], [K('Italian', 'Large'), 'Large', false]]);
+  assert.equal(syncPlan([menuOf({ id: 'i', name: 'Italian', sizes: [size('it-0', ''), size('it-l', 'Large')] })], [{ id: 'm-i', name: 'Italian' }])
+    .inserts.find((r) => r.ez_key === K('Italian')).menu_item_id, null);
 });
 
 // ── RULE C: an option needs its group AND its value exact ──────────────────────────────────
@@ -531,6 +587,7 @@ test('RULE C: an option auto links only when the group AND the value are exact (
   const entries = flattenMenus([subWith('Bread', [{ id: 'v-w', name: 'White' }])]);
   const white = entries.find((e) => e.kind === 'option');
   assert.equal(white.ezGroup, 'Bread');
+  assert.equal(white.ezKey, OK('Bread', 'White'));
   const cheese = { id: 'g-cheese', name: 'Cheese', options: [{ id: 'o-w-cheese', name: 'White' }] };
   const bread = { id: 'g-bread', name: 'Bread', options: [{ id: 'o-w-bread', name: 'White', itemId: 'm-white-bread' }] };
   assert.equal(autoTargetFor(white, [], [cheese]), null, 'our White in the Cheese group is a different thing');
@@ -542,12 +599,13 @@ test('RULE C: an option auto links only when the group AND the value are exact (
   assert.equal(autoTargetFor({ ...white, ezGroup: null }, [], [bread]), null);
   // A value that differs: nothing.
   assert.equal(autoTargetFor({ ...white, ezName: 'White Roll', exactName: 'white roll' }, [], [bread]), null);
-  // One key, two groups ("Bread" and "Bread Size" both key as "bread"): never auto linked.
+  // "Bread" and "Bread Size" shared the old key "bread" (it dropped a trailing size word): two
+  // rows now, each with its own group, and only the exact one links.
   const two = flattenMenus([subWith('Bread', [{ id: 'v-1', name: 'White' }]),
     { ...subWith('Bread Size', [{ id: 'v-2', name: 'White' }]), id: 'm-y' }]).filter((e) => e.kind === 'option');
-  assert.equal(two.length, 1);
-  assert.equal(two[0].noAuto, true);
-  assert.equal(autoTargetFor(two[0], [], [bread]), null);
+  assert.deepEqual(two.map((e) => [e.ezKey, e.ids, e.noAuto]), [[OK('Bread', 'White'), ['v-1'], false], [OK('Bread Size', 'White'), ['v-2'], false]]);
+  assert.deepEqual(autoTargetFor(two[0], [], [bread]), { menuItemId: 'm-white-bread', optionId: 'o-w-bread' });
+  assert.equal(autoTargetFor(two[1], [], [bread]), null, 'our Bread group is not their Bread Size group');
 });
 
 test('RULE C end to end: Bread White routes to our Bread White, never to our Cheese White', async () => {
@@ -560,66 +618,73 @@ test('RULE C end to end: Bread White routes to our Bread White, never to our Che
   const onlyCheese = await pipeline({ menus, ours, groups: [cheese], lines });
   assert.equal(onlyCheese.out[0].mods[0].optionId, null);
   assert.equal(onlyCheese.queued[0].mods[0].optionId, null);
-  assert.equal(onlyCheese.row(buildLinkKey({ name: 'White', groupLabel: 'Bread' }, 'option')).option_id, null);
+  assert.equal(onlyCheese.row(OK('Bread', 'White')).option_id, null);
   const withBread = await pipeline({ menus, ours, groups: [cheese, bread], lines });
   assert.equal(withBread.out[0].itemId, 'm-sub');
   assert.equal(withBread.out[0].mods[0].optionId, 'o-w-bread');
   assert.equal(withBread.queued[0].mods[0].optionId, 'o-w-bread');
 });
 
-// ── RULE A: orders only use matches made before the order ──────────────────────────────────
+// ── RULE A: orders only use matches made before the order, for the exact name they were made for ──
 
 const SYNCED = [
-  { kind: 'item', ez_key: sizeRowKey('A Wreck', 'Bigs'), ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], synced_at: NOW,
+  { kind: 'item', ez_key: K('A Wreck', 'Bigs'), ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], synced_at: NOW,
     menu_item_id: 'm-wreck-big', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 },
-  { kind: 'item', ez_key: sizeRowKey('A Wreck', 'Skinny'), ez_name: 'A Wreck', ez_size_name: 'Skinny', ez_ids: ['s-wreck-skinny'], synced_at: NOW,
+  { kind: 'item', ez_key: K('A Wreck', 'Skinny'), ez_name: 'A Wreck', ez_size_name: 'Skinny', ez_ids: ['s-wreck-skinny'], synced_at: NOW,
     menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 },
-  // A synced plain row holding an OLD order time name link (matched_by 'name'): not trusted.
-  { kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', ez_ids: ['s-salad'], synced_at: NOW,
+  // A synced row holding an automatic link that is not an exact one (only a hand edit could make one): not trusted.
+  { kind: 'item', ez_key: K('Farmhouse Salad', 'Serves 1'), ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', ez_ids: ['s-salad'], synced_at: NOW,
     menu_item_id: 'm-salad', option_id: null, source: 'auto', matched_by: 'name', seen_count: 3 },
-  // A staff match on a synced row, still the name the staff saw.
-  { kind: 'item', ez_key: 'chicken salad large', ez_name: 'Chicken Salad Large', ez_only_size: 'Regular', ez_ids: ['s-chick'], synced_at: NOW,
+  // A staff match on a synced row, made for its exact name.
+  { kind: 'item', ez_key: K('Chicken Salad Large', 'Regular'), ez_name: 'Chicken Salad Large', ez_only_size: 'Regular', ez_ids: ['s-chick'], synced_at: NOW,
     menu_item_id: 'm-chick-small', option_id: null, source: 'manual', matched_by: 'u-1', decided_as: 'Chicken Salad Large Regular', seen_count: 1 },
-  // An OLD staff name match made before any sync (no ids): orders never reach it by name.
+  // An OLD staff name match saved before the sync: orders never use it after the migration.
   { kind: 'item', ez_key: 'a wreck', ez_name: 'A Wreck', ez_size_name: null, ez_ids: [], menu_item_id: 'm-wreck-orig', option_id: null,
     source: 'manual', matched_by: 'user-1', seen_count: 9 },
   // An OLD staff match stored under the LEGACY key (size word dropped) for "Caesar Salad Large".
   { kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad Large', ez_ids: [], menu_item_id: 'm-c', option_id: null,
     source: 'manual', matched_by: 'user-1', seen_count: 4 },
+  // A row saved before the sync that holds a published id anyway (only a hand edit or an older build
+  // could): it is not a synced row, so it is never used.
+  { kind: 'item', ez_key: 'coded thing', ez_name: 'Coded Thing', ez_ids: ['s-old-format'], synced_at: NOW, menu_item_id: 'm-wreck-orig',
+    option_id: null, source: 'manual', matched_by: 'u', seen_count: 0 },
 ];
 const OURS_A = [...OUR_ITEMS, { id: 'm-c', name: 'Caesar Salad Large' }, { id: 'm-code', name: 'Coded', itemCode: 'A12' }];
 const planA = (lines, extra = {}) => planLineMatches({
   lines, ourItems: OURS_A, ourGroups: OUR_GROUPS, links: SYNCED, locationId: LOC, nowIso: NOW, sizeIds: true, ...extra,
 });
 
-test('RULE A: a line matches only by its published size id on a synced row with a staff match or an exact auto link', () => {
+test('RULE A: a line matches only when its exact name and size are a synced row\'s, its size id is on that row, and the row holds a staff match or an exact auto link', () => {
   const p = planA([
     line('A Wreck', 's-wreck-big', 'Bigs'),
     line('A Wreck', 's-wreck-skinny', 'Skinny'),
     line('Farmhouse Salad', 's-salad', 'Serves 1'),
     line('Chicken Salad Large', 's-chick', 'Regular'),
+    line('A Wreck', 's-wreck-big', 'Skinny'),       // the Bigs id under the Skinny name
+    line('A Wreck', 's-wreck-skinny', 'Bigs'),      // the Skinny id under the Bigs name
+    line('Coded Thing', 's-old-format', null),      // an id on a row saved before the sync
   ]);
-  assert.equal(p.lines[0].itemId, 'm-wreck-big', 'an exact auto link from a sync');
-  assert.equal(p.lines[0].match.source, 'menuSync');
-  assert.equal(p.lines[1].itemId, null, 'a synced row nobody decided');
-  assert.equal(p.lines[2].itemId, null, 'an old name link is not a trusted decision');
-  assert.equal(p.lines[3].itemId, 'm-chick-small', 'a staff match');
+  assert.deepEqual(p.lines.map((l) => l.itemId), ['m-wreck-big', null, null, 'm-chick-small', null, null, null]);
+  assert.equal(p.lines[0].match.source, 'menuSync', 'an exact auto link from a sync');
+  assert.equal(p.lines[2].match.matched, false, 'an automatic link that is not exact is not a trusted decision');
   assert.equal(p.writes.length, 0, 'an order writes no link row');
   assert.equal(p.upgrades.length, 0, 'an order fills nothing in');
-  // Only the seen counters of the synced rows the ids landed on.
-  assert.deepEqual(p.bumps.map((b) => b.ezKey).sort(), [sizeRowKey('A Wreck', 'Bigs'), sizeRowKey('A Wreck', 'Skinny'), 'chicken salad large', 'farmhouse salad'].sort());
-  assert.equal(p.bumps.find((b) => b.ezKey === 'farmhouse salad').seenCount, 4);
+  // Only the seen counters of the rows the lines landed on: exact name AND id.
+  assert.deepEqual(p.bumps.map((b) => b.ezKey).sort(),
+    [K('A Wreck', 'Bigs'), K('A Wreck', 'Skinny'), K('Chicken Salad Large', 'Regular'), K('Farmhouse Salad', 'Serves 1')].sort());
+  assert.equal(p.bumps.find((b) => b.ezKey === K('Farmhouse Salad', 'Serves 1')).seenCount, 4);
 });
 
-test('RULE A: no name matching at order time: exact names, old staff name rows, legacy keys, posItemId and item codes all print by name', () => {
+test('RULE A: no guessing at order time: exact names without an id, old staff rows, legacy keys, posItemId and item codes all print by name', () => {
   const lines = [
     line('A Wreck Original', null, null),                          // our exact name, no size id
-    line('A Wreck', 's-republished-999', 'Original'),              // an old staff name row "a wreck"
+    line('A Wreck', 's-republished-999', 'Original'),              // a name with no synced row
     line('Caesar Salad Large', null, null),                        // an old staff row under the legacy key
     line('Caesar Salad Large', 's-new', 'Large'),                  // the same, with an unknown size id
     line('Something', null, null, { itemId: 'm-wreck-big' }),      // a posItemId naming our item
     line('Coded', null, null, { itemId: 'A12' }),                  // a posItemId carrying our item code
     line('Farmhouse Salad', null, null),                           // a synced row's own name, no size id
+    line('A Wreck', 's-wreck-big', null),                          // the Bigs id with no size name
   ];
   const p = planA(lines);
   assert.deepEqual(p.lines.map((l) => l.itemId), lines.map(() => null), 'every line prints by name');
@@ -635,12 +700,13 @@ test('RULE A: no name matching at order time: exact names, old staff name rows, 
   assert.equal(before.lines[5].itemId, 'm-code');
 });
 
-test('RULE A: a customization matches only by its published id (customizationId) on a synced option row with a trusted decision', () => {
+test('RULE A: a customization matches only by its exact group and value AND its published id, on a synced option row with a trusted decision', () => {
   const optRows = [
-    { kind: 'option', ez_key: buildLinkKey({ name: 'Multigrain', groupLabel: 'Bread' }, 'option'), ez_name: 'Multigrain', ez_group: 'Bread',
+    { kind: 'option', ez_key: OK('Bread', 'Multigrain'), ez_name: 'Multigrain', ez_group: 'Bread',
       ez_ids: ['v-multi'], synced_at: NOW, menu_item_id: null, option_id: 'o-multi', source: 'auto', matched_by: 'exact', seen_count: 0 },
-    { kind: 'option', ez_key: buildLinkKey({ name: 'White', groupLabel: 'Bread' }, 'option'), ez_name: 'White', ez_group: 'Bread',
+    { kind: 'option', ez_key: OK('Bread', 'White'), ez_name: 'White', ez_group: 'Bread',
       ez_ids: ['v-white'], synced_at: NOW, menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 },
+    // A staff match saved before the sync: orders never use it after the migration.
     { kind: 'option', ez_key: buildLinkKey({ name: 'Rye', groupLabel: 'Bread' }, 'option'), ez_name: 'Rye', ez_group: 'Bread',
       ez_ids: [], menu_item_id: null, option_id: 'o-rye', source: 'manual', matched_by: 'u', seen_count: 0 },
   ];
@@ -649,26 +715,32 @@ test('RULE A: a customization matches only by its published id (customizationId)
     { customizationId: 'v-white', customizationTypeName: 'Bread', name: 'White', quantity: 1 },
     { customizationId: null, customizationTypeName: 'Bread', name: 'Multigrain', quantity: 1 },
     { customizationId: 'v-rye-new', customizationTypeName: 'Bread', name: 'Rye', quantity: 1, posCustomizationId: 'o-rye' },
+    { customizationId: 'v-multi', customizationTypeName: 'Bread Size', name: 'Multigrain', quantity: 1 },
   ] }]);
   assert.equal(l.mods[0].ezItemId, 'v-multi', 'the mapper carries customizationId as ezItemId');
   const p = planA([l], { links: [...SYNCED, ...optRows] });
   assert.equal(p.lines[0].itemId, 'm-wreck-big');
-  assert.deepEqual(p.lines[0].mods.map((m) => m.optionId), ['o-multi', null, null, null]);
+  assert.deepEqual(p.lines[0].mods.map((m) => m.optionId), ['o-multi', null, null, null, null]);
   assert.equal(p.lines[0].mods[3].itemId, null, 'a posCustomizationId is not used after the migration');
   assert.equal(p.writes.length, 0);
-  assert.equal(optionRouteFor({ ezItemId: 'v-multi' }, indexPublishedIds(optRows, 'option')).mode, 'synced');
-  assert.equal(optionRouteFor({ label: 'Multigrain', groupLabel: 'Bread' }, indexPublishedIds(optRows, 'option')).mode, 'unmatched');
+  const idx = indexSyncedRows(optRows, 'option');
+  assert.equal(idx.size, 2, 'the row saved before the sync is never indexed');
+  assert.equal(optionRouteFor({ ezItemId: 'v-multi', groupLabel: 'Bread', label: 'Multigrain' }, idx).mode, 'synced');
+  assert.equal(optionRouteFor({ label: 'Multigrain', groupLabel: 'Bread' }, idx).mode, 'unmatched', 'no id, no match');
+  assert.deepEqual(optionRouteFor({ ezItemId: 'v-multi', groupLabel: 'Bread Size', label: 'Multigrain' }, idx),
+    { mode: 'unmatched', reason: 'no synced option with this exact name' });
 });
 
-test('RULE A: the synced order path has no name matcher in it at all', () => {
+test('RULE A: the synced order path has no name guesser in it at all', () => {
   const src = read('../../supabase/functions/_shared/ezcater-match-ingest.ts');
   const start = src.indexOf('export function planSyncedLineMatches(');
   const body = src.slice(start, src.indexOf('\n}\n', start));
   assert.ok(start > 0 && body.length > 500);
   for (const name of ['autoLinkDecision', 'findLink', 'applyLinks', 'indexLinks', 'legacyLinkKey', 'linkKeyCandidates',
-    'buildLinkKey', 'indexItemCodes', 'rawName', 'isSyncedRow']) {
+    'buildLinkKey', 'indexItemCodes', 'rawName', 'normaliseItemName', 'normaliseKeyName', 'indexPublishedIds']) {
     assert.ok(!body.includes(name + '('), 'planSyncedLineMatches calls ' + name);
   }
+  assert.ok(body.includes('indexSyncedRows(links, \'item\')') && body.includes('sizeRouteFor(line, itemIdx)'));
   // It is chosen by the link read alone: sizeIds (the sync columns came back), never a guess.
   const dispatch = src.slice(src.indexOf('export function planLineMatches('), start);
   assert.match(dispatch, /if \(input\.linksFailed\) \{[\s\S]*?\n {2}\}\n {2}if \(input\.sizeIds\) return planSyncedLineMatches\(input\);\n {2}return planNameMatches\(input\);/);
@@ -688,117 +760,124 @@ test('RULE A: before 20260919m nothing changes: planLineMatches IS the rules mai
   const src = read('../../supabase/functions/_shared/ezcater-match-ingest.ts');
   const start = src.indexOf('export function planNameMatches(');
   const body = src.slice(start, src.indexOf('\n}\n', start));
-  assert.doesNotMatch(body, /sizeIds|synced|trustedTarget|sizeRouteFor/);
+  assert.doesNotMatch(body, /sizeIds|synced|trustedTarget|sizeRouteFor|exact:/);
 });
 
-test('sizeRouteFor: conflicting rows and gone items never guess', () => {
-  const idx = indexPublishedIds([
-    { kind: 'item', ez_key: 'a|size:x', ez_size_name: 'X', ez_ids: ['dup'], menu_item_id: 'm1', source: 'manual' },
-    { kind: 'item', ez_key: 'a', ez_size_name: null, ez_ids: ['dup'], menu_item_id: 'm2', source: 'manual' },
-    { kind: 'item', ez_key: 'b|size:x', ez_size_name: 'X', ez_ids: ['two'], menu_item_id: 'm1', source: 'manual' },
-    { kind: 'item', ez_key: 'b|size:y', ez_size_name: 'Y', ez_ids: ['two'], menu_item_id: 'm3', source: 'manual' },
+test('sizeRouteFor: the line\'s exact name picks its one row, the id must be on that row, and gone items never route', () => {
+  const idx = indexSyncedRows([
+    { kind: 'item', ez_key: K('Caesar Salad', 'Regular'), ez_name: 'Caesar Salad', ez_only_size: 'Regular', ez_ids: ['s1'], menu_item_id: 'm-reg', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', ez_ids: ['s1', 's2'], menu_item_id: 'm-lg', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_ids: ['s1'], menu_item_id: 'm-old', source: 'manual' },
   ]);
-  assert.deepEqual(sizeRouteFor({ ezSizeId: 'dup', sizeName: 'X' }, idx), { mode: 'unmatched', reason: 'id on a plain row and a size row' });
-  assert.deepEqual(sizeRouteFor({ ezSizeId: 'two', sizeName: 'X' }, idx), { mode: 'unmatched', reason: 'size rows disagree' });
-  assert.deepEqual(sizeRouteFor({ ezSizeId: null, sizeName: null }, idx), { mode: 'unmatched', reason: 'no size id' });
+  assert.equal(idx.has('caesar salad'), false, 'a row saved before the sync is never indexed');
+  assert.deepEqual(sizeRouteFor({ name: 'Caesar Salad', sizeName: 'Regular', ezSizeId: 's1' }, idx), { mode: 'synced', ezKey: K('Caesar Salad', 'Regular'), itemId: 'm-reg' });
+  assert.deepEqual(sizeRouteFor({ name: 'Caesar Salad', sizeName: 'Large', ezSizeId: 's1' }, idx), { mode: 'synced', ezKey: K('Caesar Salad', 'Large'), itemId: 'm-lg' },
+    'one id on two rows (a size renamed in place): the exact name decides');
+  assert.deepEqual(sizeRouteFor({ name: 'Caesar Salad', sizeName: 'Regular', ezSizeId: 's2' }, idx), { mode: 'unmatched', reason: 'size id not on the row with this exact name' });
+  assert.deepEqual(sizeRouteFor({ name: 'Caesar Salad', sizeName: null, ezSizeId: 's1' }, idx), { mode: 'unmatched', reason: 'no synced row with this exact name' });
+  assert.deepEqual(sizeRouteFor({ name: 'Caesar Salad', sizeName: 'Regular', ezSizeId: null }, idx), { mode: 'unmatched', reason: 'no size id' });
   const gone = planA([line('A Wreck', 's-wreck-big', 'Bigs')], { ourItems: OURS_A.filter((i) => i.id !== 'm-wreck-big') });
   assert.equal(gone.lines[0].itemId, null, 'a row pointing at a deleted item routes nothing');
   // Our menu not read whole: the target cannot be proven gone, and the decision still stands.
   assert.equal(planA([line('A Wreck', 's-wreck-big', 'Bigs')], { ourItems: [], menuOk: false }).lines[0].itemId, 'm-wreck-big');
 });
 
-test('order time matches on the SIZE id only, never the order line item id (HKX77V)', () => {
-  const synced = [{ kind: 'item', ez_key: 'italian boxed lunch', ez_name: 'Italian Boxed Lunch', ez_only_size: 'Box',
+test('order time matches the SIZE id on the row of the line\'s exact name, never the order line item id (HKX77V)', () => {
+  const synced = [{ kind: 'item', ez_key: K('Italian Boxed Lunch', 'Box'), ez_name: 'Italian Boxed Lunch', ez_only_size: 'Box',
     ez_ids: [HKX77V_SIZE_ID], synced_at: NOW, menu_item_id: 'm-ibl', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 }];
   const [hk] = orderItemsToLines([{ uuid: '5f5b503b', name: 'Italian Boxed Lunch', menuItemSizeId: HKX77V_SIZE_ID, menuItemSizeName: 'Box', quantity: 1, customizations: [] }]);
   assert.equal(hk.ezItemId, '5f5b503b');
-  assert.equal(sizeRouteFor(hk, indexPublishedIds(synced)).mode, 'synced');
+  assert.equal(lineIdentity(hk), 'italian boxed lunch box');
+  assert.equal(sizeRouteFor(hk, indexSyncedRows(synced)).mode, 'synced');
   assert.equal(planSyncedLineMatches({ lines: [hk], links: synced, ourItems: [{ id: 'm-ibl', name: 'Italian Boxed Lunch' }] }).lines[0].itemId, 'm-ibl');
   // An item id that happens to be on a row matches nothing: only ezSizeId is read.
-  const byItemId = indexPublishedIds([{ ...synced[0], ez_ids: ['5f5b503b'] }]);
+  const byItemId = indexSyncedRows([{ ...synced[0], ez_ids: ['5f5b503b'] }]);
   assert.equal(sizeRouteFor(hk, byItemId).mode, 'unmatched');
   assert.equal(sizeRouteFor({ ...hk, ezSizeId: null }, byItemId).mode, 'unmatched');
+  // The size name is part of the exact name: a line without it is not the Box, whatever its id.
+  assert.equal(sizeRouteFor({ ...hk, sizeName: null }, indexSyncedRows(synced)).mode, 'unmatched');
 });
 
-// ── RULE B: every sync decides every automatic row again ───────────────────────────────────
+// ── RULE B: every sync decides every automatic row again; a rename is a new row ─────────────
 
-const item = (id, name, sizes) => ({ id, name, sizes });
-
-test('RULE B end to end: Caesar Salad sold only as Regular, republished only as Large, ends on our exact "Caesar Salad Large" or unmatched, never Regular', async () => {
+test('RULE B end to end: Caesar Salad sold only as Regular, then only as Large, is two rows; each line goes to its own exact name, never the other size', async () => {
   const v1 = menuOf(item('i-c', 'Caesar Salad', [size('c-reg', 'Regular')]));
   const v2 = menuOf(item('i-c', 'Caesar Salad', [size('c-lg', 'Large')]));
-  const lines = [line('Caesar Salad', 'c-lg', 'Large'), line('Caesar Salad', 'c-reg', 'Regular')];
+  const lines = [line('Caesar Salad', 'c-lg', 'Large'), line('Caesar Salad', 'c-reg', 'Regular'), line('Caesar Salad', 'c-reg', 'Large')];
   const both = await pipeline({ menus: [[v1], [v2]], lines,
     ours: [{ id: 'm-cr', name: 'Caesar Salad Regular' }, { id: 'm-cl', name: 'Caesar Salad Large' }] });
   assert.equal(both.plans[0].inserts[0].menu_item_id, 'm-cr', 'sync 1: Regular, exactly');
-  const r = both.row('caesar salad');
-  assert.equal(r.menu_item_id, 'm-cl', 'sync 2: moved to our exact Large');
-  assert.equal(r.matched_by, 'exact');
-  assert.equal(r.ez_only_size, 'Large');
-  assert.deepEqual(r.ez_ids, ['c-lg'], 'the Regular id belonged to a different product and is dropped');
-  assert.equal(both.out[0].itemId, 'm-cl');
-  assert.equal(both.queued[0].itemId, 'm-cl');
-  assert.equal(both.out[1].itemId, null, 'a change to an old Regular order prints by name, never as Large');
-  assert.equal(both.queued[1].itemId, null);
+  const reg = both.row(K('Caesar Salad', 'Regular'));
+  const lg = both.row(K('Caesar Salad', 'Large'));
+  assert.equal(reg.menu_item_id, 'm-cr', 'the Regular row keeps its own match: it is still exactly our Regular');
+  assert.deepEqual(reg.ez_ids, ['c-reg']);
+  assert.equal(lg.menu_item_id, 'm-cl');
+  assert.equal(lg.matched_by, 'exact');
+  assert.equal(lg.ez_only_size, 'Large');
+  assert.deepEqual(lg.ez_ids, ['c-lg'], 'the Regular id never reaches the Large row');
+  assert.deepEqual(both.out.map((l) => l.itemId), ['m-cl', 'm-cr', null], 'a change to an old Regular order is our Regular; a Regular id under the Large name is nothing');
+  assert.deepEqual(both.queued.map((l) => l.itemId), ['m-cl', 'm-cr', null]);
   assert.equal(both.lp.writes.length + both.lp.upgrades.length, 0);
   assert.deepEqual(both.after, both.before, 'the order changed no decision');
-  // We only sell Regular: the link is taken off, and nothing ever routes to Regular again.
-  const reg = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-cr', name: 'Caesar Salad Regular' }] });
-  assert.equal(reg.row('caesar salad').menu_item_id, null);
-  assert.equal(reg.row('caesar salad').matched_by, null);
-  assert.equal(reg.plans[1].counts.cleared, 1);
-  for (const l of [...reg.out, ...reg.queued, ...both.out, ...both.queued]) assert.notEqual(l.itemId, 'm-cr');
+  // We only sell Regular: the Large row waits for staff, and nothing Large ever reaches our Regular.
+  const regOnly = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-cr', name: 'Caesar Salad Regular' }] });
+  assert.equal(regOnly.row(K('Caesar Salad', 'Large')).menu_item_id, null);
+  assert.deepEqual(regOnly.out.map((l) => l.itemId), [null, 'm-cr', null]);
+  assert.deepEqual(regOnly.queued.map((l) => l.itemId), [null, 'm-cr', null]);
 });
 
-test('RULE B end to end: Turkey Sandwich unsized, republished sold only as Box', async () => {
+test('RULE B end to end: Turkey Sandwich sold with no size name, then sold only as Box', async () => {
   const v1 = menuOf(item('i-t', 'Turkey Sandwich', [size('t-0', '')]));
   const v2 = menuOf(item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]));
   const lines = [line('Turkey Sandwich', 't-box', 'Box'), line('Turkey Sandwich', 't-0', null)];
   const plain = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-t', name: 'Turkey Sandwich' }] });
-  assert.equal(plain.plans[0].inserts[0].menu_item_id, 'm-t', 'sync 1: unsized, our plain Turkey Sandwich');
-  assert.equal(plain.row('turkey sandwich').menu_item_id, null, 'sync 2: a Box is not our plain Turkey Sandwich');
-  assert.deepEqual(plain.out.map((l) => l.itemId), [null, null]);
-  assert.deepEqual(plain.queued.map((l) => l.itemId), [null, null]);
+  assert.equal(plain.plans[0].inserts[0].menu_item_id, 'm-t', 'sync 1: no size name, our plain Turkey Sandwich');
+  assert.equal(plain.row(K('Turkey Sandwich', 'Box')).menu_item_id, null, 'sync 2: a Box is not our plain Turkey Sandwich');
+  assert.equal(plain.row(K('Turkey Sandwich')).menu_item_id, 'm-t', 'the old name keeps its own match');
+  assert.deepEqual(plain.out.map((l) => l.itemId), [null, 'm-t']);
+  assert.deepEqual(plain.queued.map((l) => l.itemId), [null, 'm-t']);
   const box = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-t', name: 'Turkey Sandwich' }, { id: 'm-tb', name: 'Turkey Sandwich Box' }] });
-  assert.equal(box.row('turkey sandwich').menu_item_id, 'm-tb', 'moved to our exact Turkey Sandwich Box');
-  assert.deepEqual(box.out.map((l) => l.itemId), ['m-tb', null]);
-  assert.deepEqual(box.queued.map((l) => l.itemId), ['m-tb', null]);
-  // With no sizes at all the first time, the same answer.
+  assert.equal(box.row(K('Turkey Sandwich', 'Box')).menu_item_id, 'm-tb', 'exactly our Turkey Sandwich Box');
+  assert.deepEqual(box.out.map((l) => l.itemId), ['m-tb', 'm-t']);
+  assert.deepEqual(box.queued.map((l) => l.itemId), ['m-tb', 'm-t']);
+  // With no sizes at all the first time: the Box is a new row, and the plain row is left as it is.
   const noSizes = planMenuSync({ entries: flattenMenus([menuOf(item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]))]),
     existing: syncPlan([menuOf(item('i-t', 'Turkey Sandwich', []))], [{ id: 'm-t', name: 'Turkey Sandwich' }]).inserts,
     ourItems: [{ id: 'm-t', name: 'Turkey Sandwich' }], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
-  assert.deepEqual(noSizes.redecides.map((r) => [r.was.menuItemId, r.menuItemId]), [['m-t', null]]);
+  assert.deepEqual(noSizes.inserts.map((r) => [r.ez_key, r.menu_item_id]), [[K('Turkey Sandwich', 'Box'), null]]);
+  assert.deepEqual(noSizes.redecides, [], 'the plain row is still exactly our Turkey Sandwich');
 });
 
-test('RULE B end to end: Italian unsized, then sold only as Small', async () => {
+test('RULE B end to end: Italian with no size name, then sold only as Small', async () => {
   const v1 = menuOf(item('i-i', 'Italian', [size('it-0', '')]));
   const v2 = menuOf(item('i-i', 'Italian', [size('it-s', 'Small')]));
   const lines = [line('Italian', 'it-s', 'Small'), line('Italian', 'it-0', null)];
   const plain = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-i', name: 'Italian' }] });
   assert.equal(plain.plans[0].inserts[0].menu_item_id, 'm-i');
-  assert.equal(plain.row('italian').menu_item_id, null);
-  assert.deepEqual([...plain.out, ...plain.queued].map((l) => l.itemId), [null, null, null, null]);
+  assert.equal(plain.row(K('Italian', 'Small')).menu_item_id, null);
+  assert.deepEqual([...plain.out, ...plain.queued].map((l) => l.itemId), [null, 'm-i', null, 'm-i']);
   const small = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-i', name: 'Italian' }, { id: 'm-is', name: 'Italian Small' }] });
-  assert.equal(small.row('italian').menu_item_id, 'm-is');
-  assert.deepEqual(small.out.map((l) => l.itemId), ['m-is', null]);
-  assert.deepEqual(small.queued.map((l) => l.itemId), ['m-is', null]);
+  assert.equal(small.row(K('Italian', 'Small')).menu_item_id, 'm-is');
+  assert.deepEqual(small.out.map((l) => l.itemId), ['m-is', 'm-i']);
+  assert.deepEqual(small.queued.map((l) => l.itemId), ['m-is', 'm-i']);
 });
 
-test('RULE B end to end: Sandwich Platter renamed Sandwich Platter Tray (the same key)', async () => {
+test('RULE B end to end: Sandwich Platter renamed Sandwich Platter Tray is a new row', async () => {
   const v1 = menuOf(item('i-sp', 'Sandwich Platter', [size('sp-1', '')]));
   const v2 = menuOf(item('i-sp', 'Sandwich Platter Tray', [size('sp-2', '')]));
-  assert.equal(flattenMenus([v1])[0].ezKey, flattenMenus([v2])[0].ezKey, 'one key, the trailing tray is dropped');
+  assert.notEqual(flattenMenus([v1])[0].ezKey, flattenMenus([v2])[0].ezKey, 'two names, two rows (the old key dropped the tray)');
   const lines = [line('Sandwich Platter Tray', 'sp-2', null), line('Sandwich Platter', 'sp-1', null)];
   const plain = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-sp', name: 'Sandwich Platter' }] });
   assert.equal(plain.plans[0].inserts[0].menu_item_id, 'm-sp');
-  const r = plain.row('sandwich platter');
-  assert.equal(r.menu_item_id, null, 'our Sandwich Platter is not their Sandwich Platter Tray');
-  assert.equal(r.ez_name, 'Sandwich Platter Tray', 'the row shows the name ezCater uses now');
-  assert.deepEqual(r.ez_ids, ['sp-2']);
-  assert.deepEqual([...plain.out, ...plain.queued].map((l) => l.itemId), [null, null, null, null]);
-  const tray = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-sp', name: 'Sandwich Platter' }, { id: 'm-spt', name: 'Sandwich Platter Tray' }] });
-  assert.equal(tray.row('sandwich platter').menu_item_id, 'm-spt');
-  assert.deepEqual(tray.out.map((l) => l.itemId), ['m-spt', null]);
+  const tray = plain.row(K('Sandwich Platter Tray'));
+  assert.equal(tray.menu_item_id, null, 'our Sandwich Platter is not their Sandwich Platter Tray');
+  assert.equal(tray.ez_name, 'Sandwich Platter Tray');
+  assert.deepEqual(tray.ez_ids, ['sp-2']);
+  assert.deepEqual(plain.row(K('Sandwich Platter')).ez_ids, ['sp-1'], 'the old name never takes the Tray id');
+  assert.deepEqual([...plain.out, ...plain.queued].map((l) => l.itemId), [null, 'm-sp', null, 'm-sp']);
+  const both = await pipeline({ menus: [[v1], [v2]], lines, ours: [{ id: 'm-sp', name: 'Sandwich Platter' }, { id: 'm-spt', name: 'Sandwich Platter Tray' }] });
+  assert.equal(both.row(K('Sandwich Platter Tray')).menu_item_id, 'm-spt');
+  assert.deepEqual(both.out.map((l) => l.itemId), ['m-spt', 'm-sp']);
 });
 
 test('RULE B end to end: our item renamed (on the menu, and off it)', async () => {
@@ -807,211 +886,162 @@ test('RULE B end to end: our item renamed (on the menu, and off it)', async () =
   const ours = [{ id: 'm-cl', name: 'Caesar Salad Large' }];
   const rename = (id, name) => (sb) => { sb.store.menu_items.find((i) => i.id === id).name = name; };
   const gone = await pipeline({ menus: [[menu], [menu]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
-  assert.equal(gone.row('caesar salad').menu_item_id, null, 'our item no longer has that exact name');
+  assert.equal(gone.row(K('Caesar Salad', 'Large')).menu_item_id, null, 'our item no longer has that exact name');
+  assert.equal(gone.plans[1].counts.cleared, 1);
   assert.equal(gone.out[0].itemId, null);
   assert.equal(gone.queued[0].itemId, null);
   const moved = await pipeline({ menus: [[menu], [menu]], lines, ours: [...ours, { id: 'm-cl2', name: 'Big Caesar' }],
     after: [(sb) => { rename('m-cl', 'Large Caesar')(sb); rename('m-cl2', 'Caesar Salad Large')(sb); }] });
-  assert.equal(moved.row('caesar salad').menu_item_id, 'm-cl2', 'moved to the one item of ours with that exact name now');
+  assert.equal(moved.row(K('Caesar Salad', 'Large')).menu_item_id, 'm-cl2', 'moved to the one item of ours with that exact name now');
   assert.equal(moved.out[0].itemId, 'm-cl2');
   // Off the current menu: kept while it still names exactly that item of ours, cleared once it does not.
   const other = menuOf(item('i-o', 'Other', [size('o-1', '')]));
   const kept = await pipeline({ menus: [[menu], [other]], lines, ours });
-  assert.equal(kept.row('caesar salad').menu_item_id, 'm-cl');
+  assert.equal(kept.row(K('Caesar Salad', 'Large')).menu_item_id, 'm-cl');
   assert.equal(kept.out[0].itemId, 'm-cl', 'a change to an order placed before still routes');
   const offGone = await pipeline({ menus: [[menu], [other]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
-  assert.equal(offGone.row('caesar salad').menu_item_id, null);
+  assert.equal(offGone.row(K('Caesar Salad', 'Large')).menu_item_id, null);
   assert.equal(offGone.out[0].itemId, null);
 });
 
-test('RULE B: every automatic row is decided again, not only old name links; a staff row never is', () => {
+test('RULE B: every automatic synced row is decided again; a staff row never is; a row saved before the sync is never written', () => {
   const entries = flattenMenus([menuOf(
     item('a', 'Apple Pie', [size('ap', '')]), item('b', 'Brownie', [size('br', '')]),
     item('c', 'Cookie', [size('co', '')]), item('d', 'Donut', [size('do', '')]), item('e', 'Eclair', [size('ec', '')]),
   )]);
   const ours = [{ id: 'm-ap', name: 'Apple Pie' }, { id: 'm-br2', name: 'Brownie' }, { id: 'm-co', name: 'Cookie' }, { id: 'm-do', name: 'Donut' }];
   const existing = [
-    { kind: 'item', ez_key: 'apple pie', ez_name: 'Apple Pie', ez_ids: ['ap'], synced_at: NOW, menu_item_id: 'm-ap', source: 'auto', matched_by: 'exact' },
-    { kind: 'item', ez_key: 'brownie', ez_name: 'Brownie', ez_ids: ['br'], synced_at: NOW, menu_item_id: 'm-br-old', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: K('Apple Pie'), ez_name: 'Apple Pie', ez_ids: ['ap'], synced_at: NOW, menu_item_id: 'm-ap', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: K('Brownie'), ez_name: 'Brownie', ez_ids: ['br'], synced_at: NOW, menu_item_id: 'm-br-old', source: 'auto', matched_by: 'exact' },
+    // An automatic name link saved before the sync under the old key: not carried, not written.
     { kind: 'item', ez_key: 'cookie', ez_name: 'Cookie', ez_ids: [], menu_item_id: 'm-co', source: 'auto', matched_by: 'name' },
-    { kind: 'item', ez_key: 'donut', ez_name: 'Donut', ez_ids: [], menu_item_id: null, source: 'auto', matched_by: null },
-    { kind: 'item', ez_key: 'eclair', ez_name: 'Eclair', ez_ids: ['ec'], synced_at: NOW, menu_item_id: 'm-do', source: 'manual', matched_by: 'u', decided_as: 'Eclair' },
+    { kind: 'item', ez_key: K('Donut'), ez_name: 'Donut', ez_ids: ['do'], synced_at: NOW, menu_item_id: null, source: 'auto', matched_by: null },
+    { kind: 'item', ez_key: K('Eclair'), ez_name: 'Eclair', ez_ids: ['ec'], synced_at: NOW, menu_item_id: 'm-do', source: 'manual', matched_by: 'u', decided_as: 'Eclair' },
   ];
   const plan = planMenuSync({ entries, existing, ourItems: ours, ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
   const by = (k) => plan.redecides.find((r) => r.ezKey === k);
-  assert.equal(by('apple pie'), undefined, 'still exact: nothing to write');
-  assert.deepEqual([by('brownie').was.menuItemId, by('brownie').menuItemId, by('brownie').matchedBy], ['m-br-old', 'm-br2', 'exact'], 'an exact link moved');
-  assert.deepEqual([by('cookie').menuItemId, by('cookie').matchedBy], ['m-co', 'exact'], 'an old name link that is exact becomes exact');
-  assert.deepEqual([by('donut').menuItemId, by('donut').matchedBy], ['m-do', 'exact'], 'an undecided row is filled');
-  assert.equal(by('eclair'), undefined, 'a staff decision is never decided again');
-  assert.equal(plan.counts.redecided, 3);
+  assert.equal(by(K('Apple Pie')), undefined, 'still exact: nothing to write');
+  assert.deepEqual([by(K('Brownie')).was.menuItemId, by(K('Brownie')).menuItemId, by(K('Brownie')).matchedBy], ['m-br-old', 'm-br2', 'exact'], 'an exact link moved');
+  assert.deepEqual(by(K('Brownie')).facts.ez_ids, ['br'], 'with its ids in the same write');
+  assert.deepEqual([by(K('Donut')).menuItemId, by(K('Donut')).matchedBy], ['m-do', 'exact'], 'an undecided row is filled');
+  assert.equal(by(K('Eclair')), undefined, 'a staff decision is never decided again');
+  assert.deepEqual(plan.inserts.map((r) => [r.ez_key, r.menu_item_id, r.matched_by]), [[K('Cookie'), 'm-co', 'exact']], 'the Cookie gets its own synced row');
+  assert.equal(plan.counts.redecided, 2);
+  assert.ok([...plan.inserts, ...plan.refreshes].every((r) => isSyncKey(r.ez_key)) && plan.redecides.every((r) => isSyncKey(r.ezKey)),
+    'a sync never writes a row saved before it');
 });
 
 test('RULE B: a staff save between the read and the write always wins', async () => {
-  const v1 = [menuOf(item('i-c', 'Caesar Salad', [size('c-reg', 'Regular')]))];
-  const v2 = [menuOf(item('i-c', 'Caesar Salad', [size('c-lg', 'Large')]))];
-  const ours = [{ id: 'm-cr', name: 'Caesar Salad Regular' }, { id: 'm-cl', name: 'Caesar Salad Large' }];
+  const menu = [menuOf(item('i-c', 'Caesar Salad', [size('c-reg', 'Regular')]))];
   const t = TABLES();
-  t.menu_items = ours.map((i) => ({ ...i, location_id: LOC, archived: false }));
+  t.menu_items = [{ id: 'm-cr', name: 'Caesar Salad Regular', location_id: LOC, archived: false }, { id: 'm-x', name: 'Other', location_id: LOC, archived: false }];
   const sb = fakeSb(t);
-  const sync = async (menus, between) => {
+  const sync = async (between) => {
     const input = await readMatchInputs(sb, LOC);
-    const plan = planMenuSync({ entries: flattenMenus(menus), existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups,
+    const plan = planMenuSync({ entries: flattenMenus(menu), existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups,
       locationId: LOC, nowIso: NOW, complete: true, menuOk: input.menuOk });
     if (between) between();
     return { plan, wrote: await writeSyncPlan(sb, LOC, plan, NOW) };
   };
-  await sync(v1);
-  assert.equal(row(sb, 'caesar salad').menu_item_id, 'm-cr');
-  // Sync 2 plans to move the link to Large; a person matches it (seeing the Regular name) first.
-  const { plan } = await sync(v2, () => itemsSave(sb, row(sb, 'caesar salad'), { menuItemId: 'm-cr' }));
+  await sync();
+  assert.equal(row(sb, K('Caesar Salad', 'Regular')).menu_item_id, 'm-cr');
+  // Our items are renamed, so sync 2 plans to move the link to m-x; a person saves m-cr first.
+  sb.store.menu_items[0].name = 'Old Caesar';
+  sb.store.menu_items[1].name = 'Caesar Salad Regular';
+  const { plan, wrote } = await sync(() => itemsSave(sb, row(sb, K('Caesar Salad', 'Regular')), { menuItemId: 'm-cr' }));
   assert.equal(plan.redecides.length, 1);
-  const r = row(sb, 'caesar salad');
+  assert.equal(plan.redecides[0].menuItemId, 'm-x');
+  assert.equal(wrote.redecided, 0, 'the guarded write found the person\'s decision and wrote nothing');
+  const r = row(sb, K('Caesar Salad', 'Regular'));
   assert.equal(r.menu_item_id, 'm-cr', "the person's decision stands");
   assert.equal(r.source, 'manual');
   assert.equal(r.decided_as, 'Caesar Salad Regular', 'what their screen showed');
-  assert.deepEqual(r.ez_ids, ['c-lg'], 'the ezCater facts are still refreshed');
-  // It was saved against the Regular name, so it is flagged, and orders do not use it until checked.
-  assert.equal(lookAgainOf(r).lookAgain, true);
-  const lp = await orderThrough(sb, [line('Caesar Salad', 'c-lg', 'Large')]);
-  assert.equal(lp.lines[0].itemId, null);
+  assert.deepEqual(r.ez_ids, ['c-reg'], 'the ezCater facts are still refreshed');
+  assert.equal(lookAgainOf(r).lookAgain, false, 'made for exactly this name');
+  const lp = await orderThrough(sb, [line('Caesar Salad', 'c-reg', 'Regular')]);
+  assert.equal(lp.lines[0].itemId, 'm-cr');
   // The same with a fill: a person answers an undecided row while the sync runs.
-  const sb2 = fakeSb({ ...TABLES([{ location_id: LOC, kind: 'item', ez_key: 'donut', ez_name: 'Donut', ez_ids: ['do'], synced_at: NOW,
+  const sb2 = fakeSb({ ...TABLES([{ location_id: LOC, kind: 'item', ez_key: K('Donut'), ez_name: 'Donut', ez_ids: ['do'], synced_at: NOW,
     menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 }]),
   menu_items: [{ id: 'm-do', name: 'Donut', location_id: LOC }, { id: 'm-do2', name: 'Glazed', location_id: LOC }] });
   const input = await readMatchInputs(sb2, LOC);
   const fill = planMenuSync({ entries: flattenMenus([menuOf(item('d', 'Donut', [size('do', '')]))]), existing: input.links,
     ourItems: input.ourItems, ourGroups: input.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
   assert.equal(fill.redecides[0].menuItemId, 'm-do');
-  itemsSave(sb2, row(sb2, 'donut'), { menuItemId: 'm-do2' });
+  itemsSave(sb2, row(sb2, K('Donut')), { menuItemId: 'm-do2' });
   await writeSyncPlan(sb2, LOC, fill, NOW);
-  assert.equal(row(sb2, 'donut').menu_item_id, 'm-do2');
-  assert.equal(row(sb2, 'donut').source, 'manual');
+  assert.equal(row(sb2, K('Donut')).menu_item_id, 'm-do2');
+  assert.equal(row(sb2, K('Donut')).source, 'manual');
 });
 
-test('RULE B: a save from a screen loaded before a sync never hides the change that sync made', async () => {
+test('RULE B: an ezCater rename is a new row: a save from a screen loaded before the sync decides only the name it showed', async () => {
   const t = TABLES();
   t.menu_items = [{ id: 'm-sp', name: 'Sandwich Platter', location_id: LOC, archived: false }];
   const sb = fakeSb(t);
   await syncOnce(sb, [menuOf(item('i-sp', 'Sandwich Platter', [size('sp-1', '')]))]);
-  const screen = rowsFrom([{ ...row(sb, 'sandwich platter') }], { syncReady: true })[0];   // the card, loaded now
-  assert.equal(screen.ezName, 'Sandwich Platter');
-  // ezCater renames it under the same key, and a sync runs before the person presses anything.
+  const loaded = { ...row(sb, K('Sandwich Platter')) };   // the card, loaded now
+  // ezCater renames it, and a sync runs before the person presses anything.
   await syncOnce(sb, [menuOf(item('i-sp', 'Sandwich Platter Tray', [size('sp-2', '')]))]);
-  assert.equal(row(sb, 'sandwich platter').ez_name, 'Sandwich Platter Tray');
-  // The person matches it from the old screen.
-  itemsSave(sb, { ...row(sb, 'sandwich platter'), ez_name: screen.ezName, ez_only_size: screen.ezOnlySize }, { menuItemId: 'm-sp' });
-  const r = row(sb, 'sandwich platter');
-  assert.equal(r.ez_name, 'Sandwich Platter Tray', 'the save never writes the old name back');
-  assert.equal(r.decided_as, 'Sandwich Platter', 'what the screen showed');
-  assert.equal(lookAgainOf(r).lookAgain, true);
+  assert.equal(row(sb, K('Sandwich Platter')).ez_name, 'Sandwich Platter', 'the old name keeps its row');
+  assert.equal(row(sb, K('Sandwich Platter Tray')).menu_item_id, null, 'the new name waits for staff');
+  // The person presses "Not on our menu" on the old screen: it lands on the name that screen showed.
+  itemsSave(sb, loaded, { ignored: true });
+  assert.equal(row(sb, K('Sandwich Platter')).matched_by, 'ignored');
+  assert.equal(row(sb, K('Sandwich Platter Tray')).matched_by, null, 'the new name is never decided by a screen that never showed it');
   const lp = await orderThrough(sb, [line('Sandwich Platter Tray', 'sp-2', null)]);
-  assert.equal(lp.lines[0].itemId, null, 'the Tray prints by name until someone has seen it');
+  assert.equal(lp.lines[0].itemId, null, 'the Tray prints by name until someone has matched it');
 });
 
-test('RULE B: our menu read only in part links nothing new, and still takes off an exact link whose ezCater name changed', () => {
+test('RULE B: our menu read only in part links nothing new and decides nothing again', () => {
   const entries = flattenMenus([menuOf(item('i-c', 'Caesar Salad', [size('c-lg', 'Large')]), item('i-b', 'Brownie', [size('br', '')]),
     item('i-d', 'Donut', [size('do', '')]))]);
   const existing = [
-    { kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Regular', ez_ids: ['c-reg'], synced_at: NOW,
-      menu_item_id: 'm-cr', source: 'auto', matched_by: 'exact' },
-    { kind: 'item', ez_key: 'brownie', ez_name: 'Brownie', ez_ids: ['br'], synced_at: NOW, menu_item_id: 'm-br', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', ez_ids: ['c-lg'], synced_at: NOW,
+      menu_item_id: 'm-cl', source: 'auto', matched_by: 'exact' },
+    { kind: 'item', ez_key: K('Brownie'), ez_name: 'Brownie', ez_ids: ['br'], synced_at: NOW, menu_item_id: 'm-br', source: 'auto', matched_by: 'exact' },
+    // Off the current menu.
+    { kind: 'item', ez_key: K('Muffin'), ez_name: 'Muffin', ez_ids: ['mu'], synced_at: NOW, menu_item_id: 'm-mu', source: 'auto', matched_by: 'exact' },
   ];
   const plan = planMenuSync({ entries, existing, ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: false });
-  assert.deepEqual(plan.redecides.map((r) => [r.ezKey, r.menuItemId]), [['caesar salad', null]], 'the changed one is cleared, the same one kept');
-  assert.ok(plan.inserts.every((r) => r.menu_item_id === null), 'nothing new linked');
-  assert.deepEqual(plan.refreshes.find((r) => r.ez_key === 'brownie').ez_ids, ['br']);
+  assert.deepEqual(plan.redecides, [], 'nothing moved, cleared or set');
+  assert.deepEqual(plan.inserts.map((r) => [r.ez_key, r.menu_item_id]), [[K('Donut'), null]], 'nothing new linked');
+  assert.deepEqual(plan.refreshes.find((r) => r.ez_key === K('Brownie')).ez_ids, ['br']);
+  assert.equal(plan.counts.autoLinked, 2);
 });
 
-test('RULE B: a failed decision write keeps that row exactly as it was: no new ids land next to an old decision', async () => {
-  const sb = fakeSb({ ...TABLES([{ location_id: LOC, kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Regular',
-    ez_ids: ['c-reg'], synced_at: NOW, menu_item_id: 'm-cr', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 }]),
-  menu_items: [{ id: 'm-cr', name: 'Caesar Salad Regular', location_id: LOC }] }, {
+test('RULE B: a failed decision write keeps that row exactly as it was: its old facts stay with its old decision', async () => {
+  // Our Caesar Salad Large was renamed, so the sync clears its exact link; that write fails.
+  const sb = fakeSb({ ...TABLES([{ location_id: LOC, kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large',
+    ez_ids: ['c-lg'], synced_at: NOW, menu_item_id: 'm-cl', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 }]),
+  menu_items: [{ id: 'm-cl', name: 'Large Caesar', location_id: LOC }] }, {
     failUpdate: (name, patch) => (name === 'ezcater_item_links' && 'matched_by' in patch ? { code: '57014', message: 'statement timeout' } : null),
   });
   const input = await readMatchInputs(sb, LOC);
-  const plan = planMenuSync({ entries: flattenMenus([menuOf(item('i-c', 'Caesar Salad', [size('c-lg', 'Large')]))]), existing: input.links,
+  const plan = planMenuSync({ entries: flattenMenus([menuOf(item('i-c', 'Caesar Salad', [size('c-lg2', 'Large')]))]), existing: input.links,
     ourItems: input.ourItems, ourGroups: input.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.equal(plan.redecides.length, 1);
+  assert.deepEqual(plan.redecides[0].facts.ez_ids, ['c-lg2', 'c-lg'], 'the decision write carries the new ids');
   const wrote = await writeSyncPlan(sb, LOC, plan, NOW);
   assert.ok(wrote.errors.some((e) => /^decide: statement timeout/.test(e)));
-  const r = row(sb, 'caesar salad');
-  assert.deepEqual(r.ez_ids, ['c-reg'], 'the refresh was held back');
-  assert.equal(r.ez_only_size, 'Regular');
-  assert.equal(r.menu_item_id, 'm-cr');
-  // So the Large order prints by name, and the Regular order still goes where it always went.
-  const lp = await orderThrough(sb, [line('Caesar Salad', 'c-lg', 'Large'), line('Caesar Salad', 'c-reg', 'Regular')]);
-  assert.deepEqual(lp.lines.map((l) => l.itemId), [null, 'm-cr']);
+  const r = row(sb, K('Caesar Salad', 'Large'));
+  assert.deepEqual(r.ez_ids, ['c-lg'], 'the refresh was held back');
+  assert.equal(r.menu_item_id, 'm-cl');
+  assert.ok(!sb.calls.some((c) => c.op === 'upsert' && c.keys.includes(K('Caesar Salad', 'Large'))), 'never refreshed on its own');
 });
 
-test('RULE B: a staff match is never changed; when its ezCater name or size changes, staff look again and orders print it by name until they do', async () => {
-  const cases = [
-    { name: 'Caesar Regular to Large', v1: item('i', 'Caesar Salad', [size('x1', 'Regular')]), v2: item('i', 'Caesar Salad', [size('x2', 'Large')]),
-      key: 'caesar salad', ours: [{ id: 'm-cr', name: 'Caesar Salad Regular' }], was: 'Caesar Salad Regular', l: line('Caesar Salad', 'x2', 'Large') },
-    { name: 'Turkey unsized to Box', v1: item('i', 'Turkey Sandwich', [size('x1', '')]), v2: item('i', 'Turkey Sandwich', [size('x2', 'Box')]),
-      key: 'turkey sandwich', ours: [{ id: 'm-t', name: 'Turkey Sandwich' }], was: 'Turkey Sandwich', l: line('Turkey Sandwich', 'x2', 'Box') },
-    { name: 'Italian unsized to Small', v1: item('i', 'Italian', [size('x1', '')]), v2: item('i', 'Italian', [size('x2', 'Small')]),
-      key: 'italian', ours: [{ id: 'm-i', name: 'Italian' }], was: 'Italian', l: line('Italian', 'x2', 'Small') },
-    { name: 'Sandwich Platter to Sandwich Platter Tray', v1: item('i', 'Sandwich Platter', [size('x1', '')]), v2: item('i', 'Sandwich Platter Tray', [size('x2', '')]),
-      key: 'sandwich platter', ours: [{ id: 'm-sp', name: 'Sandwich Platter' }], was: 'Sandwich Platter', l: line('Sandwich Platter Tray', 'x2', null) },
-  ];
-  for (const c of cases) {
-    const target = c.ours[0].id;
-    // Staff match it after sync 1 (a person, not the exact rule, so it is theirs).
-    const p = await pipeline({ menus: [[menuOf(c.v1)], [menuOf(c.v2)]], ours: [...c.ours, { id: 'm-other', name: 'Other' }], lines: [c.l],
-      after: [(sb) => itemsSave(sb, row(sb, c.key), { menuItemId: target })] });
-    const r = p.row(c.key);
-    assert.equal(r.menu_item_id, target, c.name + ': the decision is never changed');
-    assert.equal(r.source, 'manual', c.name);
-    assert.equal(r.matched_by, 'user-1', c.name);
-    assert.equal(r.decided_as, c.was, c.name + ': what the staff saw');
-    assert.equal(p.plans[1].counts.lookAgain, 1, c.name + ': counted for the sync message');
-    assert.equal(p.plans[1].redecides.length, 0, c.name);
-    assert.equal(lookAgainOf(r).lookAgain, true, c.name);
-    assert.equal(trustedTarget(r), null, c.name + ': not used by orders until checked');
-    assert.equal(p.out[0].itemId, null, c.name + ': prints by name');
-    assert.equal(p.queued[0].itemId, null, c.name);
-    // The card flags it, saying what the staff saw.
-    const shown = rowsFrom([{ ...r, look_again: lookAgainOf(r).lookAgain }], { syncReady: true })[0];
-    assert.equal(shown.lookAgain, true, c.name);
-    assert.equal(shown.state, 'matched', c.name);
-    assert.match(lookAgainNote(shown), new RegExp('It was: ' + c.was + '\\.'));
-    // "Still right": the same answer saved again records what the screen shows now, and it routes.
-    itemsSave(p.sb, r, { menuItemId: target });
-    assert.equal(lookAgainOf(p.row(c.key)).lookAgain, false, c.name);
-    const again = await orderThrough(p.sb, [c.l]);
-    assert.equal(again.lines[0].itemId, target, c.name + ': routes once checked');
-  }
-  // A staff match whose name did not change is simply used, and not flagged.
-  const same = await pipeline({ menus: [[menuOf(cases[0].v1)], [menuOf(cases[0].v1)]], ours: cases[0].ours, lines: [line('Caesar Salad', 'x1', 'Regular')],
-    after: [(sb) => itemsSave(sb, row(sb, 'caesar salad'), { menuItemId: 'm-cr' })] });
-  assert.equal(same.plans[1].counts.lookAgain, 0);
-  assert.equal(same.out[0].itemId, 'm-cr');
-});
-
-test('RULE B: a staff match made before 20260919m gets what it showed recorded once, before the names change', async () => {
-  // Saved on an order time sighting before the sync existed: the screen showed only "Turkey Sandwich".
-  const legacy = { kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', ez_group: null, menu_item_id: 'm-t', option_id: null,
-    source: 'manual', matched_by: 'user-3', seen_count: 5, last_seen_at: NOW };
-  const p = await pipeline({ menus: [[menuOf(item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]))]], existing: [legacy],
-    ours: [{ id: 'm-t', name: 'Turkey Sandwich' }], lines: [line('Turkey Sandwich', 't-box', 'Box')] });
-  assert.equal(p.plans[0].baselines.length, 1);
-  const r = p.row('turkey sandwich');
-  assert.equal(r.decided_as, 'Turkey Sandwich', 'the name the screen showed then');
-  assert.equal(r.ez_only_size, 'Box');
-  assert.equal(r.menu_item_id, 'm-t');
-  assert.equal(r.seen_count, 5 + 1, 'counters are the only thing an order moves');
-  assert.equal(lookAgainOf(r).lookAgain, true, 'never matched knowing it is a Box');
-  assert.equal(p.out[0].itemId, null);
-  // A baseline that cannot be written holds that row's refresh back, so the change is never missed.
-  const sb = fakeSb({ ...TABLES([{ location_id: LOC, ...legacy }]), menu_items: [{ id: 'm-t', name: 'Turkey Sandwich', location_id: LOC }] }, {
-    failUpdate: (name, patch) => ('decided_as' in patch ? { message: 'network down' } : null) });
-  const input = await readMatchInputs(sb, LOC);
-  const plan = planMenuSync({ entries: flattenMenus([menuOf(item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]))]), existing: input.links,
-    ourItems: input.ourItems, ourGroups: input.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
-  const wrote = await writeSyncPlan(sb, LOC, plan, NOW);
-  assert.ok(wrote.errors.some((e) => /^baseline:/.test(e)));
-  assert.equal(row(sb, 'turkey sandwich').ez_only_size ?? null, null, 'not refreshed');
-  assert.equal(isSyncedRow(row(sb, 'turkey sandwich')), false);
+test('RULE B: a staff decision on a synced row is never changed by a sync, and is used as it was', async () => {
+  const menu = [menuOf(item('i', 'Caesar Salad', [size('x1', 'Regular')]))];
+  const p = await pipeline({ menus: [menu, menu], ours: [{ id: 'm-cr', name: 'Caesar Salad Regular' }, { id: 'm-other', name: 'Other' }],
+    after: [(sb) => itemsSave(sb, row(sb, K('Caesar Salad', 'Regular')), { menuItemId: 'm-other' })],
+    lines: [line('Caesar Salad', 'x1', 'Regular')] });
+  const r = p.row(K('Caesar Salad', 'Regular'));
+  assert.equal(r.menu_item_id, 'm-other', 'the person chose a different item: sync 2 never moves it back');
+  assert.equal(r.source, 'manual');
+  assert.equal(r.decided_as, 'Caesar Salad Regular');
+  assert.equal(p.plans[1].redecides.length, 0);
+  assert.equal(p.plans[1].counts.lookAgain, 0);
+  assert.equal(p.out[0].itemId, 'm-other');
+  assert.equal(p.queued[0].itemId, 'm-other');
 });
 
 // ── The job ────────────────────────────────────────────────────────────────────────────────
@@ -1025,30 +1055,30 @@ test('sync writes every row once; syncing twice duplicates nothing and keeps sta
   const first = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => ask, nowMs: NOW_MS });
   assert.equal(first.ok, true, first.message);
   assert.equal(first.status, 'ok');
-  assert.equal(links(sb).length, 11, 'every item, size and option exactly once');
-  // The staff clear is kept as it was (not auto linked over), its seen count untouched, its ids refreshed.
-  const salad = row(sb, 'farmhouse salad');
-  assert.equal(salad.menu_item_id, null);
-  assert.equal(salad.source, 'manual');
-  assert.equal(salad.seen_count, 4);
+  assert.equal(links(sb).filter((r) => isSyncedRow(r)).length, 11, 'every item, size and option exactly once');
+  assert.equal(links(sb).length, 12, 'and the row saved before the sync, untouched');
+  const old = row(sb, 'farmhouse salad');
+  assert.deepEqual([old.menu_item_id, old.source, old.seen_count, old.ez_ids], [null, 'manual', 4, []], 'a row saved before the sync is never written');
+  const salad = row(sb, K('Farmhouse Salad', 'Serves 1'));
   assert.deepEqual(salad.ez_ids.sort(), ['s-salad', 's-salad-2']);
+  assert.equal(salad.source, 'auto', 'a staff clear is not a decision to carry');
 
   // Staff decide two rows between the syncs.
-  itemsSave(sb, row(sb, sizeRowKey('A Wreck', 'Skinny')), { menuItemId: 'm-wreck-orig' }, 'user-7');
-  itemsSave(sb, row(sb, sizeRowKey('A Wreck', 'Bigs')), { ignored: true }, 'user-7');
+  itemsSave(sb, row(sb, K('A Wreck', 'Skinny')), { menuItemId: 'm-wreck-orig' }, 'user-7');
+  itemsSave(sb, row(sb, K('A Wreck', 'Bigs')), { ignored: true }, 'user-7');
   // ezCater republishes: new published ids.
   const repub = JSON.parse(JSON.stringify(POTBELLY));
   repub.categories[0].items[0].sizes[2].id = 's-wreck-skinny-v2';
   const second = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => fakeAsk([repub, LUNCH]), nowMs: NOW_MS + 60_000 });
   assert.equal(second.ok, true, second.message);
   assert.equal(second.counts.inserted, 0, 'nothing new on the second sync');
-  assert.equal(second.counts.lookAgain, 0, 'nothing changed under the staff decisions');
-  assert.equal(links(sb).length, 11, 'no duplicates');
-  const skinny = row(sb, sizeRowKey('A Wreck', 'Skinny'));
+  assert.equal(second.counts.lookAgain, 0, 'the staff decisions were made for these exact names');
+  assert.equal(links(sb).length, 12, 'no duplicates');
+  const skinny = row(sb, K('A Wreck', 'Skinny'));
   assert.equal(skinny.menu_item_id, 'm-wreck-orig', 'the staff match is kept');
   assert.equal(skinny.matched_by, 'user-7');
-  assert.deepEqual(skinny.ez_ids, ['s-wreck-skinny-v2', 's-wreck-skinny'], 'the same product: the new published id first, the old one kept');
-  const big = row(sb, sizeRowKey('A Wreck', 'Bigs'));
+  assert.deepEqual(skinny.ez_ids, ['s-wreck-skinny-v2', 's-wreck-skinny'], 'the same exact name: the new published id first, the old one kept');
+  const big = row(sb, K('A Wreck', 'Bigs'));
   assert.equal(big.matched_by, 'ignored', '"Not on our menu" is kept');
   assert.equal(big.menu_item_id, null);
   // A second identical sync writes no decision at all.
@@ -1059,24 +1089,30 @@ test('sync writes every row once; syncing twice duplicates nothing and keeps sta
 
 test('the sync message says what changed, in plain words', async () => {
   const sb = fakeSb({ ...TABLES([
-    { location_id: LOC, kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Regular', ez_ids: ['c-reg'], synced_at: NOW,
+    // An exact link our renamed item no longer matches: taken off.
+    { location_id: LOC, kind: 'item', ez_key: K('Caesar Salad', 'Regular'), ez_name: 'Caesar Salad', ez_only_size: 'Regular', ez_ids: ['c-reg'], synced_at: NOW,
       menu_item_id: 'm-cr', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 },
-    { location_id: LOC, kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', ez_ids: ['t-0'], synced_at: NOW,
-      menu_item_id: 'm-t', option_id: null, source: 'manual', matched_by: 'u', decided_as: 'Turkey Sandwich', seen_count: 0 },
-  ]), menu_items: [{ id: 'm-cr', name: 'Caesar Salad Regular', location_id: LOC }, { id: 'm-t', name: 'Turkey Sandwich', location_id: LOC }] });
+    // Staff matches saved before the sync: one made for exactly the name ezCater sells, one not.
+    { location_id: LOC, kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', menu_item_id: 'm-t', option_id: null, source: 'manual', matched_by: 'u', seen_count: 0 },
+    { location_id: LOC, kind: 'item', ez_key: 'brownie', ez_name: 'Brownie', menu_item_id: 'm-b', option_id: null, source: 'manual', matched_by: 'u', seen_count: 0 },
+  ]), menu_items: [{ id: 'm-cr', name: 'Old Caesar', location_id: LOC }, { id: 'm-t', name: 'Turkey Sandwich', location_id: LOC }, { id: 'm-b', name: 'Brownie', location_id: LOC }] });
   const menu = { id: 'menu-9', name: 'M', startDate: null, endDate: null, categories: [{ id: 'c', name: 'C', items: [
-    item('i-c', 'Caesar Salad', [size('c-lg', 'Large')]), item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]),
+    item('i-c', 'Caesar Salad', [size('c-reg', 'Regular')]), item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]),
+    item('i-b', 'Brownie', [size('b-1', '')]), item('i-x', 'Cookies', [size('x1', 'Dozen'), size('x2', 'dozen')]),
   ] }] };
   const r = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => fakeAsk([menu]), nowMs: NOW_MS });
   assert.equal(r.status, 'ok', r.message);
+  assert.match(r.message, /1 of your earlier matches kept/);
   assert.match(r.message, /1 automatic match taken off because the names no longer match exactly/);
-  assert.match(r.message, /1 of your matches to check again: ezCater changed the name or size, so those print by name until you do/);
+  assert.match(r.message, /1 of your matches to check again: the ezCater name is not the one you matched, so those print by name until you press Still right or Change/);
+  assert.match(r.message, /2 sizes with the same name as another size of the same item, so they print by name \(give each size its own name on ezCater\): Cookies \(Dozen\); Cookies \(dozen\)/);
+  assert.equal(r.counts.sameName, 2);
   assert.doesNotMatch(r.message, /[\u2013\u2014]/);
 });
 
 test('a partial read never takes a live id away', async () => {
   const sb = fakeSb(TABLES([
-    { location_id: LOC, kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', synced_at: NOW,
+    { location_id: LOC, kind: 'item', ez_key: K('Farmhouse Salad', 'Serves 1'), ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', synced_at: NOW,
       menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0, ez_ids: ['s-salad-old'] },
   ]));
   sb.store.ezcater_caterers.push({ caterer_uuid: 'cat-2', connection_id: 'conn-1', location_id: LOC, active: true });
@@ -1086,7 +1122,7 @@ test('a partial read never takes a live id away', async () => {
   };
   const r = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => ask, nowMs: NOW_MS });
   assert.equal(r.status, 'partial');
-  assert.deepEqual(row(sb, 'farmhouse salad').ez_ids.sort(), ['s-salad', 's-salad-old']);
+  assert.deepEqual(row(sb, K('Farmhouse Salad', 'Serves 1')).ez_ids.sort(), ['s-salad', 's-salad-old']);
 });
 
 test('the sync works before 20260917_OPS_ezcater_api_url.sql has run (found against real Postgres)', async () => {
@@ -1118,6 +1154,17 @@ test('one sync per venue: a held claim answers busy, a missing claim function an
   assert.equal(noCols.status, 'not_ready');
 });
 
+test('an ok sync stamps last_ok_at with its own synced_at, so the card can tell which names it did not write', async () => {
+  const patches = [];
+  const sb = { from: () => { const b = { update(p) { patches.push(p); return b; }, eq() { return b; }, then(ok) { return Promise.resolve({ data: null, error: null }).then(ok); } }; return b; } };
+  await finishSync(sb, LOC, 'claim-1', 'ok', {}, null, NOW);
+  await finishSync(sb, LOC, 'claim-1', 'partial', {}, 'x', NOW);
+  assert.equal(patches[0].last_ok_at, NOW);
+  assert.equal('last_ok_at' in patches[1], false, 'only an ok sync moves last_ok_at');
+  assert.match(read('../../supabase/functions/_shared/ezcaterMenuSyncRun.ts'),
+    /await finishSync\(sb, locationId, claim as string, status, counts, problems\.length \? problems\.join\('; '\)\.slice\(0, 1000\) : null, nowIso\);/);
+});
+
 test('the daily pass picks venues with no good sync for 20 hours', () => {
   const h = 3600 * 1000;
   const rows = [
@@ -1131,10 +1178,10 @@ test('the daily pass picks venues with no good sync for 20 hours', () => {
 test('link reads page past 1000 rows, for the sync and for orders', async () => {
   const many = [];
   for (let i = 0; i < 2500; i++) {
-    many.push({ location_id: LOC, kind: 'item', ez_key: 'item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + i, synced_at: NOW,
+    many.push({ location_id: LOC, kind: 'item', ez_key: 'exact:item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + String(i).padStart(5, '0'), synced_at: NOW,
       menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0, ez_ids: ['id-' + i], ez_size_name: null });
   }
-  many.push({ ...many[0], ez_key: 'a wreck|size:bigs', ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', matched_by: 'exact' });
+  many.push({ ...many[0], ez_key: K('A Wreck', 'Bigs'), ez_name: 'A Wreck', ez_size_name: 'Bigs', ez_ids: ['s-wreck-big'], menu_item_id: 'm-wreck-big', matched_by: 'exact' });
   const sb = fakeSb(TABLES(many));
   const all = await readAllLinks(sb, LOC, 'kind, ez_key');
   assert.equal(all.rows.length, 2501);
@@ -1195,6 +1242,7 @@ test('RULE D: a failed or partial link read never falls back to name guessing; o
   const before = await readMatchInputs(sb, LOC);
   assert.equal(before.sizeIds, false);
   assert.equal(before.linksOk, true);
+  assert.equal(before.linksFailed, false);
   assert.equal(planLineMatches({ lines: [line('A Wreck', 's-x', 'Original')], ...before, locationId: LOC, nowIso: NOW }).lines[0].itemId, 'm-wreck-orig');
   // No links table at all (20260917 not run) is proven too.
   const noTable = await readMatchInputs(failing({ code: '42P01', message: 'relation "public.ezcater_item_links" does not exist' }), LOC);
@@ -1211,7 +1259,7 @@ test('RULE D: a failed or partial link read never falls back to name guessing; o
 test('RULE D: a partial link read (the second page fails, or the budget runs out) matches nothing and writes nothing', async () => {
   const many = [];
   for (let i = 0; i < 1500; i++) {
-    many.push({ location_id: LOC, kind: 'item', ez_key: 'item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + i, synced_at: NOW,
+    many.push({ location_id: LOC, kind: 'item', ez_key: 'exact:item ' + String(i).padStart(5, '0'), ez_name: 'Item ' + i, synced_at: NOW,
       menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0, ez_ids: ['id-' + i], ez_size_name: null });
   }
   const orderRow = { ref: 'EZ-2', customer: {}, items: [line('Chicken Salad Small', null, null), line('A Wreck Original', 's-anything', 'Original')] };
@@ -1221,13 +1269,13 @@ test('RULE D: a partial link read (the second page fails, or the budget runs out
   const before = JSON.stringify(links(sb));
   const out = await matchQueueRow(sb, LOC, orderRow, { nowIso: NOW, budgetMs: 0 });
   assert.equal(out.ran, false);
-  assert.equal(out.row, orderRow, 'the order goes through exactly as ezCater sent it');
+  assert.equal(out.row, orderRow, 'the order goes through exactly as ezCater sent it (it carried no id of its own)');
   assert.equal(JSON.stringify(links(sb)), before, 'nothing written');
   assert.ok(!sb.calls.some((c) => (c.op === 'upsert' || c.op === 'update') && c.table === 'ezcater_item_links'));
   assert.equal((await readMatchInputs(fakeSb(TABLES()), LOC, { deadline: 0 })).linksFailed, true);
 });
 
-test('RULE D: a republish keeps the old size id while the product is the same, so a change to an older order still matches', async () => {
+test('RULE D: a republish keeps the old size id while the name is the same, so a change to an older order still matches', async () => {
   const sb = fakeSb(TABLES());
   const first = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => fakeAsk([POTBELLY]), nowMs: NOW_MS });
   assert.equal(first.ok, true, first.message);
@@ -1235,7 +1283,7 @@ test('RULE D: a republish keeps the old size id while the product is the same, s
   for (const c of repub.categories) for (const it of c.items) for (const z of it.sizes) z.id = z.id + '-v2';
   const second = await runMenuSync(sb, LOC, { reason: 'daily', makeAsk: () => fakeAsk([repub]), nowMs: NOW_MS + 86_400_000 });
   assert.equal(second.status, 'ok');
-  assert.deepEqual(row(sb, sizeRowKey('A Wreck', 'Bigs')).ez_ids, ['s-wreck-big-v2', 's-wreck-big'], 'unioned: the same product');
+  assert.deepEqual(row(sb, K('A Wreck', 'Bigs')).ez_ids, ['s-wreck-big-v2', 's-wreck-big'], 'unioned: the same exact name');
   const input = await readMatchInputs(sb, LOC);
   assert.equal(planLineMatches({ lines: [line('A Wreck', 's-wreck-big', 'Bigs')], ...input, locationId: LOC, nowIso: NOW }).lines[0].itemId, 'm-wreck-big');
   assert.equal(planLineMatches({ lines: [line('A Wreck', 's-wreck-big-v2', 'Bigs')], ...input, locationId: LOC, nowIso: NOW }).lines[0].itemId, 'm-wreck-big');
@@ -1251,15 +1299,15 @@ test('RULE D: a null menu is a partial read: status partial, nothing replaced', 
   assert.equal(got.missing, 1);
   assert.equal((await readCatererMenus(fakeAsk([POTBELLY]), 'cat-1', '2026-09-18')).missing, 0);
   const sb = fakeSb(TABLES([
-    { location_id: LOC, kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', synced_at: NOW,
+    { location_id: LOC, kind: 'item', ez_key: K('Farmhouse Salad', 'Serves 1'), ez_name: 'Farmhouse Salad', ez_only_size: 'Serves 1', synced_at: NOW,
       menu_item_id: 'm-salad', option_id: null, source: 'manual', matched_by: 'u', decided_as: 'Farmhouse Salad Serves 1', seen_count: 2, ez_ids: ['s-salad-lunch'] },
   ]));
   const r = await runMenuSync(sb, LOC, { reason: 'staff', makeAsk: () => ask, nowMs: NOW_MS });
   assert.equal(r.ok, true);
   assert.equal(r.status, 'partial');
   assert.match(r.message, /no menu for 1 current menu/);
-  assert.deepEqual(row(sb, 'farmhouse salad').ez_ids.sort(), ['s-salad', 's-salad-lunch'], 'nothing taken away');
-  assert.equal(row(sb, 'farmhouse salad').menu_item_id, 'm-salad');
+  assert.deepEqual(row(sb, K('Farmhouse Salad', 'Serves 1')).ez_ids.sort(), ['s-salad', 's-salad-lunch'], 'nothing taken away');
+  assert.equal(row(sb, K('Farmhouse Salad', 'Serves 1')).menu_item_id, 'm-salad');
 });
 
 test('RULE D: the daily run stays under call_edge_fn 25 s timeout; the rest wait for the next run', async () => {
@@ -1306,7 +1354,7 @@ test('RULE D: the NOT NULL source default: a refresh never names source, and eve
   const required = [...now].filter(([, c]) => c.notNull && !c.hasDefault).map(([k]) => k).sort();
   assert.deepEqual(required, ['ez_key', 'ez_name', 'kind', 'location_id']);
 
-  const staff = { location_id: LOC, kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_group: null, ez_only_size: 'Serves 1',
+  const staff = { location_id: LOC, kind: 'item', ez_key: K('Farmhouse Salad', 'Serves 1'), ez_name: 'Farmhouse Salad', ez_group: null, ez_only_size: 'Serves 1',
     synced_at: NOW, menu_item_id: 'm-salad', option_id: null, source: 'manual', matched_by: 'user-1', decided_as: 'Farmhouse Salad Serves 1',
     seen_count: 2, ez_ids: ['s-old'] };
   const plan = planMenuSync({ entries: flattenMenus([POTBELLY]), existing: [staff], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
@@ -1318,9 +1366,9 @@ test('RULE D: the NOT NULL source default: a refresh never names source, and eve
   const sb = fakeSb(TABLES([{ ...staff }]));
   const good = await writeSyncPlan(sb, LOC, plan, NOW);
   assert.deepEqual(good.errors, []);
-  assert.equal(row(sb, 'farmhouse salad').source, 'manual');
-  assert.equal(row(sb, 'farmhouse salad').menu_item_id, 'm-salad');
-  assert.deepEqual(row(sb, 'farmhouse salad').ez_ids, ['s-salad', 's-old']);
+  assert.equal(row(sb, K('Farmhouse Salad', 'Serves 1')).source, 'manual');
+  assert.equal(row(sb, K('Farmhouse Salad', 'Serves 1')).menu_item_id, 'm-salad');
+  assert.deepEqual(row(sb, K('Farmhouse Salad', 'Serves 1')).ez_ids, ['s-salad', 's-old']);
   assert.equal(notNullError(now, plan.inserts), null, 'sync inserts');
   // The order time sighting inserts (before the migration only, now) pass both schemas too.
   const lp = planLineMatches({ lines: [line('Chicken Salad Small', null, null), line('Something New', null, null)],
@@ -1328,6 +1376,266 @@ test('RULE D: the NOT NULL source default: a refresh never names source, and eve
   assert.ok(lp.writes.length >= 1);
   assert.equal(notNullError(now, lp.writes), null);
   assert.equal(notNullError(before, lp.writes), null);
+});
+
+// ── RULE E: exact by construction (review round 4) ─────────────────────────────────────────
+// The round 3 reviewer reproduced each of these on the folded keys (zz_repro.test.js). They run
+// here end to end: flattenMenus, planMenuSync, writeSyncPlan, readMatchInputs, planLineMatches,
+// saveLinkWrites and matchQueueRow. A line with only the id and no name ('x', as the repro sent
+// it) never routes at all now: the exact name is part of the rule.
+
+test('RULE E (round 3 repro S1): a staff match on the Large tray never covers the Small tray', async () => {
+  const menu = [menuOf(item('l', 'Sandwich Platter (Large)', [size('sL', 'Tray')]), item('s', 'Sandwich Platter (Small)', [size('sS', 'Tray')]))];
+  const ours = [{ id: 'our-large', name: 'Sandwich Platter (Large)' }, { id: 'our-small', name: 'Sandwich Platter (Small)' }];
+  const p = await pipeline({ menus: [menu, menu], ours,
+    after: [(sb) => itemsSave(sb, row(sb, K('Sandwich Platter (Large)', 'Tray')), { menuItemId: 'our-large' })],
+    lines: [line('Sandwich Platter (Large)', 'sL', 'Tray'), line('Sandwich Platter (Small)', 'sS', 'Tray'),
+      line('x', 'sS', null), line('Sandwich Platter (Large)', 'sS', 'Tray')] });
+  assert.equal(p.plans[0].inserts.length, 2, 'two products, two rows');
+  assert.deepEqual(p.row(K('Sandwich Platter (Large)', 'Tray')).ez_ids, ['sL']);
+  assert.deepEqual(p.row(K('Sandwich Platter (Small)', 'Tray')).ez_ids, ['sS']);
+  assert.equal(p.row(K('Sandwich Platter (Large)', 'Tray')).decided_as, 'Sandwich Platter (Large) Tray');
+  assert.deepEqual(p.out.map((l) => l.itemId), ['our-large', null, null, null]);
+  assert.deepEqual(p.queued.map((l) => l.itemId), ['our-large', null, null, null]);
+});
+
+test('RULE E (round 3 repro S2, S2b): when a twin leaves the menu, its leftover id never routes to our plain item', async () => {
+  const A = item('a', 'Sandwich Platter', [size('sA', 'Box')]);
+  const B = item('b', 'Sandwich Platter Tray', [size('sB', 'Box')]);
+  const ours = [{ id: 'our-plat', name: 'Sandwich Platter' }, { id: 'our-box', name: 'Sandwich Platter Box' }];
+  const p = await pipeline({ menus: [[menuOf(A), { ...menuOf(B), id: 'm-2' }], [menuOf(A)]], ours,
+    lines: [line('Sandwich Platter Tray', 'sB', 'Box'), line('Sandwich Platter', 'sA', 'Box'), line('x', 'sB', null)] });
+  assert.deepEqual(p.row(K('Sandwich Platter', 'Box')).ez_ids, ['sA'], 'never the Tray id');
+  assert.equal(p.row(K('Sandwich Platter', 'Box')).menu_item_id, 'our-box', 'exactly our Sandwich Platter Box');
+  assert.equal(p.row(K('Sandwich Platter Tray', 'Box')).menu_item_id, null);
+  assert.deepEqual(p.out.map((l) => l.itemId), [null, 'our-box', null]);
+  assert.deepEqual(p.queued.map((l) => l.itemId), [null, 'our-box', null]);
+  // S2b: "Caesar Salad" and "Caesar Salad (Serves 20)" sold as a Tray, then the Serves 20 leaves.
+  const C = item('c', 'Caesar Salad', [size('sC', '')]);
+  const D = item('d', 'Caesar Salad (Serves 20)', [size('sD', 'Tray')]);
+  const q = await pipeline({ menus: [[menuOf(C, D)], [menuOf(C)]], ours: [{ id: 'our-cs', name: 'Caesar Salad' }],
+    lines: [line('Caesar Salad (Serves 20)', 'sD', 'Tray'), line('Caesar Salad', 'sC', null), line('x', 'sD', null)] });
+  assert.deepEqual(q.row(K('Caesar Salad')).ez_ids, ['sC']);
+  assert.equal(q.row(K('Caesar Salad')).menu_item_id, 'our-cs');
+  assert.equal(q.row(K('Caesar Salad (Serves 20)', 'Tray')).menu_item_id, null);
+  assert.deepEqual(q.out.map((l) => l.itemId), [null, 'our-cs', null]);
+  assert.deepEqual(q.queued.map((l) => l.itemId), [null, 'our-cs', null]);
+});
+
+test('RULE E (round 3 repro S3): our menu read in part, then a product the old keys folded in: its own row, and no link', async () => {
+  const t = TABLES();
+  t.menu_items = [{ id: 'our-plat', name: 'Sandwich Platter', location_id: LOC, archived: false }];
+  const sb = fakeSb(t);
+  await syncOnce(sb, [menuOf(item('a', 'Sandwich Platter', [size('sA', '')]))]);
+  assert.equal(row(sb, K('Sandwich Platter')).menu_item_id, 'our-plat');
+  const input = await readMatchInputs(sb, LOC);
+  const plan = planMenuSync({ entries: flattenMenus([menuOf(item('a', 'Sandwich Platter', [size('sA', '')]), item('b', 'Sandwich Platter Tray', [size('sB', '')]))]),
+    existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: false });
+  assert.deepEqual((await writeSyncPlan(sb, LOC, plan, NOW)).errors, []);
+  assert.deepEqual(row(sb, K('Sandwich Platter')).ez_ids, ['sA'], 'the plain row never takes the Tray id');
+  assert.equal(row(sb, K('Sandwich Platter')).menu_item_id, 'our-plat', 'and keeps its own exact link');
+  assert.equal(row(sb, K('Sandwich Platter Tray')).menu_item_id, null);
+  const lp = await orderThrough(sb, [line('Sandwich Platter Tray', 'sB', null), line('Sandwich Platter', 'sA', null)]);
+  assert.deepEqual(lp.lines.map((l) => l.itemId), [null, 'our-plat']);
+});
+
+test('RULE E (round 3 repro S4): a size renamed in place keeps its id; the new name routes nothing until the next sync, then only its own match', async () => {
+  const ours = [{ id: 'our-reg', name: 'Caesar Salad Regular' }, { id: 'our-lg', name: 'Caesar Salad Large' }];
+  const v1 = [menuOf(item('c', 'Caesar Salad', [size('s1', 'Regular')]))];
+  const v2 = [menuOf(item('c', 'Caesar Salad', [size('s1', 'Large')]))];
+  const lines = [line('Caesar Salad', 's1', 'Large'), line('Caesar Salad', 's1', 'Regular')];
+  const early = await pipeline({ menus: [v1], ours, lines });
+  assert.deepEqual(early.out.map((l) => l.itemId), [null, 'our-reg'], 'before the next sync the new name has no row: it prints by name');
+  assert.deepEqual(early.queued.map((l) => l.itemId), [null, 'our-reg']);
+  const later = await pipeline({ menus: [v1, v2], ours, lines });
+  assert.deepEqual(later.out.map((l) => l.itemId), ['our-lg', 'our-reg'], 'each name to its own exact match; an old Regular line stays Regular');
+  assert.deepEqual(later.queued.map((l) => l.itemId), ['our-lg', 'our-reg']);
+  assert.deepEqual(later.row(K('Caesar Salad', 'Large')).ez_ids, ['s1']);
+  assert.deepEqual(later.row(K('Caesar Salad', 'Regular')).ez_ids, ['s1']);
+});
+
+test('RULE E (round 3 repro): sizes with no name never share a row across items, and two of one item get none', async () => {
+  const menu = [menuOf(item('x', 'X', [size('u1', ''), size('u2', '')]), item('y', 'X (Serves 10)', [size('v1', ''), size('v2', 'Large')]))];
+  const { entries, notes } = flattenMenusWithNotes(menu);
+  assert.deepEqual(entries.map((e) => [e.ezKey, e.ids, e.noAuto]), [[K('X (Serves 10)'), ['v1'], true], [K('X (Serves 10)', 'Large'), ['v2'], false]]);
+  assert.deepEqual(notes.sameName, ['X (no size name)', 'X (no size name)']);
+  const p = await pipeline({ menus: [menu], ours: [{ id: 'our-x', name: 'X' }, { id: 'our-x10', name: 'X (Serves 10)' }],
+    after: [(sb) => itemsSave(sb, row(sb, K('X (Serves 10)')), { menuItemId: 'our-x10' })],
+    lines: [line('X', 'u1', null), line('X', 'u2', null), line('X (Serves 10)', 'v1', null), line('X (Serves 10)', 'v2', 'Large'), line('X', 'v1', null)] });
+  assert.deepEqual(p.out.map((l) => l.itemId), [null, null, 'our-x10', null, null]);
+  assert.deepEqual(p.queued.map((l) => l.itemId), [null, null, 'our-x10', null, null]);
+});
+
+test('RULE E (round 3 repro): option values the old keys folded together are separate rows with separate decisions', async () => {
+  const menu = [menuOf(item('s', 'Sub', [size('s-sub', '', { customizationTypes: [
+    { id: 't1', name: 'Bread', values: [{ id: 'v-w', name: 'White' }, { id: 'v-wl', name: 'White (Large)' }] },
+    { id: 't2', name: 'Bread Size', values: [{ id: 'v-bs', name: 'White' }] },
+  ] })]))];
+  const opt = flattenMenus(menu).filter((e) => e.kind === 'option');
+  assert.deepEqual(opt.map((e) => e.ezKey), [OK('Bread', 'White'), OK('Bread', 'White (Large)'), OK('Bread Size', 'White')]);
+  const lines = orderItemsToLines([{ uuid: 'o1', name: 'Sub', menuItemSizeId: 's-sub', menuItemSizeName: null, quantity: 1, customizations: [
+    { customizationId: 'v-w', customizationTypeName: 'Bread', name: 'White', quantity: 1 },
+    { customizationId: 'v-wl', customizationTypeName: 'Bread', name: 'White (Large)', quantity: 1 },
+    { customizationId: 'v-bs', customizationTypeName: 'Bread Size', name: 'White', quantity: 1 },
+    { customizationId: 'v-bs', customizationTypeName: 'Bread', name: 'White', quantity: 1 },
+  ] }]);
+  const p = await pipeline({ menus: [menu], ours: [{ id: 'm-sub', name: 'Sub' }], groups: [{ id: 'g', name: 'Bread', options: [{ id: 'o-white', name: 'White' }] }], lines });
+  assert.equal(p.out[0].itemId, 'm-sub');
+  assert.deepEqual(p.out[0].mods.map((m) => m.optionId), ['o-white', null, null, null]);
+  assert.deepEqual(p.queued[0].mods.map((m) => m.optionId), ['o-white', null, null, null]);
+});
+
+test('RULE E (III): a moved decision is written with its ids in ONE statement, so a failed refresh can never leave it next to old ids', async () => {
+  // Round 3 reproduced on Postgres: the re-decide landed, the refresh failed, and an old line routed
+  // to the new target. Here our Brownie is renamed so the link moves; every refresh upsert fails.
+  const sb = fakeSb({ ...TABLES([
+    { location_id: LOC, kind: 'item', ez_key: K('Brownie'), ez_name: 'Brownie', ez_ids: ['br-1'], synced_at: '2026-09-17T00:00:00.000Z',
+      menu_item_id: 'm-br-old', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 },
+    { location_id: LOC, kind: 'item', ez_key: K('Cookie'), ez_name: 'Cookie', ez_ids: ['co-1'], synced_at: '2026-09-17T00:00:00.000Z',
+      menu_item_id: 'm-co', option_id: null, source: 'manual', matched_by: 'u', decided_as: 'Cookie', seen_count: 0 },
+  ]), menu_items: [{ id: 'm-br-old', name: 'Old Brownie', location_id: LOC }, { id: 'm-br', name: 'Brownie', location_id: LOC }, { id: 'm-co', name: 'Cookie', location_id: LOC }] },
+  { failUpsert: (name, rows, o) => (name === 'ezcater_item_links' && !o?.ignoreDuplicates ? { code: '57014', message: 'statement timeout' } : null) });
+  const input = await readMatchInputs(sb, LOC);
+  const plan = planMenuSync({ entries: flattenMenus([menuOf(item('b', 'Brownie', [size('br-2', '')]), item('c', 'Cookie', [size('co-2', '')]))]),
+    existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups, locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  const wrote = await writeSyncPlan(sb, LOC, plan, NOW);
+  const decide = sb.calls.filter((c) => c.op === 'update' && c.table === 'ezcater_item_links');
+  assert.equal(decide.length, 1);
+  assert.deepEqual(Object.keys(decide[0].patch).sort(), ['ez_category', 'ez_group', 'ez_ids', 'ez_name', 'ez_only_size', 'ez_size_name',
+    'matched_by', 'menu_item_id', 'option_id', 'synced_at', 'updated_at']);
+  assert.deepEqual([decide[0].patch.menu_item_id, decide[0].patch.ez_ids], ['m-br', ['br-2', 'br-1']], 'the new target and the new ids, one statement');
+  assert.equal(wrote.redecided, 1);
+  assert.ok(wrote.errors.some((e) => /^refresh: statement timeout/.test(e)), 'the refresh of the other row failed');
+  const refreshed = sb.calls.filter((c) => c.op === 'upsert' && !c.ignore).flatMap((c) => c.keys);
+  assert.deepEqual(refreshed, [K('Cookie')], 'the moved row was never left to the refresh');
+  const br = row(sb, K('Brownie'));
+  assert.deepEqual([br.menu_item_id, br.ez_ids, br.synced_at], ['m-br', ['br-2', 'br-1'], NOW], 'decision and ids agree');
+  const co = row(sb, K('Cookie'));
+  assert.deepEqual([co.menu_item_id, co.ez_ids], ['m-co', ['co-1']], 'a failed refresh leaves a row as it was');
+  const lp = await orderThrough(sb, [line('Brownie', 'br-2', null), line('Brownie', 'br-1', null), line('Cookie', 'co-1', null), line('Cookie', 'co-2', null)]);
+  assert.deepEqual(lp.lines.map((l) => l.itemId), ['m-br', 'm-br', 'm-co', null]);
+});
+
+test('RULE E (IV): every bail path after the migration takes ezCater\'s own ids off; before it (proven) the row is untouched', async () => {
+  const withPos = () => ({ ref: 'EZ-9', customer: {}, items: [
+    line('A Wreck', 's-wreck-big', 'Bigs', { itemId: 'pos-1', mods: [{ label: 'Multigrain', groupLabel: 'Bread', itemId: 'pos-opt', ezItemId: 'v-multi' }] }),
+    line('Brownie', null, null),
+  ] });
+  const cleared = (out) => out.row.items.every((l) => l.itemId === null && (l.mods || []).every((m) => m.itemId === null));
+  const timeout = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const many = [];
+  for (let i = 0; i < 1500; i++) many.push({ location_id: LOC, kind: 'item', ez_key: 'exact:n ' + i, ez_name: 'N ' + i, synced_at: NOW, source: 'auto', ez_ids: [], seen_count: 0 });
+  const cases = [
+    ['the link read cut short (after the migration)', fakeSb(TABLES(many), { failLinkPageFrom: 1000 }), {}],
+    ['the link read failed (not proven either way)', fakeSb(TABLES(), { failLinkRead: () => timeout }), {}],
+    ['neither the links nor the menu read', fakeSb(TABLES(), { failLinkRead: () => timeout, failTable: { menu_items: timeout, modifier_groups: timeout } }), {}],
+    ['past the time budget', { from: () => { const b = { select: () => b, eq: () => b, order: () => b, range: () => b, then: () => new Promise(() => {}) }; return b; } }, { budgetMs: 25 }],
+    ['an exception inside the job', fakeSb(TABLES()), { get nowIso() { throw new Error('boom'); }, budgetMs: 0 }],
+  ];
+  for (const [name, sb, opts] of cases) {
+    const input = withPos();
+    const out = await matchQueueRow(sb, LOC, input, opts);
+    assert.equal(out.ran, false, name);
+    assert.ok(cleared(out), name + ': no posItemId or posCustomizationId left');
+    assert.equal(out.row.customer.ezMatch, undefined, name + ': never stamped as checked');
+    assert.equal(out.row.items[0].name, 'A Wreck', name);
+    assert.equal(input.items[0].itemId, 'pos-1', name + ': the mapper row itself is not changed');
+  }
+  // Before the migration (PROVEN by the missing column), the same failure leaves the row exactly as the mapper built it.
+  const pre = fakeSb(TABLES(), { noSyncColumns: true, failLinkRead: (cols) => (/ez_ids/.test(cols) ? null : timeout),
+    failTable: { menu_items: timeout, modifier_groups: timeout } });
+  const preRow = withPos();
+  const preOut = await matchQueueRow(pre, LOC, preRow, { nowIso: NOW, budgetMs: 0 });
+  assert.equal(preOut.ran, false);
+  assert.equal(preOut.row, preRow, 'main: the mapper row, untouched');
+  // The planner's own failed read path clears them too, and nothing to clear is the same row.
+  assert.deepEqual(planLineMatches({ lines: withPos().items, linksFailed: true, locationId: LOC, nowIso: NOW }).lines.map((l) => l.itemId), [null, null]);
+  const plain = { ref: 'EZ-0', items: [line('Brownie', null, null)] };
+  assert.equal(withoutPosIds(plain), plain);
+  assert.equal(linesWithoutPosIds(plain.items), plain.items);
+  assert.equal(withoutPosIds(null), null);
+});
+
+test('RULE E (IV): before the migration, a failed second link read falls back exactly as main does: the name rules on the menu, nothing written', async () => {
+  const sb = fakeSb(TABLES([{ location_id: LOC, kind: 'item', ez_key: 'a wreck', ez_name: 'A Wreck', menu_item_id: 'm-wreck-orig', option_id: null,
+    source: 'manual', matched_by: 'u', seen_count: 2 }]),
+  { noSyncColumns: true, failLinkRead: (cols) => (/ez_ids/.test(cols) ? null : { code: '57014', message: 'canceling statement due to statement timeout' }) });
+  const input = await readMatchInputs(sb, LOC);
+  assert.deepEqual([input.sizeIds, input.linksFailed, input.linksOk, input.links.length, input.menuOk], [false, false, false, 0, true]);
+  const orderRow = { ref: 'EZ-3', customer: {}, items: [line('Chicken Salad Small', null, null), line('A Wreck Original', null, null), line('Brand New', null, null)] };
+  const out = await matchQueueRow(sb, LOC, orderRow, { nowIso: NOW, budgetMs: 0 });
+  assert.equal(out.ran, true);
+  assert.deepEqual(out.row.items.map((l) => l.itemId), ['m-chick-small', 'm-wreck-orig', null], 'main\'s name rules on the menu');
+  assert.equal(out.inserted + out.bumped, 0);
+  assert.ok(!sb.calls.some((c) => (c.op === 'upsert' || c.op === 'update') && c.table === 'ezcater_item_links'), 'nothing written, as main after a failed link read');
+  const main = planNameMatches({ lines: orderRow.items, ourItems: input.ourItems, ourGroups: input.ourGroups, links: [], locationId: LOC, nowIso: NOW, menuOk: true });
+  assert.deepEqual(out.row.items.map((l) => l.itemId), main.lines.map((l) => l.itemId));
+  // A second read cut short by the time budget is not a failed read. The first read already
+  // PROVED the venue is before the migration, so the order goes through exactly as the mapper
+  // built it, ezCater's own ids and all, as main's own time budget does.
+  const fullPage = Array.from({ length: 1000 }, (_, i) => ({ kind: 'item', ez_key: 'k' + i, ez_name: 'K' + i, source: 'auto', seen_count: 0 }));
+  const slowSecond = { from: (name) => {
+    const st = { cols: '' };
+    const b = { select(c) { st.cols = c; return b; }, eq() { return b; }, order() { return b; }, range() { return b; },
+      then(ok, no) {
+        if (name !== 'ezcater_item_links') return Promise.resolve({ data: name === 'menu_items' ? MENU_ROWS : GROUP_ROWS, error: null }).then(ok, no);
+        if (/ez_ids/.test(st.cols)) return Promise.resolve({ data: null, error: { code: '42703', message: 'column ezcater_item_links.ez_ids does not exist' } }).then(ok, no);
+        return new Promise((r) => setTimeout(() => r({ data: fullPage, error: null }), 250)).then(ok, no);
+      } };
+    return b;
+  } };
+  const cut = await readMatchInputs(slowSecond, LOC, { deadline: Date.now() + 150 });
+  assert.deepEqual([cut.sizeIds, cut.linksFailed, cut.linksOk, cut.links.length], [false, true, false, 1000]);
+  const posRow = { ref: 'EZ-4', customer: {}, items: [line('Chicken Salad Small', null, null, { itemId: 'pos-9' })] };
+  const timed = await matchQueueRow(slowSecond, LOC, posRow, { nowIso: NOW, budgetMs: 150 });
+  assert.equal(timed.ran, false);
+  assert.equal(timed.row, posRow, 'proven before the migration: untouched, even when the job runs out of time');
+});
+
+test('RULE E: a staff decision saved before the sync is carried to the synced row of its product: as it was when the exact names agree, else to check again', async () => {
+  const legacy = [
+    // The screen showed "Turkey Sandwich"; ezCater sells it only as a Box.
+    { kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', ez_group: null, menu_item_id: 'm-t', option_id: null, source: 'manual', matched_by: 'user-3', seen_count: 5, last_seen_at: NOW },
+    // Matched under exactly the name ezCater sells ("Serves 1" is noise to the old key, not to the name).
+    { kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad Serves 1', menu_item_id: 'm-f', option_id: null, source: 'manual', matched_by: 'user-4', seen_count: 2 },
+    // "Not on our menu" on an option.
+    { kind: 'option', ez_key: buildLinkKey({ name: 'White', groupLabel: 'Bread' }, 'option'), ez_name: 'White', ez_group: 'Bread', menu_item_id: null, option_id: null, source: 'manual', matched_by: 'ignored', seen_count: 1 },
+    // An automatic name link from before: not carried; the exact rule decides the new row.
+    { kind: 'item', ez_key: 'italian boxed lunch', ez_name: 'Italian Boxed Lunch', menu_item_id: 'm-ibl-old', option_id: null, source: 'auto', matched_by: 'name', seen_count: 1 },
+  ];
+  const menu = menuOf(item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]),
+    item('i-f', 'Farmhouse Salad', [size('s-f', 'Serves 1', { customizationTypes: [{ id: 'ct', name: 'Bread', values: [{ id: 'v-w', name: 'White' }] }] })]),
+    item('i-hk', 'Italian Boxed Lunch', [size(HKX77V_SIZE_ID, 'Box')]));
+  const lines = [line('Turkey Sandwich', 't-box', 'Box'), line('Farmhouse Salad', 's-f', 'Serves 1', { mods: [{ label: 'White', groupLabel: 'Bread', ezItemId: 'v-w', itemId: null }] }),
+    line('Italian Boxed Lunch', HKX77V_SIZE_ID, 'Box')];
+  const p = await pipeline({ menus: [[menu]], existing: legacy, lines,
+    ours: [{ id: 'm-t', name: 'Turkey Sandwich' }, { id: 'm-f', name: 'Farmhouse' }, { id: 'm-ibl', name: 'Italian Boxed Lunch' }, { id: 'm-ibl-old', name: 'IBL' }],
+    groups: [{ id: 'g', name: 'Bread', options: [{ id: 'o-w', name: 'White' }] }] });
+  const turkey = p.row(K('Turkey Sandwich', 'Box'));
+  assert.deepEqual([turkey.menu_item_id, turkey.source, turkey.matched_by, turkey.decided_as], ['m-t', 'manual', 'user-3', 'Turkey Sandwich']);
+  assert.equal(lookAgainOf(turkey).lookAgain, true, 'never matched knowing it is a Box');
+  const farm = p.row(K('Farmhouse Salad', 'Serves 1'));
+  assert.deepEqual([farm.menu_item_id, farm.decided_as, lookAgainOf(farm).lookAgain], ['m-f', 'Farmhouse Salad Serves 1', false], 'the exact name: kept as it was');
+  const white = p.row(OK('Bread', 'White'));
+  assert.deepEqual([white.matched_by, white.source, lookAgainOf(white).lookAgain], ['ignored', 'manual', false]);
+  assert.deepEqual([p.row(K('Italian Boxed Lunch', 'Box')).menu_item_id, p.row(K('Italian Boxed Lunch', 'Box')).source], ['m-ibl', 'auto']);
+  assert.deepEqual([p.plans[0].counts.carried, p.plans[0].counts.lookAgain], [2, 1]);
+  assert.deepEqual(p.out.map((l) => l.itemId), [null, 'm-f', 'm-ibl'], 'a match to check again is not used until checked');
+  assert.deepEqual(p.queued.map((l) => l.itemId), [null, 'm-f', 'm-ibl']);
+  assert.equal(p.out[1].mods[0].optionId, null);
+  // The rows saved before the sync are exactly as they were, and readable on the card.
+  for (const old of legacy) assert.deepEqual(omit(p.row(old.ez_key), COUNTERS), omit({ location_id: LOC, ...old }, COUNTERS));
+  // The card flags the Turkey row, saying what was matched; "Still right" records the synced name.
+  const shown = rowsFrom(links(p.sb).map((r) => ({ ...r, look_again: lookAgainOf(r).lookAgain })), { syncReady: true });
+  const t = shown.find((r) => r.ezKey === K('Turkey Sandwich', 'Box'));
+  assert.equal(t.lookAgain, true);
+  assert.equal(lookAgainNote(t), 'The ezCater name is not the one that was matched. It was matched as: Turkey Sandwich. Orders print it by name until you check it.');
+  itemsSave(p.sb, turkey, { menuItemId: 'm-t' });
+  assert.equal(p.row(K('Turkey Sandwich', 'Box')).decided_as, 'Turkey Sandwich Box');
+  assert.equal((await orderThrough(p.sb, [lines[0]])).lines[0].itemId, 'm-t', 'routes once checked');
+  // Where it looked: the name with its size first, then the name alone, today's key then the legacy one.
+  assert.deepEqual(oldKeysOf({ kind: 'item', ezName: 'Caesar Salad', ezSizeName: 'Large', ids: [] }), ['caesar salad large', 'caesar salad']);
+  assert.equal(carryOverFor({ kind: 'item', ezKey: K('Brownie'), ezName: 'Brownie', ezSizeName: null, ids: [] }, new Map()), null);
 });
 
 // ── The Potbelly menu, end to end ──────────────────────────────────────────────────────────
@@ -1364,133 +1672,206 @@ test('the Potbelly menu end to end: exact names route by published id, everythin
 // ── The Item matching card ─────────────────────────────────────────────────────────────────
 
 test('a size row shows its size, suggests on item and size, and saves by its synced key with what it showed', () => {
-  const r = toRow({ kind: 'item', ez_key: 'a wreck|size:skinny', ez_name: 'A Wreck', ez_size_name: 'Skinny', seen_count: 0, synced_at: NOW });
+  const r = toRow({ kind: 'item', ez_key: K('A Wreck', 'Skinny'), ez_name: 'A Wreck', ez_size_name: 'Skinny', seen_count: 0, synced_at: NOW });
+  assert.equal(r.synced, true);
   assert.equal(r.sizeRow, true);
   assert.equal(theirLabel(r), 'A Wreck (Skinny)');
   const sug = suggestionsFor(r, [{ id: 'a', name: 'A Wreck Skinny' }, { id: 'b', name: 'A Wreck Bigs' }], [], { limit: 2 });
   assert.equal(sug[0].id, 'a');
   const body = saveBody(r, { menuItemId: 'a' }).body;
-  assert.equal(body.size_row, true);
-  assert.equal(body.ez_key, 'a wreck|size:skinny');
-  assert.equal(body.menu_item_id, 'a');
-  assert.equal(body.seen_size, 'Skinny');
+  assert.deepEqual(body, { synced: true, kind: 'item', ez_key: K('A Wreck', 'Skinny'), ez_name: 'A Wreck', ez_group: null,
+    menu_item_id: 'a', option_id: null, ignored: false, seen_size: 'Skinny' });
+  // A row saved before the sync is saved exactly as main saves it: its key rebuilt from its name.
   const plain = saveBody(toRow({ kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad' }), { menuItemId: 'm' }).body;
-  assert.equal(plain.size_row, undefined);
-  assert.equal(plain.ez_key, 'farmhouse salad');
-  assert.equal(plain.seen_size, null);
+  assert.deepEqual(plain, { kind: 'item', ez_key: 'farmhouse salad', ez_name: 'Farmhouse Salad', ez_group: null, menu_item_id: 'm', option_id: null, ignored: false });
+  const opt = saveBody(toRow({ kind: 'option', ez_key: OK('Bread', 'White'), ez_name: 'White', ez_group: 'Bread', synced_at: NOW }), { optionId: 'o-w' }).body;
+  assert.deepEqual([opt.synced, opt.ez_key, opt.ez_group, opt.option_id, opt.seen_size], [true, OK('Bread', 'White'), 'Bread', 'o-w', null]);
+  assert.ok(saveBody(toRow({ kind: 'item', ez_key: K('X'), ez_name: 'X', synced_at: NOW }), { optionId: 'o' }).error, 'an item cannot take an option');
 });
 
 test('a single size item carries its one size to the card, into suggestions and into what a save records', () => {
   const entries = flattenMenus([menuOf({ id: 'i-t', name: 'Turkey Sandwich', sizes: [size('s-t', 'Box')] },
     { id: 'i-m', name: 'Italian', sizes: [size('a', 'Small'), size('b', 'Large')] })]);
-  const plain = entries.find((e) => e.ezKey === 'turkey sandwich');
+  const plain = entries.find((e) => e.ezKey === K('Turkey Sandwich', 'Box'));
   assert.equal(plain.ezOnlySize, 'Box');
   const plan = planMenuSync({ entries, existing: [], ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
-  assert.equal(plan.inserts.find((r) => r.ez_key === 'turkey sandwich').ez_only_size, 'Box');
+  assert.equal(plan.inserts.find((r) => r.ez_key === K('Turkey Sandwich', 'Box')).ez_only_size, 'Box');
   assert.ok(plan.inserts.filter((r) => r.ez_size_name).every((r) => r.ez_only_size === null), 'size rows carry no only size');
   const again = planMenuSync({ entries, existing: plan.inserts, ourItems: [], ourGroups: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
-  assert.equal(again.refreshes.find((r) => r.ez_key === 'turkey sandwich').ez_only_size, 'Box');
-  const r = toRow({ kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', ez_only_size: 'Box', synced_at: NOW, seen_count: 0 });
+  assert.equal(again.refreshes.find((r) => r.ez_key === K('Turkey Sandwich', 'Box')).ez_only_size, 'Box');
+  const r = toRow({ kind: 'item', ez_key: K('Turkey Sandwich', 'Box'), ez_name: 'Turkey Sandwich', ez_only_size: 'Box', synced_at: NOW, seen_count: 0 });
   assert.equal(theirLabel(r), 'Turkey Sandwich, sold only as Box');
   const sug = suggestionsFor(r, [{ id: 'plain', name: 'Turkey Sandwich' }, { id: 'box', name: 'Turkey Sandwich Box' }], [], { limit: 2 });
   assert.equal(sug[0].id, 'box', 'suggested on its item AND its one size');
   const body = saveBody(r, { menuItemId: 'box' }).body;
-  assert.equal(body.ez_key, 'turkey sandwich', 'saved by its plain key as before');
+  assert.equal(body.ez_key, K('Turkey Sandwich', 'Box'), 'saved by its synced key');
   assert.equal(body.seen_size, 'Box');
-  // A synced row holding only an old order time name link is listed as not matched yet.
-  assert.equal(toRow({ kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW,
+  assert.equal(fullNameOf({ kind: 'item', name: body.ez_name, sizeName: body.seen_size }), 'Turkey Sandwich Box', 'what the edge function records');
+  // A synced row holding an automatic link that is not an exact one is listed as not matched yet.
+  assert.equal(toRow({ kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW,
     menu_item_id: 'm-c', source: 'auto', matched_by: 'name' }).state, 'unmatched');
-  assert.equal(toRow({ kind: 'item', ez_key: 'x', ez_name: 'X', synced_at: NOW, menu_item_id: 'm', source: 'auto', matched_by: 'exact' }).state, 'matched');
+  assert.equal(toRow({ kind: 'item', ez_key: K('X'), ez_name: 'X', synced_at: NOW, menu_item_id: 'm', source: 'auto', matched_by: 'exact' }).state, 'matched');
 });
 
-test('the card: matches to check again sort right after the unmatched ones, say what the staff saw, and a save clears them', () => {
+test('the card: matches to check again sort right after the unmatched ones, say what was matched, and a save clears them', () => {
   const rows = rowsFrom([
-    { kind: 'item', ez_key: 'apple', ez_name: 'Apple', synced_at: NOW, menu_item_id: 'm-a', source: 'manual', matched_by: 'u', last_seen_at: '2026-09-18T12:00:00Z' },
-    { kind: 'item', ez_key: 'brownie', ez_name: 'Brownie', synced_at: NOW, menu_item_id: null, source: 'auto', matched_by: null, last_seen_at: '2026-09-10T12:00:00Z' },
-    { kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW, menu_item_id: 'm-c', source: 'manual', matched_by: 'u',
-      decided_as: 'Caesar Salad Regular', look_again: true, last_seen_at: '2026-09-01T12:00:00Z' },
+    { kind: 'item', ez_key: K('Apple'), ez_name: 'Apple', synced_at: NOW, menu_item_id: 'm-a', source: 'manual', matched_by: 'u', last_seen_at: '2026-09-18T12:00:00Z' },
+    { kind: 'item', ez_key: K('Brownie'), ez_name: 'Brownie', synced_at: NOW, menu_item_id: null, source: 'auto', matched_by: null, last_seen_at: '2026-09-10T12:00:00Z' },
+    { kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW, menu_item_id: 'm-c', source: 'manual', matched_by: 'u',
+      decided_as: 'Caesar Salad', look_again: true, last_seen_at: '2026-09-01T12:00:00Z' },
   ], { syncReady: true });
-  assert.deepEqual(rows.map((r) => r.ezKey), ['brownie', 'caesar salad', 'apple']);
+  assert.deepEqual(rows.map((r) => r.ezKey), [K('Brownie'), K('Caesar Salad', 'Large'), K('Apple')]);
   assert.equal(lookAgainCount(rows), 1);
   assert.equal(countRows(rows).outstanding, 1, 'the unmatched count is unchanged');
-  assert.equal(lookAgainNote(rows[1]), 'Changed on ezCater since this was matched. It was: Caesar Salad Regular. Orders print it by name until you check it.');
+  assert.equal(lookAgainNote(rows[1]), 'The ezCater name is not the one that was matched. It was matched as: Caesar Salad. Orders print it by name until you check it.');
   assert.doesNotMatch(lookAgainNote(rows[1]), /[\u2013\u2014]/);
   const after = applySaved(rows, saveBody(rows[1], { menuItemId: 'm-c' }).body);
   assert.equal(after.length, 3, 'the same row, saved');
-  assert.equal(after.find((r) => r.ezKey === 'caesar salad').lookAgain, false);
+  assert.equal(after.find((r) => r.ezKey === K('Caesar Salad', 'Large')).lookAgain, false);
   assert.equal(lookAgainCount(after), 0);
+  // lookAgainOf: only a synced staff decision made for a different name, or with nothing recorded.
+  assert.equal(lookAgainOf({ kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', menu_item_id: 'm', source: 'manual', decided_as: 'Caesar Salad Large' }).lookAgain, false);
+  assert.equal(lookAgainOf({ kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', menu_item_id: 'm', source: 'manual' }).lookAgain, true, 'nothing recorded');
+  assert.equal(lookAgainOf({ kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad', menu_item_id: 'm', source: 'manual', decided_as: 'Other' }).lookAgain, false, 'a row saved before the sync is never flagged');
+  assert.equal(trustedTarget({ kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', menu_item_id: 'm', source: 'manual' }), null);
 });
 
-test('the card: once the sync is set up, rows no sync wrote are not listed (orders never use them); before it, nothing changes', () => {
+test('the card: once the sync is set up, rows saved before it are listed apart, read only; before it, nothing changes', () => {
   const raw = [
     { kind: 'item', ez_key: 'old sighting', ez_name: 'Old Sighting', menu_item_id: 'm-x', source: 'manual', matched_by: 'u' },
-    { kind: 'item', ez_key: 'synced', ez_name: 'Synced', synced_at: NOW, ez_ids: ['s1'], menu_item_id: null, source: 'auto', matched_by: null },
+    { kind: 'item', ez_key: K('Synced'), ez_name: 'Synced', synced_at: NOW, ez_ids: ['s1'], menu_item_id: null, source: 'auto', matched_by: null },
   ];
   const ready = rowsFrom(raw, { syncReady: true });
-  assert.deepEqual(liveRows(ready).map((r) => r.ezKey), ['synced']);
+  assert.deepEqual(liveRows(ready).map((r) => r.ezKey), [K('Synced')]);
   assert.deepEqual(offMenuRows(ready).map((r) => r.ezKey), ['old sighting']);
-  assert.match(offMenuLine(1), /^1 older name is not on the synced ezCater menu\./);
+  assert.match(offMenuLine(1), /^1 older name is from before the menu sync\./);
   assert.equal(offMenuLine(0), '');
-  const before = rowsFrom(raw);
+  assert.equal(olderNote(offMenuRows(ready)[0], [{ id: 'm-x', name: 'Our X' }], []), 'Matched to Our X before the menu sync');
+  const before = rowsFrom(raw.slice(0, 1));
   assert.equal(offMenuRows(before).length, 0, 'before 20260919m every row is listed as it always was');
   assert.equal(before.find((r) => r.ezKey === 'old sighting').state, 'matched');
-  // The card component uses these, hides the codes block once the sync is set up, and offers "Still right".
+  // The card component uses these, hides the codes block once the sync is set up, offers "Still
+  // right", and shows the older rows only when asked, with no save button.
   const jsx = read('../backoffice/sections/EzcaterItemMatching.jsx');
-  assert.match(jsx, /rowsFrom\(links\?\.links, \{ syncReady: ready \}\)/);
+  assert.match(jsx, /rowsFrom\(links\?\.links, \{ syncReady: ready, menuAt: links\?\.last_sync\?\.last_ok_at \|\| null \}\)/);
   assert.match(jsx, /const live = useMemo\(\(\) => liveRows\(rows\), \[rows\]\);/);
   assert.match(jsx, /\{codesOn && !syncReady && \(/);
   assert.match(jsx, />Still right<\/button>/);
+  const olderBlock = jsx.slice(jsx.indexOf('{showOlder && offCount > 0 && ('), jsx.indexOf('{shown.slice(0, MAX_SHOWN).map('));
+  assert.ok(olderBlock.length > 100 && olderBlock.includes('olderNote(r, ourItems, ourGroups)'));
+  assert.doesNotMatch(olderBlock, /onSave|onClick=\{\(\) => (send|save)/, 'the older rows are read only');
 });
 
-test('ezcater-connect: items_list flags look again with the sync rules; items_save records what the screen showed', () => {
+test('the card: a synced name the last whole sync did not write is listed last as no longer on their menu, and is never work to do', () => {
+  const raw = [
+    { kind: 'item', ez_key: K('Caesar Salad', 'Regular'), ez_name: 'Caesar Salad', ez_only_size: 'Regular', synced_at: '2026-09-17T15:00:00.000Z',
+      menu_item_id: null, source: 'auto', matched_by: null, seen_count: 2 },
+    { kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large', synced_at: NOW, menu_item_id: null, source: 'auto', matched_by: null },
+  ];
+  const rows = rowsFrom(raw, { syncReady: true, menuAt: NOW });
+  assert.deepEqual(rows.map((r) => [r.ezKey, r.gone]), [[K('Caesar Salad', 'Large'), false], [K('Caesar Salad', 'Regular'), true]]);
+  assert.deepEqual(countRows(rows), { total: 1, matched: 0, ignored: 0, unmatched: 1, outstanding: 1 });
+  assert.equal(goneCount(rows), 1);
+  assert.match(goneLine(1), /^1 name ezCater no longer sells is listed last\./);
+  assert.equal(seenLine(rows[1]), 'No longer on their menu, on 2 orders');
+  assert.equal(seenLine(rows[0]), 'On their menu, not ordered yet');
+  assert.ok(rowsFrom(raw, { syncReady: true }).every((r) => !r.gone), 'no whole sync known: nothing is gone');
+  const jsx = read('../backoffice/sections/EzcaterItemMatching.jsx');
+  assert.match(jsx, /\{goneN > 0 && <div style=\{\{ \.\.\.S\.sub, marginTop: 0 \}\}>\{goneLine\(goneN\)\}<\/div>\}/);
+});
+
+test('ezcater-connect: items_save updates only a synced row by its key after 20260919m, refuses an out of date page, and is main\'s save before it', () => {
   const src = read('../../supabase/functions/ezcater-connect/index.ts');
+  const at = src.indexOf("case 'items_save': {");
+  const save = src.slice(at, src.indexOf('default:', at));
+  assert.match(save, /const probe = await sb\.from\('ezcater_item_links'\)\.select\('synced_at'\)\.eq\('location_id', opsLocationId\)\.limit\(1\);/);
+  assert.match(save, /if \(syncReady && \(body\?\.synced !== true \|\| !isSyncKey\(syncedKey\)\)\) \{\n\s+return json\(\{ error: 'This page is out of date\. Reload it, then match again\.', code: 'stale_page' \}, 409\);/);
+  // What the itemsSave mirror above records as decided_as, exactly.
+  assert.match(save, /const decidedAs = fullNameOf\(\{\n\s+kind, name: ezName, group: ezGroup \|\| '', sizeName: kind === 'item' \? String\(body\?\.seen_size \|\| ''\)\.trim\(\) : '',\n\s+\}\)\.slice\(0, 500\);/);
+  // Update only, by the synced key, only a synced row: a save can decide a row, never create one.
+  assert.match(save, /\.eq\('location_id', opsLocationId\)\.eq\('kind', kind\)\.eq\('ez_key', syncedKey\)\n\s+\.not\('synced_at', 'is', null\)\n\s+\.select\('ez_key'\);/);
+  const synced = save.slice(save.indexOf('if (syncReady) {'), save.indexOf('// BEFORE 20260919m'));
+  assert.doesNotMatch(synced, /upsert|insert/);
+  // Before the migration: main's save, the key rebuilt from the name and one upsert.
+  assert.ok(save.includes("const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);"));
+  assert.ok(save.includes("const { error } = await sb.from('ezcater_item_links').upsert({\n          location_id: opsLocationId,\n          kind,\n          ez_key: ezKey,\n          ez_name: ezName,\n          ez_group: ezGroup,"));
+  // items_list: the sync columns asked for first, look again worked out with the sync's rules.
   assert.match(src, /ez_size_name, ez_only_size, ez_category, synced_at, decided_as'\);/);
   assert.match(src, /const l = lookAgainOf\(r\); return \{ \.\.\.r, look_again: l\.lookAgain, now_as: l\.now \};/);
-  // The size row branch: what the screen showed, never read back from the row.
-  assert.match(src, /const seenSize = String\(body\?\.seen_size \|\| ''\)\.trim\(\) \|\| sizeKey\.split\('\|size:'\)\[1\] \|\| '';/);
-  assert.match(src, /decided_as: decidedAs,/);
-  // The plain branch: the same rule the itemsSave mirror above uses, an existing row updated and
-  // never renamed, and the retry without decided_as before the migration.
-  assert.match(src, /decision\.decided_as = fullNameOf\(\{\n\s+kind, name: ezName, group: ezGroup \|\| '', onlySize: kind === 'item' \? String\(body\?\.seen_size \|\| ''\)\.trim\(\) : '',\n\s+\}\)\.slice\(0, 500\);/);
-  assert.match(src, /const updateRow = \(\) => sb\.from\('ezcater_item_links'\)\.update\(decision\)\n\s+\.eq\('location_id', opsLocationId\)\.eq\('kind', kind\)\.eq\('ez_key', ezKey\)\.select\('ez_key'\);/);
-  const branch = src.slice(src.indexOf('const decision: Record<string, unknown> = {'), src.indexOf('const updateRow = () =>'));
-  assert.doesNotMatch(branch, /ez_name/, 'the update never writes the name');
-  assert.match(src, /if \(error && isMissingSyncColumn\(error\)\) \{\n\s+delete decision\.decided_as;/);
-  assert.match(src, /const fresh: Record<string, unknown> = \{ location_id: opsLocationId, kind, ez_key: ezKey, ez_name: ezName, ez_group: ezGroup, \.\.\.decision \};/);
 });
 
-// ── The decision record and the release note ───────────────────────────────────────────────
+// ── The decision record, the migration and the release note ────────────────────────────────
 
-test('ADR-024 states the simpler rule in plain words; 20260919m carries the default and the columns', () => {
+test('ADR-024 states the exact rule in plain words; 20260919m carries the default and the columns', () => {
   const adr = read('../../DECISIONS.md');
   const a24 = adr.slice(adr.indexOf('## ADR-024'));
-  assert.match(a24, /orders only use matches made before the order: exact names found by the sync, or matches staff saved/);
-  assert.match(a24, /no name matching at order time/i);
+  assert.match(a24, /orders only use matches made before the order: exact names found by the sync, or matches staff saved, and only for the exact name and size they were made for/);
+  assert.match(a24, /no name guessing at order time/i);
+  assert.match(a24, /Exact by construction/);
+  assert.match(a24, /never share a row, its published ids \(`ez_ids`\) or a decision/);
   assert.match(a24, /decides every automatic row again/);
+  assert.match(a24, /in ONE statement/);
+  assert.match(a24, /carried over, never lost/);
   assert.match(a24, /look again/i);
   assert.match(a24, /group AND the value/);
-  assert.match(a24, /Known limit/);
-  assert.match(a24, /differ only by a trailing tray or pan word/);
   assert.match(a24, /matched_by 'exact'/);
+  assert.match(a24, /Known limit/);
+  assert.doesNotMatch(a24, /differ only by a trailing tray or pan word/, 'that limit is fixed');
   assert.doesNotMatch(a24, /[\u2013\u2014]/);
   const sql = read('../../supabase/migrations/' + MIGRATION_FILE);
   assert.match(sql, /alter table public\.ezcater_item_links alter column source set default 'auto';/);
   assert.match(sql, /add column if not exists ez_only_size text;/);
   assert.match(sql, /add column if not exists decided_as text;/);
+  assert.match(sql, /EXACT BY CONSTRUCTION/);
+  assert.match(sql, /delete from public\.ezcater_item_links where ez_key like 'exact:%';/);
   assert.doesNotMatch(sql, /[\u2013\u2014]/);
 });
 
-test('the release note: step 7 in plain words, and step 4 proves the new menu sync code is live', () => {
+test('the release note: the menu sync is its own part, after v5.9.9, in plain steps, and proves the new code is live', () => {
   const note = read('../../docs/EZCATER_V1_RELEASE.md');
-  const step7 = note.slice(note.indexOf('## 7. Menu sync'), note.indexOf('## Known gap'));
-  assert.match(step7, /after the sync is set up, orders only use matches made before the order: exact names found by the sync, or matches staff saved/i);
-  assert.match(step7, /Check again/);
-  // Step 4: a line only the new code has, for each function this branch changes.
-  const connectMarker = note.match(/`ezcater-connect` must contain `([^`]+)`/);
-  assert.ok(connectMarker, 'connect marker line');
-  assert.ok(read('../../supabase/functions/_shared/ezcaterMenuSyncRun.ts').includes(connectMarker[1]));
-  const webhookMarker = note.match(/`ezcater-webhook` must also contain `event read failed` and `([^`]+)`/);
-  assert.ok(webhookMarker, 'webhook marker line');
-  assert.ok(read('../../supabase/functions/_shared/ezcater-match-ingest.ts').includes(webhookMarker[1]));
+  const at = note.indexOf('\n# Menu sync, a later release\n');
+  assert.ok(at > note.indexOf('## Known gap'), 'after the whole v5.9.9 part');
+  const part = note.slice(at);
+  assert.deepEqual([...part.matchAll(/^## (\d)\. /gm)].map((m) => Number(m[1])), [1, 2, 3, 4, 5]);
+  const where = (re) => { const i = part.search(re); assert.ok(i >= 0, String(re)); return i; };
+  const order = [where(/## 1\. Merge and let the app deploy/), where(/Reload every Back Office tab/), where(/## 2\. Deploy the two edge functions/),
+    where(/## 3\. Run the migration, outside service/), where(/## 4\. Press Sync straight away/), where(/## 5\. Check your earlier matches once/), where(/## The new rule/)];
+  for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], 'in order: ' + i);
+  // The two functions it changes, in order, each with --no-verify-jwt; nothing else.
+  const cmds = [...part.matchAll(/^npx supabase functions deploy (\S+) --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt$/gm)].map((m) => m[1]);
+  assert.deepEqual(cmds, ['ezcater-connect', 'ezcater-webhook']);
+  const root = new URL('../../', import.meta.url);
+  const shipsSync = (slug) => sharedDepsOf(slug, {
+    read: (p) => readFileSync(new URL(p, root), 'utf8'),
+    exists: (p) => existsSync(new URL(p, root)),
+    list: (d) => { try { return readdirSync(new URL(d + '/', root)); } catch { return []; } },
+  }).includes('supabase/functions/_shared/ezcaterMenuSync.ts');
+  assert.ok(shipsSync('ezcater-connect') && shipsSync('ezcater-webhook'), 'both ship the file the marker is in');
+  // The live proof reads what Supabase serves into a new empty folder, and the marker is new code only.
+  const loop = part.match(/^for fn in (.+); do$/m);
+  assert.deepEqual(loop[1].split(' '), ['ezcater-connect', 'ezcater-webhook']);
+  assert.match(part, /^LIVE=\$\(mktemp -d\)$/m);
+  const marker = part.match(/^grep -a -c '([^']+)' "\$LIVE"\/\*\.eszip$/m);
+  assert.ok(marker, 'the grep line');
+  assert.ok(read('../../supabase/functions/_shared/ezcaterMenuSync.ts').includes(`'${marker[1]}'`), 'the marker is a string in the shared code');
+  const everywhere = (dir) => readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? everywhere(dir + d.name + '/') : [dir + d.name]));
+  const holders = everywhere('supabase/functions/').filter((f) => readFileSync(new URL(f, root), 'utf8').includes(marker[1]));
+  assert.deepEqual(holders, ['supabase/functions/_shared/ezcaterMenuSync.ts'], 'no code v5.9.9 ships has it');
+  // Plain words for Peter.
+  assert.match(part, /20260919m_OPS_ezcater_menu_sync_v1\.sql/);
+  assert.match(part, /press Sync ezCater menu/);
+  assert.match(part, /Tap \*\*Still right\*\*, or \*\*Change\*\*/);
+  assert.match(part, /Most single size items are like this/);
+  assert.match(part, /an old tab's save is refused, and it says to reload/);
+  assert.match(part, /A match is used only for the exact name and size it was made for/);
   assert.doesNotMatch(note, /[\u2013\u2014]/);
+  assert.doesNotMatch(part, /\S - \S/);
+});
+
+test('no em or en dashes in the files this change wrote', () => {
+  for (const p of ['../../supabase/functions/_shared/ezcaterMenuSync.ts', '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts',
+    '../../supabase/functions/_shared/ezcater-match-ingest.ts', '../../supabase/functions/ezcater-connect/index.ts',
+    './ezcaterItemRows.js', '../backoffice/sections/EzcaterItemMatching.jsx', './ezcaterMenuSyncV1.test.js']) {
+    assert.doesNotMatch(read(p), /[\u2013\u2014]/, p);
+  }
 });

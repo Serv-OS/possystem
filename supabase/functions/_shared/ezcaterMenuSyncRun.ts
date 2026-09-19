@@ -8,7 +8,7 @@
 
 import { readMatchInputs } from './ezcater-match-ingest.ts';
 import {
-  claimSync, finishSync, flattenMenus, planMenuSync, readCatererMenus, venueDate, writeSyncPlan,
+  claimSync, finishSync, flattenMenusWithNotes, planMenuSync, readCatererMenus, venueDate, writeSyncPlan,
   type EzAsk,
 } from './ezcaterMenuSync.ts';
 
@@ -100,7 +100,7 @@ export async function runMenuSync(
     }
     if (!read) return await fail(problems[0] || 'ezCater did not send a menu.');
 
-    const entries = flattenMenus(menus);
+    const { entries, notes } = flattenMenusWithNotes(menus);
     const plan = planMenuSync({
       entries, existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups,
       locationId, nowIso, complete: problems.length === 0, menuOk: input.menuOk,
@@ -111,7 +111,7 @@ export async function runMenuSync(
     const status = problems.length ? 'partial' : 'ok';
     const counts = {
       ...plan.counts, inserted: wrote.inserted, refreshed: wrote.refreshed, redecided: wrote.redecided,
-      baselined: wrote.baselined, menus: menus.length,
+      sameName: notes.sameName.length, menus: menus.length,
     };
     const bits = [
       `${plan.counts.items + plan.counts.sizes} items and sizes`,
@@ -119,14 +119,18 @@ export async function runMenuSync(
       `${plan.counts.autoLinked} matched by exact name`,
       `${plan.counts.toDecide} for you to match`,
     ];
-    // An automatic match whose names no longer match exactly (their name or size changed, or ours).
+    // Staff matches from before the sync, on a product whose exact name is the one they matched.
+    if (plan.counts.carried) bits.push(`${plan.counts.carried} of your earlier matches kept`);
+    // An automatic match whose names no longer match exactly (ours renamed or gone).
     if (plan.counts.cleared) bits.push(`${plan.counts.cleared} automatic match${plan.counts.cleared === 1 ? '' : 'es'} taken off because the names no longer match exactly`);
-    // A staff match is never changed by a sync; when its ezCater name or size changed, staff look again.
-    if (plan.counts.lookAgain) bits.push(`${plan.counts.lookAgain} of your matches to check again: ezCater changed the name or size, so those print by name until you do`);
+    // A staff match made for a different name than the synced one (from before the sync).
+    if (plan.counts.lookAgain) bits.push(`${plan.counts.lookAgain} of your matches to check again: the ezCater name is not the one you matched, so those print by name until you press Still right or Change`);
+    // Two sizes of one item with the same name: no name says which one an order means.
+    if (notes.sameName.length) bits.push(`${notes.sameName.length} size${notes.sameName.length === 1 ? '' : 's'} with the same name as another size of the same item, so ${notes.sameName.length === 1 ? 'it prints' : 'they print'} by name (give each size its own name on ezCater): ${notes.sameName.slice(0, 3).join('; ')}`);
     if (!input.menuOk) bits.push('our menu could not be read whole, so nothing new was matched automatically');
     const message = (menus.length ? 'Synced ' + bits.join(', ') + '.' : 'ezCater has no current menu for this venue.')
       + (problems.length ? ' Some of it did not complete: ' + problems[0] : '');
-    await finishSync(sb, locationId, claim as string, status, counts, problems.length ? problems.join('; ').slice(0, 1000) : null);
+    await finishSync(sb, locationId, claim as string, status, counts, problems.length ? problems.join('; ').slice(0, 1000) : null, nowIso);
     return { ok: true, status, message, counts, optionsRead, menus: menus.map((m) => s(m?.name)).filter(Boolean) };
   } catch (e) {
     console.warn('[ezcater-menu-sync] failed:', errText(e));

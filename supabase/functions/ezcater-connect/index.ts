@@ -17,10 +17,11 @@
 //     items_list     -> the ezCater item names seen on this venue, and what
 //                       each one is matched to
 //     items_save     -> match one of their names to one of ours, silence it, or
-//                       clear it back to unmatched (a synced SIZE row by its key)
+//                       clear it back to unmatched (after 20260919m: a synced row,
+//                       by the key the sync gave it, update only)
 //     menu_sync      -> "Sync ezCater menu": read the current ezCater menus of the
-//                       venue's caterers into ezcater_item_links, exact names auto
-//                       linked (_shared/ezcaterMenuSync.ts)
+//                       venue's caterers into ezcater_item_links, one row per exact
+//                       full name, exact names auto linked (_shared/ezcaterMenuSync.ts)
 //   POST { action: 'menu_sync_due' } with the service role (pg_cron, hourly):
 //                       the daily sync of every venue that is due
 //
@@ -43,7 +44,7 @@ import {
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 import {
-  readAllLinks, isMissingSyncColumn, LINK_PAGE_SIZE, lookAgainOf, fullNameOf,
+  readAllLinks, isMissingSyncColumn, isSyncKey, LINK_PAGE_SIZE, lookAgainOf, fullNameOf,
 } from '../_shared/ezcaterMenuSync.ts';
 import { runMenuSync, runDueSyncs } from '../_shared/ezcaterMenuSyncRun.ts';
 
@@ -568,8 +569,9 @@ Deno.serve(async (req) => {
             .eq('location_id', opsLocationId).maybeSingle();
           lastSync = sy || null;
         }
-        // LOOK AGAIN: a staff decision whose ezCater name or size changed since the staff saved it
-        // (a sync never changes it). Worked out here, with the sync's own name rules.
+        // LOOK AGAIN: a staff decision on a synced row made for a different name than the row's
+        // exact full name (carried over from before the sync). Worked out here, with the sync's
+        // own name rules (lookAgainOf).
         const links = syncReady
           ? res.rows.map((r: any) => { const l = lookAgainOf(r); return { ...r, look_again: l.lookAgain, now_as: l.now }; })
           : res.rows;
@@ -588,60 +590,34 @@ Deno.serve(async (req) => {
       }
 
       case 'items_save': {
-        // A SYNCED SIZE ROW (one size of an item with several) is saved by its key, and only
-        // ever UPDATED: its key comes from the menu sync (sizeRowKey), never from a name typed in
-        // a browser, so this can decide a size row but never create one.
-        const sizeKey = String(body?.ez_key || '').trim();
-        if (body?.size_row === true) {
-          if (!sizeKey.includes('|size:')) return json({ error: 'that is not a size row' }, 400);
-          const ignoredS = body?.ignored === true;
-          const target = ignoredS ? null : (String(body?.menu_item_id || '').trim() || null);
-          if (target) {
-            const { data: mi } = await sb.from('menu_items')
-              .select('id').eq('location_id', opsLocationId).eq('id', target)
-              .not('archived', 'is', true).maybeSingle();
-            if (!mi) return json({ error: 'that item is not on this menu' }, 400);
-          }
-          // What the person SAW (the name and size their screen showed, sent back by the card), so
-          // a later sync that changes either asks them to look again. Never read from the row now:
-          // a screen loaded before a sync must not confirm a name it never showed.
-          const seenSize = String(body?.seen_size || '').trim() || sizeKey.split('|size:')[1] || '';
-          const decidedAs = fullNameOf({ kind: 'item', name: String(body?.ez_name || '').trim() || sizeKey.split('|size:')[0], sizeName: seenSize }).slice(0, 500);
-          const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
-            .update({
-              menu_item_id: target,
-              option_id: null,
-              source: 'manual',
-              matched_by: ignoredS ? 'ignored' : (target ? (access.userId === 'service' ? 'service' : access.userId) : null),
-              decided_as: decidedAs,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('location_id', opsLocationId).eq('kind', 'item').eq('ez_key', sizeKey)
-            .not('ez_size_name', 'is', null)
-            .select('ez_key');
-          if (uErr) {
-            if (isAbsentTable(uErr)) return json({ ok: true, enabled: false });
-            return json({ error: uErr.message }, 500);
-          }
-          if (!Array.isArray(upd) || !upd.length) return json({ error: 'that size is not on the synced menu any more. Sync the menu and try again.' }, 404);
-          return json({ ok: true, enabled: true, ez_key: sizeKey });
-        }
+        // WHICH SIDE OF 20260919m. Before it, a save is exactly main's (a row keyed by the name,
+        // the rules orders use then). After it, orders only use SYNCED rows, keyed by their exact
+        // full name, so a save names a synced row by its key and only ever UPDATES it: it can
+        // decide a row but never create one. A save of any other row after the migration comes
+        // from a Back Office tab loaded before it (or before this release) and would decide a row
+        // no order reads, so it is refused and the page asks to be reloaded.
+        const probe = await sb.from('ezcater_item_links').select('synced_at').eq('location_id', opsLocationId).limit(1);
+        if (probe.error && isAbsentTable(probe.error)) return json({ ok: true, enabled: false });
+        if (probe.error && !isMissingSyncColumn(probe.error)) return json({ error: probe.error.message }, 500);
+        const syncReady = !probe.error;
 
         const kind = body?.kind === 'option' ? 'option' : 'item';
         const ezName = String(body?.ez_name || '').trim();
         const ezGroup = kind === 'option' ? (String(body?.ez_group || '').trim() || null) : null;
         if (!ezName) return json({ error: 'ez_name required' }, 400);
 
-        // The key is rebuilt from the name with the SAME rules the matcher uses
-        // at read time, never taken from the client. A key that did not agree
-        // with its own name would be a row nothing ever looks up again.
-        const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
-        if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
-
         const ignored = body?.ignored === true;
         const menuItemId = ignored ? null : (String(body?.menu_item_id || '').trim() || null);
         const optionId = ignored ? null : (String(body?.option_id || '').trim() || null);
         if (kind === 'item' && optionId) return json({ error: 'an item cannot be matched to an option' }, 400);
+
+        const syncedKey = String(body?.ez_key || '').trim();
+        if (syncReady && (body?.synced !== true || !isSyncKey(syncedKey))) {
+          return json({ error: 'This page is out of date. Reload it, then match again.', code: 'stale_page' }, 409);
+        }
+        if (!syncReady && body?.synced === true) {
+          return json({ error: 'The menu sync is not switched on yet. Reload this page.', code: 'stale_page' }, 409);
+        }
 
         // Verify the target is really ours AND really on this venue, so a bad
         // or stale id cannot be saved as a match that silently routes nothing.
@@ -667,38 +643,52 @@ Deno.serve(async (req) => {
         const matchedBy = ignored ? 'ignored'
           : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : null);
 
-        const decision: Record<string, unknown> = {
+        if (syncReady) {
+          // A SYNCED ROW, by the key the sync gave it. decided_as is what the person SAW (the
+          // name, size or group their screen showed, sent back by the card), never read back
+          // from the row: a match made for a different name than the row's exact full name is
+          // then flagged to look at again (lookAgainOf), and orders do not use it until it is.
+          const decidedAs = fullNameOf({
+            kind, name: ezName, group: ezGroup || '', sizeName: kind === 'item' ? String(body?.seen_size || '').trim() : '',
+          }).slice(0, 500);
+          const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
+            .update({
+              menu_item_id: menuItemId,
+              option_id: optionId,
+              source: 'manual',          // a person did this, so a later auto pass must not overrule it
+              matched_by: matchedBy,
+              decided_as: decidedAs,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('location_id', opsLocationId).eq('kind', kind).eq('ez_key', syncedKey)
+            .not('synced_at', 'is', null)
+            .select('ez_key');
+          if (uErr) {
+            if (isAbsentTable(uErr)) return json({ ok: true, enabled: false });
+            return json({ error: uErr.message }, 500);
+          }
+          if (!Array.isArray(upd) || !upd.length) return json({ error: 'That ezCater item is not on the synced menu. Sync the menu, then try again.' }, 404);
+          return json({ ok: true, enabled: true, ez_key: syncedKey });
+        }
+
+        // BEFORE 20260919m: exactly main's save. The key is rebuilt from the name with the SAME
+        // rules the matcher uses at read time, never taken from the client. A key that did not
+        // agree with its own name would be a row nothing ever looks up again.
+        const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
+        if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
+
+        const { error } = await sb.from('ezcater_item_links').upsert({
+          location_id: opsLocationId,
+          kind,
+          ez_key: ezKey,
+          ez_name: ezName,
+          ez_group: ezGroup,
           menu_item_id: menuItemId,
           option_id: optionId,
           source: 'manual',          // a person did this, so a later auto pass must not overrule it
           matched_by: matchedBy,
           updated_at: new Date().toISOString(),
-        };
-        // What the person saw (their screen's name and, for a single size item, its one size), so a
-        // later menu sync that changes either asks them to look again. The column arrives with
-        // 20260919m; before it the save is exactly as it was.
-        decision.decided_as = fullNameOf({
-          kind, name: ezName, group: ezGroup || '', onlySize: kind === 'item' ? String(body?.seen_size || '').trim() : '',
-        }).slice(0, 500);
-
-        // AN EXISTING ROW IS UPDATED, NEVER RENAMED: a menu sync may have refreshed its ezCater name
-        // since this screen loaded, and writing the screen's older spelling back would hide that
-        // change from "look again". Only a name no order or sync has written yet is inserted.
-        const updateRow = () => sb.from('ezcater_item_links').update(decision)
-          .eq('location_id', opsLocationId).eq('kind', kind).eq('ez_key', ezKey).select('ez_key');
-        let { data: updated, error } = await updateRow();
-        if (error && isMissingSyncColumn(error)) {
-          delete decision.decided_as;
-          ({ data: updated, error } = await updateRow());
-        }
-        if (!error && !(Array.isArray(updated) && updated.length)) {
-          const fresh: Record<string, unknown> = { location_id: opsLocationId, kind, ez_key: ezKey, ez_name: ezName, ez_group: ezGroup, ...decision };
-          ({ error } = await sb.from('ezcater_item_links').upsert(fresh, { onConflict: 'location_id,kind,ez_key' }));
-          if (error && isMissingSyncColumn(error)) {
-            delete fresh.decided_as;
-            ({ error } = await sb.from('ezcater_item_links').upsert(fresh, { onConflict: 'location_id,kind,ez_key' }));
-          }
-        }
+        }, { onConflict: 'location_id,kind,ez_key' });
         if (error) {
           if (isAbsentTable(error)) return json({ ok: true, enabled: false });
           return json({ error: error.message }, 500);

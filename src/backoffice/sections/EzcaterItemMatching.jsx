@@ -26,7 +26,8 @@ import {
   rowsFrom, ofKind, countRows, outstandingLine, seenLine, theirLabel, syncLine,
   ourItemsFrom, ourGroupsFrom, suggestionsFor, searchOurItems,
   matchedLabel, saveBody, applySaved, isMatchingOff,
-  liveRows, offMenuRows, lookAgainCount, lookAgainLine, lookAgainNote, offMenuLine,
+  liveRows, offMenuRows, lookAgainCount, lookAgainLine, lookAgainNote, offMenuLine, olderNote,
+  goneCount, goneLine,
 } from '../../lib/ezcaterItemRows';
 // v5.8.100: hand the venue's item codes over, so ezCater can put them on their
 // side and this screen stops having anything to ask about.
@@ -176,6 +177,8 @@ export default function EzcaterItemMatching({ locationId }) {
   const [syncing, setSyncing] = useState(false);
   // 20260919m has run: orders only use matches made before the order, on the synced menu.
   const [syncReady, setSyncReady] = useState(false);
+  // The rows from before the menu sync, read only, on request.
+  const [showOlder, setShowOlder] = useState(false);
 
   const ourItems = useMemo(() => ourItemsFrom(rawItems), [rawItems]);
   const ourGroups = useMemo(() => ourGroupsFrom(rawGroups), [rawGroups]);
@@ -244,7 +247,8 @@ export default function EzcaterItemMatching({ locationId }) {
         const ready = links?.menu_sync_ready === true;
         setEnabled(true);
         setSyncReady(ready);
-        setRows(rowsFrom(links?.links, { syncReady: ready }));
+        // menuAt: the last whole sync. A synced name it did not write is one ezCater no longer sells.
+        setRows(rowsFrom(links?.links, { syncReady: ready, menuAt: links?.last_sync?.last_ok_at || null }));
         setLastSync(links?.last_sync || null);
       }
       setRawItems(itemsRes?.data || []);
@@ -307,11 +311,14 @@ export default function EzcaterItemMatching({ locationId }) {
     setSyncing(false);
   }, [locId, syncing, load]);
 
-  // Once the sync is set up, a row no sync wrote can never route an order: it is not listed.
+  // Once the sync is set up, a row no sync wrote can never route an order: it is listed apart,
+  // read only, and only when asked for.
   const live = useMemo(() => liveRows(rows), [rows]);
-  const offCount = useMemo(() => ofKind(offMenuRows(rows), tab).length, [rows, tab]);
+  const older = useMemo(() => ofKind(offMenuRows(rows), tab), [rows, tab]);
+  const offCount = older.length;
   const shown = useMemo(() => ofKind(live, tab), [live, tab]);
   const counts = useMemo(() => countRows(shown), [shown]);
+  const goneN = useMemo(() => goneCount(shown), [shown]);
   const itemCount = useMemo(() => countRows(ofKind(live, 'item')), [live]);
   const optCount = useMemo(() => countRows(ofKind(live, 'option')), [live]);
   const itemAgain = useMemo(() => lookAgainCount(ofKind(live, 'item')), [live]);
@@ -338,8 +345,9 @@ export default function EzcaterItemMatching({ locationId }) {
       <div style={{ ...S.sub, marginTop: 0 }}>
         Sync ezCater menu loads every item, size and option from ezCater before any order.
         Exact names match themselves; tell us once what each of the rest is. Orders only use
-        matches made here, before the order: nothing is guessed from a name when an order
-        arrives. Unmatched ones still print, as plain text.
+        matches made here, before the order, and only for the exact name and size matched:
+        nothing is guessed from a name when an order arrives. Unmatched ones still print, as
+        plain text.
       </div>
 
       {loading ? (
@@ -394,7 +402,30 @@ export default function EzcaterItemMatching({ locationId }) {
 
           <div style={S.count}>{outstandingLine(counts, tab)}</div>
           {shownAgain > 0 && <div style={{ ...S.sub, marginTop: 0, color: 'var(--amber)' }}>{lookAgainLine(shownAgain, tab)}</div>}
-          {offCount > 0 && <div style={{ ...S.sub, marginTop: 0 }}>{offMenuLine(offCount)}</div>}
+          {goneN > 0 && <div style={{ ...S.sub, marginTop: 0 }}>{goneLine(goneN)}</div>}
+          {offCount > 0 && (
+            <div style={{ ...S.row, marginTop: 0 }}>
+              <span style={{ ...S.sub, marginTop: 0 }}>{offMenuLine(offCount)}</span>
+              <button style={S.btnGhost} onClick={() => setShowOlder((v) => !v)}>
+                {showOlder ? 'Hide them' : 'Show them'}
+              </button>
+            </div>
+          )}
+          {showOlder && offCount > 0 && (
+            <div style={{ marginTop: 6, marginBottom: 6, paddingLeft: 10, borderLeft: '2px solid var(--bdr)' }}>
+              {older.slice(0, MAX_SHOWN).map((r) => (
+                <div key={r.kind + ':' + r.ezKey} style={{ padding: '6px 0' }}>
+                  <div style={{ ...S.theirName, fontWeight: 600, color: 'var(--t2)' }}>
+                    {r.ezGroup ? r.ezGroup + ': ' : ''}{r.ezName}
+                  </div>
+                  <div style={S.meta}>{olderNote(r, ourItems, ourGroups)}</div>
+                </div>
+              ))}
+              {older.length > MAX_SHOWN && (
+                <div style={S.meta}>Showing the first {MAX_SHOWN} of {older.length}.</div>
+              )}
+            </div>
+          )}
 
           {shown.slice(0, MAX_SHOWN).map((r) => (
             <MatchRow

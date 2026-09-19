@@ -14,33 +14,47 @@
 -- only exact name matches (every automatic row is decided again on every sync). Everything else
 -- is left for staff on the Item matching card.
 --
--- ONCE THIS FILE HAS RUN, ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER: an order line matches
--- only by its published size id on a synced row holding a staff match or an exact auto link from
--- a sync. There is no name matching at order time at all; every other line prints by name.
+-- EXACT BY CONSTRUCTION (review round 4). A synced row's ez_key is 'exact:' plus the EXACT full
+-- name of one ezCater product (the item plus its size, or the option's group and value; only
+-- case, accents and punctuation folded), so two products whose names differ by any word never
+-- share a row, its ids or a decision. Rows saved before the sync (keys without 'exact:') are
+-- never written by a sync and are never used by an order once this file has run; a staff
+-- decision on one is copied to the synced row of the same product when the sync first writes it.
+-- No new column is needed for that: ez_key is text.
+--
+-- ONCE THIS FILE HAS RUN, ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, AND ONLY FOR THE EXACT
+-- NAME THEY WERE MADE FOR: an order line matches only when its exact full name (its name plus its
+-- size name) is a synced row's, its published size id is on that row, and the row holds a staff
+-- match or an exact auto link from a sync. There is no name guessing at order time at all; every
+-- other line prints by name.
 --
 -- WHAT THIS FILE ADDS
 --   ezcater_item_links, six columns (all nullable or defaulted), and a default of 'auto' on
 --   source so the refresh upsert (which never names source) is accepted, see below:
 --     ez_ids        text[]       the PUBLISHED ezCater ids (a size id on an item row, a value
 --                                id on an option row). They change on every republish; each
---                                sync ADDS the new ones and keeps the old ones, so an order
---                                placed before a republish still matches when it is changed
---                                (unless the row's full name changed: then the old ids belonged
---                                to a different product and are dropped).
+--                                sync ADDS the new ones and keeps the old ones (a synced row's
+--                                exact full name never changes, so every id on it was published
+--                                for the same product), so an order placed before a republish
+--                                still matches when it is changed.
 --                                (The order's menuItemSizeId IS the menu's sizes.id, proven on
 --                                HKX77V; the order's item id is never matched.)
---     ez_size_name  text         set only on a row for ONE size of an item with several sizes
---                                (its key is '<item>|size:<size>'). An order line whose published
---                                size id is on a synced row (size or plain) takes ONLY that row's
---                                staff match or exact auto link (matched_by 'exact').
---     ez_only_size  text         the ONE size name of a single size item, on its plain row. A
---                                display value for the Item matching card, never in the key.
+--     ez_size_name  text         set only on a row for ONE size of an item with several sizes,
+--                                part of its exact full name ('exact:<item> <size>'). An order
+--                                line uses a synced row only when its own name and size name are
+--                                that exact full name, its published size id is on the row, and
+--                                the row holds a staff match or an exact auto link (matched_by
+--                                'exact').
+--     ez_only_size  text         the ONE size name of a single size item, shown on the Item
+--                                matching card and part of its exact full name.
 --     ez_category   text         the ezCater category, for the screen
 --     synced_at     timestamptz  when a sync last wrote this row's ezCater facts
 --     decided_as    text         the full ezCater name (item and its size, or group and value)
---                                a person saw when they last saved this row. A sync never
---                                changes a staff decision; when the name or size changes after
---                                it, the Item matching card asks staff to look at it again.
+--                                a person saw when they last saved this row, or, for a decision
+--                                a sync carried over from a row saved before it, what that row
+--                                showed. When it is not the row's exact full name the Item
+--                                matching card asks staff to look at it again, and orders do not
+--                                use the decision until they have.
 --   ezcater_menu_syncs: one row per venue, the last sync, and the ONE SYNC PER VENUE lock.
 --   ezcater_menu_sync_claim(): takes that lock in one statement (service role only).
 --   pg_cron 'ezcater-menu-sync-hourly': asks ezcater-connect for the venues that are due (no
@@ -50,7 +64,7 @@
 -- matching card lists what it always listed, and "Sync ezCater menu" says this file has to be
 -- run first.
 --
--- RUN ORDER (docs/EZCATER_V1_RELEASE.md, step 7)
+-- RUN ORDER (docs/EZCATER_V1_RELEASE.md, "Menu sync, a later release")
 --   1. Deploy ezcater-connect, then ezcater-webhook (edge functions do not deploy with the web
 --      app). Both work before this file runs: they prove the columns are missing and keep the
 --      old rules.
@@ -192,6 +206,6 @@ $$;
 --   drop column if exists ez_category, drop column if exists ez_only_size,
 --   drop column if exists ez_size_name, drop column if exists ez_ids;
 -- commit;
--- Rows a sync inserted stay (ordinary matched or unmatched rows). Size rows (keys with '|size:')
--- are then never looked up by an order and can be deleted by hand:
---   delete from public.ezcater_item_links where ez_key like '%|size:%';
+-- Rows a sync inserted stay. Their keys start with 'exact:', which no order looks up before this
+-- file, so they can be deleted by hand (the rows saved before the sync are untouched by it):
+--   delete from public.ezcater_item_links where ez_key like 'exact:%';
