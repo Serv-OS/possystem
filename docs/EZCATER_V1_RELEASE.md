@@ -6,11 +6,12 @@ Switch it on in exactly this order. Do not skip ahead.
 ## 1. Merge and let the app deploy
 
 - **Merge to main.**
-- **Wait for the app to deploy.** It deploys itself from main.
+- **Then Claude pushes main to develop.** The tills and Back Office load possystem-liard.vercel.app, which serves the develop build.
+- **Wait for the app to deploy.** Vercel deploys develop by itself.
 
 ## 2. Set the catering prep time
 
-- **Back Office, Catering settings, prep time.** Set it for this venue.
+- **Back Office, Channels, Catering ordering, Prep time (minutes).** Set it for this venue.
 - **Why:** an ezCater order goes to the kitchen at event time minus this prep time.
 
 ## 3. Check every till has the NEW version
@@ -61,8 +62,9 @@ npx supabase functions deploy ezcater-connect --project-ref tbetcegmszzotrwdtqhi
 npx supabase functions deploy ezcater-webhook --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 ```
 
-- **Then Claude runs** `node scripts/check-deploys.mjs`, from that same checkout.
-  - Every function must match.
+- **Then Claude runs** `node scripts/check-deploys.mjs`, from that same checkout, with the token from `~/.zshenv` (the one in `~/.zshrc` is old and gives 401).
+  - **The six functions above must match.**
+  - **Other functions may show as behind.** That is older drift, not this release. Do NOT run `--deploy` for them as part of this release.
   - It now dates each function by its folder AND every `_shared` file it imports.
   - So a change made only in `_shared/ezcaterCatering.js` shows as not live until redeployed.
 - **Then Claude checks the LIVE code**, not the checkout.
@@ -103,7 +105,7 @@ grep -a -c "retry('event read failed')" "$LIVE/ezcater-webhook.eszip"
 ## 6. Place a fresh test order
 
 - **Place it on ezCater.** Make it more than the prep time ahead.
-- **Check Back Office Catering.** It shows as "ezCater" plus the order number.
+- **Check Back Office, Channels, Advance orders.** It shows as "ezCater" plus the order number.
 - **Check the fire time.** It goes to the kitchen at event time minus prep time.
 - **If ezCater has not accepted it** by then, it is held and the bell shows one urgent alert.
 

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.9',
+    date: '19 Sep 2026',
+    items: [
+      'ezCater orders now arrive as catering orders. They show in Advance orders as "ezCater" plus the ezCater order number, and go to the kitchen at the event time minus your catering prep time, the same way your own catering orders do. Before, an ezCater order was saved in a way no screen picked up, so it never reached the till or the kitchen.',
+      'ezCater collects the payment, so an ezCater order always reads as paid. The till never asks for payment, no courier is booked, and ServOS never texts or emails the ezCater customer (ezCater does that).',
+      'An order ezCater has not accepted yet is held, and shows as Awaiting ezCater acceptance. If it is still not accepted when it is due in the kitchen, the bell shows one urgent alert.',
+      'Changes made on ezCater before the kitchen has the order update it in place. Changes after that, and cancels after that, raise a clear alert (the same popup and chime as a delivery app cancel) so the kitchen can stop.',
+      'A finished order never comes back: a late message from ezCater about an order you already collected does nothing.',
+      'Catering orders that were cancelled or already collected are never sent to the kitchen, for every catering order, not just ezCater.',
+    ],
+  },
+  {
     v: '5.9.8',
     date: '18 Sep 2026',
     items: [
