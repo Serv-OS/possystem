@@ -31,14 +31,19 @@ for line in o.splitlines():
         predicted[parts[1]] = parts[3]
 expect('runbook pre-check query runs', r == 0 and len(predicted) >= 8, e + o)
 
-out, err, rc = t.apply('20260919a_OPS_fence_1_safe_now.sql')
+out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
 expect('file A applies cleanly (one transaction)', rc == 0, err[-2000:])
 print('   verify row:', last(out))
-out2, err2, rc2 = t.apply('20260919a_OPS_fence_1_safe_now.sql')
+out2, err2, rc2 = t.apply('20260919a_OPS_fence_1_after_release.sql')
 expect('file A applies a second time (idempotent)', rc2 == 0, err2[-2000:])
-expect('verify row: 4 allow all left, codes not readable, no truncate, no untrusted links, stamp trigger',
+expect('verify row: 4 allow all left, codes not readable, no truncate, no untrusted links, stamp trigger, rules and stamp ledger closed',
        last(out2).split('|')[0] == 'active_sessions, kds_tickets, order_queue, table_reservations'
-       and last(out2).split('|')[4:] == ['f', '0', '0', '0', '0', 't'], last(out2))
+       and last(out2).split('|')[4:] == ['f', '0', '0', '0', '0', 't', 'f', 'f'], last(out2))
+o, _, _ = run("select set_at < now() - interval '1 second' or true, count(*) from public.fence_state where key = 'file_a' group by 1")
+o2, _, _ = run("update public.fence_state set set_at = now() - interval '5 hours' where key = 'file_a' returning 1")
+out3, err3, rc3 = t.apply('20260919a_OPS_fence_1_after_release.sql')
+o3, _, _ = run("select set_at < now() - interval '4 hours' from public.fence_state where key = 'file_a'")
+expect('running file A again keeps the time it FIRST ran (file 2 counts its day from that)', rc3 == 0 and o3 == 't', o3 + err3[-500:])
 
 # ---------- grandfathering
 o, e, r = run("select name, coalesce(bound_via,'-'), status, coalesce(pairing_code,'-') from public.devices order by name")
@@ -183,6 +188,26 @@ o, e, r = as_('newbie', f"insert into public.user_locations (user_id, location_i
 expect('login cannot claim an unlinked venue it did not create', r != 0, e)
 o, e, r = as_('newbie', "update public.user_profiles set org_id = '00000000-0000-4000-8000-0000000000b2' where id = auth.uid();")
 expect('login with no company cannot adopt someone else company', r != 0, e)
+# LOW (fix round 2): a new venue never chooses its venue code (the Adyen store reference)
+beta_code, _, _ = run(f"select venue_code from public.locations where id = '{L3}'")
+o, e, r = as_('mallory', f"""
+do $$ declare v_org uuid; v_code text; v_future text; begin
+  insert into public.organisations (name, slug) values ('Mal code', 'mal-code') returning id into v_org;
+  insert into public.locations (org_id, name, venue_code) values (v_org, 'Copycat', '{beta_code}') returning venue_code into v_code;
+  if v_code = '{beta_code}' then raise exception 'COPIED %', v_code; end if;
+  insert into public.locations (org_id, name, venue_code) values (v_org, 'Squatter', 'SV-9999') returning venue_code into v_future;
+  if v_future = 'SV-9999' then raise exception 'SQUATTED %', v_future; end if;
+  raise notice 'CODES_OK % %', v_code, v_future;
+end $$;""")
+expect('LOW: a new venue cannot copy another venue\'s code, nor take a future one: the server gives it the next code', r == 0 and 'CODES_OK' in e, e)
+o, e, r = as_('newbie', """
+do $$ declare v_org uuid; v_code text; begin
+  insert into public.organisations (name, slug) values ('Plain', 'plain-co') returning id into v_org;
+  insert into public.locations (org_id, name) values (v_org, 'Plain One') returning venue_code into v_code;
+  if v_code !~ '^SV-[0-9]{4}$' then raise exception 'BAD CODE %', v_code; end if;
+  raise notice 'PLAIN_OK %', v_code;
+end $$;""")
+expect('a venue made the normal way keeps the code the database gave it', r == 0 and 'PLAIN_OK' in e, e)
 
 # ---------- BLOCKER 1: a login pairs itself as a till, then points the row at a victim venue
 # Steps 1 to 5, exactly as the reviewer ran them, committed (mallory is a real login).
@@ -343,6 +368,34 @@ run("delete from public.fence_attempts")
 o, e, r = as_commit('dev4', "select (public.device_issue_secret()->>'device_secret');")
 secret = last(o)
 expect('a kept kiosk collects its device secret', len(secret) == 64, o + e)
+# LOW (fix round 2): the same session asking again gets the SAME secret, never a new one
+o, e, r = as_commit('dev4', "select (public.device_issue_secret()->>'device_secret');")
+expect('LOW: asking again (a second boot check at the same moment) returns the same secret', last(o) == secret, o + e)
+o, e, r = as_commit('dev4', "select (public.claim_device_v2('')->>'device_secret');")
+expect('LOW: so does claim_device_v2 on the already linked kiosk', last(o) == secret, o + e)
+o, _, _ = run(f"select device_secret_hash = encode(sha256(convert_to('{secret}', 'UTF8')), 'hex') from public.devices where id = '{DEV['kiosk1']}'")
+expect('and the server still holds that secret', o == 't', o)
+o, _, _ = run(f"select count(*) from public.device_claim_log where device_id = '{DEV['kiosk1']}' and event = 'secret_issued'")
+expect('only the first issue is logged', o == '1', o)
+import threading, time as _time
+holder_out = {}
+def _issue(tag, delay, hold):
+    _time.sleep(delay)
+    oo, ee, rr = as_commit('dup', f"select (public.device_issue_secret()->>'device_secret'); select pg_sleep({hold});")
+    holder_out[tag] = [l for l in oo.splitlines() if len(l.strip()) == 64]
+th1 = threading.Thread(target=_issue, args=('a', 0, 2))
+th2 = threading.Thread(target=_issue, args=('b', 0.5, 0))
+th1.start(); th2.start(); th1.join(); th2.join()
+sa, sb = (holder_out.get('a') or [''])[0], (holder_out.get('b') or [''])[0]
+o, _, _ = run(f"select device_secret_hash = encode(sha256(convert_to('{sa}', 'UTF8')), 'hex') from public.devices where id = '{DEV['dupa']}'")
+expect('LOW: two calls from one till at the same moment both get the secret the server keeps', len(sa) == 64 and sa == sb and o == 't', f'{sa} {sb} {o}')
+run(f"update public.device_secret_stash set issued_at = now() - interval '11 minutes' where device_id = '{DEV['kiosk1']}'")
+o, e, r = as_commit('dev4', "select (public.device_issue_secret()->>'device_secret');")
+secret2 = last(o)
+expect('after 10 minutes a till that still asks (it has none) gets a new one', len(secret2) == 64 and secret2 != secret, o + e)
+o, e, r = as_('dev1b', f"select public.reclaim_device('{DEV['kiosk1']}', '{secret}')->>'reason';")
+expect('and the old one no longer re-links', last(o) == 'invalid', o + e)
+secret = secret2
 o, e, r = as_commit('dev1b', f"select public.reclaim_device('{DEV['kiosk1']}', '{secret}')->>'ok'; select public.pos_can_access('{L1}'::text);")
 expect('reclaim with the device secret re-links a changed login', last(o) == 't', o + e)
 o, _, _ = run(f"select location_id, bound_via from public.devices where id = '{DEV['kiosk1']}'")
@@ -383,10 +436,13 @@ select status || '|' || coalesce(bound_via, '-') from public.devices where name 
 """)
 expect('kiosk pairing with claim_device_v2 then its own row write works', last(o) == 'online|code', o + e)
 
-# ---------- place_public_order: the server decides paid
-def proof(ref, kind, amount, loc=L1, proc='stripe', order_ref=None):
-    meta = 'null' if order_ref is None else f"'{json.dumps({'order_ref': order_ref})}'::jsonb"
-    run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by, meta) values ('{proc}', '{ref}', '{kind}', '{loc}', {amount}, 'test', {meta})")
+# ---------- place_public_order: the server decides paid, from ITS OWN valuation (fix round 2)
+def proof(ref, kind, amount, loc=L1, proc='stripe', order_ref=None, meta=None):
+    m = dict(meta or {})
+    if order_ref is not None:
+        m['order_ref'] = order_ref
+    mj = 'null' if not m else f"'{json.dumps(m)}'::jsonb"
+    run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by, meta) values ('{proc}', '{ref}', '{kind}', '{loc}', {amount}, 'test', {mj})")
     o, _, _ = run(f"select id from public.payment_proofs where payment_ref = '{ref}' and kind = '{kind}'")
     return o
 
@@ -399,91 +455,302 @@ def place(who, order, check=None, proofs=(), commit=True, ip=None):
     ids = "array[" + ','.join(f"'{p}'" for p in proofs) + "]::uuid[]" if proofs else "'{}'::uuid[]"
     return fn(who, f"select public.place_public_order('{L1}', '{q(order)}'::jsonb, {c}, {ids});", ip=ip)
 
-burger = [{'name': 'Burger', 'price': 20, 'qty': 1}]
-p1 = proof('pi_card_1', 'card', 2500)
+NAMES = {'mi-burger': 'Burger', 'mi-feast': 'Feast', 'mi-tea': 'Tea', 'mi-beer': 'Beer', 'mi-pizza': 'Pizza',
+         'mi-meal': 'Meal', 'mi-coffee': 'Coffee', 'mi-tray': 'Tray', 'mi-wine': 'Wine', 'mi-chips': 'Chips',
+         'mi-wrap': 'Wrap', 'mi-fries': 'Fries', 'mi-donut': 'Donut', 'mi-cake': 'Cake',
+         'mi-cola-half': 'Cola \u2014 Half', 'mi-cola-pint': 'Cola \u2014 Pint'}
+
+def line(item, price, qty=1, **kw):
+    return dict({'itemId': item, 'name': NAMES.get(item, item), 'price': price, 'qty': qty}, **kw)
+
+def chk(ref, tail='a1b2'):
+    return f'chk-{ref}-{tail}'
+
+def pricing(ref):
+    o, _, _ = run(f"select coalesce(customer->'order_pricing', '{{}}'::jsonb) from public.order_queue where ref = '{ref}'")
+    return json.loads(o or '{}')
+
+def state(ref):
+    o, _, _ = run(f"select paid::text || '|' || coalesce(customer->>'payment_state', '-') from public.order_queue where ref = '{ref}'")
+    return o
+
+def online(ref, items, total, discounts=None, customer=None, type_='collection'):
+    o = {'ref': ref, 'source': 'online', 'type': type_, 'items': items, 'total': total, 'customer': customer or {}}
+    if discounts is not None:
+        o['discounts'] = discounts
+    return o
+
+burger = [line('mi-burger', 20)]
+
+# A real paid online order: the menu price, an option, forged server fields ignored.
+p1 = proof('pi_card_1', 'card', 2500, order_ref='OL-OK1')
 o, e, r = place('customer', {'ref': 'OL-OK1', 'source': 'online', 'type': 'collection', 'status': 'collected', 'staff': 'Evil',
-                             'items': [{'name': 'Burger', 'price': 20, 'qty': 1, 'mods': [{'name': 'Bacon', 'price': 5}]}], 'total': 25,
-                             'customer': {'name': 'Ann', 'phone': '07700 900123', 'paid': True}},
+                             'items': [line('mi-burger', 20, mods=[{'id': 'opt-bacon', 'name': 'Bacon', 'price': 5}])], 'total': 25,
+                             'customer': {'name': 'Ann', 'phone': '07700 900123', 'paid': True, 'order_pricing': {'due_minor': 1}}},
                 {'id': 'chk-ok-1', 'total': 25, 'subtotal': 20.83, 'tax_amount': 4.17, 'processor': 'stripe',
                  'stripe_payment_intent_id': 'pi_card_1', 'status': 'refunded', 'staff_id': 'x'}, [p1])
 res = j(o)
 expect('a real paid online order with a covering card proof is paid', res.get('paid') is True and res.get('check_id') == 'chk-ok-1', o + e)
 tok = res.get('track_token', '')
 o, _, _ = run("select status, staff is null, paid, placed_via, customer ? 'paid', (customer->'order_pricing'->>'due_minor') from public.order_queue where ref = 'OL-OK1'")
-expect('order row: server status, no staff, paid, rpc, phone paid flag stripped, amount due recorded', o == 'prep|t|t|rpc|f|2500', o)
+expect('order row: server status, no staff, paid, rpc, phone paid flag stripped, amount due from the server', o == 'prep|t|t|rpc|f|2500', o)
 o, _, _ = run("select status, source, total from public.closed_checks where id = 'chk-ok-1'")
 expect('paid check written by the server', o.startswith('paid|online|25'), o)
+o, _, _ = run("select items->0->'voided' from public.closed_checks where id = 'chk-ok-1'")
+expect('the check carries the server lines (voided false)', o == 'false', o)
 
-# the exact 18 Sep exploit: 95 pound order, check total 1p, 1p card proof
+# ----- normal orders, priced by the server
+p = proof('pi_mods', 'card', 2450, order_ref='OL-MODS')
+o, e, r = place('customer', online('OL-MODS', [line('mi-burger', 20, mods=[{'id': 'opt-bacon', 'name': 'Bacon', 'price': 5},
+                                                                         {'id': 'opt-noonion', 'name': 'No onions', 'price': -0.5}])], 24.5),
+                {'id': chk('OL-MODS'), 'total': 24.5}, [p])
+expect('NORMAL: a burger with bacon (+5) and no onions (-0.50) at 24.50 is paid', j(o).get('paid') is True and pricing('OL-MODS').get('goods_minor') == 2450, o + e)
+p = proof('pi_var1', 'card', 302, order_ref='OL-VAR1')
+o, e, r = place('customer', online('OL-VAR1', [line('mi-cola-half', 3.02)], 3.02), {'id': chk('OL-VAR1'), 'total': 3.02}, [p])
+expect('NORMAL: a size (its own menu row) at its collection price is paid', j(o).get('paid') is True, o + e)
+p = proof('pi_var2', 'card', 285, order_ref='OL-VAR2')
+o, e, r = place('customer', online('OL-VAR2', [line('mi-cola-half', 2.85)], 2.85, type_='delivery'), {'id': chk('OL-VAR2'), 'total': 2.85}, [p])
+expect('NORMAL: the same size on delivery at its delivery price (2.85) is paid', j(o).get('paid') is True, o + e)
+p = proof('pi_var3', 'card', 285, order_ref='OL-VAR3')
+o, e, r = place('customer', online('OL-VAR3', [line('mi-cola-half', 2.85)], 2.85), {'id': chk('OL-VAR3'), 'total': 2.85}, [p])
+expect('the delivery price sent on a collection order counts at the collection price (short)', j(o).get('paid') is False and state('OL-VAR3') == 'false|short', o + e)
+o, _, _ = run("select items->0->>'name' from public.order_queue where ref = 'OL-VAR1'")
+expect('a size keeps the storefront name "Cola - Half" (a long dash)', o == 'Cola \u2014 Half', o)
+p = proof('pi_tier', 'card', 250, order_ref='OL-TIER')
+o, e, r = place('customer', online('OL-TIER', [line('mi-chips', 2.5)], 2.5), {'id': chk('OL-TIER'), 'total': 2.5}, [p])
+expect('NORMAL: an item at its happy hour menu tier price (2.50, base 4) is paid', j(o).get('paid') is True, o + e)
+p = proof('pi_tier2', 'card', 200, order_ref='OL-TIER2')
+o, e, r = place('customer', online('OL-TIER2', [line('mi-chips', 2)], 2), {'id': chk('OL-TIER2'), 'total': 2}, [p])
+expect('below every price the menu gives it: short', j(o).get('paid') is False, o + e)
+p = proof('pi_deal', 'card', 1000, order_ref='OL-DEAL')
+o, e, r = place('customer', online('OL-DEAL', [line('mi-wrap', 8), line('mi-fries', 3.5)], 10,
+                                   discounts=[{'type': 'auto', 'label': 'Meal deal', 'amount_minor': 150}]),
+                {'id': chk('OL-DEAL'), 'total': 10}, [p])
+expect('NORMAL: a meal deal (bundle rule: wrap and fries for 10) is paid at 10', j(o).get('paid') is True and pricing('OL-DEAL').get('auto_minor') == 150, o + e)
+p = proof('pi_donut', 'card', 500, order_ref='OL-DONUT')
+o, e, r = place('customer', online('OL-DONUT', [line('mi-donut', 2, qty=3)], 5), {'id': chk('OL-DONUT'), 'total': 5}, [p])
+expect('NORMAL: buy two donuts, third half price (buy X rule) is paid at 5', j(o).get('paid') is True and pricing('OL-DONUT').get('auto_minor') == 100, o + e)
+p = proof('pi_cake', 'card', 1, order_ref='OL-CAKE')
+o, e, r = place('attacker', online('OL-CAKE', [line('mi-cake', 4)], 0.01, discounts=[{'type': 'auto', 'label': 'free cake', 'amount_minor': 399}]),
+                {'id': chk('OL-CAKE'), 'total': 0.01}, [p])
+expect('rules for the till only, expired, or never live never apply online: a cake is due in full', j(o).get('paid') is False and pricing('OL-CAKE').get('auto_minor') == 0, o + e)
+
+# ----- promo codes: proven, and used up once
+p = proof('pi_promo', 'card', 1500, order_ref='OL-PROMO')
+o, e, r = place('customer', online('OL-PROMO', [line('mi-meal', 25)], 15, discounts=[{'type': 'promo', 'label': 'SAVE10', 'amount_minor': 1000}]),
+                {'id': chk('OL-PROMO'), 'total': 15}, [p])
+expect('NORMAL: a real promo code (10 off a 25 meal) is paid at 15', j(o).get('paid') is True and pricing('OL-PROMO').get('promo_minor') == 1000, o + e)
+o, _, _ = run("select uses_count, status from public.promo_codes where code = 'SAVE10'")
+o2, _, _ = run(f"select count(*) from public.promo_redemptions where idempotency_key = '{chk('OL-PROMO')}:SAVE10' and order_id = '{chk('OL-PROMO')}'")
+expect('the code is used up by the order, under the key the page\'s own promo-redeem call sends', o == '1|redeemed' and o2 == '1', o + ' ' + o2)
+o, e, r = as_('service', f"select public.promo_redeem_atomic('81000000-0000-4000-8000-000000000001', 0, '80000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', 'SAVE10', null, '{L1}', '{chk('OL-PROMO')}', null, 25, 10, '{chk('OL-PROMO')}:SAVE10')->>'result';")
+expect('so the page\'s later promo-redeem finds it done (idempotent), never a second use', last(o) == 'idempotent_hit', o + e)
+p = proof('pi_promo2', 'card', 1500, order_ref='OL-PROMO2')
+o, e, r = place('attacker', online('OL-PROMO2', [line('mi-meal', 25)], 15, discounts=[{'type': 'promo', 'label': 'SAVE10', 'amount_minor': 1000}]),
+                {'id': chk('OL-PROMO2'), 'total': 15}, [p])
+expect('EXPLOIT: a spent single use code on a second order is not a discount (short)', j(o).get('paid') is False and pricing('OL-PROMO2').get('promo_reason') == 'already_used', o + e)
+p = proof('pi_multi', 'card', 2250, order_ref='OL-MULTI')
+o, e, r = place('customer', online('OL-MULTI', [line('mi-meal', 25)], 22.5, discounts=[{'type': 'promo', 'label': 'multi10', 'amount_minor': 250}]),
+                {'id': chk('OL-MULTI'), 'total': 22.5}, [p])
+expect('NORMAL: a 10 percent code (2.50 off 25) is paid at 22.50', j(o).get('paid') is True, o + e)
+run("insert into public.fence_attempts (bucket, misses, locked_until) values ('order:unproven:ip:198.51.100.9', 0, now() + interval '10 minutes') on conflict (bucket) do update set locked_until = excluded.locked_until")
+u0, _, _ = run("select uses_count from public.promo_codes where code = 'MULTI10'")
+p = proof('pi_rate', 'card', 1, order_ref='OL-RATE')
+o, e, r = place('attacker', online('OL-RATE', [line('mi-meal', 25)], 22.5, discounts=[{'type': 'promo', 'label': 'MULTI10', 'amount_minor': 250}]),
+                {'id': chk('OL-RATE'), 'total': 22.5}, [p], ip='198.51.100.9')
+u1, _, _ = run("select uses_count from public.promo_codes where code = 'MULTI10'")
+expect('an order refused for its network (too many unproven orders) never uses a promo code up', j(o).get('reason') == 'rate' and u0 == u1, o + e + f' {u0} {u1}')
+run("delete from public.fence_attempts where bucket = 'order:unproven:ip:198.51.100.9'")
+p = proof('pi_beta', 'card', 1500, order_ref='OL-BETA')
+o, e, r = place('attacker', online('OL-BETA', [line('mi-meal', 25)], 15, discounts=[{'type': 'promo', 'label': 'BETA10', 'amount_minor': 1000}]),
+                {'id': chk('OL-BETA'), 'total': 15}, [p])
+expect('EXPLOIT: another company\'s promo code counts for nothing here', j(o).get('paid') is False and pricing('OL-BETA').get('promo_reason') == 'wrong_venue', o + e)
+o, _, _ = run("select uses_count from public.promo_codes where code = 'BETA10'")
+expect('and is not used up', o == '0', o)
+p = proof('pi_old', 'card', 1500, order_ref='OL-OLDC')
+o, e, r = place('attacker', online('OL-OLDC', [line('mi-meal', 25)], 15, discounts=[{'type': 'promo', 'label': 'OLDCODE', 'amount_minor': 1000}]),
+                {'id': chk('OL-OLDC'), 'total': 15}, [p])
+expect('a code whose offer ended counts for nothing', j(o).get('paid') is False, o + e)
+
+# ----- loyalty: only a redemption recorded for THIS order
+run(f"insert into public.loyalty_transactions (customer_id, company_id, location_id, type, points, balance_after, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 'redeem', -100, 0, 'redeem:{chk('OL-LOY')}:rw1')")
+lp = proof(f"redeem:{chk('OL-LOY')}:rw1", 'loyalty', 300, proc='loyalty')
+o, e, r = place('customer', online('OL-LOY', [line('mi-coffee', 3)], 0, discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}]),
+                {'id': chk('OL-LOY'), 'total': 0, 'loyalty': {'idempotency_key': f"redeem:{chk('OL-LOY')}:rw1", 'discount_value': 300}}, [lp])
+expect('NORMAL: a points reward worth 3 (its redemption row names this order) pays for a coffee', j(o).get('paid') is True and pricing('OL-LOY').get('loyalty_minor') == 300, o + e)
+run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{chk('OL-STAMP')}:prog1')")
+p = proof('pi_stamp', 'card', 2500, order_ref='OL-STAMP')
+o, e, r = place('customer', online('OL-STAMP', [line('mi-coffee', 3), line('mi-meal', 25)], 25, discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}]),
+                {'id': chk('OL-STAMP'), 'total': 25}, [p])
+expect('NORMAL: a stamp card free coffee (stamp redemption row) is paid at 25', j(o).get('paid') is True, o + e)
+p = proof('pi_stamp2', 'card', 500, order_ref='OL-STAMP2')
+o, e, r = place('attacker', online('OL-STAMP2', [line('mi-coffee', 3), line('mi-meal', 25)], 5, discounts=[{'type': 'loyalty', 'label': 'x', 'amount_minor': 2300}]),
+                {'id': chk('OL-STAMP2'), 'total': 5}, [p])
+expect('EXPLOIT: another order\'s real stamp redemption never discounts this one', j(o).get('paid') is False and pricing('OL-STAMP2').get('loyalty_minor') == 0, o + e)
+run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{chk('OL-BIGLOY')}:prog1')")
+p = proof('pi_bigloy', 'card', 1, order_ref='OL-BIGLOY')
+o, e, r = place('attacker', online('OL-BIGLOY', [line('mi-coffee', 3), line('mi-meal', 25)], 0.01, discounts=[{'type': 'loyalty', 'label': 'x', 'amount_minor': 2800}]),
+                {'id': chk('OL-BIGLOY'), 'total': 0.01}, [p])
+expect('EXPLOIT: a real free item reward never takes off more than the dearest single item (25 of 28)',
+       j(o).get('paid') is False and pricing('OL-BIGLOY').get('loyalty_minor') == 2500 and pricing('OL-BIGLOY').get('due_minor', 0) >= 290, o + e)
+run(f"insert into public.loyalty_transactions (customer_id, company_id, location_id, type, points, balance_after, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 'redeem', -100, 0, 'redeem:{chk('OL-FIXLOY')}:rw2')")
+lp2 = proof(f"redeem:{chk('OL-FIXLOY')}:rw2", 'loyalty', 200, proc='loyalty')
+p = proof('pi_fixloy', 'card', 1, order_ref='OL-FIXLOY')
+o, e, r = place('attacker', online('OL-FIXLOY', [line('mi-meal', 25)], 0.01, discounts=[{'type': 'loyalty', 'label': 'x', 'amount_minor': 2499}]),
+                {'id': chk('OL-FIXLOY'), 'total': 0.01}, [p, lp2])
+expect('EXPLOIT: a points reward worth 2 (recorded on its loyalty proof) never takes off more than 2',
+       j(o).get('paid') is False and pricing('OL-FIXLOY').get('loyalty_minor') == 200, o + e)
+o, e, r = as_('attacker', f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:chk-OL-FORGE-1:p');")
+expect('EXPLOIT: nobody can forge a stamp redemption from the browser any more', r != 0, e)
+o, e, r = as_('rawanon', f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem');")
+expect('not even with the raw anon key', r != 0, e)
+o, e, r = as_('attacker', "select count(*) >= 0 from public.stamp_transactions;")
+expect('stamp ledger reads are unchanged (stage 2)', last(o) == 't', o + e)
+
+# A loyalty redemption that lands after the order: the payment check counts it then.
+p = proof('pi_late', 'card', 2500, order_ref='OL-LATE')
+o, e, r = place('customer', online('OL-LATE', [line('mi-coffee', 3), line('mi-meal', 25)], 25, discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}]),
+                {'id': chk('OL-LATE'), 'total': 25}, [p])
+expect('a reward redeemed too slowly: the order arrives short, never paid', j(o).get('paid') is False and state('OL-LATE') == 'false|short', o + e)
+run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{chk('OL-LATE')}:prog1')")
+o, e, r = as_commit('customer', f"select public.verify_public_order_payment('{L1}', 'OL-LATE', array['{p}']::uuid[]);")
+expect('once the redemption row lands, Check payment finds it and the order is paid', j(o).get('paid') is True and state('OL-LATE').startswith('true|verified'), o + e)
+
+# ----- discount rules can prove a discount because nobody but Back Office writes them now
+o, e, r = as_('attacker', f"insert into public.discount_rules (location_id, name, trigger_type, trigger_category_ids, trigger_qty, reward_type, reward_value, reward_qty) values ('{L1}', 'evil', 'buy_x', '{{cat-mains}}', 0, 'free', 0, 1);")
+expect('EXPLOIT: an anonymous session cannot add a discount rule any more', r != 0, e)
+o, e, r = as_('attacker', "with u as (update public.discount_rules set reward_value = 100 returning 1) select count(*) from u;")
+expect('nor change one', last(o) == '0' or r != 0, o + e)
+o, e, r = as_('rawanon', f"insert into public.discount_rules (location_id, name) values ('{L1}', 'evil');")
+expect('nor the raw anon key', r != 0, e)
+o, e, r = as_('owner2', f"insert into public.discount_rules (location_id, name) values ('{L1}', 'evil');")
+expect('nor another venue\'s owner', r != 0, e)
+o, e, r = as_('owner1', f"insert into public.discount_rules (location_id, name) values ('{L1}', 'Staff rule'); select count(*) from public.discount_rules where location_id = '{L1}';")
+expect('the venue\'s own Back Office still adds and reads its rules', r == 0 and last(o) == '6', o + e)
+o, e, r = as_('customer', f"select count(*) from public.discount_rules where location_id = '{L1}' and active;")
+expect('customer pages still read the active rules', last(o) == '5', o + e)
+
+# ----- THE SEVEN WAYS (18 Sep review): a 95 pound Feast, 1p paid, a 1p card proof for the order
+def seven(ref, items, total=0.01, check=None, discounts=None):
+    p = proof(f'pi_{ref}', 'card', 1, order_ref=ref)
+    c = check if check is not None else {'id': chk(ref), 'total': 0.01}
+    return place('attacker', online(ref, items, total, discounts=discounts), c, [p])
+feast = [line('mi-feast', 95)]
+cases = [
+    ('OL-W1', 'promo declared in p_order.discounts (9499)', feast, None, [{'type': 'promo', 'label': 'FAKE', 'amount_minor': 9499}], 'due'),
+    ('OL-W2', 'the same through p_check.discounts (94.99)', feast, {'id': chk('OL-W2'), 'total': 0.01, 'discounts': [{'type': 'promo', 'value': 94.99}]}, None, 'due'),
+    ('OL-W3', 'a made up option priced -94.99', [line('mi-feast', 95, mods=[{'name': 'No onions', 'price': -94.99}])], None, None, 'due'),
+    ('OL-W3B', 'a real option (No onions, -0.50) sent at -94.99', [line('mi-feast', 95, mods=[{'id': 'opt-noonion', 'name': 'No onions', 'price': -94.99}])], None, None, 'due'),
+    ('OL-W4', 'a second line priced -94.99', feast + [line('mi-tea', -94.99)], None, None, 'due'),
+    ('OL-W4B', 'a second line with no id priced -94.99', feast + [{'name': 'Refund', 'price': -94.99, 'qty': 1}], None, None, 'unknown'),
+    ('OL-W5', 'quantity 0.0001', [line('mi-feast', 95, qty=0.0001)], None, None, 'due'),
+    ('OL-W6', 'the line flagged voided', [line('mi-feast', 95, voided=True)], None, None, 'due'),
+    ('OL-W7', "price '£95' (read as 0)", [line('mi-feast', '£95')], None, None, 'due'),
+    ('OL-W8', 'an unknown item id named Feast at 1p', [{'itemId': 'mi-nope', 'name': 'Feast', 'price': 0.01, 'qty': 1}], None, None, 'unknown'),
+    ('OL-W9', "another venue's item id", [{'itemId': 'mi-beta-soup', 'name': 'Feast', 'price': 0.01, 'qty': 1}], None, None, 'unknown'),
+    ('OL-W10', 'a declared automatic discount (9499)', feast, None, [{'type': 'auto', 'label': 'x', 'amount_minor': 9499}], 'due'),
+    ('OL-W11', "another venue's option (-50)", [line('mi-feast', 95, mods=[{'id': 'opt-beta-free', 'name': 'Free thing', 'price': -50}])], None, None, 'due'),
+    ('OL-W12', 'a line discount on the item', [line('mi-feast', 95, discount={'type': 'amount', 'value': 94.99})], None, None, 'due'),
+]
+for ref, what, items, check, discounts, kind in cases:
+    o, e, r = seven(ref, items, check=check, discounts=discounts)
+    res = j(o)
+    pr = pricing(ref)
+    why = (pr.get('due_minor', 0) >= 9440) if kind == 'due' else (pr.get('unknown_lines', 0) >= 1)
+    expect(f'SEVEN WAYS {ref}: {what}: NOT paid, "short", ' + ('about 95 due' if kind == 'due' else 'an item not on the menu'),
+           res.get('ok') is True and res.get('paid') is False and state(ref) == 'false|short' and why and pr.get('proven_minor') == 1,
+           o + e + json.dumps(pr))
+o, _, _ = run("select count(*) from public.closed_checks where ref like 'OL-W%'")
+expect('none of them wrote a paid check', o == '0', o)
+o, _, _ = run("select total from public.order_queue where ref = 'OL-W1'")
+expect('staff see what the order is worth (total 94.96, not 0.01)', o.startswith('94.9'), o)
+o, _, _ = run("select items->0->>'qty', items->0 ? 'voided', items->0->>'price' from public.order_queue where ref = 'OL-W5'")
+expect('the stored line has a whole quantity and the server price', o == '1|f|95.00', o)
+o, _, _ = run("select items->0 ? 'voided' from public.order_queue where ref = 'OL-W6'")
+expect('the stored line is not voided (the kitchen makes what was counted)', o == 'f', o)
+o, _, _ = run("select items->0 ? 'discount' from public.order_queue where ref = 'OL-W12'")
+expect('and carries no line discount', o == 'f', o)
+o, _, _ = run("select customer->'order_pricing'->>'unknown_lines' from public.order_queue where ref = 'OL-W8'")
+expect('an item not on the menu is counted for staff to see', o == '1', o)
+tokw, _, _ = run("select token from public.public_order_tokens where ref = 'OL-W1'")
+o, e, r = as_('rawanon', f"select public.order_track_row('{L1}', 'OL-W1', '{tokw}')->>'payment_state';")
+expect('the customer\'s tracker says the venue is checking the payment (never "short", never pay again)', last(o) == 'checking', o + e)
+
+# A cheap item's id sent under a dear item's name goes to the kitchen under its own name.
+p = proof('pi_swap', 'card', 1000, order_ref='OL-SWAP')
+o, e, r = place('attacker', online('OL-SWAP', [line('mi-tea', 10, name='Feast', kitchenName='FEAST', receiptName='Feast')], 10), {'id': chk('OL-SWAP'), 'total': 10}, [p])
+o2, _, _ = run("select items->0->>'name', coalesce(items->0->>'kitchenName', '-'), coalesce(items->0->>'receiptName', '-') from public.order_queue where ref = 'OL-SWAP'")
+expect('EXPLOIT: a tea sent as "Feast" is paid as tea and reaches the kitchen as Tea', j(o).get('paid') is True and o2 == 'Tea|-|-', o + o2)
+p = proof('pi_pz', 'card', 1200, order_ref='OL-PZ')
+o, e, r = place('customer', online('OL-PZ', [line('mi-pizza', 12, kitchenName='PIZZA')], 12), {'id': chk('OL-PZ'), 'total': 12}, [p])
+o2, _, _ = run("select items->0->>'name', items->0->>'kitchenName' from public.order_queue where ref = 'OL-PZ'")
+expect('a real kitchen name is kept', o2 == 'Pizza|PIZZA', o2)
+
+# ----- the 18 Sep exploit cases, the gift card, and the rest of the rules
 p_small = proof('pi_1p', 'card', 1)
-o, e, r = place('attacker', {'ref': 'OL-X95', 'source': 'online', 'items': [{'name': 'Feast', 'price': 95, 'qty': 1}], 'total': 95,
-                             'customer': {'name': 'X'}}, {'id': 'chk-x95', 'total': 0.01}, [p_small])
+o, e, r = place('attacker', online('OL-X95', feast, 95), {'id': 'chk-x95', 'total': 0.01}, [p_small])
 res = j(o)
 expect('EXPLOIT: a 95 pound order with a 1p check total and a 1p proof is NOT paid', res.get('ok') and res.get('paid') is False and res.get('payment_unverified') is True, o + e)
 o, _, _ = run("select count(*) from public.closed_checks where id like 'chk-x95%'")
 expect('and no paid check was written', o == '0', o)
 o, _, _ = run("select paid, customer->>'payment_state', status from public.order_queue where ref = 'OL-X95'")
-expect('the order reaches the venue marked "payment being checked", not paid', o == 'f|checking|received', o)
+expect('the order reaches the venue marked short (1p of 95 proven), not paid', o == 'f|short|received', o)
 p_loy = proof('redeem:chk-x0:rw1', 'loyalty', 1, proc='loyalty')
-o, e, r = place('attacker', {'ref': 'OL-X0', 'source': 'online', 'items': [{'name': 'Feast', 'price': 95, 'qty': 1}], 'total': 95,
-                             'customer': {}}, {'id': 'chk-x0', 'total': 0}, [p_loy])
+o, e, r = place('attacker', online('OL-X0', feast, 95), {'id': 'chk-x0', 'total': 0}, [p_loy])
 expect('EXPLOIT: a zero check total with a loyalty marker proof is NOT paid', j(o).get('paid') is False, o + e)
-p_small2 = proof('pi_1p_b', 'card', 1)
-o, e, r = place('attacker', {'ref': 'OL-XLINES', 'source': 'online', 'items': [{'name': 'Feast', 'price': 95, 'qty': 1}], 'total': 0.01,
-                             'customer': {}}, {'id': 'chk-xl', 'total': 0.01}, [p_small2])
-expect('EXPLOIT: an order total below its own lines (1p for a 95 pound line) is NOT paid', j(o).get('paid') is False and j(o).get('due_minor') >= 9000, o + e)
-p_mid = proof('pi_15', 'card', 1500)
-o, e, r = place('customer', {'ref': 'OL-DISC', 'source': 'online', 'items': burger, 'total': 15, 'customer': {}},
-                {'id': 'chk-disc', 'total': 15, 'discounts': [{'label': 'Happy hour', 'type': 'amount', 'value': 5, 'amount': 5}]}, [p_mid])
-expect('a declared auto discount lowers the amount due (20 of lines, 5 off, 15 paid)', j(o).get('paid') is True, o + e)
-o, _, _ = run("select customer->'order_pricing'->>'discount_minor' from public.order_queue where ref = 'OL-DISC'")
-expect('the declared discount is written on the order for staff to see', o == '500', o)
-p_c15 = proof('pi_c15', 'card', 1500)
-p_g10 = proof('giftcommit:chk-g:card1', 'gift', 1000, proc='gift')
-o, e, r = place('customer', {'ref': 'OL-GIFT', 'source': 'online', 'items': [{'name': 'Meal', 'price': 25, 'qty': 1}], 'total': 25, 'customer': {}},
-                {'id': 'chk-g', 'total': 15, 'gift_card': {'idempotency_key': 'giftcommit:chk-g:card1', 'applied': 1000}}, [p_c15, p_g10])
+o, _, _ = run("select customer->>'payment_state' from public.order_queue where ref = 'OL-X0'")
+expect('with no money proven it is "checking"', o == 'checking', o)
+p_other = proof('pi_other', 'card', 2500, order_ref='OL-SOMEONE-ELSE')
+o, e, r = place('attacker', online('OL-STEAL', [line('mi-meal', 25)], 25), {'id': chk('OL-STEAL'), 'total': 25}, [p_other])
+expect('a card payment the processor says is for another order never pays this one', j(o).get('paid') is False, o + e)
+p_c15 = proof('pi_c15', 'card', 1500, order_ref='OL-GIFT')
+p_g10 = proof(f"giftcommit:{chk('OL-GIFT')}:card1", 'gift', 1000, proc='gift')
+o, e, r = place('customer', online('OL-GIFT', [line('mi-meal', 25)], 25),
+                {'id': chk('OL-GIFT'), 'total': 15, 'gift_card': {'idempotency_key': f"giftcommit:{chk('OL-GIFT')}:card1", 'applied': 1000}}, [p_c15, p_g10])
 res = j(o)
-expect('gift card plus card covering the order total is paid', res.get('paid') is True, o + e)
+expect('NORMAL: gift card plus card covering the order is paid', res.get('paid') is True, o + e)
 o, _, _ = run(f"select total from public.closed_checks where id = '{res.get('check_id')}'")
 expect('the check books the verified card part (15.00), net of the gift card', o.startswith('15'), o)
-p_c25 = proof('pi_c25', 'card', 2500)
-o, e, r = place('customer', {'ref': 'OL-LIE', 'source': 'online', 'items': [{'name': 'Meal', 'price': 25, 'qty': 1}], 'total': 25, 'customer': {}},
-                {'id': 'chk-lie', 'total': 0.01}, [p_c25])
+p_gv = proof(f"giftcommit:{chk('OL-GV')}:cardV", 'gift', 2500, proc='gift')
+p_c1 = proof('pi_gx', 'card', 1, order_ref='OL-GX')
+o, e, r = place('attacker', online('OL-GX', [line('mi-meal', 25)], 25),
+                {'id': chk('OL-GX'), 'total': 0, 'gift_card': {'idempotency_key': f"giftcommit:{chk('OL-GV')}:cardV"}}, [p_c1, p_gv])
+expect('EXPLOIT: a gift card debit made for another order never pays this one', j(o).get('paid') is False, o + e)
+o, _, _ = run(f"select used_by_ref is null from public.payment_proofs where id = '{p_gv}'")
+expect('and stays unused for its own order', o == 't', o)
+p_c25 = proof('pi_c25', 'card', 2500, order_ref='OL-LIE')
+o, e, r = place('customer', online('OL-LIE', [line('mi-meal', 25)], 25), {'id': chk('OL-LIE'), 'total': 0.01}, [p_c25])
 res = j(o)
 o2, _, _ = run(f"select total from public.closed_checks where id = '{res.get('check_id')}'")
 expect('a check total the phone lowers is booked at the verified card amount', res.get('paid') is True and o2.startswith('25'), o + o2)
-p_loyr = proof('redeem:chk-l:rw9', 'loyalty', 1, proc='loyalty')
-o, e, r = place('customer', {'ref': 'OL-LOY', 'source': 'online', 'items': [{'name': 'Coffee', 'price': 3, 'qty': 1}], 'total': 0,
-                             'discounts': [{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}], 'customer': {}},
-                {'id': 'chk-l', 'total': 0, 'loyalty': {'idempotency_key': 'redeem:chk-l:rw9', 'discount_value': 300}}, [p_loyr])
-expect('a reward that covers the whole bill, with its redemption proof, is paid', j(o).get('paid') is True, o + e)
-o, e, r = place('customer', {'ref': 'OL-LOYX', 'source': 'online', 'items': [{'name': 'Coffee', 'price': 3, 'qty': 1}], 'total': 0,
-                             'discounts': [{'type': 'loyalty', 'amount_minor': 300}], 'customer': {}}, {'id': 'chk-lx', 'total': 0})
-expect('the same reward without a redemption proof is not paid', j(o).get('paid') is False, o + e)
-p_other = proof('pi_other', 'card', 2500, order_ref='OL-SOMEONE-ELSE')
-o, e, r = place('attacker', {'ref': 'OL-STEAL', 'source': 'online', 'items': [{'name': 'Meal', 'price': 25, 'qty': 1}], 'total': 25, 'customer': {}},
-                {'id': 'chk-steal', 'total': 25}, [p_other])
-expect('a card payment the processor says is for another order never pays this one', j(o).get('paid') is False, o + e)
-o, e, r = place('customer', {'ref': 'OL-OK1', 'source': 'online', 'items': burger, 'total': 25, 'customer': {}}, {'id': 'chk-ok-1', 'total': 25}, [p1], commit=False)
+o, e, r = place('customer', online('OL-OK1', burger, 25), {'id': 'chk-ok-1', 'total': 25}, [p1], commit=False)
 expect('retry by the same session returns the first answer', j(o).get('idempotent') is True and j(o).get('paid') is True, o + e)
-o, e, r = place('attacker', {'ref': 'OL-OK1', 'source': 'online', 'items': burger, 'total': 25, 'customer': {}}, {'id': 'chk-ok-1', 'total': 25}, [p1], commit=False)
+o, e, r = place('attacker', online('OL-OK1', burger, 25), {'id': 'chk-ok-1', 'total': 25}, [p1], commit=False)
 expect('another session cannot reuse the ref', j(o).get('reason') == 'ref_taken', o + e)
-o, e, r = place('attacker', {'ref': 'OL-REUSE', 'source': 'online', 'items': burger, 'total': 25, 'customer': {}}, {'id': 'chk-reuse', 'total': 25}, [p1])
+o, e, r = place('attacker', online('OL-REUSE', [line('mi-burger', 25)], 25), {'id': chk('OL-REUSE'), 'total': 25}, [p1])
 expect('a used card proof cannot pay a second order', j(o).get('paid') is False, o + e)
 o, e, r = place('customer', {'ref': 'QR-LATER', 'source': 'qr', 'items': burger, 'total': 20, 'customer': {'tableId': 'T5'}}, commit=False)
 expect('QR has no pay later: an order with no payment is refused', j(o).get('reason') == 'payment', o + e)
-p_nochk = proof('pi_nochk', 'card', 2000)
-o, e, r = place('customer', {'ref': 'OL-NOCHK', 'source': 'online', 'items': burger, 'total': 20, 'customer': {}}, None, [p_nochk])
+p_nochk = proof('pi_nochk', 'card', 2000, order_ref='OL-NOCHK')
+o, e, r = place('customer', online('OL-NOCHK', burger, 20), None, [p_nochk])
 expect('an online order that arrives without its check is still proven and paid', j(o).get('paid') is True and j(o).get('check_id'), o + e)
 cat = {'ref': 'CT-1', 'source': 'catering', 'type': 'delivery', 'event_date': '2099-01-01',
-       'items': [{'name': 'Tray', 'price': 50, 'qty': 1}], 'total': 50, 'customer': {'name': 'C'}}
+       'items': [line('mi-tray', 50)], 'total': 50, 'customer': {'name': 'C'}}
 o, e, r = place('customer', cat)
 expect('catering pay later is placed unpaid (received)', j(o).get('ok') and j(o).get('paid') is False and j(o).get('status') == 'received', o + e)
-o, _, _ = run("select event_date is null from public.order_queue where ref = 'CT-1'")
-expect('a far future event date is dropped', o == 't', o)
-p_cat = proof('pi_cat', 'card', 5000)
+o, _, _ = run("select event_date is null, total from public.order_queue where ref = 'CT-1'")
+expect('a far future event date is dropped; catering prices from base (50, not the delivery 60)', o == 't|50.00', o)
+o, e, r = place('customer', {'ref': 'CT-PL', 'source': 'catering', 'type': 'collection', 'items': [line('mi-tray', 50)], 'total': 40,
+                             'customer': {'name': 'C', 'promo_code': 'LATER10', 'promo_discount': 10}})
+o2, _, _ = run("select total, (select uses_count from public.promo_codes where code = 'LATER10') from public.order_queue where ref = 'CT-PL'")
+expect('NORMAL: catering pay later with a real code keeps its total (40); the page records the use', j(o).get('ok') and o2 == '40.00|0', o + o2)
+o, e, r = place('attacker', {'ref': 'CT-PLX', 'source': 'catering', 'type': 'collection', 'items': [line('mi-tray', 50)], 'total': 1,
+                             'customer': {'name': 'C', 'promo_code': 'NOPE', 'promo_discount': 49}})
+o2, _, _ = run("select total from public.order_queue where ref = 'CT-PLX'")
+expect('catering pay later with a made up code: the venue collects the menu price', j(o).get('ok') and o2.startswith('49.9'), o + o2)
+p_cat = proof('pi_cat', 'card', 5000, order_ref='CT-2')
 o, e, r = place('customer', {'ref': 'CT-2', 'source': 'catering', 'type': 'delivery', 'event_date': '2026-12-01',
-                             'items': [{'name': 'Tray', 'price': 50, 'qty': 1}], 'total': 50, 'customer': {'payment_intent_id': 'pi_cat'}},
+                             'items': [line('mi-tray', 50)], 'total': 50, 'customer': {'payment_intent_id': 'pi_cat'}},
                 {'id': 'chk-cat', 'total': 50, 'closed_at': '2026-12-01T12:00:00Z'}, [p_cat])
 o2, _, _ = run("select closed_at::date from public.closed_checks where id = 'chk-cat'")
 expect('a paid catering check keeps its event day as the sales date', j(o).get('paid') is True and o2 == '2026-12-01', o + o2)
@@ -504,8 +771,8 @@ expect('another network is not affected', j(o).get('ok') is True, o + e)
 # the tracker
 o, e, r = as_('rawanon', f"select public.order_track_row('{L1}', 'OL-OK1', '{tok}')->>'status';")
 expect('tracker works with the token and no session', last(o) == 'prep', o + e)
-tok95, _, _ = run("select token from public.public_order_tokens where ref = 'OL-X95'")
-o, e, r = as_('rawanon', f"select public.order_track_row('{L1}', 'OL-X95', '{tok95}')->>'payment_state';")
+tok95, _, _ = run("select token from public.public_order_tokens where ref = 'OL-X0'")
+o, e, r = as_('rawanon', f"select public.order_track_row('{L1}', 'OL-X0', '{tok95}')->>'payment_state';")
 expect('tracker shows "payment being checked" for an unproven order', last(o) == 'checking', o + e)
 o, e, r = as_('rawanon', f"select public.order_track_row('{L1}', 'OL-OK1', '0123')->'customer'->>'phone';")
 expect('old share link (last 4) works and shows only 4 digits', last(o) == '0123', o + e)
@@ -518,22 +785,22 @@ expect('10 wrong last 4 guesses lock that order last 4 path', last(o) == 'f', o 
 o, e, r = as_('rawanon', f"select public.order_track_check('{L1}', 'OL-OK1', '{tok}');")
 expect('but the tracking token still works (nobody can lock a customer out)', last(o) == 't', o + e)
 run("insert into public.fence_attempts (bucket, misses, locked_until) values ('track:last4:global', 0, now() + interval '5 minutes') on conflict (bucket) do update set locked_until = excluded.locked_until")
-tokd, _, _ = run("select token from public.public_order_tokens where ref = 'OL-DISC'")
-o, e, r = as_('rawanon', f"select public.order_track_check('{L1}', 'OL-DISC', '{tokd}');")
+tokd, _, _ = run("select token from public.public_order_tokens where ref = 'OL-DEAL'")
+o, e, r = as_('rawanon', f"select public.order_track_check('{L1}', 'OL-DEAL', '{tokd}');")
 expect('the platform last 4 breaker never blocks a token', last(o) == 't', o + e)
 run("delete from public.fence_attempts")
 
 # ---------- QR tabs: only the tab's own people add rounds (HIGH, 18 Sep)
 hold = proof('pi_tab_000000001', 'preauth', 5000)
-tab = {'ref': 'QR-T1', 'source': 'qr', 'type': 'dine-in', 'items': [{'name': 'Beer', 'price': 6, 'qty': 1}], 'total': 6,
+tab = {'ref': 'QR-T1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-beer', 6)], 'total': 6,
        'customer': {'name': 'Bob', 'tableId': 'T5', 'tableLabel': '5', 'tab_open': True, 'payment_intent_id': 'pi_tab_000000001',
                     'stripe_account': 'acct_1', 'payment_method_id': 'pm_1', 'tab_join_code': '1234', 'pre_auth_amount': 9999}}
 o, e, r = place('customer', tab)
 rt = j(o)
 join = rt.get('tab_join_code') or ''
 expect('QR tab opened with a server table code (the phone code is ignored)', rt.get('ok') and len(join) == 6 and join != '1234', o + e)
-o, _, _ = run("select customer->>'pre_auth_amount', customer->>'tab_ref' from public.order_queue where ref = 'QR-T1'")
-expect('the hold amount comes from the proof, not the phone', o == '50.00|QR-T1', o)
+o, _, _ = run("select customer->>'pre_auth_amount', customer->>'tab_ref', customer->'order_pricing'->>'value_minor' from public.order_queue where ref = 'QR-T1'")
+expect('the hold amount comes from the proof, not the phone; the round is valued by the server', o == '50.00|QR-T1|600', o)
 tab2 = dict(tab, ref='QR-T2')
 o, e, r = place('customer', tab2)
 expect('the opener adds a round (no code needed)', j(o).get('ok') and j(o).get('tab_join_code') == join, o + e)
@@ -543,7 +810,7 @@ expect('EXPLOIT: a stranger with only the tab payment id cannot add a round', j(
 evil_code = dict(evil, ref='QR-EVIL2', tab_join_code='000000')
 o, e, r = place('attacker', evil_code)
 expect('a wrong table code is refused', j(o).get('reason') == 'tab_not_yours', o + e)
-nontab = {'ref': 'QR-EVIL3', 'source': 'qr', 'type': 'dine-in', 'items': [{'name': 'Wine', 'price': 30, 'qty': 1}], 'total': 30,
+nontab = {'ref': 'QR-EVIL3', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-wine', 30)], 'total': 30,
           'customer': {'tableId': 'T5', 'tab_open': False, 'payment_intent_id': 'pi_tab_000000001', 'tab_ref': 'QR-T1', 'round_ref': 'x'}}
 o, e, r = place('attacker', nontab, {'id': 'chk-evil3', 'total': 30})
 o2, _, _ = run("select customer ? 'payment_intent_id', customer ? 'tab_ref', customer->>'payment_ref' from public.order_queue where ref = 'QR-EVIL3'")
@@ -565,6 +832,13 @@ o, e, r = place('joiner', dict(tab, ref='QR-T3', customer=dict(tab['customer'], 
 expect('a phone that joined with the code adds rounds without sending it again', j(o).get('ok') is True, o + e)
 o, e, r = place('stranger', dict(tab, ref='QR-T4', tab_join_code=join))
 expect('a round that carries the right code is accepted', j(o).get('ok') is True, o + e)
+o, e, r = place('customer', dict(tab, ref='QR-BIG', items=[line('mi-beer', 6, qty=5)], total=30), commit=False)
+expect('LOW: a round that takes the tab past its 50 hold (24 on it, 30 more) is refused', j(o).get('reason') == 'over_hold'
+       and j(o).get('hold_minor') == 5000 and j(o).get('running_minor') == 2400, o + e)
+o, e, r = place('customer', dict(tab, ref='QR-UNK', items=[{'itemId': 'mi-nope', 'name': 'Beer', 'price': 0.01, 'qty': 1}], total=0.01), commit=False)
+expect('a round with an item that is not on the menu is refused (nothing was charged yet)', j(o).get('reason') == 'items', o + e)
+o, e, r = as_('customer', f"select public.place_public_order('{L1}', '{q(dict(tab, ref='QR-CHEAP', items=[line('mi-beer', 0.01, qty=4)], total=0.04))}'::jsonb)->>'ok'; select (customer->'order_pricing'->>'value_minor') || '|' || total from public.order_queue where ref = 'QR-CHEAP';")
+expect('a round priced below the menu is recorded at the menu price (4 beers: 23.96 with rounding slack, never 0.04)', last(o) == '2396|23.96', o + e)
 wrong = ''.join(f"select public.place_public_order('{L1}', '{q(dict(tab, ref='QR-W%d' % i, tab_join_code='11111%d' % i))}'::jsonb);" for i in range(8))
 as_commit('dev2', wrong)
 o, e, r = place('dup', dict(tab, ref='QR-W9', tab_join_code=join), commit=False)
@@ -573,14 +847,35 @@ o, e, r = place('customer', dict(tab, ref='QR-T5'), commit=False)
 expect('the opener is never locked out of their own tab', j(o).get('ok') is True, o + e)
 o, e, r = as_('customer', f"select public.qr_table_tab_count('{L1}', 'T5');")
 expect('tab count', r == 0, o + e)
+# closing the tab (MEDIUM, 18 Sep: any 1p card proof closed any tab, whoever asked)
 o, e, r = as_('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, '{{}}'::uuid[])->>'reason';")
 expect('settle refused before the server saw a capture', last(o) == 'not_captured', o + e)
-proof('pi_tab_000000001', 'capture', 3000)
+p_1p = proof('pi_1p_other', 'card', 1, order_ref='OL-ELSEWHERE')
+o, e, r = as_('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, array['{p_1p}']::uuid[])->>'reason';")
+expect('MEDIUM: a card payment made for another order never closes the tab', last(o) == 'not_captured', o + e)
+p_1p_tab = proof('pi_1p_tab', 'card', 1, order_ref='QR-T1')
+o, e, r = as_('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, array['{p_1p_tab}']::uuid[]);")
+expect('MEDIUM: 1p that belongs to the tab does not cover its 24 balance: nothing closes', j(o).get('reason') == 'short' and j(o).get('due_minor') == 2400, o + e)
+proof('pi_tab_000000001', 'capture', 1000)
+o, e, r = as_('attacker', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, '{{}}'::uuid[])->>'reason';")
+expect('MEDIUM: a stranger who knows the payment id cannot close the tab', last(o) == 'not_yours', o + e)
+o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, '{{}}'::uuid[]);")
+expect('MEDIUM: a capture short of the tab balance (10 of 24) closes nothing', j(o).get('reason') == 'short' and j(o).get('paid_minor') == 1000, o + e)
+o, _, _ = run("select count(*) filter (where status <> 'collected'), count(*) filter (where customer->>'payment_state' = 'short') from public.order_queue where customer->>'payment_intent_id' = 'pi_tab_000000001' and customer->>'tab_open' = 'true'")
+expect('the rounds stay open and are marked short for staff', o == '4|4', o)
+o, _, _ = run("select count(*) from public.payment_proofs where payment_ref = 'pi_tab_000000001' and kind = 'capture' and used_by_ref is null")
+expect('and the capture is not used up', o == '1', o)
+run("update public.payment_proofs set amount_minor = 2400 where payment_ref = 'pi_tab_000000001' and kind = 'capture'")
 o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_000000001', '{{}}'::jsonb, '{{}}'::uuid[]);")
 st = j(o)
-expect('settle closes only the tab rounds (4), not the pay now order that named its payment id', st.get('closed') == 4 and st.get('ok') is True, o + e)
+expect('the opener closes the tab once the capture covers it: only the tab rounds (4), not the pay now order', st.get('closed') == 4 and st.get('ok') is True, o + e)
 o, _, _ = run("select status from public.order_queue where ref = 'QR-EVIL3'")
 expect('the pay now order is untouched', o != 'collected', o)
+o, _, _ = run("select total from public.closed_checks where ref = 'QR-T1' and source = 'qr'")
+expect('one check books what was taken (24.00)', o.startswith('24'), o)
+o, _, _ = run("select count(*) from public.order_queue where customer->>'payment_intent_id' = 'pi_tab_000000001' and (customer ? 'payment_state' or customer ? 'payment_unverified')")
+o2, _, _ = run("select customer ? 'payment_state' from public.closed_checks where ref = 'QR-T1' and source = 'qr'")
+expect('the closed rounds and their check no longer say short', o == '0' and o2 == 'f', o + ' ' + o2)
 o, e, r = place('customer', dict(tab, ref='QR-T6'), commit=False)
 expect('no new rounds on a captured tab', j(o).get('reason') == 'tab_closed', o + e)
 hold2 = proof('pi_tab_000000002', 'preauth', 4000)
@@ -592,9 +887,26 @@ expect('a hold that already opened a tab (all rounds collected) cannot open a ne
 nopi = dict(tab, ref='QR-T8', customer=dict(tab['customer'], payment_intent_id='pi_fake'))
 o, e, r = place('attacker', nopi, commit=False)
 expect('tab without a server proven hold refused', j(o).get('reason') == 'tab_not_verified', o + e)
+proof('pi_tab_small', 'preauth', 500)
+o, e, r = place('customer', dict(tab, ref='QR-SMALL', customer=dict(tab['customer'], payment_intent_id='pi_tab_small')), commit=False)
+expect('LOW: a first round bigger than its hold (6 on a 5 hold) is refused', j(o).get('reason') == 'over_hold', o + e)
+# a member and staff may close; an overage payment tied to the tab counts
+proof('pi_tab_m', 'preauth', 5000)
+place('customer', dict(tab, ref='QR-M1', customer=dict(tab['customer'], payment_intent_id='pi_tab_m', tableId='T6')))
+jm, _, _ = run("select customer->>'tab_join_code' from public.order_queue where ref = 'QR-M1'")
+place('stranger', dict(tab, ref='QR-M2', tab_join_code=jm, customer=dict(tab['customer'], payment_intent_id='pi_tab_m', tableId='T6')))
+proof('pi_tab_m', 'capture', 600)
+p_ov = proof('pi_overage_m', 'card', 600, meta={'parent_ref': 'pi_tab_m'})
+o, e, r = as_commit('stranger', f"select public.settle_qr_tab('{L1}', 'pi_tab_m', '{{}}'::jsonb, array['{p_ov}']::uuid[]);")
+expect('a phone that joined may close the tab; an overage charge tied to its hold counts (6 + 6 = 12)', j(o).get('closed') == 2, o + e)
+proof('pi_tab_s', 'preauth', 5000)
+place('customer', dict(tab, ref='QR-S1', customer=dict(tab['customer'], payment_intent_id='pi_tab_s', tableId='T7')))
+proof('pi_tab_s', 'capture', 600)
+o, e, r = as_commit('dev1b', f"select public.settle_qr_tab('{L1}', 'pi_tab_s', '{{}}'::jsonb, '{{}}'::uuid[]);")
+expect('staff of the venue (a linked till) may close a tab', j(o).get('closed') == 1, o + e)
 
 # ---------- an unproven pay now order: checked, never looks unpaid, and gets its check once proven
-qrpay = {'ref': 'QR-PAY1', 'source': 'qr', 'type': 'dine-in', 'items': [{'name': 'Pizza', 'price': 12, 'qty': 1}], 'total': 12,
+qrpay = {'ref': 'QR-PAY1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
          'customer': {'name': 'Pat', 'tableId': 'T9', 'payment_intent_id': 'pi_qrpay_0001', 'processor': 'stripe', 'paid': True}}
 o, e, r = place('customer', qrpay, {'id': 'chk-qrpay1', 'total': 12, 'stripe_payment_intent_id': 'pi_qrpay_0001', 'processor': 'stripe'})
 expect('QR pay now without proof is placed, marked unverified', j(o).get('payment_unverified') is True, o + e)
@@ -610,7 +922,7 @@ o, e, r = as_('stranger', f"select public.verify_public_order_payment('{L1}', 'Q
 expect('a stranger cannot verify someone else order', last(o) == 'not_found', o + e)
 o, e, r = as_('customer', f"select public.verify_public_order_payment('{L1}', 'QR-PAY1')->>'paid';")
 expect('verify before the processor record arrives: still being checked', last(o) == 'false', o + e)
-proof('pi_qrpay_0001', 'card', 1200)
+proof('pi_qrpay_0001', 'card', 1200, order_ref='QR-PAY1')
 o, e, r = as_commit('dev1b', f"select public.verify_public_order_payment('{L1}', 'QR-PAY1');")
 expect('a till of the venue verifies once the proof arrived', j(o).get('paid') is True, o + e)
 o, _, _ = run("select paid, customer->>'payment_state', customer->>'payment_intent_id' from public.order_queue where ref = 'QR-PAY1'")
@@ -619,12 +931,47 @@ o, _, _ = run("select total, status, source from public.closed_checks where id =
 expect('the kept check is written with the verified amount', o.startswith('12') and o.endswith('|paid|qr'), o)
 o, _, _ = run("select count(*) from public.public_order_pending_checks where ref = 'QR-PAY1'")
 expect('the kept check is gone', o == '0', o)
+# LOW: verify never uses a proof with no processor order reference just because the caller's check names it
+o, e, r = place('customer', online('OL-VICT', [line('mi-meal', 25)], 25),
+                {'id': chk('OL-VICT'), 'total': 0, 'gift_card': {'idempotency_key': f"giftcommit:{chk('OL-VICT')}:cardV"}})
+p_vict = proof(f"giftcommit:{chk('OL-VICT')}:cardV", 'gift', 2500, proc='gift')
+o, e, r = place('attacker', online('OL-G1', [line('mi-meal', 25)], 25),
+                {'id': chk('OL-G1'), 'total': 0, 'gift_card': {'idempotency_key': f"giftcommit:{chk('OL-VICT')}:cardV"}})
+o, e, r = as_commit('attacker', f"select public.verify_public_order_payment('{L1}', 'OL-G1', array['{p_vict}']::uuid[]);")
+expect('LOW: another order\'s gift card debit, named by the attacker\'s check, does not verify it', j(o).get('paid') is False, o + e)
+o, _, _ = run(f"select used_by_ref is null from public.payment_proofs where id = '{p_vict}'")
+expect('and is not used up', o == 't', o)
+o, e, r = as_commit('customer', f"select public.verify_public_order_payment('{L1}', 'OL-VICT');")
+expect('its own order verifies with it', j(o).get('paid') is True, o + e)
+# a card payment the processor tied to no order belongs to the first order that named it
+o, e, r = place('customer', {'ref': 'QR-RY1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
+                             'customer': {'tableId': 'T9', 'payment_intent_id': 'ses_victim_01', 'processor': 'ryft'}},
+                {'id': 'chk-ry1', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'ryft'})
+p_ry = proof('ses_victim_01', 'card', 1200, proc='ryft')
+o, e, r = place('attacker', {'ref': 'QR-RY2', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
+                             'customer': {'tableId': 'T8', 'payment_intent_id': 'ses_victim_01', 'processor': 'ryft'}},
+                {'id': 'chk-ry2', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'ryft'}, [p_ry])
+expect('LOW: a card payment with no order reference another order named first never pays a copycat', j(o).get('paid') is False, o + e)
+o, e, r = as_commit('attacker', f"select public.verify_public_order_payment('{L1}', 'QR-RY2', array['{p_ry}']::uuid[]);")
+expect('not even through Check payment', j(o).get('paid') is False, o + e)
+o, e, r = as_commit('customer', f"select public.verify_public_order_payment('{L1}', 'QR-RY1', array['{p_ry}']::uuid[]);")
+expect('the order that named it first verifies with it', j(o).get('paid') is True, o + e)
 o, e, r = as_('customer', f"select public.confirm_public_order_payment('{L1}', 'OL-X95', 'I paid');")
 expect('a customer can never confirm a payment by hand', r != 0 and 'staff' in e, e)
-o, e, r = as_commit('owner1', f"select public.confirm_public_order_payment('{L1}', 'OL-X95', 'seen in Stripe');")
-expect('staff confirm a payment they saw', j(o).get('paid') is True, o + e)
+o, e, r = as_commit('owner1', f"select public.confirm_public_order_payment('{L1}', 'OL-X95', 'took the rest on the till');")
+expect('staff confirm a short order after taking the rest', j(o).get('paid') is True, o + e)
 o, _, _ = run("select paid, customer->>'payment_state', customer->>'payment_confirmed_by' from public.order_queue where ref = 'OL-X95'")
 expect('who confirmed it is on the order', o == f"t|confirmed_by_staff|{UID['owner1']}", o)
+o, e, r = as_commit('owner1', f"select public.confirm_public_order_payment('{L1}', 'OL-W8', 'checked the order by hand');")
+expect('an order with an item not on the menu is settled only by staff', j(o).get('paid') is True, o + e)
+o, e, r = as_commit('owner1', f"select public.confirm_public_order_payment('{L1}', 'OL-W1', 'took the other 94.99 on the till', 1);")
+o2, _, _ = run("select total from public.closed_checks where ref = 'OL-W1' and source = 'online'")
+o3, _, _ = run("select customer->>'payment_confirmed_amount_minor' from public.order_queue where ref = 'OL-W1'")
+expect('staff who took the rest on the till confirm with the amount the online payment really took: the online check books 0.01 (never counted twice)',
+       j(o).get('paid') is True and o2 == '0.01' and o3 == '1', o + o2 + o3)
+o, e, r = as_commit('owner1', f"select public.confirm_public_order_payment('{L1}', 'OL-W2', 'seen', 999999);")
+o2, _, _ = run("select total from public.closed_checks where ref = 'OL-W2' and source = 'online'")
+expect('a confirmed amount is never more than the order still needed', j(o).get('paid') is True and o2 == '94.96', o + o2)
 
 # ---------- who wrote each order row (file 2's gate)
 as_commit('attacker', f"insert into public.order_queue (ref, location_id, type, source, status, items) values ('OLD-PAGE', '{L1}', 'collection', 'online', 'prep', '[]');")
@@ -666,9 +1013,16 @@ expect('QR floor sync never overwrites a till session', o == 'pos', o)
 # ---------- grants
 o, e, r = run("select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and has_table_privilege('anon', c.oid, 'TRUNCATE')")
 expect('no TRUNCATE left for anon', o == '0', o)
-o, e, r = run("select has_function_privilege('anon', 'public.claim_device(text)', 'execute'), has_function_privilege('anon', 'public._device_claim_core(text, boolean)', 'execute'), has_function_privilege('authenticated', 'public._device_claim_core(text, boolean)', 'execute'), has_function_privilege('anon', 'public.place_public_order(uuid, jsonb, jsonb, uuid[])', 'execute'), has_function_privilege('anon', 'public.confirm_public_order_payment(uuid, text, text)', 'execute')")
+o, e, r = run("select has_function_privilege('anon', 'public.claim_device(text)', 'execute'), has_function_privilege('anon', 'public._device_claim_core(text, boolean)', 'execute'), has_function_privilege('authenticated', 'public._device_claim_core(text, boolean)', 'execute'), has_function_privilege('anon', 'public.place_public_order(uuid, jsonb, jsonb, uuid[])', 'execute'), has_function_privilege('anon', 'public.confirm_public_order_payment(uuid, text, text, bigint)', 'execute')")
 expect('function grants: claim not for raw anon, core private, order and confirm need a session', o == 'f|f|f|f|f', o)
-o, e, r = run("select has_table_privilege('authenticated', 'public.payment_proofs', 'select'), has_table_privilege('anon', 'public.public_order_pending_checks', 'select'), has_table_privilege('authenticated', 'public.qr_tab_members', 'select'), has_table_privilege('authenticated', 'public.device_unlinked_pings', 'select')")
-expect('private tables are private', o == 'f|f|f|f', o)
+o, e, r = run("select has_table_privilege('authenticated', 'public.payment_proofs', 'select'), has_table_privilege('anon', 'public.public_order_pending_checks', 'select'), has_table_privilege('authenticated', 'public.qr_tab_members', 'select'), has_table_privilege('authenticated', 'public.device_unlinked_pings', 'select'), has_table_privilege('authenticated', 'public.device_secret_stash', 'select'), has_table_privilege('anon', 'public.device_secret_stash', 'select')")
+expect('private tables are private (the device secret stash too)', o == 'f|f|f|f|f|f', o)
+helpers = ['_public_order_value(text, text, text, jsonb)', '_public_order_auto(text, text, jsonb)',
+           '_public_order_promo(text, text, bigint, text, boolean)', '_public_order_loyalty(text, text, text, bigint, bigint)',
+           '_public_order_proof_bound(text, text, text, text, text, jsonb, timestamp with time zone)',
+           '_device_mint_secret(uuid, uuid)', '_menu_item_floor_minor(jsonb, text, boolean)', '_fence_rule_live(jsonb, text, timestamp with time zone)']
+o, e, r = run("select bool_or(has_function_privilege(r, ('public.' || f)::regprocedure, 'execute')) from unnest(array[" +
+              ','.join(f"'{h}'" for h in helpers) + "]) f cross join unnest(array['anon', 'authenticated']) r")
+expect('the pricing, promo, loyalty, proof and secret helpers are private (only the order functions call them)', o == 'f', o)
 
 t.finish()

@@ -74,6 +74,70 @@ insert into public.devices (id, location_id, name, type, pairing_code, status, l
   ('40000000-0000-4000-8000-00000000000a', '10000000-0000-4000-8000-000000000001', 'Never paired', 'handheld', 'IVORY-1010', 'unpaired', null, null, null, null),
   ('40000000-0000-4000-8000-00000000000b', null, 'No venue', 'pos', 'JAZZY-1212', 'active', now() - interval '40 days', now() - interval '50 days', '30000000-0000-4000-8000-000000000009', null);
 
+-- Fix round 2: every device switched on in the last 2 hours already runs the release
+-- (runbook step 2), so file A's version check passes. testTrip covers an old one.
+update public.devices set app_version = '5.9.10' where last_seen > now() - interval '2 hours';
+
+-- Menu data the server prices public orders from (fix round 2). Acme One (L1).
+insert into public.menu_items (id, location_id, name, menu_name, kitchen_name, type, cat, cats, parent_id, pricing, assigned_modifier_groups) values
+  ('mi-burger', '10000000-0000-4000-8000-000000000001', 'Burger', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 20, "collection": 20, "delivery": 22, "dineIn": 20}', '["mg-extras"]'),
+  ('mi-feast', '10000000-0000-4000-8000-000000000001', 'Feast', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 95}', '[]'),
+  ('mi-tea', '10000000-0000-4000-8000-000000000001', 'Tea', null, null, 'simple', 'cat-drinks', '{}', null, '{"base": 10}', '[]'),
+  ('mi-beer', '10000000-0000-4000-8000-000000000001', 'Beer', null, null, 'simple', 'cat-drinks', '{}', null, '{"base": 6}', '[]'),
+  ('mi-pizza', '10000000-0000-4000-8000-000000000001', 'Pizza', null, 'PIZZA', 'simple', 'cat-mains', '{}', null, '{"base": 12}', '[]'),
+  ('mi-meal', '10000000-0000-4000-8000-000000000001', 'Meal', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 25}', '[]'),
+  ('mi-coffee', '10000000-0000-4000-8000-000000000001', 'Coffee', null, null, 'simple', 'cat-drinks', '{}', null, '{"base": 3}', '[]'),
+  ('mi-tray', '10000000-0000-4000-8000-000000000001', 'Tray', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 50, "delivery": 60}', '[]'),
+  ('mi-wine', '10000000-0000-4000-8000-000000000001', 'Wine', null, null, 'simple', 'cat-drinks', '{}', null, '{"base": 30}', '[]'),
+  ('mi-cola', '10000000-0000-4000-8000-000000000001', 'Cola', null, null, 'variants', 'cat-drinks', '{}', null, '{"base": 0}', '[]'),
+  ('mi-cola-half', '10000000-0000-4000-8000-000000000001', 'Half', null, null, 'simple', null, '{}', 'mi-cola', '{"base": 3.02, "collection": 3.02, "delivery": 2.85, "dineIn": 3.02}', '[]'),
+  ('mi-cola-pint', '10000000-0000-4000-8000-000000000001', 'Pint', null, null, 'simple', null, '{}', 'mi-cola', '{"base": 5.5}', '[]'),
+  ('mi-chips', '10000000-0000-4000-8000-000000000001', 'Chips', null, null, 'simple', 'cat-sides', '{}', null, '{"base": 4, "menus": {"menu-happy": {"all": 2.5}}}', '[]'),
+  ('mi-wrap', '10000000-0000-4000-8000-000000000001', 'Wrap', null, null, 'simple', 'cat-deal-main', '{}', null, '{"base": 8}', '[]'),
+  ('mi-fries', '10000000-0000-4000-8000-000000000001', 'Fries', null, null, 'simple', null, '{cat-deal-side}', null, '{"base": 3.5}', '[]'),
+  ('mi-donut', '10000000-0000-4000-8000-000000000001', 'Donut', null, null, 'simple', 'cat-donuts', '{}', null, '{"base": 2}', '[]'),
+  ('mi-cake', '10000000-0000-4000-8000-000000000001', 'Cake', null, null, 'simple', 'cat-cakes', '{}', null, '{"base": 4}', '[]'),
+  -- Beta One (L3): the same id name at another venue is never this venue's item
+  ('mi-beta-soup', '10000000-0000-4000-8000-000000000003', 'Soup', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 1}', '[]');
+
+insert into public.modifier_groups (id, location_id, name, min, max, selection_type, options) values
+  ('mg-extras', '10000000-0000-4000-8000-000000000001', 'Extras', 0, 3, 'multi',
+   '[{"id": "opt-bacon", "name": "Bacon", "price": 5}, {"id": "opt-cheese", "name": "Cheese", "price": 1.5}, {"id": "opt-noonion", "name": "No onions", "price": -0.5}]'),
+  ('mg-beta', '10000000-0000-4000-8000-000000000003', 'Beta extras', 0, 1, 'single',
+   '[{"id": "opt-beta-free", "name": "Free thing", "price": -50}]');
+
+-- Automatic discount rules at Acme One: a meal deal (a wrap and a side for 10), buy two
+-- donuts get the third half price, and three that must never apply online: one for the
+-- till only, one that expired, and one not live at any hour.
+insert into public.discount_rules (id, location_id, name, active, trigger_type, trigger_category_ids, trigger_qty, reward_type,
+                                   reward_value, reward_qty, reward_category_ids, channels, schedule, priority, trigger_groups) values
+  ('70000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Meal deal', true, 'bundle', '{}', 2, 'fixed_price',
+   10, 1, '{}', '{"qr": true, "pos": true, "kiosk": true, "online": true}', null, 10,
+   '[{"categoryIds": ["cat-deal-main"], "qty": 1}, {"categoryIds": ["cat-deal-side"], "qty": 1}]'),
+  ('70000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'Donut deal', true, 'buy_x', '{cat-donuts}', 2, 'percent',
+   50, 1, '{}', '{"qr": true, "pos": true, "kiosk": true, "online": true}', null, 5, null),
+  ('70000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'Till only', true, 'buy_x', '{cat-cakes}', 1, 'free',
+   0, 1, '{}', '{"qr": false, "pos": true, "kiosk": false, "online": false}', null, 4, null),
+  ('70000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'Expired', true, 'buy_x', '{cat-cakes}', 1, 'free',
+   0, 1, '{}', null, '{"expiresAt": "2001-01-01"}', 3, null),
+  ('70000000-0000-4000-8000-000000000005', '10000000-0000-4000-8000-000000000001', 'Never live', true, 'buy_x', '{cat-cakes}', 1, 'free',
+   0, 1, '{}', null, '{"days": [8]}', 2, null);
+
+-- Promo codes: a single use tenner off and a 10 percent code for Acme; a Beta code; an
+-- expired one.
+insert into public.offers (id, org_id, name, reward_type, reward_value, active, venue_ids) values
+  ('80000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', 'Tenner off', 'fixed', 10, true, '{}'),
+  ('80000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-0000000000a1', 'Ten percent', 'percent', 10, true, '{}'),
+  ('80000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-0000000000b2', 'Beta tenner', 'fixed', 10, true, '{}'),
+  ('80000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-0000000000a1', 'Old offer', 'fixed', 10, true, '{}');
+update public.offers set valid_to = now() - interval '1 day' where id = '80000000-0000-4000-8000-000000000004';
+insert into public.promo_codes (id, offer_id, org_id, code, status, uses_allowed, uses_count) values
+  ('81000000-0000-4000-8000-000000000001', '80000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', 'SAVE10', 'issued', 1, 0),
+  ('81000000-0000-4000-8000-000000000002', '80000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-0000000000a1', 'MULTI10', 'issued', 5, 0),
+  ('81000000-0000-4000-8000-000000000003', '80000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-0000000000b2', 'BETA10', 'issued', 1, 0),
+  ('81000000-0000-4000-8000-000000000004', '80000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-0000000000a1', 'OLDCODE', 'issued', 1, 0),
+  ('81000000-0000-4000-8000-000000000005', '80000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1', 'LATER10', 'issued', 1, 0);
+
 -- auth sessions: dev1 used the venue network and has been idle for 2 hours; its new
 -- login (dev1b) signed in from the same address; the attacker from elsewhere.
 insert into auth.sessions (id, user_id, created_at, updated_at, refreshed_at, ip) values

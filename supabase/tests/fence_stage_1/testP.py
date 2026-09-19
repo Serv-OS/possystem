@@ -75,10 +75,10 @@ def as_anon(sql):
 
 if __name__ == '__main__':
     build_platform()
-    o, e, r = apply('20260919c_PLATFORM_fence_1_safe_now.sql')
+    o, e, r = apply('20260919c_PLATFORM_fence_1_after_release.sql')
     expect('Platform file 1 applies (one transaction)', r == 0, e[-1500:])
     print('   verify:', last(o))
-    o, e, r = apply('20260919c_PLATFORM_fence_1_safe_now.sql')
+    o, e, r = apply('20260919c_PLATFORM_fence_1_after_release.sql')
     expect('Platform file 1 applies twice', r == 0, e[-1500:])
     expect('verify row', last(o) == 'f|gift_card_purchases_company_read SELECT, gift_card_purchases_read_interim SELECT, gift_card_purchases_server ALL|f|location_reader_settings_read SELECT|0', last(o))
 

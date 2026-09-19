@@ -11,6 +11,8 @@ pols = json.load(open(os.path.join(HERE, 'schema', 'policies.json')))
 fns = json.load(open(os.path.join(HERE, 'schema', 'functions.json')))
 trg = json.load(open(os.path.join(HERE, 'schema', 'triggers.json')))
 grants = json.load(open(os.path.join(HERE, 'schema', 'grants.json')))
+_ix_path = os.path.join(HERE, 'schema', 'indexes.json')
+idxs = json.load(open(_ix_path)) if os.path.exists(_ix_path) else []
 
 out = []
 w = out.append
@@ -64,7 +66,10 @@ for c in cols:
 order = ['organisations', 'locations', 'user_profiles', 'user_locations', 'devices', 'device_heartbeats',
          'ops_devices', 'waitlist_devices', 'staff_members', 'floor_tables', 'order_queue', 'closed_checks',
          'kds_tickets', 'print_jobs', 'active_sessions', 'table_reservations', 'bar_tabs', 'activity_events',
-         'order_status_marks', 'order_status_pings', 'subscriptions']
+         'order_status_marks', 'order_status_pings', 'subscriptions',
+         # fix round 2: what the server's own order valuation reads
+         'menu_items', 'modifier_groups', 'discount_rules', 'offers', 'promo_codes', 'promo_redemptions',
+         'loyalty_transactions', 'stamp_transactions']
 for t in order:
     if t not in tables:
         continue
@@ -98,6 +103,11 @@ for kind in ('p', 'u', 'c', 'f'):
             w(f'alter table public.{t} add constraint "{c["conname"]}" {d};')
         else:
             w(f'alter table public.{t} add constraint "{c["conname"]}" {c["def"]};')
+
+# unique indexes that are not constraints (promo code, idempotency keys)
+for ix in idxs:
+    if ix['t'] in tables:
+        w(ix['def'] + ';')
 
 # functions (order matters little for plpgsql; sql functions are validated at create time)
 sql_first = ['is_anon_session', 'is_super_admin', 'user_accessible_locations', 'user_accessible_orgs',
@@ -147,10 +157,22 @@ for g in grants:
     if g['col_upd']:
         w(f'grant update ({g["col_upd"]}) on public.{t} to {role};')
 for f in fns:
+    sig = f'public.{f["proname"]}({f["args"]})'
+    if f.get('acl'):
+        # Fix round 2: the live ACL exactly (PUBLIC included), so the roll back test can
+        # compare function grants item by item.
+        w(f'revoke all on function {sig} from public, anon, authenticated, service_role;')
+        for item in f['acl'].strip('{}').split(','):
+            grantee, _, rest = item.partition('=')
+            privs = rest.split('/')[0]
+            if 'X' not in privs or grantee == 'postgres':
+                continue
+            w(f'grant execute on function {sig} to {grantee or "public"};')
+        continue
     if not f['anon_x']:
-        w(f'revoke execute on function public.{f["proname"]}({f["args"]}) from public, anon;')
+        w(f'revoke execute on function {sig} from public, anon;')
     if not f['auth_x']:
-        w(f'revoke execute on function public.{f["proname"]}({f["args"]}) from authenticated;')
+        w(f'revoke execute on function {sig} from authenticated;')
 
 open(os.path.join(HERE, '.baseline.sql'), 'w').write('\n'.join(out) + '\n')
 print('wrote .baseline.sql', len(out), 'statements')

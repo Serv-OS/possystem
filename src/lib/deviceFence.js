@@ -5,7 +5,7 @@
 // fallback to today's path when the new server functions do not exist yet.
 //
 // ORDER OF RELEASE: this app release can go live BEFORE Peter runs
-// 20260919a_OPS_fence_1_safe_now.sql. Until then claim_device_v2, reclaim_device,
+// 20260919a_OPS_fence_1_after_release.sql. Until then claim_device_v2, reclaim_device,
 // device_status, device_issue_secret and device_heartbeat do not exist, PostgREST answers
 // "function not found" (PGRST202, or 42883 from Postgres), and every caller falls back to
 // the path the live app uses today.

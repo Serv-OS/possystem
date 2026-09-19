@@ -6,7 +6,8 @@
 -- #  ONLY AFTER file 1 (20260919a) has been in for a full day, the app        #
 -- #  release is on EVERY till, KDS, kiosk and clock, and the customer pages   #
 -- #  place orders through the new server functions. Outside service.         #
--- #  The file checks this itself and stops (changing nothing) if it is not.   #
+-- #  The file checks this itself and stops (changing nothing) if it is not:  #
+-- #  it refuses to run until 24 hours after file 1 FIRST ran.                 #
 -- ############################################################################
 --
 -- WHAT THIS FILE CLOSES
@@ -30,8 +31,16 @@
 -- secret to re-link with; the customer pages must use the new functions (gaps B2, B3,
 -- B12, G4, G5, G6, G16, G17); the print agents need their key (gap G24).
 --
+-- WHAT THE GATES TRUST (fix round 2, 19 Sep): only what the server wrote. The time since
+-- file 1 comes from fence_state (file 1 records when it first ran). A device counts as
+-- switched on but unpaired only when its own former session says so. Order rows written
+-- straight into order_queue by an unknown caller no longer hold this file back (anyone
+-- could write one while file 1 is in): the full day after file 1 is what gives old
+-- customer pages time to reload, and the verification row counts those rows for you.
+--
 -- RULES OF THE FILE: no begin or commit (any error means nothing changed); every
--- statement can run twice; 3 second lock wait; verification and roll back at the end.
+-- statement can run twice; 3 second lock wait; verification and roll back at the end
+-- (the ROLL BACK heading says how to run it).
 
 
 -- ============================================================================
@@ -43,7 +52,7 @@ do $guard$
 declare
   v_n    integer;
   v_list text;
-  v_null integer;
+  v_a_at timestamptz;
 begin
   if to_regclass('public.user_locations') is null
      or to_regclass('public.devices') is null
@@ -52,14 +61,27 @@ begin
   end if;
   if to_regprocedure('public.place_public_order(uuid, jsonb, jsonb, uuid[])') is null
      or to_regprocedure('public.verify_public_order_payment(uuid, text, uuid[])') is null
+     or to_regprocedure('public._public_order_value(text, text, text, jsonb)') is null
      or to_regclass('public.payment_proofs') is null
      or to_regclass('public.device_unlinked_pings') is null
+     or to_regclass('public.device_secret_stash') is null
      or to_regclass('public.fence_state') is null
      or not exists (select 1 from pg_trigger where tgname = 'order_queue_placed_via' and not tgisinternal) then
-    raise exception 'Run 20260919a_OPS_fence_1_safe_now.sql (this version) first. Nothing was changed.';
+    raise exception 'Run 20260919a_OPS_fence_1_after_release.sql (this version) first. Nothing was changed.';
   end if;
   if to_regprocedure('public.online_kitchen_load(text)') is null then
     raise exception 'online_kitchen_load(text) is missing (20260902_online_kitchen_load.sql). The storefront busy time needs it once order_queue is closed. Nothing was changed.';
+  end if;
+
+  -- 0. A full day after file 1 (fix round 2): file 1 records when it first ran. Customer
+  --    pages and tills that were open before it get a day to reload the release.
+  execute 'select set_at from public.fence_state where key = ''file_a''' into v_a_at;
+  if v_a_at is null then
+    raise exception 'Run 20260919a_OPS_fence_1_after_release.sql (this version) first. Nothing was changed.';
+  end if;
+  if v_a_at > now() - interval '24 hours' then
+    raise exception 'STOPPED, NOTHING WAS CHANGED. File 1 ran at % (UTC), less than a full day ago. Run this file again after % (UTC).',
+      to_char(v_a_at at time zone 'UTC', 'DD Mon HH24:MI'), to_char((v_a_at + interval '24 hours') at time zone 'UTC', 'DD Mon HH24:MI');
   end if;
 
   -- 1. Every active till, KDS, kiosk and clock must be running the release (it reports
@@ -84,7 +106,9 @@ begin
 
   -- 2. A device that is NOT linked but was switched on in the last 24 hours (its app said
   --    so through the heartbeat): after this file it could take a card payment it can
-  --    no longer save.
+  --    no longer save. Only a ping from a session that was once linked to that device
+  --    counts (device_claim_log names it): anyone else naming a device id is ignored, so
+  --    nobody can hold this file shut.
   select count(*),
          string_agg(format('%s: %s (%s, status %s)', coalesce(l.name, 'no venue'), d.name, coalesce(d.type, '?'), d.status),
                     '; ' order by l.name, d.name)
@@ -93,29 +117,18 @@ begin
     join public.devices d on d.id = p.device_id
     left join public.locations l on l.id = d.location_id
    where p.last_at > now() - interval '24 hours'
-     and not (d.status in ('active', 'online') and d.bound_via is not null);
+     and not (d.status in ('active', 'online') and d.bound_via is not null)
+     and exists (select 1 from public.device_claim_log g
+                  where g.device_id = p.device_id and p.uid in (g.old_uid, g.new_uid));
   if v_n > 0 then
     raise exception 'STOPPED, NOTHING WAS CHANGED. % device(s) are switched on but not paired: %. Pair each one again (Pair again on its red banner), or switch it off and press Remove in Back Office. Then run this file again tomorrow.', v_n, v_list;
   end if;
 
-  -- 3. The customer pages must be placing orders through place_public_order. Any online,
-  --    QR or catering order in the last 24 hours that an old customer page wrote straight
-  --    into the table means an old page is still out there. Orders written by the server
-  --    (ezCater, HubRise, catering release: placed_via 'server') and by tills or Back
-  --    Office ('staff') are fine.
-  select count(*) filter (where q.placed_via = 'public'),
-         count(*) filter (where q.placed_via is null)
-    into v_n, v_null
-    from public.order_queue q
-   where q.source in ('online', 'qr', 'catering')
-     and q.created_at > now() - interval '24 hours'
-     and lower(coalesce(q.customer ->> 'channel', '')) <> 'ezcater';
-  if v_null > 0 then
-    raise exception 'STOPPED, NOTHING WAS CHANGED. File 1 has been in for less than a day (% customer order(s) in the last 24 hours were written before it). Run this file again once file 1 has been in for a full day.', v_null;
-  end if;
-  if v_n > 0 then
-    raise exception 'STOPPED, NOTHING WAS CHANGED. % online, QR or catering order(s) in the last 24 hours were written by an old customer page. Wait until the new pages have been live for a full day with no old orders, then run this file again.', v_n;
-  end if;
+  -- 3. (fix round 2) Orders written straight into order_queue by a caller the server does
+  --    not know (placed_via 'public') no longer stop this file: anyone could write one
+  --    while file 1 is in, to hold it shut forever. The full day after file 1 (check 0) is
+  --    what gives an old customer page time to reload; the verification row below counts
+  --    such orders of the last 24 hours (public_orders_24h) for you to look at.
 
   -- 4. And the new path must really be working: at least one customer order placed
   --    through place_public_order in the last 7 days (a quiet day must not pass
@@ -243,6 +256,9 @@ reset lock_timeout;
 -- ============================================================================
 -- Expect: open_policies_left = none; names_on_order_screens = true;
 -- devices_readable_by_all = false; tills_without_secret = 0; qr_floor_trigger = true.
+-- public_orders_24h is for information: online, QR or catering orders of the last 24
+-- hours written straight into order_queue by an unknown caller (an old page, or someone
+-- testing the fence). From now on nobody can write one.
 select
   coalesce((select string_agg(tablename || ' ' || policyname, ', ' order by tablename, policyname)
               from pg_policies
@@ -258,7 +274,10 @@ select
            and cmd = 'SELECT' and btrim(coalesce(qual, '')) = 'true')                              as devices_readable_by_all,
   (select count(*) from public.devices
     where status in ('active', 'online') and bound_via is not null and device_secret_hash is null)  as tills_without_secret,
-  exists (select 1 from pg_trigger where tgname = 'order_queue_qr_floor' and not tgisinternal)   as qr_floor_trigger;
+  exists (select 1 from pg_trigger where tgname = 'order_queue_qr_floor' and not tgisinternal)   as qr_floor_trigger,
+  (select count(*) from public.order_queue q
+    where q.source in ('online', 'qr', 'catering') and q.placed_via = 'public'
+      and q.created_at > now() - interval '24 hours')                                               as public_orders_24h;
 
 -- More checks (read only, paste one at a time):
 -- 1. Every policy on the fenced tables:
@@ -274,17 +293,20 @@ select
 --    and has_table_privilege('anon', c.oid, p);
 
 
--- ============================================================================
--- ROLL BACK (only if the floor breaks; paste in the Ops SQL editor)
--- ============================================================================
--- Remove the "-- " at the start of each line, paste, Run. This puts back exactly the
--- open policies and grants this file removed, removes the ones it added, and can run
--- twice. File 1 may then be run again if ever needed.
--- It leaves the order_queue_qr_floor trigger in place on purpose: it only ever writes a
--- QR tab's own session on the floor plan, so it is safe next to the phone's own sync,
--- and once the release's cleanup has removed that sync it is the only thing keeping QR
--- tabs on the floor.
---
+-- -- ============================================================================
+-- -- ROLL BACK (only if the floor breaks; paste in the Ops SQL editor)
+-- -- ============================================================================
+-- -- HOW: copy every line from the "-- -- ====" line just above this heading to the
+-- -- very end of the file and paste it into the Ops SQL editor. Select all (Cmd+A)
+-- -- and press Cmd+/ once: every line loses its first "-- ", and the notes (lines
+-- -- that still start with "-- ") stay notes. Then press Run.
+-- -- WHAT: it puts back exactly the open policies and grants this file removed, removes
+-- -- the ones it added, and can run twice. After it, file 1 may be run again, or rolled
+-- -- back itself (file 1's roll back refuses to run while this file is still in).
+-- -- It leaves the order_queue_qr_floor trigger in place on purpose: it only ever writes
+-- -- a QR tab's own session on the floor plan, so it is safe next to the phone's own
+-- -- sync, and once the release's cleanup has removed that sync it is the only thing
+-- -- keeping QR tabs on the floor.
 -- set lock_timeout = '3s';
 -- drop policy if exists order_queue_staff on public.order_queue;
 -- drop policy if exists kds_tickets_staff on public.kds_tickets;

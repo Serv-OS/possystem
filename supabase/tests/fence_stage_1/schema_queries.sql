@@ -2,6 +2,12 @@
 -- needs. The dumps are not kept in git. Run each query (Ops project unless marked
 -- Platform) through the Management API with read_only true, and save the JSON array it
 -- returns under the file name given. No rows of data are read, only table shapes.
+--
+-- Fix round 2 (19 Sep 2026): the table list grew by the tables the server's own order
+-- valuation reads (menu_items, modifier_groups, discount_rules, offers, promo_codes,
+-- promo_redemptions, loyalty_transactions, stamp_transactions), functions.json carries the
+-- full ACL (proacl) so the roll back test compares function grants exactly, and
+-- indexes.json adds the unique indexes those tables rely on.
 
 -- schema/columns.json (Ops)
 select c.relname as t, a.attnum as n, a.attname as col, format_type(a.atttypid, a.atttypmod) as typ,
@@ -14,7 +20,9 @@ select c.relname as t, a.attnum as n, a.attname as col, format_type(a.atttypid, 
    and c.relname in ('organisations','locations','user_profiles','user_locations','devices','device_heartbeats',
                      'ops_devices','waitlist_devices','order_queue','closed_checks','kds_tickets','print_jobs',
                      'active_sessions','table_reservations','bar_tabs','floor_tables','staff_members',
-                     'activity_events','order_status_marks','order_status_pings','subscriptions')
+                     'activity_events','order_status_marks','order_status_pings','subscriptions',
+                     'menu_items','modifier_groups','discount_rules','offers','promo_codes','promo_redemptions',
+                     'loyalty_transactions','stamp_transactions')
  order by 1, 2;
 
 -- schema/constraints.json (Ops): same table list
@@ -24,8 +32,21 @@ select conrelid::regclass::text as t, conname, contype, pg_get_constraintdef(oid
    and conrelid::regclass::text in ('organisations','locations','user_profiles','user_locations','devices',
        'device_heartbeats','ops_devices','waitlist_devices','order_queue','closed_checks','kds_tickets','print_jobs',
        'active_sessions','table_reservations','bar_tabs','floor_tables','staff_members','activity_events',
-       'order_status_marks','order_status_pings','subscriptions')
+       'order_status_marks','order_status_pings','subscriptions','menu_items','modifier_groups','discount_rules',
+       'offers','promo_codes','promo_redemptions','loyalty_transactions','stamp_transactions')
  order by 1, contype desc, 2;
+
+-- schema/indexes.json (Ops): unique indexes that are not constraints, same table list
+select c.relname as t, i.relname as idx, pg_get_indexdef(x.indexrelid) as def
+  from pg_index x
+  join pg_class c on c.oid = x.indrelid
+  join pg_class i on i.oid = x.indexrelid
+  join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public' and x.indisunique
+   and not exists (select 1 from pg_constraint k where k.conindid = x.indexrelid)
+   and c.relname in ('locations','menu_items','modifier_groups','discount_rules','offers','promo_codes',
+                     'promo_redemptions','loyalty_transactions','stamp_transactions')
+ order by 1, 2;
 
 -- schema/policies.json (Ops): same table list
 select tablename as t, policyname as p, permissive, roles::text as roles, cmd, qual, with_check
@@ -34,7 +55,8 @@ select tablename as t, policyname as p, permissive, roles::text as roles, cmd, q
    and tablename in ('organisations','locations','user_profiles','user_locations','devices','device_heartbeats',
        'ops_devices','waitlist_devices','order_queue','closed_checks','kds_tickets','print_jobs','active_sessions',
        'table_reservations','bar_tabs','floor_tables','staff_members','activity_events','order_status_marks',
-       'order_status_pings','subscriptions')
+       'order_status_pings','subscriptions','menu_items','modifier_groups','discount_rules','offers','promo_codes',
+       'promo_redemptions','loyalty_transactions','stamp_transactions')
  order by 1, 2;
 
 -- schema/triggers.json (Ops)
@@ -51,7 +73,8 @@ select c.relname as t, t.tgname, pg_get_triggerdef(t.oid) as def, p.proname as f
 -- schema/functions.json (Ops)
 select p.proname, pg_get_function_identity_arguments(p.oid) as args, pg_get_functiondef(p.oid) as def,
        has_function_privilege('anon', p.oid, 'execute') as anon_x,
-       has_function_privilege('authenticated', p.oid, 'execute') as auth_x
+       has_function_privilege('authenticated', p.oid, 'execute') as auth_x,
+       p.proacl::text as acl
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public'
    and p.proname in ('is_anon_session','is_super_admin','pos_can_access','user_accessible_locations',
@@ -60,7 +83,8 @@ select p.proname, pg_get_function_identity_arguments(p.oid) as args, pg_get_func
        'tg_order_queue_notify','tg_order_status_marks','_touch_updated_at','order_status_names_enabled',
        'online_kitchen_load','floor_tables_guard_tombstone','floor_tables_stamp_updated_at',
        '_osd_caller_locations','register_ops_device','claim_ops_device','register_waitlist_device',
-       'claim_waitlist_device','terminal_pos_close_session','_terminal_user_has_location','handle_new_user')
+       'claim_waitlist_device','terminal_pos_close_session','_terminal_user_has_location','handle_new_user',
+       'promo_redeem_atomic')
  order by 1;
 
 -- schema/grants.json (Ops): same table list as columns.json
@@ -78,7 +102,8 @@ select t.relname as t, r.rolname as role,
    and t.relname in ('organisations','locations','user_profiles','user_locations','devices','device_heartbeats',
        'ops_devices','waitlist_devices','order_queue','closed_checks','kds_tickets','print_jobs','active_sessions',
        'table_reservations','bar_tabs','floor_tables','staff_members','activity_events','order_status_marks',
-       'order_status_pings','subscriptions')
+       'order_status_pings','subscriptions','menu_items','modifier_groups','discount_rules','offers','promo_codes',
+       'promo_redemptions','loyalty_transactions','stamp_transactions')
  order by 1, 2;
 
 -- schema/p_columns.json (PLATFORM): the columns query above with this table list

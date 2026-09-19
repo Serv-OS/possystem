@@ -1,12 +1,12 @@
 # Offline tests for the stage 1 fence migrations
 
-These run the four `20260919*` migrations against a **local, throwaway Postgres 17** that copies the live shape of the tables they touch. They never connect to Supabase.
+These run the four `20260919*` migrations (`20260919a_OPS_fence_1_after_release.sql`, `20260919b_OPS_fence_2_after_app.sql`, `20260919c_PLATFORM_fence_1_after_release.sql`, `20260919d_PLATFORM_fence_2_after_app.sql`) against a **local, throwaway Postgres 17** that copies the live shape of the tables they touch. They never connect to Supabase.
 
-- `schema/*.json`: read only catalog dumps of the stage 1 tables (columns, constraints, policies, functions, triggers, grants; no rows). They are NOT kept in git: produce them with the read only queries in `schema_queries.sql` and save each result under the name it gives.
-- `build_baseline.py`: turns the dumps into `.baseline.sql` (roles `anon`, `authenticated`, `service_role`, an `auth` schema with `uid()`, `users` and `sessions`, the tables, the live policies, functions and grants).
-- `seed.sql`: made up companies, venues, logins and devices in every state the live data has (grandfathered, stale, duplicate, no venue, a till signed in with a login from another venue, a stranger who signs up with a real login).
+- `schema/*.json`: read only catalog dumps of the stage 1 tables (columns, constraints, unique indexes, policies, functions with their full ACL, triggers, grants; no rows). They are NOT kept in git: produce them with the read only queries in `schema_queries.sql` and save each result under the name it gives. Fix round 2 added the tables the server prices orders from (menu_items, modifier_groups, discount_rules, offers, promo_codes, promo_redemptions, loyalty_transactions, stamp_transactions), `indexes.json`, and `acl` on `functions.json`.
+- `build_baseline.py`: turns the dumps into `.baseline.sql` (roles `anon`, `authenticated`, `service_role`, an `auth` schema with `uid()`, `users` and `sessions`, the tables, the live policies, functions, function ACLs and grants).
+- `seed.sql`: made up companies, venues, logins and devices in every state the live data has (grandfathered, stale, duplicate, no venue, a till signed in with a login from another venue, a stranger who signs up with a real login), every device switched on in the last 2 hours on the release version, and a small menu (items, a size, a menu tier, options), automatic deals, offers and promo codes.
 - `precheck_devices.sql`: the runbook's read only pre-check (what file A will do to each device). `testA.py` proves it predicts the file exactly.
-- `testA.py` (file 1: identity, the device exploit of 18 Sep and every variant, pairing codes, throttles, public orders, QR tabs, payment being checked), `testTrip.py` (file 1 stops, changing nothing: an unlinked profile venue, a busy till), `testB.py` (file 2: its gates, what it closes, file 1 refusing to run after it), `testP.py` (both Platform files), `testRollback.py` (every roll back block, run twice, compared with the state before its file).
+- `testA.py` (file 1: identity, the device exploit of 18 Sep and every variant, pairing codes, throttles, device secrets, venue codes, public orders priced by the server: normal orders with options, sizes, tiers, deals, promo codes and loyalty, the seven ways "paid" was forged and more, QR tabs and their hold, closing a tab, payment being checked and short), `testTrip.py` (file 1 stops, changing nothing: an unlinked profile venue, an old app switched on, a busy till), `testB.py` (file 2: its gates, what it closes, file 1 refusing to run after it), `testP.py` (both Platform files), `testRollback.py` (every roll back section, pasted whole and uncommented once, run twice, compared with the state before its file, function ACLs included, and each one refusing while the later file is in).
 
 ## Run
 
@@ -18,8 +18,8 @@ python3 testA.py && python3 testTrip.py && python3 testB.py && python3 testP.py 
 pg_ctl -D /some/scratch/pgdata stop    # and delete the folder
 ```
 
-`FENCE_PGHOST` and `FENCE_PGPORT` override the address. Every migration is applied the way the Supabase SQL editor runs a paste: the whole file as ONE transaction (`psql -1 -f`), so a file that stops has changed nothing.
+`FENCE_PGHOST` and `FENCE_PGPORT` override the address. Every migration is applied the way the Supabase SQL editor runs a paste: the whole file as ONE transaction (`psql -1 -f`), so a file that stops has changed nothing. A roll back is run the way the runbook says: the whole section from its `-- -- ====` rule to the end of the file, each line losing its first `-- `.
 
-On 19 Sep (fix round): 232, 7, 53, 20 and 24 checks (336), all passing.
+On 19 Sep (fix round 2): 325, 12, 56, 20 and 39 checks (452), all passing.
 
 Each check runs as a PostgREST caller would: `set local role` plus `request.jwt.claims` (and `request.headers` for the caller's network), inside a transaction that is rolled back unless the test needs the change to stay.

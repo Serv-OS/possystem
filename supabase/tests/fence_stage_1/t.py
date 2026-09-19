@@ -8,6 +8,13 @@ PSQL = ['psql', '-h', os.environ.get('FENCE_PGHOST', '127.0.0.1'), '-p', os.envi
 WT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 MIG = os.path.join(WT, 'supabase', 'migrations')
 
+# The four stage 1 files (fix round 2: file names match their headers; A and C wait for
+# the app release).
+FILE_A = '20260919a_OPS_fence_1_after_release.sql'
+FILE_B = '20260919b_OPS_fence_2_after_app.sql'
+FILE_C = '20260919c_PLATFORM_fence_1_after_release.sql'
+FILE_D = '20260919d_PLATFORM_fence_2_after_app.sql'
+
 UID = {
     'owner1': '20000000-0000-4000-8000-000000000001',
     'manager1': '20000000-0000-4000-8000-000000000002',
@@ -53,26 +60,41 @@ def reset():
     run(open(os.path.join(HERE, '.baseline.sql')).read())
     run(open(os.path.join(HERE, 'seed.sql')).read())
 
+def age_file_a(hours=25):
+    """Pretend file A first ran this many hours ago (file B waits a full day after it)."""
+    run(f"update public.fence_state set set_at = now() - interval '{int(hours)} hours' where key = 'file_a'")
+
 def apply(fname, db='ops'):
     return run_file(os.path.join(MIG, fname), db=db)
 
-def rollback_sql(fname):
-    """The ROLL BACK block at the end of a migration, uncommented: from its
-    "-- set lock_timeout" line to its "-- reset lock_timeout;" line."""
-    lines = open(os.path.join(MIG, fname)).read().split('\n')
-    start = max(i for i, l in enumerate(lines) if l.strip().upper().startswith('-- ROLL BACK'))
-    out, on = [], False
-    for l in lines[start:]:
-        if l.startswith("-- set lock_timeout"):
-            on = True
-        if on:
-            if not l.startswith('--'):
-                break
-            out.append(l[3:] if l.startswith('-- ') else l[2:])
-            if l.startswith('-- reset lock_timeout;'):
-                break
-    if not out:
+def rollback_block(fname):
+    """The ROLL BACK section exactly as Peter copies it: from the "-- -- ====" rule line
+    just above its heading to the very end of the file."""
+    lines = open(os.path.join(MIG, fname)).read().rstrip('\n').split('\n')
+    heads = [i for i, l in enumerate(lines) if l.lstrip('- ').upper().startswith('ROLL BACK')]
+    if not heads:
         raise RuntimeError('no roll back block in ' + fname)
+    h = heads[-1]
+    s = h - 1 if lines[h - 1].lstrip('- ').startswith('====') else h
+    return lines[s:]
+
+def rollback_sql(fname):
+    """What the SQL editor runs after the pasted block is uncommented once (select all,
+    Cmd+/): every line loses its first "-- " (a bare "--" line becomes empty). Fix round 2:
+    the WHOLE section is run, prose included, so a note that is not a comment fails here
+    just as it would in the editor."""
+    block = rollback_block(fname)
+    bad = [l for l in block if l.strip() and not l.startswith('--')]
+    if bad:
+        raise RuntimeError(f'{fname}: a roll back line is not a comment, the editor toggle would not work: {bad[0]}')
+    out = []
+    for l in block:
+        if l.startswith('-- '):
+            out.append(l[3:])
+        elif l.startswith('--'):
+            out.append(l[2:])
+        else:
+            out.append(l)
     return '\n'.join(out) + '\n'
 
 def apply_rollback(fname, db='ops'):

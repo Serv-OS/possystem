@@ -1,4 +1,4 @@
--- 20260919c_PLATFORM_fence_1_safe_now.sql
+-- 20260919c_PLATFORM_fence_1_after_release.sql
 --
 -- ############################################################################
 -- #  PLATFORM DB ONLY   project ref  yhzjgyrkyjabvhblqxzu                     #
@@ -109,11 +109,29 @@ select
       and (has_table_privilege('anon', c.oid, 'TRUNCATE') or has_table_privilege('authenticated', c.oid, 'TRUNCATE'))) as truncate_left;
 
 
--- ROLL BACK (paste in the Platform SQL editor only if a screen breaks)
--- Remove the "-- " at the start of each line, paste, Run. It puts back exactly the
--- policies and write grants this file removed, and can run twice. (TRUNCATE,
--- REFERENCES and TRIGGER are not given back: nothing uses them.)
+-- -- ============================================================================
+-- -- ROLL BACK (paste in the Platform SQL editor only if a screen breaks)
+-- -- ============================================================================
+-- -- HOW: copy every line from the "-- -- ====" line just above this heading to the
+-- -- very end of the file and paste it into the Platform SQL editor. Select all (Cmd+A)
+-- -- and press Cmd+/ once: every line loses its first "-- ", and the notes (lines that
+-- -- still start with "-- ") stay notes. Then press Run.
+-- -- ORDER: if Platform file 2 (20260919d) has run, roll IT back first (the ROLL BACK
+-- -- block at the end of 20260919d_PLATFORM_fence_2_after_app.sql). While it is still
+-- -- in, this block stops at its first step and changes nothing.
+-- -- WHAT: it puts back exactly the policies and write grants this file removed, and can
+-- -- run twice. (TRUNCATE, REFERENCES and TRIGGER are not given back: nothing uses them.)
 -- set lock_timeout = '3s';
+-- do $rb_guard$
+-- begin
+--   if exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'gift_card_purchases'
+--               and policyname = 'gift_card_purchases_server')
+--      and not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'gift_card_purchases'
+--                       and policyname = 'gift_card_purchases_read_interim') then
+--     raise exception 'STOPPED, NOTHING WAS CHANGED. Platform file 2 (20260919d) is still in. Roll back file 2 first (the ROLL BACK block at the end of 20260919d_PLATFORM_fence_2_after_app.sql), then run this block again.';
+--   end if;
+-- end
+-- $rb_guard$;
 -- drop policy if exists gift_card_purchases_service on public.gift_card_purchases;
 -- create policy gift_card_purchases_service on public.gift_card_purchases for all to public using (true) with check (true);
 -- drop policy if exists gift_card_purchases_server on public.gift_card_purchases;

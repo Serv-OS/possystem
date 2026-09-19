@@ -17,14 +17,24 @@ def j(o):
 def q(x):
     return json.dumps(x).replace("'", "''")
 
-def proof(ref, kind, amount, loc=L1):
-    run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by) values ('stripe', '{ref}', '{kind}', '{loc}', {amount}, 'test')")
+def proof(ref, kind, amount, loc=L1, order_ref=None):
+    meta = 'null' if order_ref is None else f"'{json.dumps({'order_ref': order_ref})}'::jsonb"
+    run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by, meta) values ('stripe', '{ref}', '{kind}', '{loc}', {amount}, 'test', {meta})")
     o, _, _ = run(f"select id from public.payment_proofs where payment_ref = '{ref}' and kind = '{kind}'")
     return o
 
 t.reset()
-out, err, rc = t.apply('20260919a_OPS_fence_1_safe_now.sql')
+out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
 expect('file A applies', rc == 0, err[-1500:])
+
+# --- gate 0 (fix round 2): a full day after file A FIRST ran, recorded by the server
+out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
+expect('file B stops while file A has been in for less than a full day (whatever else is ready)',
+       rc != 0 and 'less than a full day ago' in err and 'Run this file again after' in err, err[-600:])
+t.age_file_a(23)
+out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
+expect('23 hours is still less than a full day', rc != 0 and 'less than a full day ago' in err, err[-600:])
+t.age_file_a(25)
 
 # --- gate 1: devices on the release, linked, with a device secret
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
@@ -39,48 +49,47 @@ o, _, _ = run("select count(*) from public.devices where status in ('active','on
 expect('every active device now linked with a secret', o == '0', o)
 
 # --- gate 2: a device that is not linked but switched on in the last 24 hours
+as_commit('attacker', f"select public.device_heartbeat('5.9.9', array['fence_v1'], '{DEV['kds1']}');")
+as_commit('stranger', "select public.device_heartbeat(null, null, '40000000-0000-4000-8000-00000000000a');")
+o, _, _ = run("select count(*) from public.device_unlinked_pings")
+expect('MEDIUM: a stranger naming someone else\'s device id records nothing', o == '0', o)
+run(f"insert into public.device_unlinked_pings (device_id, uid, last_at) values ('40000000-0000-4000-8000-00000000000a', '{UID['stranger']}', now())")
+out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
+expect('MEDIUM: and even a ping row from a session that was never linked to that device cannot hold file B shut', rc != 0 and 'No customer order has gone through' in err, err[-600:])
+run("delete from public.device_unlinked_pings")
 as_commit('dev2', f"select public.device_heartbeat('5.9.9', array['fence_v1'], '{DEV['kds1']}');")
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
-expect('file B stops while an unlinked device is switched on (a kiosk could take money it cannot save)',
+expect('file B stops while a device that WAS linked is switched on unpaired (a kiosk could take money it cannot save)',
        rc != 0 and 'switched on but not paired' in err and 'KDS 1' in err, err[-600:])
 run("update public.device_unlinked_pings set last_at = now() - interval '2 days'")
 
-# --- gate 3: orders written by an old customer page, or before file A
+# --- gate 3 (fix round 2): rows anyone could write no longer hold file B shut
 as_commit('attacker', f"insert into public.order_queue (ref, location_id, type, source, status, items) values ('OLD-1', '{L1}', 'collection', 'online', 'prep', '[]');")
-out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
-expect('file B stops while old customer pages still write orders', rc != 0 and 'old customer page' in err, err[-600:])
-run("update public.order_queue set created_at = now() - interval '2 days' where ref = 'OLD-1'")
-run("alter table public.order_queue disable trigger order_queue_placed_via")
-run(f"insert into public.order_queue (ref, location_id, type, source, status, items) values ('PRE-A', '{L1}', 'collection', 'online', 'prep', '[]')")
-run("alter table public.order_queue enable trigger order_queue_placed_via")
-out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
-expect('file B stops while file A has been in for less than a day', rc != 0 and 'less than a day' in err, err[-600:])
-run("update public.order_queue set created_at = now() - interval '2 days' where ref = 'PRE-A'")
+as_commit('rawanon', f"insert into public.order_queue (ref, location_id, type, source, status, items) values ('OLD-2', '{L3}', 'collection', 'qr', 'prep', '[]');")
+o, _, _ = run("select string_agg(placed_via, ',' order by ref) from public.order_queue where ref in ('OLD-1', 'OLD-2')")
+expect('an anonymous session and the raw anon key can still write orders straight in during file A (placed_via public)', o == 'public,public', o)
 # ezCater orders become catering orders written by the server: they never block file B
 as_commit('service', f"insert into public.order_queue (ref, location_id, type, source, status, items, customer) values ('EZ-1', '{L1}', 'delivery', 'catering', 'received', '[]', '{{\"channel\":\"ezcater\"}}');")
-run("alter table public.order_queue disable trigger order_queue_placed_via")
-run(f"insert into public.order_queue (ref, location_id, type, source, status, items, customer) values ('EZ-OLD', '{L1}', 'delivery', 'catering', 'received', '[]', '{{\"channel\":\"ezCater\"}}')")
-run("alter table public.order_queue enable trigger order_queue_placed_via")
 as_commit('dev1', f"insert into public.order_queue (ref, location_id, type, source, status, items) values ('HUB-1', '{L1}', 'collection', 'online', 'prep', '[]');")
 
 # --- gate 4: a quiet day never passes by itself
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
-expect('file B stops when no customer order has gone through the new function yet (a quiet day)',
+expect('MEDIUM: those rows do not stop file B; it stops only because no customer order has gone through the new function yet',
        rc != 0 and 'No customer order has gone through' in err, err[-600:])
-p1 = proof('pi_test_1', 'card', 1000)
-order = {'ref': 'OL-TEST', 'source': 'online', 'items': [{'name': 'Tea', 'price': 10, 'qty': 1}], 'total': 10, 'customer': {}}
-o, e, r = as_commit('customer', f"select public.place_public_order('{L1}', '{q(order)}'::jsonb, '{q({'id': 'chk-test', 'total': 10})}'::jsonb, array['{p1}']::uuid[]);")
+p1 = proof('pi_test_1', 'card', 1000, order_ref='OL-TEST')
+order = {'ref': 'OL-TEST', 'source': 'online', 'items': [{'itemId': 'mi-tea', 'name': 'Tea', 'price': 10, 'qty': 1}], 'total': 10, 'customer': {}}
+o, e, r = as_commit('customer', f"select public.place_public_order('{L1}', '{q(order)}'::jsonb, '{q({'id': 'chk-OL-TEST-1', 'total': 10})}'::jsonb, array['{p1}']::uuid[]);")
 expect('one real test order through the new function', j(o).get('paid') is True, o + e)
 
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
-expect('file B applies once the app is live everywhere (ezCater, till and server orders do not block it)', rc == 0, err[-2000:])
+expect('file B applies once the app is live everywhere (ezCater, till, server and stray public rows do not block it)', rc == 0, err[-2000:])
 print('   verify row:', last(out))
 v = last(out).split('|')
-expect('no open policy left, names on, devices not readable by all, every till has a secret, QR trigger on',
-       v == ['none', 't', 'f', '0', 't'], last(out))
+expect('no open policy left, names on, devices not readable by all, every till has a secret, QR trigger on, 2 stray public rows counted',
+       v == ['none', 't', 'f', '0', 't', '2'], last(out))
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
 expect('file B applies a second time', rc == 0, err[-1500:])
-out, err, rc = t.apply('20260919a_OPS_fence_1_safe_now.sql')
+out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
 expect('file A refuses to run after file B, and changes nothing', rc != 0 and 'has already run' in err, err[-600:])
 o, _, _ = run("select count(*) from pg_policies where tablename = 'order_queue' and policyname = 'allow all'")
 expect('order_queue is still closed after the refused re-run', o == '0', o)
@@ -172,16 +181,16 @@ expect('a kiosk closes a check', r == 0, e)
 # --- customer path end to end, with the QR floor trigger
 run(f"insert into public.floor_tables (id, location_id, label) values ('ft-7', '{L1}', 'T7') on conflict do nothing;")
 proof('pi_tab_000000009', 'preauth', 5000)
-tab = {'ref': 'QR-B1', 'source': 'qr', 'type': 'dine-in', 'items': [{'name': 'Beer', 'price': 6, 'qty': 2}], 'total': 12,
+tab = {'ref': 'QR-B1', 'source': 'qr', 'type': 'dine-in', 'items': [{'itemId': 'mi-beer', 'name': 'Beer', 'price': 6, 'qty': 2}], 'total': 12,
        'customer': {'name': 'Bob', 'tableId': 'T7', 'tab_open': True, 'payment_intent_id': 'pi_tab_000000009'}}
 o, e, r = as_commit('customer', f"select public.place_public_order('{L1}', '{q(tab)}'::jsonb)->>'ok';")
 expect('QR tab opened through the function', last(o) == 'true', o + e)
-o, e, r = run(f"select session->>'source', session->>'subtotal' from public.active_sessions where location_id = '{L1}' and table_id = 'ft-7'")
-expect('the tab shows on the floor plan (server trigger)', o == 'qr|12', o)
+o, e, r = run(f"select session->>'source', (session->>'subtotal')::numeric = 12 from public.active_sessions where location_id = '{L1}' and table_id = 'ft-7'")
+expect('the tab shows on the floor plan (server trigger), at the server price', o == 'qr|t', o)
 evil = dict(tab, ref='QR-EVIL', customer=dict(tab['customer'], name='Eve'))
 o, e, r = as_('attacker', f"select public.place_public_order('{L1}', '{q(evil)}'::jsonb)->>'reason';")
 expect('after file B a stranger still cannot add a round to the tab', last(o) == 'tab_not_yours', o + e)
-payq = {'ref': 'QR-PAYB', 'source': 'qr', 'type': 'dine-in', 'items': [{'name': 'Pizza', 'price': 12, 'qty': 1}], 'total': 12,
+payq = {'ref': 'QR-PAYB', 'source': 'qr', 'type': 'dine-in', 'items': [{'itemId': 'mi-pizza', 'name': 'Pizza', 'price': 12, 'qty': 1}], 'total': 12,
         'customer': {'tableId': 'T8', 'payment_intent_id': 'pi_payb_00001'}}
 run(f"insert into public.floor_tables (id, location_id, label) values ('ft-8', '{L1}', 'T8') on conflict do nothing;")
 o, e, r = as_commit('customer', f"select public.place_public_order('{L1}', '{q(payq)}'::jsonb, '{q({'id': 'chk-payb', 'total': 12, 'stripe_payment_intent_id': 'pi_payb_00001'})}'::jsonb);")

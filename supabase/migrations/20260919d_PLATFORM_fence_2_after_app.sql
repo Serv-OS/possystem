@@ -40,7 +40,7 @@ begin
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'gift_card_purchases'
                   and policyname = 'gift_card_purchases_server') then
-    raise exception 'Run 20260919c_PLATFORM_fence_1_safe_now.sql first. Nothing was changed.';
+    raise exception 'Run 20260919c_PLATFORM_fence_1_after_release.sql first. Nothing was changed.';
   end if;
 end
 $guard$;
@@ -115,9 +115,16 @@ select
 -- Watch these cards in Gift cards for unexpected redemptions for the next 30 days.
 
 
--- ROLL BACK (paste in the Platform SQL editor only if a Back Office screen breaks)
--- Remove the "-- " at the start of each line, paste, Run. It puts back exactly the read
--- policies and grants this file removed, and can run twice.
+-- -- ============================================================================
+-- -- ROLL BACK (paste in the Platform SQL editor only if a Back Office screen breaks)
+-- -- ============================================================================
+-- -- HOW: copy every line from the "-- -- ====" line just above this heading to the
+-- -- very end of the file and paste it into the Platform SQL editor. Select all (Cmd+A)
+-- -- and press Cmd+/ once: every line loses its first "-- ", and the notes (lines that
+-- -- still start with "-- ") stay notes. Then press Run.
+-- -- WHAT: it puts back exactly the read policies and grants this file removed, and can
+-- -- run twice. The cleared codes do not come back; each card still holds its own
+-- -- (gift_cards.code_plain).
 -- set lock_timeout = '3s';
 -- drop policy if exists gift_card_purchases_read_interim on public.gift_card_purchases;
 -- drop policy if exists gift_card_purchases_company_read on public.gift_card_purchases;
@@ -126,4 +133,3 @@ select
 --   using (company_id in (select user_company_roles.company_id from user_company_roles where user_company_roles.user_id = auth.uid()));
 -- grant select on table public.gift_card_purchases to anon, authenticated;
 -- reset lock_timeout;
--- The cleared codes do not come back; each card still holds its own (gift_cards.code_plain).

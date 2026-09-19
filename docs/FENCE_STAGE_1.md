@@ -1,6 +1,6 @@
 # Database fence, stage 1: runbook for Peter
 
-Written 18 Sep 2026, fix round 19 Sep 2026. Branch `fix/database-fence-1`.
+Written 18 Sep 2026, fix rounds 1 and 2 on 19 Sep 2026. Branch `fix/database-fence-1`.
 
 ## What this is
 
@@ -15,17 +15,29 @@ Written 18 Sep 2026, fix round 19 Sep 2026. Branch `fix/database-fence-1`.
 |---|---|---|---|
 | 1 | **The app release** and its 5 edge functions | Vercel, Supabase functions | First |
 | 2 | **Every till on the new version** | On the floor | Before step 3 |
-| 3 | `20260919a_OPS_fence_1_safe_now.sql` | Ops SQL editor | Outside service |
-| 4 | `20260919c_PLATFORM_fence_1_safe_now.sql` | Platform SQL editor | After step 1 |
+| 3 | `20260919a_OPS_fence_1_after_release.sql` | Ops SQL editor | Outside service |
+| 4 | `20260919c_PLATFORM_fence_1_after_release.sql` | Platform SQL editor | After step 1 |
 | 5 | `20260919d_PLATFORM_fence_2_after_app.sql` | Platform SQL editor | After step 4 |
 | 6 | `20260919b_OPS_fence_2_after_app.sql` | Ops SQL editor | A full day after step 3, outside service |
 
+- **New names (fix round 2)**: files A and C used to end `_safe_now.sql`. Both wait for the app release, so they now end `_after_release.sql`.
 - **App first, always.** The live app (v5.9.8) can lose a till's login when the Wi-Fi blips, and it pairs by reading codes off the devices table. After step 3 neither works: a till still on the old app can end up **unlinked with no banner**, and it **cannot be paired** at all. The release never loses a till's login, re-links with a device secret, and shows a red banner with **Pair again** whenever a till is not linked.
+- **Step 3 checks the versions itself**: it stops, changing nothing, while any device switched on in the last 2 hours runs an app older than **v5.9.10** (or reports no version), and names each one.
 - **Each file checks the project**. Paste it in the wrong one and it stops, changing nothing.
 - **Each file is all or nothing**. If it stops with an error, nothing changed. Fix the cause and run it again.
-- **Running a file twice is safe.** Step 3 refuses to run once step 6 has run (that is on purpose).
+- **Running a file twice is safe.** Step 3 refuses to run once step 6 has run (that is on purpose). Step 6 refuses to run until **24 hours after step 3 first ran** (it reads the time step 3 recorded).
 - **Each file ends with a check**. The editor shows one result row. What to expect is written below.
-- **Each file ends with a roll back block** in comments. Every roll back puts back exactly what that file changed, and can run twice.
+- **Each file ends with a roll back block** in comments. Every roll back puts back exactly what that file changed (function grants included), and can run twice. See "How to roll back" below.
+
+## How to roll back
+
+- **Order**: roll back the LATER file first. Step 6 before step 3 (Ops); step 5 before step 4 (Platform). A roll back run in the wrong order stops at its first line, changes nothing, and says which file to roll back first.
+- **How**:
+  1. In the file, find the heading **ROLL BACK** near the end.
+  2. Copy from the `-- -- ====` line just above it to the very end of the file.
+  3. Paste it into the SQL editor of the same project.
+  4. Select all (**Cmd+A**), then press **Cmd+/** once. Every line loses its first `-- `. The notes still start with `-- ` and stay notes.
+  5. Press **Run**.
 
 ## Before you start
 
@@ -58,16 +70,21 @@ select p.email, p.role as login_role, l.name as venue, ul.role as venue_role,
 - **Every till, KDS, kiosk and clock** must load the release once.
 - **Sunmi tills**: a reload keeps the old code. **Force stop** the app (swipe it out of recents, or Settings, Apps, Force stop), then **open it again**.
 - **Where to check (Back Office)**: Hardware, **Network & sync**. Each till shows `v` and its version; anything behind is flagged **OUT OF DATE**. Switch venue (the venue name with the pin, in the Back Office menu) to see each venue. KDS screens and kiosks show their version in the query below.
-- **Where to check (every device, one query)**, read only, Ops SQL editor. Every row must show the release version:
+- **Where to check (every device, one query)**, read only, Ops SQL editor. Every row seen today must show the release version (v5.9.10 or later) in `app_version` or `heartbeat_version`, whichever `last_seen` is newer. Old Sunmi tills that ran for days without a restart only show up through `heartbeat_version`, so this query reads both:
 
 ```sql
-select l.name as venue, d.name, d.type, d.app_version, d.last_seen,
-       (select h.version from public.device_heartbeats h where h.device_id = d.id::text
-         order by h.last_seen desc limit 1) as till_version
-  from public.devices d left join public.locations l on l.id = d.location_id
- where d.status in ('active', 'online') and d.last_seen > now() - interval '14 days'
+select l.name as venue, d.name, d.type, d.status, d.app_version,
+       h.version as heartbeat_version,
+       greatest(d.last_seen, h.last_seen) as last_seen
+  from public.devices d
+  left join public.locations l on l.id = d.location_id
+  left join lateral (select hb.version, hb.last_seen from public.device_heartbeats hb
+                      where hb.device_id = d.id::text order by hb.last_seen desc limit 1) h on true
+ where greatest(d.last_seen, h.last_seen) > now() - interval '14 days'
  order by 1, 2;
 ```
+
+- **Step 3 checks this itself**: it stops while any device seen in the last 2 hours runs an older app or reports no version, and names each one. A device switched off stops counting 2 hours after it was last seen.
 
 - **A device you cannot reach today**: that is fine only if it stays switched off until step 3 is done. Switched on later with the old app, it cannot pair: force stop and reopen it first.
 
@@ -90,7 +107,7 @@ On 19 Sep (the numbers move every day, a till drops out after 14 idle days):
 **How**
 
 1. Open the **Ops** project SQL editor (tbetcegmszzotrwdtqhi).
-2. Paste all of `20260919a_OPS_fence_1_safe_now.sql`.
+2. Paste all of `20260919a_OPS_fence_1_after_release.sql`.
 3. Press **Run**.
 
 **Expect this result row**
@@ -102,10 +119,12 @@ On 19 Sep (the numbers move every day, a till drops out after 14 idle days):
 - **codes_readable_by_strangers**: `false`.
 - **truncate_left**, **profile_policy_left**, **self_move_left**, **untrusted_links_left**: all `0`.
 - **placed_via_trigger**: `true`.
+- **rules_open_to_customers**, **stamp_ledger_open**: both `false`.
 
 **If it stops**
 
-- **"A till was busy ... press Run again"**: a till held a table for more than 3 seconds. Nothing changed. Wait 10 seconds and press **Run** again. The same for a "deadlock detected" message.
+- **"... device(s) switched on in the last 2 hours run an app older than v5.9.10: ..."**: each named device still runs the old app (or reports no version). Force stop and reopen it (Sunmi), or reload it, so it loads the release. Or switch it off: it stops counting 2 hours after it was last seen. Then press **Run** again.
+- **"A till was busy ... press Run again"**: a till held a table for more than 3 seconds, or a deadlock was found. Nothing changed. Wait 10 seconds and press **Run** again.
 - **"reach a venue only through their profile venue"**: a login would lose a venue. On 19 Sep there were none. Send Claude the message, or, if you know the person works there, paste their id into `v_keep` in step 4b of the file and run again.
 - **"File 2 (20260919b) has already run"**: nothing to do, the fence is already finished.
 
@@ -116,7 +135,9 @@ On 19 Sep (the numbers move every day, a till drops out after 14 idle days):
 - **Devices**: nobody can make a fake till. **A device's venue is pinned**: it can only move in Back Office by someone who manages both venues, and moving it unpairs it.
 - **Pairing codes**: only that venue's Back Office and you can see them. Every old code is retired. A code works once, for 60 minutes.
 - **Wipes**: TRUNCATE (which skips all rules) is gone from the app keys.
-- **Online and QR orders**: "paid" is decided by the server from the real payment, never from a number the phone sends. An order it cannot prove yet reaches the venue marked **Payment being checked**.
+- **Online, QR and catering orders**: "paid" is decided by the server. It prices the order ITSELF from your menu (each item and option by its id, never below your menu price, whole quantities), takes off only discounts it can prove (your automatic deals, a real promo code, which it uses up, and a loyalty reward redeemed for that order), and checks the real payment covers that. An order it cannot prove yet reaches the venue marked **Payment being checked**. An order paid less than your menu says reaches the venue marked **Payment short**, with what was paid and what was due. Neither is ever marked paid by itself.
+- **Discount deals and stamp cards**: only your Back Office can add or change an automatic deal (anyone could before), and only the server can write the stamp card ledger.
+- **QR tabs**: a round that would take the tab past its card hold is refused. Only the person who opened the tab, someone who joined it with the table code, or staff can close it, and only the tab's own card payment counts.
 
 **What staff see the moment it runs**
 
@@ -130,6 +151,7 @@ On 19 Sep (the numbers move every day, a till drops out after 14 idle days):
   - **Anything else refused** while it is not linked waits on the till (kept, never dropped) and is sent once it is paired again.
   - Pairing it again to the **same venue** wipes nothing.
   - **Pair it again straight away**: until then it cannot see bar tabs or past bills, and staff may not be able to sign in after a restart.
+  - **Card payments stop on it until it is paired again** (the card reader functions check the till's link). Nothing is charged twice; take cash or use another till. For a venue whose only device is one of these tills, that means cash only until it is paired: better, before step 3, link that owner's login to the venue in the admin portal (if they really work there), and the till is kept.
 - **Removed devices**: nobody should be using them. One that is switched on shows the same red banner; pair it again the same way, or switch it off.
 - **Why a banner and not the pairing screen**: file A hides the row from a till that is no longer linked, and marks a till used this week "Waiting for pairing", never "removed". The release throws a till to the pairing screen only when it can read its own row and the row says removed, so these tills keep running with their work and the banner. (Before this fix round a removed till was thrown to a blank pairing screen the moment file A ran.)
 
@@ -164,14 +186,14 @@ select l.name as venue, d.name, d.type, d.last_seen
 
 **Roll back**
 
-- Paste the **ROLL BACK** block at the end of the file (remove the `-- ` at the start of each line).
-- It puts back exactly the rules, functions and write grants of 18 Sep. It does not bring back retired codes or links: pair those devices again.
+- See "How to roll back" at the top. If step 6 has run, roll it back first: this one stops and says so.
+- It puts back exactly the rules, functions, function grants and write grants of 18 Sep. It does not bring back retired codes or links: pair those devices again. Running step 3 again later starts step 6's full day again.
 
 ## Step 4: Platform file C
 
 **Wait until**: the release's edge functions are deployed. Check: Back Office, Hardware, **Card readers**, change a tip and press **Save**: it saves.
 
-**How**: Platform SQL editor (yhzjgyrkyjabvhblqxzu), paste `20260919c_PLATFORM_fence_1_safe_now.sql`, Run.
+**How**: Platform SQL editor (yhzjgyrkyjabvhblqxzu), paste `20260919c_PLATFORM_fence_1_after_release.sql`, Run.
 
 **Expect**: `gift_writes_by_browser` false, `reader_writable_by_browser` false, `reader_policies` = `location_reader_settings_read SELECT`, `truncate_left` 0, and `gift_policies` lists three policies.
 
@@ -183,7 +205,7 @@ select l.name as venue, d.name, d.type, d.last_seen
 
 **Check**: Card readers, change a tip and save. PAX terminals, change the idle image. Gift cards, Online purchases still lists.
 
-**Roll back**: the block at the end of the file.
+**Roll back**: the block at the end of the file (see "How to roll back"). If step 5 has run, roll it back first: this one stops and says so.
 
 ## Step 5: gift cards whose code leaked, then Platform file D
 
@@ -210,16 +232,17 @@ select c.company_id, count(*) as live_cards, sum(c.balance_minor) as balance_min
 - **How**: Platform SQL editor, paste `20260919d_PLATFORM_fence_2_after_app.sql`, Run.
 - **Expect**: `gift_readable_by_browser` false, `codes_left` equal to `kept_because_card_has_no_code` (normally 0), `reader_writable_by_browser` false.
 - **What closes**: online gift card codes, names and emails: nobody can read them from the browser any more.
-- **Roll back**: the block at the end of the file (cleared codes do not come back; each card keeps its own).
+- **Roll back**: the block at the end of the file (see "How to roll back"; cleared codes do not come back, each card keeps its own).
 
 ## Step 6: Ops file B (a full day after step 3)
 
 **Wait until all of these are true.** The file checks each one itself and stops, changing nothing, with the reason:
 
+- **File A has been in for a full day**: 24 hours after step 3 FIRST ran (step 3 records the time; running it again later does not move it). Before that the file says when you may run it.
 - **Every active device** reports the new app (`fence_v1`) **and** holds its device secret. Switch each kept device on for 2 minutes (Sunmi: force stop and reopen).
-- **No unpaired device is switched on**: a till or kiosk that is on but not paired could take a card payment it can no longer save. Pair it again or switch it off.
-- **File A has been in for a full day**, and no old customer page wrote an order in that day.
+- **No unpaired device is switched on**: a till or kiosk that is on but not paired could take a card payment it can no longer save. Pair it again or switch it off. Only a device's own former session can report this, so nobody else can hold the file shut.
 - **At least one customer order went through the new order function** in the last 7 days. On 19 Sep there were **no** online, QR or catering orders in 7 days, so **place one test online order** (pay with a real card and refund it, or use a gift card) and check it reached the till.
+- **Fix round 2**: orders written straight into the orders table by an unknown caller no longer stop the file (anyone could write one during step 3's day, to hold it shut). The day after step 3 is what gives old customer pages time to reload. The result row counts them for you (`public_orders_24h`).
 
 Read only checks you can run first:
 
@@ -233,7 +256,9 @@ select l.name as venue, d.name, d.type, d.app_version, d.client_caps, d.bound_vi
 ```
 
 ```sql
--- 2. who wrote the customer orders of the last day (public must be 0; rpc must be 1 or more over 7 days)
+-- 2. who wrote the customer orders of the last day (rpc must be 1 or more over 7 days;
+--    public rows no longer block the file, but look at them: real looking orders there
+--    mean an old page may still be open somewhere, so wait another day)
 select placed_via, count(*)
   from public.order_queue
  where source in ('online', 'qr', 'catering') and created_at > now() - interval '24 hours'
@@ -251,6 +276,7 @@ select placed_via, count(*)
 - **devices_readable_by_all**: `false`.
 - **tills_without_secret**: `0`.
 - **qr_floor_trigger**: `true`.
+- **public_orders_24h**: for information (usually `0`): customer orders of the last day written straight into the table by an unknown caller. From now on nobody can.
 
 **What closes**
 
@@ -265,7 +291,7 @@ select placed_via, count(*)
 
 **Smoke test**: online order and tracker, QR tab open, add a round, a friend joins with the table code, settle from the phone, catering order, kiosk order, KDS bump, a print, a QR tab on the floor plan.
 
-**Roll back**: the block at the end of the file puts back the open rules exactly (the QR floor trigger stays, it only ever writes QR sessions). After it, file A may run again.
+**Roll back**: the block at the end of the file (see "How to roll back") puts back the open rules exactly (the QR floor trigger stays, it only ever writes QR sessions). Roll this one back BEFORE step 3's. After it, file A may run again, or be rolled back.
 
 ## Things that catch people out
 
@@ -276,6 +302,8 @@ select placed_via, count(*)
 - **"Check the code: pairing codes never use 0, 1, I or O"**: the new pairing screen caught a misread symbol before sending it. Codes use letters and the digits 2 to 9 only.
 - **"This device is paired and in use"** when you issue a code: Back Office asks before it disconnects a till.
 - **Payment being checked**: an online, QR or catering order whose payment the server could not prove yet (usually a slow card processor). It is **not unpaid**: never charge it again. On the order in the Orders Hub, staff press **Check payment**; a manager can press **Confirm payment** after seeing the payment in the card processor. Both write the paid bill for reports.
+- **Payment short** (fix round 2): the customer paid less than your menu says the order costs (a doctored page, a deal that ended while they paid, or an item that is no longer on the menu). The order shows what was paid and what was due. **Never charge the full amount again.** Take the difference on the till if you want it, then a manager presses **Confirm payment** with a note. Until the app release shows this state by name, it looks like **Payment being checked**.
+- **"This round would take the tab past its card hold"**: a QR tab can only run up to its card hold. The guest closes the tab from their phone and starts a new one, or staff take the order on the till.
 - **Fixed but still broken?** Check the edge functions were deployed (`node scripts/check-deploys.mjs`).
 - **Never** use `supabase db push`.
 
@@ -292,13 +320,13 @@ select placed_via, count(*)
 - **booking_preorders, booking_rules, booking_tables, bookings**: open write policies; bookings need their own fence.
 - **config_pushes**: any session can write a menu snapshot for any venue.
 - **device_profiles**: "allow all"; kiosk and customer display read branding from it.
-- **discount_rules, discounts**: open writes.
+- **discounts** (manual till presets): open writes. (discount_rules, the automatic deals, is fenced by step 3 since fix round 2: the server prices orders from them.)
 - **eighty_six**: anyone can mark items sold out at any venue.
 - **item_variants, modifier_options**: open writes.
 - **menu_categories, menu_category_links, menus**: write rules only check "is logged in", which an anonymous session passes.
 - **package_lines, packages**: open writes.
 - **print_routing, printer_agents, printer_health, printers**: open writes (print agents heartbeat here).
-- **stamp_transactions**: open read and write.
+- **stamp_transactions**: open read (customer ids). Writes are server only since fix round 2.
 - **stock_levels**: open writes; `decrement_stock` and `restore_stock` have no search_path pin and no caller check.
 - **tax_rates, tax_profiles, tax_profile_lines**: write rules only check "is logged in".
 - **customers, customer_locations, customer_orders**: the anonymous escape hatch (customer PII), plus `attribute_public_order`.
@@ -317,10 +345,10 @@ select placed_via, count(*)
 
 - **api/stripe-capture.js and api/stripe-charge-overage.js** (Vercel): no login at all; anyone with a card payment id can capture or charge a saved card.
 - **stripe-process-payment-on-reader**: trusts the till id sent in the body.
-- **gift and loyalty functions**: "any login" is treated as authority (branch `fix/loyalty-giftcard-exposure` has the fix, parked).
+- **gift and loyalty functions**: "any login" is treated as authority, so an anonymous session still passes the money functions (branch `fix/loyalty-giftcard-exposure` has a fix, parked). Gift cards and loyalty are payments, so this belongs in stage 1 (19 Sep); it is edge function work, separate from these SQL files.
 - **workforce-clock**: any login plus a PIN clocks in at any venue; no PIN attempt limit.
 - **uber-direct track_order**: courier details by venue and order reference.
 - **order-notify**: finds orders by reference only.
-- **Prices**: the customer pages still work out prices and discounts in the browser. Stage 1 makes "paid" mean "the real payment covers what the order itself says it costs" (its lines, less the discounts it declares, which staff can see); checking the prices themselves against the menu is stage 2.
-- **Promo codes**: a promo that covers a whole online bill has no payment to prove, so that order arrives as "Payment being checked" until stage 2 adds a promo proof.
+- **Prices** (fix round 2): the server now prices every online, QR and catering order from the menu and proves every discount, so the food itself can no longer be underpaid. Still what the page says: delivery fees, service charges and US sales tax (a doctored page can leave those off), tips (the customer's choice), and a promo code's per customer limit (the server has no customer identity). A percent loyalty reward is capped at the dearest single item until payment-proof records the percent (a large one arrives "Payment short"). The automatic deals the server works out follow the storefront's rules exactly; two deals of the same priority on the same items may be applied in a different order and show "Payment short" (staff confirm).
+- **Promo codes** (fix round 2): a promo that covers a whole bill is now proven by the server and the order is paid. A catering pay later order only checks its code (the page records the use), so the same single use code on two pay later orders at the same moment can still count twice.
 - **Customer display**: its broadcast channel can be joined by anyone who knows a till id.
