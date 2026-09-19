@@ -367,6 +367,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         orderType: check.order_type, customer: check.customer,
         items: check.items || [], discounts: check.discounts || [],
         subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
+        // v5.9.12: tax as booked, so a refund or reprint on THIS till returns / shows
+        // the added-on (US) tax the check charged. Inclusive rows: no new keys at
+        // all, exactly as before.
+        ...(check.tax_breakdown?.hasExclusiveTax ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
         method: check.method,
         closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
         // Carry the occupation's seatedAt (epoch ms) so isSessionClosed can tombstone
@@ -456,6 +460,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             orderType: check.order_type, customer: check.customer,
             items: check.items || [], discounts: check.discounts || [],
             subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
+            // v5.9.12: tax as booked, only for a check that charged added-on tax
+            ...(check.tax_breakdown?.hasExclusiveTax ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
             method: check.method,
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],

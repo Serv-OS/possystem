@@ -1,3 +1,12 @@
+# Session, 19 Sep 2026, v5.9.12, US sales tax basis (branch fix/us-tax-basis)
+
+- Fixed: US added-on tax was charged on price x qty before discounts and never on service or delivery. Now every surface passes its own check basis to the one seam (computeOrderTaxUnified) and each tax line decides (post discount, service ON, delivery OFF by default). ADR-025, INVARIANTS (Reporting / Tax).
+- New: src/lib/taxBasis.js (+ taxBasis.test.js, 38 tests incl. a 2000 check UK lock fuzz). 9000 random UK checks compared against origin/main: identical totals, booked breakdown and refunds. 2808 tests green, build exit 0.
+- Review round 1: 4 US bugs confirmed and fixed (kiosk V2 gift sizing, realtime/MasterSync breakdown, online fallback, service tax on part refunds) + 2 edge cases (0% exclusive row, levy decision). ADR-025 lists them.
+- RELEASE ORDER: migration 20260919t first, then merge.
+- Kiosk card path fingerprints updated (kioskCardPathGuard.test.js history): Peter signed off 19 Sep with the release approval; kiosk hardware test (one card payment on a real reader) still owed after deploy.
+- MIGRATION PENDING (Peter): supabase/migrations/20260919t_OPS_tax_basis_service_delivery.sql (two columns on tax_profile_lines, exclusive lines to post_discount). Back Office saves without the new columns until it runs and says so.
+- Known gaps left alone (flagged in ADR-025): MPOS ignores check discounts and service; partial refunds return the menu price; UK till VAT on pre-discount price.
 # Session, 19 Sep 2026, v5.9.11, accounting day fixes (Xero, groundwork for QuickBooks)
 
 - Branch fix/accounting-sales-day. ADR-025, INVARIANTS "Accounting days".

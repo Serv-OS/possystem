@@ -10,7 +10,7 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../../store';
-import { computeOrderTaxUnified } from '../../../lib/taxCompute';
+import { recordedCheckTax } from '../../../lib/taxCompute';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 
@@ -33,7 +33,8 @@ export default function Tax({ checks, fmt, fmtN }) {
     let totalGross = 0;
 
     checks.filter(c => c.status !== 'voided').forEach(c => {
-      const result = computeOrderTaxUnified(c.items || [], taxCtx, c.orderType || 'dine-in');
+      // v5.9.12: the tax the check CHARGED when it stored one (US), else the seam.
+      const result = recordedCheckTax(c, taxCtx);
       totalDerivedTax += result.totalTax || 0;
       totalNet        += result.subtotal || result.totalNet || 0;
 

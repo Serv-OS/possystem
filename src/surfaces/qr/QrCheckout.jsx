@@ -159,8 +159,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // the figure shown is "incl. VAT £X.XX", not added on top.
   // v5.7.34: through the unified seam — profiles cascade when the venue has
   // any assigned, byte-identical calculateOrderTax otherwise.
+  // v5.9.12: ADDED-ON tax on the bill's own basis: offers come off the lines
+  // they hit (uid = the key evaluateAutoDiscounts saw) and the table service
+  // charge is taxed where the line's profile says so (US default: yes). UK
+  // inclusive VAT never uses the basis, so UK totals and VAT are unchanged.
   const taxBreakdown = useMemo(() => computeOrderTaxUnified(
-    cart.map(l => ({
+    cart.map((l, i) => ({
+      uid: l.key || l.uid || l.id || `l${i}`,
       price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
       qty: l.qty || 1,
       itemId: l.itemId ?? null,
@@ -172,7 +177,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     })),
     taxCtx || { taxRates },
     'dine-in',
-  ), [cart, taxCtx, taxRates]);
+    { discounts: autoDiscounts, service: serviceCharge },
+  ), [cart, taxCtx, taxRates, autoDiscounts, serviceCharge]);
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
   // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
@@ -535,6 +541,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         service: serviceCharge,
         tip: tipAmount,
         tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
+            // v5.9.30 (was v5.9.12, rebased): the named lines, only when added-on tax
+            // was charged. A UK row is unchanged: hasExclusiveTax is false for VAT.
+            ...(taxBreakdown?.hasExclusiveTax && exclusiveTax > 0 ? { tax_breakdown: taxBreakdown } : {}),
         total,
         method: 'card',
         // v5.9.11: what paid the check, per tender. place_public_order keeps it on the row it

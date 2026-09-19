@@ -15,6 +15,7 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { creditDiscounts } from '../../lib/taxBasis';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
@@ -89,14 +90,18 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   // UK inclusive VAT contributes exactly 0: UK totals unchanged.
   // v5.7.34: through the unified seam — profiles cascade when assigned,
   // byte-identical calculateOrderTax otherwise.
+  // v5.9.12: on the bill's own basis: the promo code comes off the taxed amount
+  // and the delivery fee is taxed where the line's profile says so (US default:
+  // no). UK inclusive VAT never uses the basis, so UK totals are unchanged.
   const taxBk = useMemo(() => {
     try {
       return computeOrderTaxUnified(
         cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, itemId: l.itemId ?? null, cat: l.cat ?? null, cats: Array.isArray(l.cats) ? l.cats : null, taxProfileId: l.taxProfileId ?? null, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })),
         taxCtx || { taxRates: taxRates || [] }, fulfilment,
+        { discounts: creditDiscounts({ promo: discount }), deliveryFee },
       );
     } catch { return null; }
-  }, [cart, taxCtx, taxRates, fulfilment]);
+  }, [cart, taxCtx, taxRates, fulfilment, discount, deliveryFee]);
   const exclusiveTax = +(Number(taxBk?.exclusiveTax) || 0).toFixed(2);
   const total = Math.max(0, +(subtotal + exclusiveTax + deliveryFee + tip - discount).toFixed(2));
   const totalMinor = Math.round(total * 100);
@@ -280,6 +285,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
         subtotal, service: deliveryFee, tip, tax_amount: taxBk?.totalTax || null, total, method: 'card',
         tenders: singleTender('card', total, tip, { pspRef: payId, processor }),   // v5.9.11
+        // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
+        ...(taxBk?.hasExclusiveTax && exclusiveTax > 0 ? { tax_breakdown: taxBk } : {}),
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };

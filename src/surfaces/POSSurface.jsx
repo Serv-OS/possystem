@@ -18,7 +18,8 @@ import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
-import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { taxCtxHasConfig } from '../lib/taxCompute';
+import { creditDiscountsFromPayment } from '../lib/taxBasis';
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
@@ -359,13 +360,12 @@ export default function POSSurface() {
   // CheckoutModal. Display-only.
   // v5.7.34: through the unified seam — legacy-equivalent venues get
   // calculateOrderTax byte-identical, profile venues get the cascade.
+  // v5.9.12: the footer shows the BILL's own tax (getPOSTotals: discounts,
+  // service and delivery in the basis), so it can never disagree with the total.
+  // taxCtx stays subscribed so a tax setup change re-renders the till.
   const taxCtx = useStore(s => s.getTaxContext());
-  const footerTaxBreakdown = useMemo(() => {
-    if (!taxCtxHasConfig(taxCtx) || !items.length) return null;
-    try { return computeOrderTaxUnified(items.filter(i => !i.voided), taxCtx, orderType || 'dine-in'); }
-    catch { return null; }
-  }, [items, taxCtx, orderType]);
-  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null } = getPOSTotals();
+  const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null, tax: billTax = null } = getPOSTotals();
+  const footerTaxBreakdown = items.length ? billTax : null;
   // v5.5.646: auto-fetch an Uber Direct delivery quote when a delivery order has an
   // address + items, so the surcharge is on the bill BEFORE checkout. Debounced; the
   // resolved quote lands on store.deliveryQuote and getPOSTotals folds it into total.
@@ -841,11 +841,13 @@ export default function POSSurface() {
     const receiptSnapshot = shouldPrint ? (() => {
       const nonVoided = items.filter(i => !i.voided);
       const tip = paymentInfo.tip || 0;
-      const grand = total + tip;
+      // v5.9.12: the bill as CHARGED, with any promo / loyalty credit in the
+      // tax basis (the same recompute the store's close does). UK inclusive:
+      // no added-on tax, so this is exactly `total` and the old breakdown.
+      const charged = getPOSTotals({ creditDiscounts: creditDiscountsFromPayment(paymentInfo) });
+      const grand = charged.total + tip;
       let taxBreakdown = null;
-      if (taxCtxHasConfig(taxCtx)) {
-        try { taxBreakdown = computeOrderTaxUnified(nonVoided, taxCtx, orderType || 'dine-in'); } catch {}
-      }
+      if (taxCtxHasConfig(taxCtx)) taxBreakdown = charged.tax || null;
       const tableLabel = activeTable?.label || null;
       const server = session?.server || staff?.name || null;
       // Use a timestamp-based ref; the durable closed_checks row gets its own
@@ -1963,7 +1965,7 @@ export default function POSSurface() {
       {/* Modals */}
       {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
-      {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
+      {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
 
       {/* Void modal */}
@@ -2007,7 +2009,7 @@ export default function POSSurface() {
       {/* Receipt modal */}
       {showReceipt&&(
         <ReceiptModal
-          items={items} subtotal={subtotal} service={service} total={total}
+          items={items} subtotal={subtotal} service={service} total={total} taxBreakdown={billTax}
           checkDiscount={checkDiscount}
           orderType={orderType}
           tableLabel={activeTable?.label}

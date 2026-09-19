@@ -40,6 +40,24 @@
 //       paired through rpos-kiosk-id, so getActiveLocationSync() had no venue for it).
 //     The job fields (check key, amounts, suppressTip, closed check id, source), polling, cancel,
 //     the Stripe branch and every outcome are unchanged.
+//   v5.9.12 (19 Sep 2026, US sales tax basis. Peter signed this off when he approved the
+//   release; the kiosk hardware test, one card payment on a real reader, follows the
+//   deploy). ScreenPay and updateCartQty are byte for byte v5.8.75.
+//     totals 2452 -> 2862 chars: the tax lines move into a memo (kioskTaxLines, each line
+//       keyed by the same uid evaluateAutoDiscounts saw) and the seam call gains the basis
+//       { discounts: autoDiscounts }, so US added-on tax is charged after offers. Inclusive
+//       VAT never reads the basis: every UK kiosk figure is identical (taxBasis.test.js
+//       UK LOCK fuzz). `total` is the same expression.
+//     credits 687 -> 1718 chars: after promoCredit, creditedTaxBreakdown recomputes the tax
+//       with the loyalty and promo credits in the basis; taxRelief (0 unless added-on tax
+//       drops) comes off grandTotal. The end marker is now the grandTotal line with
+//       `- taxRelief`. Loyalty, gift and promo sizing are unchanged.
+//     submitOrder 16899 -> 17280 chars: tax / tax_amount read chargedTaxBreakdown (the
+//       breakdown with the relief applied, else taxBreakdown: identical for UK), the row
+//       gains tax_breakdown ONLY when added-on tax was charged, and the useCallback
+//       dependency list gains chargedTaxBreakdown. The gift commit order, the idempotency
+//       key, the PGRST204 retry, both stock paths, the order_queue insert and the 30 second
+//       reset are unchanged.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,8 +71,8 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride) => {',
     end: 'tableNumber, resetSession]);',
-    length: 16899,
-    sha256: '45281c7c3ec5bf9ba1e93fb690d6388c08b1aa5db760437c845ec4647f7f116b',
+    length: 17280,
+    sha256: 'd843c8fd7ddf9bde47d5f789160f9a70feacc9ef00659a9aea31965f730a191c',
   },
   {
     name: 'ScreenPay logic',
@@ -66,16 +84,16 @@ const BLOCKS = [
   {
     name: 'credits',
     start: 'const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {',
-    end: 'const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit);',
-    length: 687,
-    sha256: '0056f0f9a617810559d280e64eb9e50e7d6ab508eb822db45a1797e45212690a',
+    end: 'const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit - taxRelief);',
+    length: 1718,
+    sha256: '54704e2f785c4e7931054cb101d7822bdb66fe75da19a921719cc96db72e2a26',
   },
   {
     name: 'totals',
     start: 'const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);',
     end: 'const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);',
-    length: 2452,
-    sha256: 'cfd0783e0cad200d327448496e83b83b06f548b447229397548103e59f74a209',
+    length: 2862,
+    sha256: '4dfc7f6aacef36c47c3b57544557d36ed89e93f2849a4c48a0755878b8f2e77c',
   },
   {
     name: 'updateCartQty',
@@ -89,7 +107,7 @@ const BLOCKS = [
 const count = (hay, needle) => hay.split(needle).length - 1;
 
 for (const b of BLOCKS) {
-  test(`card path guard: ${b.name} is unchanged since v5.8.67`, () => {
+  test(`card path guard: ${b.name} is unchanged since v5.9.12`, () => {
     const i = SRC.indexOf(b.start);
     assert.ok(i >= 0, `${b.name}: start marker not found`);
     const j = SRC.indexOf(b.end, i);

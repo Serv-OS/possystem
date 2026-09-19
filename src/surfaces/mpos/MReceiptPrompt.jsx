@@ -9,6 +9,7 @@ import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { recordCheckBasis } from '../../lib/taxBasis';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx } from './MShellStyles';
 
@@ -66,7 +67,7 @@ export default function MReceiptPrompt({ check, onDone }) {
       // tax lines (was omitted — receipts printed with no VAT). Prefer the
       // breakdown stored on the check; recompute from items as a fallback.
       const taxBreakdown = check.taxBreakdown
-        || (() => { try { return computeOrderTaxUnified(check.items || [], useStore.getState().getTaxContext(), check.orderType || 'takeaway'); } catch { return null; } })();
+        || (() => { try { return computeOrderTaxUnified(check.items || [], useStore.getState().getTaxContext(), check.orderType || 'takeaway', recordCheckBasis(check)); } catch { return null; } })();
       const result = await printCustomerReceipt?.({
         location: locationConfig,
         check,

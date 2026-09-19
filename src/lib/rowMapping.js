@@ -55,6 +55,12 @@ export const normaliseTaxProfileLineRow = (l) => {
     compound: (l.compound === true),
     taxable: (l.taxable === true),
     taxBasis: l.taxBasis ?? l.tax_basis ?? 'pre_discount',
+    // v5.9.12 (migration 20260919t): does this line also tax its share of the
+    // service charge / delivery fee? null = the column is not there yet (or an
+    // old tab saved the row), and the engine applies the US default once, in
+    // taxEngine.lineBasisSettings: service ON for added-on rate lines, delivery OFF.
+    taxServiceCharge: typeof (l.taxServiceCharge ?? l.tax_service_charge) === 'boolean' ? (l.taxServiceCharge ?? l.tax_service_charge) : null,
+    taxDeliveryFee: typeof (l.taxDeliveryFee ?? l.tax_delivery_fee) === 'boolean' ? (l.taxDeliveryFee ?? l.tax_delivery_fee) : null,
     orderTypes: Array.isArray(orderTypes) && orderTypes.length ? orderTypes : ['all'],
     sortOrder: l.sortOrder ?? l.sort_order ?? 0,
     active: l.active !== false,

@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { recordCheckBasis } from '../lib/taxBasis';
 import { shortOrderRef } from '../lib/db';
 import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
 
@@ -305,9 +306,9 @@ function RefundModal({check, onConfirm, onCancel}){
               )}
 
               {refundTotal>0&&<div style={{borderTop:'1px solid var(--bdr)',paddingTop:12,marginTop:12}}>
-                {(bd.service>0||bd.tip>0)&&(
+                {(bd.service>0||bd.tip>0||bd.tax>0)&&(
                   <div style={{fontSize:11,color:'var(--t3)',marginBottom:6,display:'flex',justifyContent:'space-between'}}>
-                    <span>Items {money(bd.itemsAmount)}{bd.service>0?` · service ${money(bd.service)}`:''}{bd.tip>0?` · tip ${money(bd.tip)}`:''}</span>
+                    <span>Items {money(bd.itemsAmount)}{bd.service>0?` · service ${money(bd.service)}`:''}{bd.tax>0?` · sales tax ${money(bd.tax)}`:''}{bd.tip>0?` · tip ${money(bd.tip)}`:''}</span>
                   </div>
                 )}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800}}>
@@ -417,6 +418,7 @@ function RefundModal({check, onConfirm, onCancel}){
                     </div>
                   ))}
                   {bd.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Service charge</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.service)}</span></div>}
+                  {bd.tax>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Sales tax</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.tax)}</span></div>}
                   {bd.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.tip)}</span></div>}
                   <div style={{borderTop:'1px solid var(--bdr)',paddingTop:6,marginTop:4,display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:13}}>
                     <span>Cash to return</span>
@@ -823,10 +825,16 @@ export default function CheckHistory(){
       const nonVoided = (selectedCheck.items || []).filter(i => !i.voided);
       let taxBreakdown = null;
       const reprintTaxCtx = useStore.getState().getTaxContext();
-      if (taxCtxHasConfig(reprintTaxCtx)) {
+      if (selectedCheck.taxBreakdown?.hasExclusiveTax) {
+        // v5.9.12: a check that charged added-on (US) tax reprints the tax it
+        // CHARGED (its discounts, service and credits were in the basis), never a
+        // recompute from the items under today's setup.
+        taxBreakdown = selectedCheck.taxBreakdown;
+      } else if (taxCtxHasConfig(reprintTaxCtx)) {
         // v5.7.34: unified seam (legacy parity or profiles cascade).
+        // v5.9.12: on the record's own basis (inclusive VAT ignores it: UK identical).
         try {
-          taxBreakdown = computeOrderTaxUnified(nonVoided, reprintTaxCtx, selectedCheck.orderType || 'dine-in');
+          taxBreakdown = computeOrderTaxUnified(nonVoided, reprintTaxCtx, selectedCheck.orderType || 'dine-in', recordCheckBasis(selectedCheck));
         } catch {}
       }
       const result = await printService.printReceipt({

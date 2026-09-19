@@ -13,7 +13,7 @@
 
 import { useRef, useMemo } from 'react';
 import { useStore } from '../../../store';
-import { computeOrderTaxUnified } from '../../../lib/taxCompute';
+import { recordedCheckTax } from '../../../lib/taxCompute';
 import { computeSalesStats } from './SalesSummary';
 import { ExportBtn } from './_charts';
 
@@ -71,7 +71,8 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, f
     const m = {};
     checks.filter(c => c.status !== 'voided').forEach(c => {
       let res = null;
-      try { res = computeOrderTaxUnified(c.items || [], taxCtx, c.orderType || 'dine-in'); } catch { return; }
+      // v5.9.12: the tax the check CHARGED when it stored one (US), else the seam.
+      try { res = recordedCheckTax(c, taxCtx); } catch { return; }
       (res?.breakdown || []).forEach(b => {
         const key = b.rate?.id ?? 'per-unit';
         if (!m[key]) {

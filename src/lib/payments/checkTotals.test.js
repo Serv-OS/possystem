@@ -79,7 +79,7 @@ test('US exclusive check: total now carries the added-on tax the screen shows', 
   assert.equal(t.total, 47.20 + 4.19);       // subtotal + tax, nothing else
 });
 
-test('tax BASIS unchanged: exclusive tax is on pre-discount goods, ignoring check discounts and service', () => {
+test('v5.9.12 tax BASIS: exclusive tax is on the DISCOUNTED goods (item and check discounts reduce it)', () => {
   const US_RATES = [
     { id: 'us', rate: 0.10, type: 'exclusive', active: true, is_default: true },
   ];
@@ -93,8 +93,10 @@ test('tax BASIS unchanged: exclusive tax is on pre-discount goods, ignoring chec
     discountRules: [],
     taxRates: US_RATES,
   });
-  // Engine basis today: 10% of the FULL £20 (2.00) — not of the discounted £8.
-  assert.equal(t.exclusiveTax, 2);
-  assert.equal(t.discountedSub, 8);          // 20 → item −50% → 10 → check −2 → 8
-  assert.equal(t.total, 10);                 // 8 + 2.00 tax
+  // Before v5.9.12 this charged 10% of the FULL 20.00 (2.00 tax, total 10.00):
+  // over-collected by 1.20. Now: 20 -> item -50% -> 10 -> check -2 -> 8, tax 0.80.
+  assert.equal(t.discountedSub, 8);
+  assert.equal(t.exclusiveTax, 0.8);
+  assert.equal(t.total, 8.8);
+  assert.equal(t.tax.checkBasisApplied, true);
 });

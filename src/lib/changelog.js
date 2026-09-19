@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.30',
+    date: '21 Sep 2026',
+    items: [
+      'US sales tax is now charged on what the customer actually pays. Item discounts, check discounts, offers, promo codes and loyalty rewards all lower the taxed amount, as they do in most US states. Before, the tax was worked out on the full menu price, so a discounted US check was over charged.',
+      'A mandatory service charge is now taxed where the tax profile says so: on by default for US sales tax, as in New York and California. Tips are never taxed. The delivery fee is not taxed unless you switch it on.',
+      'Each US tax line in Back Office, Tax, has two new switches: Tax the service charge and Tax the delivery fee. The tax basis now defaults to the discounted price.',
+      'The till, handheld, kiosk, online, QR, catering and bar tabs, and the receipts, reports and saved checks, all use the same tax, so the screen, the charge and the record agree.',
+      'A part refund of a US check now gives back the sales tax on the items returned, not just their price.',
+      'UK venues: nothing changes. VAT inside the prices is worked out exactly as before, proven on 9000 test checks.',
+      'Needs one database update (20260919t). Until it runs, the service charge follows the default and The Cabin keeps taxing the full price on its existing tax lines.',
+    ],
+  },
+  {
     v: '5.9.29',
     date: '21 Sep 2026',
     items: [

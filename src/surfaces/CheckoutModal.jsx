@@ -4,6 +4,7 @@ import { ALLERGENS } from '../data/seed';
 import SplitModal from '../components/SplitModal';
 import { useStore } from '../store';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { creditDiscounts } from '../lib/taxBasis';
 import { breakdownLabel } from '../lib/receiptTax';   // v5.7.34: rate-null guard (per-unit lines)
 import {
   resolvePlatformLocationId,
@@ -1179,7 +1180,11 @@ async function retireReaderLegs(closedCheckId, legs) {
 }
 
 // ─── Main checkout modal ──────────────────────────────────────────────────────
-export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, tipBasis, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
+// v5.9.12: `taxFor(creditDiscounts)` (optional) returns the bill's computeCheckTotals-
+// shaped { exclusiveTax, tax } with the given promo / loyalty credits in the tax
+// basis. POSSurface passes getPOSTotals, BarSurface its tab bill. Without it the
+// modal behaves exactly as before (no credit lowers the tax).
+export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total: grossTotal, taxFor, tipBasis, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
   const { deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
   // v5.5.731: while checkout is open, hold the auto-sign-out guard so an idle timeout can't sign the
@@ -1242,6 +1247,33 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // v5.5.505: entered through the unified gift-card/promo box (no separate field).
   const [promoApplied, setPromoApplied] = useState(null);   // { code, code_id, offer_id, type, value, amount, label }
   // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
+
+  // Loyalty discount applied to total
+  const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
+  const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
+
+  // ── v5.9.12: promo codes and loyalty rewards are STORE discounts ─────────────
+  // In most US states they lower the taxable amount, so the added-on sales tax is
+  // recomputed with them in the basis (taxFor). The credits themselves still come
+  // off `grand` below, exactly as before; only the TAX they leave owing changes.
+  // `total` is therefore the bill with that tax. Inclusive VAT (every UK venue)
+  // has no added-on tax, taxRelief is exactly 0 and `total` IS the prop, so UK
+  // checkouts are byte-identical.
+  const taxCredits = creditDiscounts({ promo: promoCredit, loyalty: loyaltyCredit });
+  let billTax = null;          // computeCheckTotals-shaped result for THIS bill (with credits)
+  let taxRelief = 0;
+  if (typeof taxFor === 'function') {
+    try {
+      const plain = taxFor([]);
+      billTax = plain;
+      if (taxCredits.length) {
+        const credited = taxFor(taxCredits);
+        const relief = Math.round(((Number(plain?.exclusiveTax) || 0) - (Number(credited?.exclusiveTax) || 0)) * 100) / 100;
+        if (relief > 0) { taxRelief = relief; billTax = credited; }
+      }
+    } catch { billTax = null; taxRelief = 0; }   // fail toward the plain bill, never a guessed one
+  }
+  const total = taxRelief > 0 ? +(grossTotal - taxRelief).toFixed(2) : grossTotal;
 
   // Fetch loyalty data when checkout opens with a customer that has a phone
   useEffect(() => {
@@ -1424,9 +1456,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const splitWithBookingCredit = !!bookingInfo;
 
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
-  // Loyalty discount applied to total
-  const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
-  const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
+  // loyaltyCredit / promoCredit are computed above (v5.9.12: they feed the tax basis).
   // v5.7.21: booking credit applies FIRST and against the BILL only (a tip is
   // for tonight's service, never pre-paid). Capped at the bill: an excess
   // prepay just zeroes the due — it is NOT refunded here, the surplus stays
@@ -1487,11 +1517,15 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
   // Calculate tax breakdown — v5.7.34: through the unified seam (profiles
   // cascade OR byte-identical legacy parity). Same read shape as before.
+  // v5.9.12: with taxFor, the lines shown are the bill's own (discounts, service,
+  // delivery and any promo / loyalty credit in the basis), so the screen shows the
+  // tax actually charged. Without it, the old items-only computation.
   const taxCtx = useStore(s => s.getTaxContext());
-  const taxBreakdown = useMemo(() => {
-    if (!taxCtxHasConfig(taxCtx)) return null;
+  const itemsTaxBreakdown = useMemo(() => {
+    if (typeof taxFor === 'function' || !taxCtxHasConfig(taxCtx)) return null;
     try { return computeOrderTaxUnified(items?.filter(i=>!i.voided)||[], taxCtx, orderType); } catch { return null; }
-  }, [items, taxCtx, orderType]);
+  }, [items, taxCtx, orderType, taxFor]);
+  const taxBreakdown = typeof taxFor === 'function' ? (billTax?.tax || null) : itemsTaxBreakdown;
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
@@ -1973,6 +2007,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // into the draft (same idiom as giftCard) so a reconciler-driven close
           // books the same tender legs and stamps the ledger.
           bookingPayment: bookingLegsFor() || null,
+          // v5.9.12 — promo / loyalty credits that lowered the added-on tax
+          // (dueMinor above already reflects it), so a reconciler-driven close
+          // books the same tax. Absent when nothing lowered it (every UK check).
+          ...(taxRelief > 0 ? { taxCredits } : {}),
           source: 'pos_send_to_terminal',
           // ── v5.6.76: this job is the FINAL leg of a reader split ────────────
           // The modal normally books the check itself when the terminal approves.
@@ -2684,7 +2722,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       {showSplit && (
         <SplitModal
           items={items}
-          total={total}
+          // v5.9.12: the split divides the GROSS bill and carries no promo /
+          // loyalty credit (its close books none), so it takes the plain tax.
+          total={grossTotal}
           covers={covers}
           canTakeCash={_canTakeCash}
           onComplete={async (portions)=>{
@@ -2750,7 +2790,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             // dropped by the store's row map, so a split check said only 'split' and no
             // accounts system could tell its card money from its cash.
             const tenders = splitTenders(portions, { legTip, giftLegs, processor: cardProcessor || 'stripe' });
-            onComplete({ method:'split', tip:tipTotal, grand:total+tipTotal, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
+            onComplete({ method:'split', tip:tipTotal, grand:grossTotal+tipTotal, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
               closedCheckId: getCheckId(),
               // v5.5.902: split gift legs — the store folds these into the check's
               // gift_card jsonb so a refund can reverse every card that part-paid it.

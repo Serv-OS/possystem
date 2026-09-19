@@ -43,9 +43,10 @@
  * PURE MODULE apart from its two sibling imports - runs under `node --test`.
  */
 
-import { computeTax, makeCascadeResolver } from './taxEngine.js';
+import { computeTax, makeCascadeResolver, lineBasisSettings } from './taxEngine.js';
 import { buildLegacyProfiles, legacyProfileId } from './taxAdapter.js';
 import { calculateOrderTax } from './tax.js';
+import { allocateCheckBasis, recordCheckBasis } from './taxBasis.js';
 
 /**
  * Build a tax context OUTSIDE the store - the customer surfaces (online, QR,
@@ -105,9 +106,16 @@ function isLegacyMirror(profile, ratesById) {
   if (active.length !== 1) return false;
   const l = active[0];
   const mode = r.type === 'inclusive' ? 'inclusive' : 'exclusive';
+  // v5.9.12: the basis settings must equal what the adapter gives this rate
+  // (inclusive: pre-discount, no service, no delivery - exactly the old rule;
+  // exclusive: the US defaults). A mirror an operator changed is a real profile.
+  const mine = lineBasisSettings({ ...l, mode, lineType: 'rate' });
+  const adapter = lineBasisSettings({ mode, lineType: 'rate' });
   return (l.lineType ?? 'rate') === 'rate'
     && !l.compound && !l.taxable
-    && (l.taxBasis ?? 'pre_discount') === 'pre_discount'
+    && mine.taxBasis === adapter.taxBasis
+    && mine.taxServiceCharge === adapter.taxServiceCharge
+    && mine.taxDeliveryFee === adapter.taxDeliveryFee
     && (!Array.isArray(l.orderTypes) || l.orderTypes.length === 0 || l.orderTypes.includes('all'))
     && (l.mode ?? 'exclusive') === mode
     && Math.abs((Number(l.rate) || 0) - (parseFloat(r.rate) || 0)) < 1e-9;
@@ -251,19 +259,40 @@ function v2Record(eng, source, orderType) {
  * engine result PLUS the synthesised legacy shape:
  *
  *   { subtotal, totalTax, total, exclusiveTax, breakdown, hasExclusiveTax,
- *     taxV2, source }
+ *     taxV2, source, lineTaxes, checkBasisApplied }
  *
  * On a legacy-equivalent venue the legacy keys are calculateOrderTax's OWN
  * output object spread - byte-identical numbers, guaranteed by construction.
  *
+ * v5.9.12 CHECK BASIS: pass `checkBasis` = { discounts, service, deliveryFee }
+ * (the same figures the bill is built from) and every added-on rate line is
+ * charged on its post-discount value plus, where its profile says so, its share
+ * of the service charge and delivery fee (taxBasis.js allocates, the engine
+ * applies each line's own settings). EVERY surface passes it, so the screen, the
+ * charge, closed_checks.tax_amount, tax_breakdown and the receipt agree. When
+ * nothing added-on moves (every UK inclusive check, a US check with no discount,
+ * service or delivery) the result is exactly the pre-v5.9.12 one, and a
+ * legacy-equivalent venue still returns calculateOrderTax byte for byte.
+ *
+ *   lineTaxes          RAW added-on tax on each LIVE item's goods (voided removed,
+ *                      same order as the check's items) - what a partial refund
+ *                      gives back with the items. Present only when some line
+ *                      carries added-on tax.
+ *   serviceTax /       RAW added-on tax on the service charge / delivery fee
+ *   deliveryTax        (present only when > 0) - returned with the service.
+ *   checkBasisApplied  true when the check basis changed an added-on amount
+ *                      (present only then)
+ *
  * @param {Array}  items    order lines (any of the shapes surfaces build today)
  * @param {Object} taxCtx   getTaxContext() / buildLocalTaxCtx() / { taxRates }
  * @param {string} orderType
+ * @param {Object} [checkBasis]  { discounts, service, deliveryFee } (major units)
  */
-export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'dine-in') {
+export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'dine-in', checkBasis = null) {
   const prep = prepareTaxCtx(taxCtx);
   const live = (items || []).filter(i => i && !i.voided);
-  const engineLines = live.map(i => toEngineLine(i, prep.remap));
+  const alloc = checkBasis ? allocateCheckBasis(live, checkBasis).lines : null;
+  const engineLines = live.map((i, n) => (alloc ? { ...toEngineLine(i, prep.remap), ...alloc[n] } : toEngineLine(i, prep.remap)));
   // A line-level profile snapshot forces the engine path even when the current
   // menu maps are empty (the item was un-assigned after the line was added).
   // v5.7.34 MONEY FIX: only a snapshot that resolves a LOADED profile counts -
@@ -297,12 +326,34 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
     engErr = e;   // invalid profile config - fail toward legacy, never a guess
   }
 
-  if (prep.legacyEquivalent && !anyLineProfile) {
+  // v5.9.12: per live item raw added-on tax + whether the check basis moved
+  // anything. Both ride on the result ONLY when there is added-on tax to speak
+  // of, so a UK inclusive check's record (closed_checks.tax_breakdown) keeps
+  // exactly its old keys, byte for byte.
+  const checkBasisApplied = !!eng?.checkBasisUsed;
+  const extras = {};
+  if (eng && eng.lineTaxes.some(t => t.exclusive > 0)) {
+    // Per line tax on the GOODS; the service charge and delivery fee parts are
+    // totalled apart, because a part refund returns them with the service /
+    // delivery it gives back, not with the items.
+    extras.lineTaxes = eng.lineTaxes.map(t => t.exclusive - t.service - t.delivery);
+    const svc = eng.lineTaxes.reduce((a, t) => a + t.service, 0);
+    const del = eng.lineTaxes.reduce((a, t) => a + t.delivery, 0);
+    if (svc > 0) extras.serviceTax = svc;
+    if (del > 0) extras.deliveryTax = del;
+  }
+  if (checkBasisApplied) extras.checkBasisApplied = true;
+
+  if (prep.legacyEquivalent && !anyLineProfile && !checkBasisApplied) {
     // PARITY PATH - calculateOrderTax is the engine of record: byte-identical
     // to v5.7.31 slice 0 on every venue configured purely through tax_rates
     // (every UK site). The profiles engine only contributes the v2 record.
+    // v5.9.12: a US legacy venue whose discount / service / delivery changes
+    // the added-on tax takes the engine path below (same adapter profiles,
+    // same pooled rounding), because calculateOrderTax has no check basis.
+    // Inclusive lines never consume the basis, so a UK check is always here.
     const leg = calculateOrderTax(items || [], prep.taxRates, orderType);
-    return { ...leg, taxV2: v2Record(eng, 'legacy', orderType), source: 'legacy' };
+    return { ...leg, taxV2: v2Record(eng, 'legacy', orderType), source: 'legacy', ...extras };
   }
 
   if (!eng) {
@@ -329,5 +380,32 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
     hasExclusiveTax: breakdown.some(b => !b.rate || b.rate.type === 'exclusive'),
     taxV2: v2Record(eng, 'profiles', orderType),
     source: 'profiles',
+    ...extras,
   };
+}
+
+/**
+ * v5.9.12: the tax a CLOSED check carries, for reports and reprints. A check that
+ * charged added-on (US) tax stored its breakdown at close (discounts, service,
+ * credits all in the basis), and that is the answer: a recompute from the items
+ * would drop the basis. Anything else (every inclusive-VAT check, older rows) is
+ * recomputed exactly as before, on the record's own basis, which inclusive VAT
+ * never reads, so UK figures are unchanged.
+ */
+export function recordedCheckTax(check, taxCtx) {
+  if (check?.taxBreakdown?.hasExclusiveTax) return check.taxBreakdown;
+  return computeOrderTaxUnified(check?.items || [], taxCtx, check?.orderType || 'dine-in', recordCheckBasis(check));
+}
+
+/**
+ * v5.9.12: does this result charge an added-on PERCENTAGE tax (a US sales tax
+ * line with a rate above 0)? Online uses it to pick the exact per line result
+ * over the older pro rata offer scaling. Per-unit levies and 0% rows do not
+ * count, so an inclusive-VAT order (with or without a levy) keeps its old path.
+ */
+export function chargesAddedOnRate(result) {
+  const v2 = result?.taxV2;
+  if (Array.isArray(v2?.lines)) return v2.lines.some(l => l && l.mode === 'exclusive' && l.rate != null && Number(l.rate) > 0);
+  return Array.isArray(result?.breakdown)
+    && result.breakdown.some(b => b?.rate && b.rate.type === 'exclusive' && Number(b.rate.rate) > 0);
 }

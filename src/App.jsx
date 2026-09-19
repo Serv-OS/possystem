@@ -873,7 +873,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
           const mapped = assembleTaxProfiles(profQ.data, lineQ.data);
           const pkey = rows => JSON.stringify((rows || []).map(p => [
             p.id, p.name, p.active, p.sortOrder, p.rounding,
-            (p.lines || []).map(l => [l.id, l.name, l.jurisdiction, l.rate, l.flatAmount, l.lineType, l.mode, l.compound, l.taxable, l.taxBasis, l.orderTypes, l.sortOrder, l.active]),
+            (p.lines || []).map(l => [l.id, l.name, l.jurisdiction, l.rate, l.flatAmount, l.lineType, l.mode, l.compound, l.taxable, l.taxBasis, l.taxServiceCharge ?? null, l.taxDeliveryFee ?? null, l.orderTypes, l.sortOrder, l.active]),
           ]).sort());
           if (pkey(mapped) !== pkey(st.taxProfiles || [])) useStore.setState({ taxProfiles: mapped });
         }

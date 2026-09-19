@@ -29,6 +29,7 @@ import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
+import { chargedAddedOnTax } from '../lib/taxBasis';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -381,7 +382,10 @@ function MPOSRouter() {
     const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
     const orderType = st.orderType || 'takeaway';
     let taxBreakdown = null;
-    if (st.taxRates?.length || taxCtxHasConfig(st.getTaxContext())) {
+    if (chargedAddedOnTax(paymentInfo)) {
+      // v5.9.12: the added-on tax MTender charged, exactly as recordWalkInClosed books it.
+      taxBreakdown = chargedAddedOnTax(paymentInfo);
+    } else if (st.taxRates?.length || taxCtxHasConfig(st.getTaxContext())) {
       // v5.7.34: unified seam — legacy parity or profiles cascade, same shape.
       try { taxBreakdown = computeOrderTaxUnified(items, st.getTaxContext(), orderType); }
       catch { /* leave VAT unsplit rather than book a guess */ }
@@ -803,7 +807,12 @@ function MPOSRouter() {
       <MCardFlow
         payment={flow.context.payment}
         onCancel={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
-        onApproved={onPaymentApproved}
+        // v5.9.12: the added-on tax MTender charged rides to the close, so the
+        // record books exactly that tax (inclusive-only checks carry nothing).
+        onApproved={(info) => {
+          const charged = chargedAddedOnTax(flow.context.payment);
+          onPaymentApproved(charged ? { ...info, chargedTaxBreakdown: charged } : info);
+        }}
       />
     );
   }
