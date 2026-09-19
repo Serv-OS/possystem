@@ -674,8 +674,14 @@ test('orderItemsToLines output feeds the planner unchanged', () => {
  * `fail` maps a table name, or 'table:op', to the error it should return.
  * `boom` makes .from() itself throw, which is the network dying mid call.
  * `hang` makes every call never resolve, which is the read that never comes back.
+ *
+ * THE DATABASE BEFORE 20260919m (the menu sync). Every test in this file is about the rules
+ * main has, which are the rules while the sync columns are not there. A select naming them
+ * fails the WHOLE select, exactly as Postgres does (42703), and the matcher proves from that
+ * that the migration has not run. `syncColumns: true` models the database after it
+ * (src/lib/ezcaterMenuSyncV1.test.js covers that side).
  */
-function fakeSb(tables, { fail = {}, boom = false, hang = false, noItemCodeColumn = false } = {}) {
+function fakeSb(tables, { fail = {}, boom = false, hang = false, noItemCodeColumn = false, syncColumns = false } = {}) {
   const calls = [];
   const store = JSON.parse(JSON.stringify(tables));
   const from = (name) => {
@@ -693,6 +699,10 @@ function fakeSb(tables, { fail = {}, boom = false, hang = false, noItemCodeColum
       }
       const err = fail[name + ':' + state.op] || fail[name];
       if (err) return { data: null, error: err };
+      if (!syncColumns && name === 'ezcater_item_links' && state.op === 'select'
+        && /ez_ids|ez_size_name|ez_only_size|synced_at|decided_as/.test(String(state.cols || ''))) {
+        return { data: null, error: { code: '42703', message: 'column ezcater_item_links.ez_ids does not exist' } };
+      }
       if (state.op === 'select') {
         let rows = (store[name] || []).filter(matches);
         if (state.range) rows = rows.slice(state.range[0], state.range[1] + 1);

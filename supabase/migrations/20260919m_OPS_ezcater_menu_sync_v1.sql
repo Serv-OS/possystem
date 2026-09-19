@@ -11,15 +11,22 @@
 -- The connected ezCater token can read the caterer's menus (proven live, read only). A sync
 -- writes every item, every size of a multi size item and every option value into
 -- ezcater_item_links BEFORE any order, with the ids ezCater published them under, and auto links
--- only exact name matches. Everything else is left for staff on the Item matching card.
+-- only exact name matches (every automatic row is decided again on every sync). Everything else
+-- is left for staff on the Item matching card.
+--
+-- ONCE THIS FILE HAS RUN, ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER: an order line matches
+-- only by its published size id on a synced row holding a staff match or an exact auto link from
+-- a sync. There is no name matching at order time at all; every other line prints by name.
 --
 -- WHAT THIS FILE ADDS
---   ezcater_item_links, five columns (all nullable or defaulted), and a default of 'auto' on
+--   ezcater_item_links, six columns (all nullable or defaulted), and a default of 'auto' on
 --   source so the refresh upsert (which never names source) is accepted, see below:
 --     ez_ids        text[]       the PUBLISHED ezCater ids (a size id on an item row, a value
 --                                id on an option row). They change on every republish; each
 --                                sync ADDS the new ones and keeps the old ones, so an order
---                                placed before a republish still matches when it is changed.
+--                                placed before a republish still matches when it is changed
+--                                (unless the row's full name changed: then the old ids belonged
+--                                to a different product and are dropped).
 --                                (The order's menuItemSizeId IS the menu's sizes.id, proven on
 --                                HKX77V; the order's item id is never matched.)
 --     ez_size_name  text         set only on a row for ONE size of an item with several sizes
@@ -30,22 +37,26 @@
 --                                display value for the Item matching card, never in the key.
 --     ez_category   text         the ezCater category, for the screen
 --     synced_at     timestamptz  when a sync last wrote this row's ezCater facts
+--     decided_as    text         the full ezCater name (item and its size, or group and value)
+--                                a person saw when they last saved this row. A sync never
+--                                changes a staff decision; when the name or size changes after
+--                                it, the Item matching card asks staff to look at it again.
 --   ezcater_menu_syncs: one row per venue, the last sync, and the ONE SYNC PER VENUE lock.
 --   ezcater_menu_sync_claim(): takes that lock in one statement (service role only).
 --   pg_cron 'ezcater-menu-sync-hourly': asks ezcater-connect for the venues that are due (no
 --     good sync for 20 hours), so each venue syncs about once a day.
 --
--- THE APP WORKS BEFORE THIS FILE RUNS. Orders match by name exactly as before this branch, the
--- Item matching card lists what it always listed, and "Sync ezCater menu" says this file has to
--- be run first.
+-- THE APP WORKS BEFORE THIS FILE RUNS. Orders match by name exactly as main does, the Item
+-- matching card lists what it always listed, and "Sync ezCater menu" says this file has to be
+-- run first.
 --
 -- RUN ORDER (docs/EZCATER_V1_RELEASE.md, step 7)
 --   1. Deploy ezcater-connect, then ezcater-webhook (edge functions do not deploy with the web
 --      app). Both work before this file runs: they prove the columns are missing and keep the
 --      old rules.
---   2. Run this file. From then on a line on a synced row matches only by that row's decision.
---   3. Straight away, press "Sync ezCater menu" on Item matching, so sized lines have rows to
---      match. Until then they print by name.
+--   2. Run this file, outside service. From then on orders only use matches made before the
+--      order: until the first sync, every ezCater line prints by name.
+--   3. Straight away, press "Sync ezCater menu" on Item matching, so lines have rows to match.
 --   Needs 20260917_OPS_ezcater_item_links.sql first (checked below).
 
 set lock_timeout = '3s';
@@ -64,9 +75,10 @@ alter table public.ezcater_item_links add column if not exists ez_size_name text
 alter table public.ezcater_item_links add column if not exists ez_category text;
 alter table public.ezcater_item_links add column if not exists synced_at timestamptz;
 alter table public.ezcater_item_links add column if not exists ez_only_size text;
+alter table public.ezcater_item_links add column if not exists decided_as text;
 
 -- THE REFRESH NEEDS THIS. A sync refreshes an existing row with an upsert that names ONLY the
--- ezCater fact columns (ids, size, category, synced_at), never `source`, so a staff match keeps
+-- ezCater fact columns (names, ids, size, category, synced_at), never `source`, so a staff match keeps
 -- source 'manual'. But Postgres builds the full INSERT tuple before ON CONFLICT DO UPDATE runs,
 -- and `source` is NOT NULL: with no default that tuple is rejected, every refresh of an existing
 -- row fails, and after a republish new size ids never arrive. With a default the tuple is
@@ -157,10 +169,10 @@ end;
 $$;
 
 -- ── Verify after applying ───────────────────────────────────────────────────
---   five rows expected:
+--   six rows expected:
 --   select column_name from information_schema.columns
 --    where table_schema = 'public' and table_name = 'ezcater_item_links'
---      and column_name in ('ez_ids','ez_size_name','ez_only_size','ez_category','synced_at');
+--      and column_name in ('ez_ids','ez_size_name','ez_only_size','ez_category','synced_at','decided_as');
 --   'auto'::text expected:
 --   select column_default from information_schema.columns
 --    where table_schema = 'public' and table_name = 'ezcater_item_links' and column_name = 'source';
@@ -175,7 +187,8 @@ $$;
 -- drop table if exists public.ezcater_menu_syncs;
 -- drop index if exists public.ezcater_item_links_ez_ids_idx;
 -- alter table public.ezcater_item_links alter column source drop default;
--- alter table public.ezcater_item_links drop column if exists synced_at,
+-- alter table public.ezcater_item_links drop column if exists decided_as,
+--   drop column if exists synced_at,
 --   drop column if exists ez_category, drop column if exists ez_only_size,
 --   drop column if exists ez_size_name, drop column if exists ez_ids;
 -- commit;

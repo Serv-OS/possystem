@@ -107,8 +107,14 @@ function seenOf(row) {
  * be shown (nothing to label it) and cannot be saved (the key check would
  * reject it). Dropping it is strictly better than rendering a blank line the
  * operator can click.
+ *
+ * opts.syncReady (items_list menu_sync_ready: migration 20260919m has run) marks
+ * every row no menu sync ever wrote as offMenu. From then on orders only use
+ * matches made before the order, by published id, so such a row (an old order
+ * time sighting) can never route anything: the card lists it apart, never as
+ * work to do.
  */
-export function toRow(dbRow) {
+export function toRow(dbRow, opts) {
   if (!dbRow || typeof dbRow !== 'object') return null;
   const ezKey = first(dbRow, 'ez_key', 'ezKey');
   const ezName = first(dbRow, 'ez_name', 'ezName');
@@ -141,6 +147,13 @@ export function toRow(dbRow) {
   // staff see "Turkey Sandwich, sold only as Box" and never match blind.
   const ezOnlySize = kind === 'item' && !sizeRow ? first(dbRow, 'ez_only_size', 'ezOnlySize') : null;
 
+  // LOOK AGAIN: a staff decision whose ezCater name or size changed since the staff saved it.
+  // Worked out by ezcater-connect items_list (lookAgainOf in _shared/ezcaterMenuSync.ts) with the
+  // sync's own name rules. A sync never changes a staff decision; this asks a person to check it.
+  const lookAgainRaw = dbRow.look_again !== undefined ? dbRow.look_again : dbRow.lookAgain;
+  const lookAgain = lookAgainRaw === true && (state === 'matched' || state === 'ignored');
+  const offMenu = !!(opts && opts.syncReady) && !syncedAt;
+
   return {
     kind,
     ezKey,
@@ -156,6 +169,9 @@ export function toRow(dbRow) {
     source,
     matchedBy,
     untrusted: !!untrusted,
+    lookAgain,
+    decidedAs: first(dbRow, 'decided_as', 'decidedAs'),
+    offMenu,
     seenCount: seenOf(dbRow),
     lastSeenAt: first(dbRow, 'last_seen_at', 'lastSeenAt'),
     state,
@@ -170,16 +186,24 @@ const seenAtMs = (row) => {
 
 const STATE_ORDER = { unmatched: 0, matched: 1, ignored: 2 };
 
+/** Where a row sorts: unmatched, then matches to look at again, then matched, then silenced. */
+const rankOf = (r) => {
+  if (r && r.offMenu) return 4;
+  if (r && r.lookAgain) return 0.5;
+  return STATE_ORDER[r && r.state] ?? 3;
+};
+
 /**
- * Unmatched first, then matched, then the ones a person silenced. Inside each
- * group, most recently seen first, then most seen, then by name so the list is
- * the same list every time and does not shuffle under the operator's cursor
- * while they work down it.
+ * Unmatched first, then matches to look at again, then matched, then the ones
+ * a person silenced (rows no sync wrote, once the sync is set up, last). Inside
+ * each group, most recently seen first, then most seen, then by name so the
+ * list is the same list every time and does not shuffle under the operator's
+ * cursor while they work down it.
  */
 export function sortRows(rows) {
   return (Array.isArray(rows) ? rows.slice() : []).sort((a, b) => {
-    const sa = STATE_ORDER[a.state] ?? 3;
-    const sb = STATE_ORDER[b.state] ?? 3;
+    const sa = rankOf(a);
+    const sb = rankOf(b);
     if (sa !== sb) return sa - sb;
     const ta = seenAtMs(a);
     const tb = seenAtMs(b);
@@ -191,10 +215,10 @@ export function sortRows(rows) {
 }
 
 /** Table rows straight from the edge function into the list the screen renders. */
-export function rowsFrom(list) {
+export function rowsFrom(list, opts) {
   const out = [];
   for (const raw of Array.isArray(list) ? list : []) {
-    const row = toRow(raw);
+    const row = toRow(raw, opts);
     if (row) out.push(row);
   }
   return sortRows(out);
@@ -219,6 +243,45 @@ export function countRows(rows) {
     else unmatched++;
   }
   return { total: matched + ignored + unmatched, matched, ignored, unmatched, outstanding: unmatched };
+}
+
+/** The rows orders can use: every row, until the sync is set up; then only synced rows. */
+export function liveRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && !r.offMenu);
+}
+
+/** Rows no menu sync wrote, once the sync is set up: they can never route an order. */
+export function offMenuRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && r.offMenu);
+}
+
+/** How many staff decisions to look at again. */
+export function lookAgainCount(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && r.lookAgain && !r.offMenu).length;
+}
+
+/** The plain line under the heading when some matches need a second look. '' when none do. */
+export function lookAgainLine(n, kind) {
+  const c = Number(n) || 0;
+  if (!c) return '';
+  const noun = kind === 'option' ? 'option' : 'item';
+  return c === 1
+    ? `1 ${noun} to check again: ezCater changed its name or size after it was matched.`
+    : `${c} ${noun}s to check again: ezCater changed their name or size after they were matched.`;
+}
+
+/** The note on one row to look at again: what the person saw when they matched it. */
+export function lookAgainNote(row) {
+  if (!row || !row.lookAgain) return '';
+  const was = row.decidedAs ? ` It was: ${row.decidedAs}.` : '';
+  return `Changed on ezCater since this was matched.${was} Orders print it by name until you check it.`;
+}
+
+/** The note about rows no sync wrote, once the sync is set up. '' when there are none. */
+export function offMenuLine(n) {
+  const c = Number(n) || 0;
+  if (!c) return '';
+  return `${c} older ${c === 1 ? 'name is' : 'names are'} not on the synced ezCater menu. Orders only use matches made on the synced menu, so ${c === 1 ? 'it is' : 'they are'} not shown.`;
 }
 
 // ----------------------------------------------------------------------------
@@ -559,6 +622,8 @@ export function saveBody(row, choice) {
         menu_item_id: ignored ? null : str(c.menuItemId),
         option_id: null,
         ignored,
+        // What this screen showed, so a later sync that changes it asks again (decided_as).
+        seen_size: row.ezSizeName || null,
       },
     };
   }
@@ -588,6 +653,9 @@ export function saveBody(row, choice) {
       menu_item_id: menuItemId,
       option_id: optionId,
       ignored,
+      // The one size a single size item showed on this screen, so a later sync that changes
+      // it asks again (decided_as). null when the row showed none.
+      seen_size: kind === 'item' ? (row.ezOnlySize || null) : null,
     },
   };
 }
@@ -616,6 +684,9 @@ export function applySaved(rows, sent) {
       optionId,
       matchedBy: sent.ignored ? 'ignored' : null,
       source: 'manual',
+      // A save is a person looking at it now: nothing left to check.
+      lookAgain: false,
+      untrusted: false,
       state,
     };
   });

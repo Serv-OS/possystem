@@ -13,33 +13,28 @@
 //   1. reads the CURRENT menus (venue date, venue clock) of every caterer mapped to the venue
 //   2. writes one ezcater_item_links row per item (one per SIZE when an item has several sizes,
 //      one per option value when values are readable), each carrying its published ids (ez_ids)
-//   3. auto links ONLY an EXACT name match to our menu (exactName below: case, accents, spaces
-//      and punctuation folded, nothing else dropped); everything else is left for staff, who get
-//      suggestions on the Item matching card
-//   It never deletes a row, never changes a decision (a staff match, "Not on our menu", a staff
-//   clear, or an earlier auto link) and never touches seen_count. Syncing twice writes no new row.
+//   3. decides every AUTOMATIC row again from the whole menu (planMenuSync, review round 3): the
+//      one exact name match of ours, or nothing. A changed or lost exact match is moved or
+//      cleared. Everything else is left for staff, who get suggestions on the Item matching card.
+//   It never deletes a row, never changes a staff decision (a staff match, "Not on our menu" or a
+//   staff clear) and never touches seen_count. A staff decision whose ezCater name or size changed
+//   since the staff saved it is shown to staff to look at again (decided_as, lookAgainOf), and
+//   orders do not use it until they have.
 //
-// THE ORDER TIME RULE (sizeRouteFor, used by ezcater-match-ingest.ts), kept deliberately simple.
-// It matches on the line's SIZE id only (ezSizeId, which ezcater-map.ts takes from the order's
-// menuItemSizeId), never on the line's item id. PROVEN on the live test order HKX77V (Claude,
-// read only, 18 Sep 2026): its line carried ezSizeId 0226b68c-492c-5a38-b528-fd62a1c1e828, and
-// the menu read has exactly that id as categories[0].items[1].sizes[0].id (size "Box", serves 1).
-// The same line's item id (ezItemId 5f5b503b-...) was NEITHER the menu's item id (279b6bf4-...)
-// NOR its originalItemId (b4d95922-...), so an order's item id can never be matched against a
-// synced row.
-//
-//   EXACT MEANS EXACT AT ORDER TIME TOO (review round 2, 18 Sep 2026):
-//   * a line whose published size id is on a synced row (a SIZE row or a single size PLAIN row)
-//     resolves to that row's decision ONLY: a staff match, or an exact auto link written by a
-//     sync (matched_by 'exact'). A row with no such decision leaves the line unmatched.
-//   * a line with no size id whose name key finds a synced row is the same: that row decides.
-//   * the order time name rule (autoLinkDecision, which drops size words to FIND candidates)
-//     never decides a line on a synced row, and never fills or upgrades a synced row.
-//   * ANY other sized line stays unmatched and prints by name: no guessed size, and no old name
-//     match carried onto a sized line
-//   * a line with no synced row at all (and no size) keeps the rules from before this file
-//   * a failed or partial link read (not a proven missing table or column) matches NOTHING by
-//     name: the order goes through exactly as ezCater sent it (ezcater-match-ingest.ts)
+// THE ORDER TIME RULE, once 20260919m has run (planSyncedLineMatches in ezcater-match-ingest.ts):
+//   ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER. A line matches only when its published SIZE id
+//   (ezSizeId, which ezcater-map.ts takes from the order's menuItemSizeId) is on a synced row that
+//   holds a trusted decision: a staff match, or an exact auto link a sync made (matched_by
+//   'exact'). A customization likewise only by its published id on a synced option row. There is
+//   NO name matching at order time at all: every other line, sized or not, prints by name and
+//   writes no link. PROVEN on the live test order HKX77V (Claude, read only, 18 Sep 2026): its line
+//   carried ezSizeId 0226b68c-492c-5a38-b528-fd62a1c1e828, and the menu read has exactly that id as
+//   categories[0].items[1].sizes[0].id (size "Box", serves 1). The same line's item id (ezItemId
+//   5f5b503b-...) was NEITHER the menu's item id (279b6bf4-...) NOR its originalItemId
+//   (b4d95922-...), so an order's item id is never matched. Every HKX77V line carries a size id.
+//   A customization's id (customizationId) has not been seen on a live order yet: if it is not the
+//   menu's value id, no customization ever matches and every one prints by name, never a wrong one.
+//   Before 20260919m runs the order time rules are exactly the ones on main.
 //
 // Pure functions first (tested under node), then the database and ezCater side. The ezCater call
 // is passed in (ask), so nothing here needs Deno globals.
@@ -53,7 +48,7 @@ const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 
 /** The size part of a size row key: lower case words, nothing stripped (a size IS the point). */
 export function sizeKeyPart(sizeName: unknown): string {
-  const t = s(sizeName).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  const t = s(sizeName).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   return t || 'unnamed';
 }
@@ -102,6 +97,18 @@ const CONTAINER_FOLD: Record<string, string> = Object.freeze({
 const foldWord = (w: string): string => CONTAINER_FOLD[w] || w;
 
 /**
+ * True when a single size item's only size says something its item name does not. "Box" adds
+ * nothing to "Italian Boxed Lunch" (Box repeats Boxed); it does add to "Turkey Sandwich". A size
+ * with no usable name adds nothing.
+ */
+export function sizeAddsWords(itemName: unknown, sizeName: unknown): boolean {
+  const size = exactName(sizeName);
+  if (!size) return false;
+  const said = new Set(exactName(itemName).split(' ').filter(Boolean).map(foldWord));
+  return size.split(' ').some((w) => !said.has(foldWord(w)));
+}
+
+/**
  * The full exact name of an item with ONE size (or none), the name an auto link compares.
  * The only size takes part exactly as a multi size item's sizes do: the full name is
  * '<item> <size>'. The one allowance: a size name whose every word the item name already says
@@ -113,11 +120,57 @@ const foldWord = (w: string): string => CONTAINER_FOLD[w] || w;
 export function singleSizeExactName(itemName: unknown, sizeName: unknown): string {
   const item = exactName(itemName);
   if (!item) return '';
-  const size = exactName(sizeName);
-  if (!size) return item;
-  const said = new Set(item.split(' ').map(foldWord));
-  const adds = size.split(' ').some((w) => !said.has(foldWord(w)));
-  return adds ? `${item} ${size}` : item;
+  return sizeAddsWords(itemName, sizeName) ? `${item} ${exactName(sizeName)}` : item;
+}
+
+/** The parts of one row's (or one menu entry's) ezCater name, as the Item matching card shows them. */
+export interface NameParts {
+  kind: 'item' | 'option';
+  name: string;
+  /** The customization group (options only). */
+  group?: string;
+  /** The size of a SIZE row (one size of an item with several). */
+  sizeName?: string;
+  /** The one size of a single size item, on its plain row. */
+  onlySize?: string;
+}
+
+/**
+ * The FULL ezCater name of a row, readable: what a person sees, what decided_as stores, and (in
+ * its exact form, fullExactOf) what "the name changed" compares.
+ *   option     '<group>: <value>' (the value alone when there is no group)
+ *   size row   '<item> <size>'
+ *   plain row  '<item> <only size>' when that size says something the item name does not, else '<item>'
+ */
+export function fullNameOf(p: NameParts): string {
+  const name = s(p?.name);
+  if (p?.kind === 'option') {
+    const group = s(p.group);
+    return group ? `${group}: ${name}` : name;
+  }
+  if (s(p?.sizeName)) return `${name} ${s(p.sizeName)}`;
+  if (s(p?.onlySize) && sizeAddsWords(name, p.onlySize)) return `${name} ${s(p.onlySize)}`;
+  return name;
+}
+
+/** The exact form of fullNameOf. Two rows with the same one are the same product by name. */
+export function fullExactOf(p: NameParts): string {
+  return exactName(fullNameOf(p));
+}
+
+/** A stored ezcater_item_links row's name parts (snake_case, or camelCase). */
+export function rowNameParts(row: any): NameParts {
+  const kind: 'item' | 'option' = s(row?.kind) === 'option' ? 'option' : 'item';
+  const key = s(row?.ez_key ?? row?.ezKey);
+  const size = kind === 'item' ? s(row?.ez_size_name ?? row?.ezSizeName) : '';
+  const sizeRow = !!size && key.includes('|size:');
+  return {
+    kind,
+    name: s(row?.ez_name ?? row?.ezName),
+    group: kind === 'option' ? s(row?.ez_group ?? row?.ezGroup) : '',
+    sizeName: sizeRow ? size : '',
+    onlySize: kind === 'item' && !sizeRow ? s(row?.ez_only_size ?? row?.ezOnlySize) : '',
+  };
 }
 
 // ── The ezCater side ─────────────────────────────────────────────────────────────────────────
@@ -229,22 +282,34 @@ export interface MenuEntry {
   /**
    * The name of the ONE size of a single size item, on its plain row. A display value for staff
    * (ez_only_size), never part of the key: so nobody matches "Turkey Sandwich" without seeing it
-   * is sold only as a Box.
+   * is sold only as a Box. It is part of the full name (fullNameOf) an auto link compares.
    */
   ezOnlySize?: string | null;
   ezCategory: string | null;
   /** Published ids: a size id for an item row, a value id for an option row. */
   ids: string[];
   /**
-   * The full EXACT name an auto link compares (exactName): '<item> <size>' for a size row,
-   * singleSizeExactName for a plain row. '' links nothing.
+   * The full EXACT name an auto link compares: '<item> <size>' for a size row,
+   * singleSizeExactName for a plain row, the value for an option (whose group is compared on its
+   * own, autoTargetFor). '' links nothing.
    */
   exactName?: string;
   /**
-   * Never auto linked: a size row whose full name a sibling shares, or a plain row the menus
-   * describe two different ways (the same key with two different full names).
+   * Never auto linked: a size row whose full name a sibling shares, or a row the menus describe
+   * two different ways (the same key with two different full names).
    */
   noAuto: boolean;
+}
+
+/** An entry's name parts. */
+export function entryNameParts(e: MenuEntry): NameParts {
+  return {
+    kind: e.kind,
+    name: s(e.ezName),
+    group: e.kind === 'option' ? s(e.ezGroup) : '',
+    sizeName: e.kind === 'item' ? s(e.ezSizeName) : '',
+    onlySize: e.kind === 'item' && !s(e.ezSizeName) ? s(e.ezOnlySize) : '',
+  };
 }
 
 /**
@@ -252,6 +317,10 @@ export interface MenuEntry {
  *   an item with 0 or 1 size  -> ONE plain row, keyed by name exactly as an order line is
  *   an item with 2+ sizes     -> one row PER SIZE, keyed sizeRowKey(item, size)
  *   every option value        -> one option row, keyed as an order customization is
+ * One key described two different ways (two current menus, or two names the key folds together,
+ * "Sandwich Platter" and "Sandwich Platter Tray") is one row that is never auto linked; the row
+ * shows the description whose full exact name sorts first, so it reads the same whatever order
+ * ezCater lists the menus in.
  */
 export function flattenMenus(menus: any): MenuEntry[] {
   const out = new Map<string, MenuEntry>();
@@ -260,9 +329,14 @@ export function flattenMenus(menus: any): MenuEntry[] {
     const prev = out.get(k);
     if (!prev) { out.set(k, { ...e, ids: Array.from(new Set(e.ids)) }); return; }
     for (const id of e.ids) if (!prev.ids.includes(id)) prev.ids.push(id);
-    // One key, two different full names ("Sandwich Platter Tray" and "Sandwich Platter" key the
-    // same): which one is ours is a guess, so neither is auto linked.
-    prev.noAuto = prev.noAuto || e.noAuto || (prev.exactName || '') !== (e.exactName || '');
+    const a = fullExactOf(entryNameParts(prev));
+    const b = fullExactOf(entryNameParts(e));
+    // One key, two different full names: which one is ours is a guess, so neither is auto linked.
+    prev.noAuto = prev.noAuto || e.noAuto || a !== b || (prev.exactName || '') !== (e.exactName || '');
+    if (b < a) {
+      prev.ezName = e.ezName; prev.ezGroup = e.ezGroup; prev.ezSizeName = e.ezSizeName;
+      prev.ezOnlySize = e.ezOnlySize; prev.ezCategory = e.ezCategory; prev.exactName = e.exactName;
+    }
   };
   for (const menu of arr(menus)) {
     for (const cat of arr(menu?.categories)) {
@@ -325,7 +399,7 @@ const ourNamesOf = (x: any): string[] => ['name', 'menuName', 'label']
 export function entryExactName(entry: MenuEntry): string {
   if (typeof entry.exactName === 'string') return entry.exactName;
   if (entry.kind === 'option') return exactName(entry.ezName);
-  return entry.ezSizeName ? exactName(`${entry.ezName} ${entry.ezSizeName}`) : exactName(entry.ezName);
+  return fullExactOf(entryNameParts(entry));
 }
 
 /**
@@ -334,7 +408,10 @@ export function entryExactName(entry: MenuEntry): string {
  *                         name as the row's full name: item name plus its size, see
  *                         singleSizeExactName. Any size or container word on one side only
  *                         ("Large", "Small", "Tray", "Box") means different names, so no link.
- *   option                exactly ONE of our options, in any group, with the same exact name
+ *   option                exactly ONE of our options whose GROUP has the same exact name as the
+ *                         ezCater customization group AND whose own name is the same exact name
+ *                         as the value (review round 3): "Bread: White" is never our "White" in
+ *                         the Cheese group. A value with no group links nothing.
  *   anything marked noAuto, or with no exact name, links nothing
  * The order time name rules (autoLinkDecision) are NOT used here: they compare names with the
  * size words dropped, which is right for suggestions and wrong for a link nobody checks.
@@ -345,8 +422,11 @@ export function autoTargetFor(entry: MenuEntry, ourItems: any[], ourGroups: any[
   const want = entryExactName(entry);
   if (!want) return null;
   if (entry.kind === 'option') {
+    const wantGroup = exactName(entry.ezGroup);
+    if (!wantGroup) return null;
     const hits = new Map<string, any>();
     for (const g of arr(ourGroups)) {
+      if (!ourNamesOf(g).some((n) => exactName(n) === wantGroup)) continue;
       for (const o of arr(g?.options)) {
         if (!o || o.id == null) continue;
         if (ourNamesOf(o).some((n) => exactName(n) === want)) hits.set(String(o.id), o);
@@ -364,11 +444,11 @@ export function autoTargetFor(entry: MenuEntry, ourItems: any[], ourGroups: any[
   return hits.size === 1 ? { menuItemId: Array.from(hits)[0], optionId: null } : null;
 }
 
-// ── The plan ─────────────────────────────────────────────────────────────────────────────────
+// ── Decisions ────────────────────────────────────────────────────────────────────────────────
 
 const idsOf = (v: unknown): string[] => arr(v).map((x) => s(x)).filter(Boolean);
 
-/** matched_by on an auto link a SYNC wrote by the exact rule. The order time name rule writes 'name'. */
+/** matched_by on an auto link a SYNC wrote by the exact rule. The order time name rule wrote 'name'. */
 export const EXACT_MATCHED_BY = 'exact';
 
 /** A row a menu sync wrote or refreshed: it carries published ids or a synced_at stamp. */
@@ -378,11 +458,15 @@ export function isSyncedRow(row: any): boolean {
 }
 
 /**
- * The decision on a row that may route food without a person looking again, or null:
- *   a staff match (source 'manual' with a target), or
+ * The decision on a row that may route food at order time, or null:
+ *   a staff match (source 'manual' with a target) whose ezCater name and size are still the ones
+ *   the person saw when they saved it (lookAgainOf), or
  *   an EXACT auto link (source 'auto', matched_by 'exact', written by a sync)
- * An auto link the order time name rule made (matched_by 'name') is NOT one: it was made with
- * size words dropped. "Not on our menu" and a staff clear have no target, so they are null too.
+ * An auto link the old order time name rule made (matched_by 'name') is NOT one: it was made with
+ * size words dropped. A staff match whose name or size changed since is not one UNTIL staff look
+ * at it again ("Still right" on the Item matching card): the decision itself is never changed, but
+ * a "Caesar Salad" matched as Regular must not route the Large ezCater now sells under that name.
+ * "Not on our menu" and a staff clear have no target, so they are null too.
  */
 export function trustedTarget(row: any): { menuItemId: string | null; optionId: string | null } | null {
   if (!row) return null;
@@ -390,75 +474,148 @@ export function trustedTarget(row: any): { menuItemId: string | null; optionId: 
   const optionId = s(row.option_id ?? row.optionId) || null;
   if (!menuItemId && !optionId) return null;
   const source = s(row.source);
-  if (source === 'manual') return { menuItemId, optionId };
+  if (source === 'manual') return lookAgainOf(row).lookAgain ? null : { menuItemId, optionId };
   if (source === 'auto' && s(row.matched_by ?? row.matchedBy) === EXACT_MATCHED_BY) return { menuItemId, optionId };
   return null;
 }
 
-/** A row nobody has decided: no target, not silenced, not touched by a person. */
-const isBare = (row: any) => !!row && !s(row.menu_item_id) && !s(row.option_id)
-  && !s(row.matched_by) && s(row.source || 'auto') === 'auto';
+/** The decision columns of a row, exactly as read: what a guarded write compares. */
+export interface Decision { menuItemId: string | null; optionId: string | null; matchedBy: string | null }
+export function decisionOf(row: any): Decision {
+  return {
+    menuItemId: s(row?.menu_item_id ?? row?.menuItemId) || null,
+    optionId: s(row?.option_id ?? row?.optionId) || null,
+    matchedBy: s(row?.matched_by ?? row?.matchedBy) || null,
+  };
+}
+
+const isStaffRow = (row: any) => s(row?.source) === 'manual';
+
+/** A person's decision: a match, or "Not on our menu". A staff clear is not one. */
+export function isStaffDecision(row: any): boolean {
+  if (!isStaffRow(row)) return false;
+  const d = decisionOf(row);
+  return !!(d.menuItemId || d.optionId) || d.matchedBy === 'ignored';
+}
+
+/**
+ * LOOK AGAIN (review round 3). A staff decision is never changed by a sync, but when the ezCater
+ * name or size it was made for has changed since (decided_as, what the staff saw, against the
+ * row's full name now), staff are asked to look at it again on the Item matching card, and until
+ * they do, orders do not use it (trustedTarget): those lines print by name. A row with nothing
+ * recorded (decided before 20260919m, until its first sync records it) is not flagged.
+ */
+export function lookAgainOf(row: any): { lookAgain: boolean; was: string | null; now: string } {
+  const now = fullNameOf(rowNameParts(row));
+  const saw = s(row?.decided_as ?? row?.decidedAs);
+  if (!isStaffDecision(row) || !saw) return { lookAgain: false, was: saw || null, now };
+  return { lookAgain: exactName(saw) !== exactName(now), was: saw, now };
+}
+
+// ── The plan ─────────────────────────────────────────────────────────────────────────────────
 
 export interface SyncPlan {
-  /** New rows, written insert only (on conflict do nothing): a racing save or order wins. */
+  /** New rows, written insert only (on conflict do nothing): a racing save wins. */
   inserts: any[];
-  /** Existing rows: the ezCater facts only (ids, size, category, synced_at). Never a decision. */
+  /** Existing rows: the ezCater facts only (names, ids, size, category, synced_at). Never a decision. */
   refreshes: any[];
-  /** Existing undecided rows that now have an exact match: guarded update, a person wins. */
-  fills: { kind: string; ezKey: string; menuItemId: string | null; optionId: string | null }[];
   /**
-   * Existing rows holding an auto link the ORDER TIME name rule made (matched_by 'name') before
-   * the row was synced. Exact means exact, so each is decided again by the exact rule: kept and
-   * marked 'exact' when it is the exact match, otherwise replaced by the exact match or cleared
-   * for staff. Guarded on the old values, so a person who saved first wins. Only with our whole
-   * menu in hand (menuOk).
+   * AUTOMATIC rows decided again (review round 3, every one, not only old name links): set to the
+   * one exact match of ours, moved to it, or cleared. Guarded on the decision as read, so a person
+   * who saved first wins. Written BEFORE the refresh, and a row whose write fails is not refreshed,
+   * so new published ids never land on a row still holding an old decision.
    */
-  rechecks: { kind: string; ezKey: string; was: { menuItemId: string | null; optionId: string | null };
-    menuItemId: string | null; optionId: string | null }[];
-  counts: { items: number; sizes: number; options: number; inserted: number; refreshed: number; autoLinked: number; toDecide: number; rechecked: number };
+  redecides: { kind: string; ezKey: string; was: Decision; menuItemId: string | null; optionId: string | null; matchedBy: string | null }[];
+  /**
+   * Staff decisions with nothing recorded of what the staff saw (made before 20260919m): the name
+   * the row showed before this sync, recorded BEFORE the refresh changes it. Guarded on the
+   * decision as read and on decided_as still being empty.
+   */
+  baselines: { kind: string; ezKey: string; was: Decision; decidedAs: string }[];
+  counts: {
+    items: number; sizes: number; options: number; inserted: number; refreshed: number;
+    autoLinked: number; toDecide: number; redecided: number; cleared: number; lookAgain: number;
+  };
 }
 
 /** Published ids kept per row, newest first. Only reached after this many republishes. */
 export const MAX_IDS_PER_ROW = 200;
 
-/**
- * What a sync writes. PURE.
- * IDS ARE ONLY EVER ADDED: every sync keeps the ids already on a row and puts the newly published
- * ones first, complete read or not. An order placed before the caterer republished carries the
- * OLD size id, and when ezCater later sends a change to that order it still carries that id; it
- * must still find its row. Published ids are UUIDs, so an old id cannot come back meaning
- * something else, and if one ever did sit on two rows, sizeRouteFor already answers unmatched
- * ("size rows disagree", "id on a plain row and a size row").
- * `complete` false (a caterer or a menu could not be read, or came back empty) is reported, and
- * a partial read can never take anything away because nothing is ever taken away.
- * `menuOk` false (our own menu was only partly read) writes no auto link at all: "nothing else of
- * ours has that name" is not a claim a partial menu can make.
- */
 /** A plain row's single size name for display (ez_only_size); null on size and option rows. */
 const onlySizeOf = (e: MenuEntry): string | null =>
   (e.kind === 'item' && !e.ezSizeName ? (s(e.ezOnlySize) || null) : null);
 
+/** A stored row as an entry, for rows this read did not cover. */
+function storedEntry(row: any): MenuEntry {
+  const p = rowNameParts(row);
+  return {
+    kind: p.kind, ezKey: s(row?.ez_key), ezName: p.name, ezGroup: p.kind === 'option' ? (p.group || null) : null,
+    ezSizeName: p.sizeName || null, ezOnlySize: p.onlySize || null, ezCategory: null, ids: [],
+    exactName: p.kind === 'option' ? exactName(p.name) : fullExactOf(p), noAuto: false,
+  };
+}
+
+const sameDecision = (a: Decision, b: Decision) =>
+  a.menuItemId === b.menuItemId && a.optionId === b.optionId && a.matchedBy === b.matchedBy;
+
+/**
+ * What a sync writes. PURE.
+ *
+ * IDS: every sync keeps the ids already on a row and puts the newly published ones first, so an
+ * order placed before the caterer republished (same item, new ids) still finds its row when
+ * ezCater later sends a change to it. The one exception: when the row's FULL name changed (a new
+ * only size, a renamed item under the same key), the old ids were published for a different
+ * product and are dropped, so an old "Caesar Salad Regular" order can never route to what the row
+ * now holds for "Caesar Salad Large". A partial read never takes an id away otherwise.
+ *
+ * DECISIONS (review round 3):
+ *   an automatic row covered by this read   decided again from the whole of our menu: the one
+ *                                           exact match (kept, moved to, or set), else cleared
+ *   an automatic row this read did not cover  (synced before) kept only when its stored name is
+ *                                           still exactly one item of ours, the one it points
+ *                                           at; otherwise cleared. Never moved or newly linked.
+ *   a staff decision                        never touched; flagged for staff when its name or
+ *                                           size changed since they saved it (lookAgainOf)
+ * `menuOk` false (our own menu was only partly read) links nothing new; an exact link whose
+ * ezCater name changed is still cleared, because what it was made for is gone.
+ */
 export function planMenuSync(input: {
   entries: MenuEntry[]; existing: any[]; ourItems: any[]; ourGroups: any[];
   locationId: string; nowIso: string; complete: boolean; menuOk: boolean;
 }): SyncPlan {
+  const kindOf = (r: any) => (s(r?.kind) === 'option' ? 'option' : 'item');
   const byKey = new Map<string, any>();
-  for (const r of arr(input.existing)) if (r && s(r.ez_key)) byKey.set((s(r.kind) || 'item') + ':' + s(r.ez_key), r);
+  for (const r of arr(input.existing)) if (r && s(r.ez_key)) byKey.set(kindOf(r) + ':' + s(r.ez_key), r);
   const plan: SyncPlan = {
-    inserts: [], refreshes: [], fills: [], rechecks: [],
-    counts: { items: 0, sizes: 0, options: 0, inserted: 0, refreshed: 0, autoLinked: 0, toDecide: 0, rechecked: 0 },
+    inserts: [], refreshes: [], redecides: [], baselines: [],
+    counts: { items: 0, sizes: 0, options: 0, inserted: 0, refreshed: 0, autoLinked: 0, toDecide: 0, redecided: 0, cleared: 0, lookAgain: 0 },
   };
+  const decide = (target: { menuItemId: string | null; optionId: string | null } | null): Decision => (target
+    ? { menuItemId: target.menuItemId, optionId: target.optionId, matchedBy: EXACT_MATCHED_BY }
+    : { menuItemId: null, optionId: null, matchedBy: null });
+  const redecide = (e: { kind: string; ezKey: string }, was: Decision, next: Decision) => {
+    plan.redecides.push({ kind: e.kind, ezKey: e.ezKey, was, ...next });
+    if ((was.menuItemId || was.optionId) && !next.menuItemId && !next.optionId) plan.counts.cleared++;
+  };
+  const covered = new Set<string>();
+
   for (const e of arr(input.entries) as MenuEntry[]) {
+    const k = e.kind + ':' + e.ezKey;
+    if (covered.has(k)) continue;
+    covered.add(k);
     if (e.kind === 'option') plan.counts.options++;
     else if (e.ezSizeName) plan.counts.sizes++;
     else plan.counts.items++;
     const target = input.menuOk ? autoTargetFor(e, input.ourItems, input.ourGroups) : null;
-    const prev = byKey.get(e.kind + ':' + e.ezKey);
+    const view = {
+      ez_name: e.ezName, ez_group: e.kind === 'option' ? (e.ezGroup || null) : null,
+      ez_size_name: e.ezSizeName, ez_only_size: onlySizeOf(e), ez_category: e.ezCategory,
+    };
+    const prev = byKey.get(k);
     if (!prev) {
       plan.inserts.push({
-        location_id: input.locationId, kind: e.kind, ez_key: e.ezKey, ez_name: e.ezName,
-        ez_group: e.kind === 'option' ? e.ezGroup : null,
-        ez_size_name: e.ezSizeName, ez_only_size: onlySizeOf(e), ez_category: e.ezCategory, ez_ids: e.ids,
+        location_id: input.locationId, kind: e.kind, ez_key: e.ezKey, ...view,
+        ez_ids: Array.from(new Set(e.ids)).slice(0, MAX_IDS_PER_ROW),
         menu_item_id: target ? target.menuItemId : null, option_id: target ? target.optionId : null,
         source: 'auto', matched_by: target ? EXACT_MATCHED_BY : null,
         seen_count: 0, last_seen_at: null, synced_at: input.nowIso, updated_at: input.nowIso,
@@ -466,47 +623,79 @@ export function planMenuSync(input: {
       if (target) plan.counts.autoLinked++; else plan.counts.toDecide++;
       continue;
     }
-    const ids = Array.from(new Set([...e.ids, ...idsOf(prev.ez_ids)])).slice(0, MAX_IDS_PER_ROW);
+
+    const nowExact = fullExactOf(entryNameParts(e));
+    const wasExact = fullExactOf(rowNameParts(prev));
+    const changed = nowExact !== wasExact;
+    const ids = changed ? e.ids : [...e.ids, ...idsOf(prev.ez_ids)];
     // ONLY the ezCater fact columns. `source` is left out on purpose: the column defaults to
     // 'auto' (20260919m) so Postgres accepts the insert tuple ON CONFLICT DO UPDATE builds, and
-    // DO UPDATE sets only the columns named here, so every row keeps its own source.
+    // DO UPDATE sets only the columns named here, so every row keeps its own source and decision.
     plan.refreshes.push({
-      location_id: input.locationId, kind: e.kind, ez_key: e.ezKey,
-      ez_name: s(prev.ez_name) || e.ezName,
-      ez_size_name: e.ezSizeName, ez_only_size: onlySizeOf(e), ez_category: e.ezCategory, ez_ids: ids,
-      synced_at: input.nowIso,
+      location_id: input.locationId, kind: e.kind, ez_key: e.ezKey, ...view,
+      ez_ids: Array.from(new Set(ids)).slice(0, MAX_IDS_PER_ROW), synced_at: input.nowIso,
     });
-    const prevItem = s(prev.menu_item_id) || null;
-    const prevOption = s(prev.option_id) || null;
-    const looseAuto = s(prev.source) === 'auto' && s(prev.matched_by) === 'name' && !!(prevItem || prevOption);
-    if (isBare(prev) && target) {
-      plan.fills.push({ kind: e.kind, ezKey: e.ezKey, menuItemId: target.menuItemId, optionId: target.optionId });
-      plan.counts.autoLinked++;
-    } else if (looseAuto && input.menuOk) {
-      plan.rechecks.push({ kind: e.kind, ezKey: e.ezKey, was: { menuItemId: prevItem, optionId: prevOption },
-        menuItemId: target ? target.menuItemId : null, optionId: target ? target.optionId : null });
-      plan.counts.rechecked++;
+
+    const was = decisionOf(prev);
+    if (isStaffRow(prev)) {
+      // A person decided (or cleared) this row: never changed here.
+      if (isStaffDecision(prev)) {
+        const saw = s(prev.decided_as);
+        if (!saw) plan.baselines.push({ kind: e.kind, ezKey: e.ezKey, was, decidedAs: fullNameOf(rowNameParts(prev)) });
+        if ((saw ? exactName(saw) : wasExact) !== nowExact) plan.counts.lookAgain++;
+      } else {
+        plan.counts.toDecide++;
+      }
+      continue;
+    }
+
+    // An automatic row: decided again.
+    if (input.menuOk) {
+      const next = decide(target);
+      if (!sameDecision(was, next)) redecide(e, was, next);
       if (target) plan.counts.autoLinked++; else plan.counts.toDecide++;
-    } else if (looseAuto) {
-      // Our menu was read only in part: the loose link is left as it is, and order time does
-      // not trust it (trustedTarget), so the line prints by name until a whole read decides it.
+      continue;
+    }
+    // Our menu was read only in part: nothing new is linked. An exact link whose ezCater name
+    // changed has lost what it was made for, so it is cleared; the next whole read decides it.
+    // Anything else waits (an old name link is never used at order time anyway).
+    if ((was.menuItemId || was.optionId) && was.matchedBy === EXACT_MATCHED_BY && changed) {
+      redecide(e, was, decide(null));
       plan.counts.toDecide++;
-    } else if (!prevItem && !prevOption && s(prev.matched_by) !== 'ignored') {
+    } else if ((was.menuItemId || was.optionId) && was.matchedBy === EXACT_MATCHED_BY) {
+      plan.counts.autoLinked++;
+    } else {
       plan.counts.toDecide++;
     }
   }
+
+  // Automatic rows this read did not cover (off the current menus, or a caterer that did not
+  // answer): only synced rows, only with our whole menu. Kept while their stored name is still
+  // exactly the one item of ours they point at (our item renamed or gone: cleared).
+  if (input.menuOk) {
+    for (const [k, prev] of byKey) {
+      if (covered.has(k) || isStaffRow(prev) || !isSyncedRow(prev)) continue;
+      const was = decisionOf(prev);
+      if (!was.menuItemId && !was.optionId) continue;
+      const target = was.matchedBy === EXACT_MATCHED_BY ? autoTargetFor(storedEntry(prev), input.ourItems, input.ourGroups) : null;
+      const keep = !!target && target.menuItemId === was.menuItemId && target.optionId === was.optionId;
+      if (!keep) redecide({ kind: kindOf(prev), ezKey: s(prev.ez_key) }, was, decide(null));
+    }
+  }
+
   plan.counts.inserted = plan.inserts.length;
   plan.counts.refreshed = plan.refreshes.length;
+  plan.counts.redecided = plan.redecides.length;
   return plan;
 }
 
 // ── Order time ───────────────────────────────────────────────────────────────────────────────
 
-/** Item rows by published id. A row read before the migration has no ids and adds nothing. */
-export function indexPublishedIds(links: any): Map<string, any[]> {
+/** Rows of one kind by published id. A row read before the migration has no ids and adds nothing. */
+export function indexPublishedIds(links: any, kind: 'item' | 'option' = 'item'): Map<string, any[]> {
   const idx = new Map<string, any[]>();
   for (const r of arr(links)) {
-    if (!r || (s(r.kind) || 'item') !== 'item') continue;
+    if (!r || (s(r.kind) || 'item') !== kind) continue;
     for (const id of idsOf(r.ez_ids ?? r.ezIds)) {
       const list = idx.get(id) || [];
       list.push(r);
@@ -517,34 +706,53 @@ export function indexPublishedIds(links: any): Map<string, any[]> {
 }
 
 export type SizeRoute =
-  | { mode: 'plain' }
   | { mode: 'synced'; ezKey: string; itemId: string | null }
   | { mode: 'unmatched'; reason: string };
 
 /**
- * How one order line may be matched. PURE. See the rule at the top of this file.
- *   plain      no synced row holds this line's size id and the line has no size: the caller
- *              decides (a key lookup on synced rows first, then the old name rules)
- *   synced     a synced row (size or plain) holds the id and decides: its TRUSTED target
- *              (trustedTarget), or nothing when it has none
- *   unmatched  nothing decides; the line prints by name
+ * How one order line is matched once 20260919m has run. PURE. There is no other way.
+ *   synced     the synced row holding the line's published SIZE id decides: its trusted target
+ *              (trustedTarget), or nothing when it has none (the line prints by name)
+ *   unmatched  no size id, a size id on no synced row, or rows that disagree: prints by name
+ * Never the line's name, never its item id, never a posItemId.
  */
 export function sizeRouteFor(line: any, idIdx: Map<string, any[]>): SizeRoute {
   // The SIZE id only (the order's menuItemSizeId IS the menu's sizes.id, proven on HKX77V, see
   // the top of this file). Never line.ezItemId: an order's item id is not the menu's item id.
   const id = s(line?.ezSizeId);
-  const rows = id ? idIdx.get(id) || [] : [];
-  if (rows.length) {
-    const sized = rows.filter((r) => s(r.ez_size_name ?? r.ezSizeName));
-    // The same id on a size row and a plain row: stale data, and a guess either way. Unmatched.
-    if (sized.length && sized.length !== rows.length) return { mode: 'unmatched', reason: 'id on a plain row and a size row' };
-    const targets = new Set(rows.map((r) => s(trustedTarget(r)?.menuItemId)));
-    if (targets.size !== 1) return { mode: 'unmatched', reason: sized.length ? 'size rows disagree' : 'synced rows disagree' };
-    const t = Array.from(targets)[0];
-    return { mode: 'synced', ezKey: s(rows[0].ez_key ?? rows[0].ezKey), itemId: t || null };
-  }
-  if (s(line?.sizeName)) return { mode: 'unmatched', reason: id ? 'size id not on the synced menu' : 'sized line with no id' };
-  return { mode: 'plain' };
+  if (!id) return { mode: 'unmatched', reason: 'no size id' };
+  const rows = idIdx.get(id) || [];
+  if (!rows.length) return { mode: 'unmatched', reason: 'size id not on the synced menu' };
+  const sized = rows.filter((r) => s(r.ez_size_name ?? r.ezSizeName));
+  // The same id on a size row and a plain row: stale data, and a guess either way. Unmatched.
+  if (sized.length && sized.length !== rows.length) return { mode: 'unmatched', reason: 'id on a plain row and a size row' };
+  const targets = new Set(rows.map((r) => s(trustedTarget(r)?.menuItemId)));
+  if (targets.size !== 1) return { mode: 'unmatched', reason: sized.length ? 'size rows disagree' : 'synced rows disagree' };
+  const t = Array.from(targets)[0];
+  return { mode: 'synced', ezKey: s(rows[0].ez_key ?? rows[0].ezKey), itemId: t || null };
+}
+
+export type OptionRoute =
+  | { mode: 'synced'; ezKey: string; optionId: string | null; itemId: string | null }
+  | { mode: 'unmatched'; reason: string };
+
+/**
+ * How one customization is matched once 20260919m has run. PURE. By its published id only
+ * (ezItemId, which ezcater-map.ts takes from the order's customizationId) on a synced option row
+ * with a trusted decision. Never its name or group.
+ */
+export function optionRouteFor(mod: any, optIdx: Map<string, any[]>): OptionRoute {
+  const id = s(mod?.ezItemId);
+  if (!id) return { mode: 'unmatched', reason: 'no customization id' };
+  const rows = optIdx.get(id) || [];
+  if (!rows.length) return { mode: 'unmatched', reason: 'customization id not on the synced menu' };
+  const answers = new Set(rows.map((r) => {
+    const t = trustedTarget(r);
+    return (t?.optionId || '') + '|' + (t?.menuItemId || '');
+  }));
+  if (answers.size !== 1) return { mode: 'unmatched', reason: 'option rows disagree' };
+  const t = trustedTarget(rows[0]);
+  return { mode: 'synced', ezKey: s(rows[0].ez_key ?? rows[0].ezKey), optionId: t?.optionId || null, itemId: t?.menuItemId || null };
 }
 
 // ── The database ─────────────────────────────────────────────────────────────────────────────
@@ -554,14 +762,14 @@ export const LINK_MAX_PAGES = 50;
 
 /** The link columns the matcher and the sync read, with and without the sync columns. */
 export const LINK_COLUMNS = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count';
-export const LINK_COLUMNS_WITH_SYNC = LINK_COLUMNS + ', ez_ids, ez_size_name, synced_at';
+export const LINK_COLUMNS_WITH_SYNC = LINK_COLUMNS + ', ez_ids, ez_size_name, ez_only_size, synced_at, decided_as';
 
 /** True when a read failed because the sync columns are not there yet (migration not run). */
 export function isMissingSyncColumn(err: any): boolean {
   if (!err) return false;
   const code = String(err.code || '');
   const msg = String(err.message || '') + ' ' + String(err.details || '');
-  if (!/ez_ids|ez_size_name|ez_only_size|ez_category|synced_at/i.test(msg)) return false;
+  if (!/ez_ids|ez_size_name|ez_only_size|ez_category|synced_at|decided_as/i.test(msg)) return false;
   // Proven only by Postgres' undefined column code, PostgREST's schema cache code, or its words.
   return code === '42703' || code === 'PGRST204'
     || /column\b.*\b(does not exist|could not find)|could not find the .*column/i.test(msg);
@@ -605,45 +813,63 @@ export async function readAllLinks(
 
 /** Rows written per request. */
 export const WRITE_CHUNK = 500;
+/** Single row updates in flight at once. */
+export const UPDATE_BATCH = 8;
+
+/** Where a guarded update repeats the decision it read: equal, or still empty. */
+function guardDecision(q: any, was: Decision): any {
+  let out = was.menuItemId ? q.eq('menu_item_id', was.menuItemId) : q.is('menu_item_id', null);
+  out = was.optionId ? out.eq('option_id', was.optionId) : out.is('option_id', null);
+  out = was.matchedBy ? out.eq('matched_by', was.matchedBy) : out.is('matched_by', null);
+  return out;
+}
+
+async function inBatches<T>(list: T[], run: (x: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < list.length; i += UPDATE_BATCH) await Promise.all(list.slice(i, i + UPDATE_BATCH).map(run));
+}
 
 /**
- * Write a plan. Inserts never overwrite (on conflict do nothing). Refreshes name only the ezCater
- * fact columns, so a decision a person saves mid sync is never touched. Fills repeat every
- * condition of an undecided row in their where clause, so a person who answered it first wins.
+ * Write a plan, in this order:
+ *   1. baselines  what the staff saw, recorded before the refresh changes the names
+ *   2. redecides  automatic rows decided again, before the refresh adds new published ids
+ *   3. inserts    never overwrite (on conflict do nothing)
+ *   4. refreshes  name only the ezCater fact columns, so a decision a person saves mid sync is
+ *                 never touched. A row whose baseline or decision write FAILED is not refreshed:
+ *                 its old names and ids stay with its old decision until the next sync.
+ * Every guarded update repeats the decision it read, so a person who saved first wins.
  */
 export async function writeSyncPlan(sb: any, locationId: string, plan: SyncPlan, nowIso: string):
-  Promise<{ inserted: number; refreshed: number; filled: number; rechecked: number; errors: string[] }> {
-  const done = { inserted: 0, refreshed: 0, filled: 0, rechecked: 0, errors: [] as string[] };
+  Promise<{ inserted: number; refreshed: number; redecided: number; baselined: number; errors: string[] }> {
+  const done = { inserted: 0, refreshed: 0, redecided: 0, baselined: 0, errors: [] as string[] };
+  const held = new Set<string>();
+  const errText = (e: any) => String(e?.message || e);
+
+  await inBatches(plan.baselines || [], async (b) => {
+    const q = sb.from('ezcater_item_links').update({ decided_as: b.decidedAs })
+      .eq('location_id', locationId).eq('kind', b.kind).eq('ez_key', b.ezKey)
+      .eq('source', 'manual').is('decided_as', null);
+    const { error } = await guardDecision(q, b.was);
+    if (error) { done.errors.push('baseline: ' + errText(error)); held.add(b.kind + ':' + b.ezKey); } else done.baselined++;
+  });
+  await inBatches(plan.redecides || [], async (r) => {
+    const q = sb.from('ezcater_item_links')
+      .update({ menu_item_id: r.menuItemId, option_id: r.optionId, matched_by: r.matchedBy, updated_at: nowIso })
+      .eq('location_id', locationId).eq('kind', r.kind).eq('ez_key', r.ezKey).eq('source', 'auto');
+    const { error } = await guardDecision(q, r.was);
+    if (error) { done.errors.push('decide: ' + errText(error)); held.add(r.kind + ':' + r.ezKey); } else done.redecided++;
+  });
   for (let i = 0; i < plan.inserts.length; i += WRITE_CHUNK) {
     const chunk = plan.inserts.slice(i, i + WRITE_CHUNK);
     const { error } = await sb.from('ezcater_item_links')
       .upsert(chunk, { onConflict: 'location_id,kind,ez_key', ignoreDuplicates: true });
-    if (error) done.errors.push('insert: ' + (error.message || error)); else done.inserted += chunk.length;
+    if (error) done.errors.push('insert: ' + errText(error)); else done.inserted += chunk.length;
   }
-  for (let i = 0; i < plan.refreshes.length; i += WRITE_CHUNK) {
-    const chunk = plan.refreshes.slice(i, i + WRITE_CHUNK);
+  const refreshes = plan.refreshes.filter((r) => !held.has(r.kind + ':' + r.ez_key));
+  for (let i = 0; i < refreshes.length; i += WRITE_CHUNK) {
+    const chunk = refreshes.slice(i, i + WRITE_CHUNK);
     const { error } = await sb.from('ezcater_item_links')
       .upsert(chunk, { onConflict: 'location_id,kind,ez_key' });
-    if (error) done.errors.push('refresh: ' + (error.message || error)); else done.refreshed += chunk.length;
-  }
-  for (const f of plan.fills) {
-    const { error } = await sb.from('ezcater_item_links')
-      .update({ menu_item_id: f.menuItemId, option_id: f.optionId, matched_by: EXACT_MATCHED_BY, updated_at: nowIso })
-      .eq('location_id', locationId).eq('kind', f.kind).eq('ez_key', f.ezKey)
-      .eq('source', 'auto').is('menu_item_id', null).is('option_id', null).is('matched_by', null);
-    if (error) done.errors.push('fill: ' + (error.message || error)); else done.filled++;
-  }
-  for (const r of plan.rechecks || []) {
-    const linked = !!(r.menuItemId || r.optionId);
-    let q = sb.from('ezcater_item_links')
-      .update({ menu_item_id: r.menuItemId, option_id: r.optionId, matched_by: linked ? EXACT_MATCHED_BY : null, updated_at: nowIso })
-      .eq('location_id', locationId).eq('kind', r.kind).eq('ez_key', r.ezKey)
-      .eq('source', 'auto').eq('matched_by', 'name');
-    // Still exactly the loose link we read, or nothing changes: a person who saved first wins.
-    q = r.was.menuItemId ? q.eq('menu_item_id', r.was.menuItemId) : q.is('menu_item_id', null);
-    q = r.was.optionId ? q.eq('option_id', r.was.optionId) : q.is('option_id', null);
-    const { error } = await q;
-    if (error) done.errors.push('recheck: ' + (error.message || error)); else done.rechecked++;
+    if (error) done.errors.push('refresh: ' + errText(error)); else done.refreshed += chunk.length;
   }
   return done;
 }

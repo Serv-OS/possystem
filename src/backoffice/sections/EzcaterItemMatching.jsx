@@ -26,6 +26,7 @@ import {
   rowsFrom, ofKind, countRows, outstandingLine, seenLine, theirLabel, syncLine,
   ourItemsFrom, ourGroupsFrom, suggestionsFor, searchOurItems,
   matchedLabel, saveBody, applySaved, isMatchingOff,
+  liveRows, offMenuRows, lookAgainCount, lookAgainLine, lookAgainNote, offMenuLine,
 } from '../../lib/ezcaterItemRows';
 // v5.8.100: hand the venue's item codes over, so ezCater can put them on their
 // side and this screen stops having anything to ask about.
@@ -75,6 +76,10 @@ function MatchRow({ row, ourItems, ourGroups, suggestions, busy, onSave }) {
   const pick = (c) => send(row.kind === 'option'
     ? { optionId: c.optionId, menuItemId: c.menuItemId }
     : { menuItemId: c.menuItemId });
+  // "Still right": the same answer saved again, which records what this screen shows now.
+  const confirm = () => send(row.state === 'ignored'
+    ? { ignored: true }
+    : (row.kind === 'option' ? { optionId: row.optionId, menuItemId: row.menuItemId } : { menuItemId: row.menuItemId }));
 
   return (
     <div style={S.item}>
@@ -86,11 +91,17 @@ function MatchRow({ row, ourItems, ourGroups, suggestions, busy, onSave }) {
             {row.ezCategory ? row.ezCategory + ' · ' : ''}
             {seenLine(row)}
           </div>
+          {row.lookAgain && (
+            <div style={{ ...S.meta, color: 'var(--amber)', fontWeight: 700, marginTop: 4 }}>{lookAgainNote(row)}</div>
+          )}
         </div>
 
         {row.state === 'matched' && (
           <div style={{ ...S.row, justifyContent: 'flex-end', flex: '1 1 200px' }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</span>
+            {row.lookAgain && !changing && (
+              <button style={S.btnGhost} disabled={!!busy} onClick={confirm}>Still right</button>
+            )}
             <button style={S.btnGhost} disabled={!!busy}
               onClick={() => setChanging((v) => !v)}>{changing ? 'Cancel' : 'Change'}</button>
           </div>
@@ -99,6 +110,9 @@ function MatchRow({ row, ourItems, ourGroups, suggestions, busy, onSave }) {
         {row.state === 'ignored' && (
           <div style={{ ...S.row, justifyContent: 'flex-end', flex: '1 1 200px' }}>
             <span style={{ fontSize: 13, color: 'var(--t3)' }}>Not on our menu</span>
+            {row.lookAgain && (
+              <button style={S.btnGhost} disabled={!!busy} onClick={confirm}>Still right</button>
+            )}
             <button style={S.btnGhost} disabled={!!busy}
               onClick={() => send({})}>Undo</button>
           </div>
@@ -160,6 +174,8 @@ export default function EzcaterItemMatching({ locationId }) {
   const [copied, setCopied] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  // 20260919m has run: orders only use matches made before the order, on the synced menu.
+  const [syncReady, setSyncReady] = useState(false);
 
   const ourItems = useMemo(() => ourItemsFrom(rawItems), [rawItems]);
   const ourGroups = useMemo(() => ourGroupsFrom(rawGroups), [rawGroups]);
@@ -224,7 +240,13 @@ export default function EzcaterItemMatching({ locationId }) {
       }
       setCodesOn(haveCodes);
       if (links && links.enabled === false) { setEnabled(false); setRows([]); }
-      else { setEnabled(true); setRows(rowsFrom(links?.links)); setLastSync(links?.last_sync || null); }
+      else {
+        const ready = links?.menu_sync_ready === true;
+        setEnabled(true);
+        setSyncReady(ready);
+        setRows(rowsFrom(links?.links, { syncReady: ready }));
+        setLastSync(links?.last_sync || null);
+      }
       setRawItems(itemsRes?.data || []);
       setRawGroups(groupsRes?.data || []);
       // An empty picker must never look like an empty menu. Say it out loud
@@ -285,10 +307,16 @@ export default function EzcaterItemMatching({ locationId }) {
     setSyncing(false);
   }, [locId, syncing, load]);
 
-  const shown = useMemo(() => ofKind(rows, tab), [rows, tab]);
+  // Once the sync is set up, a row no sync wrote can never route an order: it is not listed.
+  const live = useMemo(() => liveRows(rows), [rows]);
+  const offCount = useMemo(() => ofKind(offMenuRows(rows), tab).length, [rows, tab]);
+  const shown = useMemo(() => ofKind(live, tab), [live, tab]);
   const counts = useMemo(() => countRows(shown), [shown]);
-  const itemCount = useMemo(() => countRows(ofKind(rows, 'item')), [rows]);
-  const optCount = useMemo(() => countRows(ofKind(rows, 'option')), [rows]);
+  const itemCount = useMemo(() => countRows(ofKind(live, 'item')), [live]);
+  const optCount = useMemo(() => countRows(ofKind(live, 'option')), [live]);
+  const itemAgain = useMemo(() => lookAgainCount(ofKind(live, 'item')), [live]);
+  const optAgain = useMemo(() => lookAgainCount(ofKind(live, 'option')), [live]);
+  const shownAgain = tab === 'option' ? optAgain : itemAgain;
 
   // One suggestion list per visible row, built once per menu change rather than
   // on every keystroke in any row's search box. Matched rows are included too,
@@ -309,8 +337,9 @@ export default function EzcaterItemMatching({ locationId }) {
       <div style={S.h2}>Item matching</div>
       <div style={{ ...S.sub, marginTop: 0 }}>
         Sync ezCater menu loads every item, size and option from ezCater before any order.
-        Exact names match themselves; tell us once what each of the rest is. A size is only ever
-        matched here, never guessed. Unmatched ones still print, as plain text.
+        Exact names match themselves; tell us once what each of the rest is. Orders only use
+        matches made here, before the order: nothing is guessed from a name when an order
+        arrives. Unmatched ones still print, as plain text.
       </div>
 
       {loading ? (
@@ -331,7 +360,9 @@ export default function EzcaterItemMatching({ locationId }) {
 
           {/* v5.8.100: hand the codes over. Nothing here is required: an item
               with no code still arrives, it just has to be matched by name. */}
-          {codesOn && (
+          {/* Once the sync is set up an order only uses matches made here, never a code or a
+              POS id on the order, so the codes are not offered for ezCater any more. */}
+          {codesOn && !syncReady && (
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
               <div style={S.row}>
                 <button
@@ -354,14 +385,16 @@ export default function EzcaterItemMatching({ locationId }) {
 
           <div style={{ ...S.row, marginTop: 14 }}>
             <button style={S.tab(tab === 'item')} onClick={() => setTab('item')}>
-              Items{itemCount.outstanding ? ' (' + itemCount.outstanding + ')' : ''}
+              Items{itemCount.outstanding + itemAgain ? ' (' + (itemCount.outstanding + itemAgain) + ')' : ''}
             </button>
             <button style={S.tab(tab === 'option')} onClick={() => setTab('option')}>
-              Options{optCount.outstanding ? ' (' + optCount.outstanding + ')' : ''}
+              Options{optCount.outstanding + optAgain ? ' (' + (optCount.outstanding + optAgain) + ')' : ''}
             </button>
           </div>
 
           <div style={S.count}>{outstandingLine(counts, tab)}</div>
+          {shownAgain > 0 && <div style={{ ...S.sub, marginTop: 0, color: 'var(--amber)' }}>{lookAgainLine(shownAgain, tab)}</div>}
+          {offCount > 0 && <div style={{ ...S.sub, marginTop: 0 }}>{offMenuLine(offCount)}</div>}
 
           {shown.slice(0, MAX_SHOWN).map((r) => (
             <MatchRow

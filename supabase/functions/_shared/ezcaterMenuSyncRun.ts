@@ -61,8 +61,12 @@ export async function runMenuSync(
     if (!caterers.length) return await fail('No ezCater caterer is linked to this venue yet.');
 
     const connIds = Array.from(new Set(caterers.map((c: any) => s(c.connection_id))));
-    const { data: conns, error: connErr } = await sb.from('ezcater_connections')
-      .select('id, api_token, api_url, status').in('id', connIds);
+    // api_url arrives with 20260917_OPS_ezcater_api_url.sql, run by hand, and a select naming a
+    // column that is not there fails WHOLE. So it is asked for, then asked for again without it,
+    // exactly as ezcater-webhook's readConnection does. No api_url means the live ezCater API.
+    let connRes = await sb.from('ezcater_connections').select('id, api_token, api_url, status').in('id', connIds);
+    if (connRes.error) connRes = await sb.from('ezcater_connections').select('id, api_token, status').in('id', connIds);
+    const { data: conns, error: connErr } = connRes;
     if (connErr) return await fail('Could not read the ezCater connection.');
     const connById = new Map<string, any>();
     for (const c of Array.isArray(conns) ? conns : []) if (c && s(c.id) && s(c.api_token)) connById.set(s(c.id), c);
@@ -105,14 +109,21 @@ export async function runMenuSync(
     problems.push(...wrote.errors);
 
     const status = problems.length ? 'partial' : 'ok';
-    const counts = { ...plan.counts, inserted: wrote.inserted, refreshed: wrote.refreshed, filled: wrote.filled, rechecked: wrote.rechecked, menus: menus.length };
+    const counts = {
+      ...plan.counts, inserted: wrote.inserted, refreshed: wrote.refreshed, redecided: wrote.redecided,
+      baselined: wrote.baselined, menus: menus.length,
+    };
     const bits = [
       `${plan.counts.items + plan.counts.sizes} items and sizes`,
       optionsRead ? `${plan.counts.options} options` : 'options could not be read',
       `${plan.counts.autoLinked} matched by exact name`,
       `${plan.counts.toDecide} for you to match`,
     ];
-    if (!input.menuOk) bits.push('our menu could not be read whole, so nothing was matched automatically');
+    // An automatic match whose names no longer match exactly (their name or size changed, or ours).
+    if (plan.counts.cleared) bits.push(`${plan.counts.cleared} automatic match${plan.counts.cleared === 1 ? '' : 'es'} taken off because the names no longer match exactly`);
+    // A staff match is never changed by a sync; when its ezCater name or size changed, staff look again.
+    if (plan.counts.lookAgain) bits.push(`${plan.counts.lookAgain} of your matches to check again: ezCater changed the name or size, so those print by name until you do`);
+    if (!input.menuOk) bits.push('our menu could not be read whole, so nothing new was matched automatically');
     const message = (menus.length ? 'Synced ' + bits.join(', ') + '.' : 'ezCater has no current menu for this venue.')
       + (problems.length ? ' Some of it did not complete: ' + problems[0] : '');
     await finishSync(sb, locationId, claim as string, status, counts, problems.length ? problems.join('; ').slice(0, 1000) : null);

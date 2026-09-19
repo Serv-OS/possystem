@@ -42,7 +42,9 @@ import {
   isSandboxApi, resolveEzcaterApi, ez,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
-import { readAllLinks, isMissingSyncColumn, LINK_PAGE_SIZE } from '../_shared/ezcaterMenuSync.ts';
+import {
+  readAllLinks, isMissingSyncColumn, LINK_PAGE_SIZE, lookAgainOf, fullNameOf,
+} from '../_shared/ezcaterMenuSync.ts';
 import { runMenuSync, runDueSyncs } from '../_shared/ezcaterMenuSyncRun.ts';
 
 /** ezCater, as the menu sync asks it: one connection's token and address. */
@@ -548,7 +550,8 @@ Deno.serve(async (req) => {
         // first and dropped when 20260919m has not run yet (menu_sync_ready false).
         const base = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
         // ez_only_size: the one size of a single size item, shown so staff never match blind.
-        let res = await readAllLinks(sb, opsLocationId, base + ', ez_size_name, ez_only_size, ez_category, synced_at');
+        // decided_as: what a person saw when they saved the row, for "look again" below.
+        let res = await readAllLinks(sb, opsLocationId, base + ', ez_size_name, ez_only_size, ez_category, synced_at, decided_as');
         let syncReady = true;
         if (!res.ok && isMissingSyncColumn(res.error)) {
           syncReady = false;
@@ -565,8 +568,13 @@ Deno.serve(async (req) => {
             .eq('location_id', opsLocationId).maybeSingle();
           lastSync = sy || null;
         }
+        // LOOK AGAIN: a staff decision whose ezCater name or size changed since the staff saved it
+        // (a sync never changes it). Worked out here, with the sync's own name rules.
+        const links = syncReady
+          ? res.rows.map((r: any) => { const l = lookAgainOf(r); return { ...r, look_again: l.lookAgain, now_as: l.now }; })
+          : res.rows;
         return json({
-          ok: true, enabled: true, links: res.rows, complete: res.complete,
+          ok: true, enabled: true, links, complete: res.complete,
           page_size: LINK_PAGE_SIZE, menu_sync_ready: syncReady, last_sync: lastSync,
         });
       }
@@ -594,12 +602,18 @@ Deno.serve(async (req) => {
               .not('archived', 'is', true).maybeSingle();
             if (!mi) return json({ error: 'that item is not on this menu' }, 400);
           }
+          // What the person SAW (the name and size their screen showed, sent back by the card), so
+          // a later sync that changes either asks them to look again. Never read from the row now:
+          // a screen loaded before a sync must not confirm a name it never showed.
+          const seenSize = String(body?.seen_size || '').trim() || sizeKey.split('|size:')[1] || '';
+          const decidedAs = fullNameOf({ kind: 'item', name: String(body?.ez_name || '').trim() || sizeKey.split('|size:')[0], sizeName: seenSize }).slice(0, 500);
           const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
             .update({
               menu_item_id: target,
               option_id: null,
               source: 'manual',
               matched_by: ignoredS ? 'ignored' : (target ? (access.userId === 'service' ? 'service' : access.userId) : null),
+              decided_as: decidedAs,
               updated_at: new Date().toISOString(),
             })
             .eq('location_id', opsLocationId).eq('kind', 'item').eq('ez_key', sizeKey)
@@ -653,18 +667,38 @@ Deno.serve(async (req) => {
         const matchedBy = ignored ? 'ignored'
           : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : null);
 
-        const { error } = await sb.from('ezcater_item_links').upsert({
-          location_id: opsLocationId,
-          kind,
-          ez_key: ezKey,
-          ez_name: ezName,
-          ez_group: ezGroup,
+        const decision: Record<string, unknown> = {
           menu_item_id: menuItemId,
           option_id: optionId,
           source: 'manual',          // a person did this, so a later auto pass must not overrule it
           matched_by: matchedBy,
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'location_id,kind,ez_key' });
+        };
+        // What the person saw (their screen's name and, for a single size item, its one size), so a
+        // later menu sync that changes either asks them to look again. The column arrives with
+        // 20260919m; before it the save is exactly as it was.
+        decision.decided_as = fullNameOf({
+          kind, name: ezName, group: ezGroup || '', onlySize: kind === 'item' ? String(body?.seen_size || '').trim() : '',
+        }).slice(0, 500);
+
+        // AN EXISTING ROW IS UPDATED, NEVER RENAMED: a menu sync may have refreshed its ezCater name
+        // since this screen loaded, and writing the screen's older spelling back would hide that
+        // change from "look again". Only a name no order or sync has written yet is inserted.
+        const updateRow = () => sb.from('ezcater_item_links').update(decision)
+          .eq('location_id', opsLocationId).eq('kind', kind).eq('ez_key', ezKey).select('ez_key');
+        let { data: updated, error } = await updateRow();
+        if (error && isMissingSyncColumn(error)) {
+          delete decision.decided_as;
+          ({ data: updated, error } = await updateRow());
+        }
+        if (!error && !(Array.isArray(updated) && updated.length)) {
+          const fresh: Record<string, unknown> = { location_id: opsLocationId, kind, ez_key: ezKey, ez_name: ezName, ez_group: ezGroup, ...decision };
+          ({ error } = await sb.from('ezcater_item_links').upsert(fresh, { onConflict: 'location_id,kind,ez_key' }));
+          if (error && isMissingSyncColumn(error)) {
+            delete fresh.decided_as;
+            ({ error } = await sb.from('ezcater_item_links').upsert(fresh, { onConflict: 'location_id,kind,ez_key' }));
+          }
+        }
         if (error) {
           if (isAbsentTable(error)) return json({ ok: true, enabled: false });
           return json({ error: error.message }, 500);

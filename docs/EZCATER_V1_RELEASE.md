@@ -125,7 +125,13 @@ grep -a -c "retry('event read failed')" "$LIVE/ezcater-webhook.eszip"
   - It switches sized line matching on, and it schedules the hourly sync.
   - So running it is itself outside service.
   - `ezcater-connect` and `ezcater-webhook` both work before it. They keep the old matching rules.
+- **The new rule.** After the sync is set up, orders only use matches made before the order: exact names found by the sync, or matches staff saved.
+  - Nothing is guessed from a name when an order arrives.
+  - Anything not matched prints by name, as plain text.
 - **Then press Sync.** It is Sync ezCater menu on Item matching.
-  - Until then sized lines print by name.
+  - Until then every ezCater line prints by name.
 - **Only exact matches link automatically.** Check the rest by hand.
   - Each single size item shows its one size, so you never match blind.
+- **Check again.** If ezCater changes a name or size you matched, the card says so.
+  - Tap Still right, or Change.
+  - Until then that item prints by name.

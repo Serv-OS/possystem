@@ -52,6 +52,14 @@
 //     product. The migration has a check constraint as the backstop.
 //   * it never guesses between two equally good matches. autoLinkDecision
 //     suggests instead, and the line stays unmatched until a person picks.
+//
+// ALL OF THE ABOVE IS THE RULE SET BEFORE MIGRATION 20260919m (planNameMatches,
+// exactly as main has it). Once 20260919m has run (the link read comes back with
+// the sync columns) ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER
+// (planSyncedLineMatches): a line matches only by its published size id on a
+// synced row with a staff match or an exact auto link from a sync, there is no
+// name matching at all, and an order writes nothing but seen counters. The menu
+// sync (ezcaterMenuSync.ts) writes every row staff match.
 
 import {
   applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks,
@@ -59,10 +67,10 @@ import {
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
 import { withMatchedItems } from './ezcater-map.ts';
-// The synced menu (feat/ezcater-menu-sync-v1): the published size id rule and the paged link read.
+// The synced menu (feat/ezcater-menu-sync-v1): the published id rules and the paged link read.
 import {
-  indexPublishedIds, sizeRouteFor, readAllLinks, isMissingSyncColumn, isMissingLinksTable,
-  isSyncedRow, trustedTarget, LINK_COLUMNS, LINK_COLUMNS_WITH_SYNC,
+  indexPublishedIds, sizeRouteFor, optionRouteFor, readAllLinks, isMissingSyncColumn, isMissingLinksTable,
+  LINK_COLUMNS, LINK_COLUMNS_WITH_SYNC,
 } from './ezcaterMenuSync.ts';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -220,6 +228,120 @@ export interface MatchPlan {
 /**
  * Decide every line and every modifier on one order.
  *
+ * TWO RULE SETS, and which one runs is decided by the link read, never by a guess:
+ *
+ *   sizeIds true   migration 20260919m has run (the link read came back WITH the sync columns).
+ *                  ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER: planSyncedLineMatches. No name
+ *                  matching of any kind.
+ *   sizeIds false  the read PROVED the sync columns (or the whole links table) are not there:
+ *                  planNameMatches, the rules exactly as main has them.
+ *
+ * linksFailed (the link read failed or came back partial for any reason other than a proven
+ * missing table or column) matches nothing at all: every line comes back exactly as ezCater sent
+ * it, printing by name, and nothing is written.
+ */
+export function planLineMatches(input: {
+  lines: any[];
+  ourItems?: any[];
+  ourGroups?: any[];
+  links?: any;
+  locationId: string;
+  nowIso: string;
+  /** false when what we hold is only part of the menu. Default true. */
+  menuOk?: boolean;
+  /** true when the links were read WITH the menu sync columns: migration 20260919m has run. */
+  sizeIds?: boolean;
+  /** true when the link read failed or came back partial (not a proven missing table or column). */
+  linksFailed?: boolean;
+}): MatchPlan {
+  const lines = Array.isArray(input.lines) ? input.lines : [];
+  if (input.linksFailed) {
+    return { lines: lines.map((l: any) => ({ ...(l || {}) })), writes: [], bumps: [], upgrades: [] };
+  }
+  if (input.sizeIds) return planSyncedLineMatches(input);
+  return planNameMatches(input);
+}
+
+/**
+ * AFTER migration 20260919m: ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER (review round 3,
+ * Peter's simpler version: exact names found by the sync, or matches staff saved).
+ *
+ *   a line        matches ONLY when its published size id (ezSizeId, the order's menuItemSizeId,
+ *                 proven to be the menu's sizes.id on HKX77V) is on a synced row with a trusted
+ *                 decision (trustedTarget: a staff match, or an exact auto link a sync made)
+ *   a customization  ONLY by its published id (ezItemId, the order's customizationId) on a
+ *                 synced option row with a trusted decision
+ *   everything else  sized or not, with or without a size name: no match. It prints by name.
+ *
+ * NO NAME MATCHING AT ALL: not autoLinkDecision, not the saved name links (applyLinks, findLink,
+ * the legacy key fallback), not a synced row found by its name, not a posItemId, not an item
+ * code. And NOTHING IS WRITTEN except the seen counters of the synced rows the order's ids landed
+ * on: no sighting, no fill, no upgrade. The sync writes every row staff can match.
+ *
+ * A trusted target that is no longer on our menu (deleted, or archived) routes nothing, when the
+ * menu was read whole and so can prove it. PURE.
+ */
+export function planSyncedLineMatches(input: {
+  lines: any[];
+  ourItems?: any[];
+  ourGroups?: any[];
+  links?: any;
+  menuOk?: boolean;
+}): MatchPlan {
+  const lines = Array.isArray(input.lines) ? input.lines : [];
+  const links: any[] = Array.isArray(input.links) ? input.links : [];
+  const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
+  const ourGroups = Array.isArray(input.ourGroups) ? input.ourGroups : [];
+  const whole = input.menuOk !== false;
+  const knownItems = whole && ourItems.length ? new Set<string>(ourItems.map((it: any) => String(it.id))) : null;
+  const knownOptions = whole && ourGroups.length
+    ? new Set<string>(ourGroups.flatMap((g: any) => (Array.isArray(g?.options) ? g.options : []).map((o: any) => String(o?.id))))
+    : null;
+  const itemIdx = indexPublishedIds(links, 'item');
+  const optIdx = indexPublishedIds(links, 'option');
+  const counts = linkSeenCounts(links);
+  const times = new Map<string, number>();
+  const saw = (kind: string, key: string) => {
+    if (!key) return;
+    const k = kind + ':' + key;
+    times.set(k, (times.get(k) || 0) + 1);
+  };
+
+  const outLines = lines.map((raw: any) => {
+    const line = raw || {};
+    const route = sizeRouteFor(line, itemIdx);
+    let itemId: string | null = route.mode === 'synced' && route.itemId ? String(route.itemId) : null;
+    if (itemId && knownItems && !knownItems.has(itemId)) itemId = null;
+    if (route.mode === 'synced') saw('item', route.ezKey);
+
+    const mods = (Array.isArray(line.mods) ? line.mods : []).map((rawMod: any) => {
+      const mod = rawMod || {};
+      const o = optionRouteFor(mod, optIdx);
+      let optionId: string | null = o.mode === 'synced' && o.optionId ? String(o.optionId) : null;
+      let modItemId: string | null = o.mode === 'synced' && o.itemId ? String(o.itemId) : null;
+      if (optionId && knownOptions && !knownOptions.has(optionId)) { optionId = null; modItemId = null; }
+      if (modItemId && knownItems && !knownItems.has(modItemId)) modItemId = null;
+      if (o.mode === 'synced') saw('option', o.ezKey);
+      const matched = !!(optionId || modItemId);
+      return { ...mod, itemId: modItemId, optionId, match: { matched, source: matched ? 'menuSync' : null } };
+    });
+
+    return { ...line, itemId, mods, match: { matched: !!itemId, source: itemId ? 'menuSync' : null } };
+  });
+
+  const bumps = Array.from(times.entries()).slice(0, MAX_LINK_BUMPS).map(([k, n]) => {
+    const cut = k.indexOf(':');
+    return { kind: k.slice(0, cut), ezKey: k.slice(cut + 1), times: n, seenCount: (counts.get(k) || 0) + n };
+  });
+  return { lines: outLines, writes: [], bumps, upgrades: [] };
+}
+
+// THE RULES BEFORE 20260919m, exactly as main has them (planLineMatches calls this only when the
+// link read PROVED the sync columns are not there). The body below is main's planLineMatches,
+// unchanged.
+/**
+ * Decide every line and every modifier on one order.
+ *
  * Two passes, and the second one only runs when we actually hold the menu:
  *
  *   1. applyLinks: the venue's saved links, plus today's posItemId behaviour.
@@ -242,7 +364,7 @@ export interface MatchPlan {
  * nowIso is an ARGUMENT, not a clock read, so the same input always gives the
  * same output and the tests can pin it.
  */
-export function planLineMatches(input: {
+export function planNameMatches(input: {
   lines: any[];
   ourItems?: any[];
   ourGroups?: any[];
@@ -251,82 +373,14 @@ export function planLineMatches(input: {
   nowIso: string;
   /** false when what we hold is only part of the menu. Default true. */
   menuOk?: boolean;
-  /**
-   * true when the links were read WITH the menu sync columns (ez_ids, ez_size_name, synced_at),
-   * i.e. migration 20260919m has run. Then EXACT MEANS EXACT at order time (see the top of
-   * ezcaterMenuSync.ts): a line on a synced row (by its published size id, or by its name key)
-   * takes only that row's trusted decision, and any other sized line stays unmatched. false or
-   * absent is the behaviour before this change.
-   */
-  sizeIds?: boolean;
-  /**
-   * true when the link read FAILED or came back PARTIAL for any reason other than a proven
-   * missing table or column. Then nothing is matched by name, for ANY line: every line comes back
-   * exactly as ezCater sent it (it prints by name) and nothing is written.
-   */
-  linksFailed?: boolean;
 }): MatchPlan {
   const lines = Array.isArray(input.lines) ? input.lines : [];
-  if (input.linksFailed) {
-    return { lines: lines.map((l: any) => ({ ...(l || {}) })), writes: [], bumps: [], upgrades: [] };
-  }
   const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
   const ourGroups = Array.isArray(input.ourGroups) ? input.ourGroups : [];
-  const rawLinks: any[] = Array.isArray(input.links) ? input.links : [];
+  const links = input.links || [];
   const locationId = text(input.locationId);
   const nowIso = text(input.nowIso) || new Date(0).toISOString();
   const menuOk = input.menuOk !== false;
-
-  // The synced rows, by 'kind:key' and by published id. Without the sync columns there are none
-  // and every line is 'plain', as before.
-  const syncedRows = input.sizeIds ? rawLinks.filter((r) => isSyncedRow(r)) : [];
-  const syncedIdx = indexLinks(syncedRows);
-  const syncedRaw = new Map<string, any>();
-  for (const r of syncedRows) syncedRaw.set((text(r.kind) || 'item') + ':' + (text(r.ez_key) || text(r.ezKey)), r);
-  // What the matchers see: a synced row keeps its target ONLY when it is a trusted decision
-  // (a staff match, or an exact auto link from a sync). An old order time name link on a synced
-  // row is not one, and must never route a line or look like a saved answer.
-  const links = input.sizeIds
-    ? rawLinks.map((r) => (isSyncedRow(r) && !trustedTarget(r)
-      ? { ...r, menu_item_id: null, option_id: null, menuItemId: null, optionId: null } : r))
-    : (input.links || []);
-
-  // Per line: the old name rules ('plain'), a synced row ('synced'), or nothing ('unmatched').
-  const idIdx = input.sizeIds ? indexPublishedIds(rawLinks) : null;
-  const routes: any[] = lines.map((l: any) => {
-    const r: any = idIdx ? sizeRouteFor(l, idIdx) : { mode: 'plain' };
-    if (r.mode !== 'plain' || !syncedRows.length) return r;
-    // No size id on a synced row, and no size on the line: its NAME key may still find a synced
-    // row (an item ezCater sells with no size at all). That row decides, never the name rule.
-    const hit = findLink(syncedIdx, l || {}, 'item');
-    if (!hit) return r;
-    const t = trustedTarget(syncedRaw.get('item:' + hit.key));
-    return { mode: 'synced', ezKey: hit.key, itemId: t && t.menuItemId ? t.menuItemId : null };
-  });
-  /** A line the name rules may not decide: the synced row's answer, or no match at all. */
-  const routed = (appliedLine: any, i: number, known: Set<string> | null) => {
-    const r: any = routes[i];
-    let itemId: string | null = r.mode === 'synced' && r.itemId ? String(r.itemId) : null;
-    // A synced row pointing at an item that is gone (only checkable with the whole menu) routes nothing.
-    if (itemId && known && known.size && !known.has(itemId)) itemId = null;
-    return { ...appliedLine, itemId, match: { matched: !!itemId, source: itemId ? 'menuSync' : null } };
-  };
-  /**
-   * A customization whose key finds a synced option row: that row's trusted decision only, or
-   * nothing. null when no synced row holds it (the old rules decide).
-   */
-  const syncedMod = (appliedMod: any, srcMod: any): { mod: any; key: string } | null => {
-    if (!syncedRows.length) return null;
-    const hit = findLink(syncedIdx, srcMod || {}, 'option');
-    if (!hit) return null;
-    const t = trustedTarget(syncedRaw.get('option:' + hit.key));
-    const itemId = t && t.menuItemId ? t.menuItemId : null;
-    const optionId = t && t.optionId ? t.optionId : null;
-    return {
-      key: hit.key,
-      mod: { ...appliedMod, itemId, optionId, match: { matched: !!(itemId || optionId), source: (itemId || optionId) ? 'menuSync' : null } },
-    };
-  };
 
   // Our item codes, from whatever menu we hold.
   //
@@ -343,18 +397,8 @@ export function planLineMatches(input: {
   const haveItems = ourItems.length > 0;
   const haveGroups = ourGroups.length > 0;
   if (!locationId || !menuOk || (!haveItems && !haveGroups)) {
-    const out = applied.map((l: any, i: number) => {
-      const base = routes[i].mode === 'plain' ? l : routed(l, i, null);
-      const srcMods = Array.isArray(lines[i]?.mods) ? lines[i].mods : [];
-      const mods = (Array.isArray(base.mods) ? base.mods : []).map((m: any, j: number) => {
-        const sm = syncedMod(m, srcMods[j]);
-        return sm ? sm.mod : m;
-      });
-      return { ...base, mods };
-    });
-    return { lines: out, writes: [], bumps: [], upgrades: [] };
+    return { lines: applied, writes: [], bumps: [], upgrades: [] };
   }
-  const knownIds = new Set<string>(ourItems.map((it: any) => String(it.id)));
 
   const idx = indexLinks(links);
   const counts = linkSeenCounts(links);
@@ -401,9 +445,6 @@ export function planLineMatches(input: {
     const hit = findLink(idx, src, kind);
     if (hit) {
       sawExisting(kind, hit.key);
-      // A synced row is never filled or upgraded by the order time name rule. (Lines and
-      // customizations on synced rows never get here; this is the backstop.)
-      if (syncedRaw.has(kind + ':' + hit.key)) return;
       // The row was written the first time we saw this name, before the venue
       // had the product. Now we can answer it, so fill it in rather than leave
       // the screen asking forever about something we match on every order.
@@ -434,16 +475,8 @@ export function planLineMatches(input: {
     const src = lines[i] || {};
     let itemId = appliedLine.itemId != null ? String(appliedLine.itemId) : null;
     let source = appliedLine.match ? appliedLine.match.source : null;
-    const route: any = routes[i];
 
-    if (route.mode !== 'plain') {
-      // On a synced row, or sized: never the name rules, never a name row written or filled
-      // from this line. Only the row's seen count moves.
-      const r = routed(appliedLine, i, haveItems ? knownIds : null);
-      itemId = r.itemId;
-      source = r.match.source;
-      if (route.mode === 'synced' && route.ezKey) sawExisting('item', route.ezKey);
-    } else if (haveItems) {
+    if (haveItems) {
       // codes is passed in rather than rebuilt per line: one index for the
       // whole order, and the option arm cannot build one at all.
       const d = autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes });
@@ -457,10 +490,8 @@ export function planLineMatches(input: {
 
     const srcMods = Array.isArray(src.mods) ? src.mods : [];
     const mods = (Array.isArray(appliedLine.mods) ? appliedLine.mods : []).map((appliedMod: any, j: number) => {
-      const srcMod = srcMods[j] || {};
-      const sm = syncedMod(appliedMod, srcMod);
-      if (sm) { sawExisting('option', sm.key); return sm.mod; }
       if (!haveGroups) return appliedMod;
+      const srcMod = srcMods[j] || {};
       const d = autoLinkDecision(srcMod, ourGroups, links, { kind: 'option', itemCodes: codes });
       if (!d.stale) record('option', srcMod, d);
       // The option arm has no plain posItemId rule of its own (an id there that
@@ -512,9 +543,9 @@ export interface MatchInputs {
   menuOk: boolean;
   /**
    * false ONLY when the read proved the sync columns (or the links table) are not there, so the
-   * rules before migration 20260919m apply. true when the links came with ez_ids and
-   * ez_size_name, AND when the read failed for any other reason: then no sized line may be
-   * matched by a name guess.
+   * rules before migration 20260919m apply (planNameMatches). true when the links came with the
+   * sync columns: orders only use matches made before the order (planSyncedLineMatches). Also
+   * true when the read failed for any other reason, with linksFailed: nothing is matched.
    */
   sizeIds?: boolean;
   /**
@@ -591,11 +622,10 @@ export async function readMatchInputs(
   locationId: string,
   opts: { deadline?: number | null } = {},
 ): Promise<MatchInputs> {
-  // sizeIds starts TRUE: a sized line may fall back to the old name rules ONLY when the read
-  // PROVED the sync columns (or the whole table) are not there. Any other failed read (a
-  // timeout, a network fault, a permission error) leaves every sized line unmatched, printing
-  // by name: a venue that HAS synced size rows must never get a name guess because one read
-  // failed.
+  // sizeIds starts TRUE: the old name rules apply ONLY when the read PROVED the sync columns (or
+  // the whole table) are not there. Any other failed read (a timeout, a network fault, a
+  // permission error) leaves linksFailed true and every line prints by name: a venue that HAS
+  // synced rows must never get a name guess because one read failed.
   const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false, sizeIds: true, linksFailed: true };
   if (!sb || !locationId) return out;
   const deadline = opts.deadline == null ? null : opts.deadline;
@@ -834,6 +864,10 @@ export async function matchQueueRow(
 
       const next = withMatchedItems(row, plan.lines);
       const summary = next?.customer?.ezMatch || { lines: plan.lines.length, matched: 0 };
+      if (input.sizeIds === true) {
+        // The synced rule's own line, also the live proof the new code is deployed (release note step 4).
+        console.log(`[ezcater-match] synced menu, only matches made before the order: ${Number(summary.matched) || 0} of ${plan.lines.length} lines by published id`);
+      }
       return {
         row: next,
         matched: Number(summary.matched) || 0,
