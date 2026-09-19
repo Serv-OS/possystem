@@ -344,7 +344,8 @@ export default function EzcaterItemMatching({ locationId }) {
       <div style={S.h2}>Item matching</div>
       <div style={{ ...S.sub, marginTop: 0 }}>
         Sync ezCater menu loads every item, size and option from ezCater before any order.
-        Exact names match themselves; tell us once what each of the rest is. Orders only use
+        Plain item names that match exactly match themselves; options, and names with symbols or
+        emoji, are for you to match: tell us once what each of the rest is. Orders only use
         matches made here, before the order, and only for the exact name and size matched:
         nothing is guessed from a name when an order arrives. Unmatched ones still print, as
         plain text.

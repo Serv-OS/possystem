@@ -11,8 +11,8 @@
 -- The connected ezCater token can read the caterer's menus (proven live, read only). A sync
 -- writes every item, every size of a multi size item and every option value into
 -- ezcater_item_links BEFORE any order, with the ids ezCater published them under, and auto links
--- only exact name matches (every automatic row is decided again on every sync). Everything else
--- is left for staff on the Item matching card.
+-- only plain item names that match exactly (every automatic row is decided again on every sync).
+-- Options, and names with symbols or emoji, are left for staff on the Item matching card.
 --
 -- EXACT BY CONSTRUCTION (review round 4). A synced row's ez_key is 'exact:' plus the EXACT full
 -- name of one ezCater product (the item plus its size, or the option's group and value; only
@@ -28,6 +28,13 @@
 -- "Size: Large" never routes Size: Large on another item. ez_item_name (added below) is that
 -- item's name, for the Item matching card. A copy of this file run before round 5 lacks it:
 -- run this file again (idempotent) before the next sync, or the sync's writes fail and say so.
+--
+-- REVIEW ROUND 6. No schema change: only the text of new keys. A plain name (letters, digits,
+-- spaces, . , ' & ( ) - / and accents) is keyed folded by case, Latin accents and whitespace only;
+-- any other name is keyed by its text as ezCater wrote it. An option key holds its item, group and
+-- value as a JSON array ('exact:["<item>","<group>","<value>"]'), and decided_as of an option holds
+-- them as a JSON object. Rows written under round 4 or 5 keys stay, are never written again, and
+-- never route; their staff decisions are carried to the new rows.
 --
 -- ONCE THIS FILE HAS RUN, ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, AND ONLY FOR THE EXACT
 -- NAME THEY WERE MADE FOR: an order line matches only when its exact full name (its name plus its
@@ -63,7 +70,7 @@
 --                                matching card asks staff to look at it again, and orders do not
 --                                use the decision until they have.
 --     ez_item_name  text         set only on an OPTION row: the ezCater item it customizes,
---                                part of its exact full name ('exact:<item>|<group>|<value>').
+--                                part of its exact full name (the first part of its key).
 --   ezcater_menu_syncs: one row per venue, the last sync, and the ONE SYNC PER VENUE lock.
 --   ezcater_menu_sync_claim(): takes that lock in one statement (service role only).
 --   pg_cron 'ezcater-menu-sync-hourly': asks ezcater-connect for the venues that are due (no

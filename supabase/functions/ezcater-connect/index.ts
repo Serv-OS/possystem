@@ -44,7 +44,7 @@ import {
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 import {
-  readAllLinks, isMissingSyncColumn, isSyncKey, LINK_PAGE_SIZE, lookAgainOf, fullNameOf,
+  readAllLinks, isMissingSyncColumn, isCurrentSyncKey, LINK_PAGE_SIZE, lookAgainOf, decidedAsOf, trustedTarget,
 } from '../_shared/ezcaterMenuSync.ts';
 import { runMenuSync, runDueSyncs } from '../_shared/ezcaterMenuSyncRun.ts';
 
@@ -580,7 +580,14 @@ Deno.serve(async (req) => {
         // exact full name (carried over from before the sync). Worked out here, with the sync's
         // own name rules (lookAgainOf).
         const links = syncReady
-          ? res.rows.map((r: any) => { const l = lookAgainOf(r); return { ...r, look_again: l.lookAgain, now_as: l.now }; })
+          ? res.rows.map((r: any) => {
+            const l = lookAgainOf(r);
+            // An automatic link that routes nothing (review round 6: on an option, or on a name that
+            // is not plain, written by an earlier sync and not yet cleared): the card lists it as
+            // not matched yet, never as done.
+            const autoIdle = r?.source === 'auto' && !!(r?.menu_item_id || r?.option_id) && !trustedTarget(r);
+            return { ...r, look_again: l.lookAgain, now_as: l.now, auto_idle: autoIdle };
+          })
           : res.rows;
         return json({
           ok: true, enabled: true, links, complete: res.complete,
@@ -619,7 +626,10 @@ Deno.serve(async (req) => {
         if (kind === 'item' && optionId) return json({ error: 'an item cannot be matched to an option' }, 400);
 
         const syncedKey = String(body?.ez_key || '').trim();
-        if (syncReady && (body?.synced !== true || !isSyncKey(syncedKey))) {
+        // Only a key a sync writes TODAY for this kind (isCurrentSyncKey): an option key of an
+        // earlier round ('exact:group|value', 'exact:item|group|value') is a row orders never read,
+        // so a save on it would look done and route nothing. The page is out of date.
+        if (syncReady && (body?.synced !== true || !isCurrentSyncKey(kind, syncedKey))) {
           return json({ error: 'This page is out of date. Reload it, then match again.', code: 'stale_page' }, 409);
         }
         if (!syncReady && body?.synced === true) {
@@ -656,11 +666,13 @@ Deno.serve(async (req) => {
           // from the row: a match made for a different name than the row's exact full name is
           // then flagged to look at again (lookAgainOf), and orders do not use it until it is.
           // An option's item (seen_item) is part of what the person saw: a match on "Size: Large"
-          // is made for ONE item's Size: Large (review round 5).
-          const decidedAs = fullNameOf({
+          // is made for ONE item's Size: Large (review round 5). An option's decided_as keeps its
+          // item, group and value APART (decidedAsOf, review round 6), so a group holding ': ' is
+          // never read back in the wrong place.
+          const decidedAs = decidedAsOf({
             kind, name: ezName, group: ezGroup || '', sizeName: kind === 'item' ? String(body?.seen_size || '').trim() : '',
             item: kind === 'option' ? String(body?.seen_item || '').trim() : '',
-          }).slice(0, 500);
+          });
           const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
             .update({
               menu_item_id: menuItemId,

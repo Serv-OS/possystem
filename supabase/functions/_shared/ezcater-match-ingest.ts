@@ -307,9 +307,10 @@ export function planLineMatches(input: {
  *                   its published size id (ezSizeId, the order's menuItemSizeId, proven to be the
  *                   menu's sizes.id on HKX77V) is on that row, and
  *                   that row holds a trusted decision (trustedTarget: a staff match made for that
- *                   name, or an exact auto link a sync made)
+ *                   name, or an exact auto link a sync made on a PLAIN item name)
  *   a customization  likewise, by the line it is on, its group and value, and its published id (ezItemId, the
- *                 order's customizationId), on the synced option row keyed by them
+ *                 order's customizationId), on the synced option row keyed by them. Only a
+ *                 STAFF match routes one: a sync never auto links an option (review round 6)
  *   everything else  no match. It prints by name.
  *
  * NO GUESSING FROM A NAME: not autoLinkDecision, not the saved name links (applyLinks, findLink,

@@ -172,7 +172,12 @@ grep -a -c 'no synced option on this item with this exact name' "$LIVE"/*.eszip
 ## 4. Press Sync straight away
 
 - **Item matching: press Sync ezCater menu.**
-- **Only exact names match themselves.** Match the rest by hand.
+- **The sync links plain item names that match exactly; options, and names with symbols or emoji, are for staff to match.**
+  - Plain means only letters, numbers, spaces, full stops, commas, apostrophes, &, brackets, hyphens and slashes.
+  - "Turkey Sandwich" links our "Turkey Sandwich" by itself.
+  - "Wings 🌶", "Milk 2%" and "Ziti ½ Pan" wait for you.
+  - Every option waits for you, even when the names are the same.
+- **Match the rest by hand.**
   - Each item shows its size, so you never match blind.
   - Each option shows its item. A match on "Large, on Pizza" is for Pizza only.
 
@@ -202,7 +207,8 @@ grep -a -c 'no synced option on this item with this exact name' "$LIVE"/*.eszip
 
 ## The new rule
 
-- **Orders only use matches made before the order.** Exact names found by the sync, or matches staff saved.
+- **Orders only use matches made before the order.** Plain item names the sync linked, or matches staff saved.
+- **Options only use matches staff saved.**
 - **A match is used only for the exact name and size it was made for.**
   - And only when ezCater's id for it is on that match.
 - **Nothing is guessed from a name.** Anything else prints by name, as plain text.

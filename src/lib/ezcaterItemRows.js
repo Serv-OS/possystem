@@ -37,6 +37,40 @@ import { suggestMatches, matchOptions, buildLinkKey, normaliseItemName, displayN
  */
 export const SYNC_KEY_PREFIX = 'exact:';
 
+/**
+ * True for an option key a sync writes today: 'exact:' plus a JSON array of the item, group and
+ * value (review round 6, optionIdentity in _shared/ezcaterMenuSync.ts). Keys of earlier rounds
+ * ('exact:group|value', 'exact:item|group|value') are not.
+ */
+export function isCurrentOptionKey(ezKey) {
+  const k = typeof ezKey === 'string' ? ezKey : '';
+  if (k.indexOf(SYNC_KEY_PREFIX) !== 0) return false;
+  const t = k.slice(SYNC_KEY_PREFIX.length);
+  if (t.charAt(0) !== '[') return false;
+  try {
+    const a = JSON.parse(t);
+    return Array.isArray(a) && a.length === 3 && a.every((x) => typeof x === 'string') && !!a[0] && !!a[2];
+  } catch { return false; }
+}
+
+/**
+ * What decided_as says, as a person reads it. An option's decided_as holds its item, group and
+ * value apart (a JSON object, decidedAsOf in _shared/ezcaterMenuSync.ts): written out here as
+ * '<item> › <group>: <value>'. Any other text is shown as it is.
+ */
+export function readableDecidedAs(text) {
+  const t = typeof text === 'string' ? text.trim() : '';
+  if (t.charAt(0) !== '{') return t;
+  try {
+    const o = JSON.parse(t);
+    if (!o || typeof o !== 'object' || typeof o.value !== 'string') return t;
+    const group = typeof o.group === 'string' ? o.group.trim() : '';
+    const item = typeof o.item === 'string' ? o.item.trim() : '';
+    const value = group ? `${group}: ${o.value.trim()}` : o.value.trim();
+    return item ? `${item} \u203a ${value}` : value;
+  } catch { return t; }
+}
+
 // ----------------------------------------------------------------------------
 // "Matching is not switched on yet"
 // ----------------------------------------------------------------------------
@@ -139,18 +173,22 @@ export function toRow(dbRow, opts) {
   const source = first(dbRow, 'source', 'source') || 'auto';
   const syncedAt = first(dbRow, 'synced_at', 'syncedAt');
   // A row a menu sync wrote: keyed by its exact full name (SYNC_KEY_PREFIX).
-  // An option row is keyed by its item, group and value ('exact:item|group|value', review round
-  // 5). One keyed by group and value alone was written by an earlier sync: orders never use it
-  // (isCurrentSyncKey in _shared/ezcaterMenuSync.ts), so it is listed with the older rows.
+  // An option row is keyed by its item, group and value, structured (isCurrentOptionKey, review
+  // round 6). One keyed by an earlier round's rule was written by an earlier sync: orders never
+  // use it (isCurrentSyncKey in _shared/ezcaterMenuSync.ts), so it is listed with the older rows.
   const synced = ezKey.indexOf(SYNC_KEY_PREFIX) === 0
-    && (kind !== 'option' || ezKey.slice(SYNC_KEY_PREFIX.length).split('|').length === 3);
+    && (kind !== 'option' || isCurrentOptionKey(ezKey));
 
   // EXACT MEANS EXACT (mirrors trustedTarget in supabase/functions/_shared/ezcaterMenuSync.ts).
-  // On a SYNCED row only a staff match or an exact auto link (matched_by 'exact') routes an
-  // order. Any other automatic link on a synced row routes nothing, so the card lists it as not
-  // matched yet, never as done.
+  // On a SYNCED row only a staff match or an exact auto link (matched_by 'exact') on an ITEM routes
+  // an order. Any other automatic link on a synced row (an option's included: options are never
+  // auto linked, review round 6) routes nothing, so the card lists it as not matched yet, never
+  // as done.
+  // items_list also says when an automatic link routes nothing for a reason only the server can
+  // tell (auto_idle: a name that is not plain, or a row an earlier sync keyed).
   const untrusted = synced && (menuItemId || optionId)
-    && !(source === 'manual' || (source === 'auto' && matchedBy === 'exact'));
+    && (!(source === 'manual' || (source === 'auto' && matchedBy === 'exact' && kind === 'item'))
+      || (source === 'auto' && dbRow.auto_idle === true));
 
   let state = 'unmatched';
   if ((menuItemId || optionId) && !untrusted) state = 'matched';
@@ -194,7 +232,8 @@ export function toRow(dbRow, opts) {
     matchedBy,
     untrusted: !!untrusted,
     lookAgain,
-    decidedAs: first(dbRow, 'decided_as', 'decidedAs'),
+    // What the person saw, readable (an option's decided_as holds its parts apart).
+    decidedAs: readableDecidedAs(first(dbRow, 'decided_as', 'decidedAs')) || null,
     offMenu,
     seenCount: seenOf(dbRow),
     lastSeenAt: first(dbRow, 'last_seen_at', 'lastSeenAt'),

@@ -102,7 +102,7 @@ export async function runMenuSync(
 
     const { entries, notes } = flattenMenusWithNotes(menus);
     const plan = planMenuSync({
-      entries, existing: input.links, ourItems: input.ourItems, ourGroups: input.ourGroups,
+      entries, existing: input.links, ourItems: input.ourItems,
       locationId, nowIso, complete: problems.length === 0, menuOk: input.menuOk,
     });
     const wrote = await writeSyncPlan(sb, locationId, plan, nowIso);

@@ -13,26 +13,31 @@
 // of one ezCater product, never by a folded name:
 //   an item    'exact:' + exactName(item name + ' ' + its size)   (a multi size item's size, or a
 //              single size item's only size; no size, the item name alone)
-//   an option  'exact:' + exactName(its item's name) + '|' + exactName(group) + '|' + exactName(value)
-//              (scoped to its item, review round 5: "Size: Large" on Pizza is not on Salad)
-// exactName folds only case, accents (Latin, Greek, Cyrillic), apostrophes, '&' and whitespace or
-// ordinary punctuation. It keeps every letter and number in any script, number fractions ('½' is
-// '1/2', never '¼') and every other symbol or emoji (review round 5). Nothing else is dropped: no
-// tray, pan, box, serves, bracketed part or size word. So two ezCater products whose
-// names differ by any word are two rows, with their own published ids and their own decision, and
-// no decision can ever reach a product it was not made for. ("Caesar Salad" and "Caesar Salad
-// (Serves 20)", "Sandwich Platter" and "Sandwich Platter Tray", "Bread: White" and "Bread Size:
-// White" were one row each under the old folded keys.) A row's exact full name never changes, so
-// its ids are only ever added to: a rename on ezCater is a NEW row.
+//   an option  'exact:' + a JSON array of exactName(its item's name), exactName(group) and
+//              exactName(value) (scoped to its item, review round 5: "Size: Large" on Pizza is not
+//              on Salad; structured, review round 6: a group holding ': ' or '|' is one part)
+//
+// ONLY PLAIN NAMES LINK ON THEIR OWN (review round 6). Five review rounds each found a new way for
+// two "exact" names to fold together, so the sync now does less on its own instead:
+//   the sync links plain item names that match exactly; options, and names with symbols or emoji,
+//   are for staff to match.
+// A PLAIN name holds nothing but letters and digits (any script), spaces, the ordinary punctuation
+// . , ' & ( ) - / and accents. exactName folds a plain name by case, accents on Latin letters and
+// whitespace ONLY, and keeps any other name exactly as ezCater wrote it (composed form, whitespace
+// evened out). So two ezCater products whose names differ in any way are two rows, with their own
+// published ids and their own decision, and no decision can ever reach a product it was not made
+// for. Nothing is dropped: no tray, pan, box, serves, bracketed part or size word. A row's exact
+// full name never changes, so its ids are only ever added to: a rename on ezCater is a NEW row.
 //
 // WHAT A SYNC DOES, AND NOTHING MORE
 //   1. reads the CURRENT menus (venue date, venue clock) of every caterer mapped to the venue
 //   2. writes one row per exact full name, carrying the ids ezCater published it under (ez_ids)
-//   3. decides every AUTOMATIC row again from the whole of our menu: the one exact name match of
-//      ours, or nothing (planMenuSync)
-//   4. a NEW row gets the staff decision saved on the row ezCater's item had before the sync
-//      existed (the old key rules), exactly as it was when the names are exactly the same, else
-//      marked for staff to look again (lookAgainOf); orders do not use it until they have
+//   3. decides every AUTOMATIC row again from the whole of our menu: for an item with a plain full
+//      name, the one item of ours with the same plain name, or nothing; for anything else, nothing
+//      (planMenuSync). It never writes an automatic option decision.
+//   4. a NEW row gets the staff decision saved on the row ezCater's item had before (the old key
+//      rules, or a sync under an earlier rule), exactly as it was when the names are exactly the
+//      same, else marked for staff to look again (lookAgainOf); orders do not use it until they have
 //   It never deletes a row, never changes a staff decision, never touches seen_count, and never
 //   writes a row saved before the sync: those stay as they were, readable, and orders never use
 //   them once 20260919m has run.
@@ -42,8 +47,9 @@
 //   A line matches only when exactName(its name + ' ' + its size name) IS a synced row's exact
 //   full name, AND its published SIZE id (ezSizeId, which ezcater-map.ts takes from the order's
 //   menuItemSizeId) is on that row, AND the row holds a trusted decision: a staff match, or an
-//   exact auto link a sync made (matched_by 'exact'). A customization likewise, by the name of
-//   the line it is on, its group and value, and its published id (customizationId). No guessing from a name: every other line
+//   exact auto link a sync made on a plain item name (matched_by 'exact'). A customization
+//   likewise, by the name of the line it is on, its group and value, and its published id
+//   (customizationId), and only by a staff match. No guessing from a name: every other line
 //   prints by name and writes no link. The name check also closes the window after ezCater renames
 //   a size in place (same id, new name) before the next sync: the new name has no row yet.
 //   PROVEN on the live test order HKX77V (Claude, read only, 18 Sep 2026): its line carried
@@ -64,63 +70,114 @@ const s = (v: unknown): string => (v == null ? '' : String(v).trim());
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 
 // ── Exact names ──────────────────────────────────────────────────────────────────────────────
+//
+// REVIEW ROUND 6: NARROW WHAT THE SYNC DOES ON ITS OWN. Five rounds each found a new way for two
+// "exact" names to fold together (ASCII folding, fractions, CJK, emoji, flag tag characters,
+// keycaps, compatibility forms, option groups). So a name is now either PLAIN or it is not:
+//   plain     nothing but letters and digits (any script), spaces, the ordinary punctuation
+//             . , ' & ( ) - / and accents. Its exact form folds case, accents on Latin letters and
+//             whitespace, and NOTHING else. Only a plain item name is ever auto linked.
+//   not plain anything else (an emoji, a symbol, '%', a superscript, a fraction character, a format,
+//             private use, tag, enclosing or variation character). Its exact form is the name as
+//             ezCater wrote it (only Unicode composed form and runs of whitespace are evened out),
+//             so two such names are one row only when they are the same text. Never auto linked:
+//             staff match it, and that match routes only that exact text.
 
-/** Vulgar fraction characters (¼ ½ ¾, ⅐ to ⅞, ↉). Each is read as its digits ('1/2'), never dropped. */
-const VULGAR_FRACTIONS = /[\u00bc-\u00be\u2150-\u215e\u2189]/gu;
+/** The ordinary punctuation a plain name may hold. Kept as it is: never folded to a space. */
+const PLAIN_PUNCTUATION: ReadonlySet<string> = new Set(['.', ',', "'", '&', '(', ')', '-', '/']);
 /**
- * An accent (a combining mark) on a Latin, Greek or Cyrillic letter: folded off. In any other
- * script a mark is part of the letter (a Devanagari vowel sign, a Japanese voicing mark) and kept.
+ * Whitespace by Unicode's White_Space property. Not JavaScript's \s, which also holds the
+ * invisible U+FEFF (a format character, so a name holding one is not plain and is kept as written).
  */
-const FOLDED_ACCENT = /([\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])\p{M}+/gu;
-/** Variation selectors (the emoji or the text form of one symbol): the same symbol either way. */
-const VARIATION_SELECTORS = /[\ufe00-\ufe0f]|\uDB40[\uDD00-\uDDEF]/g;
-/** Holds the '/' of a number fraction ('1/2') while other punctuation is folded. A private use character, cleared from the input first. */
-const FRACTION_SLASH = '\ue000';
-const WORD_CHAR = /[\p{L}\p{N}\p{M}\ue000]/u;
-/** A symbol or emoji (\p{S}), or a private use character: significant, one word each. */
-const SIGNIFICANT_SYMBOL = /[\p{S}\p{Co}]/u;
-/** ASCII symbols read as ordinary punctuation ('|' also keeps an option key's parts apart). */
-const PLAIN_SYMBOLS: ReadonlySet<string> = new Set(['|', '^', '`', '~']);
+const WHITE_SPACE = /\p{White_Space}/u;
+/** Every run of whitespace one space, none at either end. */
+const evenSpaces = (t: string): string => t.replace(/\p{White_Space}+/gu, ' ').replace(/^ | $/g, '');
+/** Letters (any script) and decimal digits. Not '²', '½' or 'Ⅻ' (other numbers). */
+const PLAIN_LETTER_OR_DIGIT = /[\p{L}\p{Nd}]/u;
+/** A combining mark that is part of a letter or an accent (not an enclosing mark: those are \p{Me}). */
+const PLAIN_MARK = /[\p{Mn}\p{Mc}]/u;
+/** Marks that are never plain although they are \p{Mn}: variation selectors, overlays, marks for symbols, the grapheme joiner. */
+const NOT_PLAIN_MARK = /[\ufe00-\ufe0f\u0334-\u0338\u034f\u20d0-\u20ff\u180b-\u180d\u{e0100}-\u{e01ef}]/u;
 
 /**
- * The EXACT form of a name, the only form a synced row is keyed by and an auto link compares.
- * UNICODE AWARE (review round 5):
- *   folded       case (full folding: 'Straße' is 'strasse', 'ΩΜΕΓΑ' is 'ωμεγα'), compatibility
- *                forms (NFKD: full width 'Ｆｕｌｌ' is 'full'), accents on Latin, Greek and Cyrillic
- *                letters, '&' read as 'and', apostrophes dropped, emoji variation selectors and
- *                invisible format characters dropped, every run of whitespace or ordinary
- *                punctuation one space
- *   kept         every letter and number in ANY script (\p{L}\p{N}: "Pho 大" is not "Pho 小", and
- *                neither is our "Pho"), a mark that is part of a letter outside Latin, Greek and
- *                Cyrillic, and a number fraction: '½' and '1/2' are both '1/2', '¼' is '1/4',
- *                '1½' is '1 1/2', so "Ziti ½ Pan" and "Ziti ¼ Pan" are two names, and '1/2' is
- *                never '12'
- *   significant  any symbol or emoji that is not whitespace or ordinary punctuation, one word per
- *                symbol: "Wings 🌶🌶🌶" is 'wings 🌶 🌶 🌶', never "Wings" and never "Wings 🌶"
- * NOTHING else is dropped: no size word, no container word (tray, pan, box), no "serves 10", no
- * bracketed part. The scorer and the order time name rules before 20260919m (normaliseItemName,
- * normaliseKeyName) drop some of those on purpose to FIND candidates; a synced row must not,
- * because the dropped word is exactly what tells "Sandwich Platter Large" from our "Sandwich
- * Platter". The output never holds '|' (an option key keeps its parts apart with it) and holds
- * '/' only between two numbers.
+ * True when a name is PLAIN: letters and digits from any script, spaces, the ordinary punctuation
+ * . , ' & ( ) - / and accents, and nothing else. False for an empty name.
+ */
+export function isPlainName(value: unknown): boolean {
+  const t = s(value).normalize('NFD');
+  if (!t) return false;
+  for (const ch of t) {
+    if (PLAIN_LETTER_OR_DIGIT.test(ch) || WHITE_SPACE.test(ch) || PLAIN_PUNCTUATION.has(ch)) continue;
+    if (PLAIN_MARK.test(ch) && !NOT_PLAIN_MARK.test(ch)) continue;
+    return false;
+  }
+  return true;
+}
+
+/** An accent on a Latin letter (a mark of the Combining Diacritical Marks block): folded off. Nowhere else: 'й' is not 'и'. */
+const LATIN_ACCENT = /(\p{Script=Latin})[\u0300-\u036f]+/gu;
+
+/** A plain name folded: case, accents on Latin letters and whitespace. Nothing else. */
+function foldPlain(t: string): string {
+  const folded = t.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD')
+    .replace(LATIN_ACCENT, '$1').normalize('NFC');
+  return evenSpaces(folded);
+}
+
+/**
+ * The EXACT form of a name: what a synced row is keyed by and what an auto link compares.
+ *   a plain name    folded by case, accents on Latin letters and whitespace only ('Café Latte' is
+ *                   'cafe latte'; 'Mac & Cheese' is not 'Mac and Cheese'; 'Чай' is not 'Чаи')
+ *   any other name  the text as ezCater wrote it, composed (NFC), whitespace evened out: 'Full
+ *                   Breakfast' with a Scottish flag is not the one with a Welsh flag, '#️⃣' is not
+ *                   '*️⃣', 'Pizza 10²' is not 'Pizza 102', '½' is not '¼'
+ * A plain form holds only plain characters and any other form holds at least one that is not, so
+ * the two can never be the same. '' for an empty name.
  */
 export function exactName(value: unknown): string {
+  const t = s(value);
+  if (!t) return '';
+  if (isPlainName(t)) return foldPlain(t);
+  return evenSpaces(t.normalize('NFC'));
+}
+
+/** True when two names are PLAIN and the same after folding case, accents and whitespace: the only auto link. */
+export function plainSame(a: unknown, b: unknown): boolean {
+  return isPlainName(a) && isPlainName(b) && foldPlain(s(a)) === foldPlain(s(b));
+}
+
+// ── The exact rules of earlier review rounds: only ever READ, to carry a staff decision ───────
+
+/** Vulgar fraction characters (¼ ½ ¾, ⅐ to ⅞, ↉), as review round 5 read them. */
+const R5_VULGAR_FRACTIONS = /[\u00bc-\u00be\u2150-\u215e\u2189]/gu;
+const R5_FOLDED_ACCENT = /([\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])\p{M}+/gu;
+const R5_VARIATION_SELECTORS = /[\ufe00-\ufe0f]|\uDB40[\uDD00-\uDDEF]/g;
+const R5_FRACTION_SLASH = '\ue000';
+const R5_WORD_CHAR = /[\p{L}\p{N}\p{M}\ue000]/u;
+const R5_SIGNIFICANT_SYMBOL = /[\p{S}\p{Co}]/u;
+const R5_PLAIN_SYMBOLS: ReadonlySet<string> = new Set(['|', '^', '`', '~']);
+
+/**
+ * A name under the exact rule of review round 5 (Unicode folding). Used ONLY to find a row a sync
+ * wrote under that rule, so a staff decision on it can be carried to the row of today's rule
+ * (carryOverFor). Never builds a new key.
+ */
+export function round5ExactName(value: unknown): string {
   let t = s(value);
   if (!t) return '';
   t = t.replace(/\ue000/g, ' ');
-  t = t.replace(VULGAR_FRACTIONS, (c) => ' ' + c.normalize('NFKD').replace(/\u2044/g, '/') + ' ');
-  // Full case folding (upper then lower: 'ß' to 'ss', a final sigma to sigma), in compatibility form.
+  t = t.replace(R5_VULGAR_FRACTIONS, (c) => ' ' + c.normalize('NFKD').replace(/\u2044/g, '/') + ' ');
   t = t.normalize('NFKD').toUpperCase().toLowerCase().normalize('NFKD');
-  t = t.replace(VARIATION_SELECTORS, '').replace(/\p{Cf}/gu, '');
-  t = t.replace(FOLDED_ACCENT, '$1');
+  t = t.replace(R5_VARIATION_SELECTORS, '').replace(/\p{Cf}/gu, '');
+  t = t.replace(R5_FOLDED_ACCENT, '$1');
   t = t.replace(/&/g, ' and ').replace(/['\u2018\u2019\u02bc`\u00b4]/g, '');
-  t = t.replace(/(\p{N})\s*[/\u2044\u2215]\s*(?=\p{N})/gu, '$1' + FRACTION_SLASH);
+  t = t.replace(/(\p{N})\s*[/\u2044\u2215]\s*(?=\p{N})/gu, '$1' + R5_FRACTION_SLASH);
   const words: string[] = [];
   let word = '';
   for (const ch of t) {
-    if (WORD_CHAR.test(ch)) { word += ch; continue; }
+    if (R5_WORD_CHAR.test(ch)) { word += ch; continue; }
     if (word) { words.push(word); word = ''; }
-    if (SIGNIFICANT_SYMBOL.test(ch) && !PLAIN_SYMBOLS.has(ch)) words.push(ch);
+    if (R5_SIGNIFICANT_SYMBOL.test(ch) && !R5_PLAIN_SYMBOLS.has(ch)) words.push(ch);
   }
   if (word) words.push(word);
   return words.join(' ').replace(/\ue000/g, '/');
@@ -143,8 +200,9 @@ export const SYNC_KEY_PREFIX = 'exact:';
 
 /**
  * The exact full name of an ezCater item as it is sold: the item name plus its size (a multi size
- * item's size, or a single size item's only size), through exactName. '' when the item has no
- * usable name. An order line is the same thing: its name plus its size name (lineIdentity).
+ * item's size, or a single size item's only size), through exactName, as ONE name (a plain item
+ * with a size holding an emoji is not plain). '' when the item has no usable name. An order line
+ * is the same thing: its name plus its size name (lineIdentity).
  */
 export function itemIdentity(itemName: unknown, sizeName: unknown): string {
   if (!exactName(itemName)) return '';
@@ -153,35 +211,40 @@ export function itemIdentity(itemName: unknown, sizeName: unknown): string {
 
 /**
  * The exact full name of an option: the ITEM it customizes, its group and its value, each through
- * exactName, kept apart by '|' (which exactName never leaves), so "Bread White: Roll" is never
- * "Bread: White Roll". SCOPED TO ITS ITEM (review round 5): "Size: Large" on Pizza and "Size:
- * Large" on Salad are two rows with two decisions, so one staff match can never route a
- * customization on an item it was not made for. The item is its NAME (not its size): the same
- * customization offered under every size of one item is one row. '' when the item or the value
- * has no usable name.
+ * exactName, as a STRUCTURED key (review round 6): a JSON array of the three, so a group holding
+ * ': ', ' › ' or '|' is never read as two parts. SCOPED TO ITS ITEM (review round 5): "Size:
+ * Large" on Pizza and "Size: Large" on Salad are two rows with two decisions, so one staff match
+ * can never route a customization on an item it was not made for. The item is its NAME (not its
+ * size): the same customization offered under every size of one item is one row. '' when the
+ * item or the value has no usable name.
  */
 export function optionIdentity(item: unknown, group: unknown, value: unknown): string {
   const i = exactName(item);
   const v = exactName(value);
-  return i && v ? `${i}|${exactName(group)}|${v}` : '';
+  return i && v ? JSON.stringify([i, exactName(group), v]) : '';
 }
 
-/** The group and value part of an option's identity, without its item: 'group|value'. Never a key. */
-export function optionPairOf(group: unknown, value: unknown): string {
-  const v = exactName(value);
-  return v ? `${exactName(group)}|${v}` : '';
+/** The item, group and value of a structured option identity, or null for any other text. */
+export function optionPartsOfIdentity(identity: unknown): { item: string; group: string; value: string } | null {
+  const t = typeof identity === 'string' ? identity : '';
+  if (!t.startsWith('[')) return null;
+  try {
+    const a = JSON.parse(t);
+    if (!Array.isArray(a) || a.length !== 3 || !a.every((x) => typeof x === 'string') || !a[0] || !a[2]) return null;
+    return { item: a[0], group: a[1], value: a[2] };
+  } catch { return null; }
 }
 
 /**
  * True for a key a menu sync wrote under TODAY's rules for its kind. An option key written before
- * review round 5 ('exact:group|value', no item) is a sync key but not a current one: orders never
- * look it up, and the card lists it with the rows from before the sync, read only. Its staff
- * decision is carried to the item scoped rows (carryOverFor).
+ * review round 6 ('exact:group|value' of round 4, 'exact:item|group|value' of round 5) is a sync
+ * key but not a current one: orders never look it up, and the card lists it with the rows from
+ * before the sync, read only. Its staff decision is carried to today's rows (carryOverFor).
  */
 export function isCurrentSyncKey(kind: unknown, key: unknown): boolean {
   if (!isSyncKey(key)) return false;
   if (kind !== 'option') return true;
-  return identityOfKey(key).split('|').length === 3;
+  return optionPartsOfIdentity(identityOfKey(key)) !== null;
 }
 
 /** The key of the synced row for one exact full name. '' for no name. */
@@ -263,15 +326,12 @@ export interface NameParts {
   item?: string;
 }
 
-/**
- * Between an option's item and its group in a readable full name ("Pizza › Size: Large"). What
- * shownIdentity splits at (the first one), so it reads an option decided_as back into its parts.
- */
+/** Between an option's item and its group in a readable full name ("Pizza › Size: Large"). Display only: never read back. */
 export const OPTION_ITEM_SEPARATOR = ' › ';
 
 /**
- * The FULL ezCater name of a row, readable: what a person sees and what decided_as stores. Its
- * exact form is the row's exact full name (identityOfParts), so nothing is left out:
+ * The FULL ezCater name of a row, readable: what a person sees. An item's decided_as stores it
+ * (decidedAsOf); an option's stores its parts apart. Nothing is left out:
  *   option     '<item> › <group>: <value>' (without '<group>: ' when there is no group, and
  *              without '<item> › ' only for a row from before review round 5, which had no item)
  *   item       '<item> <size>' for a size of an item with several, '<item> <only size>' for a
@@ -296,20 +356,46 @@ export function identityOfParts(p: NameParts): string {
 }
 
 /**
- * The exact full name of a readable full name as fullNameOf writes it (decided_as, what a person
- * saw). An option's is split at its first ' › ' into item and the rest, and the rest at its first
- * ': ' into group and value. An option name with no item (saved before review round 5) has no
- * exact full name today (''), so it is never the name of a synced option row: it is looked at again.
+ * What decided_as stores for a staff decision made on a row showing these parts: what the person
+ * SAW. An item: its readable full name (fullNameOf), whose exact form is the item's exact full
+ * name. An option (review round 6): its item, group and value as SEPARATE fields, a JSON object,
+ * so a group holding ': ' or ' › ' is never split in the wrong place when it is read back.
+ */
+export function decidedAsOf(p: NameParts): string {
+  if (p?.kind === 'option') return JSON.stringify({ item: s(p.item), group: s(p.group), value: s(p.name) });
+  return fullNameOf(p).slice(0, 500);
+}
+
+/** The option parts a decided_as holds (decidedAsOf), or null when it holds none (an older, readable text). */
+function decidedOptionParts(shown: unknown): NameParts | null {
+  const t = s(shown);
+  if (!t.startsWith('{')) return null;
+  try {
+    const o = JSON.parse(t);
+    if (!o || typeof o !== 'object' || typeof o.value !== 'string') return null;
+    return {
+      kind: 'option', name: s(o.value),
+      group: typeof o.group === 'string' ? s(o.group) : '', item: typeof o.item === 'string' ? s(o.item) : '',
+    };
+  } catch { return null; }
+}
+
+/** A decided_as as a person reads it: an option's parts written out (fullNameOf), any other text as it is. */
+export function readableDecidedAs(shown: unknown): string {
+  const parts = decidedOptionParts(shown);
+  return parts ? fullNameOf(parts) : s(shown);
+}
+
+/**
+ * The exact full name of what a person saw (decided_as). An item's is the exact form of its text.
+ * An option's is built from the SEPARATE fields decidedAsOf stores, never parsed out of a display
+ * string (review round 6): a readable option text (saved before review round 6) has no exact full
+ * name today (''), so it is never the name of a synced option row: it is looked at again.
  */
 export function shownIdentity(kind: string, shown: unknown): string {
-  const text = s(shown);
-  if (kind !== 'option') return exactName(text);
-  const cut = text.indexOf(OPTION_ITEM_SEPARATOR);
-  if (cut < 0) return '';
-  const item = text.slice(0, cut);
-  const rest = text.slice(cut + OPTION_ITEM_SEPARATOR.length);
-  const at = rest.indexOf(': ');
-  return at >= 0 ? optionIdentity(item, rest.slice(0, at), rest.slice(at + 2)) : optionIdentity(item, '', rest);
+  if (kind !== 'option') return exactName(s(shown));
+  const p = decidedOptionParts(shown);
+  return p ? optionIdentity(p.item, p.group, p.name) : '';
 }
 
 /** A stored ezcater_item_links row's name parts (snake_case, or camelCase). */
@@ -445,14 +531,16 @@ export interface MenuEntry {
   /** Published ids: a size id for an item row, a value id for an option row. */
   ids: string[];
   /**
-   * The name an AUTO LINK compares with ours: exactName('<item> <size>') for a size of an item
-   * with several, singleSizeExactName for a single size item, the value for an option (whose
-   * group is compared on its own, autoTargetFor). '' links nothing.
+   * The name an AUTO LINK compares with ours (items only): exactName('<item> <size>') for a size
+   * of an item with several, singleSizeExactName for a single size item. '' for an option, and
+   * '' links nothing.
    */
   exactName?: string;
   /**
-   * Never auto linked: the size with no name of an item with several (its name does not say which
-   * size), or one exact full name the menus describe with two different auto link names.
+   * Never auto linked: EVERY option (review round 6: options are for staff to match), an item whose
+   * full name is not plain (isPlainName), the size with no name of an item with several (its name
+   * does not say which size), or one exact full name the menus describe with two different auto
+   * link names.
    */
   noAuto: boolean;
 }
@@ -521,7 +609,7 @@ export function flattenMenusWithNotes(menus: any): { entries: MenuEntry[]; notes
             put({ kind: 'item', ezKey: syncKeyOf(identity), ezName: name, ezGroup: null, ezSizeName: null, ezCategory: category,
               ezOnlySize: only || null,
               ids: sizes.length && s(sizes[0].id) ? [s(sizes[0].id)] : [],
-              exactName: singleSizeExactName(name, only), noAuto: false });
+              exactName: singleSizeExactName(name, only), noAuto: !isPlainName(`${name} ${only}`) });
           }
         } else {
           const identities = sizes.map((z) => itemIdentity(name, z.name));
@@ -534,9 +622,11 @@ export function flattenMenusWithNotes(menus: any): { entries: MenuEntry[]; notes
               continue;
             }
             // A size with no name: its full name is the item name alone, which does not say which
-            // size it is, so it is never auto linked (staff can still match it).
+            // size it is, so it is never auto linked (staff can still match it). Nor is a full
+            // name that is not plain.
             put({ kind: 'item', ezKey: syncKeyOf(identity), ezName: name, ezGroup: null, ezSizeName: s(z.name) || null,
-              ezCategory: category, ids: s(z.id) ? [s(z.id)] : [], exactName: identity, noAuto: !exactName(z.name) });
+              ezCategory: category, ids: s(z.id) ? [s(z.id)] : [], exactName: identity,
+              noAuto: !exactName(z.name) || !isPlainName(`${name} ${s(z.name)}`) });
           }
         }
         for (const z of sizes) {
@@ -545,10 +635,11 @@ export function flattenMenusWithNotes(menus: any): { entries: MenuEntry[]; notes
             for (const v of arr(t?.values)) {
               const vName = s(v?.name);
               // Scoped to its item (review round 5): the same group and value on two items are two rows.
+              // Listed for staff and NEVER auto linked (review round 6).
               const identity = optionIdentity(name, group, vName);
               if (!identity) continue;
               put({ kind: 'option', ezKey: syncKeyOf(identity), ezName: vName, ezGroup: group || null, ezSizeName: null,
-                ezItemName: name, ezCategory: category, ids: s(v?.id) ? [s(v.id)] : [], exactName: exactName(vName), noAuto: false });
+                ezItemName: name, ezCategory: category, ids: s(v?.id) ? [s(v.id)] : [], exactName: '', noAuto: true });
             }
           }
         }
@@ -569,50 +660,43 @@ export function flattenMenus(menus: any): MenuEntry[] {
 const ourNamesOf = (x: any): string[] => ['name', 'menuName', 'label']
   .map((k) => x?.[k]).filter((n) => typeof n === 'string' && n.trim()) as string[];
 
-/** The auto link name of one entry: the one flattenMenus worked out, or built from its parts. */
+/** The auto link name of one entry: the one flattenMenus worked out, or built from its parts. '' for an option. */
 export function entryExactName(entry: MenuEntry): string {
+  if (entry.kind === 'option') return '';
   if (typeof entry.exactName === 'string') return entry.exactName;
-  if (entry.kind === 'option') return exactName(entry.ezName);
   if (s(entry.ezSizeName)) return itemIdentity(entry.ezName, entry.ezSizeName);
   return singleSizeExactName(entry.ezName, entry.ezOnlySize);
 }
 
 /**
- * Our target for one synced row, or null. EXACT MEANS EXACT.
- *   item (plain or size)  exactly ONE of our items whose name (or menu name) has the SAME exact
- *                         name as the row's auto link name: the item plus its size (see
- *                         singleSizeExactName). Any size or container word on one side only
- *                         ("Large", "Small", "Tray", "Box") means different names, so no link.
- *   option                exactly ONE of our options whose GROUP has the same exact name as the
- *                         ezCater customization group AND whose own name is the same exact name
- *                         as the value: "Bread: White" is never our "White" in the Cheese group.
- *                         A value with no group links nothing.
- *   anything marked noAuto, or with no exact name, links nothing
+ * True when a sync may link this entry ON ITS OWN (review round 6): an ITEM whose full name (the
+ * item with its size or its only size) is PLAIN, and not marked noAuto. Never an option.
  */
-export function autoTargetFor(entry: MenuEntry, ourItems: any[], ourGroups: any[]):
+export function mayAutoLink(entry: MenuEntry): boolean {
+  if (!entry || entry.kind !== 'item' || entry.noAuto) return false;
+  const p = entryNameParts(entry);
+  return isPlainName(`${p.name} ${s(p.sizeName) || s(p.onlySize)}`);
+}
+
+/**
+ * Our target for one synced row, or null. EXACT MEANS EXACT, AND ONLY FOR PLAIN ITEM NAMES.
+ *   item     its full name is plain (mayAutoLink), and exactly ONE of our items has a plain name
+ *            (or menu name) that is the same after folding case, accents and whitespace
+ *            (plainSame) as the row's auto link name: the item plus its size (see
+ *            singleSizeExactName). Any size or container word on one side only ("Large",
+ *            "Small", "Tray", "Box") means different names, so no link.
+ *   option   NEVER (review round 6): options are listed for staff to match
+ *   anything marked noAuto, not plain, or with no exact name, links nothing
+ */
+export function autoTargetFor(entry: MenuEntry, ourItems: any[]):
   { menuItemId: string | null; optionId: string | null } | null {
-  if (!entry || entry.noAuto) return null;
+  if (!mayAutoLink(entry)) return null;
   const want = entryExactName(entry);
   if (!want) return null;
-  if (entry.kind === 'option') {
-    const wantGroup = exactName(entry.ezGroup);
-    if (!wantGroup) return null;
-    const hits = new Map<string, any>();
-    for (const g of arr(ourGroups)) {
-      if (!ourNamesOf(g).some((n) => exactName(n) === wantGroup)) continue;
-      for (const o of arr(g?.options)) {
-        if (!o || o.id == null) continue;
-        if (ourNamesOf(o).some((n) => exactName(n) === want)) hits.set(String(o.id), o);
-      }
-    }
-    if (hits.size !== 1) return null;
-    const [id, o] = Array.from(hits.entries())[0];
-    return { menuItemId: o.itemId != null && s(o.itemId) ? String(o.itemId) : null, optionId: id };
-  }
   const hits = new Set<string>();
   for (const it of arr(ourItems)) {
     if (!it || it.id == null) continue;
-    if (ourNamesOf(it).some((n) => exactName(n) === want)) hits.add(String(it.id));
+    if (ourNamesOf(it).some((n) => plainSame(n, want))) hits.add(String(it.id));
   }
   return hits.size === 1 ? { menuItemId: Array.from(hits)[0], optionId: null } : null;
 }
@@ -633,7 +717,10 @@ export function isSyncedRow(row: any): boolean {
  * The decision on a row that may route food at order time, or null:
  *   a staff match (source 'manual' with a target) made for this row's exact full name
  *   (lookAgainOf), or
- *   an EXACT auto link (source 'auto', matched_by 'exact', written by a sync)
+ *   an EXACT auto link (source 'auto', matched_by 'exact', written by a sync) on an ITEM row
+ *   whose full name is plain, keyed by today's rule for its own name (review round 6: an auto
+ *   link a sync made under an earlier rule, on an option or on a name with symbols or emoji,
+ *   routes nothing from the moment this code runs, before any sync clears it)
  * An auto link the old order time name rule made (matched_by 'name') is NOT one. A staff decision
  * made for a different name (carried over from before the sync, or with nothing recorded) is not
  * one UNTIL staff look at it again ("Still right" on the Item matching card). "Not on our menu"
@@ -641,14 +728,18 @@ export function isSyncedRow(row: any): boolean {
  */
 export function trustedTarget(row: any): { menuItemId: string | null; optionId: string | null } | null {
   if (!row) return null;
-  // An option row keyed before review round 5 (no item in its key) never routes.
-  if (!isCurrentSyncKey(s(row.kind) === 'option' ? 'option' : 'item', row.ez_key ?? row.ezKey)) return null;
+  // An option row keyed before review round 6 (no item in its key, or not structured) never routes.
+  const kind = s(row.kind) === 'option' ? 'option' : 'item';
+  if (!isCurrentSyncKey(kind, row.ez_key ?? row.ezKey)) return null;
   const menuItemId = s(row.menu_item_id ?? row.menuItemId) || null;
   const optionId = s(row.option_id ?? row.optionId) || null;
   if (!menuItemId && !optionId) return null;
   const source = s(row.source);
   if (source === 'manual') return lookAgainOf(row).lookAgain ? null : { menuItemId, optionId };
-  if (source === 'auto' && s(row.matched_by ?? row.matchedBy) === EXACT_MATCHED_BY) return { menuItemId, optionId };
+  if (source === 'auto' && s(row.matched_by ?? row.matchedBy) === EXACT_MATCHED_BY) {
+    if (kind !== 'item' || isEarlierSyncRow(row) || !mayAutoLink(storedEntry(row))) return null;
+    return { menuItemId, optionId: null };
+  }
   return null;
 }
 
@@ -677,19 +768,22 @@ export function isStaffDecision(row: any): boolean {
  * DIFFERENT name: one carried over from the row the item had before the sync ("Turkey Sandwich",
  * now sold as "Turkey Sandwich Box"), or one with nothing recorded of what the person saw. Until
  * staff look again ("Still right" or "Change"), orders do not use it (trustedTarget): those lines
- * print by name. decided_as is what the person saw (fullNameOf); its exact form is compared with
- * the row's key. Rows saved before the sync are never flagged: orders never use them.
+ * print by name. decided_as is what the person saw (decidedAsOf); its exact form is compared with
+ * the row's key (an option's from its separate fields, never from a display string). Rows saved
+ * before the sync are never flagged: orders never use them. `was` is decided_as as a person reads
+ * it (readableDecidedAs).
  */
 export function lookAgainOf(row: any): { lookAgain: boolean; was: string | null; now: string } {
   const now = fullNameOf(rowNameParts(row));
   const saw = s(row?.decided_as ?? row?.decidedAs);
   const key = row?.ez_key ?? row?.ezKey;
   const kind = s(row?.kind) === 'option' ? 'option' : 'item';
-  // Rows saved before the sync, and option rows keyed before review round 5 (no item in the key),
-  // are never flagged: orders never use them, and the card lists them apart, read only.
-  if (!isStaffDecision(row) || !isCurrentSyncKey(kind, key)) return { lookAgain: false, was: saw || null, now };
+  const was = saw ? readableDecidedAs(saw) : null;
+  // Rows saved before the sync, and option rows keyed before review round 6, are never flagged:
+  // orders never use them, and the card lists them apart, read only.
+  if (!isStaffDecision(row) || !isCurrentSyncKey(kind, key)) return { lookAgain: false, was, now };
   if (!saw) return { lookAgain: true, was: null, now };
-  return { lookAgain: shownIdentity(kind, saw) !== identityOfKey(key), was: saw, now };
+  return { lookAgain: shownIdentity(kind, saw) !== identityOfKey(key), was, now };
 }
 
 // ── The plan ─────────────────────────────────────────────────────────────────────────────────
@@ -756,39 +850,58 @@ export function oldKeysOf(e: MenuEntry): string[] {
 }
 
 /**
- * The keys a sync under an EARLIER rule could have written this product's row under (review
- * round 4): an item by its ASCII only exact name ("Pho 大" was 'exact:pho'), an option by its
- * group and value with no item ('exact:bread|white'). Only ever read, to carry a staff decision.
+ * The keys a sync under an EARLIER rule could have written this product's row under, the most
+ * specific first: review round 5 (Unicode folding, round5ExactName: an item by its full name, an
+ * option by 'item|group|value'), then review round 4 (ASCII only: "Pho 大" was 'exact:pho', an
+ * option 'exact:group|value' with no item). Only ever read, to carry a staff decision.
  */
 export function earlierSyncKeysOf(e: MenuEntry): string[] {
+  const out: string[] = [];
+  const add = (k: string) => { if (k && !out.includes(k)) out.push(k); };
   if (e.kind === 'option') {
-    const v = asciiExactName(e.ezName);
-    return v ? [SYNC_KEY_PREFIX + `${asciiExactName(e.ezGroup)}|${v}`] : [];
+    const i5 = round5ExactName(e.ezItemName);
+    const v5 = round5ExactName(e.ezName);
+    if (i5 && v5) add(SYNC_KEY_PREFIX + `${i5}|${round5ExactName(e.ezGroup)}|${v5}`);
+    const v4 = asciiExactName(e.ezName);
+    if (v4) add(SYNC_KEY_PREFIX + `${asciiExactName(e.ezGroup)}|${v4}`);
+    return out;
   }
   const size = s(e.ezSizeName) || s(e.ezOnlySize);
-  const name = asciiExactName(e.ezName) ? asciiExactName(`${s(e.ezName)} ${size}`) : '';
-  return name ? [SYNC_KEY_PREFIX + name] : [];
+  if (round5ExactName(e.ezName)) add(SYNC_KEY_PREFIX + round5ExactName(`${s(e.ezName)} ${size}`));
+  if (asciiExactName(e.ezName)) add(SYNC_KEY_PREFIX + asciiExactName(`${s(e.ezName)} ${size}`));
+  return out;
+}
+
+/** The round 5 key of an option entry ('exact:item|group|value' by round5ExactName), '' for none. */
+function round5OptionKeyOf(e: MenuEntry): string {
+  const i5 = round5ExactName(e.ezItemName);
+  const v5 = round5ExactName(e.ezName);
+  return i5 && v5 ? SYNC_KEY_PREFIX + `${i5}|${round5ExactName(e.ezGroup)}|${v5}` : '';
 }
 
 /**
  * True for a row a sync wrote under an earlier rule: its key is a sync key, but not the key its
- * own stored names give today (an option row with no item, an item row whose name holds a
- * letter, number or symbol the ASCII rule dropped). A current row is never one.
+ * own stored names give today (an option row not keyed by the structured identity, an item row
+ * whose name an earlier rule folded differently). A current row is never one.
  */
 export function isEarlierSyncRow(row: any): boolean {
   const key = s(row?.ez_key ?? row?.ezKey);
   if (!isSyncKey(key)) return false;
+  const kind = s(row?.kind) === 'option' ? 'option' : 'item';
+  if (kind === 'option') return !isCurrentSyncKey('option', key);
   return syncKeyOf(identityOfParts(rowNameParts(row))) !== key;
 }
 
+/** Two readable names written the same (whitespace evened out). Text equality only: nothing is parsed out of either. */
+const sameText = (a: string, b: string) => !!a && evenSpaces(a) === evenSpaces(b);
+
 /**
- * What an option's "<group>: <value>" name (with no item, as a row from before the sync or before
- * review round 5 showed it) is as a group and value pair (optionPairOf). '' for no value.
+ * The group and value pair of an option (without its item), structured: a JSON array. What
+ * optionItemsOf groups by. Never a key.
  */
-function shownPair(text: string): string {
-  const t = s(text);
-  const at = t.indexOf(': ');
-  return at >= 0 ? optionPairOf(t.slice(0, at), t.slice(at + 2)) : optionPairOf('', t);
+export function optionPairOf(group: unknown, value: unknown): string {
+  const v = exactName(value);
+  return v ? JSON.stringify([exactName(group), v]) : '';
 }
 
 /**
@@ -798,13 +911,20 @@ function shownPair(text: string): string {
  * Kept exactly when that is the new row's exact full name; otherwise lookAgainOf flags it and
  * orders do not use it until staff look again. null when there is none.
  *
- * OPTIONS (review round 5). A decision from before carries no item: it was made for a group and
- * value on EVERY item. It is kept as it was ONLY when that group and value are exactly this row's
- * AND, on a whole read of ezCater's current menus, exactly ONE item offers them (`optionItems`:
- * each option's group and value pair to the exact names of the items offering it; null when the
- * read was not whole). Then it can only ever have meant this item, and decided_as records the
- * full name with the item. Otherwise (the pair is on two items, or the read was partial) it is
- * carried for staff to look at again: orders do not use it until they have.
+ * ON EVERY SYNC, not only the first (review round 6): a row an earlier rule keyed 'exact:pho' for
+ * "Pho 大" becomes the row of a plain "Pho" once ezCater sells one (its names are refreshed). Its
+ * decision was still made for "Pho 大", so it is carried to the "Pho 大" row whenever that row is
+ * new, however many syncs later: from a CURRENT row only when its decided_as is exactly the new
+ * row's name, never otherwise ("Wings" is not "Wings 🌶").
+ *
+ * OPTIONS keep the round 5 rules, by TEXT EQUALITY with what the person saw, never by parsing it:
+ *   a round 5 row (keyed with its item) whose decision was made seeing exactly this option's
+ *   readable name WITH its item: kept as it was
+ *   a decision with no item (round 4, or saved before the sync) made seeing exactly this option's
+ *   "<group>: <value>": kept only when, on a whole read of ezCater's current menus, exactly ONE
+ *   item offers that group and value (`optionItems`, null when the read was not whole)
+ *   anything else is carried for staff to look at again: orders do not use it until they have
+ * A kept option decision records the option's parts apart (decidedAsOf).
  */
 export function carryOverFor(e: MenuEntry, rows: Map<string, any>, optionItems: Map<string, Set<string>> | null = null):
   { menuItemId: string | null; optionId: string | null; matchedBy: string | null; decidedAs: string } | null {
@@ -813,20 +933,26 @@ export function carryOverFor(e: MenuEntry, rows: Map<string, any>, optionItems: 
   for (const key of candidates) {
     const old = rows.get(e.kind + ':' + key);
     if (!old || !isStaffDecision(old)) continue;
-    // A synced row is carried from only when a sync wrote it under an earlier rule: a CURRENT row
-    // is another product's own decision ("Wings" is not "Wings 🌶").
-    if (isSyncKey(old.ez_key) && !isEarlierSyncRow(old)) continue;
     const d = decisionOf(old);
-    let decidedAs = (s(old.decided_as) || fullNameOf(rowNameParts(old))).slice(0, 500);
-    if (!decidedAs) continue;
-    if (e.kind === 'option') {
-      const pair = optionPairOf(e.ezGroup, e.ezName);
-      const items = optionItems ? optionItems.get(pair) : null;
-      if (pair && shownPair(decidedAs) === pair && items && items.size === 1) {
-        decidedAs = fullNameOf(entryNameParts(e)).slice(0, 500);
-      }
+    const optionId = e.kind === 'item' ? null : d.optionId;
+    const saw = s(old.decided_as);
+    // A CURRENT row is another product's own decision, unless it was made for exactly this name.
+    if (isSyncKey(old.ez_key) && !isEarlierSyncRow(old)) {
+      if (!saw || shownIdentity(e.kind, saw) !== identityOfKey(e.ezKey)) continue;
+      return { menuItemId: d.menuItemId, optionId, matchedBy: d.matchedBy, decidedAs: saw };
     }
-    return { menuItemId: d.menuItemId, optionId: e.kind === 'item' ? null : d.optionId, matchedBy: d.matchedBy, decidedAs };
+    const shown = (saw || fullNameOf(rowNameParts(old))).slice(0, 2000);
+    if (!shown) continue;
+    if (e.kind === 'option') {
+      const withItem = fullNameOf(entryNameParts(e));
+      const noItem = fullNameOf({ kind: 'option', name: e.ezName, group: s(e.ezGroup) });
+      const pair = optionPairOf(e.ezGroup, e.ezName);
+      const items = optionItems && pair ? optionItems.get(pair) : null;
+      const keep = (s(old.ez_key) === round5OptionKeyOf(e) && s(e.ezItemName) && sameText(shown, withItem))
+        || (sameText(shown, noItem) && !!items && items.size === 1);
+      if (keep) return { menuItemId: d.menuItemId, optionId, matchedBy: d.matchedBy, decidedAs: decidedAsOf(entryNameParts(e)) };
+    }
+    return { menuItemId: d.menuItemId, optionId, matchedBy: d.matchedBy, decidedAs: shown };
   }
   return null;
 }
@@ -869,7 +995,7 @@ export function optionItemsOf(entries: MenuEntry[]): Map<string, Set<string>> {
  * `menuOk` false (our own menu was only partly read) links nothing new and decides nothing again.
  */
 export function planMenuSync(input: {
-  entries: MenuEntry[]; existing: any[]; ourItems: any[]; ourGroups: any[];
+  entries: MenuEntry[]; existing: any[]; ourItems: any[];
   locationId: string; nowIso: string; complete: boolean; menuOk: boolean;
 }): SyncPlan {
   const kindOf = (r: any) => (s(r?.kind) === 'option' ? 'option' : 'item');
@@ -901,7 +1027,7 @@ export function planMenuSync(input: {
     if (e.kind === 'option') plan.counts.options++;
     else if (e.ezSizeName) plan.counts.sizes++;
     else plan.counts.items++;
-    const target = input.menuOk ? autoTargetFor(e, input.ourItems, input.ourGroups) : null;
+    const target = input.menuOk ? autoTargetFor(e, input.ourItems) : null;
     const prev = synced.get(k);
     const facts: RowFacts = {
       ez_name: e.ezName, ez_group: e.kind === 'option' ? (e.ezGroup || null) : null,
@@ -972,7 +1098,8 @@ export function planMenuSync(input: {
       if (covered.has(k) || isStaffRow(prev)) continue;
       const was = decisionOf(prev);
       if (!was.menuItemId && !was.optionId) continue;
-      const target = was.matchedBy === EXACT_MATCHED_BY ? autoTargetFor(storedEntry(prev), input.ourItems, input.ourGroups) : null;
+      // A row an earlier rule keyed (its key is not its own name's key today) is never kept.
+      const target = was.matchedBy === EXACT_MATCHED_BY && !isEarlierSyncRow(prev) ? autoTargetFor(storedEntry(prev), input.ourItems) : null;
       const keep = !!target && target.menuItemId === was.menuItemId && target.optionId === was.optionId;
       if (!keep) {
         plan.redecides.push({ kind: kindOf(prev), ezKey: s(prev.ez_key), was, ...decide(null) });

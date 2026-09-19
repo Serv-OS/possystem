@@ -14,7 +14,9 @@
  *      staff match or an exact auto link from a sync. No guessing; nothing written but seen counters.
  *   B  every sync decides every automatic row again from the whole menu (kept, moved or cleared);
  *      a staff decision is never changed
- *   C  an option auto links only when its group AND its value are exact
+ *   C  an option is never auto linked (review round 6); only a staff match routes one. The sync
+ *      links plain item names that match exactly; options, and names with symbols or emoji, are
+ *      for staff to match
  *   D  what the earlier rounds fixed: failed or partial link reads print by name, ids kept across a
  *      republish, the NOT NULL source default, the 18 s cron budget, the migration name 20260919m
  *   E  exact by construction (review round 4): one row per exact full name, so two ezCater products
@@ -36,7 +38,7 @@ import {
   isMissingSyncColumn, isMissingLinksTable, writeSyncPlan, trustedTarget, isSyncedRow, finishSync,
   itemIdentity, optionIdentity, syncKeyOf, isSyncKey, identityOfKey, lineIdentity, modIdentity, shownIdentity,
   SYNC_KEY_PREFIX, oldKeysOf, carryOverFor, asciiExactName, isCurrentSyncKey, isEarlierSyncRow, earlierSyncKeysOf,
-  optionItemsOf, optionPairOf,
+  optionItemsOf, optionPairOf, decidedAsOf, readableDecidedAs, isPlainName, plainSame, round5ExactName, mayAutoLink,
 } from '../../supabase/functions/_shared/ezcaterMenuSync.ts';
 import { runMenuSync, dueLocations, runDueSyncs, CRON_BUDGET_MS, MIGRATION_FILE } from '../../supabase/functions/_shared/ezcaterMenuSyncRun.ts';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -50,7 +52,7 @@ import { sharedDepsOf } from '../../scripts/edgeFnDeps.mjs';
 import {
   toRow, rowsFrom, saveBody, applySaved, theirLabel, suggestionsFor, countRows,
   liveRows, offMenuRows, lookAgainCount, lookAgainNote, offMenuLine, olderNote, seenLine, goneCount, goneLine,
-  SYNC_KEY_PREFIX as CLIENT_SYNC_KEY_PREFIX,
+  SYNC_KEY_PREFIX as CLIENT_SYNC_KEY_PREFIX, isCurrentOptionKey, readableDecidedAs as clientReadableDecidedAs,
 } from './ezcaterItemRows.js';
 
 const NOW = '2026-09-18T15:00:00.000Z';
@@ -331,7 +333,8 @@ const line = (name, ezSizeId, sizeName, extra = {}) => ({ itemId: null, name, ez
  * What ezcater-connect items_save writes for one Item matching card save after 20260919m (the edge
  * function is Deno and cannot be imported here; a static test below holds this mirror to it): the
  * card's saveBody, then the SYNCED row with that key UPDATED (never created, never renamed),
- * recording what the screen showed as decided_as (fullNameOf).
+ * recording what the screen showed as decided_as (decidedAsOf: an option's parts apart). A save on
+ * a key that is not a current sync key for its kind is refused as a stale page.
  */
 function itemsSave(sb, dbRow, choice, userId = 'user-1') {
   const shown = toRow({ ...dbRow, look_again: lookAgainOf(dbRow).lookAgain }, { syncReady: true });
@@ -340,10 +343,11 @@ function itemsSave(sb, dbRow, choice, userId = 'user-1') {
   const body = built.body;
   assert.equal(body.synced, true, 'after 20260919m the card saves only synced rows');
   const matchedBy = body.ignored ? 'ignored' : ((body.menu_item_id || body.option_id) ? userId : null);
+  assert.ok(isCurrentSyncKey(body.kind, body.ez_key), 'items_save refuses a key that is not current (stale_page)');
   const hit = links(sb).find((x) => x.kind === body.kind && x.ez_key === body.ez_key && x.synced_at);
   assert.ok(hit, 'the edge function only ever updates a synced row');
   Object.assign(hit, { menu_item_id: body.menu_item_id, option_id: body.option_id, source: 'manual', matched_by: matchedBy,
-    decided_as: fullNameOf({ kind: body.kind, name: body.ez_name, group: body.ez_group || '', sizeName: body.kind === 'item' ? (body.seen_size || '') : '', item: body.kind === 'option' ? (body.seen_item || '') : '' }) });
+    decided_as: decidedAsOf({ kind: body.kind, name: body.ez_name, group: body.ez_group || '', sizeName: body.kind === 'item' ? (body.seen_size || '') : '', item: body.kind === 'option' ? (body.seen_item || '') : '' }) });
   return body;
 }
 
@@ -418,8 +422,8 @@ test('a Potbelly shaped menu flattens to one row per exact full name: single siz
   assert.deepEqual(multi.ids, ['v-multi'], 'one value id, seen under three sizes, kept once');
   // The key is the exact full name: nothing folded away.
   assert.equal(K('A Wreck', 'Bigs'), 'exact:a wreck bigs');
-  assert.equal(K('Caesar Salad (Serves 20)', 'Half Tray'), 'exact:caesar salad serves 20 half tray');
-  assert.equal(OK('A Wreck', 'Bread', 'White'), 'exact:a wreck|bread|white');
+  assert.equal(K('Caesar Salad (Serves 20)', 'Half Tray'), 'exact:caesar salad (serves 20) half tray', 'plain punctuation is kept, not folded');
+  assert.equal(OK('A Wreck', 'Bread', 'White'), 'exact:["a wreck","bread","white"]', 'an option key is structured (round 6)');
   assert.ok(entries.every((e) => isSyncKey(e.ezKey)));
 });
 
@@ -442,24 +446,32 @@ test('full names and exact full names: what a person sees, what decided_as store
   assert.notEqual(optionIdentity('Sub', 'Bread White', 'Roll'), optionIdentity('Sub', 'Bread', 'White Roll'), 'the group and the value stay apart');
   assert.notEqual(optionIdentity('Sub Bread', 'White', 'Roll'), optionIdentity('Sub', 'Bread White', 'Roll'), 'the item and the group stay apart');
   assert.equal(optionIdentity('', 'Bread', 'White'), '', 'an option with no item has no row');
-  assert.equal(shownIdentity('option', 'Sub › Bread: White Roll'), optionIdentity('Sub', 'Bread', 'White Roll'));
-  assert.equal(shownIdentity('option', 'Sub › White'), optionIdentity('Sub', '', 'White'));
+  // Round 6: an option's decided_as holds its parts apart and is never parsed out of a display string.
+  assert.equal(shownIdentity('option', decidedAsOf({ kind: 'option', item: 'Sub', group: 'Bread', name: 'White Roll' })), optionIdentity('Sub', 'Bread', 'White Roll'));
+  assert.equal(shownIdentity('option', decidedAsOf({ kind: 'option', item: 'Sub', group: '', name: 'White' })), optionIdentity('Sub', '', 'White'));
+  assert.equal(shownIdentity('option', 'Sub › Bread: White Roll'), '', 'a readable option text is never read back into parts');
   assert.equal(shownIdentity('option', 'Bread: White'), '', 'a name with no item is no synced option row name');
+  assert.equal(readableDecidedAs(decidedAsOf({ kind: 'option', item: 'Sub', group: 'Bread', name: 'White' })), 'Sub › Bread: White');
   assert.equal(shownIdentity('item', 'Italian Boxed Lunch Box'), itemIdentity('Italian Boxed Lunch', 'Box'));
   assert.equal(sizeAddsWords('Cookie Trays', 'Tray'), false);
   assert.equal(sizeAddsWords('Caesar Salad', ''), false, 'a size with no name adds nothing');
   assert.equal(singleSizeExactName('Caesar Salad', 'Large'), 'caesar salad large');
   assert.equal(singleSizeExactName('Italian Boxed Lunch', 'Box'), 'italian boxed lunch', 'the Boxed allowance is in the auto link name only');
-  assert.equal(exactName('  Crème  Brûlée & Chef\u2019s (Large) '), 'creme brulee and chefs large');
+  // Round 6: a plain name folds case, Latin accents and whitespace ONLY ('&' and brackets stay).
+  assert.equal(exactName("  Crème  Brûlée & Chef's (Large) "), "creme brulee & chef's (large)");
+  // A name that is not plain (a curly apostrophe) is kept as written, whitespace evened out.
+  assert.equal(exactName('  Crème  Brûlée & Chef\u2019s (Large) '), 'Crème Brûlée & Chef\u2019s (Large)');
   assert.equal(isSyncKey('exact:x'), true);
   assert.equal(isSyncKey('x'), false);
   assert.equal(isSyncKey('exact:'), false);
   assert.equal(identityOfKey('exact:sub|bread|white'), 'sub|bread|white');
+  assert.equal(isCurrentSyncKey('option', 'exact:sub|bread|white'), false, 'a round 5 option key is not current');
+  assert.equal(isCurrentSyncKey('option', OK('Sub', 'Bread', 'White')), true);
   assert.equal(identityOfKey('bread|white'), '');
   // ezCater's own documented example line: "Margherita Pizza" sold as a "12\" Pizza".
   assert.equal(lineIdentity({ name: 'Margherita Pizza', sizeName: '12" Pizza' }), itemIdentity('Margherita Pizza', '12" Pizza'));
   assert.equal(lineIdentity({ name: 'Margherita Pizza', sizeName: null }), 'margherita pizza');
-  assert.equal(modIdentity({ label: 'White', groupLabel: 'Bread' }, { name: 'Sub' }), 'sub|bread|white');
+  assert.equal(modIdentity({ label: 'White', groupLabel: 'Bread' }, { name: 'Sub' }), '["sub","bread","white"]');
   assert.equal(modIdentity({ label: 'White', groupLabel: 'Bread' }, null), '', 'a customization with no line has no row');
   // The client mirror of the prefix is the same string.
   assert.equal(CLIENT_SYNC_KEY_PREFIX, SYNC_KEY_PREFIX);
@@ -467,7 +479,7 @@ test('full names and exact full names: what a person sees, what decided_as store
 
 // ── Exact names auto link; size clashes do not ─────────────────────────────────────────────
 
-test('exact names auto link: a single size item, a size by its full name, an option', () => {
+test('exact names auto link: a single size item, a size by its full name; an option never (round 6)', () => {
   const plan = planMenuSync({
     entries: flattenMenus([POTBELLY]), existing: [], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
     locationId: LOC, nowIso: NOW, complete: true, menuOk: true,
@@ -479,7 +491,9 @@ test('exact names auto link: a single size item, a size by its full name, an opt
   assert.equal(by(K('A Wreck', 'Original')).menu_item_id, 'm-wreck-orig');
   assert.equal(by(K('A Wreck', 'Bigs')).menu_item_id, 'm-wreck-big');
   assert.equal(by(K('A Wreck', 'Bigs')).matched_by, 'exact', 'a sync auto link is marked exact');
-  assert.equal(by(OK('A Wreck', 'Bread', 'Multigrain')).option_id, 'o-multi');
+  // Our Bread group has Multigrain exactly, but options are for staff to match.
+  assert.equal(by(OK('A Wreck', 'Bread', 'Multigrain')).option_id, null);
+  assert.equal(by(OK('A Wreck', 'Bread', 'Multigrain')).matched_by, null);
   // Every new row is a not yet ordered row carrying its published ids.
   for (const r of plan.inserts) {
     assert.equal(r.seen_count, 0);
@@ -510,7 +524,7 @@ test('size clashes and guesses do not auto link', () => {
   assert.equal(by(K('Cookie Tray', 'Serves 20')).menu_item_id, null);
   // A size lost in our plain name is not the same size.
   assert.equal(autoTargetFor({ kind: 'item', ezKey: 'x', ezName: 'Italian', ezGroup: null, ezSizeName: 'Large', ezCategory: null, ids: [], noAuto: false },
-    [{ id: 'a', name: 'Italian' }], []), null);
+    [{ id: 'a', name: 'Italian' }]), null);
   // Our menu read only in part: nothing auto links at all.
   const partial = planMenuSync({
     entries: flattenMenus([POTBELLY]), existing: [], ourItems: OUR_ITEMS, ourGroups: OUR_GROUPS,
@@ -533,8 +547,10 @@ test('exact means exact: a size or container word on one side only never links',
   assert.equal(flattenMenus([caesar])[0].ezKey, 'exact:caesar salad large');
   assert.equal(syncPlan([caesar], [{ id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([caesar], [{ id: 'm-c', name: 'Caesar Salad' }]).inserts[0].menu_item_id, null);
-  assert.equal(syncPlan([caesar], [{ id: 'm-cl', name: 'Caesar Salad (Large)' }, { id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, 'm-cl',
-    'the same words, only punctuation differs: linked');
+  assert.equal(syncPlan([caesar], [{ id: 'm-cl', name: 'Caesar Salad (Large)' }, { id: 'm-cs', name: 'Caesar Salad Small' }]).inserts[0].menu_item_id, null,
+    'round 6: punctuation is not folded, so brackets on one side only are a different name');
+  assert.equal(syncPlan([caesar], [{ id: 'm-cl2', name: '  caesar  SALAD large ' }]).inserts[0].menu_item_id, 'm-cl2',
+    'case and whitespace only: linked');
   // A container word on ONE side is a different name too, both ways round.
   assert.equal(syncPlan([menuOf({ id: 'i-t', name: 'Caesar Salad Half Tray', sizes: [] })], [{ id: 'm-ch', name: 'Caesar Salad Half' }]).inserts[0].menu_item_id, null);
   assert.equal(syncPlan([menuOf({ id: 'i-t2', name: 'Caesar Salad Half', sizes: [] })], [{ id: 'm-cht', name: 'Caesar Salad Half Tray' }]).inserts[0].menu_item_id, null);
@@ -589,32 +605,37 @@ const subWith = (group, values) => menuOf({ id: 'i-sub', name: 'Sub', sizes: [
   size('s-sub', '', { customizationTypes: [{ id: 'ct-1', name: group, values }] }),
 ] });
 
-test('RULE C: an option auto links only when the group AND the value are exact (Bread: White is never our Cheese White)', () => {
+test('RULE C (round 6): an option is NEVER auto linked, however exactly its group and value match ours', () => {
   const entries = flattenMenus([subWith('Bread', [{ id: 'v-w', name: 'White' }])]);
   const white = entries.find((e) => e.kind === 'option');
   assert.equal(white.ezGroup, 'Bread');
   assert.equal(white.ezKey, OK('Sub', 'Bread', 'White'));
-  const cheese = { id: 'g-cheese', name: 'Cheese', options: [{ id: 'o-w-cheese', name: 'White' }] };
+  assert.equal(white.noAuto, true, 'every option row is marked never auto linked');
+  assert.equal(white.exactName, '');
   const bread = { id: 'g-bread', name: 'Bread', options: [{ id: 'o-w-bread', name: 'White', itemId: 'm-white-bread' }] };
-  assert.equal(autoTargetFor(white, [], [cheese]), null, 'our White in the Cheese group is a different thing');
-  assert.deepEqual(autoTargetFor(white, [], [cheese, bread]), { menuItemId: 'm-white-bread', optionId: 'o-w-bread' });
-  // Two groups of ours called Bread, each with a White: a guess, so nothing.
-  assert.equal(autoTargetFor(white, [], [bread, { ...bread, id: 'g-bread-2', options: [{ id: 'o-w-2', name: 'White' }] }]), null);
-  // A group that is not the same exact name, or no group at all: nothing.
-  assert.equal(autoTargetFor(white, [], [{ ...bread, name: 'Bread Choice' }]), null);
-  assert.equal(autoTargetFor({ ...white, ezGroup: null }, [], [bread]), null);
-  // A value that differs: nothing.
-  assert.equal(autoTargetFor({ ...white, ezName: 'White Roll', exactName: 'white roll' }, [], [bread]), null);
-  // "Bread" and "Bread Size" shared the old key "bread" (it dropped a trailing size word): two
-  // rows now, each with its own group, and only the exact one links.
+  assert.equal(autoTargetFor(white, [{ id: 'm-white-bread', name: 'White' }]), null);
+  assert.equal(autoTargetFor({ ...white, noAuto: false }, [{ id: 'x', name: 'White' }]), null, 'not even with noAuto cleared by hand');
+  const p = planMenuSync({ entries, existing: [], ourItems: [{ id: 'm-sub', name: 'Sub' }], ourGroups: [bread], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  const opt = p.inserts.find((r) => r.kind === 'option');
+  assert.equal(opt.option_id, null);
+  assert.equal(opt.menu_item_id, null);
+  assert.equal(opt.source, 'auto');
+  assert.equal(opt.matched_by, null);
+  assert.equal(p.counts.toDecide >= 1, true, 'it is listed for staff');
+  // "Bread" and "Bread Size" shared the old key "bread": two rows now, each for staff.
   const two = flattenMenus([subWith('Bread', [{ id: 'v-1', name: 'White' }]),
     { ...subWith('Bread Size', [{ id: 'v-2', name: 'White' }]), id: 'm-y' }]).filter((e) => e.kind === 'option');
-  assert.deepEqual(two.map((e) => [e.ezKey, e.ids, e.noAuto]), [[OK('Sub', 'Bread', 'White'), ['v-1'], false], [OK('Sub', 'Bread Size', 'White'), ['v-2'], false]]);
-  assert.deepEqual(autoTargetFor(two[0], [], [bread]), { menuItemId: 'm-white-bread', optionId: 'o-w-bread' });
-  assert.equal(autoTargetFor(two[1], [], [bread]), null, 'our Bread group is not their Bread Size group');
+  assert.deepEqual(two.map((e) => [e.ezKey, e.ids, e.noAuto]), [[OK('Sub', 'Bread', 'White'), ['v-1'], true], [OK('Sub', 'Bread Size', 'White'), ['v-2'], true]]);
+  // An automatic option decision already on a current row (only a hand edit could make one) is
+  // cleared by the next sync and never routes before it.
+  const existing = [{ location_id: LOC, kind: 'option', ez_key: OK('Sub', 'Bread', 'White'), ez_name: 'White', ez_group: 'Bread', ez_item_name: 'Sub',
+    ez_ids: ['v-w'], synced_at: NOW, menu_item_id: 'm-white-bread', option_id: 'o-w-bread', source: 'auto', matched_by: 'exact' }];
+  assert.equal(trustedTarget(existing[0]), null);
+  const again = planMenuSync({ entries, existing, ourItems: [], locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  assert.deepEqual(again.redecides.map((r) => [r.ezKey, r.optionId, r.matchedBy]), [[OK('Sub', 'Bread', 'White'), null, null]]);
 });
 
-test('RULE C end to end: Bread White routes to our Bread White, never to our Cheese White', async () => {
+test('RULE C end to end (round 6): Bread White routes only after a staff match, and only to the option staff chose', async () => {
   const lines = orderItemsToLines([{ uuid: 'ol-1', name: 'Sub', menuItemSizeId: 's-sub', menuItemSizeName: null, quantity: 1,
     customizations: [{ customizationId: 'v-w', customizationTypeId: 'ct-1', customizationTypeName: 'Bread', name: 'White', quantity: 1 }] }]);
   const cheese = { id: 'g-cheese', name: 'Cheese', options: [{ id: 'o-w-cheese', name: 'White' }] };
@@ -626,9 +647,13 @@ test('RULE C end to end: Bread White routes to our Bread White, never to our Che
   assert.equal(onlyCheese.queued[0].mods[0].optionId, null);
   assert.equal(onlyCheese.row(OK('Sub', 'Bread', 'White')).option_id, null);
   const withBread = await pipeline({ menus, ours, groups: [cheese, bread], lines });
-  assert.equal(withBread.out[0].itemId, 'm-sub');
-  assert.equal(withBread.out[0].mods[0].optionId, 'o-w-bread');
-  assert.equal(withBread.queued[0].mods[0].optionId, 'o-w-bread');
+  assert.equal(withBread.out[0].itemId, 'm-sub', 'the plain item still auto links');
+  assert.equal(withBread.out[0].mods[0].optionId, null, 'the option waits for staff');
+  assert.equal(withBread.queued[0].mods[0].optionId, null);
+  const staff = await pipeline({ menus, ours, groups: [cheese, bread], lines,
+    after: [(sb) => { itemsSave(sb, row(sb, OK('Sub', 'Bread', 'White')), { optionId: 'o-w-bread' }); }] });
+  assert.equal(staff.out[0].mods[0].optionId, 'o-w-bread');
+  assert.equal(staff.queued[0].mods[0].optionId, 'o-w-bread');
 });
 
 // ── RULE A: orders only use matches made before the order, for the exact name they were made for ──
@@ -706,10 +731,11 @@ test('RULE A: no guessing at order time: exact names without an id, old staff ro
   assert.equal(before.lines[5].itemId, 'm-code');
 });
 
-test('RULE A: a customization matches only by its exact group and value AND its published id, on a synced option row with a trusted decision', () => {
+test('RULE A: a customization matches only by its exact group and value AND its published id, on a synced option row with a STAFF match', () => {
   const optRows = [
     { kind: 'option', ez_key: OK('A Wreck', 'Bread', 'Multigrain'), ez_name: 'Multigrain', ez_group: 'Bread', ez_item_name: 'A Wreck',
-      ez_ids: ['v-multi'], synced_at: NOW, menu_item_id: null, option_id: 'o-multi', source: 'auto', matched_by: 'exact', seen_count: 0 },
+      ez_ids: ['v-multi'], synced_at: NOW, menu_item_id: null, option_id: 'o-multi', source: 'manual', matched_by: 'u-1', seen_count: 0,
+      decided_as: decidedAsOf({ kind: 'option', item: 'A Wreck', group: 'Bread', name: 'Multigrain' }) },
     { kind: 'option', ez_key: OK('A Wreck', 'Bread', 'White'), ez_name: 'White', ez_group: 'Bread', ez_item_name: 'A Wreck',
       ez_ids: ['v-white'], synced_at: NOW, menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 0 },
     // A staff match saved before the sync: orders never use it after the migration.
@@ -733,6 +759,10 @@ test('RULE A: a customization matches only by its exact group and value AND its 
   assert.equal(idx.size, 2, 'the row saved before the sync is never indexed');
   assert.equal(optionRouteFor({ ezItemId: 'v-multi', groupLabel: 'Bread', label: 'Multigrain' }, idx, l).mode, 'synced');
   assert.equal(optionRouteFor({ label: 'Multigrain', groupLabel: 'Bread' }, idx, l).mode, 'unmatched', 'no id, no match');
+  // Round 6: an automatic option decision never routes, even an exact one on a current row.
+  const autoOpt = { ...optRows[0], source: 'auto', matched_by: 'exact', decided_as: null };
+  assert.equal(trustedTarget(autoOpt), null);
+  assert.equal(optionRouteFor({ ezItemId: 'v-multi', groupLabel: 'Bread', label: 'Multigrain' }, indexSyncedRows([autoOpt], 'option'), l).optionId, null);
   assert.deepEqual(optionRouteFor({ ezItemId: 'v-multi', groupLabel: 'Bread Size', label: 'Multigrain' }, idx, l),
     { mode: 'unmatched', reason: 'no synced option on this item with this exact name' });
 });
@@ -1485,8 +1515,12 @@ test('RULE E (round 3 repro): option values the old keys folded together are sep
     { customizationId: 'v-bs', customizationTypeName: 'Bread Size', name: 'White', quantity: 1 },
     { customizationId: 'v-bs', customizationTypeName: 'Bread', name: 'White', quantity: 1 },
   ] }]);
-  const p = await pipeline({ menus: [menu], ours: [{ id: 'm-sub', name: 'Sub' }], groups: [{ id: 'g', name: 'Bread', options: [{ id: 'o-white', name: 'White' }] }], lines });
-  assert.equal(p.out[0].itemId, 'm-sub');
+  const groups = [{ id: 'g', name: 'Bread', options: [{ id: 'o-white', name: 'White' }] }];
+  const auto = await pipeline({ menus: [menu], ours: [{ id: 'm-sub', name: 'Sub' }], groups, lines });
+  assert.equal(auto.out[0].itemId, 'm-sub');
+  assert.deepEqual(auto.out[0].mods.map((m) => m.optionId), [null, null, null, null], 'round 6: no option is auto linked');
+  const p = await pipeline({ menus: [menu], ours: [{ id: 'm-sub', name: 'Sub' }], groups, lines,
+    after: [(sb) => { itemsSave(sb, row(sb, OK('Sub', 'Bread', 'White')), { optionId: 'o-white' }); }] });
   assert.deepEqual(p.out[0].mods.map((m) => m.optionId), ['o-white', null, null, null]);
   assert.deepEqual(p.queued[0].mods.map((m) => m.optionId), ['o-white', null, null, null]);
 });
@@ -1666,7 +1700,7 @@ test('the Potbelly menu end to end: exact names route by published id, everythin
   const want = ['m-wreck-orig', 'm-wreck-big', null, 'm-italian-small', null, null, null, null, 'm-ibl', null];
   assert.deepEqual(p.out.map((l) => l.itemId), want, 'planLineMatches');
   assert.deepEqual(p.queued.map((l) => l.itemId), want, 'matchQueueRow');
-  assert.equal(p.out[0].mods[0].optionId, 'o-multi', 'Bread: Multigrain, exact group and value');
+  assert.equal(p.out[0].mods[0].optionId, null, 'Bread: Multigrain is exact, but options are for staff to match (round 6)');
   assert.equal(p.out[2].mods[0].optionId, null, 'Bread: White is not on our menu');
   assert.equal(p.plans[1].counts.inserted, 0, 'the second sync inserts nothing');
   assert.equal(p.plans[1].counts.redecided, 0, 'and changes no decision');
@@ -1791,9 +1825,11 @@ test('ezcater-connect: items_save updates only a synced row by its key after 202
   const at = src.indexOf("case 'items_save': {");
   const save = src.slice(at, src.indexOf('default:', at));
   assert.match(save, /const probe = await sb\.from\('ezcater_item_links'\)\.select\('synced_at'\)\.eq\('location_id', opsLocationId\)\.limit\(1\);/);
-  assert.match(save, /if \(syncReady && \(body\?\.synced !== true \|\| !isSyncKey\(syncedKey\)\)\) \{\n\s+return json\(\{ error: 'This page is out of date\. Reload it, then match again\.', code: 'stale_page' \}, 409\);/);
-  // What the itemsSave mirror above records as decided_as, exactly.
-  assert.match(save, /const decidedAs = fullNameOf\(\{\n\s+kind, name: ezName, group: ezGroup \|\| '', sizeName: kind === 'item' \? String\(body\?\.seen_size \|\| ''\)\.trim\(\) : '',\n\s+item: kind === 'option' \? String\(body\?\.seen_item \|\| ''\)\.trim\(\) : '',\n\s+\}\)\.slice\(0, 500\);/);
+  // Round 6: only a CURRENT sync key for its kind (a round 4 or round 5 option key is refused).
+  assert.match(save, /if \(syncReady && \(body\?\.synced !== true \|\| !isCurrentSyncKey\(kind, syncedKey\)\)\) \{\n\s+return json\(\{ error: 'This page is out of date\. Reload it, then match again\.', code: 'stale_page' \}, 409\);/);
+  assert.doesNotMatch(save, /isSyncKey\(/);
+  // What the itemsSave mirror above records as decided_as, exactly (an option's parts apart).
+  assert.match(save, /const decidedAs = decidedAsOf\(\{\n\s+kind, name: ezName, group: ezGroup \|\| '', sizeName: kind === 'item' \? String\(body\?\.seen_size \|\| ''\)\.trim\(\) : '',\n\s+item: kind === 'option' \? String\(body\?\.seen_item \|\| ''\)\.trim\(\) : '',\n\s+\}\);/);
   // Update only, by the synced key, only a synced row: a save can decide a row, never create one.
   assert.match(save, /\.eq\('location_id', opsLocationId\)\.eq\('kind', kind\)\.eq\('ez_key', syncedKey\)\n\s+\.not\('synced_at', 'is', null\)\n\s+\.select\('ez_key'\);/);
   const synced = save.slice(save.indexOf('if (syncReady) {'), save.indexOf('// BEFORE 20260919m'));
@@ -1803,7 +1839,8 @@ test('ezcater-connect: items_save updates only a synced row by its key after 202
   assert.ok(save.includes("const { error } = await sb.from('ezcater_item_links').upsert({\n          location_id: opsLocationId,\n          kind,\n          ez_key: ezKey,\n          ez_name: ezName,\n          ez_group: ezGroup,"));
   // items_list: the sync columns asked for first, look again worked out with the sync's rules.
   assert.match(src, /const syncCols = ', ez_size_name, ez_only_size, ez_category, synced_at, decided_as';\n\s+let res = await readAllLinks\(sb, opsLocationId, base \+ syncCols \+ ', ez_item_name'\);/);
-  assert.match(src, /const l = lookAgainOf\(r\); return \{ \.\.\.r, look_again: l\.lookAgain, now_as: l\.now \};/);
+  assert.match(src, /const l = lookAgainOf\(r\);/);
+  assert.match(src, /return \{ \.\.\.r, look_again: l\.lookAgain, now_as: l\.now, auto_idle: autoIdle \};/);
 });
 
 // ── The decision record, the migration and the release note ────────────────────────────────
@@ -1811,7 +1848,10 @@ test('ezcater-connect: items_save updates only a synced row by its key after 202
 test('ADR-024 states the exact rule in plain words; 20260919m carries the default and the columns', () => {
   const adr = read('../../DECISIONS.md');
   const a24 = adr.slice(adr.indexOf('## ADR-024'));
-  assert.match(a24, /orders only use matches made before the order: exact names found by the sync, or matches staff saved, and only for the exact name and size they were made for/);
+  assert.match(a24, /the sync links plain item names that match exactly; options, and names with symbols or emoji, are for staff to match/);
+  assert.match(a24, /orders only use matches made before the order: plain item names the sync linked, or matches staff saved, and only for the exact name and size they were made for/);
+  assert.match(a24, /Only plain names link on their own \(review round 6/);
+  assert.match(a24, /OPTIONS ARE NEVER AUTO LINKED/);
   assert.match(a24, /no name guessing at order time/i);
   assert.match(a24, /Exact by construction/);
   assert.match(a24, /never share a row, its published ids \(`ez_ids`\) or a decision/);
@@ -1819,7 +1859,7 @@ test('ADR-024 states the exact rule in plain words; 20260919m carries the defaul
   assert.match(a24, /in ONE statement/);
   assert.match(a24, /carried over, never lost/);
   assert.match(a24, /look again/i);
-  assert.match(a24, /group AND the value/);
+  assert.match(a24, /An option never auto links \(round 6\)/);
   assert.match(a24, /matched_by 'exact'/);
   assert.match(a24, /Known limit/);
   assert.doesNotMatch(a24, /differ only by a trailing tray or pan word/, 'that limit is fixed');
@@ -1870,6 +1910,8 @@ test('the release note: the menu sync is its own part, after v5.9.9, in plain st
   assert.match(part, /Most single size items are like this/);
   assert.match(part, /an old tab's save is refused, and it says to reload/);
   assert.match(part, /A match is used only for the exact name and size it was made for/);
+  assert.match(part, /The sync links plain item names that match exactly; options, and names with symbols or emoji, are for staff to match\./);
+  assert.match(part, /Options only use matches staff saved/);
   assert.doesNotMatch(note, /[\u2013\u2014]/);
   assert.doesNotMatch(part, /\S - \S/);
 });
@@ -1891,46 +1933,59 @@ const SMALL = '\u5c0f';
 const CHILI = '\u{1F336}';
 const SEP = '\u203a';
 
-test('ROUND 5 exactName is Unicode aware: every letter and number in any script, fractions and symbols are kept; case, accents and punctuation fold', () => {
-  // Fractions: the reviewer's repro, and the ways a fraction is typed.
-  assert.equal(exactName(`Ziti ${HALF} Pan`), 'ziti 1/2 pan');
-  assert.equal(exactName(`Ziti ${QUARTER} Pan`), 'ziti 1/4 pan');
+test('ROUND 6 exact names: a PLAIN name folds case, Latin accents and whitespace only; any other name is kept as written', () => {
+  // Plain: letters and digits of any script, spaces, . , ' & ( ) - / and accents.
+  for (const n of ['Turkey Sandwich', 'Café Latte', "Chef's Choice (Large)", 'Mac & Cheese', 'Cookies 1/2 Dozen', 'A-1, B.2',
+    `Pho ${BIG}`, 'Чай', 'कि', 'が', 'Ｆｕｌｌ']) assert.equal(isPlainName(n), true, n);
+  // Not plain: emoji, symbols, '%', superscripts, fraction characters, format, private use, tag,
+  // enclosing and variation characters, overlays, '|', curly quotes, '#', '*', '+', '!', '"', ':'.
+  for (const n of [`Wings ${CHILI}`, 'Milk 2%', 'Pizza 10²', `Ziti ${HALF} Pan`, 'Tea​', 'A', 'Flag \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}',
+    'Combo #️⃣', 'x̶', 'Wings️', 'A|B', 'Chef’s', 'Combo #1', 'A*', 'Wings + Fries', 'Hot!', '12" Pizza', 'Bread: White',
+    'Coke™', 'Ⅻ', '']) assert.equal(isPlainName(n), false, JSON.stringify(n));
+  // Plain names fold case, accents on LATIN letters and whitespace, and nothing else.
+  assert.equal(exactName('  Crème   Brûlée  '), 'creme brulee');
+  assert.equal(exactName('Straße'), exactName('STRASSE'), 'full case folding');
+  assert.equal(exactName('Mac & Cheese'), 'mac & cheese');
+  assert.notEqual(exactName('Mac & Cheese'), exactName('Mac and Cheese'), "'&' is not folded to 'and'");
+  assert.notEqual(exactName('Caesar Salad (Large)'), exactName('Caesar Salad Large'), 'brackets are not folded away');
+  assert.notEqual(exactName('Чай'), exactName('Чаи'), "the Cyrillic breve is a letter of its own: 'й' is not 'и'");
+  assert.equal(exactName('Чай'), exactName('Чай'), 'the same letter typed in two ways is one name');
+  assert.notEqual(exactName('Ｆｕｌｌ'), exactName('Full'), 'no compatibility folding: full width is not plain ASCII');
+  assert.notEqual(exactName('कि'), exactName('का'), 'a Devanagari vowel sign is part of the letter');
+  assert.notEqual(exactName('が'), exactName('か'), 'a Japanese voicing mark is part of the letter');
+  // Any other name is the text as written (composed, whitespace evened out): two differ when their text differs.
+  const scot = 'Full Breakfast \u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
+  const wales = 'Full Breakfast \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}';
+  assert.notEqual(exactName(scot), exactName(wales), 'flag tag characters are kept');
+  assert.notEqual(exactName('Family \u{1F468}‍\u{1F469}‍\u{1F467}'), exactName('Family \u{1F468}\u{1F469}\u{1F467}'), 'a zero width joiner is kept');
+  assert.notEqual(exactName('Combo #️⃣'), exactName('Combo *️⃣'), 'a keycap keeps its base');
+  assert.notEqual(exactName('Pizza 10²'), exactName('Pizza 102'), 'a superscript is not a digit');
+  assert.notEqual(exactName('Milk 2%'), exactName('Milk 2'), "'%' is not punctuation");
   assert.notEqual(exactName(`Ziti ${HALF} Pan`), exactName(`Ziti ${QUARTER} Pan`));
-  assert.equal(exactName(`Ziti ${HALF} Pan`), exactName('Ziti 1/2 Pan'), 'a fraction character and a typed fraction are one name');
-  assert.equal(exactName('Ziti 1 / 2 Pan'), 'ziti 1/2 pan');
-  assert.equal(exactName(`1${HALF} lb`), '1 1/2 lb', 'one and a half is never eleven halves');
-  assert.notEqual(exactName('Cookies 1/2 Dozen'), exactName('Cookies 12 Dozen'), '1/2 is never 12');
-  assert.equal(exactName('A/B'), 'a b', 'a slash between words is ordinary punctuation');
-  // Letters in any script.
-  assert.equal(exactName(`Pho ${BIG}`), `pho ${BIG}`);
-  assert.notEqual(exactName(`Pho ${BIG}`), exactName(`Pho ${SMALL}`));
-  assert.notEqual(exactName(`Pho ${BIG}`), exactName('Pho'));
-  assert.notEqual(exactName('\u0915\u093f'), exactName('\u0915\u093e'), 'a Devanagari vowel sign is part of the letter');
-  assert.notEqual(exactName('\u304c'), exactName('\u304b'), 'a Japanese voicing mark is part of the letter');
-  assert.equal(exactName('\uff76\uff9e'), exactName('\u30ac'), 'half width katakana is the same letter');
-  // Symbols and emoji are significant, one word each.
-  assert.equal(exactName(`Wings ${CHILI}${CHILI}${CHILI}`), `wings ${CHILI} ${CHILI} ${CHILI}`);
-  assert.notEqual(exactName(`Wings ${CHILI}${CHILI}${CHILI}`), exactName('Wings'));
-  assert.notEqual(exactName(`Wings ${CHILI}${CHILI}${CHILI}`), exactName(`Wings ${CHILI}`));
-  assert.equal(exactName(`Wings ${CHILI}\ufe0f`), exactName(`Wings${CHILI}`), 'the emoji form of one symbol is that symbol');
-  assert.notEqual(exactName('Wings + Fries'), exactName('Wings Fries'));
-  // Folded: case (full), compatibility forms, Latin, Greek and Cyrillic accents, punctuation.
-  assert.equal(exactName('Stra\u00dfe'), exactName('STRASSE'));
-  assert.equal(exactName('\u03a9\u039c\u0395\u0393\u0391'), exactName('\u03c9\u03bc\u03ad\u03b3\u03b1'));
-  assert.equal(exactName('\uff26\uff55\uff4c\uff4c'), 'full');
-  assert.equal(exactName('  Cr\u00e8me  Br\u00fbl\u00e9e & Chef\u2019s (Large)! '), 'creme brulee and chefs large');
-  assert.equal(exactName('A|B'), 'a b', "'|' never reaches a name, so it can keep an option key's parts apart");
-  assert.equal(exactName('1\ue0002'), '1 2', 'a private use character in the input never becomes a fraction slash');
-  assert.equal(exactName('Tea\u200b'), 'tea', 'an invisible format character is not a letter');
-  // The rule before round 5 dropped all of that; kept only to find rows it wrote.
+  assert.notEqual(exactName(`Ziti ${HALF} Pan`), exactName('Ziti 1/2 Pan'), 'no fraction mapping');
+  assert.notEqual(exactName(`Wings ${CHILI}`), exactName('Wings'));
+  assert.notEqual(exactName(`Wings ${CHILI}`), exactName(`Wings ${CHILI}️`), 'a variation selector is kept too');
+  assert.equal(exactName(`  Wings   ${CHILI} `), `Wings ${CHILI}`, 'only whitespace is evened out');
+  assert.equal(isPlainName('Te\ufeffa'), false, 'U+FEFF is a format character, not whitespace');
+  assert.notEqual(exactName('Te\ufeffa'), exactName('Tea'));
+  assert.equal(exactName('Tea\u00a0\u3000Cake'), 'tea cake', 'Unicode whitespace is whitespace');
+  assert.equal(exactName('Café ☕'), 'Café ☕', 'composed form');
+  // Plain and not plain can never share a form: a plain form holds only plain characters.
+  assert.notEqual(exactName('Coke™'), exactName('CokeTM'));
+  // The auto link comparison: both plain, and the same after case, accents and whitespace.
+  assert.equal(plainSame('  café LATTE', 'Cafe Latte'), true);
+  assert.equal(plainSame(`Wings ${CHILI}`, `Wings ${CHILI}`), false, 'the same text, but not plain: never an auto link');
+  assert.equal(plainSame('Milk 2%', 'Milk 2%'), false);
+  // The rules of earlier rounds, kept only to find rows they wrote.
+  assert.equal(round5ExactName(`Ziti ${HALF} Pan`), 'ziti 1/2 pan');
+  assert.equal(round5ExactName(scot), round5ExactName(wales), 'round 5 folded the flags together (why it is not used for keys)');
   assert.equal(asciiExactName(`Pho ${BIG}`), 'pho');
-  assert.equal(asciiExactName(`Ziti ${HALF} Pan`), asciiExactName(`Ziti ${QUARTER} Pan`));
 });
 
 test('ROUND 5 (ADV1): Ziti half pan and Ziti quarter pan are two rows; a staff match on one never routes the other', async () => {
   const menu = [menuOf(item('h', `Ziti ${HALF} Pan`, [size('sH', '')]), item('q', `Ziti ${QUARTER} Pan`, [size('sQ', '')]))];
   const { entries } = flattenMenusWithNotes(menu);
-  assert.deepEqual(entries.map((e) => [e.ezKey, e.ids]), [['exact:ziti 1/2 pan', ['sH']], ['exact:ziti 1/4 pan', ['sQ']]]);
+  assert.deepEqual(entries.map((e) => [e.ezKey, e.ids, e.noAuto]), [[`exact:Ziti ${HALF} Pan`, ['sH'], true], [`exact:Ziti ${QUARTER} Pan`, ['sQ'], true]]);
   const ours = [{ id: 'our-half', name: 'Ziti Half Pan' }, { id: 'our-qtr', name: 'Ziti Quarter Pan' }];
   const p = await pipeline({ menus: [menu, menu], ours,
     after: [(sb) => itemsSave(sb, row(sb, K(`Ziti ${HALF} Pan`)), { menuItemId: 'our-half' })],
@@ -1938,10 +1993,12 @@ test('ROUND 5 (ADV1): Ziti half pan and Ziti quarter pan are two rows; a staff m
   assert.deepEqual(p.out.map((l) => l.itemId), ['our-half', null, null]);
   assert.deepEqual(p.queued.map((l) => l.itemId), ['our-half', null, null]);
   assert.equal(p.row(K(`Ziti ${QUARTER} Pan`)).menu_item_id, null);
-  // An item of ours with the same fraction written out auto links exactly.
-  const typed = await pipeline({ menus: [menu], ours: [{ id: 'our-12', name: 'Ziti 1/2 Pan' }],
+  // Round 6: a name with a fraction character is not plain, so it never auto links: not to our
+  // "Ziti 1/2 Pan", and not even to our "Ziti ½ Pan" written the same way. Staff match it.
+  const typed = await pipeline({ menus: [menu], ours: [{ id: 'our-12', name: 'Ziti 1/2 Pan' }, { id: 'our-same', name: `Ziti ${HALF} Pan` }],
     lines: [line(`Ziti ${HALF} Pan`, 'sH', null), line(`Ziti ${QUARTER} Pan`, 'sQ', null)] });
-  assert.deepEqual(typed.out.map((l) => l.itemId), ['our-12', null]);
+  assert.deepEqual(typed.out.map((l) => l.itemId), [null, null]);
+  assert.ok(links(typed.sb).every((r) => r.menu_item_id === null && r.matched_by === null));
 });
 
 test('ROUND 5 (ADV2): option values half lb and quarter lb are two rows with two decisions', async () => {
@@ -1949,7 +2006,7 @@ test('ROUND 5 (ADV2): option values half lb and quarter lb are two rows with two
     { id: 't1', name: 'Turkey', values: [{ id: 'v-h', name: `${HALF} lb` }, { id: 'v-q', name: `${QUARTER} lb` }] }] })]))];
   const opt = flattenMenus(menu).filter((e) => e.kind === 'option');
   assert.deepEqual(opt.map((e) => [e.ezKey, e.ids]), [[OK('Deli Tray', 'Turkey', `${HALF} lb`), ['v-h']], [OK('Deli Tray', 'Turkey', `${QUARTER} lb`), ['v-q']]]);
-  assert.equal(OK('Deli Tray', 'Turkey', `${HALF} lb`), 'exact:deli tray|turkey|1/2 lb');
+  assert.equal(OK('Deli Tray', 'Turkey', `${HALF} lb`), `exact:["deli tray","turkey","${HALF} lb"]`);
   const groups = [{ id: 'g1', name: 'Turkey', options: [{ id: 'o-half', name: 'Half lb' }, { id: 'o-qtr', name: 'Quarter lb' }] }];
   const mods = (id, name) => orderItemsToLines([{ uuid: 'o1', name: 'Deli Tray', menuItemSizeId: 's-d', menuItemSizeName: null, quantity: 1,
     customizations: [{ customizationId: id, customizationTypeName: 'Turkey', name, quantity: 1 }] }]);
@@ -1958,18 +2015,24 @@ test('ROUND 5 (ADV2): option values half lb and quarter lb are two rows with two
     after: [(sb) => itemsSave(sb, row(sb, OK('Deli Tray', 'Turkey', `${HALF} lb`)), { optionId: 'o-half' })], lines });
   assert.deepEqual(p.out.map((l) => l.mods[0].optionId), [null, 'o-half']);
   assert.deepEqual(p.queued.map((l) => l.mods[0].optionId), [null, 'o-half']);
-  assert.equal(p.row(OK('Deli Tray', 'Turkey', `${HALF} lb`)).decided_as, `Deli Tray ${SEP} Turkey: ${HALF} lb`);
+  assert.equal(p.row(OK('Deli Tray', 'Turkey', `${HALF} lb`)).decided_as, JSON.stringify({ item: 'Deli Tray', group: 'Turkey', value: `${HALF} lb` }));
+  assert.equal(lookAgainOf(p.row(OK('Deli Tray', 'Turkey', `${HALF} lb`))).was, `Deli Tray ${SEP} Turkey: ${HALF} lb`);
 });
 
-test('ROUND 5 (ADV3): "Pho" with a CJK size word and "Wings" with chilies never auto link our plain Pho and Wings', async () => {
+test('ROUND 5 (ADV3): "Pho" with a CJK size word and "Wings" with chilies never auto link; round 6: an emoji name never auto links at all', async () => {
   const menu = [menuOf(item('a', `Pho ${BIG}`, [size('sA', '')]), item('b', `Pho ${SMALL}`, [size('sB', '')]),
     item('c', `Wings ${CHILI}`, [size('sC', '')]), item('e', `Wings ${CHILI}${CHILI}${CHILI}`, [size('sE', '')]))];
   const { entries } = flattenMenusWithNotes(menu);
   assert.equal(new Set(entries.map((e) => e.ezKey)).size, 4, 'four products, four rows');
   const p = await pipeline({ menus: [menu], ours: [{ id: 'our-pho', name: 'Pho' }, { id: 'our-w', name: 'Wings' }, { id: 'our-hot', name: `Wings ${CHILI}${CHILI}${CHILI}` }],
     lines: [line(`Pho ${BIG}`, 'sA', null), line(`Pho ${SMALL}`, 'sB', null), line(`Wings ${CHILI}${CHILI}${CHILI}`, 'sE', null), line(`Wings ${CHILI}`, 'sC', null)] });
-  assert.deepEqual(p.out.map((l) => l.itemId), [null, null, 'our-hot', null], 'only the exact name, emoji and all');
-  assert.deepEqual(p.queued.map((l) => l.itemId), [null, null, 'our-hot', null]);
+  assert.deepEqual(p.out.map((l) => l.itemId), [null, null, null, null], 'even our exact emoji name is for staff to match');
+  assert.deepEqual(p.queued.map((l) => l.itemId), [null, null, null, null]);
+  // A staff match on the emoji name routes that exact name only.
+  const s = await pipeline({ menus: [menu], ours: [{ id: 'our-hot', name: `Wings ${CHILI}${CHILI}${CHILI}` }],
+    after: [(sb) => itemsSave(sb, row(sb, K(`Wings ${CHILI}${CHILI}${CHILI}`)), { menuItemId: 'our-hot' })],
+    lines: [line(`Wings ${CHILI}${CHILI}${CHILI}`, 'sE', null), line(`Wings ${CHILI}`, 'sC', null), line(`Wings ${CHILI}${CHILI}${CHILI}`, 'sC', null)] });
+  assert.deepEqual(s.out.map((l) => l.itemId), ['our-hot', null, null]);
 });
 
 test('ROUND 5 (ADV4): "Size: Large" on Pizza and on Salad are two rows; one staff match routes only its own item', async () => {
@@ -2018,7 +2081,8 @@ test('ROUND 5: a staff option decision from before is kept only where its item i
   // Only Sub offers Bread: White: the decision can only have meant Sub's. Kept, recorded with its item.
   const one = await pipeline({ menus: [[menuOf(bread('sub', 'Sub', 'v-1'))]], ours, groups, existing: [oldWhite], lines: order('Sub', 'v-1') });
   const kept = one.row(OK('Sub', 'Bread', 'White'));
-  assert.deepEqual([kept.option_id, kept.source, kept.decided_as, lookAgainOf(kept).lookAgain], ['o-w', 'manual', `Sub ${SEP} Bread: White`, false]);
+  assert.deepEqual([kept.option_id, kept.source, kept.decided_as, lookAgainOf(kept).lookAgain],
+    ['o-w', 'manual', decidedAsOf({ kind: 'option', item: 'Sub', group: 'Bread', name: 'White' }), false]);
   assert.deepEqual([one.plans[0].counts.carried, one.plans[0].counts.lookAgain], [1, 0]);
   assert.equal(one.out[0].mods[0].optionId, 'o-w');
   assert.equal(one.queued[0].mods[0].optionId, 'o-w');
@@ -2034,7 +2098,7 @@ test('ROUND 5: a staff option decision from before is kept only where its item i
   assert.deepEqual(two.queued.map((l) => l.mods[0].optionId), [null, null]);
   // "Still right" on Sub records Sub's full name: then Sub routes, Wrap still waits.
   itemsSave(two.sb, two.row(OK('Sub', 'Bread', 'White')), { optionId: 'o-w' });
-  assert.equal(two.row(OK('Sub', 'Bread', 'White')).decided_as, `Sub ${SEP} Bread: White`);
+  assert.equal(readableDecidedAs(two.row(OK('Sub', 'Bread', 'White')).decided_as), `Sub ${SEP} Bread: White`);
   const after = await orderThrough(two.sb, [...order('Sub', 'v-1'), ...order('Wrap', 'v-2')]);
   assert.deepEqual(after.lines.map((l) => l.mods[0].optionId), ['o-w', null]);
   // A partial read of ezCater cannot prove the item is the only one: looked at again.
@@ -2060,13 +2124,13 @@ test('ROUND 5: an option row a sync keyed without its item is carried from, neve
   assert.equal(trustedTarget(earlier), null);
   assert.equal(lookAgainOf(earlier).lookAgain, false, 'never flagged: it can never route');
   assert.equal(indexSyncedRows([earlier], 'option').size, 0);
-  assert.deepEqual(earlierSyncKeysOf({ kind: 'option', ezName: 'White', ezGroup: 'Bread', ezItemName: 'Sub', ids: [] }), ['exact:bread|white']);
+  assert.deepEqual(earlierSyncKeysOf({ kind: 'option', ezName: 'White', ezGroup: 'Bread', ezItemName: 'Sub', ids: [] }), ['exact:sub|bread|white', 'exact:bread|white']);
   const menu = [menuOf(item('sub', 'Sub', [size('s-sub', '', { customizationTypes: [{ id: 'ct', name: 'Bread', values: [{ id: 'v-1', name: 'White' }] }] })]))];
   const p = await pipeline({ menus: [menu], ours: [{ id: 'm-sub', name: 'Sub' }], groups: [{ id: 'g', name: 'Bread Choice', options: [{ id: 'o-w', name: 'White' }] }],
     existing: [earlier], lines: orderItemsToLines([{ uuid: 'o', name: 'Sub', menuItemSizeId: 's-sub', menuItemSizeName: null, quantity: 1,
       customizations: [{ customizationId: 'v-1', customizationTypeName: 'Bread', name: 'White', quantity: 1 }] }]) });
   const now = p.row(OK('Sub', 'Bread', 'White'));
-  assert.deepEqual([now.option_id, now.decided_as, now.ez_item_name, now.ez_ids], ['o-w', `Sub ${SEP} Bread: White`, 'Sub', ['v-1']]);
+  assert.deepEqual([now.option_id, readableDecidedAs(now.decided_as), now.ez_item_name, now.ez_ids], ['o-w', `Sub ${SEP} Bread: White`, 'Sub', ['v-1']]);
   assert.equal(p.out[0].mods[0].optionId, 'o-w');
   assert.deepEqual(omit(p.row('exact:bread|white'), COUNTERS), omit({ location_id: LOC, ...earlier }, COUNTERS), 'the earlier row is never written');
   // The card: the earlier row is read only, with the rows from before the sync; the new one shows its item.
@@ -2112,7 +2176,7 @@ test('ROUND 5: 20260919m adds ez_item_name; the order path never needs it', () =
   const sync = read('../../supabase/functions/_shared/ezcaterMenuSync.ts');
   assert.match(sync, /export const LINK_COLUMNS_WITH_SYNC = LINK_COLUMNS \+ ', ez_ids, ez_size_name, ez_only_size, synced_at, decided_as';/);
   const a24 = read('../../DECISIONS.md').slice(read('../../DECISIONS.md').indexOf('## ADR-024'));
-  assert.match(a24, /Unicode exact names and item scoped options \(review round 5/);
+  assert.match(a24, /Item scoped options \(review round 5/);
   assert.match(a24, /exactly one item offering them/);
 });
 
@@ -2133,4 +2197,202 @@ test('ROUND 5: the release note says what to do when the first Sync fails', () =
   assert.match(note, /Ran an older copy of it before\?\*\* Run this one anyway/);
   assert.doesNotMatch(part, /[\u2013\u2014]/);
   assert.doesNotMatch(part, /\S - \S/);
+});
+
+// ── Review round 6: the sync links plain item names that match exactly; options, and names with
+// symbols or emoji, are for staff to match ─────────────────────────────────────────────────────
+
+const SCOT = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
+const WALES = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}';
+const HASH_KEY = '#️⃣';
+const STAR_KEY = '*️⃣';
+
+test('ROUND 6: every round 5 collision is its own row, never auto linked, and its lines print by name; plain items still link', async () => {
+  const one = (id, name) => item(id, name, [size('s-' + id, '')]);
+  const menu = [menuOf(
+    one('scot', `Full Breakfast ${SCOT}`), one('wales', `Full Breakfast ${WALES}`),
+    one('hash', `Combo ${HASH_KEY}`), one('star', `Combo ${STAR_KEY}`),
+    one('sup', 'Pizza 10²'), one('pct', 'Milk 2%'), one('chai', 'Чай'),
+    one('half', `Ziti ${HALF} Pan`), one('qtr', `Ziti ${QUARTER} Pan`),
+    one('big', `Pho ${BIG}`), one('small', `Pho ${SMALL}`), one('chili', `Wings ${CHILI}`),
+    one('turkey', 'Turkey Sandwich'),
+  )];
+  const ours = [
+    { id: 'our-scot', name: `Full Breakfast ${SCOT}` }, { id: 'our-welsh', name: 'Full Welsh Breakfast' },
+    { id: 'our-hash', name: `Combo ${HASH_KEY}` }, { id: 'our-102', name: 'Pizza 102' }, { id: 'our-milk', name: 'Milk 2' },
+    { id: 'our-chai', name: 'Чаи' }, { id: 'our-ziti', name: 'Ziti 1/2 Pan' }, { id: 'our-pho', name: 'Pho' },
+    { id: 'our-wings', name: 'Wings' }, { id: 'our-turkey', name: 'turkey  sandwich' },
+  ];
+  const ids = ['scot', 'wales', 'hash', 'star', 'sup', 'pct', 'chai', 'half', 'qtr', 'big', 'small', 'chili', 'turkey'];
+  const lines = [
+    ...ids.map((id) => line(menu[0].categories[0].items.find((x) => x.id === id).name, 's-' + id, null)),
+    // The Welsh line carrying the Scottish id, and the other way round: never either product.
+    line(`Full Breakfast ${WALES}`, 's-scot', null), line(`Full Breakfast ${SCOT}`, 's-wales', null),
+  ];
+  const p = await pipeline({ menus: [menu], ours, lines });
+  const itemRows = links(p.sb).filter((r) => r.kind === 'item');
+  assert.equal(itemRows.length, ids.length, 'thirteen products, thirteen rows: nothing folded together');
+  for (const r of itemRows) {
+    if (r.ez_name === 'Turkey Sandwich') continue;
+    assert.deepEqual([r.menu_item_id, r.option_id, r.source, r.matched_by], [null, null, 'auto', null], r.ez_name);
+    assert.equal(r.ez_ids.length, 1, r.ez_name);
+  }
+  assert.deepEqual([p.row(K('Turkey Sandwich')).menu_item_id, p.row(K('Turkey Sandwich')).matched_by], ['our-turkey', 'exact'],
+    'a plain name, the same after case and whitespace: auto linked');
+  const want = [...ids.map((id) => (id === 'turkey' ? 'our-turkey' : null)), null, null];
+  assert.deepEqual(p.out.map((l) => l.itemId), want, 'planLineMatches');
+  assert.deepEqual(p.queued.map((l) => l.itemId), want, 'matchQueueRow');
+  assert.equal(p.plans[0].counts.autoLinked, 1);
+  assert.equal(p.plans[0].counts.toDecide, ids.length - 1);
+  // A staff match on the Scottish breakfast routes only the Scottish breakfast.
+  const s = await pipeline({ menus: [menu], ours, lines,
+    after: [(sb) => itemsSave(sb, row(sb, K(`Full Breakfast ${SCOT}`)), { menuItemId: 'our-scot' })] });
+  assert.deepEqual(s.out.map((l) => l.itemId), [...ids.map((id) => ({ scot: 'our-scot', turkey: 'our-turkey' }[id] || null)), null, null]);
+  assert.equal(lookAgainOf(s.row(K(`Full Breakfast ${SCOT}`))).lookAgain, false);
+});
+
+test('ROUND 6: "Size: Large" on Salad and on Pizza is never auto linked, even when our Pizza has exactly Size: Large', async () => {
+  const menu = [menuOf(
+    item('p', 'Pizza', [size('s-p', '', { customizationTypes: [{ id: 't', name: 'Size', values: [{ id: 'v-pl', name: 'Large' }] }] })]),
+    item('s', 'Salad', [size('s-s', '', { customizationTypes: [{ id: 't2', name: 'Size', values: [{ id: 'v-sl', name: 'Large' }] }] })]))];
+  const groups = [{ id: 'g-size', name: 'Size', options: [{ id: 'opt-pizza-large', name: 'Large', itemId: null }] }];
+  const order = (name, sizeId, valueId) => orderItemsToLines([{ uuid: 'o-' + name, name, menuItemSizeId: sizeId, menuItemSizeName: null, quantity: 1,
+    customizations: [{ customizationId: valueId, customizationTypeName: 'Size', name: 'Large', quantity: 1 }] }]);
+  const lines = [...order('Pizza', 's-p', 'v-pl'), ...order('Salad', 's-s', 'v-sl')];
+  const p = await pipeline({ menus: [menu, menu], ours: [{ id: 'm-pizza', name: 'Pizza' }, { id: 'm-salad', name: 'Salad' }], groups, lines });
+  for (const k of [OK('Pizza', 'Size', 'Large'), OK('Salad', 'Size', 'Large')]) {
+    assert.deepEqual([p.row(k).option_id, p.row(k).menu_item_id, p.row(k).matched_by, p.row(k).source], [null, null, null, 'auto'], k);
+  }
+  assert.deepEqual(p.out.map((l) => [l.itemId, l.mods[0].optionId, l.mods[0].itemId]), [['m-pizza', null, null], ['m-salad', null, null]]);
+  assert.deepEqual(p.queued.map((l) => l.mods[0].optionId), [null, null]);
+  assert.equal(p.plans[0].counts.options, 2);
+  assert.equal(p.plans[1].counts.redecided, 0, 'the second sync writes no option decision either');
+});
+
+test('ROUND 6: a staff option match on a group holding ": " (and an item holding " › ") confirms and routes only on its item', async () => {
+  const group = 'Step 1: Choose Bread';
+  const itemName = `Sandwich ${SEP} Deluxe`;
+  const menu = [menuOf(
+    item('sw', itemName, [size('s-sw', '', { customizationTypes: [
+      { id: 't1', name: group, values: [{ id: 'v-white', name: 'White' }] },
+      // The same readable text, split in another place: its own row, never the staff match's.
+      { id: 't2', name: 'Step 1', values: [{ id: 'v-other', name: 'Choose Bread: White' }] },
+    ] })]),
+    item('wr', 'Wrap', [size('s-wr', '', { customizationTypes: [{ id: 't3', name: group, values: [{ id: 'v-wrap', name: 'White' }] }] })]))];
+  const key = OK(itemName, group, 'White');
+  const twin = OK(itemName, 'Step 1', 'Choose Bread: White');
+  assert.notEqual(key, twin);
+  assert.equal(fullNameOf({ kind: 'option', item: itemName, group, name: 'White' }), fullNameOf({ kind: 'option', item: itemName, group: 'Step 1', name: 'Choose Bread: White' }),
+    'the readable names are the same text: why decided_as keeps the parts apart');
+  const groups = [{ id: 'g', name: 'Bread', options: [{ id: 'o-white', name: 'White' }] }];
+  const order = (name, sizeId, g, v, id) => orderItemsToLines([{ uuid: 'o-' + id, name, menuItemSizeId: sizeId, menuItemSizeName: null, quantity: 1,
+    customizations: [{ customizationId: id, customizationTypeName: g, name: v, quantity: 1 }] }]);
+  const lines = [...order(itemName, 's-sw', group, 'White', 'v-white'), ...order(itemName, 's-sw', 'Step 1', 'Choose Bread: White', 'v-other'),
+    ...order('Wrap', 's-wr', group, 'White', 'v-wrap'), ...order('Wrap', 's-wr', group, 'White', 'v-white')];
+  const p = await pipeline({ menus: [menu], ours: [], groups, lines,
+    after: [(sb) => itemsSave(sb, row(sb, key), { optionId: 'o-white' })] });
+  const saved = p.row(key);
+  assert.equal(saved.decided_as, JSON.stringify({ item: itemName, group, value: 'White' }));
+  assert.equal(lookAgainOf(saved).lookAgain, false, 'confirmed: the parts are compared, never parsed from a display string');
+  assert.deepEqual(trustedTarget(saved), { menuItemId: null, optionId: 'o-white' });
+  assert.deepEqual(p.out.map((l) => l.mods[0].optionId), ['o-white', null, null, null]);
+  assert.deepEqual(p.queued.map((l) => l.mods[0].optionId), ['o-white', null, null, null]);
+  // A decision carried with only a readable text (from before round 6) is looked at again, and
+  // "Still right" confirms it.
+  const carried = { ...saved, decided_as: `${itemName} ${SEP} ${group}: White` };
+  assert.equal(lookAgainOf(carried).lookAgain, true);
+  assert.equal(lookAgainOf(carried).was, `${itemName} ${SEP} ${group}: White`);
+  assert.equal(trustedTarget(carried), null);
+  Object.assign(p.row(key), { decided_as: carried.decided_as });
+  const shown = toRow({ ...p.row(key), look_again: true }, { syncReady: true });
+  assert.equal(shown.lookAgain, true);
+  assert.match(lookAgainNote(shown), /It was matched as: Sandwich › Deluxe › Step 1: Choose Bread: White\./);
+  itemsSave(p.sb, p.row(key), { optionId: 'o-white' });
+  assert.equal(lookAgainOf(p.row(key)).lookAgain, false, 'Still right confirms it');
+  const again = await orderThrough(p.sb, lines);
+  assert.deepEqual(again.lines.map((l) => l.mods[0].optionId), ['o-white', null, null, null]);
+});
+
+test('ROUND 6: a round 4 item decision is carried on every sync, not only the first insert', async () => {
+  // Round 4 wrote 'exact:pho' for "Pho 大" and staff matched it. ezCater now also sells a plain "Pho".
+  const r4 = { location_id: LOC, kind: 'item', ez_key: 'exact:pho', ez_name: `Pho ${BIG}`, ez_ids: ['sA'], synced_at: '2026-09-17T00:00:00.000Z',
+    menu_item_id: 'our-pho-l', option_id: null, source: 'manual', matched_by: 'user-1', decided_as: `Pho ${BIG}`, seen_count: 2 };
+  const t = TABLES([r4]);
+  t.menu_items = [{ id: 'our-pho-l', name: 'Pho Large', location_id: LOC, menu_name: null, pricing: { base: 9 }, archived: false }];
+  t.modifier_groups = [];
+  let failFirst = true;
+  const sb = fakeSb(t, { failUpsert: (name, rows, opts) => {
+    if (failFirst && opts?.ignoreDuplicates && rows.some((r) => r.ez_key === K(`Pho ${BIG}`))) { failFirst = false; return { code: '57014', message: 'timeout' }; }
+    return null;
+  } });
+  const menu = [menuOf(item('a', `Pho ${BIG}`, [size('sA', '')]), item('p', 'Pho', [size('sP', '')]))];
+  // First sync: the "Pho" entry falls on 'exact:pho' and refreshes its names; the insert of "Pho 大" fails.
+  const input = await readMatchInputs(sb, LOC);
+  const plan1 = planMenuSync({ entries: flattenMenus(menu), existing: input.links, ourItems: input.ourItems, locationId: LOC, nowIso: NOW, complete: true, menuOk: true });
+  const wrote1 = await writeSyncPlan(sb, LOC, plan1, NOW);
+  assert.equal(wrote1.errors.length, 1);
+  assert.equal(row(sb, K(`Pho ${BIG}`)), undefined);
+  assert.equal(row(sb, 'exact:pho').ez_name, 'Pho');
+  assert.equal(isEarlierSyncRow(row(sb, 'exact:pho')), false, 'now the current row of "Pho"');
+  assert.equal(lookAgainOf(row(sb, 'exact:pho')).lookAgain, true, 'the decision was made for "Pho 大", not "Pho"');
+  // Second sync: "Pho 大" is new, and its decision is still found and carried as it was.
+  const plan2 = await syncOnce(sb, menu);
+  const big = row(sb, K(`Pho ${BIG}`));
+  assert.deepEqual([big.menu_item_id, big.source, big.decided_as, lookAgainOf(big).lookAgain], ['our-pho-l', 'manual', `Pho ${BIG}`, false]);
+  assert.equal(plan2.counts.carried, 1);
+  const lp = await orderThrough(sb, [line(`Pho ${BIG}`, 'sA', null), line('Pho', 'sP', null)]);
+  assert.deepEqual(lp.lines.map((l) => l.itemId), ['our-pho-l', null]);
+  // A current row whose decision was made for another name is never carried ("Wings" is not "Wings \u{1F336}").
+  const wings = { kind: 'item', ez_key: K('Wings'), ez_name: 'Wings', synced_at: NOW, menu_item_id: 'our-w', option_id: null,
+    source: 'manual', matched_by: 'u', decided_as: 'Wings' };
+  const e = flattenMenus([menuOf(item('c', `Wings ${CHILI}`, [size('sC', '')]))])[0];
+  assert.equal(carryOverFor(e, new Map([['item:' + wings.ez_key, wings]])), null);
+});
+
+test('ROUND 6: a round 5 option decision is kept for its own item only; a round 5 automatic option link never routes', async () => {
+  const r5staff = { kind: 'option', ez_key: 'exact:pizza|size|large', ez_name: 'Large', ez_group: 'Size', ez_item_name: 'Pizza', ez_ids: ['v-pl'],
+    synced_at: '2026-09-18T00:00:00.000Z', menu_item_id: null, option_id: 'o-large', source: 'manual', matched_by: 'user-1',
+    decided_as: `Pizza ${SEP} Size: Large`, seen_count: 1 };
+  // The round 5 repro: an auto link from Salad's Size: Large to our Pizza's option.
+  const r5auto = { kind: 'option', ez_key: 'exact:salad|size|large', ez_name: 'Large', ez_group: 'Size', ez_item_name: 'Salad', ez_ids: ['v-sl'],
+    synced_at: '2026-09-18T00:00:00.000Z', menu_item_id: null, option_id: 'o-large', source: 'auto', matched_by: 'exact', seen_count: 0 };
+  for (const r of [r5staff, r5auto]) {
+    assert.equal(isCurrentSyncKey('option', r.ez_key), false);
+    assert.equal(isEarlierSyncRow(r), true);
+    assert.equal(trustedTarget(r), null);
+  }
+  const menu = [menuOf(
+    item('p', 'Pizza', [size('s-p', '', { customizationTypes: [{ id: 't', name: 'Size', values: [{ id: 'v-pl', name: 'Large' }] }] })]),
+    item('s', 'Salad', [size('s-s', '', { customizationTypes: [{ id: 't2', name: 'Size', values: [{ id: 'v-sl', name: 'Large' }] }] })]))];
+  const order = (name, sizeId, valueId) => orderItemsToLines([{ uuid: 'o-' + name + valueId, name, menuItemSizeId: sizeId, menuItemSizeName: null, quantity: 1,
+    customizations: [{ customizationId: valueId, customizationTypeName: 'Size', name: 'Large', quantity: 1 }] }]);
+  const lines = [...order('Pizza', 's-p', 'v-pl'), ...order('Salad', 's-s', 'v-sl')];
+  const p = await pipeline({ menus: [menu], ours: [{ id: 'm-pizza', name: 'Pizza' }, { id: 'm-salad', name: 'Salad' }],
+    groups: [{ id: 'g', name: 'Size', options: [{ id: 'o-large', name: 'Large' }] }], existing: [r5staff, r5auto], lines });
+  const pizza = p.row(OK('Pizza', 'Size', 'Large'));
+  assert.deepEqual([pizza.option_id, pizza.source, pizza.decided_as, lookAgainOf(pizza).lookAgain],
+    ['o-large', 'manual', decidedAsOf({ kind: 'option', item: 'Pizza', group: 'Size', name: 'Large' }), false]);
+  const salad = p.row(OK('Salad', 'Size', 'Large'));
+  assert.deepEqual([salad.option_id, salad.source, salad.matched_by], [null, 'auto', null], 'the round 5 auto link is never carried');
+  assert.deepEqual(p.out.map((l) => l.mods[0].optionId), ['o-large', null]);
+  assert.deepEqual(p.queued.map((l) => l.mods[0].optionId), ['o-large', null]);
+  // The earlier rows are never written, and the card lists them apart, read only.
+  assert.deepEqual(omit(p.row('exact:pizza|size|large'), COUNTERS), omit({ location_id: LOC, ...r5staff }, COUNTERS));
+  const shown = rowsFrom(links(p.sb).map((r) => ({ ...r, look_again: lookAgainOf(r).lookAgain })), { syncReady: true });
+  assert.deepEqual(shown.filter((r) => r.kind === 'option' && r.synced).map((r) => r.ezKey).sort(), [OK('Pizza', 'Size', 'Large'), OK('Salad', 'Size', 'Large')].sort());
+  assert.equal(isCurrentOptionKey('exact:pizza|size|large'), false);
+  assert.equal(isCurrentOptionKey(OK('Pizza', 'Size', 'Large')), true);
+  assert.equal(clientReadableDecidedAs(pizza.decided_as), `Pizza ${SEP} Size: Large`);
+  // items_list marks an automatic link that routes nothing (auto_idle); the card never shows it as done.
+  const idle = { kind: 'item', ez_key: K(`Wings ${CHILI}`), ez_name: `Wings ${CHILI}`, synced_at: NOW, menu_item_id: 'm-w', source: 'auto', matched_by: 'exact' };
+  assert.equal(trustedTarget(idle), null);
+  assert.equal(toRow({ ...idle, auto_idle: true }, { syncReady: true }).state, 'unmatched');
+  assert.equal(toRow({ ...idle, ez_key: K('Wings'), ez_name: 'Wings', auto_idle: false }, { syncReady: true }).state, 'matched');
+  const connect = read('../../supabase/functions/ezcater-connect/index.ts');
+  assert.match(connect, /const autoIdle = r\?\.source === 'auto' && !!\(r\?\.menu_item_id \|\| r\?\.option_id\) && !trustedTarget\(r\);/);
+  // A round 5 decision whose readable text is not this option's (carried from elsewhere): to check again.
+  const e = flattenMenus(menu).find((x) => x.kind === 'option' && x.ezItemName === 'Pizza');
+  const other = carryOverFor(e, new Map([['option:exact:pizza|size|large', { ...r5staff, decided_as: `Pizza ${SEP} Size: Large Thin` }]]), optionItemsOf(flattenMenus(menu)));
+  assert.equal(other.decidedAs, `Pizza ${SEP} Size: Large Thin`);
+  assert.equal(shownIdentity('option', other.decidedAs), '', 'never read back from text');
 });
