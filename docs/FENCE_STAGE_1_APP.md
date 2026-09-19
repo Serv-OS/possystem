@@ -263,3 +263,23 @@ Everything below is for the app agent. Each item names the file and the line on 
   - Both write the kept paid check for reports. Pin it with a test (a helper that answers 'paid', 'unpaid' or 'checking').
 - **S4. INVARIANTS.md** ("Database fence stage 1"): add that a device's venue never changes while it is linked (moving it unpairs it); pairing codes are readable only by that venue's Back Office and the super admin; "paid" on a public order is decided by the server from verified money against the amount due; `payment_state 'checking'` is a third state that is never charged again.
 
+
+### 11b. Built (fix round, 19 Sep 2026)
+
+Every item above is built on this branch and works before and after the SQL. Tests: `src/lib/deviceFence.test.js`, `src/lib/orderPayment.test.js` (new), `src/lib/publicOrder.test.js`, `src/lib/paymentProofRules.test.js`.
+
+- **A12**: `src/sync/OfflineQueue.js` releases parked permission writes on `rpos-device-relinked` (always) and on the FIRST `rpos-device-linked` of a page (`shouldReleaseParkedOnLink`), and reads `getLastDeviceLinkOutcome()` in case the boot link answered before the queue started. Once per page, so a write refused for another reason never loops.
+- **A13**: `sendDeviceHeartbeat` sends `p_device_id` (only a real uuid, `heartbeatArgs`).
+- **A14**: while `device_heartbeat` is missing, `sendDeviceHeartbeat` writes `last_seen` and `app_version` on its own row (`legacyHeartbeatPatch`, never the status). The kiosk's own second write is gone. FENCE STAGE 1 FALLBACK.
+- **A15**: `runDeviceLink` no longer sends a saved code once `device_status` exists, and drops it from `rpos-device` (`forgetLegacyCode`).
+- **Pairing screens** (till and kiosk): any separator is ignored (a long dash from autocorrect too), the box takes 20 characters, and a mistyped server code (a 0, 1, I or O, or a symbol short or long) is caught before it is sent (`pairingCodeHint`), because the server answers every non server format code "no longer valid". Old browser codes are never hinted (they pair until file A).
+- **A16 (old WebViews)**: nothing can fix an old build. Its pairing screen reads the code off the devices table and caps the box at 12 characters, so after file A it answers **"Pairing code not found"** for every code, a new one included. The runbook says: force stop and reopen, then pair.
+- **C15**: both online paths send `total` = card + gift (`onlineChargedTotalMinor`) and `p_order.discounts` (`buildDeclaredDiscounts`); the card path proves the gift debit and redeems the reward BEFORE placing (bounded to 7 s by `withinMs`: a slow redeem never holds a paid order back, it then arrives checking and the redeem still runs). The legacy insert writes the row without `discounts` (order_queue has no such column).
+- **C16**: rounds send `p_order.tab_join_code` only when this phone holds the real code (`tabRoundJoinCode`); `ensureCustomerSession()` before `qr_tab_join`; `tab_not_yours` and `locked` in plain words; the resume screen keeps the stash code (`mergeResumeTab`).
+- **C17**: `placePublicOrder({ reprove })` starts `startPaymentVerification` (about 3 minutes, `verifyPaymentInBackground`) for online, QR pay now and catering; the page shows "Your order is in. The venue is confirming your payment." and the tracker adds "You do not need to pay again." while `order_track_row` says checking.
+- **C18**: payment-proof records `meta.order_ref` (Stripe `metadata.ref`, Adyen `merchant_reference`, Ryft metadata) and the loyalty reward's fixed value. **Found while building it**: the online and QR checkouts minted a NEW order ref on every step change, and the Stripe payment is created before the step moves to 'pay', so its `metadata.ref` never matched the placed order. With C18 every Stripe card order would have arrived "Payment being checked". Both now mint one ref per checkout (catering already did).
+- **C19**: `reason: 'payment'` (and the other customer refusals) shown in the server's words (`publicOrderRefusalMessage`).
+- **S3**: `src/lib/orderPayment.js` (`orderPaymentState`), `src/components/PaymentCheckModal.jsx` (Check payment; Confirm payment behind a manager PIN with a note), Orders Hub badge, no charge step, read-only open, QR pay now card; MPOS blocks collection; the checkout modal closes on a checking order; the kitchen ticket prints "PAYMENT BEING CHECKED, DO NOT CHARGE".
+- **S4**: INVARIANTS.md, "Database fence stage 1".
+
+**Deploy**: the web app, and the `payment-proof` edge function again (C18), with `location-admin`, `gift-list`, `gift-resend`, `gift-fulfill` from the first release.

@@ -301,6 +301,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         opsLocationId: opsId, order: cateringPaidRow, check: closedCheck,
         proofIds: proof.proofId ? [proof.proofId] : [],
         proofUnavailable: !!proof.unavailable, moneyTaken: true,
+        // Fix round (C17): an order the server could not prove yet is checked again in the background.
+        reprove: payId ? [{ processor, kind: 'card', paymentRef: payId }] : null,
         // FENCE STAGE 1 FALLBACK: today's two direct inserts, only while place_public_order
         // does not exist (or the proof function is not deployed yet).
         legacyInsert: async () => {

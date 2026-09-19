@@ -8,6 +8,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { orderPaymentState, PAYMENT_CHECKING_LABEL } from '../../lib/orderPayment';
 
 const FLOW = ['received', 'prep', 'ready', 'collected'];
 
@@ -38,11 +39,19 @@ export default function MQueueDetail({ order, onBack }) {
   const pill = STATUS_PILL[status] || STATUS_PILL.received;
   // v5.5.659: an order still owing money must be charged before it can be marked collected.
   // Online/kiosk are prepaid by channel; everything else needs a paid flag.
-  const paid = !!(live.paid || live.customer?.paid || ['online', 'kiosk'].includes(live.source));
+  // Fence S3 (fix round): a payment being checked is neither: never charged, never collected
+  // until a till checks it (Orders Hub, Check payment) or a manager confirms it.
+  const payState = orderPaymentState(live);
+  const paid = payState === 'paid';
+  const checking = payState === 'checking';
 
   const advance = () => {
     const next = nextStatus(status);
     if (!next) return;
+    if (next === 'collected' && checking) {
+      showToast?.(`${PAYMENT_CHECKING_LABEL}: check it in the Orders Hub on a till before handing it over. Do not charge it again.`, 'error');
+      return;
+    }
     if (next === 'collected' && !paid) {
       showToast?.('Take payment for this order before marking it collected', 'error');
       return;
@@ -147,6 +156,11 @@ export default function MQueueDetail({ order, onBack }) {
           </div>
           {/* customer.paid is what QueueSync persists; the paid column is never written, so a
               reload on another device only keeps the flag in customer. Same test as the guard. */}
+          {checking && (
+            <div style={{ marginTop:6, fontSize:11, fontWeight:700, color:'#b45309', textAlign:'right' }}>
+              {PAYMENT_CHECKING_LABEL} · do not charge again
+            </div>
+          )}
           {(live.paid || live.customer?.paid) && (
             <div style={{ marginTop:6, fontSize:11, fontWeight:700, color:'var(--grn)', textAlign:'right' }}>
               ✓ Already paid · {(live.paymentMethod || 'card').toUpperCase()}
@@ -158,7 +172,7 @@ export default function MQueueDetail({ order, onBack }) {
       {/* Bottom action bar */}
       <div style={Sx.bottom}>
         {advanceLabel ? (
-          <button onClick={advance} style={Sx.btnPrim}>{(nextStatus(status) === 'collected' && !paid) ? '💳 Take payment to collect' : advanceLabel}</button>
+          <button onClick={advance} style={Sx.btnPrim}>{(nextStatus(status) === 'collected' && checking) ? PAYMENT_CHECKING_LABEL : (nextStatus(status) === 'collected' && !paid) ? '💳 Take payment to collect' : advanceLabel}</button>
         ) : (
           <div style={{ padding:10, borderRadius:10, background:'var(--bg3)', color:'var(--t3)', fontSize:12, textAlign:'center', fontWeight:700 }}>
             Order complete · removing from queue shortly

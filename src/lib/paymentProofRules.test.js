@@ -4,8 +4,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import {
   parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
+  processorOrderRef, loyaltyRewardValueMinor,
 } from '../../supabase/functions/_shared/paymentProofRules.js';
 
 const OPS = '7218c716-eeb4-4f96-b284-f3500823595c';
@@ -77,4 +81,49 @@ test('about 30 proofs per caller in 10 minutes', () => {
   for (let i = 0; i < 30; i++) { const r = allowProofRequest(h, 1000 + i); assert.equal(r.ok, true); h = r.history; }
   assert.equal(allowProofRequest(h, 2000).ok, false);
   assert.equal(allowProofRequest(h, 1000 + 10 * 60 * 1000 + 1).ok, true, 'the window moves on');
+});
+
+// ── Fix round (19 Sep 2026), contract C18: a payment is bound to its order ────────
+
+test('C18: the processor\'s own order reference is recorded, from the processor record only', () => {
+  assert.equal(processorOrderRef('stripe', { metadata: { ref: 'OL-AB12C', ops_location_id: OPS } }), 'OL-AB12C');
+  assert.equal(processorOrderRef('stripe', { metadata: {} }), null, 'no ref: the proof counts for the order it is attached to');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: 'QR-ZZ9Y8' }), 'QR-ZZ9Y8');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: null, raw: { merchantReference: 'CA-11AA2' } }), 'CA-11AA2');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: 'tj-5d2c' }), null, 'a terminal job is not an order ref');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: 'tab-capture:psp123' }), null);
+  assert.equal(processorOrderRef('ryft', { metadata: { order_ref: 'OL-RY123' } }), 'OL-RY123');
+  assert.equal(processorOrderRef('ryft', { metadata: { channel: 'online' } }), null);
+  assert.equal(processorOrderRef('stripe', { metadata: { ref: 'not a ref!' } }), null, 'only the order ref shape place_public_order accepts');
+  assert.equal(processorOrderRef('gift', { metadata: { ref: 'OL-AB12C' } }), null);
+});
+
+test('C18: a loyalty reward with a fixed money value is proven at that value, else the marker 1', () => {
+  assert.equal(loyaltyRewardValueMinor({ reward_value: { amount_minor: 350 } }), 350);
+  assert.equal(loyaltyRewardValueMinor({ reward_value: { percent: 10 } }), 0);
+  assert.equal(loyaltyRewardValueMinor({ reward_value: null }), 0);
+  assert.equal(loyaltyRewardValueMinor(null), 0);
+  const row = { type: 'redeem', company_id: 'c1' };
+  assert.equal(loyaltyProof(row, { companyId: 'c1', rewardValueMinor: loyaltyRewardValueMinor({ reward_value: { amount_minor: 350 } }) }).amount_minor, 350);
+  assert.equal(loyaltyProof(row, { companyId: 'c1', rewardValueMinor: 0 }).amount_minor, 1);
+});
+
+test('C18: payment-proof records meta.order_ref for every processor and the reward value', () => {
+  const src = fs.readFileSync(fileURLToPath(new URL('../../supabase/functions/payment-proof/index.ts', import.meta.url)), 'utf8');
+  assert.ok(src.includes("meta.order_ref = processorOrderRef('stripe', pi);"));
+  assert.ok(src.includes("meta.order_ref = processorOrderRef('ryft', ses.data);"));
+  assert.ok(src.includes("meta.order_ref = processorOrderRef('adyen', row);"));
+  assert.ok(src.includes('merchant_reference, raw'), 'the Adyen ledger read includes the merchant reference');
+  assert.ok(src.includes('verdict = loyaltyProof(row, { companyId, opsLocationId: opsId, rewardValueMinor });'));
+});
+
+test('C18: the customer pages mint ONE order ref per checkout, so the payment\'s ref is the order\'s', () => {
+  const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const oc = read('../surfaces/online/OnlineCheckout.jsx');
+  assert.ok(oc.includes('if (!orderIdsRef.current) {') && oc.includes('const { ref } = orderIdsRef.current;'), 'online: the Stripe payment is made before the step moves to pay');
+  assert.ok(!/const ref = `OL-/.test(oc), 'no ref minted per step');
+  const qc = read('../surfaces/qr/QrCheckout.jsx');
+  assert.ok(qc.includes('const ref = orderRefRef.current;'));
+  assert.ok(!/const ref = `QR-/.test(qc));
+  assert.ok(read('../surfaces/catering/CateringCheckout.jsx').includes("const ref = useMemo(() => `CA-${Math.random().toString(36).slice(2, 7).toUpperCase()}`, []);"), 'catering was already stable');
 });

@@ -272,7 +272,8 @@ select placed_via, count(*)
 - **"That pairing code is no longer valid"**: it is a code from before step 3. Every old code is retired. Issue a new one.
 - **"Pairing code not found"**: check the code, or issue a new one. Codes last **60 minutes** and work **once**.
 - **"Too many pairing attempts"**: that device tried 6 wrong codes. Wait 15 minutes.
-- **A till on the old app cannot pair** after step 3 (its pairing screen looks the code up first, and codes are hidden). **Force stop and reopen** it so it loads the new app, then pair it.
+- **A till on the old app cannot pair** after step 3 (its pairing screen looks the code up first, and codes are hidden). It says **"Pairing code not found"** for every code, even a brand new one. **Force stop and reopen** it so it loads the new app (the new pairing screen shows the version under the box and the words "Type it with or without the dashes"), then pair it.
+- **"Check the code: pairing codes never use 0, 1, I or O"**: the new pairing screen caught a misread symbol before sending it. Codes use letters and the digits 2 to 9 only.
 - **"This device is paired and in use"** when you issue a code: Back Office asks before it disconnects a till.
 - **Payment being checked**: an online, QR or catering order whose payment the server could not prove yet (usually a slow card processor). It is **not unpaid**: never charge it again. On the order in the Orders Hub, staff press **Check payment**; a manager can press **Confirm payment** after seeing the payment in the card processor. Both write the paid bill for reports.
 - **Fixed but still broken?** Check the edge functions were deployed (`node scripts/check-deploys.mjs`).

@@ -1196,6 +1196,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (customer?.paid) {
       try { useStore.getState().showToast?.('This order has already been paid — opening read-only.', 'error'); } catch {}
       onClose?.();
+    } else if (customer?.payment_state === 'checking' || customer?.payment_unverified === true) {
+      // Fence S3 (fix round): the customer paid on their phone and the server is confirming it.
+      // Never charge it again here: Orders Hub, Check payment (or a manager's Confirm payment).
+      try { useStore.getState().showToast?.('Payment being checked: the customer already paid. Use Check payment in Orders. Do not charge it again.', 'error'); } catch {}
+      onClose?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

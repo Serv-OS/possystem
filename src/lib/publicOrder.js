@@ -219,5 +219,152 @@ export function qrSessionWriteAction({ existing, hasItems }) {
   return isQr ? 'update_qr' : 'skip';
 }
 
-/** Words for an order placed but not proven paid (contract C1 step 4). */
-export const UNVERIFIED_MESSAGE = 'Your order is in. The venue will confirm your payment.';
+/** Words for an order placed but not proven paid (contract C1 step 4, C17). Never "pay again". */
+export const UNVERIFIED_MESSAGE = 'Your order is in. The venue is confirming your payment.';
+
+// ── Fix round (19 Sep 2026), docs/FENCE_STAGE_1_APP.md section 11 ─────────────────────────────
+
+const toMinor = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0; };
+
+/**
+ * C15: what an online order charges across card and gift card, in pence: the card amount (the
+ * bill net of the promo code and the loyalty reward; auto discounts are already net) plus the gift
+ * card. place_public_order counts it as the order's own total, and "paid" means verified card plus
+ * gift money covers it.
+ */
+export function onlineChargedTotalMinor({ remainingMinor = 0, giftAppliedMinor = 0 } = {}) {
+  return toMinor(remainingMinor) + toMinor(giftAppliedMinor);
+}
+
+/**
+ * C15: the discounts the order declares (p_order.discounts). The server takes them off the value
+ * of the lines to work out the amount due, and writes the result into customer.order_pricing for
+ * staff to see. A loyalty discount counts only with a loyalty redemption proof.
+ *   autoDiscounts: the auto discount records (value in pounds, label)
+ *   promo:  { code, amountMinor }
+ *   reward: { name, amountMinor }
+ */
+export function buildDeclaredDiscounts({ autoDiscounts = [], promo = null, reward = null } = {}) {
+  const out = [];
+  for (const d of Array.isArray(autoDiscounts) ? autoDiscounts : []) {
+    const amt = toMinor(Math.round((Number(d && (d.value ?? d.amount)) || 0) * 100));
+    if (amt > 0) out.push({ type: 'auto', label: String((d && (d.label || d.name)) || 'Offer').slice(0, 80), amount_minor: amt });
+  }
+  if (promo && toMinor(promo.amountMinor) > 0) out.push({ type: 'promo', label: String(promo.code || 'Promo').slice(0, 80), amount_minor: toMinor(promo.amountMinor) });
+  if (reward && toMinor(reward.amountMinor) > 0) out.push({ type: 'loyalty', label: String(reward.name || 'Reward').slice(0, 80), amount_minor: toMinor(reward.amountMinor) });
+  return out;
+}
+
+/**
+ * C15: the ledger key loyalty-redeem writes for this order's redemption, which payment-proof reads
+ * (points: redeem:<check>:<reward>, stamps: stampredeem:<check>:<program>).
+ */
+export function loyaltyProofKey(rewardApplied, checkId) {
+  if (!rewardApplied) return null;
+  if (rewardApplied.idempotency_key) return String(rewardApplied.idempotency_key);
+  if (!checkId) return null;
+  if (rewardApplied.stamp_program_id) return `stampredeem:${checkId}:${rewardApplied.stamp_program_id}`;
+  if (rewardApplied.reward_id) return `redeem:${checkId}:${rewardApplied.reward_id}`;
+  return null;
+}
+
+/** Resolve a promise, or null after ms (a slow step must never hold a paid order back). */
+export function withinMs(promise, ms, sleep = sleepDefault) {
+  return Promise.race([Promise.resolve(promise).catch(() => null), sleep(ms).then(() => null)]);
+}
+
+/**
+ * C16, C19: plain words for a place_public_order refusal the customer can act on. Anything else
+ * gets the page's own fallback words.
+ */
+export function publicOrderRefusalMessage(placed, fallback) {
+  const r = placed && placed.reason;
+  const m = placed && placed.message;
+  if (r === 'tab_not_yours') return m || 'Ask the person who opened this tab for the table code.';
+  if (r === 'locked') return m || 'Too many wrong codes. Ask a member of staff.';
+  if (r === 'tab_closed') return m || 'This tab is already closed. Please start a new order.';
+  if (r === 'tab_not_verified') return m || 'We could not confirm the card hold for this tab. Please ask a member of staff.';
+  if (r === 'payment') return m || 'Please pay for your order to send it.';
+  if (r === 'rate') return m || 'Too many orders right now. Please try again in a few minutes.';
+  return fallback;
+}
+
+/**
+ * C16: the table code a new round carries. Only a code this phone really holds (from the stash,
+ * or from qr_tab_join / qr_tab_rounds as opener or member). Never a code made up in this page:
+ * a wrong code counts towards the tab's lock (8 per hour).
+ */
+export function tabRoundJoinCode(existingTab) {
+  if (!existingTab) return null;
+  const c = existingTab.tab_join_code
+    || (Array.isArray(existingTab.rounds) && existingTab.rounds[0] && existingTab.rounds[0].customer && existingTab.rounds[0].customer.tab_join_code)
+    || null;
+  const n = normalizeJoinCode(c);
+  return n.length >= 4 ? n : null;
+}
+
+/**
+ * C16: resume a stashed tab with the server's answer. qr_tab_rounds returns tab_join_code only to
+ * the opener and members; to anyone else it is null. The code the stash holds is never
+ * overwritten with that null (the resume screen keeps showing it).
+ */
+export function mergeResumeTab(stashed, serverTab) {
+  const merged = { ...(stashed || {}), ...(serverTab || {}) };
+  merged.tab_join_code = (serverTab && serverTab.tab_join_code) || (stashed && stashed.tab_join_code) || null;
+  if (stashed && 'joined' in stashed) merged.joined = stashed.joined;
+  return merged;
+}
+
+/** C17: how long the page keeps checking an unproven payment (about 3 minutes in total). */
+export const VERIFY_DELAYS_MS = Object.freeze([4000, 8000, 12000, 16000, 20000, 30000, 40000, 50000]);
+
+/**
+ * C17: after place_public_order answered payment_unverified, keep checking in the background:
+ * ask payment-proof again for the same payments, then verify_public_order_payment with the
+ * proofs. Never asks the customer to pay again, and stops on an answer that cannot change.
+ *
+ * @param {Function} o.requestProof ({processor, kind, paymentRef}) => {proofId}|{failed}|{unavailable}
+ * @param {Function} o.verify       (proofIds) => {data, error}  (verify_public_order_payment)
+ * @param {Array}    o.reprove      [{processor, kind, paymentRef}]
+ * @param {Array}    o.proofIds     proofs already had (sent again)
+ * @returns {Promise<{verified: boolean, reason?: string, checkId?: string}>}
+ */
+export async function verifyPaymentInBackground({
+  requestProof, verify, reprove = [], proofIds = [], delays = VERIFY_DELAYS_MS, sleep = sleepDefault, isMissing = isMissingRpc,
+} = {}) {
+  if (!verify) return { verified: false, reason: 'missing' };
+  const known = new Set((proofIds || []).filter(Boolean));
+  for (const wait of delays) {
+    if (wait) await sleep(wait);
+    for (const r of reprove || []) {
+      if (!r || !r.paymentRef || !requestProof) continue;
+      let p;
+      try { p = await requestProof(r); } catch { p = null; }
+      if (p && p.proofId) known.add(p.proofId);
+      if (p && p.unavailable) return { verified: false, reason: 'unsupported' };
+    }
+    let res;
+    try { res = await verify([...known]); } catch (e) { res = { error: e }; }
+    const { data, error } = res || {};
+    if (error) {
+      if (isMissing(error)) return { verified: false, reason: 'unsupported' };
+      continue;                                     // network: try again at the next step
+    }
+    if (data && data.ok && data.paid) return { verified: true, checkId: data.check_id || null };
+    if (data && data.ok === false && ['not_found', 'no_check', 'no_session'].includes(data.reason)) {
+      return { verified: false, reason: data.reason };
+    }
+  }
+  return { verified: false, reason: 'timeout' };
+}
+
+/**
+ * C17: is the tracker row still "being checked"? order_track_row answers payment_state; the old
+ * direct read carries it in customer. A paid order is never "checking", whatever an older copy
+ * of the customer block says.
+ */
+export function trackerPaymentChecking(row) {
+  if (!row || row.paid === true) return false;
+  const st = row.payment_state || (row.customer && row.customer.payment_state) || null;
+  return st === 'checking' || !!(row.customer && row.customer.payment_unverified === true);
+}

@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, ensureAuthToken, linkDevice, sendDeviceHeartbeat, KIOSK_SECRET_KEY } from '../lib/supabase';
-import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDeviceRead } from '../lib/deviceFence';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDeviceRead, pairingCodeHint } from '../lib/deviceFence';
 import { checkDeviceLink } from '../lib/deviceLink';
 import DeviceLinkBanner from '../components/DeviceLinkBanner';
 import KioskApp from './KioskApp';
@@ -84,10 +84,9 @@ function KioskSurfaceInner() {
     }
     setKiosk(data);
     try { localStorage.setItem('rpos-kiosk-row', JSON.stringify(data)); } catch { /* quota */ }
-    // FENCE STAGE 1 FALLBACK: the heartbeat function reports last_seen once 20260919a is in;
-    // before that the old direct write keeps Network Status alive.
-    const hb = await sendDeviceHeartbeat();
-    if (hb && hb.unsupported) await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', id);
+    // The heartbeat function reports last_seen once 20260919a is in; before that
+    // sendDeviceHeartbeat writes last_seen and app_version itself (FENCE STAGE 1 FALLBACK, A14).
+    await sendDeviceHeartbeat();
   }, []);
 
   useEffect(() => { if (paired) loadPaired(); }, [paired, loadPaired]);
@@ -115,6 +114,8 @@ function KioskSurfaceInner() {
     setError(null);
     const codeNorm = code.trim().toUpperCase();
     if (!normalizePairingCode(codeNorm)) { setError('Enter the pairing code'); return; }
+    const hint = pairingCodeHint(codeNorm);   // fix round: a mistyped server code, caught before the server sees it
+    if (hint) { setError(hint); return; }
     setWorking(true);
     try {
       // Database fence stage 1 (contract A4): claim_device_v2 binds this kiosk's session to its
@@ -200,6 +201,11 @@ function KioskSurfaceInner() {
           onChange={e => setCode(e.target.value.toUpperCase())}
           onKeyDown={e => { if (e.key === 'Enter') tryPair(); }}
           placeholder="XXXX-XXXX-XXXX"
+          maxLength={20}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
           style={{
             width: '100%',
             background: 'rgba(255,255,255,0.06)',

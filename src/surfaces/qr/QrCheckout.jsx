@@ -14,11 +14,12 @@
 // Open-tab path (with Stripe pre-auth + bar_tabs row) lands in commit 2.
 // Email receipts land in commit 3 (needs Resend/SES infra).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
+import { tabRoundJoinCode, publicOrderRefusalMessage } from '../../lib/publicOrder';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -190,8 +191,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     return true;
   }, [name, phone, email]);
 
+  // Fix round (19 Sep, contract C18): one ref per checkout, not per step. The Stripe payment is
+  // made before the step moves to 'pay' and carries metadata.ref, which the proof records as
+  // meta.order_ref; a new ref per step would have left every card order "Payment being checked".
+  const orderRefRef = useRef(null);
+  if (!orderRefRef.current) orderRefRef.current = `QR-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
   const orderShape = useMemo(() => {
-    const ref = `QR-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    const ref = orderRefRef.current;
     const customer = {
       name: name.trim(),
       phone: phone.replace(/\s+/g, ''),
@@ -240,8 +246,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         round_ref: ref,
         tip: tipAmount,   // this round's tip, see v5.8.9 note on round 1
       };
-      // The server ignores a phone sent code and keeps the tab's own (fence stage 1, C9).
+      // The server keeps the tab's own code in customer (fence stage 1, C9). Fix round (C16): a
+      // round from a phone that is neither the opener nor a member must CARRY the table code, so
+      // it goes as p_order.tab_join_code. Only a code this phone really holds is sent: a made up
+      // one would count towards the tab's lock (8 wrong per hour).
       const { tab_join_code: legacyJoinCode, ...roundCustomerForServer } = roundCustomer;
+      const roundCode = tabRoundJoinCode(existingTab);
       const queueRow = {
         ref,
         location_id: opsLocationId,
@@ -262,7 +272,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       const tabPi = roundCustomer.payment_intent_id || existingTab?.payment_intent_id || null;
       const tabProcessor = roundCustomer.processor || existingTab?.processor || 'stripe';
       const sendRound = () => placePublicOrder({
-        opsLocationId, order: { ...queueRow, customer: roundCustomerForServer },
+        opsLocationId, order: { ...queueRow, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },
         legacyInsert: async () => {
           const { error: qErr } = await supabase.from('order_queue').insert({ ...queueRow, customer: { ...roundCustomerForServer, tab_join_code: legacyJoinCode } });
           return qErr ? { ok: false, error: qErr } : { ok: true };
@@ -274,8 +284,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         if (pr.proofId) placed = await sendRound();
       }
       if (!placed.ok) {
-        if (placed.reason === 'tab_closed') throw new Error(placed.message || 'This tab is already closed. Please start a new order.');
-        throw new Error(placed.message || 'Could not add to tab.');
+        // tab_not_yours (no code and not a member), locked (too many wrong codes), tab_closed:
+        // the server's own words (fence C16).
+        throw new Error(publicOrderRefusalMessage(placed, placed.message || 'Could not add to tab.'));
       }
       try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
       // v5.5.157: refresh the floor-plan table session so the new round
@@ -537,6 +548,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         opsLocationId, order: queueRow, check: closedCheckRow,
         proofIds: proof.proofId ? [proof.proofId] : [],
         proofUnavailable: !!proof.unavailable, moneyTaken: true,
+        // Fence C17: a pay now order the server could not prove yet is checked again in the
+        // background. A tab has no paid check to verify (it is settled at close).
+        reprove: (!tabMode && payId) ? [{ processor, kind: 'card', paymentRef: payId }] : null,
         // FENCE STAGE 1 FALLBACK: today's direct inserts (with the browser made table code),
         // used only while place_public_order does not exist or the proof function is not live.
         legacyInsert: async () => {
@@ -552,9 +566,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       });
       if (!placed.ok) {
         console.error('[QrCheckout] order write failed AFTER payment:', placed.reason, placed.message);
+        // Fence C19: a refusal the server explains (for example 'payment': a QR order must be
+        // paid now or be a round of a tab) is shown in its words.
         setError(isOpenTab
-          ? (placed.message || `Card was authorised but we could not save the tab. Please show this to staff. Ref ${ref}.`)
-          : `Payment succeeded but we could not save the order. Please show this to staff. Ref ${ref}.`);
+          ? publicOrderRefusalMessage(placed, placed.message || `Card was authorised but we could not save the tab. Please show this to staff. Ref ${ref}.`)
+          : publicOrderRefusalMessage(placed, `Payment succeeded but we could not save the order. Please show this to staff. Ref ${ref}.`));
         return;
       }
       const joinCode = tabMode ? (placed.tabJoinCode || null) : null;

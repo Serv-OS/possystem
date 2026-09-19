@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
-import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFromClaim } from '../lib/deviceFence';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFromClaim, pairingCodeHint } from '../lib/deviceFence';
 import { getPendingCount, reconcilePendingChecks } from '../sync/DataSafe';
 import { getQueueSize, replayQueue } from '../sync/OfflineQueue';
 import { VERSION } from '../lib/version';
@@ -62,6 +62,10 @@ export default function PairingScreen({ onPaired }) {
     const typed = code.trim().toUpperCase();
     const clean = normalizePairingCode(code);
     if (!clean) return setError('Enter the pairing code from your back office');
+    // Fix round (19 Sep): a mistyped server code (a 0, 1, I or O, or a symbol short) is caught
+    // here, before the server answers it "no longer valid" as if it were an old code.
+    const hint = pairingCodeHint(code);
+    if (hint) return setError(hint);
     setLoading(true); setError('');
 
     if ((await unsentWork()) > 0) {
@@ -190,7 +194,11 @@ export default function PairingScreen({ onPaired }) {
           onChange={e => setCode(e.target.value.toUpperCase())}
           onKeyDown={e => e.key === 'Enter' && handlePair()}
           placeholder="XXXX-XXXX-XXXX"
-          maxLength={16}
+          maxLength={20}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
           style={{
             width: '100%', padding: '14px 16px', borderRadius: 12,
             border: `2px solid ${error ? '#fca5a5' : 'var(--bdr)'}`,
@@ -228,7 +236,8 @@ export default function PairingScreen({ onPaired }) {
         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, fontFamily: 'monospace' }}>v{VERSION}</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>
           Generate a pairing code in your back office:<br />
-          <strong>Back Office → Hardware → Terminals</strong>
+          <strong>Back Office → Hardware → Terminals</strong><br />
+          Type it with or without the dashes. A code works once, for 60 minutes.
         </div>
 
         {/* Admin bypass link */}

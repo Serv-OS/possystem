@@ -7335,7 +7335,12 @@ export const useStore = create((set, get) => ({
       const deliveryBlock = _isDeliveryish ? {
         channel: order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null),
         serviceType: _svcType,
-        paid: order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        paid: (order.customer?.payment_state === 'checking' || order.customer?.payment_unverified === true) && order.paid !== true
+          ? false
+          : order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        // Fence S3 (fix round): the server could not prove the payment yet. The ticket says so,
+        // never "UNPAID, COLLECT" (which would invite a second charge at the pass).
+        paymentChecking: (order.customer?.payment_state === 'checking' || order.customer?.payment_unverified === true) && order.paid !== true,
         // v5.5.850: partial channel payments — printed as PART-PAID £x / COLLECT £y (printer.js)
         paidAmount: order.customer?.paidAmount ?? null,
         due: order.customer?.due ?? null,

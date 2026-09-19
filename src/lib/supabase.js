@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { resolveAuthToken, lastAuthOutcome, AUTH_OUTCOMES, DEFAULT_STORAGE_KEY } from './authSession';
-import { runDeviceLink, FENCE_CAPS, isMissingRpc } from './deviceFence';
+import { runDeviceLink, FENCE_CAPS, isMissingRpc, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
 import { VERSION } from './version';
 
 // ── Ops DB (POS operational data — source of truth for all POS operations) ───
@@ -263,15 +263,34 @@ const dispatchLink = (name, detail) => {
 /**
  * Report this build to the server (contract A10). Resolves the device_heartbeat answer,
  * { unsupported: true } while the function does not exist, or null on a failure.
+ * Fix round (19 Sep):
+ *   A13: the device id saved on this till (or the kiosk id) goes with it, so the server can see a
+ *        device that is switched on but not linked (file B waits until there is none).
+ *   A14: while device_heartbeat does not exist, this till writes its own last_seen and
+ *        app_version, so the runbook's step 2 query shows every till is on this release BEFORE
+ *        file A. FENCE STAGE 1 FALLBACK (the KDS also keeps its db.js updateDeviceHeartbeat).
  */
 export const sendDeviceHeartbeat = async () => {
   if (!supabase) return null;
+  const local = readLocalDevice();
   try {
-    const { data, error } = await supabase.rpc('device_heartbeat', { p_app_version: VERSION, p_caps: [...FENCE_CAPS] });
-    if (error) return isMissingRpc(error) ? { unsupported: true } : null;
+    const { data, error } = await supabase.rpc('device_heartbeat', heartbeatArgs({ version: VERSION, caps: FENCE_CAPS, deviceId: local?.id }));
+    if (error) {
+      if (!isMissingRpc(error)) return null;
+      if (local?.id) {
+        try { await supabase.from('devices').update(legacyHeartbeatPatch({ version: VERSION })).eq('id', local.id); }
+        catch { /* best effort: the row stays as it was */ }
+      }
+      return { unsupported: true };
+    }
     return data || null;
   } catch { return null; }
 };
+
+// The last answer of the device link on this page (contract A12: OfflineQueue may start after
+// the boot link already answered, so it asks here instead of waiting for an event it missed).
+let _lastLinkOutcome = null;
+export const getLastDeviceLinkOutcome = () => _lastLinkOutcome;
 
 /**
  * Re-link this browser's device and tell the app what happened. allowLegacy runs today's
@@ -298,12 +317,18 @@ export const linkDevice = async ({ allowLegacy = true } = {}) => {
         const cur = JSON.parse(localStorage.getItem('rpos-device') || 'null');
         if (cur) { cur.pairingCode = code; localStorage.setItem('rpos-device', JSON.stringify(cur)); }
       } : null,
+      // Contract A15: once the fence functions exist a saved code can never re-link: drop it.
+      forgetLegacyCode: dev.kind === 'till' ? () => {
+        const cur = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+        if (cur && 'pairingCode' in cur) { delete cur.pairingCode; localStorage.setItem('rpos-device', JSON.stringify(cur)); }
+      } : null,
     });
   } catch (e) {
     console.warn('[boot] device link failed (non-fatal):', e?.message);
     res = { outcome: 'unknown', message: e?.message };
   }
   const detail = { ...res, kind: dev.kind, deviceId: dev.id };
+  _lastLinkOutcome = res.outcome;
   if (res.outcome === 'lost') dispatchLink('rpos-device-link-lost', detail);
   else if (res.outcome === 'relinked') dispatchLink('rpos-device-relinked', detail);
   else if (res.outcome === 'linked') dispatchLink('rpos-device-linked', detail);

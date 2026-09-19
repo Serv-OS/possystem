@@ -24,6 +24,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getPaymentSession } from '../_shared/ryft.ts';
 import {
   parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
+  processorOrderRef, loyaltyRewardValueMinor,
 } from '../_shared/paymentProofRules.js';
 
 const cors = {
@@ -87,6 +88,8 @@ Deno.serve(async (req) => {
       const pi = await stripe.paymentIntents.retrieve(ref, {}, { stripeAccount: msa.stripe_account_id });
       verdict = stripeProof(pi, kind, opsId);
       meta.status = (pi as any)?.status ?? null;
+      // Fix round (C18): the order this payment was made for, from the processor's own record.
+      meta.order_ref = processorOrderRef('stripe', pi);
     } else if (processor === 'ryft') {
       const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
         .select('ryft_account_id').in('location_id', platformIds).limit(1).maybeSingle();
@@ -95,11 +98,13 @@ Deno.serve(async (req) => {
       if (!ses.ok) return json({ ok: false, reason: ses.status === 404 ? 'not_seen' : 'processor' }, ses.status === 404 ? 404 : 502);
       verdict = ryftProof(ses.data, kind, { venueAccountId: accountId });
       meta.status = ses.data?.status ?? null;
+      meta.order_ref = processorOrderRef('ryft', ses.data);
     } else if (processor === 'adyen') {
       const { data: row } = await platformAdmin.from('adyen_payments')
-        .select('psp_reference, location_id, amount_minor, currency, success, capture_required, captured_at, last_event_code, raw')
+        .select('psp_reference, location_id, amount_minor, currency, success, capture_required, captured_at, last_event_code, merchant_reference, raw')
         .eq('psp_reference', ref).maybeSingle();
       verdict = adyenProof(row, kind, { venuePlatformIds: platformIds });
+      meta.order_ref = processorOrderRef('adyen', row);
     } else if (processor === 'gift') {
       const { data: tx } = await platformAdmin.from('gift_card_transactions')
         .select('type, company_id, amount_minor, card_id').eq('idempotency_key', ref).maybeSingle();
@@ -114,7 +119,15 @@ Deno.serve(async (req) => {
           .select('type, location_id').eq('idempotency_key', ref).maybeSingle();
         row = st;
       }
-      verdict = loyaltyProof(row, { companyId, opsLocationId: opsId });
+      // Fix round (C18): a reward with a fixed money value is recorded at that value (the
+      // server caps a declared loyalty discount at it); otherwise the marker 1.
+      let rewardValueMinor = 0;
+      if (row?.reward_id && companyId) {
+        const { data: reward } = await platformAdmin.from('loyalty_rewards')
+          .select('reward_value').eq('id', row.reward_id).eq('company_id', companyId).maybeSingle();
+        rewardValueMinor = loyaltyRewardValueMinor(reward);
+      }
+      verdict = loyaltyProof(row, { companyId, opsLocationId: opsId, rewardValueMinor });
     }
   } catch (e) {
     console.warn('[payment-proof] lookup failed:', (e as Error)?.message);
@@ -122,6 +135,7 @@ Deno.serve(async (req) => {
   }
 
   if (!verdict.ok) return json({ ok: false, reason: verdict.reason || 'not_seen' }, 409);
+  if (meta.order_ref == null) delete meta.order_ref;
 
   const { data: up, error: upErr } = await opsAdmin.from('payment_proofs').upsert({
     processor,

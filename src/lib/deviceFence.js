@@ -35,9 +35,43 @@ export function isPermissionError(error) {
   return /row-level security|permission denied|\b42501\b/i.test(msg);
 }
 
-/** Codes are compared without spaces or dashes, in capitals (the server does the same). */
+/**
+ * Codes are compared without spaces or dashes, in capitals (the server does the same). Fix round
+ * (19 Sep): anything that is not a letter or a digit is dropped, so a code typed with the long
+ * dash a phone keyboard or autocorrect puts in, dots or a stray space still
+ * pairs.
+ */
 export function normalizePairingCode(code) {
-  return String(code || '').replace(/[\s-]+/g, '').toUpperCase();
+  return String(code || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+}
+
+/** The server code alphabet (20260919a _fence_random_code): no 0, 1, I or O. */
+export const SERVER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const SERVER_CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{12}$/;
+
+/** A code in the server format (12 symbols), the only kind that pairs once 20260919a is in. */
+export function isServerPairingCode(code) {
+  return SERVER_CODE_RE.test(normalizePairingCode(code));
+}
+
+/**
+ * A plain hint for a code that is clearly a mistyped SERVER code, shown before anything is sent.
+ * The server answers every code that is not in its format "no longer valid" (it treats it as a
+ * code from before the fence), which would send staff to Back Office for a new code when they
+ * only misread one symbol. Old browser codes (a word and 4 digits, at most 10 symbols) are never
+ * hinted: they still pair while 20260919a is not run.
+ * Returns null (send it) or the words to show.
+ */
+export function pairingCodeHint(code) {
+  const c = normalizePairingCode(code);
+  if (!c) return 'Enter the pairing code from Back Office.';
+  if (c.length === 12 && !SERVER_CODE_RE.test(c)) {
+    return 'Check the code: pairing codes never use 0, 1, I or O (they are shown as XXXX-XXXX-XXXX).';
+  }
+  if (c.length >= 11 && c.length !== 12) {
+    return 'A pairing code has 12 letters and numbers, shown as XXXX-XXXX-XXXX. Check the code.';
+  }
+  return null;
 }
 
 /** A server code (12 symbols) is shown XXXX-XXXX-XXXX; an old short code is shown as is. */
@@ -195,6 +229,46 @@ export function releaseParkedItem(item) {
 }
 
 /**
+ * Contract A12 (fix round): when are parked permission writes released?
+ * - 'rpos-device-relinked': always (the link came back during this page).
+ * - 'rpos-device-linked': ONCE per page. After "Pair again" (or any pairing) the page reloads and
+ *   the boot link answers 'linked', not 'relinked', so the relinked event never fires and the
+ *   writes refused while the till was unlinked would stay parked for good. Once per page, because
+ *   the link check answers 'linked' again on every wake and after every refusal: releasing each
+ *   time would replay a write refused for another reason, be refused again and loop.
+ * Anything else (lost, unknown, unsupported, legacy) releases nothing.
+ */
+export function shouldReleaseParkedOnLink({ event, outcome, releasedOnLinkThisPage = false } = {}) {
+  if (event === 'rpos-device-relinked' || outcome === 'relinked') return true;
+  if (event === 'rpos-device-linked' || outcome === 'linked') return !releasedOnLinkThisPage;
+  return false;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Contract A10 and A13: the device_heartbeat arguments. p_device_id is the device id saved on this
+ * till (or the kiosk id), so the server can record a device that is switched on but not linked
+ * (file B refuses to run while one is). Only a real uuid is sent: anything else would make the
+ * whole call fail with 22P02 and the heartbeat would be lost.
+ */
+export function heartbeatArgs({ version, caps = FENCE_CAPS, deviceId } = {}) {
+  const args = { p_app_version: version == null ? null : String(version), p_caps: [...(caps || [])] };
+  if (deviceId && UUID_RE.test(String(deviceId))) args.p_device_id = String(deviceId);
+  return args;
+}
+
+/**
+ * Contract A14: while device_heartbeat does not exist (20260919a not run), the till writes its
+ * own last_seen and app_version, so the runbook's step 2 query proves every till is on this
+ * release BEFORE file A. Only those two columns: after file A a linked till may write nothing
+ * else on its row, and the status is never touched here. FENCE STAGE 1 FALLBACK.
+ */
+export function legacyHeartbeatPatch({ version, now = () => new Date().toISOString() } = {}) {
+  return { last_seen: now(), app_version: version == null ? null : String(version).slice(0, 40) };
+}
+
+/**
  * Re-link this till at boot (contract A2), falling back to today's path while the fence
  * functions do not exist.
  *
@@ -203,11 +277,12 @@ export function releaseParkedItem(item) {
  * @param {Function} o.readLegacyCode   () => Promise<string|null>, today's SELECT pairing_code (fallback only)
  * @param {Function} o.saveSecret       (secret) => void
  * @param {Function} o.saveLegacyCode   (code) => void (fallback only)
+ * @param {Function} o.forgetLegacyCode () => void, drop the saved pairing code (contract A15)
  * @param {boolean}  o.allowLegacy      run today's claim when the new functions are missing (boot only)
  * @returns {Promise<{outcome: string, reason?: string, message?: string}>}
  *   outcome: 'skipped' | 'legacy' | 'unsupported' | 'linked' | 'relinked' | 'lost' | 'unknown'
  */
-export async function runDeviceLink({ rpc, device, readLegacyCode, saveSecret, saveLegacyCode, allowLegacy = true } = {}) {
+export async function runDeviceLink({ rpc, device, readLegacyCode, saveSecret, saveLegacyCode, forgetLegacyCode, allowLegacy = true } = {}) {
   if (!rpc || !device || !device.id) return { outcome: 'skipped' };
   const call = async (name, args) => {
     try { return (await rpc(name, args)) || {}; } catch (e) { return { error: e || { message: 'failed' } }; }
@@ -252,15 +327,13 @@ export async function runDeviceLink({ rpc, device, readLegacyCode, saveSecret, s
     return { outcome: 'linked' };
   }
 
-  // 3. Not bound. A till paired before this release still has its code (until file 2).
-  if (device.pairingCode) {
-    const c = await call('claim_device_v2', { p_code: device.pairingCode });
-    if (!c.error && c.data && c.data.ok && String(c.data.device_id) === String(device.id)) {
-      keepSecret(c.data);
-      return { outcome: 'relinked' };
-    }
-    if (c.error && !isMissingRpc(c.error)) return { outcome: 'unknown', message: c.error.message };
-    if (!c.error && c.data && c.data.ok === false && !secretRefusal) secretRefusal = c.data;
+  // 3. Not bound. Contract A15 (fix round): a code saved before this release can never re-link
+  // a till once the fence functions exist (file A retired every old code, and there is no
+  // re-link by code at all: only the device secret re-links). So it is not sent (it would only
+  // be answered "no longer valid"), and it is dropped from rpos-device. Only the device
+  // secret, or pairing again with a new code from Back Office, links this till again.
+  if (device.pairingCode && forgetLegacyCode) {
+    try { forgetLegacyCode(); } catch { /* storage */ }
   }
 
   const reason = (secretRefusal && secretRefusal.reason) || 'not_bound';

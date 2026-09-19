@@ -159,3 +159,39 @@ export function allowProofRequest(history, now, { max = 30, windowMs = 10 * 60 *
   if (recent.length >= max) return { ok: false, history: recent };
   return { ok: true, history: [...recent, now] };
 }
+
+/**
+ * Fix round (19 Sep 2026, contract C18): the processor's OWN order reference for this payment,
+ * recorded as meta.order_ref on the proof. place_public_order and verify_public_order_payment
+ * never let a proof whose order_ref names another order pay this one (a payment made for one
+ * order cannot be replayed onto a bigger one). Null when the processor record names none (the
+ * proof then counts for the order it is attached to, as before).
+ *   stripe  payment_intent.metadata.ref (every customer page sets it)
+ *   adyen   the ledger row's merchant_reference, else raw.merchantReference (our order ref)
+ *   ryft    the session metadata ref or order_ref, when the page set one
+ */
+export function processorOrderRef(processor, record) {
+  if (!record || typeof record !== 'object') return null;
+  let ref = null;
+  if (processor === 'stripe') ref = record.metadata && record.metadata.ref;
+  else if (processor === 'adyen') ref = record.merchant_reference || (record.raw && (record.raw.merchantReference || record.raw.merchant_reference));
+  else if (processor === 'ryft') ref = record.metadata && (record.metadata.ref || record.metadata.order_ref);
+  const s = ref == null ? '' : String(ref).trim();
+  // Only an order ref shape (place_public_order: letters, digits, dot, underscore, colon, dash,
+  // up to 40). Adyen references of other flows (terminal jobs, refunds, tab captures) are not
+  // order refs.
+  if (!s || !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,39}$/.test(s)) return null;
+  if (processor === 'adyen' && /^(tj-|rf:|tab-capture:|tab-cancel:)/.test(s)) return null;
+  return s;
+}
+
+/**
+ * C18: a loyalty reward's fixed money value in pence (loyalty_rewards.reward_value.amount_minor),
+ * or 0 when the reward has none (a free item, a percentage): the proof then keeps the marker 1.
+ * The server caps a declared loyalty discount at this value.
+ */
+export function loyaltyRewardValueMinor(reward) {
+  const v = reward && reward.reward_value;
+  if (!v || typeof v !== 'object') return 0;
+  return posInt(v.amount_minor);
+}

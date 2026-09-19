@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { publicRead } from '../../lib/publicOrderClient';
+import { trackerPaymentChecking, UNVERIFIED_MESSAGE } from '../../lib/publicOrder';
 import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
@@ -59,7 +60,9 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           // avoids re-rendering the whole tree every 5s.
           setOrder(prev => {
             if (!prev) return data;
+            // Fix round (C17): a change of payment state (checking to verified) is a change too.
             if (prev.status === data.status && prev.total === data.total
+                && trackerPaymentChecking(prev) === trackerPaymentChecking(data)
                 && JSON.stringify(prev.items) === JSON.stringify(data.items)) return prev;
             console.log('[OrderTracker]', orderRef, 'status:', prev?.status, '→', data.status);
             return data;
@@ -272,6 +275,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total paid</span>
               <span style={{ fontSize: 16, fontWeight: 900 }}>{money(Number(order.total || 0))}</span>
             </div>
+            {/* Fix round (C17): the server has not proven the payment yet. The customer is told
+                the venue is confirming it, and is never asked to pay again. */}
+            {trackerPaymentChecking(order) && (
+              <div role="status" style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: '#f59e0b1f', border: '1px solid #f59e0b66', fontSize: 12.5, fontWeight: 700, lineHeight: 1.5 }}>
+                {UNVERIFIED_MESSAGE} You do not need to pay again.
+              </div>
+            )}
             {order.collection_time && (
               <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: `${theme.accent}15`, border: `1px solid ${cardBdr}`, fontSize: 12 }}>
                 {/* The promised time is stored for ASAP orders too, with the

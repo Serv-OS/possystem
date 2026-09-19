@@ -23,8 +23,8 @@ import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
-import { publicRead } from '../../lib/publicOrderClient';
-import { openTabsFromResult, chooseTrackKey, UNVERIFIED_MESSAGE } from '../../lib/publicOrder';
+import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
+import { openTabsFromResult, chooseTrackKey, UNVERIFIED_MESSAGE, mergeResumeTab, publicOrderRefusalMessage } from '../../lib/publicOrder';
 import { isMissingRpc } from '../../lib/deviceFence';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
@@ -109,6 +109,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // your payment" note for an order placed without proof of payment.
   const [trackKey, setTrackKey] = useState(null);
   const [unverifiedNotice, setUnverifiedNotice] = useState(null);
+  // Fix round (C17): the page keeps checking an unproven payment in the background
+  // (publicOrderClient startPaymentVerification); once it is proven the notice goes.
+  useEffect(() => {
+    const onVerified = (e) => { if (!trackerRef || e?.detail?.ref === trackerRef) setUnverifiedNotice(null); };
+    window.addEventListener('rpos-public-payment-verified', onVerified);
+    return () => window.removeEventListener('rpos-public-payment-verified', onVerified);
+  }, [trackerRef]);
   const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
   // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
   // always dine-in. Online mode keeps the existing welcome flow.
@@ -224,7 +231,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         } else if (!rr.data || !rr.data.tab) {
           clearStashedTab(location.online_slug, tableId);
         } else {
-          setResumeTab({ ...stashed, ...rr.data.tab, joined: stashed.joined });
+          // Fence C16: qr_tab_rounds returns the table code only to the opener and members;
+          // the code the stash holds is kept (the resume screen shows it).
+          setResumeTab(mergeResumeTab(stashed, rr.data.tab));
           setResumeRounds(Array.isArray(rr.data.rounds) ? rr.data.rounds : []);
         }
       } catch (e) { console.warn('[OnlineSurface] resume check failed:', e?.message); }
@@ -703,7 +712,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               enterTab(tab);   // FENCE STAGE 1 FALLBACK: the old list carried the payment id
             } else if (tab.tab_handle && stashed?.payment_intent_id && stashed.tab_ref && stashed.tab_ref === tab.tab_ref) {
               const { data } = await supabase.rpc('qr_tab_rounds', { p_location_id: String(opsLocationId), p_payment_intent_id: String(stashed.payment_intent_id) });
-              if (data?.tab) enterTab({ ...stashed, ...data.tab, rounds: data.rounds || [] });
+              if (data?.tab) enterTab({ ...mergeResumeTab(stashed, data.tab), rounds: data.rounds || [] });
               else { setPickedTableTab(tab); setTableConfirmed(true); }
             } else {
               setPickedTableTab(tab);
@@ -731,6 +740,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             // Database fence stage 1 (contract C6, gap G5): the code is checked on the server
             // (qr_tab_join, 8 wrong tries per tab per hour), never against a code in this page.
             if (openTabAtTable.tab_handle) {
+              // Fix round (C16): a session FIRST, so the server remembers this phone as a member
+              // of the tab and its later rounds need no code.
+              await ensureCustomerSession();
               const { data, error } = await supabase.rpc('qr_tab_join', {
                 p_location_id: String(opsLocationId), p_tab_handle: String(openTabAtTable.tab_handle), p_join_code: String(code),
               });
@@ -738,7 +750,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                 enterTab({ ...data.tab, rounds: data.rounds || [] });
                 return true;
               }
-              return { ok: false, message: data?.message || null, locked: data?.reason === 'locked' || data?.reason === 'staff_only' };
+              return {
+                ok: false,
+                message: data?.reason === 'locked' || data?.reason === 'tab_not_yours'
+                  ? publicOrderRefusalMessage(data, null)
+                  : (data?.message || null),
+                locked: data?.reason === 'locked' || data?.reason === 'staff_only',
+              };
             }
             // FENCE STAGE 1 FALLBACK: the old list carried the code (only while qr_table_open_tabs does not exist).
             if (openTabAtTable.tab_join_code && String(code) === String(openTabAtTable.tab_join_code)) {

@@ -16,6 +16,8 @@ import {
   claimRefusalMessage, deviceEntryFromClaim, classifyDeviceRead, decideDeviceRefresh,
   trustSharedRead, linkStateFromStatus, shouldShowLinkBanner, isParkedPermissionItem,
   releaseParkedItem, runDeviceLink, issuePairingCodeWithFallback, linkBannerText,
+  pairingCodeHint, isServerPairingCode, SERVER_CODE_ALPHABET, shouldReleaseParkedOnLink,
+  heartbeatArgs, legacyHeartbeatPatch,
 } from './deviceFence.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -240,15 +242,27 @@ test('A2: a bound till that has its secret asks for nothing more', async () => {
   assert.equal(calls.length, 1);
 });
 
-test('A2: an unbound till paired before this release re-links once with its saved code', async () => {
+test('A15: once the fence functions exist a saved code is never sent, and it is dropped', async () => {
   const saved = [];
-  const { rpc } = fakeRpc({
+  let forgot = 0;
+  const { rpc, calls } = fakeRpc({
     device_status: { data: { bound: false }, error: null },
     claim_device_v2: { data: { ok: true, device_id: 'd1', device_secret: 'fresh' }, error: null },
   });
-  const r = await runDeviceLink({ rpc, device: { id: 'd1', pairingCode: 'OLDCODE' }, saveSecret: (s) => saved.push(s) });
-  assert.equal(r.outcome, 'relinked');
-  assert.deepEqual(saved, ['fresh']);
+  const r = await runDeviceLink({ rpc, device: { id: 'd1', pairingCode: 'OLDCODE' }, saveSecret: (s) => saved.push(s), forgetLegacyCode: () => { forgot += 1; } });
+  assert.equal(r.outcome, 'lost', 'only the secret, or pairing again, links the till');
+  assert.deepEqual(calls.map(c => c[0]), ['device_status'], 'no claim with an old code (file A retired them all)');
+  assert.equal(forgot, 1, 'the dead code is removed from rpos-device');
+  assert.deepEqual(saved, []);
+});
+
+test('A15: before 20260919a the saved code is still today\'s boot claim (fallback), never dropped', async () => {
+  let forgot = 0;
+  const { rpc, calls } = fakeRpc({ claim_device: { data: 'L1', error: null } });
+  const r = await runDeviceLink({ rpc, device: { id: 'd1', pairingCode: 'DONUT-4821' }, forgetLegacyCode: () => { forgot += 1; } });
+  assert.equal(r.outcome, 'legacy');
+  assert.deepEqual(calls.map(c => c[0]), ['device_status', 'claim_device']);
+  assert.equal(forgot, 0);
 });
 
 test('A2: a refused secret and no code is "lost" with the server\'s reason (the banner)', async () => {
@@ -270,11 +284,11 @@ test('A2: a network error is unknown, never lost', async () => {
   assert.equal((await runDeviceLink({ rpc: rpc2, device: { id: 'd1', deviceSecret: 's' } })).outcome, 'unknown');
 });
 
-test('A2: a code that belongs to another device never counts as this till', async () => {
+test('A2: a till bound as ANOTHER device never counts as this till', async () => {
   const saved = [];
   const { rpc } = fakeRpc({
-    device_status: { data: { bound: false }, error: null },
-    claim_device_v2: { data: { ok: true, device_id: 'OTHER', device_secret: 'x' }, error: null },
+    device_status: { data: { bound: true, device_id: 'OTHER', has_secret: true }, error: null },
+    device_issue_secret: { data: { ok: true, device_id: 'OTHER', device_secret: 'x' }, error: null },
   });
   const r = await runDeviceLink({ rpc, device: { id: 'd1', pairingCode: 'C' }, saveSecret: (s) => saved.push(s) });
   assert.equal(r.outcome, 'lost');
@@ -302,7 +316,7 @@ test('the pairing screen never pairs locally when the claim was refused', () => 
   assert.ok(refused > 0 && stored > refused);
   assert.ok(src.slice(refused, refused + 200).includes('return setError(claimRefusalMessage(res, rpcErr));'), 'a refusal returns before anything is stored');
   assert.ok(src.includes('if (rpcErr && isMissingRpc(rpcErr)) {') && src.includes('const old = await legacyPair(typed);'), 'FENCE STAGE 1 FALLBACK only when the function is missing');
-  assert.ok(src.includes('maxLength={16}') && src.includes('placeholder="XXXX-XXXX-XXXX"'));
+  assert.ok(src.includes('maxLength={20}') && src.includes('placeholder="XXXX-XXXX-XXXX"'));
 });
 
 test('the kiosk only forgets its pairing on a successful read of status removed', () => {
@@ -349,4 +363,89 @@ test('A6 fallback: before 20260919a the browser code is written the old way', as
 
 test('A11: DevSwitcher (read every code of the venue) is deleted', () => {
   assert.equal(fs.existsSync(fileURLToPath(new URL('../components/DevSwitcher.jsx', import.meta.url))), false);
+});
+
+// ── Fix round (19 Sep 2026): docs/FENCE_STAGE_1_APP.md section 11 ──────────────
+
+test('pairing screen: the server code format pairs with or without dashes, spaces or a long dash', () => {
+  const code = 'ABCD-EFGH-JK23';
+  for (const typed of ['ABCD-EFGH-JK23', 'abcdefghjk23', 'ABCD EFGH JK23', ' abcd\u2013efgh\u2014jk23 ', 'ABCD.EFGH.JK23']) {
+    assert.equal(normalizePairingCode(typed), 'ABCDEFGHJK23', typed);
+    assert.equal(isServerPairingCode(typed), true, typed);
+    assert.equal(pairingCodeHint(typed), null, `${typed} is sent as is`);
+  }
+  assert.equal(formatPairingCode('abcdefghjk23'), code);
+  assert.equal(SERVER_CODE_ALPHABET.length, 32);
+  for (const bad of '01IO') assert.equal(SERVER_CODE_ALPHABET.includes(bad), false);
+});
+
+test('pairing screen: a mistyped server code is caught before the server calls it "no longer valid"', () => {
+  assert.match(pairingCodeHint('ABCD-EFGH-JK20'), /never use 0, 1, I or O/, 'a zero');
+  assert.match(pairingCodeHint('ABCD-EFGH-IK23'), /never use 0, 1, I or O/, 'an I');
+  assert.match(pairingCodeHint('ABCD-EFGH-JK2'), /12 letters and numbers/, 'one short');
+  assert.match(pairingCodeHint('ABCD-EFGH-JK234'), /12 letters and numbers/, 'one long');
+  assert.match(pairingCodeHint(''), /Enter the pairing code/);
+  // Old browser codes (a word and 4 digits) still go to the server while 20260919a is not run.
+  for (const old of ['DONUT-4821', 'NOODLE-1034', 'BAKER-3225']) assert.equal(pairingCodeHint(old), null, old);
+});
+
+test('pairing screens use the hint and take a 14 character code (old code stopped at 12)', () => {
+  const ps = read('../surfaces/PairingScreen.jsx');
+  const hint = ps.indexOf('const hint = pairingCodeHint(code);');
+  assert.ok(hint > 0 && hint < ps.indexOf("await supabase.rpc('claim_device_v2'"), 'the hint runs before the claim');
+  const ks = read('../surfaces/KioskSurface.jsx');
+  assert.ok(ks.includes('const hint = pairingCodeHint(codeNorm);') && ks.includes('maxLength={20}'));
+});
+
+test('A12: parked writes are released on the first "linked" of a page (after Pair again) and on every relink', () => {
+  assert.equal(shouldReleaseParkedOnLink({ event: 'rpos-device-relinked' }), true);
+  assert.equal(shouldReleaseParkedOnLink({ event: 'rpos-device-relinked', releasedOnLinkThisPage: true }), true);
+  assert.equal(shouldReleaseParkedOnLink({ event: 'rpos-device-linked' }), true, 'the boot link after a pairing reload');
+  assert.equal(shouldReleaseParkedOnLink({ event: 'rpos-device-linked', releasedOnLinkThisPage: true }), false, 'never a loop on every wake');
+  assert.equal(shouldReleaseParkedOnLink({ outcome: 'linked' }), true);
+  for (const outcome of ['lost', 'unknown', 'unsupported', 'legacy', 'skipped']) assert.equal(shouldReleaseParkedOnLink({ outcome }), false, outcome);
+  const oq = read('../sync/OfflineQueue.js');
+  assert.ok(oq.includes("window.addEventListener('rpos-device-linked', async () => {"));
+  assert.ok(oq.includes('const bootLink = getLastDeviceLinkOutcome();'), 'a boot link that answered before the queue started still counts');
+  // Release keeps every guard: only parked permission items, buffered time kept, replay unchanged.
+  const parked = { id: 9, status: 'failed_permanent', permanentFailure: true, attempts: 5, ts: 42, lastError: 'permission denied for table bar_tabs' };
+  assert.equal(isParkedPermissionItem(parked), true);
+  assert.equal(releaseParkedItem(parked).ts, 42);
+  assert.ok(oq.includes('if (_guard && !reconciled && isStateWrite(it)) continue;'), 'before() still guards');
+  assert.ok(oq.includes('try { keep = _guard.keep(it) !== false; } catch { keep = true; }'), 'keep() still guards');
+  assert.ok(read('./supabase.js').includes('_lastLinkOutcome = res.outcome;'));
+});
+
+test('A13: the heartbeat names the device this till thinks it is (a real uuid only)', () => {
+  const id = '6f1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+  assert.deepEqual(heartbeatArgs({ version: '5.9.9', deviceId: id }), { p_app_version: '5.9.9', p_caps: [...FENCE_CAPS], p_device_id: id });
+  assert.deepEqual(heartbeatArgs({ version: '5.9.9', deviceId: 'admin' }), { p_app_version: '5.9.9', p_caps: [...FENCE_CAPS] }, 'never a 22P02');
+  assert.deepEqual(heartbeatArgs({ version: '5.9.9' }), { p_app_version: '5.9.9', p_caps: [...FENCE_CAPS] });
+  const src = read('./supabase.js');
+  assert.ok(src.includes("supabase.rpc('device_heartbeat', heartbeatArgs({ version: VERSION, caps: FENCE_CAPS, deviceId: local?.id }))"));
+});
+
+test('A14: before 20260919a the till writes only its own last_seen and version', () => {
+  const p = legacyHeartbeatPatch({ version: '5.9.9', now: () => '2026-09-19T10:00:00.000Z' });
+  assert.deepEqual(p, { last_seen: '2026-09-19T10:00:00.000Z', app_version: '5.9.9' });
+  assert.ok(!('status' in p), 'the status is never touched (a linked till may write only its heartbeat after file A)');
+  const src = read('./supabase.js');
+  const i = src.indexOf("supabase.from('devices').update(legacyHeartbeatPatch({ version: VERSION })).eq('id', local.id)");
+  assert.ok(i > 0, 'the fallback write');
+  assert.ok(src.slice(Math.max(0, i - 400), i).includes('if (!isMissingRpc(error)) return null;'), 'only while the function is missing');
+  assert.ok(!read('../surfaces/KioskSurface.jsx').includes("update({ last_seen: new Date().toISOString() }).eq('id', id)"), 'the kiosk no longer writes it twice');
+});
+
+test('refused writes never lose work: Pair again to the same venue wipes nothing, another venue asks first', () => {
+  const sb = read('./supabase.js');
+  assert.ok(sb.includes('if (activeLocId && lastActive && activeLocId !== lastActive) {'), 'only a real venue change wipes local data');
+  assert.ok(sb.includes("'rpos-device',") && sb.includes("'rpos-kiosk-secret',"), 'the pairing record and kiosk secret survive any wipe');
+  const ps = read('../surfaces/PairingScreen.jsx');
+  const send = ps.indexOf('try { await reconcilePendingChecks(); }');
+  const claim = ps.indexOf("await supabase.rpc('claim_device_v2'");
+  assert.ok(send > 0 && claim > send, 'unsent sales and queued writes are sent BEFORE the claim');
+  const ask = ps.indexOf('if (prevLoc && data.location_id && prevLoc !== data.location_id) {');
+  const fence = ps.indexOf('enforceTenantFence(data.location_id);');
+  assert.ok(ask > 0 && fence > ask, 'a different venue with unsent work asks before anything is wiped');
+  assert.ok(read('../components/DeviceLinkBanner.jsx').includes('<PairingScreen onPaired={() => window.location.reload()} />'), 'the reload is what A12 releases the parked writes on');
 });

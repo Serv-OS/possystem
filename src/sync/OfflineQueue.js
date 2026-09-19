@@ -9,7 +9,8 @@
  */
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
-import { isParkedPermissionItem, releaseParkedItem, isPermissionError } from '../lib/deviceFence';
+import { isParkedPermissionItem, releaseParkedItem, isPermissionError, shouldReleaseParkedOnLink } from '../lib/deviceFence';
+import { getLastDeviceLinkOutcome } from '../lib/supabase';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -425,13 +426,32 @@ export async function releaseParkedPermissionWrites() {
   return released;
 }
 
+// Contract A12 (fix round): the boot link after a pairing answers 'linked', so parked writes are
+// released on the FIRST 'rpos-device-linked' of the page as well (shouldReleaseParkedOnLink).
+let _releasedOnLinkThisPage = false;
+
+async function releaseOnLink(supabase, { event, outcome }) {
+  if (!shouldReleaseParkedOnLink({ event, outcome, releasedOnLinkThisPage: _releasedOnLinkThisPage })) return;
+  if (event === 'rpos-device-linked' || outcome === 'linked') _releasedOnLinkThisPage = true;
+  await releaseParkedPermissionWrites();
+  if (_isOnline) replayQueue(supabase);
+}
+
 export function initOfflineQueue(supabase) {
   _supabaseRef = supabase;
 
   window.addEventListener('rpos-device-relinked', async () => {
-    await releaseParkedPermissionWrites();
-    if (_isOnline) replayQueue(supabase);
+    await releaseOnLink(supabase, { event: 'rpos-device-relinked' });
   });
+  window.addEventListener('rpos-device-linked', async () => {
+    await releaseOnLink(supabase, { event: 'rpos-device-linked' });
+  });
+  // The boot link may have answered before this queue started (it runs from useSupabaseInit,
+  // this from SyncBridge): act on that answer instead of waiting for an event already gone.
+  const bootLink = getLastDeviceLinkOutcome();
+  if (bootLink === 'linked' || bootLink === 'relinked') {
+    setTimeout(() => { releaseOnLink(supabase, { outcome: bootLink }).catch(() => {}); }, 0);
+  }
 
   window.addEventListener('online', () => {
     _isOnline = true;

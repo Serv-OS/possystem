@@ -16,6 +16,8 @@ import {
   requestProofWithRetry, buildPlaceOrderArgs, placePublicOrderWithFallback, settleQrTabWithFallback,
   chooseTrackKey, trackLinkParams, normalizeJoinCode, joinCodeReady, tabFromRoundsResult,
   openTabsFromResult, qrSessionWriteAction, UNVERIFIED_MESSAGE,
+  onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs, publicOrderRefusalMessage,
+  tabRoundJoinCode, mergeResumeTab, verifyPaymentInBackground, VERIFY_DELAYS_MS, trackerPaymentChecking,
 } from './publicOrder.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -95,7 +97,7 @@ test('no proof: the order is still placed, unpaid and marked unverified (money i
     locationId: 'L1', order: row, check, proofIds: [], moneyTaken: true, sleep: noSleep,
   });
   assert.equal(r.ok, true); assert.equal(r.paid, false); assert.equal(r.unverified, true);
-  assert.equal(UNVERIFIED_MESSAGE, 'Your order is in. The venue will confirm your payment.');
+  assert.equal(UNVERIFIED_MESSAGE, 'Your order is in. The venue is confirming your payment.');
 });
 
 test('a network error is retried (the RPC is idempotent per session and ref), then surfaced', async () => {
@@ -252,4 +254,150 @@ test('C12: the busy time no longer reads tables, tabs and orders from a customer
   const fn = src.slice(src.indexOf('export async function liveOrderCount('), src.indexOf('export function kitchenLoadFromStore('));
   assert.ok(fn.includes("supabase.rpc('online_kitchen_load'"));
   for (const t of ['active_sessions', 'bar_tabs', 'order_queue', 'floor_tables']) assert.ok(!fn.includes(`from('${t}')`), `no direct read of ${t}`);
+});
+
+// ── Fix round (19 Sep 2026), docs/FENCE_STAGE_1_APP.md section 11 ──────────────
+
+test('C15: the online total is what the customer is charged across card and gift card', () => {
+  // A 30.00 bill, 2.00 auto offer already net, 5.00 promo, 3.00 reward, 10.00 on a gift card:
+  // the card pays 30 - 2 - 5 - 3 - 10 = 10.00, the order total is 10 + 10 = 20.00.
+  assert.equal(onlineChargedTotalMinor({ remainingMinor: 1000, giftAppliedMinor: 1000 }), 2000);
+  assert.equal(onlineChargedTotalMinor({ remainingMinor: 0, giftAppliedMinor: 2350 }), 2350, 'gift only');
+  assert.equal(onlineChargedTotalMinor({ remainingMinor: 1234 }), 1234, 'card only');
+  assert.equal(onlineChargedTotalMinor({ remainingMinor: -5, giftAppliedMinor: 'x' }), 0);
+});
+
+test('C15: the order declares its discounts in pence (auto, promo, loyalty)', () => {
+  const d = buildDeclaredDiscounts({
+    autoDiscounts: [{ label: '2 for 1 cookies', value: 2 }, { label: 'zero', value: 0 }],
+    promo: { code: 'SUMMER5', amountMinor: 500 },
+    reward: { name: 'Free coffee', amountMinor: 300 },
+  });
+  assert.deepEqual(d, [
+    { type: 'auto', label: '2 for 1 cookies', amount_minor: 200 },
+    { type: 'promo', label: 'SUMMER5', amount_minor: 500 },
+    { type: 'loyalty', label: 'Free coffee', amount_minor: 300 },
+  ]);
+  assert.deepEqual(buildDeclaredDiscounts({}), []);
+});
+
+test('C15: the server sees an honest order as paid (the rule, mirrored)', () => {
+  // place_public_order: due = max(order total, check total, goods - declared discounts - slack);
+  // paid = card + gift proofs >= due. Goods 30.00, auto 2, promo 5, reward 3 (proven), gift 10.
+  const items = [{ price: 10, qty: 3, mods: [] }];
+  const goods = items.reduce((s, it) => s + Math.round(it.price * it.qty * 100), 0);
+  const declared = buildDeclaredDiscounts({ autoDiscounts: [{ value: 2 }], promo: { code: 'P', amountMinor: 500 }, reward: { name: 'R', amountMinor: 300 } });
+  const floor = Math.max(0, goods - declared.reduce((s, x) => s + x.amount_minor, 0) - (items.length + 2));
+  const total = onlineChargedTotalMinor({ remainingMinor: 1000, giftAppliedMinor: 1000 });
+  const checkTotal = 1000;   // the check books the card amount (net of gift)
+  const due = Math.max(total, checkTotal, floor);
+  assert.equal(due, 2000);
+  assert.ok(1000 /* card */ + 1000 /* gift */ >= due, 'card plus gift proofs cover it: paid, not "checking"');
+  // Before the fix round the total was the gross 28.00 and nothing was declared: never paid.
+  assert.ok(1000 + 1000 < Math.max(2800, goods - (items.length + 2)));
+});
+
+test('C15: the loyalty proof key is the one loyalty-redeem writes', () => {
+  assert.equal(loyaltyProofKey({ reward_id: 'r1' }, 'chk-OL-1-x'), 'redeem:chk-OL-1-x:r1');
+  assert.equal(loyaltyProofKey({ stamp_program_id: 's1' }, 'chk-OL-1-x'), 'stampredeem:chk-OL-1-x:s1');
+  assert.equal(loyaltyProofKey({ idempotency_key: 'k9', reward_id: 'r1' }, 'c'), 'k9');
+  assert.equal(loyaltyProofKey(null, 'c'), null);
+});
+
+test('C15: a slow reward redeem never holds a paid order back', async () => {
+  const fast = await withinMs(Promise.resolve('done'), 7000, async () => new Promise(() => {}));
+  assert.equal(fast, 'done');
+  const slow = await withinMs(new Promise(() => {}), 7000, async () => {});
+  assert.equal(slow, null, 'placed anyway, it arrives "Payment being checked"');
+  const failed = await withinMs(Promise.reject(new Error('x')), 7000, async () => new Promise(() => {}));
+  assert.equal(failed, null);
+});
+
+test('C15: both online paths send the charged total, the declared discounts and all proofs', () => {
+  const oc = read('../surfaces/online/OnlineCheckout.jsx');
+  assert.equal((oc.match(/total: chargedTotal\(\),/g) || []).length, 2, 'card path and gift only path');
+  assert.equal((oc.match(/order: \{ \.\.\.queueRow, discounts: declaredDiscounts\(\) \}/g) || []).length, 2);
+  assert.ok(oc.includes('proofIds: [...(proof.proofId ? [proof.proofId] : []), ...giftProofIds, ...rewardProofIds],'), 'the card path sends card, gift and loyalty proofs');
+  const card = oc.slice(oc.indexOf('const onPaymentSuccess = async'), oc.indexOf('const placed = await placePublicOrder({', oc.indexOf('const onPaymentSuccess = async')));
+  assert.ok(card.includes("processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key"), 'the gift proof after commitGift');
+  assert.ok(card.includes('await redeemLoyaltyBeforePlacing()'), 'the reward is redeemed BEFORE placing');
+  // The legacy insert writes queueRow itself: order_queue has no discounts column.
+  assert.ok(oc.includes("const { error: insErr } = await supabase.from('order_queue').insert(queueRow);"));
+});
+
+test('C16: a round carries the table code only when this phone really holds it', () => {
+  assert.equal(tabRoundJoinCode({ tab_join_code: '123456' }), '123456');
+  assert.equal(tabRoundJoinCode({ rounds: [{ customer: { tab_join_code: '4321' } }] }), '4321', 'an old 4 digit tab');
+  assert.equal(tabRoundJoinCode({ tab_join_code: null, rounds: [{ customer: {} }] }), null, 'never a code made up here (it would count towards the lock)');
+  assert.equal(tabRoundJoinCode(null), null);
+  const qc = read('../surfaces/qr/QrCheckout.jsx');
+  assert.ok(qc.includes('const roundCode = tabRoundJoinCode(existingTab);'));
+  assert.ok(qc.includes("order: { ...queueRow, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },"), 'p_order.tab_join_code');
+  assert.ok(qc.includes("throw new Error(publicOrderRefusalMessage(placed, placed.message || 'Could not add to tab.'));"));
+});
+
+test('C16: the resume screen keeps the stash code when the server does not return it', () => {
+  const stashed = { tab_ref: 'QR-1', payment_intent_id: 'pi_1', tab_join_code: '654321', joined: true };
+  const m = mergeResumeTab(stashed, { tab_ref: 'QR-1', payment_intent_id: 'pi_1', tab_join_code: null, has_join_code: true, table_label: '4.1' });
+  assert.equal(m.tab_join_code, '654321');
+  assert.equal(m.table_label, '4.1');
+  assert.equal(m.joined, true);
+  assert.equal(mergeResumeTab(stashed, { tab_join_code: '111222' }).tab_join_code, '111222', 'the server code wins when it sends one');
+  const os = read('../surfaces/online/OnlineSurface.jsx');
+  assert.ok(os.includes('setResumeTab(mergeResumeTab(stashed, rr.data.tab));'));
+  const join = os.indexOf("await supabase.rpc('qr_tab_join', {");
+  assert.ok(join > 0 && os.slice(join - 300, join).includes('await ensureCustomerSession();'), 'a session BEFORE joining, so the server remembers the member');
+});
+
+test('C16, C19: refusals the customer can act on are shown in plain words', () => {
+  assert.equal(publicOrderRefusalMessage({ reason: 'tab_not_yours' }, 'x'), 'Ask the person who opened this tab for the table code.');
+  assert.match(publicOrderRefusalMessage({ reason: 'locked' }, 'x'), /Too many wrong codes/);
+  assert.equal(publicOrderRefusalMessage({ reason: 'payment' }, 'x'), 'Please pay for your order to send it.');
+  assert.equal(publicOrderRefusalMessage({ reason: 'payment', message: 'Server words.' }, 'x'), 'Server words.');
+  assert.equal(publicOrderRefusalMessage({ reason: 'error' }, 'fallback'), 'fallback');
+  assert.equal(publicOrderRefusalMessage(null, 'fallback'), 'fallback');
+});
+
+test('C17: an unproven payment is checked again in the background, then verified', async () => {
+  const calls = [];
+  let n = 0;
+  const r = await verifyPaymentInBackground({
+    reprove: [{ processor: 'stripe', kind: 'card', paymentRef: 'pi_1' }], proofIds: ['g1'], sleep: async () => {},
+    requestProof: async (req) => { calls.push(['proof', req.paymentRef]); n += 1; return n < 2 ? { failed: true } : { proofId: 'c1' }; },
+    verify: async (ids) => { calls.push(['verify', ids]); return ids.includes('c1') ? { data: { ok: true, paid: true, check_id: 'chk-9' } } : { data: { ok: true, paid: false } }; },
+  });
+  assert.deepEqual(r, { verified: true, checkId: 'chk-9' });
+  assert.deepEqual(calls, [['proof', 'pi_1'], ['verify', ['g1']], ['proof', 'pi_1'], ['verify', ['g1', 'c1']]]);
+});
+
+test('C17: it stops on an answer that cannot change, and gives up after about 3 minutes', async () => {
+  const total = VERIFY_DELAYS_MS.reduce((a, b) => a + b, 0);
+  assert.ok(total >= 150000 && total <= 240000, `about 3 minutes (${total} ms)`);
+  const stop = await verifyPaymentInBackground({ sleep: async () => {}, verify: async () => ({ data: { ok: false, reason: 'no_check' } }) });
+  assert.deepEqual(stop, { verified: false, reason: 'no_check' });
+  const missing = await verifyPaymentInBackground({ sleep: async () => {}, verify: async () => ({ error: { code: 'PGRST202' } }) });
+  assert.equal(missing.reason, 'unsupported');
+  let tries = 0;
+  const timeout = await verifyPaymentInBackground({ sleep: async () => {}, verify: async () => { tries += 1; return tries % 2 ? { error: { message: 'Failed to fetch' } } : { data: { ok: true, paid: false } }; } });
+  assert.deepEqual(timeout, { verified: false, reason: 'timeout' });
+  assert.equal(tries, VERIFY_DELAYS_MS.length, 'a network error is tried again at the next step');
+});
+
+test('C17: the customer is told the venue is confirming the payment, never to pay again', () => {
+  assert.equal(UNVERIFIED_MESSAGE, 'Your order is in. The venue is confirming your payment.');
+  assert.ok(!/pay again|try again|retry/i.test(UNVERIFIED_MESSAGE));
+  assert.equal(trackerPaymentChecking({ paid: false, payment_state: 'checking' }), true, 'order_track_row');
+  assert.equal(trackerPaymentChecking({ customer: { payment_state: 'checking' } }), true, 'the old direct read');
+  assert.equal(trackerPaymentChecking({ paid: true, payment_state: 'checking' }), false, 'paid wins');
+  assert.equal(trackerPaymentChecking({ paid: false, payment_state: 'verified' }), false);
+  const tr = read('../surfaces/online/OrderTracker.jsx');
+  assert.ok(tr.includes('trackerPaymentChecking(prev) === trackerPaymentChecking(data)'), 'a change of payment state re-renders');
+  assert.ok(tr.includes('{UNVERIFIED_MESSAGE} You do not need to pay again.'));
+  const client = read('./publicOrderClient.js');
+  assert.ok(client.includes("if (placed && placed.ok && placed.unverified && placed.path === 'rpc' && order && order.ref) {"));
+  assert.ok(client.includes("supabase.rpc('verify_public_order_payment', { p_location_id: String(opsLocationId), p_ref: String(ref), p_proof_ids: ids })"));
+  for (const f of ['../surfaces/qr/QrCheckout.jsx', '../surfaces/catering/CateringCheckout.jsx']) {
+    assert.ok(read(f).includes("[{ processor, kind: 'card', paymentRef: payId }]"), `${f} checks its card payment again`);
+  }
+  assert.ok(read('../surfaces/online/OnlineSurface.jsx').includes("window.addEventListener('rpos-public-payment-verified', onVerified);"));
 });
