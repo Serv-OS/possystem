@@ -31,6 +31,46 @@
 
 import { suggestMatches, matchOptions, buildLinkKey, normaliseItemName, displayNameOf } from './ezcaterMatch.js';
 
+/**
+ * Every row a menu sync writes is keyed by this plus its exact full name. The same constant as
+ * SYNC_KEY_PREFIX in supabase/functions/_shared/ezcaterMenuSync.ts (a test holds them together).
+ */
+export const SYNC_KEY_PREFIX = 'exact:';
+
+/**
+ * True for an option key a sync writes today: 'exact:' plus a JSON array of the item, group and
+ * value (review round 6, optionIdentity in _shared/ezcaterMenuSync.ts). Keys of earlier rounds
+ * ('exact:group|value', 'exact:item|group|value') are not.
+ */
+export function isCurrentOptionKey(ezKey) {
+  const k = typeof ezKey === 'string' ? ezKey : '';
+  if (k.indexOf(SYNC_KEY_PREFIX) !== 0) return false;
+  const t = k.slice(SYNC_KEY_PREFIX.length);
+  if (t.charAt(0) !== '[') return false;
+  try {
+    const a = JSON.parse(t);
+    return Array.isArray(a) && a.length === 3 && a.every((x) => typeof x === 'string') && !!a[0] && !!a[2];
+  } catch { return false; }
+}
+
+/**
+ * What decided_as says, as a person reads it. An option's decided_as holds its item, group and
+ * value apart (a JSON object, decidedAsOf in _shared/ezcaterMenuSync.ts): written out here as
+ * '<item> › <group>: <value>'. Any other text is shown as it is.
+ */
+export function readableDecidedAs(text) {
+  const t = typeof text === 'string' ? text.trim() : '';
+  if (t.charAt(0) !== '{') return t;
+  try {
+    const o = JSON.parse(t);
+    if (!o || typeof o !== 'object' || typeof o.value !== 'string') return t;
+    const group = typeof o.group === 'string' ? o.group.trim() : '';
+    const item = typeof o.item === 'string' ? o.item.trim() : '';
+    const value = group ? `${group}: ${o.value.trim()}` : o.value.trim();
+    return item ? `${item} \u203a ${value}` : value;
+  } catch { return t; }
+}
+
 // ----------------------------------------------------------------------------
 // "Matching is not switched on yet"
 // ----------------------------------------------------------------------------
@@ -107,8 +147,19 @@ function seenOf(row) {
  * be shown (nothing to label it) and cannot be saved (the key check would
  * reject it). Dropping it is strictly better than rendering a blank line the
  * operator can click.
+ *
+ * opts.syncReady (items_list menu_sync_ready: migration 20260919m has run) marks
+ * every row no menu sync wrote (its key is not a synced key) as offMenu. From
+ * then on orders only use synced rows, by exact name and published id, so such
+ * a row (a sighting or a match saved before the sync) can never route anything:
+ * the card lists it apart, read only, never as work to do.
+ *
+ * opts.menuAt (the last whole sync's time, ezcater_menu_syncs.last_ok_at) marks
+ * a synced row that sync did not write as gone: ezCater no longer sells that
+ * exact name (renamed, resized or taken off). Its match still routes a change to
+ * an order placed before, so it stays listed, last, and is not work to do.
  */
-export function toRow(dbRow) {
+export function toRow(dbRow, opts) {
   if (!dbRow || typeof dbRow !== 'object') return null;
   const ezKey = first(dbRow, 'ez_key', 'ezKey');
   const ezName = first(dbRow, 'ez_name', 'ezName');
@@ -119,19 +170,71 @@ export function toRow(dbRow) {
   const optionId = first(dbRow, 'option_id', 'optionId');
   const matchedBy = first(dbRow, 'matched_by', 'matchedBy');
 
+  const source = first(dbRow, 'source', 'source') || 'auto';
+  const syncedAt = first(dbRow, 'synced_at', 'syncedAt');
+  // A row a menu sync wrote: keyed by its exact full name (SYNC_KEY_PREFIX).
+  // An option row is keyed by its item, group and value, structured (isCurrentOptionKey, review
+  // round 6). One keyed by an earlier round's rule was written by an earlier sync: orders never
+  // use it (isCurrentSyncKey in _shared/ezcaterMenuSync.ts), so it is listed with the older rows.
+  const synced = ezKey.indexOf(SYNC_KEY_PREFIX) === 0
+    && (kind !== 'option' || isCurrentOptionKey(ezKey));
+
+  // EXACT MEANS EXACT (mirrors trustedTarget in supabase/functions/_shared/ezcaterMenuSync.ts).
+  // On a SYNCED row only a staff match or an exact auto link (matched_by 'exact') on an ITEM routes
+  // an order. Any other automatic link on a synced row (an option's included: options are never
+  // auto linked, review round 6) routes nothing, so the card lists it as not matched yet, never
+  // as done.
+  // items_list also says when an automatic link routes nothing for a reason only the server can
+  // tell (auto_idle: a name that is not plain, or a row an earlier sync keyed).
+  const untrusted = synced && (menuItemId || optionId)
+    && (!(source === 'manual' || (source === 'auto' && matchedBy === 'exact' && kind === 'item'))
+      || (source === 'auto' && dbRow.auto_idle === true));
+
   let state = 'unmatched';
-  if (menuItemId || optionId) state = 'matched';
-  else if (matchedBy === 'ignored') state = 'ignored';
+  if ((menuItemId || optionId) && !untrusted) state = 'matched';
+  else if (!menuItemId && !optionId && matchedBy === 'ignored') state = 'ignored';
+
+  // A synced SIZE row: one size of an item ezCater sells in several sizes. Like every synced row
+  // it is saved by the key the sync gave it (saveBody), never a key rebuilt from its name.
+  const ezSizeName = kind === 'item' && synced ? first(dbRow, 'ez_size_name', 'ezSizeName') : null;
+  const sizeRow = !!ezSizeName;
+  // A single size item's ONE size (ez_only_size): staff see "Turkey Sandwich, sold only as Box"
+  // and never match blind. It is part of the row's exact full name.
+  const ezOnlySize = kind === 'item' && synced && !sizeRow ? first(dbRow, 'ez_only_size', 'ezOnlySize') : null;
+
+  // LOOK AGAIN: a staff decision made for a different name than this synced row's exact full name
+  // (carried over from before the sync). Worked out by ezcater-connect items_list (lookAgainOf in
+  // _shared/ezcaterMenuSync.ts). A sync never changes a staff decision; this asks a person to check it.
+  const lookAgainRaw = dbRow.look_again !== undefined ? dbRow.look_again : dbRow.lookAgain;
+  const lookAgain = lookAgainRaw === true && (state === 'matched' || state === 'ignored');
+  const offMenu = !!(opts && opts.syncReady) && !synced;
+  const menuAtMs = opts && opts.menuAt ? Date.parse(opts.menuAt) : NaN;
+  const syncedMs = syncedAt ? Date.parse(syncedAt) : NaN;
+  const gone = synced && Number.isFinite(menuAtMs) && Number.isFinite(syncedMs) && syncedMs < menuAtMs;
 
   return {
     kind,
     ezKey,
     ezName,
+    ezSizeName: sizeRow ? ezSizeName : null,
+    sizeRow,
+    ezOnlySize,
+    ezCategory: first(dbRow, 'ez_category', 'ezCategory'),
+    syncedAt,
+    synced,
+    gone,
     ezGroup: first(dbRow, 'ez_group', 'ezGroup'),
+    // The ezCater item a synced option customizes: its match is for that item only.
+    ezItemName: kind === 'option' && synced ? first(dbRow, 'ez_item_name', 'ezItemName') : null,
     menuItemId,
     optionId,
-    source: first(dbRow, 'source', 'source') || 'auto',
+    source,
     matchedBy,
+    untrusted: !!untrusted,
+    lookAgain,
+    // What the person saw, readable (an option's decided_as holds its parts apart).
+    decidedAs: readableDecidedAs(first(dbRow, 'decided_as', 'decidedAs')) || null,
+    offMenu,
     seenCount: seenOf(dbRow),
     lastSeenAt: first(dbRow, 'last_seen_at', 'lastSeenAt'),
     state,
@@ -147,15 +250,27 @@ const seenAtMs = (row) => {
 const STATE_ORDER = { unmatched: 0, matched: 1, ignored: 2 };
 
 /**
- * Unmatched first, then matched, then the ones a person silenced. Inside each
- * group, most recently seen first, then most seen, then by name so the list is
- * the same list every time and does not shuffle under the operator's cursor
- * while they work down it.
+ * Where a row sorts: unmatched, then matches to look at again, then matched, then silenced, then
+ * names ezCater no longer sells (gone), then rows no sync wrote (offMenu).
+ */
+const rankOf = (r) => {
+  if (r && r.offMenu) return 5;
+  if (r && r.gone) return 4;
+  if (r && r.lookAgain) return 0.5;
+  return STATE_ORDER[r && r.state] ?? 3;
+};
+
+/**
+ * Unmatched first, then matches to look at again, then matched, then the ones
+ * a person silenced (names ezCater no longer sells, then rows no sync wrote,
+ * once the sync is set up, last). Inside each group, most recently seen first,
+ * then most seen, then by name so the list is the same list every time and does
+ * not shuffle under the operator's cursor while they work down it.
  */
 export function sortRows(rows) {
   return (Array.isArray(rows) ? rows.slice() : []).sort((a, b) => {
-    const sa = STATE_ORDER[a.state] ?? 3;
-    const sb = STATE_ORDER[b.state] ?? 3;
+    const sa = rankOf(a);
+    const sb = rankOf(b);
     if (sa !== sb) return sa - sb;
     const ta = seenAtMs(a);
     const tb = seenAtMs(b);
@@ -167,10 +282,10 @@ export function sortRows(rows) {
 }
 
 /** Table rows straight from the edge function into the list the screen renders. */
-export function rowsFrom(list) {
+export function rowsFrom(list, opts) {
   const out = [];
   for (const raw of Array.isArray(list) ? list : []) {
-    const row = toRow(raw);
+    const row = toRow(raw, opts);
     if (row) out.push(row);
   }
   return sortRows(out);
@@ -182,19 +297,88 @@ export function ofKind(rows, kind) {
   return (Array.isArray(rows) ? rows : []).filter((r) => r && r.kind === want);
 }
 
-/** Counts for one tab. `outstanding` is the number the heading reports. */
+/**
+ * Counts for one tab. `outstanding` is the number the heading reports. A name ezCater no longer
+ * sells (gone) is not one of their items any more and never work to do, so it is not counted
+ * here at all (goneCount counts it).
+ */
 export function countRows(rows) {
   const list = Array.isArray(rows) ? rows : [];
   let matched = 0;
   let ignored = 0;
   let unmatched = 0;
   for (const r of list) {
-    if (!r) continue;
+    if (!r || r.gone) continue;
     if (r.state === 'matched') matched++;
     else if (r.state === 'ignored') ignored++;
     else unmatched++;
   }
   return { total: matched + ignored + unmatched, matched, ignored, unmatched, outstanding: unmatched };
+}
+
+/** How many synced names ezCater no longer sells (gone). */
+export function goneCount(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && r.gone).length;
+}
+
+/** The note about names ezCater no longer sells. '' when there are none. */
+export function goneLine(n) {
+  const c = Number(n) || 0;
+  if (!c) return '';
+  return c === 1
+    ? '1 name ezCater no longer sells is listed last. Its match only reaches a change to an older order.'
+    : `${c} names ezCater no longer sells are listed last. Their matches only reach changes to older orders.`;
+}
+
+/** The rows orders can use: every row, until the sync is set up; then only synced rows. */
+export function liveRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && !r.offMenu);
+}
+
+/** Rows no menu sync wrote, once the sync is set up: they can never route an order. */
+export function offMenuRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && r.offMenu);
+}
+
+/** How many staff decisions to look at again (never a gone name, never a row no sync wrote). */
+export function lookAgainCount(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && r.lookAgain && !r.offMenu && !r.gone).length;
+}
+
+/** The plain line under the heading when some matches need a second look. '' when none do. */
+export function lookAgainLine(n, kind) {
+  const c = Number(n) || 0;
+  if (!c) return '';
+  const noun = kind === 'option' ? 'option' : 'item';
+  return c === 1
+    ? `1 ${noun} to check again: its ezCater name is not the one it was matched as.`
+    : `${c} ${noun}s to check again: their ezCater names are not the ones they were matched as.`;
+}
+
+/** The note on one row to look at again: what the person saw when they matched it. */
+export function lookAgainNote(row) {
+  if (!row || !row.lookAgain) return '';
+  const was = row.decidedAs ? ` It was matched as: ${row.decidedAs}.` : '';
+  return `The ezCater name is not the one that was matched.${was} Orders print it by name until you check it.`;
+}
+
+/** The note about rows no sync wrote, once the sync is set up. '' when there are none. */
+export function offMenuLine(n) {
+  const c = Number(n) || 0;
+  if (!c) return '';
+  return `${c} older ${c === 1 ? 'name is' : 'names are'} from before the menu sync. Orders only use matches made on the synced menu, so ${c === 1 ? 'it is' : 'they are'} kept apart, to read only.`;
+}
+
+/**
+ * One row saved before the menu sync, read only: its name, and what it was matched to. Kept so
+ * staff can see their earlier work (the sync carries each match over to the synced name it was
+ * made for, and asks staff to check the rest).
+ */
+export function olderNote(row, ourItems, ourGroups) {
+  if (!row) return '';
+  if (row.state === 'matched') return `Matched to ${matchedLabel(row, ourItems, ourGroups)} before the menu sync`;
+  if (row.state === 'ignored') return 'Not on our menu, before the menu sync';
+  return 'Not matched before the menu sync';
 }
 
 // ----------------------------------------------------------------------------
@@ -209,16 +393,49 @@ export function outstandingLine(counts, kind) {
   const c = counts || {};
   const n = Number(c.outstanding) || 0;
   const noun = kind === 'option' ? 'options' : 'items';
-  if (!c.total) return `Nothing from ezCater yet. Their ${noun} show up here after the first order.`;
+  if (!c.total) return `Nothing from ezCater yet. Press Sync ezCater menu to load their ${noun}.`;
   if (n === 0) return `All their ${noun} are matched.`;
   if (n === 1) return `1 of their ${noun} is not matched yet.`;
   return `${n} of their ${noun} are not matched yet.`;
 }
 
+/**
+ * Their name as the screen shows it: a size row carries its size, and a single size item says
+ * the one size it is sold as, so nobody matches "Turkey Sandwich" not knowing it is a Box.
+ */
+export function theirLabel(row) {
+  if (!row) return '';
+  if (row.sizeRow && row.ezSizeName) return `${row.ezName} (${row.ezSizeName})`;
+  if (row.ezOnlySize) return `${row.ezName}, sold only as ${row.ezOnlySize}`;
+  // An option is matched for one item: "Large, on Pizza" is not Large on Salad.
+  if (row.kind === 'option' && row.ezItemName) return `${row.ezName}, on ${row.ezItemName}`;
+  return row.ezName;
+}
+
+/**
+ * The line under the Sync button: the last sync, in plain words. `sync` is the
+ * ezcater_menu_syncs row items_list returns (null before the first sync).
+ */
+export function syncLine(sync) {
+  if (!sync) return 'Not synced yet.';
+  const when = (v) => {
+    const t = v ? Date.parse(v) : NaN;
+    return Number.isFinite(t) ? new Date(t).toLocaleString() : null;
+  };
+  if (sync.status === 'running') return 'Syncing now.';
+  const ok = when(sync.last_ok_at);
+  const last = ok ? `Last synced ${ok}.` : 'Not synced yet.';
+  if (sync.status === 'ok' || !sync.error) return last;
+  return `${last} The last try did not complete: ${String(sync.error).slice(0, 200)}`;
+}
+
 /** The small grey line under a row: how often ezCater has sent it. */
 export function seenLine(row) {
   const n = row ? row.seenCount : 0;
-  if (!n) return 'Not on an order yet';
+  const orders = n === 1 ? 'on 1 order' : `on ${n} orders`;
+  // A name ezCater no longer sells: its match only reaches changes to orders placed before.
+  if (row && row.gone) return n ? `No longer on their menu, ${orders}` : 'No longer on their menu';
+  if (!n) return row && row.synced ? 'On their menu, not ordered yet' : 'Not on an order yet';
   return n === 1 ? 'On 1 order' : `On ${n} orders`;
 }
 
@@ -340,7 +557,13 @@ export function suggestionsFor(row, ourItems, ourGroups, opts) {
   }
 
   const prices = pricesById(ourItems);
-  return suggestMatches({ name: row.ezName }, ourItems, { limit }).map((s) => ({
+  // A size row is suggested on its item AND size, so "Caesar Salad" "Half Tray" puts our
+  // "Caesar Salad Half" first. Suggestions only: a person still picks.
+  // A single size item is suggested on its item and its one size too ("Turkey Sandwich" "Box"
+  // puts our "Turkey Sandwich Box" first).
+  const theirName = row.sizeRow && row.ezSizeName ? `${row.ezName} ${row.ezSizeName}`
+    : (row.ezOnlySize ? `${row.ezName} ${row.ezOnlySize}` : row.ezName);
+  return suggestMatches({ name: theirName }, ourItems, { limit }).map((s) => ({
     id: s.itemId,
     name: s.name,
     note: '',
@@ -484,11 +707,6 @@ export function matchedLabel(row, ourItems, ourGroups) {
 export function saveBody(row, choice) {
   if (!row || !row.ezName) return { error: 'nothing to save' };
   const kind = row.kind === 'option' ? 'option' : 'item';
-  const line = kind === 'option'
-    ? { name: row.ezName, groupLabel: row.ezGroup || '' }
-    : { name: row.ezName };
-  const ezKey = buildLinkKey(line, kind);
-  if (!ezKey) return { error: 'that name cannot be matched' };
 
   const c = choice || {};
   const ignored = c.ignored === true;
@@ -499,6 +717,34 @@ export function saveBody(row, choice) {
   if (kind === 'option' && !ignored && menuItemId && !optionId) {
     return { error: 'an option needs one of our options, not an item' };
   }
+
+  // A SYNCED row (after 20260919m) is saved by the key the sync gave it: its exact full name.
+  // The edge function only ever UPDATES such a row, so this can decide a row but never invent
+  // one. It also sends back what this screen showed (the name, and the size), which the edge
+  // function records as decided_as.
+  if (row.synced) {
+    return {
+      body: {
+        synced: true,
+        kind,
+        ez_key: row.ezKey,
+        ez_name: row.ezName,
+        ez_group: kind === 'option' ? (row.ezGroup || null) : null,
+        menu_item_id: menuItemId,
+        option_id: optionId,
+        ignored,
+        seen_size: kind === 'item' ? (row.ezSizeName || row.ezOnlySize || null) : null,
+        // The item this screen showed the option on: part of what the match was made for.
+        seen_item: kind === 'option' ? (row.ezItemName || null) : null,
+      },
+    };
+  }
+
+  const line = kind === 'option'
+    ? { name: row.ezName, groupLabel: row.ezGroup || '' }
+    : { name: row.ezName };
+  const ezKey = buildLinkKey(line, kind);
+  if (!ezKey) return { error: 'that name cannot be matched' };
 
   return {
     body: {
@@ -537,6 +783,9 @@ export function applySaved(rows, sent) {
       optionId,
       matchedBy: sent.ignored ? 'ignored' : null,
       source: 'manual',
+      // A save is a person looking at it now: nothing left to check.
+      lookAgain: false,
+      untrusted: false,
       state,
     };
   });

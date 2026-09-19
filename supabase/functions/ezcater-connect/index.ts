@@ -17,7 +17,13 @@
 //     items_list     -> the ezCater item names seen on this venue, and what
 //                       each one is matched to
 //     items_save     -> match one of their names to one of ours, silence it, or
-//                       clear it back to unmatched
+//                       clear it back to unmatched (after 20260919m: a synced row,
+//                       by the key the sync gave it, update only)
+//     menu_sync      -> "Sync ezCater menu": read the current ezCater menus of the
+//                       venue's caterers into ezcater_item_links, one row per exact
+//                       full name, exact names auto linked (_shared/ezcaterMenuSync.ts)
+//   POST { action: 'menu_sync_due' } with the service role (pg_cron, hourly):
+//                       the daily sync of every venue that is due
 //
 // There is NO OAuth. ezCater issues a static token by email request, generated
 // once in the Partner Portal, and it CANNOT be recovered if lost. So unlike
@@ -34,9 +40,17 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   caterers as listCaterers, subscribers as listSubscribers, createSubscriber, updateSubscriber,
   createSubscription, deleteSubscriptions, EZ_EVENTS, EzcaterError, isSchemaError,
-  isSandboxApi, resolveEzcaterApi,
+  isSandboxApi, resolveEzcaterApi, ez,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
+import {
+  readAllLinks, isMissingSyncColumn, isCurrentSyncKey, LINK_PAGE_SIZE, lookAgainOf, decidedAsOf, trustedTarget,
+} from '../_shared/ezcaterMenuSync.ts';
+import { runMenuSync, runDueSyncs } from '../_shared/ezcaterMenuSyncRun.ts';
+
+/** ezCater, as the menu sync asks it: one connection's token and address. */
+const askFor = (conn: any) => (op: string, query: string, vars: Record<string, unknown> = {}) =>
+  ez<any>(String(conn.api_token), op, query, vars, conn.api_url ?? null);
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -288,6 +302,19 @@ Deno.serve(async (req) => {
   const action = String(body?.action || '');
   const opsLocationId = String(body?.ops_location_id || body?.location_id || '');
   if (!action) return json({ error: 'action required' }, 400);
+
+  // The daily menu sync. pg_cron only (public.call_edge_fn sends the service role), never a
+  // browser: it touches every venue.
+  if (action === 'menu_sync_due') {
+    const bearer = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+    if (!bearer || bearer !== SERVICE_ROLE) return json({ error: 'Unauthorized' }, 401);
+    try {
+      const out = await runDueSyncs(sb, askFor, { isSchemaError });
+      return json({ ok: true, ...out });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
   if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
 
   const access = await requireAccess(req, opsLocationId);
@@ -520,34 +547,94 @@ Deno.serve(async (req) => {
       // screen has to work before he does.
 
       case 'items_list': {
-        const { data, error } = await sb.from('ezcater_item_links')
-          .select('kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at')
-          .eq('location_id', opsLocationId)
-          .order('last_seen_at', { ascending: false, nullsFirst: false })
-          .limit(1000);
-        if (error) {
-          if (isAbsentTable(error)) return json({ ok: true, enabled: false, links: [] });
-          return json({ error: error.message }, 500);
+        // PAGED: a synced menu passes PostgREST's 1000 row cap. The sync columns are asked for
+        // first and dropped when 20260919m has not run yet (menu_sync_ready false).
+        const base = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
+        // ez_only_size: the one size of a single size item, shown so staff never match blind.
+        // ez_item_name: the item an option row customizes (options are scoped to their item).
+        // decided_as: what a person saw when they saved the row, for "look again" below.
+        const syncCols = ', ez_size_name, ez_only_size, ez_category, synced_at, decided_as';
+        let res = await readAllLinks(sb, opsLocationId, base + syncCols + ', ez_item_name');
+        // A copy of 20260919m from before review round 5 has every sync column but ez_item_name:
+        // still the synced side (option rows then show without their item until it is run again).
+        if (!res.ok && isMissingSyncColumn(res.error) && /ez_item_name/i.test(String(res.error?.message || '') + ' ' + String(res.error?.details || ''))) {
+          res = await readAllLinks(sb, opsLocationId, base + syncCols);
         }
-        return json({ ok: true, enabled: true, links: data || [] });
+        let syncReady = true;
+        if (!res.ok && isMissingSyncColumn(res.error)) {
+          syncReady = false;
+          res = await readAllLinks(sb, opsLocationId, base);
+        }
+        if (!res.ok) {
+          if (isAbsentTable(res.error)) return json({ ok: true, enabled: false, links: [] });
+          return json({ error: res.error?.message || 'could not read the matches' }, 500);
+        }
+        let lastSync: any = null;
+        if (syncReady) {
+          const { data: sy } = await sb.from('ezcater_menu_syncs')
+            .select('status, started_at, finished_at, last_ok_at, counts, error')
+            .eq('location_id', opsLocationId).maybeSingle();
+          lastSync = sy || null;
+        }
+        // LOOK AGAIN: a staff decision on a synced row made for a different name than the row's
+        // exact full name (carried over from before the sync). Worked out here, with the sync's
+        // own name rules (lookAgainOf).
+        const links = syncReady
+          ? res.rows.map((r: any) => {
+            const l = lookAgainOf(r);
+            // An automatic link that routes nothing (review round 6: on an option, or on a name that
+            // is not plain, written by an earlier sync and not yet cleared): the card lists it as
+            // not matched yet, never as done.
+            const autoIdle = r?.source === 'auto' && !!(r?.menu_item_id || r?.option_id) && !trustedTarget(r);
+            return { ...r, look_again: l.lookAgain, now_as: l.now, auto_idle: autoIdle };
+          })
+          : res.rows;
+        return json({
+          ok: true, enabled: true, links, complete: res.complete,
+          page_size: LINK_PAGE_SIZE, menu_sync_ready: syncReady, last_sync: lastSync,
+        });
+      }
+
+      case 'menu_sync': {
+        // Staff only: requireAccess above proved a signed in Back Office user of THIS venue (or
+        // super_admin, or the service role). A paired till or a kiosk session has no such user.
+        const out = await runMenuSync(sb, opsLocationId, { reason: 'staff', makeAsk: askFor, isSchemaError });
+        // Always 200: { ok, status, message } is the answer, and the card shows message as is.
+        return json(out);
       }
 
       case 'items_save': {
+        // WHICH SIDE OF 20260919m. Before it, a save is exactly main's (a row keyed by the name,
+        // the rules orders use then). After it, orders only use SYNCED rows, keyed by their exact
+        // full name, so a save names a synced row by its key and only ever UPDATES it: it can
+        // decide a row but never create one. A save of any other row after the migration comes
+        // from a Back Office tab loaded before it (or before this release) and would decide a row
+        // no order reads, so it is refused and the page asks to be reloaded.
+        const probe = await sb.from('ezcater_item_links').select('synced_at').eq('location_id', opsLocationId).limit(1);
+        if (probe.error && isAbsentTable(probe.error)) return json({ ok: true, enabled: false });
+        if (probe.error && !isMissingSyncColumn(probe.error)) return json({ error: probe.error.message }, 500);
+        const syncReady = !probe.error;
+
         const kind = body?.kind === 'option' ? 'option' : 'item';
         const ezName = String(body?.ez_name || '').trim();
         const ezGroup = kind === 'option' ? (String(body?.ez_group || '').trim() || null) : null;
         if (!ezName) return json({ error: 'ez_name required' }, 400);
 
-        // The key is rebuilt from the name with the SAME rules the matcher uses
-        // at read time, never taken from the client. A key that did not agree
-        // with its own name would be a row nothing ever looks up again.
-        const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
-        if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
-
         const ignored = body?.ignored === true;
         const menuItemId = ignored ? null : (String(body?.menu_item_id || '').trim() || null);
         const optionId = ignored ? null : (String(body?.option_id || '').trim() || null);
         if (kind === 'item' && optionId) return json({ error: 'an item cannot be matched to an option' }, 400);
+
+        const syncedKey = String(body?.ez_key || '').trim();
+        // Only a key a sync writes TODAY for this kind (isCurrentSyncKey): an option key of an
+        // earlier round ('exact:group|value', 'exact:item|group|value') is a row orders never read,
+        // so a save on it would look done and route nothing. The page is out of date.
+        if (syncReady && (body?.synced !== true || !isCurrentSyncKey(kind, syncedKey))) {
+          return json({ error: 'This page is out of date. Reload it, then match again.', code: 'stale_page' }, 409);
+        }
+        if (!syncReady && body?.synced === true) {
+          return json({ error: 'The menu sync is not switched on yet. Reload this page.', code: 'stale_page' }, 409);
+        }
 
         // Verify the target is really ours AND really on this venue, so a bad
         // or stale id cannot be saved as a match that silently routes nothing.
@@ -572,6 +659,45 @@ Deno.serve(async (req) => {
         // writes when it first sees a name.
         const matchedBy = ignored ? 'ignored'
           : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : null);
+
+        if (syncReady) {
+          // A SYNCED ROW, by the key the sync gave it. decided_as is what the person SAW (the
+          // name, size or group their screen showed, sent back by the card), never read back
+          // from the row: a match made for a different name than the row's exact full name is
+          // then flagged to look at again (lookAgainOf), and orders do not use it until it is.
+          // An option's item (seen_item) is part of what the person saw: a match on "Size: Large"
+          // is made for ONE item's Size: Large (review round 5). An option's decided_as keeps its
+          // item, group and value APART (decidedAsOf, review round 6), so a group holding ': ' is
+          // never read back in the wrong place.
+          const decidedAs = decidedAsOf({
+            kind, name: ezName, group: ezGroup || '', sizeName: kind === 'item' ? String(body?.seen_size || '').trim() : '',
+            item: kind === 'option' ? String(body?.seen_item || '').trim() : '',
+          });
+          const { data: upd, error: uErr } = await sb.from('ezcater_item_links')
+            .update({
+              menu_item_id: menuItemId,
+              option_id: optionId,
+              source: 'manual',          // a person did this, so a later auto pass must not overrule it
+              matched_by: matchedBy,
+              decided_as: decidedAs,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('location_id', opsLocationId).eq('kind', kind).eq('ez_key', syncedKey)
+            .not('synced_at', 'is', null)
+            .select('ez_key');
+          if (uErr) {
+            if (isAbsentTable(uErr)) return json({ ok: true, enabled: false });
+            return json({ error: uErr.message }, 500);
+          }
+          if (!Array.isArray(upd) || !upd.length) return json({ error: 'That ezCater item is not on the synced menu. Sync the menu, then try again.' }, 404);
+          return json({ ok: true, enabled: true, ez_key: syncedKey });
+        }
+
+        // BEFORE 20260919m: exactly main's save. The key is rebuilt from the name with the SAME
+        // rules the matcher uses at read time, never taken from the client. A key that did not
+        // agree with its own name would be a row nothing ever looks up again.
+        const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
+        if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
 
         const { error } = await sb.from('ezcater_item_links').upsert({
           location_id: opsLocationId,

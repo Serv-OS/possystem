@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.10',
+    date: '19 Sep 2026',
+    items: [
+      'ezCater menu sync. Back Office, Channels, 3rd Party orders, ezCater item matching now has a Sync ezCater menu button. It reads your menu from ezCater before any order arrives, so you match items once, up front, instead of after an order lands.',
+      'The sync links a plain item name by itself only when it matches one of yours exactly, for example Turkey Sandwich to Turkey Sandwich. Options, and names with symbols or emoji, wait for you to match. Each item shows its ezCater size, and each option shows its item, so you never match blind.',
+      'Orders only use matches made before the order. Nothing is guessed from a name: an ezCater line with no match prints by name, so the kitchen reads it as written.',
+      'Your earlier matches carry over. Where ezCater now shows a size, the card asks you to check it once: tap Still right or Change.',
+      'Needs one database update (20260919m), run outside service, then press Sync straight away. Until then ezCater matching works exactly as before.',
+    ],
+  },
+  {
     v: '5.9.9',
     date: '19 Sep 2026',
     items: [

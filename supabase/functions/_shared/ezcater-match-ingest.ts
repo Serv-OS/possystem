@@ -52,6 +52,16 @@
 //     product. The migration has a check constraint as the backstop.
 //   * it never guesses between two equally good matches. autoLinkDecision
 //     suggests instead, and the line stays unmatched until a person picks.
+//
+// ALL OF THE ABOVE IS THE RULE SET BEFORE MIGRATION 20260919m (planNameMatches,
+// exactly as main has it). Once 20260919m has run (the link read comes back with
+// the sync columns) ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, AND ONLY FOR
+// THE EXACT NAME THEY WERE MADE FOR (planSyncedLineMatches): a line matches only
+// when its exact full name (its name plus its size name) is a synced row's, its
+// published size id is on that row, and the row holds a staff match or an exact
+// auto link from a sync. No guessing from a name, no posItemId, no item code, and
+// an order writes nothing but seen counters. The menu sync (ezcaterMenuSync.ts)
+// writes every row staff match.
 
 import {
   applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks,
@@ -59,6 +69,11 @@ import {
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
 import { withMatchedItems } from './ezcater-map.ts';
+// The synced menu (feat/ezcater-menu-sync-v1): the exact name and published id rules, and the paged link read.
+import {
+  indexSyncedRows, sizeRouteFor, optionRouteFor, readAllLinks, isMissingSyncColumn, isMissingLinksTable,
+  LINK_COLUMNS, LINK_COLUMNS_WITH_SYNC,
+} from './ezcaterMenuSync.ts';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Limits. All of them are about one pathological order, not about normal use.
@@ -213,6 +228,160 @@ export interface MatchPlan {
 }
 
 /**
+ * The lines with every itemId ezCater itself carried taken off: a line's posItemId and a
+ * customization's posCustomizationId (ezcater-map.ts puts both on itemId). Once 20260919m has run
+ * nothing but a synced match may route a line, and an id ezCater sends is not one (ezCater
+ * confirmed posItemId stays null for this integration, so this changes no real order). The SAME
+ * array, and the same line objects, when there was nothing to take off.
+ */
+export function linesWithoutPosIds(lines: any): any {
+  if (!Array.isArray(lines)) return lines;
+  let changed = false;
+  const next = lines.map((l: any) => {
+    if (!l || typeof l !== 'object') return l;
+    const mods = Array.isArray(l.mods) ? l.mods : null;
+    let modsChanged = false;
+    const nextMods = mods ? mods.map((m: any) => {
+      if (!m || typeof m !== 'object' || m.itemId == null) return m;
+      modsChanged = true;
+      return { ...m, itemId: null };
+    }) : mods;
+    if (l.itemId == null && !modsChanged) return l;
+    changed = true;
+    return { ...l, itemId: null, ...(modsChanged ? { mods: nextMods } : {}) };
+  });
+  return changed ? next : lines;
+}
+
+/** An order_queue row with linesWithoutPosIds applied. The SAME object when there was nothing to take off. */
+export function withoutPosIds(row: any): any {
+  if (!row || !Array.isArray(row.items)) return row;
+  const items = linesWithoutPosIds(row.items);
+  return items === row.items ? row : { ...row, items };
+}
+
+/**
+ * Decide every line and every modifier on one order.
+ *
+ * TWO RULE SETS, and which one runs is decided by the link read, never by a guess:
+ *
+ *   sizeIds true   migration 20260919m has run (the link read came back WITH the sync columns).
+ *                  ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, and only for the exact name they
+ *                  were made for: planSyncedLineMatches. No guessing from a name of any kind.
+ *   sizeIds false  the read PROVED the sync columns (or the whole links table) are not there:
+ *                  planNameMatches, the rules exactly as main has them.
+ *
+ * linksFailed (the link read failed or came back partial for any reason other than a proven
+ * missing table or column) matches nothing at all: every line comes back as ezCater sent it but
+ * with no itemId of ezCater's own (linesWithoutPosIds), printing by name, and nothing is written.
+ */
+export function planLineMatches(input: {
+  lines: any[];
+  ourItems?: any[];
+  ourGroups?: any[];
+  links?: any;
+  locationId: string;
+  nowIso: string;
+  /** false when what we hold is only part of the menu. Default true. */
+  menuOk?: boolean;
+  /** true when the links were read WITH the menu sync columns: migration 20260919m has run. */
+  sizeIds?: boolean;
+  /** true when the link read failed or came back partial (not a proven missing table or column). */
+  linksFailed?: boolean;
+}): MatchPlan {
+  const lines = Array.isArray(input.lines) ? input.lines : [];
+  if (input.linksFailed) {
+    return { lines: linesWithoutPosIds(lines).map((l: any) => ({ ...(l || {}) })), writes: [], bumps: [], upgrades: [] };
+  }
+  if (input.sizeIds) return planSyncedLineMatches(input);
+  return planNameMatches(input);
+}
+
+/**
+ * AFTER migration 20260919m: ORDERS ONLY USE MATCHES MADE BEFORE THE ORDER, AND ONLY FOR THE EXACT
+ * NAME THEY WERE MADE FOR (review round 4, exact by construction).
+ *
+ *   a line        matches ONLY when ALL of these hold (sizeRouteFor):
+ *                   exactName(its name + ' ' + its size name) IS a synced row's exact full name
+ *                   (that row's key), and
+ *                   its published size id (ezSizeId, the order's menuItemSizeId, proven to be the
+ *                   menu's sizes.id on HKX77V) is on that row, and
+ *                   that row holds a trusted decision (trustedTarget: a staff match made for that
+ *                   name, or an exact auto link a sync made on a PLAIN item name)
+ *   a customization  likewise, by the line it is on, its group and value, and its published id (ezItemId, the
+ *                 order's customizationId), on the synced option row keyed by them. Only a
+ *                 STAFF match routes one: a sync never auto links an option (review round 6)
+ *   everything else  no match. It prints by name.
+ *
+ * NO GUESSING FROM A NAME: not autoLinkDecision, not the saved name links (applyLinks, findLink,
+ * the legacy key fallback), not a folded name, not a posItemId, not an item code. The exact name
+ * check can only ever match fewer lines than the id alone, and it closes the window after ezCater
+ * renames a size in place (same id, new name) before the next sync: the new name has no row yet.
+ * NOTHING IS WRITTEN except the seen counters of the synced rows the order's lines landed on: no
+ * sighting, no fill, no upgrade. The sync writes every row staff can match.
+ *
+ * A trusted target that is no longer on our menu (deleted, or archived) routes nothing, when the
+ * menu was read whole and so can prove it. PURE.
+ */
+export function planSyncedLineMatches(input: {
+  lines: any[];
+  ourItems?: any[];
+  ourGroups?: any[];
+  links?: any;
+  menuOk?: boolean;
+}): MatchPlan {
+  const lines = Array.isArray(input.lines) ? input.lines : [];
+  const links: any[] = Array.isArray(input.links) ? input.links : [];
+  const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
+  const ourGroups = Array.isArray(input.ourGroups) ? input.ourGroups : [];
+  const whole = input.menuOk !== false;
+  const knownItems = whole && ourItems.length ? new Set<string>(ourItems.map((it: any) => String(it.id))) : null;
+  const knownOptions = whole && ourGroups.length
+    ? new Set<string>(ourGroups.flatMap((g: any) => (Array.isArray(g?.options) ? g.options : []).map((o: any) => String(o?.id))))
+    : null;
+  const itemIdx = indexSyncedRows(links, 'item');
+  const optIdx = indexSyncedRows(links, 'option');
+  const counts = linkSeenCounts(links);
+  const times = new Map<string, number>();
+  const saw = (kind: string, key: string) => {
+    if (!key) return;
+    const k = kind + ':' + key;
+    times.set(k, (times.get(k) || 0) + 1);
+  };
+
+  const outLines = lines.map((raw: any) => {
+    const line = raw || {};
+    const route = sizeRouteFor(line, itemIdx);
+    let itemId: string | null = route.mode === 'synced' && route.itemId ? String(route.itemId) : null;
+    if (itemId && knownItems && !knownItems.has(itemId)) itemId = null;
+    if (route.mode === 'synced') saw('item', route.ezKey);
+
+    const mods = (Array.isArray(line.mods) ? line.mods : []).map((rawMod: any) => {
+      const mod = rawMod || {};
+      const o = optionRouteFor(mod, optIdx, line);
+      let optionId: string | null = o.mode === 'synced' && o.optionId ? String(o.optionId) : null;
+      let modItemId: string | null = o.mode === 'synced' && o.itemId ? String(o.itemId) : null;
+      if (optionId && knownOptions && !knownOptions.has(optionId)) { optionId = null; modItemId = null; }
+      if (modItemId && knownItems && !knownItems.has(modItemId)) modItemId = null;
+      if (o.mode === 'synced') saw('option', o.ezKey);
+      const matched = !!(optionId || modItemId);
+      return { ...mod, itemId: modItemId, optionId, match: { matched, source: matched ? 'menuSync' : null } };
+    });
+
+    return { ...line, itemId, mods, match: { matched: !!itemId, source: itemId ? 'menuSync' : null } };
+  });
+
+  const bumps = Array.from(times.entries()).slice(0, MAX_LINK_BUMPS).map(([k, n]) => {
+    const cut = k.indexOf(':');
+    return { kind: k.slice(0, cut), ezKey: k.slice(cut + 1), times: n, seenCount: (counts.get(k) || 0) + n };
+  });
+  return { lines: outLines, writes: [], bumps, upgrades: [] };
+}
+
+// THE RULES BEFORE 20260919m, exactly as main has them (planLineMatches calls this only when the
+// link read PROVED the sync columns are not there). The body below is main's planLineMatches,
+// unchanged.
+/**
  * Decide every line and every modifier on one order.
  *
  * Two passes, and the second one only runs when we actually hold the menu:
@@ -237,7 +406,7 @@ export interface MatchPlan {
  * nowIso is an ARGUMENT, not a clock read, so the same input always gives the
  * same output and the tests can pin it.
  */
-export function planLineMatches(input: {
+export function planNameMatches(input: {
   lines: any[];
   ourItems?: any[];
   ourGroups?: any[];
@@ -414,6 +583,19 @@ export interface MatchInputs {
    * the whole answer and no new link may be written.
    */
   menuOk: boolean;
+  /**
+   * false ONLY when the read proved the sync columns (or the links table) are not there, so the
+   * rules before migration 20260919m apply (planNameMatches). true when the links came with the
+   * sync columns: orders only use matches made before the order (planSyncedLineMatches). Also
+   * true when the read failed for any other reason, with linksFailed: nothing is matched.
+   */
+  sizeIds?: boolean;
+  /**
+   * true when the link read failed or was cut short for any reason OTHER than a proven missing
+   * links table (20260917 not run). Then NO line is matched by name and nothing is written:
+   * a venue whose synced rows could not be read must not get a name guess on any line.
+   */
+  linksFailed?: boolean;
 }
 
 /** True once the budget is spent. No deadline means never. */
@@ -480,27 +662,62 @@ export function isMissingItemCodeColumn(err: any): boolean {
 export async function readMatchInputs(
   sb: any,
   locationId: string,
-  opts: { deadline?: number | null } = {},
+  opts: { deadline?: number | null; onSizeIds?: (sizeIds: boolean) => void } = {},
 ): Promise<MatchInputs> {
-  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false };
+  // sizeIds starts TRUE: the old name rules apply ONLY when the read PROVED the sync columns (or
+  // the whole table) are not there. Any other failed read (a timeout, a network fault, a
+  // permission error) leaves linksFailed true and every line prints by name: a venue that HAS
+  // synced rows must never get a name guess because one read failed.
+  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false, sizeIds: true, linksFailed: true };
   if (!sb || !locationId) return out;
   const deadline = opts.deadline == null ? null : opts.deadline;
+  // Which side of 20260919m this venue is PROVEN to be on, told the moment the link read knows (the
+  // matcher's bail paths take ezCater's own ids off unless the venue is proven before it). Told
+  // again with the final answer at the end of the link read.
+  const tell = (sizeIds: boolean) => {
+    if (typeof opts.onSizeIds !== 'function') return;
+    try { opts.onSizeIds(sizeIds); } catch { /* a callback never fails a read */ }
+  };
 
   // 1) Saved links. 42P01 (table missing, the migration is run by hand) is the
   // expected failure here and reads the same as "no links saved yet".
+  //
+  // PAGED (feat/ezcater-menu-sync-v1): a synced menu can pass PostgREST's 1000 row cap, and a
+  // row cut off by the cap would read as "never seen". An incomplete read keeps the rows it got
+  // but writes nothing (linksOk false), the same answer as a failed read.
+  // The sync columns are asked for first; before 20260919m runs they are not there, and the
+  // read is repeated without them (sizeIds false: the rules before this change).
   try {
-    const { data, error } = await sb.from('ezcater_item_links')
-      .select('kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, seen_count')
-      .eq('location_id', locationId);
-    if (error) {
+    let res = await readAllLinks(sb, locationId, LINK_COLUMNS_WITH_SYNC, deadline);
+    if (!res.ok && isMissingSyncColumn(res.error)) {
+      out.sizeIds = false;
+      tell(false);
+      res = await readAllLinks(sb, locationId, LINK_COLUMNS, deadline);
+      // PROVEN before 20260919m: no sync ever ran, so the rules main has apply. If the read
+      // without the sync columns FAILS too (a timeout, a network fault), that is exactly main's
+      // failed link read: no saved links, the name rules on the menu, nothing written (linksOk
+      // stays false). A read cut short by the time budget is left as below (the order goes
+      // through as the mapper built it, as main's own time budget does).
+      if (!res.ok) out.linksFailed = false;
+    } else if (!res.ok && isMissingLinksTable(res.error)) {
+      out.sizeIds = false;
+      tell(false);
+      // PROVEN: no links table, so no sync ever ran. The rules from before (name match, no writes).
+      out.linksFailed = false;
+    }
+    if (!res.ok) {
+      const error = res.error || {};
       console.warn('[ezcater-match] no saved links (' + (error.code || 'error') + '):', error.message);
     } else {
-      out.links = Array.isArray(data) ? data : [];
-      out.linksOk = true;
+      out.links = res.rows;
+      out.linksOk = res.complete;
+      out.linksFailed = !res.complete;
+      if (!res.complete) console.warn('[ezcater-match] saved links read incomplete, nothing will be matched or written');
     }
   } catch (e) {
     console.warn('[ezcater-match] links read threw:', e instanceof Error ? e.message : String(e));
   }
+  tell(out.sizeIds !== false);
 
   // 2) The menu. BOTH tables have to come back whole. A partly read menu is
   // worse than no menu: "nothing of ours has that name" would be a lie told
@@ -633,9 +850,14 @@ export async function saveLinkWrites(
  * calls. Reads, decides, saves, and returns a NEW row with itemId filled in and
  * customer.ezMatch stamped.
  *
- * ON ANY FAILURE IT RETURNS THE ROW IT WAS GIVEN, UNTOUCHED. No ezMatch stamp,
- * itemId exactly as the mapper left it, which is today's behaviour and a
- * working plain text ticket. Nothing here can stop an order reaching a kitchen.
+ * ON ANY FAILURE IT RETURNS THE ROW IT WAS GIVEN, with no ezMatch stamp, which
+ * is a working plain text ticket. Nothing here can stop an order reaching a
+ * kitchen. Before 20260919m (PROVEN by the link read) that row is untouched:
+ * itemId exactly as the mapper left it, today's behaviour. Otherwise (after the
+ * migration, or not proven either way: a timeout, a failed read, an exception)
+ * the ids ezCater itself carried (posItemId, posCustomizationId) are taken off
+ * too (withoutPosIds), because after the migration nothing but a synced match
+ * may route a line. It is the very same row when there was no such id.
  *
  * AND IT IS ON A CLOCK. budgetMs (default MATCH_BUDGET_MS) caps the whole job.
  * The deadline is checked between reads, and the job is raced against a timer
@@ -650,7 +872,12 @@ export async function matchQueueRow(
   opts: { nowIso?: string; budgetMs?: number } = {},
 ): Promise<{ row: any; matched: number; lines: number; inserted: number; bumped: number; ran: boolean }> {
   const lines = Array.isArray(row?.items) ? row.items : [];
-  const bailed = { row, matched: 0, lines: lines.length, inserted: 0, bumped: 0, ran: false };
+  // What every bail path returns. Until the link read PROVES the venue is before 20260919m (the
+  // sync columns, or the links table, are not there), ezCater's own ids are taken off.
+  const bailedFor = (provenBefore: boolean) => ({
+    row: provenBefore ? row : withoutPosIds(row), matched: 0, lines: lines.length, inserted: 0, bumped: 0, ran: false,
+  });
+  let bailed = bailedFor(false);
   if (!sb || !locationId || !lines.length) return bailed;
 
   const budgetMs = Number.isFinite(opts.budgetMs as number) ? Number(opts.budgetMs) : MATCH_BUDGET_MS;
@@ -664,7 +891,9 @@ export async function matchQueueRow(
   try {
     const work = async () => {
       const nowIso = opts.nowIso || new Date().toISOString();
-      const input = await readMatchInputs(sb, locationId, { deadline });
+      const input = await readMatchInputs(sb, locationId, {
+        deadline, onSizeIds: (sizeIds: boolean) => { bailed = bailedFor(sizeIds === false); },
+      });
 
       // Both reads failed, so we know nothing: not the links, not the menu. Stamping
       // ezMatch here would tell a screen "we checked and matched none of it", which
@@ -672,6 +901,13 @@ export async function matchQueueRow(
       // mapper's row untouched instead.
       if (!input.linksOk && !input.menuOk) {
         console.warn('[ezcater-match] neither links nor menu could be read, order continues unmatched');
+        return bailed;
+      }
+      // The link read failed or was partial (and the table is not proven missing): no line may
+      // be matched and nothing may be written. The order goes through as ezCater sent it, less
+      // ezCater's own ids (bailed).
+      if (input.linksFailed) {
+        console.warn('[ezcater-match] saved links not read whole, every line prints by name');
         return bailed;
       }
 
@@ -683,6 +919,8 @@ export async function matchQueueRow(
         locationId,
         nowIso,
         menuOk: input.menuOk,
+        sizeIds: input.sizeIds === true,
+        linksFailed: input.linksFailed === true,
       });
 
       // Only write when the links table answered a read. If it did not, an insert
@@ -697,6 +935,10 @@ export async function matchQueueRow(
 
       const next = withMatchedItems(row, plan.lines);
       const summary = next?.customer?.ezMatch || { lines: plan.lines.length, matched: 0 };
+      if (input.sizeIds === true) {
+        // The synced rule's own line, also the live proof the new code is deployed (release note step 4).
+        console.log(`[ezcater-match] synced menu, only matches made before the order: ${Number(summary.matched) || 0} of ${plan.lines.length} lines by exact name and published id`);
+      }
       return {
         row: next,
         matched: Number(summary.matched) || 0,

@@ -88,6 +88,9 @@ export const EZCATER_CLIENT_NAME = 'servos-pos';
 // 1.x shapes asked for fields ezCater does not have and fetched nothing.
 export const EZCATER_CLIENT_VERSION = '2.0.0';
 
+/** Sent on every ezCater call. See ez(). */
+export const EZCATER_USER_AGENT = `ServOS/${EZCATER_CLIENT_VERSION} (+https://serv-os.app)`;
+
 export class EzcaterError extends Error {
   status: number;
   code: string | null;
@@ -244,6 +247,9 @@ export async function ez<T = any>(
       'apollographql-client-version': EZCATER_CLIENT_VERSION,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+      // A plain, named agent. ezCater sits behind Cloudflare, which refused a default scripting
+      // agent on the live menu read of 18 Sep 2026.
+      'User-Agent': EZCATER_USER_AGENT,
     },
     body: JSON.stringify({ operationName, query, variables }),
   });

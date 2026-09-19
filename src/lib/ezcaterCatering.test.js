@@ -681,9 +681,14 @@ test('E. ADR-023 says the claim refuses cancelled rows for every source, and the
 });
 
 test('E2. release note steps in Peter\'s order: merge, prep time, tills on the new version, functions, HKX77V, fresh order; menu sync later', () => {
-  const note = read('../../docs/EZCATER_V1_RELEASE.md');
+  const whole = read('../../docs/EZCATER_V1_RELEASE.md');
+  // v5.9.9 ships ALONE. The menu sync is a later release and has its own part of the note, after
+  // this one (src/lib/ezcaterMenuSyncV1.test.js pins it). Everything below about the v5.9.9 steps
+  // reads only the v5.9.9 part.
+  const later = whole.indexOf('\n# Menu sync, a later release\n');
+  assert.ok(later > whole.indexOf('## Known gap'), 'the menu sync part comes after the v5.9.9 part');
+  const note = whole.slice(0, later);
   const steps = [...note.matchAll(/^## (\d)\. /gm)].map((m) => Number(m[1]));
-  // This branch ships ALONE as v5.9.9. Menu sync is a later release and adds its own step back.
   assert.deepEqual(steps, [1, 2, 3, 4, 5, 6]);
   assert.doesNotMatch(note, /## 7\./);
   assert.doesNotMatch(note, /20260919m/);
@@ -727,8 +732,8 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   const six = ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-connect', 'ezcater-webhook'];
   const cmds = [...note.matchAll(/^npx supabase functions deploy (\S+) --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt$/gm)].map((m) => m[1]);
   assert.deepEqual(cmds, six);
-  // No deploy line anywhere without the flag.
-  for (const line of note.split('\n').filter((l) => /functions deploy /.test(l))) assert.match(line, /--no-verify-jwt/, line);
+  // No deploy line anywhere in the whole note without the flag.
+  for (const line of whole.split('\n').filter((l) => /functions deploy /.test(l))) assert.match(line, /--no-verify-jwt/, line);
   assert.match(note, /every ezCater notification gets a 401/);
   // The live proof reads what Supabase SERVES into a fresh empty folder, never the checkout.
   assert.match(note, /Claude checks the LIVE code\*\*, not the checkout/);
@@ -737,9 +742,9 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   const loop = note.match(/^for fn in (.+); do$/m);
   assert.ok(loop, 'the download loop');
   assert.deepEqual(loop[1].split(' '), six);
-  assert.doesNotMatch(note, /functions download/);
-  // Every search names the live folder only.
-  for (const line of note.split('\n').filter((l) => /^grep -a/.test(l))) assert.match(line, /"\$LIVE/, line);
+  assert.doesNotMatch(whole, /functions download/);
+  // Every search in the whole note names the live folder only.
+  for (const line of whole.split('\n').filter((l) => /^grep -a/.test(l))) assert.match(line, /"\$LIVE/, line);
   // The markers: only the new code has them, and they really are in the files the note names.
   const marker = note.match(/must each count at least 1 for `([^`]+)`\. Only the new code has that text\./);
   assert.ok(marker, 'marker line');
@@ -751,8 +756,9 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   assert.match(note, /`ezcater-webhook` must also contain `event read failed`/);
   // The five named are exactly the functions that ship the shared file (edgeFnDeps.test.js).
   assert.match(note, /Those five: `catering-release`, `order-notify`, `review-request`, `uber-direct`, `ezcater-webhook`\./);
-  // No dashes used as punctuation (list bullets are fine).
-  assert.doesNotMatch(note, /\S - \S/);
+  // No dashes used as punctuation (list bullets are fine), anywhere in the note.
+  assert.doesNotMatch(whole, /\S - \S/);
+  assert.doesNotMatch(whole, /[\u2013\u2014]/);
 });
 
 // \u2500\u2500 Review fixes (18 Sep 2026, round 3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
