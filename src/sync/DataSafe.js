@@ -18,6 +18,7 @@
  */
 
 import { supabase, getLocationId } from '../lib/supabase';
+import { reportWriteRefused } from '../lib/deviceLink';
 
 const LS_PENDING_CHECKS   = 'rpos-pending-checks';
 const LS_PENDING_SESSIONS = 'rpos-session-backup';
@@ -50,6 +51,7 @@ export async function safeInsertClosedCheck(check, row) {
   try {
     const { error } = await supabase.from('closed_checks').insert(row);
     if (error) {
+      reportWriteRefused(error);   // fence stage 1: a refused sale may mean a lost link (banner)
       console.warn('[DataSafe] Supabase write failed, check queued for retry:', error.message);
       return { ok: false, queued: true };
     }
@@ -83,6 +85,7 @@ export async function safeUpsertClosedCheck(check, row) {
       .upsert(row, { onConflict: 'id', ignoreDuplicates: true })
       .select('id');
     if (error) {
+      reportWriteRefused(error);
       console.warn('[DataSafe] upsert failed, check queued for retry:', error.message);
       return { ok: false, queued: true, created: false };
     }
@@ -169,6 +172,7 @@ export async function reconcilePendingChecks() {
         removePendingCheck(check.id);
         console.log(`[DataSafe] Reconciled check ${check.id}`);
       } else {
+        reportWriteRefused(error);
         console.warn(`[DataSafe] Failed to reconcile check ${check.id}:`, error.message);
       }
     } catch (e) {
@@ -207,6 +211,11 @@ export function loadSessionBackup() {
  * Call this when the device comes back online.
  * Replays all pending data to Supabase.
  */
+// Database fence stage 1 (contract A8): a till linked again sends the sales it kept.
+if (typeof window !== 'undefined') {
+  window.addEventListener('rpos-device-relinked', () => { reconcilePendingChecks().catch(() => {}); });
+}
+
 export async function onReconnect() {
   console.log('[DataSafe] Reconnected — reconciling pending data');
   await reconcilePendingChecks();

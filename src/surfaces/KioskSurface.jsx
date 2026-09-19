@@ -13,7 +13,10 @@
 */
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, ensureAuthToken } from '../lib/supabase';
+import { supabase, ensureAuthToken, linkDevice, sendDeviceHeartbeat, KIOSK_SECRET_KEY } from '../lib/supabase';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDeviceRead } from '../lib/deviceFence';
+import { checkDeviceLink } from '../lib/deviceLink';
+import DeviceLinkBanner from '../components/DeviceLinkBanner';
 import KioskApp from './KioskApp';
 import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
@@ -38,69 +41,126 @@ function KioskSurfaceInner() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState(null);
 
+  // Database fence stage 1 (contract A4, gap B3): a read error or a missing row is UNKNOWN,
+  // never "unpaired". The local pairing is cleared only when the read succeeded and the row
+  // says status removed. Otherwise the kiosk keeps its pairing and the not linked banner
+  // shows (components/DeviceLinkBanner.jsx) until it is linked again.
   const loadPaired = useCallback(async () => {
     const id = localStorage.getItem(LS_KIOSK_ID);
     if (!id) return;
+    // Re-link first (secret, or collect one if bound without). FENCE STAGE 1 FALLBACK: before
+    // 20260919a this answers "legacy" and does nothing, which is today's behaviour.
+    try { await linkDevice({ allowLegacy: true }); } catch { /* keep the pairing */ }
     const { data, error } = await supabase
       .from('devices').select('*').eq('id', id).eq('type', 'kiosk').maybeSingle();
-    if (error || !data) {
-      console.warn('[KioskSurface] paired kiosk not found, clearing local pairing', error);
+    const read = classifyDeviceRead({ error, row: data });
+    if (read === 'removed') {
+      console.warn('[KioskSurface] this kiosk was removed in Back Office, clearing local pairing');
       localStorage.removeItem(LS_KIOSK_ID);
       localStorage.removeItem(LS_KIOSK_TOKEN);
+      localStorage.removeItem(KIOSK_SECRET_KEY);
       setPaired(false);
       return;
     }
+    if (read !== 'present') {
+      // FENCE STAGE 1 FALLBACK: before 20260919a the devices table is readable by all, so a
+      // successful read with no row is a deleted kiosk (today's behaviour). After it, only
+      // the server's answer to the re-link decides; the kiosk keeps its pairing.
+      const probe = await supabase.rpc('device_status');
+      if (!error && !data && probe.error && isMissingRpc(probe.error)) {
+        localStorage.removeItem(LS_KIOSK_ID);
+        localStorage.removeItem(LS_KIOSK_TOKEN);
+        setPaired(false);
+        return;
+      }
+      console.warn('[KioskSurface] could not read this kiosk, keeping the pairing', error?.message || 'no row');
+      checkDeviceLink();
+      // Keep running on the last known row so the kiosk still opens.
+      try {
+        const cached = JSON.parse(localStorage.getItem('rpos-kiosk-row') || 'null');
+        if (cached && cached.id === id) setKiosk(cached);
+      } catch { /* none */ }
+      return;
+    }
     setKiosk(data);
-    await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', id);
+    try { localStorage.setItem('rpos-kiosk-row', JSON.stringify(data)); } catch { /* quota */ }
+    // FENCE STAGE 1 FALLBACK: the heartbeat function reports last_seen once 20260919a is in;
+    // before that the old direct write keeps Network Status alive.
+    const hb = await sendDeviceHeartbeat();
+    if (hb && hb.unsupported) await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', id);
   }, []);
 
   useEffect(() => { if (paired) loadPaired(); }, [paired, loadPaired]);
 
+  // FENCE STAGE 1 FALLBACK: today's pairing (SELECT by code, best effort claim_device, then the
+  // UPDATE that clears the code). Used only while claim_device_v2 does not exist.
+  const legacyKioskPair = async (codeNorm) => {
+    const { data, error } = await supabase
+      .from('devices').select('*')
+      .eq('pairing_code', codeNorm)
+      .eq('type', 'kiosk')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return { error: 'Invalid code. Check the back office for the correct code.' };
+    try {
+      await ensureAuthToken();
+      await supabase.rpc('claim_device', { p_code: codeNorm });
+    } catch (e) {
+      console.warn('[KioskSurface] claim_device (device_uid stamp) failed: Ryft terminal payments will be unavailable until re-pair:', e?.message);
+    }
+    return { row: data, clearCode: true };
+  };
+
   const tryPair = async () => {
     setError(null);
     const codeNorm = code.trim().toUpperCase();
-    if (!codeNorm) { setError('Enter the pairing code'); return; }
+    if (!normalizePairingCode(codeNorm)) { setError('Enter the pairing code'); return; }
     setWorking(true);
     try {
-      const { data, error } = await supabase
-        .from('devices').select('*')
-        .eq('pairing_code', codeNorm)
-        .eq('type', 'kiosk')
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
-        setError('Invalid code. Check the back office for the correct code.');
+      // Database fence stage 1 (contract A4): claim_device_v2 binds this kiosk's session to its
+      // devices row, clears the code on the server and hands back a one time device secret.
+      // v5.5.871: the kiosk needs devices.device_uid = auth.uid() for Ryft "send to terminal".
+      try { await ensureAuthToken(); } catch (e) { console.warn('[KioskSurface] no auth session:', e?.message); }
+      let row = null;
+      let clearCode = false;
+      const { data: res, error: rpcErr } = await supabase.rpc('claim_device_v2', { p_code: normalizePairingCode(codeNorm) });
+      if (rpcErr && isMissingRpc(rpcErr)) {
+        const old = await legacyKioskPair(codeNorm);
+        if (old.error) { setError(old.error); return; }
+        row = old.row; clearCode = old.clearCode;
+      } else if (rpcErr || !res?.ok) {
+        setError(claimRefusalMessage(res, rpcErr));
         return;
-      }
-
-      // v5.5.871: bind this kiosk's anonymous auth session to its devices row
-      // server-side (devices.device_uid = auth.uid()), the SAME identity the POS
-      // gets from claim_device. Without it the kiosk can't use the Ryft PAX
-      // "send to terminal" path — terminal_targets_for_pos and terminal-job-create
-      // both fence on devices.device_uid = auth.uid(). Run it BEFORE the update
-      // below clears pairing_code (claim_device matches on the code). Best-effort:
-      // Stripe-reader kiosks never needed it, so a failure here must not block
-      // pairing — only Ryft card payments depend on it.
-      try {
-        await ensureAuthToken();
-        await supabase.rpc('claim_device', { p_code: codeNorm });
-      } catch (e) {
-        console.warn('[KioskSurface] claim_device (device_uid stamp) failed — Ryft terminal payments will be unavailable until re-pair:', e?.message);
+      } else if (res.type !== 'kiosk') {
+        setError('That code is for a till, not a kiosk. Use the code from Back Office, Channels, Kiosks.');
+        return;
+      } else {
+        if (res.device_secret) localStorage.setItem(KIOSK_SECRET_KEY, res.device_secret);
+        const { data: full } = await supabase.from('devices').select('*').eq('id', res.device_id).maybeSingle();
+        row = full || { id: res.device_id, name: res.name, type: res.type, location_id: res.location_id, profile_id: res.profile_id, status: res.status };
       }
 
       const token = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '.' + Date.now();
-      const { error: e2 } = await supabase
-        .from('devices').update({
-          paired_at: new Date().toISOString(),
-          pairing_code: null,
-          session_token: token,
-          last_seen: new Date().toISOString(),
-          status: 'online',
-        }).eq('id', data.id);
-      if (e2) throw e2;
-      localStorage.setItem(LS_KIOSK_ID, data.id);
+      // session_token, last_seen and status stay a direct write (the bound kiosk may write its
+      // own row). The pairing code is only cleared here on the old path: the server already
+      // cleared it on the new one.
+      const patch = {
+        paired_at: new Date().toISOString(),
+        session_token: token,
+        last_seen: new Date().toISOString(),
+        status: 'online',
+      };
+      if (clearCode) patch.pairing_code = null;
+      const { error: e2 } = await supabase.from('devices').update(patch).eq('id', row.id);
+      if (e2) {
+        if (clearCode) throw e2;
+        console.warn('[KioskSurface] session token write refused (kiosk is paired):', e2.message);
+      }
+      localStorage.setItem(LS_KIOSK_ID, row.id);
       localStorage.setItem(LS_KIOSK_TOKEN, token);
-      setKiosk(Object.assign({}, data, { paired_at: new Date().toISOString(), session_token: token }));
+      const paired = Object.assign({}, row, { paired_at: new Date().toISOString(), session_token: token });
+      try { localStorage.setItem('rpos-kiosk-row', JSON.stringify(paired)); } catch { /* quota */ }
+      setKiosk(paired);
       setPaired(true);
     } catch (e) {
       console.error('[KioskSurface] pairing failed', e);
@@ -114,6 +174,7 @@ function KioskSurfaceInner() {
     if (!confirm('Unpair this kiosk?')) return;
     localStorage.removeItem(LS_KIOSK_ID);
     localStorage.removeItem(LS_KIOSK_TOKEN);
+    localStorage.removeItem(KIOSK_SECRET_KEY);
     setPaired(false);
     setKiosk(null);
     setCode('');
@@ -121,7 +182,7 @@ function KioskSurfaceInner() {
 
   // ─── Paired → check opening hours, then render the full ordering app ───
   if (paired && kiosk) {
-    return <KioskHoursGate kiosk={kiosk} onUnpair={unpair}/>;
+    return <><DeviceLinkBanner /><KioskHoursGate kiosk={kiosk} onUnpair={unpair}/></>;
   }
 
   // ─── Pairing-code entry ───
@@ -138,7 +199,7 @@ function KioskSurfaceInner() {
           value={code}
           onChange={e => setCode(e.target.value.toUpperCase())}
           onKeyDown={e => { if (e.key === 'Enter') tryPair(); }}
-          placeholder="BAKER-3225"
+          placeholder="XXXX-XXXX-XXXX"
           style={{
             width: '100%',
             background: 'rgba(255,255,255,0.06)',

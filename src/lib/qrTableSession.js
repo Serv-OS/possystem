@@ -15,7 +15,17 @@
 // Keeps the QR + bar_tabs concerns isolated (no bar_tabs touched, per
 // the existing memory rule).
 
+// Database fence stage 1 (contract S1, tables never lost): this helper only ever writes or
+// deletes a session that is QR's own (session.source === 'qr'). A till's session on the same
+// table is never overwritten or removed: the old blind upsert replaced it whenever a QR round
+// landed on a table a till had open. Writes are conditional in the database too (insert only
+// when there is no row, update and delete only WHERE session->>source = 'qr'), so a till that
+// seats the table between our read and our write still wins.
+// STAGE 1 CLEANUP: once 20260919b has run the order_queue_qr_floor trigger keeps the floor plan
+// (same rule, on the server) and the phone callers (QrCheckout) and OrdersHub force close no
+// longer need this; remove the calls then.
 import { supabase } from './supabase';
+import { qrSessionWriteAction } from './publicOrder';   // pure, tested in publicOrder.test.js
 
 export async function syncQrTableSession(locationId, tableId) {
   if (!supabase || !locationId || !tableId) return;
@@ -51,18 +61,19 @@ export async function syncQrTableSession(locationId, tableId) {
       ...i, tab_pi: r.customer?.payment_intent_id || null,
     })));
 
-    if (!allItems.length) {
-      // No open QR items — clear the QR session if it exists. Don't blanket-
-      // delete other dine-in sessions that an operator may have started
-      // on this table via POS — only delete if the existing session was
-      // QR-managed (source='qr' on the session jsonb).
-      const { data: existing } = await supabase
-        .from('active_sessions').select('session')
-        .eq('location_id', locationId).eq('table_id', floorId).maybeSingle();
-      if (existing?.session?.source === 'qr') {
-        await supabase.from('active_sessions')
-          .delete().eq('location_id', locationId).eq('table_id', floorId);
-      }
+    // What is on the table now. A failed read decides nothing (never write blind).
+    const { data: existing, error: exErr } = await supabase
+      .from('active_sessions').select('session')
+      .eq('location_id', locationId).eq('table_id', floorId).maybeSingle();
+    if (exErr) { console.warn('[syncQrTableSession] session read failed, not writing:', exErr.message); return; }
+    const action = qrSessionWriteAction({ existing, hasItems: allItems.length > 0 });
+    if (action === 'skip') return;   // a till owns this table: never touch its session
+
+    if (action === 'delete_qr') {
+      // No open QR items: clear the QR session only (source='qr' on the session jsonb).
+      await supabase.from('active_sessions')
+        .delete().eq('location_id', locationId).eq('table_id', floorId)
+        .filter('session->>source', 'eq', 'qr');
       return;
     }
 
@@ -85,12 +96,22 @@ export async function syncQrTableSession(locationId, tableId) {
       qr_tab_count: rows.length,
     };
 
-    await supabase.from('active_sessions').upsert({
-      location_id: locationId,
-      table_id: floorId,
-      session,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'location_id,table_id' });
+    if (action === 'insert') {
+      // Only when the table has no session. A till that seated it meanwhile makes this a
+      // unique violation (23505), which leaves the till's session exactly as it is.
+      const { error: insErr } = await supabase.from('active_sessions').insert({
+        location_id: locationId,
+        table_id: floorId,
+        session,
+        updated_at: new Date().toISOString(),
+      });
+      if (insErr && insErr.code !== '23505') console.warn('[syncQrTableSession] insert failed:', insErr.message);
+      return;
+    }
+    await supabase.from('active_sessions')
+      .update({ session, updated_at: new Date().toISOString() })
+      .eq('location_id', locationId).eq('table_id', floorId)
+      .filter('session->>source', 'eq', 'qr');
   } catch (e) {
     console.warn('[syncQrTableSession] failed:', e?.message);
   }

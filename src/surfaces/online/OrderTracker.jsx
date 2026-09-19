@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { publicRead } from '../../lib/publicOrderClient';
 import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
@@ -18,7 +19,7 @@ const STEPS = [
   { key: 'collected',label: 'Collected', icon: '✅', desc: 'Enjoy!' },
 ];
 
-export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London' }) {
+export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London', trackKey = null }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -30,30 +31,28 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
   // Polling interval 5s gives a perceptually-live feel without slamming the DB.
   useEffect(() => {
     let alive = true;
-    let chan = null;
 
+    // Database fence stage 1 (contract C3): the tracker row comes from order_track_row, keyed
+    // to something the customer holds (the tracking token, the QR tab's card payment id, or
+    // the last 4 phone digits of an old link). NULL means "not found or wrong key": the last
+    // good state stays on screen. The realtime channel on order_queue is gone: it pushed every
+    // order of the venue (customer blocks included) to any phone, and after file 2 a customer
+    // receives nothing from it. The 5 s poll was already the workhorse.
     const fetchOnce = async () => {
       try {
-        // v5.5.830 SECURITY: scope by location AND select only what we render.
-        // `ref` is a SHORT PER-VENUE SEQUENTIAL number (#1042) — store/index.js:5019
-        // documents that refs COLLIDE ACROSS LOCATIONS. Without the location filter
-        // this public, unauthenticated tracker returned another venue's order for a
-        // guessed ref, and select('*') handed over the customer block (name, phone)
-        // with it. Two other call sites already guard on location; this one did not.
-        const { data, error } = await supabase
-          .from('order_queue')
-          // v5.8.6: `type` and `customer` are needed by the courier block and
-          // the delivery labelling below. Without them the poll overwrote the
-          // realtime payload with a row missing both, so the live courier card
-          // flickered in and vanished, and a delivery order was labelled
-          // "Collection". This query is already fenced on ref AND location_id,
-          // which is the same trust level as the realtime payload it merges.
-          .select('ref, status, total, items, collection_time, is_asap, type, customer')
-          .eq('ref', orderRef).eq('location_id', locationId).maybeSingle();
+        const { data, error, legacy } = await publicRead('order_track_row',
+          { p_location_id: String(locationId), p_ref: String(orderRef), p_key: trackKey ? String(trackKey) : '' },
+          // FENCE STAGE 1 FALLBACK: today's direct read, only while order_track_row does not exist.
+          // v5.5.830 SECURITY: scoped by location AND only what we render.
+          () => supabase
+            .from('order_queue')
+            .select('ref, status, total, items, collection_time, is_asap, type, customer')
+            .eq('ref', orderRef).eq('location_id', locationId).maybeSingle());
         if (!alive) return;
         if (error) {
           console.warn('[OrderTracker] poll error:', error.message);
-          setErr(error.message); return;
+          if (legacy) setErr(error.message);
+          return;
         }
         if (data) {
           // Only update state if status / total / items actually changed —
@@ -73,34 +72,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
     };
     fetchOnce();
 
-    if (supabase) {
-      // v5.5.830: the realtime filter was scoped by ref ALONE, so a colliding ref at
-      // another venue pushed that venue's row straight to this customer. Realtime
-      // takes a single filter expression, so we scope to location_id (the selective
-      // half) and re-check ref in the handler.
-      chan = supabase.channel(`order-tracker-${locationId}-${orderRef}`)
-        .on('postgres_changes', {
-          event: 'UPDATE', schema: 'public', table: 'order_queue', filter: `location_id=eq.${locationId}`,
-        }, (payload) => {
-          if (payload?.new?.ref !== orderRef) return;
-          if (!alive) return;
-          console.log('[OrderTracker] realtime UPDATE for', orderRef, '→', payload.new?.status);
-          setOrder(payload.new);
-        }).subscribe((status) => {
-          if (status === 'SUBSCRIBED') console.log('[OrderTracker] subscribed to', orderRef);
-          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            console.warn('[OrderTracker] realtime channel issue:', status, '(polling will continue)');
-          }
-        });
-    }
     const poll = setInterval(fetchOnce, 5_000);
 
     return () => {
       alive = false;
       clearInterval(poll);
-      if (chan && supabase) supabase.removeChannel(chan);
     };
-  }, [orderRef, locationId]);
+  }, [orderRef, locationId, trackKey]);
 
   // Live courier tracking for COURIER delivery orders (Stuart). Polls the anon-safe track_order
   // edge action for status + ETA + the live tracking-map URL.
@@ -270,7 +248,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
 
         {/* Order summary */}
         {/* Shareable link — customers can bookmark this and come back any time. */}
-        {order && <ShareLink order={order} theme={theme} cardBdr={cardBdr} muted={muted} inputBg={inputBg}/>}
+        {order && <ShareLink order={order} trackKey={trackKey} theme={theme} cardBdr={cardBdr} muted={muted} inputBg={inputBg}/>}
 
         {order && (
           <div style={{
@@ -327,20 +305,24 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
 // Shareable link — combines the order ref with the last-4 digits of the
 // phone used to place the order, so the URL is bookmarkable but mildly
 // gated against random ref-guessing.
-function ShareLink({ order, theme, cardBdr, muted, inputBg }) {
+// Database fence stage 1 (contract C3): the link carries the tracking token (?t=) when there
+// is one, and still the last 4 digits (?p=) so old style links keep working everywhere.
+function ShareLink({ order, trackKey, theme, cardBdr, muted, inputBg }) {
   const [copied, setCopied] = useState(false);
   const phone = String(order?.customer?.phone || '').replace(/\D/g, '');
   const p4 = phone.slice(-4);
+  const token = trackKey && !/^\d{4}$/.test(String(trackKey)) ? String(trackKey) : null;
   const url = useMemo(() => {
-    if (!order?.ref || !p4) return null;
+    if (!order?.ref || (!p4 && !token)) return null;
     const u = new URL(window.location.origin + window.location.pathname);
     // Preserve the slug-resolution query (?loc=…) if present.
     const loc = new URL(window.location.href).searchParams.get('loc');
     if (loc) u.searchParams.set('loc', loc);
     u.searchParams.set('track', order.ref);
-    u.searchParams.set('p', p4);
+    if (token) u.searchParams.set('t', token);
+    if (p4) u.searchParams.set('p', p4);
     return u.toString();
-  }, [order?.ref, p4]);
+  }, [order?.ref, p4, token]);
   if (!url) return null;
 
   const copy = async () => {

@@ -32,6 +32,7 @@ import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
@@ -1007,6 +1008,17 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     } catch { /* best-effort */ }
   };
 
+  // Database fence stage 1 (contract C1 step 4): an order placed without proof of payment.
+  // The money was taken, so the order stands (unpaid, marked for the venue); staff see it in
+  // the activity feed and the customer is told the venue will confirm the payment.
+  const notePaymentUnverified = (ref) => {
+    try {
+      logActivity(opsLocationId, { kind: 'order', severity: 'action', refType: 'order', refId: ref,
+        title: `Online order ${ref}: payment not confirmed`,
+        body: 'The card payment could not be verified automatically. Check the payment before handing the order over.' });
+    } catch { /* feed best-effort */ }
+  };
+
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
   const onGiftOnlyPayment = async () => {
     const gate = deliveryGateError();
@@ -1054,16 +1066,35 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
-      const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
-      if (insErr) {
-        console.error('[OnlineCheckout] order_queue write failed:', insErr);
-        setError('Could not save the order. Contact the venue with ref ' + ref + '.');
-        return;
+      // Database fence stage 1 (contract C2): the order and its paid check are written by ONE
+      // server call, place_public_order, which counts the gift (or loyalty) debit as paid only
+      // with a proof the payment-proof function wrote from the ledger. A reward that covers the
+      // whole bill is redeemed BEFORE placing (a zero total check needs that proof).
+      let rewardProofIds = [];
+      let proofUnavailable = false;
+      if (rewardApplied && !giftApplied) {
+        try { await redeemLoyaltyAfterOrder(); } catch { /* the reward is recorded on the check either way */ }
+        // The ledger key loyalty-redeem derives from the check id (points: redeem:<check>:<reward>,
+        // stamps: stampredeem:<check>:<program>).
+        const loyaltyKey = rewardApplied.idempotency_key
+          || (rewardApplied.stamp_program_id ? `stampredeem:${checkId}:${rewardApplied.stamp_program_id}`
+            : rewardApplied.reward_id ? `redeem:${checkId}:${rewardApplied.reward_id}` : null);
+        if (loyaltyKey) {
+          const lp = await requestPaymentProof({ opsLocationId, processor: 'loyalty', kind: 'loyalty', paymentRef: loyaltyKey });
+          if (lp.proofId) rewardProofIds = [lp.proofId];
+          else if (lp.unavailable) proofUnavailable = true;
+        }
       }
-      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      let giftProofIds = [];
+      if (giftApplied && giftCommit?.idempotency_key) {
+        const gp = await requestPaymentProof({ opsLocationId, processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key });
+        if (gp.proofId) giftProofIds = [gp.proofId];
+        else if (gp.unavailable) proofUnavailable = true;
+      }
 
+      let closedCheck = null;
       try {
-        const closedCheck = {
+        closedCheck = {
           id: checkId,
           ref,
           location_id: opsLocationId,
@@ -1103,16 +1134,45 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
-        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
-        // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
-        // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
-        sendOrderConfirmation(closedCheck);
-        redeemPromoAfterOrder();
-        redeemLoyaltyAfterOrder();
       } catch (e) {
-        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+        console.warn('[OnlineCheckout] closed check build threw:', e?.message);
+      }
+
+      const placed = await placePublicOrder({
+        opsLocationId, order: queueRow, check: closedCheck,
+        proofIds: [...giftProofIds, ...rewardProofIds], proofUnavailable, moneyTaken: true,
+        // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while
+        // place_public_order does not exist (or the proof function is not deployed yet).
+        legacyInsert: async () => {
+          const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
+          if (insErr) return { ok: false, error: insErr };
+          if (closedCheck) {
+            const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+            if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+          }
+          return { ok: true };
+        },
+      });
+      if (!placed.ok) {
+        console.error('[OnlineCheckout] order write failed:', placed.reason, placed.message);
+        setError('Could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      if (placed.unverified) notePaymentUnverified(ref);
+
+      try {
+        if (closedCheck) {
+          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
+          sendOrderConfirmation(closedCheck);
+        }
+        redeemPromoAfterOrder();
+        // A reward that covered the whole bill was already redeemed above (before placing).
+        if (!(rewardApplied && !giftApplied)) redeemLoyaltyAfterOrder();
+      } catch (e) {
+        console.warn('[OnlineCheckout] after order work threw:', e?.message);
       }
 
       attributeOnlineOrder({
@@ -1127,7 +1187,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent: null });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent: null, trackToken: placed.trackToken, phone: customer?.phone || null, paymentUnverified: !!placed.unverified });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
       setError('Could not save the order. Contact the venue.');
@@ -1178,13 +1238,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
-      const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
-      if (insErr) {
-        console.error('[OnlineCheckout] order_queue write failed AFTER payment:', insErr);
-        setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
-        return;
-      }
-      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      // Database fence stage 1 (contract C1): ask the server to record proof of the card
+      // payment (it reads the processor, never this page), in parallel with the gift commit.
+      const proofPromise = payId
+        ? requestPaymentProof({ opsLocationId, processor, kind: 'card', paymentRef: payId })
+        : Promise.resolve({ failed: true, reason: 'missing' });
 
       // v5.5.901: gift card — debit at COMMIT, like promo + loyalty below. The card leg is
       // already captured and the order is already queued, so the debit CANNOT block or fail
@@ -1202,8 +1260,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // up in History / EOD / Payments reports identically to in-store paid
       // orders. status='paid' (not 'open') because Stripe already collected.
       // The receipt formatter prints check.ref as "ORDER #" — no extra wiring.
+      let closedCheck = null;
       try {
-        const closedCheck = {
+        closedCheck = {
           id: checkId,
           ref,
           location_id: opsLocationId,
@@ -1252,16 +1311,49 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
-        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
-        // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
-        // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
-        sendOrderConfirmation(closedCheck);
+      } catch (e) {
+        console.warn('[OnlineCheckout] closed check build threw:', e?.message);
+      }
+
+      // ONE server call writes the order and (when the card proof covers it) the paid check.
+      // The money was taken, so the order is never dropped: without proof it still reaches the
+      // kitchen, unpaid and marked for the venue to confirm.
+      const proof = await proofPromise;
+      const placed = await placePublicOrder({
+        opsLocationId, order: queueRow, check: closedCheck,
+        proofIds: proof.proofId ? [proof.proofId] : [],
+        proofUnavailable: !!proof.unavailable, moneyTaken: true,
+        // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while
+        // place_public_order does not exist (or the proof function is not deployed yet).
+        legacyInsert: async () => {
+          const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
+          if (insErr) return { ok: false, error: insErr };
+          if (closedCheck) {
+            const { error: ccErr } = await supabase.from('closed_checks').insert(closedCheck);
+            if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+          }
+          return { ok: true };
+        },
+      });
+      if (!placed.ok) {
+        console.error('[OnlineCheckout] order write failed AFTER payment:', placed.reason, placed.message);
+        setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      if (placed.unverified) notePaymentUnverified(ref);
+
+      try {
+        if (closedCheck) {
+          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
+          sendOrderConfirmation(closedCheck);
+        }
         redeemPromoAfterOrder();
         redeemLoyaltyAfterOrder();
       } catch (e) {
-        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+        console.warn('[OnlineCheckout] after order work threw:', e?.message);
       }
 
       // Customer profile: every online order/visit flows into the same CRM
@@ -1294,7 +1386,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         }
       }
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent, trackToken: placed.trackToken, phone: customer?.phone || null, paymentUnverified: !!placed.unverified });
     } catch (e) {
       console.error('[OnlineCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');

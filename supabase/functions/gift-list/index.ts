@@ -9,8 +9,30 @@
 //   search     — search code_last4, recipient_name, or recipient_email
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
+  cors, json, opsAdmin, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { decideCompanyStaff, PURCHASE_LIST_COLUMNS } from '../_shared/companyStaffAccess.js';
+
+// Database fence stage 1 (contract P3): is the caller Back Office staff of this company?
+// user_locations to a venue of the company, a super admin, or a Platform company role. Never
+// "has a JWT": an anonymous session is free to anybody holding the public key.
+async function isCompanyStaff(user: any, companyId: string): Promise<boolean> {
+  if (!user?.id || user.is_anonymous) return false;
+  const [prof, ul, venues, roles] = await Promise.all([
+    opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
+    opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id),
+    platformAdmin.from('locations').select('ops_location_id').eq('company_id', companyId),
+    platformAdmin.from('user_company_roles').select('company_id').eq('user_id', user.id),
+  ]);
+  return decideCompanyStaff({
+    user,
+    role: (prof.data as any)?.role ?? null,
+    userLocationIds: ((ul.data as any[]) || []).map((r) => r.location_id),
+    companyOpsLocationIds: ((venues.data as any[]) || []).map((r) => r.ops_location_id).filter(Boolean),
+    companyRoleCompanyIds: ((roles.data as any[]) || []).map((r) => r.company_id),
+    companyId,
+  }).ok;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -27,6 +49,22 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── purchases: the Back Office "Online purchases" list (contract P3) ─────
+  // The columns the screen shows, NOT fulfilled_code (a spendable code), and only for staff
+  // of the company. After 20260919d the browser cannot read gift_card_purchases at all.
+  if (body.action === 'purchases') {
+    if (!body.location_id) return json({ error: 'location_id required' }, 400);
+    if (!(await isCompanyStaff(caller, companyId))) return json({ error: 'not staff of this company' }, 403);
+    const { data: rows, error: pErr } = await platformAdmin
+      .from('gift_card_purchases')
+      .select(PURCHASE_LIST_COLUMNS)
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false })
+      .limit(Math.min(Number(body.limit) || 50, 200));
+    if (pErr) return json({ error: pErr.message }, 500);
+    return json({ purchases: rows ?? [] });
+  }
 
   const limit = Math.min(Number(body.limit) || 500, 1000);
 

@@ -346,14 +346,15 @@ Deno.serve(async (req) => {
     return json({ error: `Ledger entry failed: ${txErr.message}` }, 500);
   }
 
-  // Update purchase → fulfilled (store plaintext code for resend capability)
+  // Update purchase → fulfilled. Database fence stage 1 (contract P3): the plaintext code is
+  // NOT copied onto the purchase any more (that row was readable by every browser); the card
+  // keeps its own code (gift_cards.code_plain), which is what gift-resend reads.
   await platformAdmin
     .from('gift_card_purchases')
     .update({
       status: 'fulfilled',
       gift_card_id: card.id,
       code_last4: last4,
-      fulfilled_code: normalized,
       fulfilled_at: new Date().toISOString(),
     })
     .eq('id', purchaseId);

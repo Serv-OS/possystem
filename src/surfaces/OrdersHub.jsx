@@ -709,6 +709,9 @@ export default function OrdersHub() {
       // v5.5.157: refresh the floor-plan table session so the closed
       // tab's items disappear from TablesSurface. If other QR tabs are
       // still open at this table the helper preserves their items.
+      // Database fence stage 1 (contract S1): the helper now only writes or removes a session
+      // QR owns, never a till's. STAGE 1 CLEANUP: remove this call after 20260919b (its
+      // order_queue_qr_floor trigger keeps the floor plan).
       if (tab.tableId && tab.firstRow?.location_id) {
         syncQrTableSession(tab.firstRow.location_id, tab.tableId).catch(() => {});
       }

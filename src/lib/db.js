@@ -8,7 +8,8 @@
  * All queries are scoped to a location_id for multi-tenancy.
  */
 
-import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
+import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
+import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
 import { VERSION } from './version';
@@ -653,6 +654,7 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
   // v4.3 — durable send: if the network/Supabase fails, queue the write to
   // IndexedDB so it replays when the device comes back online. No lost tickets.
   const handleFailure = async (err) => {
+    reportWriteRefused(err);   // fence stage 1: a refused kitchen ticket may mean a lost link (banner); it is queued below
     try {
       const { queueWrite } = await import('../sync/OfflineQueue');
       // v5.8.66: the queued copy carries meta ONLY once this session has seen the column
@@ -1013,6 +1015,12 @@ export const fetchStaff = async (locationId = null) => {
 // ── Devices ───────────────────────────────────────────────────────────────────
 export const updateDeviceHeartbeat = async (deviceId) => {
   if (isMock) return { data: null, error: null };
+  // Database fence stage 1 (contract A10): the server heartbeat reports last_seen, the build
+  // and fence_v1. FENCE STAGE 1 FALLBACK: while device_heartbeat does not exist (20260919a
+  // not run) the old direct write below runs. Delete the fallback once 20260919b has run.
+  const hb = await sendDeviceHeartbeat();
+  if (hb && !hb.unsupported) return { data: hb, error: null };
+  if (!hb) return { data: null, error: null };
   // v5.5.279: location_id guard on device heartbeat
   const locationId = getActiveLocationSync() || await getLocationId();
   // v5.5.870: report the running app version so Back Office → Network Status can flag a till that

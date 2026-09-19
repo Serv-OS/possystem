@@ -21,6 +21,7 @@ import { clearStashedTab } from '../../lib/qrTabStorage';
 import { money } from '../../lib/currency';
 import { ryftTab } from '../../lib/payments/ryft';
 import { adyenTab } from '../../lib/payments/adyenTab';
+import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
@@ -44,6 +45,9 @@ export default function TabResumeScreen({
     const ryftCustomerId   = tab.ryft_customer_id || rounds?.[0]?.customer?.ryft_customer_id || null;
     const ryftStoredCardId = tab.ryft_payment_method_id || rounds?.[0]?.customer?.ryft_payment_method_id || null;
     const locId            = rounds?.[0]?.location_id || null;
+    const isAdyen          = !isRyft && (tab.processor === 'adyen' || rounds?.[0]?.customer?.processor === 'adyen');
+    // Card payment ids of any overage charged below (each needs its own 'card' proof).
+    const overageIds = [];
     setClosing(true); setError('');
     try {
       // Capture the bill, clamped to the hold. Both paths yield the same shape:
@@ -94,6 +98,7 @@ export default function TabResumeScreen({
             amount_minor: shortfallMinor,
             currency: data.currency || 'gbp',
           });
+          if (ov.charged && ov.overage?.id) overageIds.push(ov.overage.id);
           if (!ov.charged) {
             console.warn('[TabResume] ryft overage not approved:', ov?.error || ov?.detail);
             setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
@@ -115,12 +120,14 @@ export default function TabResumeScreen({
               description: `QR tab overage · self-close · ${tab.payment_intent_id}`,
               metadata: {
                 source: 'qr_overage',
+                ops_location_id: String(locId || ''),   // fence stage 1: payment-proof checks the venue on the intent
                 parent_payment_intent: tab.payment_intent_id,
                 table_label: String(tab.table_label || tableLabel || ''),
               },
             }),
           });
           const ov = await ovRes.json();
+          if (ovRes.ok && ov.ok && ov.payment_intent) overageIds.push(ov.payment_intent);
           if (!ovRes.ok || !ov.ok) {
             console.warn('[TabResume] overage failed:', ov?.error);
             setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
@@ -130,53 +137,79 @@ export default function TabResumeScreen({
         }
       }
 
-      // Mark every round on this tab as collected so they leave the
-      // operator's open-orders pane. Use the same payment_intent_id as
-      // the join key — that's what links rounds to one tab.
-      try {
-        const refs = (rounds || []).map(r => r.ref).filter(Boolean);
-        if (refs.length) {
-          // v5.5.988: fenced on the venue. Refs are not globally unique — the queue's key is
-          // (location_id, ref) — so ref alone would mark another venue's live orders collected.
-          // locId comes off the rounds themselves, so it is always this tab's venue.
-          await supabase.from('order_queue')
-            .update({ status: 'collected' })
-            .eq('location_id', locId)
-            .in('ref', refs);
-        }
-      } catch (e) { console.warn('[TabResume] mark-collected:', e?.message); }
-
-      // Aggregate items across all rounds for the closed_check.
-      const allItems = (rounds || []).flatMap(r => r.items || []);
-      const tabTip = +(rounds || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
-      try {
-        await supabase.from('closed_checks').insert({
-          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
-          ref: tab.tab_ref,
-          location_id: rounds?.[0]?.location_id || null,
-          server: 'QR',
-          covers: 1,
-          order_type: 'dine-in',
-          customer: { ...(rounds?.[0]?.customer || {}), tab_closed_at: new Date().toISOString() },
-          items: allItems.map(i => ({ ...i, voided: false })),
-          discounts: [],
-          // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
-          subtotal: +(runningTotal - tabTip).toFixed(2),
-          service: 0, tip: tabTip, tax_amount: null,
-          total: runningTotal,
-          method: 'card',
-          // Refund routing (refundCheck reads top-level processor + payment_intents).
-          processor: isRyft ? 'ryft' : 'stripe',
-          stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
-          payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
-          closed_at: new Date().toISOString(),
-          status: 'paid',
-          refunds: [],
-          table_id: null,
-          table_label: tab.table_label ? `Table ${tab.table_label}` : (tableLabel ? `Table ${tableLabel}` : null),
-          source: 'qr',
+      // Database fence stage 1 (contract C10, gaps G16 and G17): the capture and overage calls
+      // above stay. The server records proof of what was really captured (payment-proof reads
+      // the processor), and settle_qr_tab marks the rounds collected and writes ONE closed check
+      // for what was captured; a shortfall is recorded for staff, never booked as paid.
+      const tableLabelForCheck = tab.table_label ? `Table ${tab.table_label}` : (tableLabel ? `Table ${tableLabel}` : null);
+      const procName = isRyft ? 'ryft' : isAdyen ? 'adyen' : 'stripe';
+      const capProof = await requestPaymentProof({ opsLocationId: locId, processor: procName, kind: 'capture', paymentRef: tab.payment_intent_id });
+      const ovProofIds = [];
+      for (const ovId of overageIds) {
+        const pr = await requestPaymentProof({ opsLocationId: locId, processor: isRyft ? 'ryft' : 'stripe', kind: 'card', paymentRef: ovId });
+        if (pr.proofId) ovProofIds.push(pr.proofId);
+      }
+      const legacySettle = async () => {
+        // FENCE STAGE 1 FALLBACK: today's two direct writes, only while settle_qr_tab (or the
+        // proof function) is not live.
+        // Mark every round on this tab as collected so they leave the operator's open-orders
+        // pane. v5.5.988: fenced on the venue (refs are only unique per venue).
+        try {
+          const refs = (rounds || []).map(r => r.ref).filter(Boolean);
+          if (refs.length) {
+            await supabase.from('order_queue')
+              .update({ status: 'collected' })
+              .eq('location_id', locId)
+              .in('ref', refs);
+          }
+        } catch (e) { console.warn('[TabResume] mark-collected:', e?.message); }
+        // Aggregate items across all rounds for the closed_check.
+        const allItems = (rounds || []).flatMap(r => r.items || []);
+        const tabTip = +(rounds || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+        try {
+          await supabase.from('closed_checks').insert({
+            id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+            ref: tab.tab_ref,
+            location_id: rounds?.[0]?.location_id || null,
+            server: 'QR',
+            covers: 1,
+            order_type: 'dine-in',
+            customer: { ...(rounds?.[0]?.customer || {}), tab_closed_at: new Date().toISOString() },
+            items: allItems.map(i => ({ ...i, voided: false })),
+            discounts: [],
+            // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
+            subtotal: +(runningTotal - tabTip).toFixed(2),
+            service: 0, tip: tabTip, tax_amount: null,
+            total: runningTotal,
+            method: 'card',
+            // Refund routing (refundCheck reads top-level processor + payment_intents).
+            processor: isRyft ? 'ryft' : 'stripe',
+            stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
+            payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
+            closed_at: new Date().toISOString(),
+            status: 'paid',
+            refunds: [],
+            table_id: null,
+            table_label: tableLabelForCheck,
+            source: 'qr',
+          });
+        } catch (e) { console.warn('[TabResume] closed_checks insert:', e?.message); }
+        return { ok: true };
+      };
+      const settled = capProof.unavailable
+        ? { ...(await legacySettle()), path: 'legacy' }
+        : await settleQrTab({
+          opsLocationId: locId, paymentIntentId: tab.payment_intent_id,
+          check: { table_label: tableLabelForCheck }, proofIds: ovProofIds, legacySettle,
         });
-      } catch (e) { console.warn('[TabResume] closed_checks insert:', e?.message); }
+      if (!settled.ok) {
+        // The card WAS charged: never say otherwise. Staff close the tab on the till.
+        console.warn('[TabResume] settle not confirmed:', settled.reason, settled.message);
+        // The stash goes, so a second tap can never try to capture the same card again.
+        clearStashedTab(slug, tableId);
+        setError(`We charged your card. The venue will close your tab on the till. Please show this screen to staff (${tab.tab_ref || ''}).`);
+        return;
+      }
 
       clearStashedTab(slug, tableId);
       onClosed?.({ amount: runningTotal });

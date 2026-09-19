@@ -22,6 +22,8 @@ import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { supabase, isMock } from '../../lib/supabase';
 import { updateDeviceHeartbeat } from '../../lib/db';
+import { isDeviceLinkUncertain } from '../../lib/deviceLink';
+import { trustSharedRead } from '../../lib/deviceFence';
 import { loadStaffRoster } from '../../lib/staffRoster';
 import { getLocationConfig } from '../../lib/locationTime';
 import {
@@ -204,6 +206,8 @@ export function KDSSurface() {
   // ── heartbeat (Status drawer shows the KDS online) ──────────────────────────
   useEffect(() => {
     if (!device.id || isMock) return;
+    // Database fence stage 1 (contract A10): device_heartbeat (with the old direct write as
+    // the FENCE STAGE 1 FALLBACK inside updateDeviceHeartbeat while the function is missing).
     const beat = () => { updateDeviceHeartbeat(device.id).catch?.(() => {}); };
     beat();
     const id = setInterval(beat, 60000);
@@ -252,6 +256,9 @@ export function KDSSurface() {
         let q = supabase.from('kds_tickets').select('*').eq('location_id', locationId).in('status', ['pending', 'held']).order('sent_at', { ascending: true });
         if (centreId) q = q.eq('centre_id', centreId);
         const { data } = await q;
+        // Database fence stage 1 (contract A9): an empty read while this screen may have lost
+        // its link is unknown, never "no tickets". Keep what is on screen.
+        if (data && !trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: data.length })) return;
         if (data && writeSeq.current === seqAtStart) {
           setRows(data.map(mapRow));
           // A ticket bumped somewhere else while it was open closes the pop out.

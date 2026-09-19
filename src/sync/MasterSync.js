@@ -17,6 +17,8 @@
 
 import { supabase, isMock, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
+import { isDeviceLinkUncertain } from '../lib/deviceLink';
+import { trustSharedRead } from '../lib/deviceFence';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -186,8 +188,11 @@ export async function forceSyncFromSupabase() {
       return !!(tableId && s && closedOcc.has(`${tableId}:${s}`));
     };
 
-    // Reconcile sessions — merge Supabase with local, preserving newer local data
-    if (sessionsRes.data) {
+    // Reconcile sessions: merge Supabase with local, preserving newer local data.
+    // Database fence stage 1 (contract A9): an empty read while this till may have lost its
+    // link is unknown, never "no tables": the tables are left exactly as they are.
+    const sessionsTrusted = !!sessionsRes.data && trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: sessionsRes.data.length });
+    if (sessionsRes.data && sessionsTrusted) {
       const sessionMap = {};
       sessionsRes.data.forEach(r => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
 

@@ -17,7 +17,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase } from '../../lib/supabase';
-import { logOrderActivity } from '../../lib/activity';
+import { logOrderActivity, logActivity } from '../../lib/activity';
+import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -93,6 +94,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const configuredPreAuth = Number(location.qr_tab_pre_auth_amount ?? 0);
   const tabPreAuthAmount = Math.max(configuredPreAuth, MIN_PRE_AUTH);
 
+  // Database fence stage 1 (contract C8): the table code is made by the SERVER now
+  // (place_public_order answers tab_join_code, 6 digits). This browser made code is the
+  // FENCE STAGE 1 FALLBACK, used only while place_public_order does not exist.
   // v5.5.716: a 4-digit table code shown to the tab opener. Other phones must enter it to add to /
   // settle this tab (validated against customer.tab_join_code in OnlineSurface), so a passer-by who
   // just scans the printed QR can't order against someone else's tab. Re-used when adding a round to
@@ -236,6 +240,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         round_ref: ref,
         tip: tipAmount,   // this round's tip, see v5.8.9 note on round 1
       };
+      // The server ignores a phone sent code and keeps the tab's own (fence stage 1, C9).
+      const { tab_join_code: legacyJoinCode, ...roundCustomerForServer } = roundCustomer;
       const queueRow = {
         ref,
         location_id: opsLocationId,
@@ -249,13 +255,35 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         collection_time: null,
         is_asap: true,
       };
-      const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
-      if (qErr) throw qErr;
+      // Database fence stage 1 (contract C9): one server call. The tab's card hold must be
+      // proven on the server; a tab opened before this release has no hold proof yet, so on
+      // 'tab_not_verified' the proof is asked for once and the round sent again.
+      // FENCE STAGE 1 FALLBACK: the direct insert, only while place_public_order does not exist.
+      const tabPi = roundCustomer.payment_intent_id || existingTab?.payment_intent_id || null;
+      const tabProcessor = roundCustomer.processor || existingTab?.processor || 'stripe';
+      const sendRound = () => placePublicOrder({
+        opsLocationId, order: { ...queueRow, customer: roundCustomerForServer },
+        legacyInsert: async () => {
+          const { error: qErr } = await supabase.from('order_queue').insert({ ...queueRow, customer: { ...roundCustomerForServer, tab_join_code: legacyJoinCode } });
+          return qErr ? { ok: false, error: qErr } : { ok: true };
+        },
+      });
+      let placed = await sendRound();
+      if (!placed.ok && placed.reason === 'tab_not_verified' && tabPi) {
+        const pr = await requestPaymentProof({ opsLocationId, processor: tabProcessor, kind: 'preauth', paymentRef: tabPi });
+        if (pr.proofId) placed = await sendRound();
+      }
+      if (!placed.ok) {
+        if (placed.reason === 'tab_closed') throw new Error(placed.message || 'This tab is already closed. Please start a new order.');
+        throw new Error(placed.message || 'Could not add to tab.');
+      }
       try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
       // v5.5.157: refresh the floor-plan table session so the new round
       // shows up on TablesSurface alongside any other open QR rounds.
+      // STAGE 1 CLEANUP: remove after 20260919b (its order_queue_qr_floor trigger does this;
+      // until then this helper only ever writes a QR owned session, contract S1).
       syncQrTableSession(opsLocationId, tableId).catch(() => {});
-      onPlaced?.({ ref, total: subtotal, addedToTab: true });
+      onPlaced?.({ ref, total: subtotal, addedToTab: true, trackToken: placed.trackToken, paymentIntentId: tabPi });
     } catch (e) {
       console.error('[QrCheckout addToTab] failed:', e);
       setError(e?.message || 'Could not add to tab.');
@@ -367,21 +395,31 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       let effectiveTableLabel = tableLabel || tableId;
       if (tableId) {
         try {
-          const { data: existing } = await supabase
-            .from('order_queue')
-            .select('ref, customer')
-            .eq('location_id', opsLocationId)
-            .eq('source', 'qr')
-            .neq('status', 'collected')
-            .filter('customer->>tableId', 'eq', String(tableId));
-          // Count DISTINCT payment_intent_id (one number per tab/charge),
-          // fall back to ref for any order without a PI.
-          const distinctPIs = new Set();
-          (existing || []).forEach(r => {
-            const k = r.customer?.payment_intent_id || `ref:${r.ref}`;
-            distinctPIs.add(k);
-          });
-          const subNum = distinctPIs.size + 1;
+          // Database fence stage 1 (contract C7): qr_table_tab_count counts the distinct open tabs.
+          // FENCE STAGE 1 FALLBACK: today's direct read, only while it does not exist.
+          const cnt = await publicRead('qr_table_tab_count',
+            { p_location_id: String(opsLocationId), p_table_id: String(tableId) },
+            () => supabase
+              .from('order_queue')
+              .select('ref, customer')
+              .eq('location_id', opsLocationId)
+              .eq('source', 'qr')
+              .neq('status', 'collected')
+              .filter('customer->>tableId', 'eq', String(tableId)));
+          let count = 0;
+          if (cnt.legacy) {
+            // Count DISTINCT payment_intent_id (one number per tab/charge),
+            // fall back to ref for any order without a PI.
+            const distinctPIs = new Set();
+            (cnt.data || []).forEach(r => {
+              const k = r.customer?.payment_intent_id || `ref:${r.ref}`;
+              distinctPIs.add(k);
+            });
+            count = distinctPIs.size;
+          } else {
+            count = Number(cnt.data) || 0;
+          }
+          const subNum = count + 1;
           effectiveTableLabel = `${tableLabel || tableId}.${subNum}`;
         } catch (e) { console.warn('[QrCheckout] sub-numbering query failed:', e?.message); }
       }
@@ -418,7 +456,6 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         ...(tabMode ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),
-          tab_join_code: tabJoinCode,   // v5.5.716: gate other phones joining this tab
           pre_auth_amount: tabPreAuthAmount,
           tab_running_total: total,
           // v5.5.151: snapshot the venue's surcharge config at tab-open time
@@ -456,53 +493,76 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         collection_time: null,
         is_asap: true,
       };
-      const { error: qErr } = await supabase.from('order_queue').insert(queueRow);
-      if (qErr) {
-        console.error('[QrCheckout] order_queue write failed AFTER payment:', qErr);
+      // 2. closed_checks: only on PAY-NOW orders. For open-tab the bill isn't paid yet
+      // (the card is only held); the check is written when the tab is settled.
+      const closedCheckRow = tabMode ? null : {
+        id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        ref,
+        location_id: opsLocationId,
+        server: 'QR',
+        staff_id: null,
+        covers: 1,
+        order_type: 'dine-in',
+        customer: customerWithPayment,
+        items: items.map(i => ({ ...i, voided: false })),
+        discounts: autoDiscounts,
+        subtotal,
+        service: serviceCharge,
+        tip: tipAmount,
+        tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
+        total,
+        method: 'card',
+        stripe_payment_intent_id: payId,
+        payment_intents: payId ? [{ id: payId, amountMinor: Math.round(total * 100) }] : null,
+        processor,   // 'stripe' | 'ryft': refund routes by this
+        drawer_id: null,
+        shift_id: null,
+        closed_at: new Date().toISOString(),
+        status: 'paid',
+        refunds: [],
+        table_id: tableId || null,
+        table_label: tableLabelStr,
+        source: 'qr',
+      };
+
+      // Database fence stage 1 (contract C8): proof of the card payment (pay now) or of the
+      // card hold (open tab), read from the processor by the payment-proof function, then ONE
+      // server call writes the order (and the paid check for pay now). The server makes the
+      // tab's table code. The money was taken, so the order is never dropped: without proof
+      // it still reaches the kitchen, marked for staff to confirm.
+      const proof = payId
+        ? await requestPaymentProof({ opsLocationId, processor, kind: tabMode ? 'preauth' : 'card', paymentRef: payId })
+        : { failed: true, reason: 'missing' };
+      const placed = await placePublicOrder({
+        opsLocationId, order: queueRow, check: closedCheckRow,
+        proofIds: proof.proofId ? [proof.proofId] : [],
+        proofUnavailable: !!proof.unavailable, moneyTaken: true,
+        // FENCE STAGE 1 FALLBACK: today's direct inserts (with the browser made table code),
+        // used only while place_public_order does not exist or the proof function is not live.
+        legacyInsert: async () => {
+          const legacyRow = tabMode ? { ...queueRow, customer: { ...customerWithPayment, tab_join_code: tabJoinCode } } : queueRow;
+          const { error: qErr } = await supabase.from('order_queue').insert(legacyRow);
+          if (qErr) return { ok: false, error: qErr };
+          if (closedCheckRow) {
+            try { await supabase.from('closed_checks').insert(closedCheckRow); }
+            catch (e) { console.warn('[QrCheckout] closed_checks insert failed:', e?.message); }
+          }
+          return { ok: true, tabJoinCode: tabMode ? tabJoinCode : null };
+        },
+      });
+      if (!placed.ok) {
+        console.error('[QrCheckout] order write failed AFTER payment:', placed.reason, placed.message);
         setError(isOpenTab
-          ? `Card was authorised but we could not save the tab. Please show this to staff. Ref ${ref}.`
+          ? (placed.message || `Card was authorised but we could not save the tab. Please show this to staff. Ref ${ref}.`)
           : `Payment succeeded but we could not save the order. Please show this to staff. Ref ${ref}.`);
         return;
       }
+      const joinCode = tabMode ? (placed.tabJoinCode || null) : null;
       try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
-
-      // 2. closed_checks — only on PAY-NOW orders. For open-tab the bill
-      // isn't paid yet (status is requires_capture in Stripe) — closed_checks
-      // gets written on force-close-and-capture by the operator (commit 3c).
-      if (!tabMode) {
-        try {
-          await supabase.from('closed_checks').insert({
-            id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
-            ref,
-            location_id: opsLocationId,
-            server: 'QR',
-            staff_id: null,
-            covers: 1,
-            order_type: 'dine-in',
-            customer: customerWithPayment,
-            items: items.map(i => ({ ...i, voided: false })),
-            discounts: autoDiscounts,
-            subtotal,
-            service: serviceCharge,
-            tip: tipAmount,
-            tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
-            total,
-            method: 'card',
-            stripe_payment_intent_id: payId,
-            payment_intents: payId ? [{ id: payId, amountMinor: Math.round(total * 100) }] : null,
-            processor,   // 'stripe' | 'ryft' — refund routes by this
-            drawer_id: null,
-            shift_id: null,
-            closed_at: new Date().toISOString(),
-            status: 'paid',
-            refunds: [],
-            table_id: tableId || null,
-            table_label: tableLabelStr,
-            source: 'qr',
-          });
-        } catch (e) {
-          console.warn('[QrCheckout] closed_checks insert failed:', e?.message);
-        }
+      if (placed.unverified) {
+        logActivity(opsLocationId, { kind: 'order', severity: 'action', refType: 'order', refId: ref,
+          title: `QR order ${ref}: payment not confirmed`,
+          body: 'The card payment could not be verified automatically. Check the payment before serving.' }).catch(() => {});
       }
 
       // 3. Customer CRM (fire-and-forget — phone optional for QR, only
@@ -525,7 +585,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
             payment_intent_id: payId,
-            tab_join_code: tabJoinCode,   // v5.5.716: so the opener can re-share it from the resume screen
+            tab_join_code: joinCode,   // v5.5.716: so the opener can re-share it from the resume screen (fence stage 1: the server's code)
             processor,
             stripe_account: pi?.stripe_account || null,
             // Ryft: the session + stored-card ids the close path needs (the
@@ -545,10 +605,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // v5.5.157: also surface the order on the floor-plan table session
       // so operators see the table as in-service from the moment of
       // first round, not just in the OrdersHub QR-tabs section.
+      // STAGE 1 CLEANUP: remove after 20260919b (its order_queue_qr_floor trigger does this;
+      // until then this helper only ever writes a QR owned session, contract S1).
       if (tableId) {
         syncQrTableSession(opsLocationId, tableId).catch(() => {});
       }
-      onPlaced?.({ ref, total, paymentIntent, joinCode: isOpenTab ? tabJoinCode : null });
+      onPlaced?.({ ref, total, paymentIntent, joinCode, trackToken: placed.trackToken, paymentIntentId: payId, paymentUnverified: !!placed.unverified });
     } catch (e) {
       console.error('[QrCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Show this to staff. Ref ' + orderShape.ref + '.');

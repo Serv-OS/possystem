@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
+import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
 
 const DEFAULT_PRODUCTION_CENTRES = [
   { id:'pc1', name:'Hot kitchen',  icon:'🔥' },
@@ -19,6 +20,10 @@ function getProductionCentres() {
   } catch { return DEFAULT_PRODUCTION_CENTRES; }
 }
 
+// Database fence stage 1 (contract A6): pairing codes come from the SERVER
+// (issue_pairing_code: 12 symbols, about 60 bits, 60 minutes). This browser made code
+// (Math.random, 90,000 values) is the FENCE STAGE 1 FALLBACK only, used while 20260919a
+// is not run. Delete ADJECTIVES and genCode once 20260919b has run.
 const ADJECTIVES = ['APPLE','BAKER','CEDAR','DONUT','EMBER','FROST','GROVE','HONEY','IVORY','JAZZY'];
 const genCode = () => `${ADJECTIVES[Math.floor(Math.random()*10)]}-${Math.floor(1000+Math.random()*9000)}`;
 
@@ -132,6 +137,8 @@ export default function DeviceRegistry() {
   const [pairStep, setPairStep] = useState(1);
   const [newDevice, setNewDevice] = useState({ name:'', type:'pos', profileId:'', centreId:'', receiptPrinterId:'' });
   const [pairingCode, setPairingCode] = useState('');
+  // Codes this screen just issued (the server hands the code back once; the list read may lag).
+  const [issued, setIssued] = useState({});
   const [pairedDeviceId, setPairedDeviceId] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -162,12 +169,10 @@ export default function DeviceRegistry() {
   const startPairing = async () => {
     if (!newDevice.name.trim()) return setError('Terminal name required');
     setWorking(true); setError('');
-    const code = genCode();
     const { data, error:err } = await supabase.from('devices').insert({
       location_id: locationId,
       name: newDevice.name.trim(),
       type: newDevice.type,
-      pairing_code: code,
       profile_id: !['kds','clock'].includes(newDevice.type) ? (newDevice.profileId || null) : null,
       centre_id: newDevice.type === 'kds' ? (newDevice.centreId || null) : null,
       // v5.5.835: receipts route to the printer set on the device — so a device created
@@ -176,11 +181,16 @@ export default function DeviceRegistry() {
       receipt_printer_id: !['kds','clock'].includes(newDevice.type) ? (newDevice.receiptPrinterId || null) : null,
       status: 'unpaired',
     }).select().single();
-    setWorking(false);
     reportSave('device', err);
-    if (err) return setError(err.message);
-    setPairingCode(code);
+    if (err) { setWorking(false); return setError(err.message); }
     setPairedDeviceId(data.id);
+    const res = await issueCode(data.id, { force: false });
+    setWorking(false);
+    if (!res.ok) {
+      await loadDevices(locationId);
+      return setError(`The terminal was added but no pairing code was issued: ${res.message} Press Regenerate on it below.`);
+    }
+    setPairingCode(formatPairingCode(res.code));
     await loadDevices(locationId);
     setPairStep(2);
   };
@@ -201,20 +211,36 @@ export default function DeviceRegistry() {
     if (locationId) await loadDevices(locationId);
   };
 
+  // One path for a new code (contract A6): the server issues it; a device that is paired right
+  // now is only moved after "This till is in use" is confirmed.
+  const issueCode = (deviceId, { force = false } = {}) => issuePairingCodeWithFallback({
+    rpc: (name, args) => supabase.rpc(name, args),
+    deviceId,
+    force,
+    confirmPaired: async () => window.confirm('This till is in use. A new code disconnects it until it is paired again. Issue a new code?'),
+    // FENCE STAGE 1 FALLBACK: today's browser made code, written directly.
+    legacyIssue: async () => {
+      const code = genCode();
+      const { data, error } = await supabase.from('devices')
+        .update({ pairing_code:code, status:'unpaired', paired_at:null })
+        .eq('id', deviceId).select('id');
+      const failure = error || (!data || data.length === 0
+        ? new Error(`Pairing-code update matched 0 rows for id=${deviceId}: RLS may have blocked it`)
+        : null);
+      reportSave('device pairing code', failure);
+      return failure ? null : code;
+    },
+  });
+
   const regenerateCode = async (deviceId) => {
-    const code = genCode();
-    const { data, error } = await supabase.from('devices')
-      .update({ pairing_code:code, status:'unpaired', paired_at:null })
-      .eq('id', deviceId).select('id');
-    const failure = error || (!data || data.length === 0
-      ? new Error(`Pairing-code update matched 0 rows for id=${deviceId} — RLS may have blocked it`)
-      : null);
-    reportSave('device pairing code', failure);
-    if (failure) {
-      // Never reveal a code the DB didn't accept — the OLD code is still the live one.
-      showToast('Could not issue a new code — the previous code is still the valid one', 'error');
+    const res = await issueCode(deviceId, { force: false });
+    if (!res.ok) {
+      // Never reveal a code the DB didn't accept: the OLD code is still the live one.
+      if (res.reason !== 'cancelled') showToast(res.message || 'Could not issue a new code. The previous code is still the valid one', 'error');
       return;
     }
+    setIssued(prev => ({ ...prev, [deviceId]: { code: res.code, expiresAt: res.expires_at } }));
+    if (res.expires_at) showToast('New pairing code issued. It is valid for 60 minutes.', 'success');
     setShowCodeFor(deviceId);
     if (locationId) await loadDevices(locationId);
   };
@@ -350,7 +376,7 @@ export default function DeviceRegistry() {
               </div>
               <div style={{ background:'var(--bg)', border:'2px dashed var(--acc)', borderRadius:16, padding:'32px', textAlign:'center', marginBottom:24 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', letterSpacing:'.1em', textTransform:'uppercase', marginBottom:8 }}>Pairing code</div>
-                <div style={{ fontSize:48, fontWeight:800, letterSpacing:'.15em', color:'var(--acc)', fontFamily:'monospace' }}>{pairingCode}</div>
+                <div style={{ fontSize:36, fontWeight:800, letterSpacing:'.15em', color:'var(--acc)', fontFamily:'monospace' }}>{pairingCode}</div>
                 <div style={{ fontSize:12, color:'var(--t3)', marginTop:8 }}>
                   {newDevice.name} · {DEVICE_TYPES.find(t=>t.id===newDevice.type)?.label}
                 </div>
@@ -447,10 +473,20 @@ export default function DeviceRegistry() {
                     </div>
 
                     {/* Show pairing code inline */}
-                    {(d.status==='unpaired'||showCode) && d.pairing_code && (
+                    {(d.status==='unpaired'||showCode) && (issued[d.id]?.code || d.pairing_code) && (
                       <div style={{ marginTop:8, display:'inline-flex', alignItems:'center', gap:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'6px 12px' }}>
                         <span style={{ fontSize:11, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em' }}>Pairing code:</span>
-                        <span style={{ fontFamily:'monospace', fontSize:18, fontWeight:800, color:'var(--acc)', letterSpacing:'.1em' }}>{d.pairing_code}</span>
+                        <span style={{ fontFamily:'monospace', fontSize:18, fontWeight:800, color:'var(--acc)', letterSpacing:'.1em' }}>{formatPairingCode(issued[d.id]?.code || d.pairing_code)}</span>
+                        {(issued[d.id]?.expiresAt || d.pairing_expires_at) && (
+                          <span style={{ fontSize:11, color:'var(--t3)' }}>valid for 60 minutes</span>
+                        )}
+                      </div>
+                    )}
+                    {d.status==='unpaired' && !(issued[d.id]?.code || d.pairing_code) && (
+                      <div style={{ marginTop:8 }}>
+                        <button onClick={()=>regenerateCode(d.id)} style={{ ...S.btn, ...S.btnGhost, padding:'6px 12px', fontSize:12 }}>
+                          New pairing code
+                        </button>
                       </div>
                     )}
                   </div>

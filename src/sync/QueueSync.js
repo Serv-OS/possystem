@@ -19,6 +19,7 @@
 
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
+import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
@@ -483,7 +484,7 @@ export async function flushQueues() {
       const sent = new Map(queueUpserts.map(r => [r.ref, rowHash(r)]));
       Promise.resolve(supabase.from('order_queue').upsert(queueUpserts, { onConflict: 'location_id,ref' }).select('ref, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] order_queue batch upsert:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] order_queue batch upsert:', error.message); return; }
           const at = new Map((data || []).map(r => [r.ref, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('orderQueue', o => o.ref, queueHash, sent, at);
         })
@@ -492,7 +493,7 @@ export async function flushQueues() {
     for (const row of queueUpdates) {
       Promise.resolve(supabase.from('order_queue').update(row).eq('location_id', _locationId).eq('ref', row.ref).select('ref, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] order_queue update:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] order_queue update:', error.message); return; }
           const at = new Map((data || []).map(r => [r.ref, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('orderQueue', o => o.ref, queueHash, new Map([[row.ref, rowHash(row)]]), at);
         })
@@ -503,7 +504,7 @@ export async function flushQueues() {
       const sent = new Map(tabUpserts.map(r => [r.id, rowHash(r)]));
       Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' }).select('id, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] bar_tabs batch upsert:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] bar_tabs batch upsert:', error.message); return; }
           const at = new Map((data || []).map(r => [r.id, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('tabs', t => t.id, tabHash, sent, at);
         })
@@ -512,7 +513,7 @@ export async function flushQueues() {
     for (const row of tabUpdates) {
       Promise.resolve(supabase.from('bar_tabs').update(row).eq('id', row.id).neq('status', 'closed').select('id, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] bar_tabs update:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] bar_tabs update:', error.message); return; }
           const at = new Map((data || []).map(r => [r.id, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('tabs', t => t.id, tabHash, new Map([[row.id, rowHash(row)]]), at);
         })

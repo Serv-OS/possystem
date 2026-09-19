@@ -12,6 +12,7 @@
  */
 
 import { supabase, getLocationId } from './supabase';
+import { reportWriteRefused } from './deviceLink';
 import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation } from './receiptBranding';
 import { money } from './currency.js';
@@ -563,6 +564,7 @@ class PrintService {
               jobId = existing.id;
             }
           } else {
+            reportWriteRefused(error);   // fence stage 1: a refused print job may mean a lost link
             console.warn('[Print] Durable insert failed, will try offline queue:', error.message);
           }
         }

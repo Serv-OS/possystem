@@ -26,6 +26,8 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { setReplayGuard, bufferedUpsertKeys } from './OfflineQueue';
+import { isDeviceLinkUncertain } from '../lib/deviceLink';
+import { trustSharedRead } from '../lib/deviceFence';
 import { reconcileList, changedKeys, keepBufferedWrite as keepRule, stampedKeys } from '../lib/queueReconcile';
 import {
   queueHash, tabHash, queueFromRow, tabFromRow, QUEUE_ROW_CAP, openQueueQuery, openTabQuery,
@@ -88,7 +90,14 @@ async function runPass() {
     const [qHeads, tHeads, bufQ, bufT] = heads;
     let ok = true;
     let partial = !bufQ || !bufT;   // the buffered writes could not be read: nothing is judged finally
-    if (!qHeads.error && Array.isArray(qHeads.data)) {
+    // Database fence stage 1 (contract A9): while this till may have lost its link (the server
+    // said so, or a write was just refused), an EMPTY read is unknown, not "the server has
+    // nothing": after file 2 row level security hides every row from an unlinked till. That
+    // list is skipped this pass (nothing dropped, nothing published, the empty streak untouched).
+    const linkUnsure = isDeviceLinkUncertain();
+    const qTrusted = !qHeads.error && Array.isArray(qHeads.data) && trustSharedRead({ linkUncertain: linkUnsure, rowCount: qHeads.data.length });
+    const tTrusted = !tHeads.error && Array.isArray(tHeads.data) && trustSharedRead({ linkUncertain: linkUnsure, rowCount: tHeads.data.length });
+    if (qTrusted) {
       // A read that returns nothing while this till holds confirmed rows is not believed until
       // it repeats: a device whose session was lost reads as empty under the tenant fence.
       _emptyQ = (qHeads.data.length === 0 && droppableQ.size > 0) ? _emptyQ + 1 : 0;
@@ -96,7 +105,7 @@ async function runPass() {
       partial = partial || inconclusive || qHeads.data.length >= QUEUE_ROW_CAP;
       ok = (await reconcileQueue(qHeads.data, droppableQ, bufQ, inconclusive)) && ok;
     } else ok = false;
-    if (!tHeads.error && Array.isArray(tHeads.data)) {
+    if (tTrusted) {
       _emptyT = (tHeads.data.length === 0 && droppableT.size > 0) ? _emptyT + 1 : 0;
       const inconclusive = _emptyT > 0 && _emptyT < EMPTY_STREAK;
       partial = partial || inconclusive || tHeads.data.length >= QUEUE_ROW_CAP;

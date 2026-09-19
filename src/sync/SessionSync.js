@@ -10,6 +10,7 @@
 
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
+import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
@@ -211,13 +212,13 @@ export async function flushSessions() {
   if (isOnline()) {
     if (upsertRows.length) {
       Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
-        .then(res => { if (res?.error) { console.warn('[SessionSync] batch upsert error — queueing for replay:', res.error.message || res.error); _queueUpserts(); }
+        .then(res => { if (res?.error) { reportWriteRefused(res.error); console.warn('[SessionSync] batch upsert error, queueing for replay:', res.error.message || res.error); _queueUpserts(); }
                        else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
         .catch(e => { console.warn('[SessionSync] batch upsert threw — queueing for replay:', e?.message || e); _queueUpserts(); });
     }
     if (toDelete.length) {
       Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', toDelete))
-        .then(res => { if (res?.error) { console.warn('[SessionSync] batch delete error — queueing for replay:', res.error.message || res.error); _queueDeletes(); } })
+        .then(res => { if (res?.error) { reportWriteRefused(res.error); console.warn('[SessionSync] batch delete error, queueing for replay:', res.error.message || res.error); _queueDeletes(); } })
         .catch(e => { console.warn('[SessionSync] batch delete threw — queueing for replay:', e?.message || e); _queueDeletes(); });
     }
   } else {
@@ -310,7 +311,7 @@ export async function flushSingleSession(tableId) {
   if (isOnline()) {
     try {
       const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });
-      if (error) console.warn('[SessionSync] flushSingleSession upsert error —', error.message || error);
+      if (error) { reportWriteRefused(error); console.warn('[SessionSync] flushSingleSession upsert error:', error.message || error); }
       else console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id);
     } catch (e) { console.warn('[SessionSync] flushSingleSession threw —', e?.message || e); }
   }
@@ -352,7 +353,7 @@ export async function persistTransfer(fromId, toId) {
   if (isOnline()) {
     try {
       const { error } = await supabase.from('active_sessions').delete().match(match);
-      if (error) { console.warn('[SessionSync] persistTransfer delete error — queueing:', error.message || error); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
+      if (error) { reportWriteRefused(error); console.warn('[SessionSync] persistTransfer delete error, queueing:', error.message || error); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
       else console.log('[SessionSync] ✓ transfer persisted:', fromId, '→', toId);
     } catch (e) { console.warn('[SessionSync] persistTransfer threw — queueing:', e?.message || e); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
   } else {

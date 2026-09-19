@@ -12,6 +12,8 @@ import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
 import { isSessionClosed } from './sessionClosure';
 import { pruneClosedRemoved, rebuildOrphans, loadPlanState } from '../lib/tablePlan';
+import { isDeviceLinkUncertain } from '../lib/deviceLink';
+import { trustSharedRead } from '../lib/deviceFence';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -46,6 +48,10 @@ export async function startSessionReconciler() {
         .eq('location_id', _locationId);
 
       if (error || !heads) return;
+      // Database fence stage 1 (contract A9): an empty read while this till may have lost its
+      // link is unknown, never "no tables". Nothing is healed or cleared on it (self heal
+      // writes would only be refused); the next poll after the till is linked again decides.
+      if (!trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: heads.length })) return;
 
       const presentIds = new Set();
       const changedIds = [];

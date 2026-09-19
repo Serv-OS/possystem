@@ -9,6 +9,7 @@
  */
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
+import { isParkedPermissionItem, releaseParkedItem, isPermissionError } from '../lib/deviceFence';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -183,6 +184,12 @@ async function replayItem(supabase, item) {
     }
     await dbDelete(item.id);
   } catch (e) {
+    // Database fence stage 1 (contract A7): a refused write may mean this till lost its link.
+    // Tell the app (lib/deviceLink.js checks the link and shows the banner); the write itself
+    // stays parked here and is released on rpos-device-relinked (below).
+    if (isPermissionError(e)) {
+      try { window.dispatchEvent(new CustomEvent('rpos-write-refused', { detail: { code: e?.code || null, message: e?.message || '' } })); } catch { /* no window */ }
+    }
     const attempts = (item.attempts || 0) + 1;
     const patch = { ...item, attempts, lastError: e.message, lastFailedAt: Date.now(), firstFailedAt: item.firstFailedAt || Date.now() };
     if (attempts >= MAX_AUTO_RETRIES) {
@@ -396,8 +403,35 @@ function scheduleFlush() {
   }, 1000);
 }
 
+/**
+ * Database fence stage 1 (contract A8): writes the server refused while this till had lost its
+ * link (42501, "row-level security", "permission denied") were parked after 5 tries. When the
+ * till is linked again they are released (attempts and status reset, buffered time kept) and
+ * replayed through every existing guard: before(), keep(), the staleness quarantine and the
+ * reconciler rules all still apply. Kitchen tickets and print jobs written during a lapse
+ * arrive. A stale quarantine and a dismissed item are never released here.
+ */
+export async function releaseParkedPermissionWrites() {
+  let released = 0;
+  try {
+    const items = await dbGetAll();
+    for (const it of items) {
+      if (!isParkedPermissionItem(it)) continue;
+      await dbPut(releaseParkedItem(it));
+      released += 1;
+    }
+  } catch (e) { console.warn('[OfflineQueue] could not release parked writes:', e?.message || e); }
+  if (released) console.log(`[OfflineQueue] till linked again: ${released} parked write(s) released for replay`);
+  return released;
+}
+
 export function initOfflineQueue(supabase) {
   _supabaseRef = supabase;
+
+  window.addEventListener('rpos-device-relinked', async () => {
+    await releaseParkedPermissionWrites();
+    if (_isOnline) replayQueue(supabase);
+  });
 
   window.addEventListener('online', () => {
     _isOnline = true;
