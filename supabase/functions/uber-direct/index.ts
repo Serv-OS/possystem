@@ -19,6 +19,7 @@ import { createOrder as createHubriseOrder, patchOrder as patchHubriseOrder } fr
 import { cancelDelivery, createOrganization, getOrganization, inviteOrgMember, parseOrgResp, UBER_ORG_SCOPE } from '../_shared/uber.ts';
 import { getStuartToken, getStuartPricing, normaliseStuartPricing, cancelStuartJob, classifyStuartError, getStuartJob, parseStuartJob, mapStuartStatus, parseStuartCost } from '../_shared/stuart.ts';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const e164 = (raw: string) => {
   const s = String(raw || '').replace(/[\s()-]/g, '');
@@ -163,6 +164,7 @@ async function refreshStuartRow(row: any, cfg: any): Promise<any> {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
 
   let body: any;

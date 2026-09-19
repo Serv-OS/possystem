@@ -5,6 +5,7 @@
 // location not explicitly switched. Auth: service-role or signed-in user.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -22,6 +23,7 @@ async function authorize(req: Request): Promise<boolean> {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   if (!(await authorize(req))) return json({ error: 'unauthorized' }, 401);
 

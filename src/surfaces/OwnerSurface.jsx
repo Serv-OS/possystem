@@ -10,6 +10,8 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
+import SecondStepGate from '../components/secondStep/SecondStepGate';
+import { isRealLogin, sessionAal } from '../lib/secondStep/rules';
 
 const money = (n, currency = 'GBP', dp = 0) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -19,6 +21,10 @@ const pctTone = (p, good = 'up') => p == null ? 'var(--t3)' : (good === 'up' ? (
 
 export default function OwnerSurface() {
   const [session, setSession] = useState(undefined); // undefined=checking
+  // SECOND SIGN IN STEP (docs/SECOND_STEP.md): the Owner app signs in with Back Office
+  // credentials and its token can read everything the Back Office can, so it asks for the
+  // same second step. Closed again whenever the session drops back to password only.
+  const [secondStepOk, setSecondStepOk] = useState(false);
   // Theme: reuse the app-wide rpos-theme key + [data-theme] CSS so the owner's
   // choice persists and matches the rest of ServOS.
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
@@ -54,12 +60,33 @@ export default function OwnerSurface() {
   useEffect(() => {
     if (isMock || !supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s || null);
+      if (!s || (isRealLogin(s) && sessionAal(s) !== 'aal2')) setSecondStepOk(false);
+    });
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
   if (session === undefined) return <Shell><div style={{ color: 'var(--t3)', textAlign: 'center', paddingTop: 80 }}>Loading…</div></Shell>;
-  if (!session) return <Shell><Login theme={theme} onToggleTheme={toggleTheme} /></Shell>;
+  // An anonymous session (a till or payment token in the same storage) is not an owner login.
+  if (!session || !isRealLogin(session)) return <Shell><Login theme={theme} onToggleTheme={toggleTheme} /></Shell>;
+  if (!secondStepOk) {
+    return (
+      <Shell>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}><ThemeBtn theme={theme} onClick={toggleTheme} /></div>
+        <Brand sub="Confirm it is you" />
+        <SecondStepGate
+          supabase={supabase}
+          mode="login"
+          tone="auto"
+          frame={false}
+          area="Owner"
+          onPassed={() => setSecondStepOk(true)}
+          onSignOut={() => { supabase.auth.signOut({ scope: 'local' }); }}
+        />
+      </Shell>
+    );
+  }
   return <Shell><Dashboard email={session.user?.email} theme={theme} onToggleTheme={toggleTheme} /></Shell>;
 }
 

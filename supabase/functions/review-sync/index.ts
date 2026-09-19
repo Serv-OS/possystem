@@ -18,6 +18,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { fetchReviews, PLATFORM_CAPS, type Platform, type PlatformReview } from '../_shared/review-platforms.ts';
 import { accessTokenFrom, listReviews } from '../_shared/google-reviews.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 // Pull live Google Business Profile reviews for a connected venue (token stored
 // by review-google). Returns [] (never throws) so one platform can't break sync.
@@ -126,6 +127,7 @@ async function syncLocation(opsLocationId: string, injected: Record<string, Plat
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: any;

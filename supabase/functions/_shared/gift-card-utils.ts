@@ -94,6 +94,7 @@ export function generateHmacSecret(): string {
 
 // ── Shared Supabase + CORS helpers ──────────────────────────────────────────
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from './second-step.ts';
 
 export const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -121,6 +122,8 @@ export const platformAdmin = createClient(
 
 // Auth helper: extract and validate caller from Authorization header.
 // Returns the user object or a Response (error).
+// Second sign in step (docs/SECOND_STEP.md): a password only Back Office login is refused
+// here once enforcement is switched on. Anonymous tills, kiosks and customer pages pass.
 export async function authenticateCaller(
   req: Request,
 ): Promise<{ user: any } | Response> {
@@ -130,6 +133,8 @@ export async function authenticateCaller(
     data: { user },
   } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!user) return json({ error: 'Invalid token' }, 401);
+  const secondStepBlock = await secondStepRefusal(authHeader);
+  if (secondStepBlock) return secondStepBlock;
   return { user };
 }
 

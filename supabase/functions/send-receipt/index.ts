@@ -10,6 +10,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -45,6 +46,7 @@ async function authorize(req: Request): Promise<{ ok: boolean; isService: boolea
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   const auth = await authorize(req);
   if (!auth.ok) return json({ error: 'unauthorized' }, 401);
   if (req.method !== 'POST') return json({ error:'POST only' }, 405);

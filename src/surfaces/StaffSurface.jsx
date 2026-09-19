@@ -17,6 +17,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 import ClockCard from '../staff/ClockCard';
+import { MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -312,11 +313,12 @@ function CreateLogin({ onSubmit, busy, err }) {
       <div style={{ fontSize: 14, color: 'var(--t2)', lineHeight: 1.6, marginBottom: 16 }}>
         Welcome to the team. Choose a password and you're in — you'll use it with your email address from now on.
       </div>
-      <Field label="Password" type="password" value={p1} onChange={e => setP1(e.target.value)} autoComplete="new-password" placeholder="At least 8 characters" />
+      {/* 12, matching the Supabase minimum in docs/SECOND_STEP.md and staff-portal accept_invite. */}
+      <Field label="Password" type="password" value={p1} onChange={e => setP1(e.target.value)} autoComplete="new-password" placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`} />
       <Field label="Repeat password" type="password" value={p2} onChange={e => setP2(e.target.value)} autoComplete="new-password" />
       {mismatch && <ErrLine>Passwords don't match</ErrLine>}
       <ErrLine>{err}</ErrLine>
-      <Primary disabled={busy || !p1 || p1.length < 8 || p1 !== p2} onClick={() => onSubmit(p1)}>{busy ? 'Setting up…' : 'Create my login'}</Primary>
+      <Primary disabled={busy || !p1 || p1.length < MIN_PASSWORD_LENGTH || p1 !== p2} onClick={() => onSubmit(p1)}>{busy ? 'Setting up…' : 'Create my login'}</Primary>
     </div>
   );
 }

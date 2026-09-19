@@ -8,6 +8,7 @@
 //   - Points calculation helpers
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from './second-step.ts';
 
 // ── CORS + JSON helpers ────────────────────────────────────────────────────
 export const cors = {
@@ -46,6 +47,10 @@ export async function authenticateCaller(
     data: { user },
   } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!user) return json({ error: 'Invalid token' }, 401);
+  // Second sign in step (docs/SECOND_STEP.md): refuses a password only Back Office login
+  // once enforcement is switched on. Anonymous tills, kiosks and customer pages pass.
+  const secondStepBlock = await secondStepRefusal(authHeader);
+  if (secondStepBlock) return secondStepBlock;
   return { user };
 }
 

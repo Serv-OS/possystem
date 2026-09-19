@@ -19,6 +19,7 @@ import {
   authorizeUrl, exchangeCode, revokeToken, getAccount, getLocation,
   createCallback, HUBRISE_SCOPE,
 } from '../_shared/hubrise.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -146,6 +147,7 @@ function publicStatus(c: any) {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   const url = new URL(req.url);
 
   // ── GET ?action=oauth_callback — browser redirect back from HubRise ──────────

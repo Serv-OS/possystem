@@ -241,3 +241,16 @@ Short ADR entries for non-obvious choices in the codebase.
 **Decision:** Delete it (v5.5.806, owner-confirmed 18 Jul 2026). Do not mount a second item editor. MenuManager's Items tab (`ItemsLibrary` in `MenuManager.jsx`) is the single item-management surface.
 
 **Consequences:** One write path and one UI for item edits — avoids a UI-level "two save paths" divergence (the same failure mode as the `sbUpsertCategory`/`upsertMenuItem` gotcha). If a simpler, focused item-library UX is wanted later (the original food-hall pitch), build it against the current editor/feature set rather than resurrecting the v4.6 file (recoverable from git history before v5.5.806 if ever needed).
+
+---
+
+## ADR-023: Back Office second sign in step, enforced by the database
+
+**Context:** Peter (18 Sep 2026): a stolen or guessed password must not be enough to get into the Back Office. 13 real logins, no MFA; tills and customer pages run on anonymous sessions that must never be affected. Supabase supports TOTP and WebAuthn as MFA factors (WebAuthn marked experimental in auth-js), and passkey sign in is still beta.
+
+**Decision:**
+- Every real login (Back Office, admin portal, Owner app) passes a second step at sign in: Face ID or fingerprint (WebAuthn MFA) where the browser and the serv-os.app relying party allow it, and an authenticator app code that every login must keep as the backup and that works everywhere (our iOS and Android shells and the Sunmi tills cannot do WebAuthn yet). The staff app is out of scope: it reaches only the person's own records through one server function.
+- Enforcement is layered and switchable without a deploy: a RESTRICTIVE `second_step_fence` policy on every public RLS table and storage.objects, the PostgREST pre-request check (covers SECURITY DEFINER functions), and `secondStepRefusal` in every edge function a real login uses. All read one service role only flag, OFF until everyone has enrolled.
+- Lost phones: an owner resets their own staff; only a ServOS super admin resets owners; nobody resets themselves; audited and emailed.
+
+**Consequences:** Two SQL objects must stay in step with the edge helper (parity test). Enrolling signs out the person's other password only sessions, so devices running on a person's login must be re-paired (runbook step 2). Platform has no logins, so its protection is sign ups off plus the database fence project. Face ID inside our own apps needs native entitlement work later.

@@ -29,6 +29,7 @@
 // treats them as nobody; the ONLY door to data is this function.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -239,7 +240,13 @@ Deno.serve(async (req) => {
     const action = body.action || 'snapshot';
 
     // ── invite: BO-side. Manager sends (or re-sends) the create-login email ──
+    // SECOND SIGN IN STEP (docs/SECOND_STEP.md): invite, notify_training and offboard are
+    // Back Office actions, so a password only Back Office login is refused once enforcement
+    // is on. The staff app's own actions below (snapshot, clock, details) are deliberately
+    // NOT checked: staff app logins reach only that person's own records, through this
+    // function, and are out of scope for the Back Office second step.
     if (action === 'invite') {
+      const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
       const { data: staff } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
       if (!staff) return json({ error: 'staff member not found' }, 404);
       const caller = await callerManagesLocation(req, staff.location_id);
@@ -251,6 +258,7 @@ Deno.serve(async (req) => {
     // ── notify_training: tell someone they have training to do. BO-authorised,
     //    called straight after an assignment. Email + it shows in their app. ──
     if (action === 'notify_training') {
+      const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
       const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
       if (!staffRow) return json({ error: 'staff member not found' }, 404);
       const caller = await callerManagesLocation(req, staffRow.location_id);
@@ -300,6 +308,7 @@ Deno.serve(async (req) => {
     //    work at more than one); the login itself is only disabled when no
     //    venue remains. Super-admin accounts are never touched. ──────────────
     if (action === 'offboard') {
+      const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
       const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
       if (!staffRow) return json({ error: 'staff member not found' }, 404);
       const caller = await callerManagesLocation(req, staffRow.location_id);
@@ -355,7 +364,8 @@ Deno.serve(async (req) => {
     if (action === 'accept_invite') {
       const token = String(body.token || ''); const password = String(body.password || '');
       if (!token) return json({ error: 'missing token' }, 400);
-      if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+      // 12, matching the Supabase minimum Peter sets in docs/SECOND_STEP.md (was 8).
+      if (password.length < 12) return json({ error: 'Password must be at least 12 characters' }, 400);
       const hash = await sha256(token);
       const { data: rows } = await admin.from('wf_staff').select('*').eq('portal_invite_hash', hash).limit(1);
       const staff = rows?.[0];

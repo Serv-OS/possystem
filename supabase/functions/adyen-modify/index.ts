@@ -24,6 +24,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, effectiveMerchantAccount } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck, isOvercaptureRefusal } from '../_shared/tip_capture.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -41,6 +42,7 @@ const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', 
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();

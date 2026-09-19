@@ -12,6 +12,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { postReply, type Platform } from '../_shared/review-platforms.ts';
 import { accessTokenFrom, replyToReview } from '../_shared/google-reviews.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -49,6 +50,7 @@ async function callFn(name: string, payload: unknown): Promise<{ ok: boolean; er
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: any;

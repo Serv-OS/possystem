@@ -77,6 +77,19 @@ export function isHostStandMode() {
   return HOST_STAND_MODES.has(getDeviceMode());
 }
 
+// Surfaces where a PERSON signs in with a password (Back Office, admin portal, Owner app,
+// Staff app). The app start (useSupabaseInit) must never hand them an anonymous device session:
+// the Owner app treated one as "signed in" and showed an empty dashboard with no login form,
+// and an anonymous sign in racing a password sign in could overwrite it. Since the second sign
+// in step (docs/SECOND_STEP.md) a person's session must be their own, finished with Face ID,
+// fingerprint or an authenticator code. (ensureAuthToken itself keeps its old Back Office only
+// rule, so a customer page never loses its anonymous checkout session because of a mode that
+// was saved on the same address.)
+const LOGIN_SURFACE_MODES = new Set(['office', 'backoffice', 'admin', 'owner', 'staff']);
+export function isLoginSurfaceMode() {
+  return LOGIN_SURFACE_MODES.has(getDeviceMode());
+}
+
 export const getLocationId = async () => {
   if (isMock) return 'loc-demo';
   if (_resolvedLocationId) return _resolvedLocationId;
