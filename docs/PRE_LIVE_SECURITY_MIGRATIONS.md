@@ -1,3 +1,5 @@
+> **SUPERSEDED 18 Sep 2026.** Do not run the 20260907b files. The database fence stage 1 (`docs/FENCE_STAGE_1.md`, migrations 20260919a to 20260919d) finishes this plan and fixes the 12 breaks and the stage 1 gaps listed at the end of this file.
+
 > **STATUS 8 Sep 2026: DRAFT, DO NOT RUN.** The adversarial pass found 12 breaks and 25 gaps (listed at the end of this file) that are not applied yet. Fix pass first.
 
 # Pre live security migrations: runbook
