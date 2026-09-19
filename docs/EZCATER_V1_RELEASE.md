@@ -128,7 +128,10 @@ Nothing in it is needed for v5.9.9. Switch it on in exactly this order.
 - **Reload every Back Office tab** that shows 3rd Party orders.
   - An old tab saves matches that orders do not use.
   - After step 3 an old tab's save is refused, and it says to reload.
-- **The tills do not change.** No force stop this time.
+- **The tills do not change for menu sync.**
+- **But v5.9.9 step 3 still applies** if it was not done yet: every till on the new version before `ezcater-webhook` is deployed.
+  - Released together on 19 Sep, so the tills show **v5.9.10**.
+  - `ezcater-connect` can be deployed straight away. `ezcater-webhook` waits for the tills.
 
 ## 2. Deploy the two edge functions
 
