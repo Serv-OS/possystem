@@ -312,7 +312,7 @@ test('webhook: writes through the plan, conditional on kitchen_routed_at, and ke
   const src = read('../../supabase/functions/ezcater-webhook/index.ts');
   assert.match(src, /ezcaterCateringRow\(queueRow/);
   assert.match(src, /ezcaterWritePlan\(/);
-  assert.match(src, /\.is\('kitchen_routed_at', null\)\.neq\('status', 'cancelled'\)/);
+  assert.match(src, /\.is\('kitchen_routed_at', null\)\.not\('status', 'in', NOT_RELEASABLE_STATUSES_PG\)/);
   assert.match(src, /catering_site_settings'\)\.select\('prep_time_minutes'\)/);
   assert.match(src, /from\('locations'\)\.select\('timezone'\)/);
   assert.match(src, /onConflict: 'notification_id', ignoreDuplicates: true/);   // notification idempotency kept
@@ -625,10 +625,11 @@ test('E. ADR-023 says the claim refuses cancelled rows for every source, and the
   const store = read('../store/index.js');
   assert.match(store, /\.or\('status\.is\.null,status\.neq\.cancelled'\)/);
   const note = read('../../docs/EZCATER_V1_RELEASE.md');
-  for (const fn of ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-webhook']) {
+  for (const fn of ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-connect', 'ezcater-webhook']) {
     assert.match(note, new RegExp('`' + fn + '`'), fn);
   }
   assert.ok(note.indexOf('`ezcater-webhook`') > note.indexOf('`uber-direct`'), 'the webhook goes last');
+  assert.ok(note.indexOf('**Last:** `ezcater-webhook`') > note.indexOf('  - `ezcater-connect`'), 'the webhook after connect');
   assert.match(note, /closed_checks/);
   assert.match(note, /HKX77V/);
   assert.doesNotMatch(note, /[\u2013\u2014]/);
@@ -647,15 +648,38 @@ test('E2. release note steps in Peter\'s order: merge, prep time, tills on the n
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], `step ${i + 1} after step ${i}`);
   // Step 3: the master till and every Sunmi, where Peter sees it, why, and a stop.
   assert.match(note, /master till AND every Sunmi till/);
-  assert.match(note, /beside "What's new"/);
+  assert.match(note, /next to "What's new"/);
+  assert.match(note, /Terminal status button: the Version row/);
+  // The exact version the merge ships, and how a Sunmi till really gets it (a reload keeps old code).
+  assert.match(note, /The merge ships as v5\.9\.9\./);
+  assert.match(note, /It must read exactly v5\.9\.9\./);
+  assert.doesNotMatch(note, /v5\.8\.100/);
+  assert.match(note, /A reload is not enough/);
+  assert.match(note, /Force stop the app:\*\* swipe it away, or Settings, Apps, the app, Force stop\./);
+  assert.match(note, /Then reopen it\*\* and read the version again/);
   assert.match(note, /releases held orders and cancelled orders/);
   assert.match(note, /Do not go further until every till shows it/);
   // Step 4: from the merged commit, the CLI, the webhook last, then the deploy check.
   assert.match(note, /From the merged commit/);
+  assert.match(note, /Fetch first\./);
+  assert.match(note, /`git rev-parse HEAD` must equal the merge commit shown on GitHub/);
   assert.match(note, /Supabase CLI/);
   assert.ok(note.indexOf('node scripts/check-deploys.mjs') > note.indexOf('`ezcater-webhook`'), 'check after the webhook');
-  // Step 7: the migration, then Sync outside service.
-  assert.ok(note.indexOf('Then press Sync') > note.indexOf('20260919m'));
+  assert.match(note, /Claude runs the deploys, and Claude checks them/);
+  assert.match(note, /every `_shared` file it imports/);
+  // The live proof: a line only the new code has, and it really is in the shared code.
+  assert.match(note, /npx supabase functions download <name>/);
+  const marker = note.match(/must contain `([^`]+)`\. Only the new code has that text\./);
+  assert.ok(marker, 'marker line');
+  assert.ok(read('../../supabase/functions/_shared/ezcaterCatering.js').includes(marker[1]), 'marker is in the shared code');
+  assert.ok(read('../../supabase/functions/ezcater-webhook/index.ts').includes("retry('event read failed')"));
+  assert.match(note, /`ezcater-webhook` must also contain `event read failed`/);
+  // Step 7: running the migration is itself outside service, then Sync.
+  const step7 = note.slice(note.indexOf('## 7. Menu sync'), note.indexOf('## Known gap'));
+  assert.ok(step7.indexOf('Outside service only') < step7.indexOf('20260919m'), 'outside service covers the migration');
+  assert.ok(step7.indexOf('Then press Sync') > step7.indexOf('20260919m'));
+  assert.match(step7, /switches sized line matching on, and it schedules the hourly sync/);
+  assert.match(step7, /So running it is itself outside service/);
   assert.match(note, /Outside service, or when no ezCater order is due to fire/);
   assert.match(note, /Only exact matches link automatically/);
   // No dashes used as punctuation (list bullets are fine).
@@ -764,4 +788,61 @@ test('R3c. a collected order is finished: a later cancel or change writes nothin
   const ready = ezcaterWritePlan({ next: dead, existing: stored(row, { status: 'ready', kitchen_routed_at: 'x' }), nowIso: 'n' });
   assert.equal(ready.kind, 'fired');
   assert.equal(ready.flag.text, FLAG_CANCELLED_AFTER_FIRE);
+});
+
+// ── Review fixes (18 Sep 2026, round 4) ─────────────────────────────────────
+
+test('R4a. the unfired write refuses a collected row as well as a cancelled one', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.match(src, /\.update\(plan\.patch\)\n\s+\.eq\('location_id', locationId\)\.eq\('ref', row\.ref\)\n\s+\.is\('kitchen_routed_at', null\)\.not\('status', 'in', NOT_RELEASABLE_STATUSES_PG\)/);
+  assert.doesNotMatch(src, /\.neq\('status', 'cancelled'\)/);
+  assert.match(src, /NOT_RELEASABLE_STATUSES_PG,\n\} from '\.\.\/_shared\/ezcaterCatering\.js';/);
+  assert.equal(NOT_RELEASABLE_STATUSES_PG, '(collected,cancelled)');
+  // Staff collected it (unrouted) between the read and the write: the update matches no row, the
+  // webhook reads again and the plan skips it.
+  const collected = stored(build(HKX77V()), { status: 'collected', kitchen_routed_at: null });
+  assert.equal(ezcaterWritePlan({ next: build(HKX77V()), existing: collected, nowIso: 'n', linkKnown: true }).kind, 'skip');
+});
+
+test('R4b. a failed read of the notification row is retried, never read as "no prior event"', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.match(src, /const \{ data: prior, error: priorErr \} = await sb\.from\('ezcater_events'\)\n\s+\.select\('status, attempts, error'\)\.eq\('notification_id', notificationId\)\.maybeSingle\(\);\n\s+if \(priorErr\) \{\n\s+console\.error\([^\n]+\n\s+return retry\('event read failed'\);\n\s+\}/);
+  // Before the duplicate check, the marker read and the attempts write.
+  const at = src.indexOf("return retry('event read failed')");
+  assert.ok(at > 0);
+  assert.ok(at < src.indexOf("prior?.status === 'processed'"));
+  assert.ok(at < src.indexOf('queueWrittenBefore = ezcaterQueueWrittenBefore(prior)'));
+  assert.ok(at < src.indexOf('attempts: (Number(prior?.attempts) || 0) + 1'));
+});
+
+test('R4c. a cancel after firing whose link write failed raises the bell on the retry', () => {
+  const row = build(HKX77V());
+  const dead = build(HKX77V({ lifecycle: { orderIsCurrently: 'cancelled' } }));
+  const fired = stored(row, { status: 'prep', kitchen_routed_at: '2026-09-23T17:30:05Z' });
+  // First attempt: cancelled after firing, flagged. Then the link write failed.
+  const first = ezcaterWritePlan({ next: dead, existing: fired, nowIso: '2026-09-23T18:00:00Z', linkKnown: true });
+  assert.equal(first.kind, 'fired');
+  assert.equal(first.flag.kind, 'cancelled_after_fire');
+  const afterFirst = { ...fired, ...first.patch };
+  // The retry: marker present, row already cancelled with the flag, link still says accepted.
+  const retryPlan = ezcaterWritePlan({ next: dead, existing: afterFirst, nowIso: '2026-09-23T18:01:00Z', linkKnown: true, queueWrittenBefore: true, linkLifecycle: 'accepted' });
+  assert.equal(retryPlan.kind, 'skip');
+  assert.equal(retryPlan.patch, undefined, 'nothing written again');
+  assert.deepEqual(retryPlan.flag, first.flag, 'the same flag, raised now');
+  assert.equal(retryPlan.flag.text, FLAG_CANCELLED_AFTER_FIRE);
+  // Not owed: no marker (a repeat cancel), a link that already says cancelled (an earlier cancel
+  // finished and rang), no flag on the row (cancelled before firing), or not a cancel.
+  assert.equal(ezcaterWritePlan({ next: dead, existing: afterFirst, nowIso: 'n', linkKnown: true }).flag, undefined);
+  assert.equal(ezcaterWritePlan({ next: dead, existing: afterFirst, nowIso: 'n', linkKnown: true, queueWrittenBefore: true, linkLifecycle: 'cancelled' }).flag, undefined);
+  const cancelledEarly = stored(row, { status: 'cancelled', customer: { ...row.customer, ezcater_lifecycle: 'cancelled' } });
+  assert.equal(ezcaterWritePlan({ next: dead, existing: cancelledEarly, nowIso: 'n', linkKnown: true, queueWrittenBefore: true, linkLifecycle: 'accepted' }).flag, undefined);
+  assert.equal(ezcaterWritePlan({ next: row, existing: afterFirst, nowIso: 'n', linkKnown: true, queueWrittenBefore: true, linkLifecycle: 'accepted' }).flag, undefined);
+  const changedFlag = { ...afterFirst, customer: { ...afterFirst.customer, ezcater_flag: { kind: 'changed_after_fire', text: FLAG_CHANGED_AFTER_FIRE, at: 'x' } } };
+  assert.equal(ezcaterWritePlan({ next: dead, existing: changedFlag, nowIso: 'n', linkKnown: true, queueWrittenBefore: true, linkLifecycle: 'accepted' }).flag, undefined);
+  // The webhook passes the marker and the link lifecycle, and a skip with a flag rings the bell.
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.match(src, /queueWrittenBefore, linkLifecycle: priorLink\?\.ez_lifecycle \?\? null,/);
+  assert.match(src, /queue row not written:', plan\.reason\);\n\s+written = true;\n\s+\/\/[^\n]*\n\s+if \(plan\.flag\) flagged = plan\.flag;/);
+  // The bell is still after the link write, so a second failure retries and rings once.
+  assert.ok(src.indexOf('if (flagged) {') > src.indexOf("return retry('link write failed')"));
 });

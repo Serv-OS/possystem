@@ -305,15 +305,20 @@ export function kitchenFingerprint(row) {
  *   linkKnown true when ezcater_order_links already has this order (read BEFORE this run
  *             writes its own link): with no queue row that means it was finished, so nothing
  *             is written
+ *   queueWrittenBefore  true when an earlier attempt at THIS notification wrote the queue row
+ *             but not the link (EZ_QUEUE_WRITTEN_MARKER on the event row)
+ *   linkLifecycle  the lifecycle on the link as read before this run (ez_lifecycle), or null
  * Returns one of:
  *   { kind: 'skip', reason }
+ *   { kind: 'skip', reason, flag }           nothing to write, but the staff alert is still owed
+ *                                            (a retried cancel after firing, see below)
  *   { kind: 'insert', row }                  first sight of a live order
  *   { kind: 'unfired', patch }               before firing: items, times, totals in place, or a cancel
  *   { kind: 'fired', patch, flag }           after firing: the row is left alone, staff get a flag
  * 'unfired' writes are made only while kitchen_routed_at is still null; when that loses a race
  * the webhook re-reads the row and asks again, and gets 'fired'.
  */
-export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false }) {
+export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false, queueWrittenBefore = false, linkLifecycle = null }) {
   const state = ezLifecycleState(next?.customer?.ezcater_lifecycle);
   const dead = EZ_DEAD.has(norm(next?.customer?.ezcater_lifecycle));
 
@@ -332,7 +337,19 @@ export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false }) 
   // The live test order written before this change (source 'ezcater') stays exactly as it is.
   if (norm(existing.source) !== 'catering') return { kind: 'skip', reason: 'row written before ezCater orders were catering orders, left as it is' };
   // Cancelled is terminal. Nothing revives it.
-  if (norm(existing.status) === 'cancelled') return { kind: 'skip', reason: 'already cancelled' };
+  if (norm(existing.status) === 'cancelled') {
+    // THE RETRIED CANCEL AFTER FIRING. The first attempt wrote the cancel and the flag, then the
+    // link write failed, so it returned before the staff alert (the bell). On the retry the row
+    // is already cancelled, so without this the bell would never ring. It is owed only when this
+    // SAME notification wrote the queue row (the marker), the row carries the cancelled after
+    // firing flag, this notification is the cancel, and the link does not already say cancelled
+    // (a link that does means an earlier cancel finished, and its bell already rang).
+    const f = existing.customer && typeof existing.customer === 'object' ? existing.customer.ezcater_flag : null;
+    if (queueWrittenBefore && dead && f && f.kind === 'cancelled_after_fire' && !EZ_DEAD.has(norm(linkLifecycle))) {
+      return { kind: 'skip', reason: 'already cancelled, the staff alert from the earlier attempt is raised now', flag: f };
+    }
+    return { kind: 'skip', reason: 'already cancelled' };
+  }
   // Collected is finished too: the food has gone. A later cancel or change on ezCater writes
   // nothing and raises no alert (the webhook logs the reason), so a handed over order is never
   // turned into a "cancelled after the kitchen" alarm or a "changed" flag.

@@ -13,8 +13,14 @@
 //
 // Sub-hour differences are ignored: deploying and then committing seconds later is normal
 // and would otherwise bury the real drift in noise.
+//
+// _SHARED COUNTS (18 Sep 2026). A deploy bundles the function's folder AND every _shared file it
+// imports, so a function is dated by the newest commit to ANY of those (scripts/edgeFnDeps.mjs).
+// Before this, a change made only in _shared read as live while the old code was still serving.
+// Run it from the checkout you deployed from: the dates are read from THIS checkout's git log.
 
 import { execSync } from 'node:child_process';
+import { deployPathsOf } from './edgeFnDeps.mjs';
 
 const PROJECT = 'tbetcegmszzotrwdtqhi';
 const TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
@@ -36,9 +42,17 @@ for (const fn of await res.json()) {
     committed = Number(execSync(`git log -1 --format=%ct -- ${dir}`, { encoding: 'utf8' }).trim());
   } catch { continue; }
   if (!committed) continue;                       // not in this repo
+  // The folder plus every _shared file it ships: the newest commit to any of them.
+  let newestPath = dir;
+  for (const p of deployPathsOf(fn.slug).slice(1)) {
+    try {
+      const t = Number(execSync(`git log -1 --format=%ct -- "${p}"`, { encoding: 'utf8' }).trim());
+      if (t > committed) { committed = t; newestPath = p; }
+    } catch { /* not committed yet: nothing to date it by */ }
+  }
   const deployed = fn.updated_at / 1000;
   const hours = (committed - deployed) / 3600;
-  if (hours > MIN_HOURS) stale.push({ slug: fn.slug, hours });
+  if (hours > MIN_HOURS) stale.push({ slug: fn.slug, hours, newestPath });
 }
 
 stale.sort((a, b) => b.hours - a.hours);
@@ -47,7 +61,8 @@ if (!stale.length) { console.log('✅ every edge function is live with its commi
 console.log(`⚠ ${stale.length} edge function(s) NOT LIVE with committed code:\n`);
 for (const s of stale) {
   const age = s.hours > 48 ? `${(s.hours / 24).toFixed(0)} days` : `${s.hours.toFixed(1)}h`;
-  console.log(`   ${s.slug.padEnd(34)} ${age} behind`);
+  const why = s.newestPath.includes('/_shared/') ? `  (newest change: ${s.newestPath})` : '';
+  console.log(`   ${s.slug.padEnd(34)} ${age} behind${why}`);
 }
 
 if (!DO_DEPLOY) { console.log('\nRe-run with --deploy to ship them.'); process.exit(1); }

@@ -59,6 +59,7 @@ import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.
 import {
   ezcaterCateringRow, ezcaterWritePlan, ezcaterPrep, ezcaterBadge,
   ezcaterPriorLink, ezcaterQueueWrittenBefore, ezcaterEventError, EZ_QUEUE_WRITTEN_MARKER,
+  NOT_RELEASABLE_STATUSES_PG,
 } from '../_shared/ezcaterCatering.js';
 import { DEFAULT_VENUE_TZ } from '../_shared/cateringRules.js';
 
@@ -188,8 +189,14 @@ Deno.serve(async (req) => {
       return retry('event write failed');
     }
 
-    const { data: prior } = await sb.from('ezcater_events')
+    // A FAILED READ IS NOT "NO PRIOR EVENT". Read as none, a retry after a failed link write would
+    // lose EZ_QUEUE_WRITTEN_MARKER and could file a finished order again, so it is retried instead.
+    const { data: prior, error: priorErr } = await sb.from('ezcater_events')
       .select('status, attempts, error').eq('notification_id', notificationId).maybeSingle();
+    if (priorErr) {
+      console.error('[ezcater-webhook] could not read the notification back:', priorErr.message);
+      return retry('event read failed');
+    }
     if (!inserted?.length && prior?.status === 'processed') return ok();   // genuine duplicate
     queueWrittenBefore = ezcaterQueueWrittenBefore(prior);
     await sb.from('ezcater_events')
@@ -385,12 +392,18 @@ Deno.serve(async (req) => {
       // queue row was finished by staff and is not brought back (ezcaterWritePlan). A retry of a
       // notification whose queue write landed but whose link write failed counts as known too
       // (queueWrittenBefore), so a row staff removed in between is never inserted a second time.
-      const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString(), linkKnown: !!priorLink || queueWrittenBefore });
+      // queueWrittenBefore and linkLifecycle also let a retried cancel after firing ring the bell
+      // the failed first attempt never rang (see ezcaterWritePlan).
+      const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString(), linkKnown: !!priorLink || queueWrittenBefore,
+        queueWrittenBefore, linkLifecycle: priorLink?.ez_lifecycle ?? null,
+      });
       if (existing || plan.kind !== 'skip') rowOnFile = true;
 
       if (plan.kind === 'skip') {
         console.log('[ezcater-webhook]', row.ref, 'queue row not written:', plan.reason);
         written = true;
+        // A retried cancel after firing: the row is already cancelled, but the bell is still owed.
+        if (plan.flag) flagged = plan.flag;
       } else if (plan.kind === 'insert') {
         const { error } = await sb.from('order_queue').insert(plan.row);
         if (!error) { written = true; continue; }
@@ -402,13 +415,13 @@ Deno.serve(async (req) => {
       } else if (plan.kind === 'unfired') {
         const { data: upd, error } = await sb.from('order_queue').update(plan.patch)
           .eq('location_id', locationId).eq('ref', row.ref)
-          .is('kitchen_routed_at', null).neq('status', 'cancelled')
+          .is('kitchen_routed_at', null).not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
           .select('ref');
         if (error) {
           await failEvent(`order_queue update failed: ${error.message}`, 'error');
           return retry('queue write failed');
         }
-        if (upd?.length) written = true;   // else it fired or was cancelled meanwhile: plan again
+        if (upd?.length) written = true;   // else it fired, was cancelled or was collected meanwhile: plan again
       } else if (plan.kind === 'fired') {
         const { error } = await sb.from('order_queue').update(plan.patch)
           .eq('location_id', locationId).eq('ref', row.ref);
