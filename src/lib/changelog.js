@@ -7,6 +7,21 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.11',
+    date: '19 Sep 2026',
+    items: [
+      'Xero now posts each venue business day, not a UTC day. A day runs from your business day start (Location settings, 06:00 unless you changed it) to the same time next morning, on the venue clock, so after midnight trade counts with the night before and summer time no longer moves sales to the wrong day. A day still trading is never posted.',
+      'Split bills now post correctly. Every check records what paid it (card, cash, gift card, booking credit, loyalty and promo credit), so Xero gets the card part in Card Clearing and the cash part in Cash Clearing. Split bills from before this update go to a new Unallocated account and are listed for your accountant.',
+      'Refunds post on the day they were made, with their tip, service and VAT shares, as money out of the right clearing account. Failed card refunds are not posted.',
+      'Gift card redemptions and booking deposits have their own clearing accounts (that money was taken earlier), loyalty and promo credit are treated as discounts, and cancelled channel orders are left out.',
+      'Tips and service charge with no account chosen now post to ServOS Tips Payable and ServOS Service Charge Payable, never to sales.',
+      'Back Office, Xero: the date is your venue business day, amounts show in your currency, Check figures first shows the day without sending anything, and any warnings are listed.',
+      'Safer posting: a day that stopped halfway finishes without sending the first half twice, two posts of the same day at once are refused, every attempt (including failed bill pushes) is kept in the history, and the Xero login refresh can no longer break when two things use it at once.',
+      'Auto post now runs every hour and posts each business day about four hours after it ends, so tills that were offline can catch up. If a day changes after it was posted, Back Office says so. The first day posted this new way starts exactly where the last old style day ended, so nothing is missed or posted twice.',
+      'Needs one database update (20260919n). It is safe to run before or after the update; until it runs, checks save as before without the tender detail.',
+    ],
+  },
+  {
     v: '5.9.10',
     date: '19 Sep 2026',
     items: [

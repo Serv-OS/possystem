@@ -20,6 +20,8 @@ import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { wallTimeToInstantMs, cateringPrepMinutes, cateringFireMs } from '../../lib/cateringRules';
+import { singleTender } from '../../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
@@ -266,10 +268,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         id: checkId, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
         subtotal, service: deliveryFee, tip, tax_amount: taxBk?.totalTax || null, total, method: 'card',
+        tenders: singleTender('card', total, tip, { pspRef: payId, processor }),   // v5.9.11
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
-      await supabase.from('closed_checks').insert(closedCheck);
+      await writeClosedCheckRow(supabase, closedCheck, { tag: 'CateringCheckout' });
       redeemPromo(ref);
       // Email the customer their confirmation/receipt (best-effort; never blocks the
       // on-screen confirmation). Reuses the receipt pipeline; the just-inserted

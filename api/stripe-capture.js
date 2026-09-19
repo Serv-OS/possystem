@@ -107,7 +107,9 @@ export default async function handler(req, res) {
       // v5.5.160: tells the caller how much of the requested total is still
       // outstanding so they can charge it as overage on the saved card.
       requested_amount: amountToCapture != null ? Math.round(amountToCapture) : null,
-      captured_amount: data.amount,
+      // v5.9.11: what was TAKEN. After a partial capture a PaymentIntent's `amount` is still
+      // the authorised hold; `amount_received` is the money captured.
+      captured_amount: data.amount_received ?? data.amount,
       shortfall: cappedFromOverage ? (Math.round(amountToCapture) - data.amount) : 0,
       capped_from_overage: cappedFromOverage,
     });

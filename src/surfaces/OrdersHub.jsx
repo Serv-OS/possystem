@@ -25,6 +25,8 @@ import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispa
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields } from '../lib/channelMoney';
+import { cardLegTenders, singleTender } from '../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import CourierTrackingQR from '../components/CourierTrackingQR';
 import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
@@ -631,7 +633,8 @@ export default function OrdersHub() {
       let closedCheckError = null;
       try {
         const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
-        const { error: ccErr } = await supabase.from('closed_checks').insert({
+        const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'stripe');
+        const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
           location_id: tab.firstRow?.location_id || null,
@@ -657,6 +660,13 @@ export default function OrdersHub() {
           tip: tabTip, tax_amount: null,
           total: totalCollected,
           method: 'card',
+          // v5.9.11: the two card charges this tab took (the hold capture and any overage),
+          // the tab's tip on the first. closed_checks.tenders.
+          tenders: cardLegTenders([
+            // never more than was asked for (an older capture answer reported the hold)
+            { amount: Math.min(capturedFromAuth, finalTotal), pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tabProcessor },
+            { amount: overageCaptured, pspRef: null, processor: tabProcessor },
+          ], { tip: tabTip }),
           // Refund routing: refundCheck reads top-level processor + refunds each
           // payment_intents[].id (payment_session_id for Ryft, payment_intent_id
           // for Stripe). Reference the main captured hold; the overage is a
@@ -674,7 +684,7 @@ export default function OrdersHub() {
           table_id: tab.tableId || null,
           table_label: `Table ${tab.tableLabel}`,
           source: 'qr',
-        });
+        }, { tag: 'forceCloseQrTab' });
         if (ccErr) {
           closedCheckError = ccErr.message || JSON.stringify(ccErr);
           console.error('[forceCloseQrTab] closed_checks insert FAILED:', ccErr);
@@ -815,7 +825,9 @@ export default function OrdersHub() {
       }
       // Write closed_checks now that the bill has been captured.
       try {
-        await supabase.from('closed_checks').insert({
+        // What the hold captured, never more than was asked for (an older capture answer reported the hold).
+        const capturedMajor = Number(data.captured_amount) > 0 ? Math.min(Number(data.captured_amount) / 100, captureAmount) : captureAmount;
+        const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: o.ref,
           location_id: o.location_id || null,
@@ -830,13 +842,17 @@ export default function OrdersHub() {
           tip: Number(o.customer?.tip) || 0, tax_amount: null,
           total: captureAmount,                // what was actually charged
           method: 'card',
+          // v5.9.11: one card tender, the amount the hold captured, the tab's tip on it.
+          tenders: singleTender('card', capturedMajor, Math.min(Number(o.customer?.tip) || 0, capturedMajor),
+            { pspRef: pi, processor: o.customer?.processor || 'stripe' }),
           closed_at: new Date().toISOString(),
           status: 'paid',
           refunds: [],
           table_id: null,
           table_label: o.customer?.tableLabel ? `Table ${o.customer.tableLabel}` : null,
           source: 'qr',
-        });
+        }, { tag: 'OrdersHub force-close' });
+        if (ccErr) console.warn('[OrdersHub force-close] closed_checks insert:', ccErr.message);
       } catch (e) { console.warn('[OrdersHub force-close] closed_checks insert:', e?.message); }
       updateQueueStatus(o.ref, 'collected');
       showToast(

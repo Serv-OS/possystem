@@ -15,6 +15,7 @@ import { VERSION } from './version';
 import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
+import { closedCheckRow } from './closedCheckRow';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
@@ -751,44 +752,6 @@ export const insertClosedCheck = async (check, locationId = null) => {
   const { safeInsertClosedCheck } = await import('../sync/DataSafe.js');
   return safeInsertClosedCheck(check, row);
 };
-
-// The one camelCase→snake_case closed_check row map, shared by insert (normal closes)
-// and upsert (the terminal-job reconciler). One shape, so the two can never drift.
-function closedCheckRow(check, locationId) {
-  return {
-    id:           check.id,
-    location_id:  locationId,
-    ref:          check.ref,
-    server:       check.server,
-    staff_id:     check.staffId   || null,   // v4.6.19 — FK to staff_members.id
-    covers:       check.covers,
-    order_type:   check.orderType,
-    customer:     check.customer,
-    items:        check.items,
-    discounts:    check.discounts,
-    subtotal:     check.subtotal,
-    service:      check.service,
-    tip:          check.tip,
-    tax_amount:   check.taxAmount != null ? check.taxAmount : null,  // v4.6.19 — stored explicitly
-    tax_breakdown: check.taxBreakdown || null,  // v5.5.853: was computed+carried but never mapped — per-rate VAT now persists
-    total:        check.total,
-    method:       check.method,
-    drawer_id:    check.drawerId || null,   // v4.6.37
-    shift_id:     check.shiftId  || null,   // v4.6.37
-    closed_at:    check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
-    seated_at:    check.seatedAt ? new Date(check.seatedAt).toISOString() : null,   // Tables Ready: seat->close turn time feeds the waitlist estimator's learning loop
-    status:       check.status || 'paid',
-    refunds:      check.refunds || [],
-    table_id:     check.tableId || null,
-    table_label:  check.tableLabel || null,
-    gift_card:    check.giftCard || null,   // v5.5.217: gift card reversal on refund
-    loyalty:      check.loyalty  || null,   // v5.5.218: loyalty points summary (earn/redeem)
-    source:       check.source   || null,   // v5.5.276: pos / kiosk / online / qr — null = 'pos' default
-    stripe_payment_intent_id: check.stripePaymentIntentId || null,  // v5.5.301: for card refunds
-    payment_intents: check.paymentIntents || null,  // v5.5.323: ALL card PIs (split portions + bar tabs) for multi-card refund
-    processor:    check.processor || 'stripe',   // which processor took the payment — refund routes by this
-  };
-}
 
 // Idempotent closed_check write for the terminal-job reconciler. Same training gate
 // and locationId resolution as insertClosedCheck, but goes through the ON CONFLICT DO

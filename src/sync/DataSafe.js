@@ -18,6 +18,8 @@
  */
 
 import { supabase, getLocationId } from '../lib/supabase';
+import { closedCheckRow } from '../lib/closedCheckRow';
+import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 
 const LS_PENDING_CHECKS   = 'rpos-pending-checks';
 const LS_PENDING_SESSIONS = 'rpos-session-backup';
@@ -48,7 +50,9 @@ export async function safeInsertClosedCheck(check, row) {
 
   // Step 2 — Supabase
   try {
-    const { error } = await supabase.from('closed_checks').insert(row);
+    // v5.9.11: through writeClosedCheckRow, so a column the database does not have yet
+    // (tenders, before its migration) is dropped instead of failing the sale.
+    const { error } = await writeClosedCheckRow(supabase, row, { tag: 'DataSafe' });
     if (error) {
       console.warn('[DataSafe] Supabase write failed, check queued for retry:', error.message);
       return { ok: false, queued: true };
@@ -78,10 +82,7 @@ export async function safeUpsertClosedCheck(check, row) {
     setPendingChecks(pending);
   }
   try {
-    const { data, error } = await supabase
-      .from('closed_checks')
-      .upsert(row, { onConflict: 'id', ignoreDuplicates: true })
-      .select('id');
+    const { data, error } = await writeClosedCheckRow(supabase, row, { upsert: true, select: 'id', tag: 'DataSafe' });
     if (error) {
       console.warn('[DataSafe] upsert failed, check queued for retry:', error.message);
       return { ok: false, queued: true, created: false };
@@ -129,42 +130,11 @@ export async function reconcilePendingChecks() {
       removePendingCheck(check.id);
       continue;
     }
-    // Re-insert
+    // Re-insert. v5.9.11: the SAME row map as a live close (lib/closedCheckRow.js). This
+    // used to be a hand copy that had drifted (no tax_breakdown, no seated_at, no tenders).
     try {
-      const row = {
-        id:           check.id,
-        location_id:  locationId,
-        ref:          check.ref,
-        server:       check.server,
-        staff_id:     check.staffId || null,
-        covers:       check.covers,
-        order_type:   check.orderType,
-        customer:     check.customer || null,
-        items:        check.items,
-        discounts:    check.discounts || [],
-        subtotal:     check.subtotal,
-        service:      check.service || 0,
-        tip:          check.tip || 0,
-        tax_amount:   check.taxAmount != null ? check.taxAmount : null,
-        total:        check.total,
-        method:       check.method,
-        drawer_id:    check.drawerId || null,
-        shift_id:     check.shiftId || null,
-        closed_at:    check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
-        status:       check.status || 'paid',
-        refunds:      check.refunds || [],
-        table_id:     check.tableId || null,
-        table_label:  check.tableLabel || null,
-        gift_card:    check.giftCard || null,
-        loyalty:      check.loyalty || null,
-        source:       check.source || null,
-        // v5.5.720: offline-replay was dropping the payment identity — refunds route by processor +
-        // payment_intents[].id, and the card-scheme receipt block rides payment_intents[0].card.
-        stripe_payment_intent_id: check.stripePaymentIntentId || null,
-        payment_intents: check.paymentIntents || null,
-        processor:    check.processor || 'stripe',
-      };
-      const { error } = await supabase.from('closed_checks').insert(row);
+      const row = closedCheckRow(check, locationId);
+      const { error } = await writeClosedCheckRow(supabase, row, { tag: 'DataSafe' });
       if (!error) {
         removePendingCheck(check.id);
         console.log(`[DataSafe] Reconciled check ${check.id}`);

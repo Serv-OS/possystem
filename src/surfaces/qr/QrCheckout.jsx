@@ -33,6 +33,8 @@ import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
 import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
 import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as calcTip } from '../../lib/tipping';
+import { singleTender } from '../../lib/accounting/tenders';
+import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
@@ -471,7 +473,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // gets written on force-close-and-capture by the operator (commit 3c).
       if (!tabMode) {
         try {
-          await supabase.from('closed_checks').insert({
+          const { error: ccErr } = await writeClosedCheckRow(supabase, {
             id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
             ref,
             location_id: opsLocationId,
@@ -488,6 +490,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
             total,
             method: 'card',
+            tenders: singleTender('card', total, tipAmount, { pspRef: payId, processor }),   // v5.9.11
             stripe_payment_intent_id: payId,
             payment_intents: payId ? [{ id: payId, amountMinor: Math.round(total * 100) }] : null,
             processor,   // 'stripe' | 'ryft' — refund routes by this
@@ -499,7 +502,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             table_id: tableId || null,
             table_label: tableLabelStr,
             source: 'qr',
-          });
+          }, { tag: 'QrCheckout' });
+          if (ccErr) console.warn('[QrCheckout] closed_checks insert failed:', ccErr.message);
         } catch (e) {
           console.warn('[QrCheckout] closed_checks insert failed:', e?.message);
         }

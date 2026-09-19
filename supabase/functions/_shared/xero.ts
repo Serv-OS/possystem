@@ -66,35 +66,69 @@ export async function getConnections(accessToken: string): Promise<any[]> {
  * Return a valid access token + tenantId for a location, refreshing (and persisting the
  * rotated refresh token) if the stored access token is within 2 minutes of expiry.
  * `sb` is a service-role Supabase client. Throws if the venue isn't connected.
+ *
+ * v5.9.11 REFRESH RACE: Xero rotates the refresh token on every refresh, so two calls that
+ * refresh at once (the nightly post while someone opens the mapping screen) used to both
+ * spend the same refresh token and then both write, last write wins. If the loser's token
+ * set was the one kept, the next refresh failed and the venue was silently disconnected.
+ * Now the new tokens are saved with a compare and set on the refresh token we started from:
+ * exactly one refresh lands. A caller that loses (its save matches no row, or Xero refuses
+ * a token another call has just spent) re-reads the row and uses the winner's token.
  */
 export async function getValidAccessToken(sb: any, locationId: string, clientId: string, clientSecret: string): Promise<{ accessToken: string; tenantId: string; tenantName: string | null }> {
-  const { data: c } = await sb.from('xero_connections').select('*').eq('location_id', locationId).maybeSingle();
-  if (!c) throw new Error('Xero not connected for this location');
-  const soon = Date.now() + 2 * 60 * 1000;
-  if (new Date(c.expires_at).getTime() > soon) {
-    return { accessToken: c.access_token, tenantId: c.tenant_id, tenantName: c.tenant_name };
+  const read = async () => {
+    const { data, error } = await sb.from('xero_connections').select('*').eq('location_id', locationId).maybeSingle();
+    if (error) throw new Error(`Could not read the Xero connection: ${error.message}`);
+    if (!data) throw new Error('Xero not connected for this location');
+    return data;
+  };
+  const fresh = (c: any) => new Date(c.expires_at).getTime() > Date.now() + 2 * 60 * 1000;
+  const out = (c: any, token = c.access_token) => ({ accessToken: token, tenantId: c.tenant_id, tenantName: c.tenant_name });
+
+  const c = await read();
+  if (fresh(c)) return out(c);
+
+  let t: any;
+  try {
+    t = await refreshTokens(clientId, clientSecret, c.refresh_token);
+  } catch (e) {
+    // Another call may have refreshed with this same token a moment ago. Use its result.
+    await new Promise((r) => setTimeout(r, 400));
+    const again = await read();
+    if (again.refresh_token !== c.refresh_token && fresh(again)) return out(again);
+    throw e;
   }
-  const t = await refreshTokens(clientId, clientSecret, c.refresh_token);
-  await sb.from('xero_connections').update({
+  const { data: saved, error } = await sb.from('xero_connections').update({
     access_token: t.access_token,
     refresh_token: t.refresh_token,                 // rotated — must save the new one
     expires_at: new Date(Date.now() + (t.expires_in || 1800) * 1000).toISOString(),
     scopes: t.scope || c.scopes,
     updated_at: new Date().toISOString(),
-  }).eq('location_id', locationId);
-  return { accessToken: t.access_token, tenantId: c.tenant_id, tenantName: c.tenant_name };
+  }).eq('location_id', locationId).eq('refresh_token', c.refresh_token).select('location_id');
+  if (error) throw new Error(`Could not save the refreshed Xero token: ${error.message}`);
+  if (saved && saved.length) return out(c, t.access_token);
+  // Lost the race: another call saved its rotated set first. Ours is still a valid access
+  // token for now, but the stored row is the one every later call will refresh from.
+  const winner = await read();
+  return fresh(winner) ? out(winner) : out(c, t.access_token);
 }
 
-/** Authenticated Accounting API call (adds Bearer + xero-tenant-id + JSON headers). */
-export async function xeroApi(accessToken: string, tenantId: string, path: string, init: RequestInit = {}): Promise<any> {
+/**
+ * Authenticated Accounting API call (adds Bearer + xero-tenant-id + JSON headers).
+ * `idempotencyKey` sets Xero's Idempotency-Key header (PUT and POST): a repeat with the same
+ * key returns the first answer instead of creating a second record.
+ */
+export async function xeroApi(accessToken: string, tenantId: string, path: string, init: RequestInit & { idempotencyKey?: string } = {}): Promise<any> {
+  const { idempotencyKey, ...rest } = init;
   const res = await fetch(`${XERO_API}${path}`, {
-    ...init,
+    ...rest,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'xero-tenant-id': tenantId,
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      ...(init.headers || {}),
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey.slice(0, 128) } : {}),
+      ...(rest.headers || {}),
     },
   });
   const text = await res.text();

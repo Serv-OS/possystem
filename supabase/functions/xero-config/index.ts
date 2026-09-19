@@ -4,12 +4,15 @@
 // rates + payment methods so the back office can populate the mapping dropdowns.
 //   POST { action }:
 //     options { locationId } -> { accounts:[{code,name,type,bank}], taxRates:[{taxType,name,rate}], paymentMethods:[...] }
-//     get     { locationId } -> { mapping, detail }
+//     get     { locationId } -> { mapping, detail, autoDaily, venue:{ timezone, dayStart, currency, currentDay, lastCompletedDay } }
 //     save    { locationId, mapping } -> { ok, mapping }
 // Location-fenced like xero-connect. Deploy --no-verify-jwt.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
+import { venueClock } from '../_shared/accountingData.ts';
+import { checkTenders, MONEY_KINDS } from '../_shared/accountingDay.js';
+import { currentBusinessDay, lastCompletedBusinessDay } from '../_shared/businessDay.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -19,6 +22,7 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CLIENT_ID = Deno.env.get('XERO_CLIENT_ID') ?? '';
 const CLIENT_SECRET = Deno.env.get('XERO_CLIENT_SECRET') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+const platform = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
 async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true } | { ok: false; res: Response }> {
   const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
@@ -34,13 +38,32 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   return { ok: true };
 }
 
-// The distinct payment-method strings this venue has actually used (so the operator maps
-// exactly what they see), newest first, capped.
-async function paymentMethods(locationId: string): Promise<string[]> {
-  const { data } = await sb.from('closed_checks').select('payment_method,method').eq('location_id', locationId).order('closed_at', { ascending: false }).limit(2000);
-  const set = new Set<string>();
-  for (const r of (data || [])) { const m = (r.payment_method || r.method || '').trim(); if (m) set.add(m); }
-  return [...set].slice(0, 30);
+// The tender methods this venue has actually taken, as xero-sales will post them (v5.9.11:
+// read through the same tender rules, so a split bill lists card and cash, an older split
+// lists 'unallocated', and loyalty or promo credit, which is never money, is left out).
+// Newest checks first, capped. Returns { methods: string[], kinds: { [method]: kind } }.
+async function paymentMethods(locationId: string): Promise<{ methods: string[]; kinds: Record<string, string> }> {
+  const q = (cols: string) => sb.from('closed_checks').select(cols).eq('location_id', locationId).order('closed_at', { ascending: false }).limit(2000);
+  let { data, error } = await q('payment_method,method,total,tip,gift_card,payment_intents,source,loyalty,tenders');
+  if (error) ({ data } = await q('payment_method,method,total,tip,gift_card,payment_intents,source,loyalty'));   // tenders migration not run yet
+  const kinds: Record<string, string> = {};
+  for (const r of (data || [])) {
+    for (const t of checkTenders(r).tenders) {
+      if (!MONEY_KINDS.has(t.kind) || kinds[t.method]) continue;
+      kinds[t.method] = t.kind;
+    }
+  }
+  const methods = Object.keys(kinds).slice(0, 30);
+  return { methods, kinds: Object.fromEntries(methods.map((m) => [m, kinds[m]])) };
+}
+
+// The venue's business day, for the Back Office date picker (never the browser's clock).
+async function venueDay(locationId: string) {
+  try {
+    const v = await venueClock(platform, locationId);
+    const now = Date.now();
+    return { ...v, currentDay: currentBusinessDay(now, v.timezone, v.dayStart), lastCompletedDay: lastCompletedBusinessDay(now, v.timezone, v.dayStart) };
+  } catch { return null; }
 }
 
 Deno.serve(async (req) => {
@@ -55,8 +78,11 @@ Deno.serve(async (req) => {
 
   try {
     if (action === 'get') {
-      const { data } = await sb.from('xero_config').select('mapping,detail,auto_daily').eq('location_id', locationId).maybeSingle();
-      return json({ mapping: data?.mapping || null, detail: data?.detail || null, autoDaily: !!data?.auto_daily });
+      const [{ data }, venue] = await Promise.all([
+        sb.from('xero_config').select('mapping,detail,auto_daily').eq('location_id', locationId).maybeSingle(),
+        venueDay(locationId),
+      ]);
+      return json({ mapping: data?.mapping || null, detail: data?.detail || null, autoDaily: !!data?.auto_daily, venue });
     }
 
     if (action === 'save') {
@@ -81,7 +107,7 @@ Deno.serve(async (req) => {
       const taxRates = (taxRes?.TaxRates || [])
         .filter((r: any) => String(r.Status || 'ACTIVE').toUpperCase() === 'ACTIVE')
         .map((r: any) => ({ taxType: r.TaxType, name: r.Name, rate: Number(r.EffectiveRate) }));
-      return json({ accounts, taxRates, paymentMethods: methods });
+      return json({ accounts, taxRates, paymentMethods: methods.methods, paymentMethodKinds: methods.kinds });
     }
 
     return json({ error: 'Unknown action' }, 400);

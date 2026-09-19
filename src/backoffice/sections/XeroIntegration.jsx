@@ -8,6 +8,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
+import { money } from '../../lib/currency';
+
+// v5.9.11: tender methods as xero-sales posts them (closed_checks.tenders), each with the
+// ServOS clearing account it lands in when the operator has not chosen one.
+const KIND_DEFAULT = {
+  card: 'Card Clearing', cash: 'Cash Clearing', gift_card: 'Gift Card Clearing',
+  deposit: 'Deposits Clearing', unallocated: 'Unallocated Clearing', other: 'Card Clearing',
+};
+function methodLabel(m) {
+  if (m === 'unallocated') return 'Unallocated (older split bills)';
+  const t = String(m || '').replace(/_/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -56,9 +69,9 @@ function MappingCard({ locId }) {
   const accounts = opts?.accounts || [];
   const banks = accounts.filter(a => a.bank);
   const byType = (types) => accounts.filter(a => !a.bank && (!types || types.includes(String(a.type).toUpperCase())));
-  const AcctSelect = ({ value, onChange, types }) => (
+  const AcctSelect = ({ value, onChange, types, placeholder = 'Default (Sales)' }) => (
     <select value={value || ''} onChange={e => onChange(e.target.value)} style={sel}>
-      <option value="">Default (Sales)</option>
+      <option value="">{placeholder}</option>
       {byType(types).map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
     </select>
   );
@@ -71,14 +84,14 @@ function MappingCard({ locId }) {
       </button>
       {open && (
         <div style={{ marginTop: 14 }}>
-          <div style={S.note}>Choose exactly where each part of a sale posts in Xero. Leave anything blank to use the default. Tips are usually a <b>liability</b> (money owed to staff), not income.</div>
+          <div style={S.note}>Choose exactly where each part of a sale posts in Xero. Leave anything blank to use the default. Tips are a <b>liability</b> (money owed to staff), never income, so by default they post to <b>ServOS Tips Payable</b>. Service charge posts to <b>ServOS Service Charge Payable</b> until you choose where it belongs.</div>
           {loading && <div style={{ ...S.note, marginTop: 12 }}>Loading your Xero accounts…</div>}
           {err && <div style={{ ...S.banner(false), marginTop: 12 }}>{err}</div>}
           {opts && !loading && (
             <div style={{ marginTop: 14 }}>
               <div style={fieldRow}><span style={flabel}>Sales revenue</span><AcctSelect value={map.revenueAccount} onChange={v => set({ revenueAccount: v })} types={['REVENUE', 'SALES']} /></div>
-              <div style={fieldRow}><span style={flabel}>Tips / gratuities</span><AcctSelect value={map.tipsAccount} onChange={v => set({ tipsAccount: v })} types={['CURRLIAB', 'LIABILITY', 'REVENUE']} /></div>
-              <div style={fieldRow}><span style={flabel}>Service charge</span><AcctSelect value={map.serviceAccount} onChange={v => set({ serviceAccount: v })} types={['REVENUE', 'CURRLIAB', 'LIABILITY']} /></div>
+              <div style={fieldRow}><span style={flabel}>Tips / gratuities</span><AcctSelect value={map.tipsAccount} onChange={v => set({ tipsAccount: v })} types={['CURRLIAB', 'LIABILITY', 'REVENUE']} placeholder="Default (ServOS Tips Payable)" /></div>
+              <div style={fieldRow}><span style={flabel}>Service charge</span><AcctSelect value={map.serviceAccount} onChange={v => set({ serviceAccount: v })} types={['REVENUE', 'CURRLIAB', 'LIABILITY']} placeholder="Default (ServOS Service Charge Payable)" /></div>
               <div style={fieldRow}><span style={flabel}>VAT / tax rate</span>
                 <select value={map.taxDefault || ''} onChange={e => set({ taxDefault: e.target.value })} style={sel}>
                   <option value="">Auto (from Xero)</option>
@@ -99,14 +112,14 @@ function MappingCard({ locId }) {
               </div>
 
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '18px 0 4px' }}>Payment method → bank account</div>
-              <div style={S.note}>Each method lands in a Xero “clearing” bank account so its payout reconciles there.</div>
+              <div style={S.note}>Each method lands in a Xero “clearing” bank account so its payout reconciles there. Gift card redemptions and booking deposits have their own, because that money was taken earlier. Loyalty and promo credit are discounts, not money, so they are not listed.</div>
               <div style={{ marginTop: 10 }}>
                 {(opts.paymentMethods || []).length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>No sales yet to map.</div>}
                 {(opts.paymentMethods || []).map(m => (
                   <div key={m} style={fieldRow}>
-                    <span style={{ ...flabel, textTransform: 'capitalize' }}>{m}</span>
+                    <span style={flabel}>{methodLabel(m)}</span>
                     <select value={(map.paymentMap || {})[m] || ''} onChange={e => setPay(m, e.target.value)} style={sel}>
-                      <option value="">Auto ({/cash/i.test(m) ? 'Cash' : 'Card'} Clearing)</option>
+                      <option value="">Auto ({KIND_DEFAULT[(opts.paymentMethodKinds || {})[m]] || (/cash/i.test(m) ? 'Cash Clearing' : 'Card Clearing')})</option>
                       {banks.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
@@ -132,8 +145,10 @@ export default function XeroIntegration() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [flash, setFlash] = useState('');
-  const today = new Date().toISOString().slice(0, 10);
-  const [syncDate, setSyncDate] = useState(today);
+  // v5.9.11: the date is a VENUE BUSINESS DAY (the venue's time zone and day start, from
+  // the server), never the browser's UTC date, and only a day that has ended can be posted.
+  const [venue, setVenue] = useState(null);
+  const [syncDate, setSyncDate] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [syncErr, setSyncErr] = useState('');
@@ -146,7 +161,14 @@ export default function XeroIntegration() {
     if (!id) { setLoading(false); return; }
     try {
       setStatus(await xeroStatus(id));
-      try { const m = await xeroGetMapping(id); setAutoDaily(!!m.autoDaily); } catch { /* non-fatal */ }
+      try {
+        const m = await xeroGetMapping(id);
+        setAutoDaily(!!m.autoDaily);
+        if (m.venue) setVenue(m.venue);
+        // The server's figure; the fallback (venue clock unreadable) is only a starting point,
+        // the server still checks the day against the venue clock before posting.
+        setSyncDate(d => d || m.venue?.lastCompletedDay || new Date(Date.now() - 86400000).toISOString().slice(0, 10));
+      } catch { /* non-fatal */ }
     } catch (e) { setErr(e.message || 'Could not load Xero status'); } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -179,13 +201,14 @@ export default function XeroIntegration() {
     try { await xeroDisconnect(locId); await load(); } catch (e) { setErr(e.message || 'Disconnect failed'); } finally { setBusy(false); }
   };
 
-  const syncSales = async () => {
-    if (!locId) return;
-    setSyncing(true); setSyncErr(''); setSyncResult(null);
-    try { setSyncResult(await xeroSyncSales(locId, syncDate)); }
+  const syncSales = async (dryRun = false) => {
+    if (!locId || !syncDate) return;
+    setSyncing(dryRun ? 'preview' : 'push'); setSyncErr(''); setSyncResult(null);
+    try { setSyncResult(await xeroSyncSales(locId, syncDate, dryRun ? { dryRun: true } : {})); }
     catch (e) { setSyncErr(e.message || 'Sync failed'); }
     finally { setSyncing(false); }
   };
+  const cur = syncResult?.currency || venue?.currency;
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!locId) return <div style={S.empty}>Pick a location to connect Xero.</div>;
@@ -225,26 +248,49 @@ export default function XeroIntegration() {
           </div>
           <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--bdr)' }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>Push sales to Xero</div>
-            <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account (card and cash kept separate). When your card <b>payout</b> lands in the bank, reconcile it against the clearing account — that’s how sales connect to the cash in the bank.</div>
+            <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account per payment type (card, cash and gift card kept separate), and that day’s refunds as “spent money”. When your card <b>payout</b> lands in the bank, reconcile it against the clearing account — that’s how sales connect to the cash in the bank.</div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-              <input type="date" value={syncDate} max={today} onChange={e => setSyncDate(e.target.value)}
+              <input type="date" value={syncDate} max={venue?.lastCompletedDay || undefined} onChange={e => setSyncDate(e.target.value)}
                 style={{ border: '1px solid var(--bdr2)', borderRadius: 9, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)' }} />
-              <button style={S.btn} onClick={syncSales} disabled={syncing}>{syncing ? 'Pushing…' : 'Push sales to Xero'}</button>
+              <button style={S.btn} onClick={() => syncSales(false)} disabled={!!syncing || !syncDate}>{syncing === 'push' ? 'Pushing…' : 'Push sales to Xero'}</button>
+              <button style={S.ghost} onClick={() => syncSales(true)} disabled={!!syncing || !syncDate}>{syncing === 'preview' ? 'Checking…' : 'Check figures first'}</button>
             </div>
+            {venue && (
+              <div style={{ ...S.note, marginTop: 8 }}>
+                A day is the venue’s business day: from {venue.dayStart} to {venue.dayStart} the next morning, {venue.timezone} time, so after-midnight trade counts with the night before. Only a day that has ended can be posted.
+              </div>
+            )}
             {syncErr && <div style={S.banner(false)}>{syncErr}</div>}
             {syncResult?.ok && syncResult.already && <div style={{ ...S.banner(true), marginTop: 12 }}>✓ Already pushed for {syncResult.date}.</div>}
-            {syncResult?.ok && !syncResult.already && (
+            {syncResult?.ok && syncResult.empty && <div style={{ ...S.banner(true), marginTop: 12 }}>No sales or refunds on {syncResult.date}. Nothing to post.</div>}
+            {syncResult?.ok && !syncResult.empty && (
               <div style={{ marginTop: 12 }}>
-                <div style={{ ...S.banner(true), marginBottom: 8 }}>✓ Pushed {syncResult.date} to Xero{syncResult.sample ? ' (test figures — no real sales that day)' : ''}.</div>
+                {!syncResult.already && (
+                  <div style={{ ...S.banner(true), marginBottom: 8 }}>
+                    {syncResult.dryRun ? `Figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Pushed ${syncResult.date} to Xero${syncResult.sample ? ' (test figures — no real sales that day)' : ''}.`}
+                  </div>
+                )}
                 {(syncResult.lines || []).map((l, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '7px 10px', border: '1px solid var(--bdr2)', borderRadius: 8, marginBottom: 6, background: 'var(--bg2)' }}>
-                    <span style={{ color: 'var(--t1)', fontWeight: 700, textTransform: 'capitalize' }}>{l.method} · £{Number(l.gross).toFixed(2)}</span>
-                    {l.link && <a href={l.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, textDecoration: 'none', fontSize: 12 }}>View in Xero ↗</a>}
+                  <div key={l.key || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, fontSize: 13, padding: '7px 10px', border: '1px solid var(--bdr2)', borderRadius: 8, marginBottom: 6, background: 'var(--bg2)' }}>
+                    <span style={{ color: 'var(--t1)', fontWeight: 700 }}>
+                      {l.direction === 'refunds' ? 'Refunds' : 'Takings'} · {(l.methods || []).map(methodLabel).join(', ')} · {money(l.total, cur)}
+                      {l.account && <span style={{ fontWeight: 600, color: 'var(--t4)' }}> · {l.account}</span>}
+                    </span>
+                    {l.link && <a href={l.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, textDecoration: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>View in Xero ↗</a>}
                   </div>
                 ))}
               </div>
             )}
-            <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated.</div>
+            {(syncResult?.warnings || []).length > 0 && (
+              <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(200,150,40,.12)', border: '1px solid rgba(200,150,40,.3)' }}>
+                {(syncResult.warnings || []).map((w, i) => (
+                  <div key={w.code || i} style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.5, marginTop: i ? 6 : 0 }}>
+                    <b>{w.count ? `${w.count} × ` : ''}</b>{w.message}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated, and a day that stopped halfway finishes without sending the first half again.</div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
               <input type="checkbox" checked={autoDaily} disabled={autoBusy}
                 onChange={async (e) => {
@@ -254,7 +300,7 @@ export default function XeroIntegration() {
                 }}
                 style={{ width: 17, height: 17 }} />
               <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>Auto-post each night</span>
-              <span style={{ fontSize: 12, color: 'var(--t4)' }}>— yesterday’s takings post automatically every morning. Days with no sales are skipped.</span>
+              <span style={{ fontSize: 12, color: 'var(--t4)' }}>— each business day posts automatically about four hours after it ends, so a till that was offline has time to catch up. Days with no sales are skipped.</span>
             </label>
           </div>
         </div>
