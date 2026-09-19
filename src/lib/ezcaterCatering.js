@@ -11,4 +11,5 @@ export {
   isAwaitingEzcaterAcceptance, RELEASABLE_OR_FILTER, NOT_RELEASABLE_STATUSES_PG, cateringMayRelease,
   advanceStatusLabel, ezLifecycleState, ezcaterPrep, ezcaterCateringTiming, ezcaterCateringRow,
   kitchenFingerprint, ezcaterWritePlan, channelCancelAlert, ezcaterHoldAlertDue, ezcaterHoldAlertText,
+  ezcaterPriorLink, EZ_QUEUE_WRITTEN_MARKER, ezcaterQueueWrittenBefore, ezcaterEventError,
 } from '../../supabase/functions/_shared/ezcaterCatering.js';

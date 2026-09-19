@@ -26,6 +26,7 @@ import {
   cateringChannelLabel, ezcaterOrderNumber, cateringOrderNumber, ezcaterBadge, ezcaterFlagText,
   isAwaitingEzcaterAcceptance, RELEASABLE_OR_FILTER, NOT_RELEASABLE_STATUSES_PG, cateringMayRelease,
   advanceStatusLabel, ezLifecycleState, ezcaterPrep, ezcaterCateringRow, ezcaterWritePlan,
+  ezcaterPriorLink, EZ_QUEUE_WRITTEN_MARKER, ezcaterQueueWrittenBefore, ezcaterEventError,
   kitchenFingerprint, EZ_PREP_FALLBACK_MINUTES, FLAG_CHANGED_AFTER_FIRE, FLAG_CANCELLED_AFTER_FIRE,
   AWAITING_LABEL, channelCancelAlert, ezcaterHoldAlertDue, ezcaterHoldAlertText,
 } from './ezcaterCatering.js';
@@ -631,4 +632,136 @@ test('E. ADR-023 says the claim refuses cancelled rows for every source, and the
   assert.match(note, /closed_checks/);
   assert.match(note, /HKX77V/);
   assert.doesNotMatch(note, /[\u2013\u2014]/);
+});
+
+test('E2. release note steps in Peter\'s order: merge, prep time, tills on the new version, functions, HKX77V, fresh order, menu sync', () => {
+  const note = read('../../docs/EZCATER_V1_RELEASE.md');
+  const steps = [...note.matchAll(/^## (\d)\. /gm)].map((m) => Number(m[1]));
+  assert.deepEqual(steps, [1, 2, 3, 4, 5, 6, 7]);
+  const at = (re) => { const i = note.search(re); assert.ok(i >= 0, String(re)); return i; };
+  const order = [
+    at(/Merge to main/), at(/## 2\. Set the catering prep time/), at(/NEW version number/),
+    at(/## 4\. Deploy the edge functions/), at(/## 5\. The old test order HKX77V/),
+    at(/## 6\. Place a fresh test order/), at(/## 7\. Menu sync/),
+  ];
+  for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], `step ${i + 1} after step ${i}`);
+  // Step 3: the master till and every Sunmi, where Peter sees it, why, and a stop.
+  assert.match(note, /master till AND every Sunmi till/);
+  assert.match(note, /beside "What's new"/);
+  assert.match(note, /releases held orders and cancelled orders/);
+  assert.match(note, /Do not go further until every till shows it/);
+  // Step 4: from the merged commit, the CLI, the webhook last, then the deploy check.
+  assert.match(note, /From the merged commit/);
+  assert.match(note, /Supabase CLI/);
+  assert.ok(note.indexOf('node scripts/check-deploys.mjs') > note.indexOf('`ezcater-webhook`'), 'check after the webhook');
+  // Step 7: the migration, then Sync outside service.
+  assert.ok(note.indexOf('Then press Sync') > note.indexOf('20260919m'));
+  assert.match(note, /Outside service, or when no ezCater order is due to fire/);
+  assert.match(note, /Only exact matches link automatically/);
+  // No dashes used as punctuation (list bullets are fine).
+  assert.doesNotMatch(note, /\S - \S/);
+});
+
+// \u2500\u2500 Review fixes (18 Sep 2026, round 3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+test('R3a. a failed link read is retried, never read as "no link"; any row means known', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.match(src, /const \{ data: linkRows, error: linkReadErr \} = await sb\.from\('ezcater_order_links'\)\n\s+\.select\('accepted_count, event_at, ez_lifecycle'\)\.eq\('ez_order_id', order\.uuid\)\.limit\(10\);/);
+  assert.match(src, /if \(linkReadErr\) \{\n\s+await failEvent\(`link read failed: \$\{linkReadErr\.message\}`, 'error'\);\n\s+return retry\('link read failed'\);/);
+  assert.match(src, /const priorLink: any = ezcaterPriorLink\(linkRows\);/);
+  // The read and its error check come before the stale guard and the plan.
+  assert.ok(src.indexOf("retry('link read failed')") < src.indexOf('priorLink?.event_at && eventAt'));
+  assert.doesNotMatch(src, /ez_order_id', order\.uuid\)\.maybeSingle\(\)/);
+
+  assert.equal(ezcaterPriorLink(null), null);
+  assert.equal(ezcaterPriorLink([]), null);
+  assert.equal(ezcaterPriorLink(undefined), null);
+  assert.deepEqual(ezcaterPriorLink({ accepted_count: 1, event_at: 'a', ez_lifecycle: 'accepted' }), { accepted_count: 1, event_at: 'a', ez_lifecycle: 'accepted' });
+  // Two rows: known, the highest count, the latest event and its lifecycle.
+  const two = ezcaterPriorLink([
+    { accepted_count: 2, event_at: '2026-09-18T10:00:00Z', ez_lifecycle: 'accepted' },
+    { accepted_count: 1, event_at: '2026-09-18T11:00:00Z', ez_lifecycle: 'cancelled' },
+  ]);
+  assert.deepEqual(two, { accepted_count: 2, event_at: '2026-09-18T11:00:00Z', ez_lifecycle: 'cancelled' });
+  // A row with nothing in it still means known.
+  assert.ok(ezcaterPriorLink([{}]));
+  assert.equal(ezcaterPriorLink([{}]).accepted_count, 0);
+  // Known means a finished order with no queue row is not filed again.
+  assert.equal(ezcaterWritePlan({ next: build(HKX77V()), existing: null, nowIso: 'n', linkKnown: !!ezcaterPriorLink([{}, {}]) }).kind, 'skip');
+});
+
+test('R3b. a failed link write marks the event error and retries, before the event counts as processed', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  const upsertAt = src.indexOf(".from('ezcater_order_links')\n      .upsert(");
+  const retryAt = src.indexOf("return retry('link write failed')");
+  const alertAt = src.indexOf('if (flagged) {');
+  const processedAt = src.indexOf("status: 'processed', location_id: locationId, error: null");
+  assert.ok(upsertAt > 0 && retryAt > upsertAt, 'retry on a failed link write');
+  assert.ok(alertAt > retryAt, 'the staff alert only after the link is written, so a retry raises it once');
+  assert.ok(processedAt > alertAt, 'processed only after the link');
+  assert.match(src, /await failEvent\(rowOnFile \? `\$\{EZ_QUEUE_WRITTEN_MARKER\}; \$\{msg\}` : msg, 'error'\);/);
+  assert.doesNotMatch(src, /console\.warn\('\[ezcater-webhook\] link upsert failed:'/);
+  // The retry still cannot insert twice: notification dedupe, insert only on no row, 23505 re-plans.
+  assert.match(src, /onConflict: 'notification_id', ignoreDuplicates: true/);
+  assert.match(src, /prior\?\.status === 'processed'\) return ok\(\)/);
+  assert.match(src, /select\('status, attempts, error'\)/);
+  assert.match(src, /queueWrittenBefore = ezcaterQueueWrittenBefore\(prior\);/);
+  assert.match(src, /linkKnown: !!priorLink \|\| queueWrittenBefore/);
+  assert.match(src, /23505\|duplicate key/);
+  // Every error written for this notification keeps the marker.
+  assert.match(src, /error: ezcaterEventError\(msg, queueWrittenBefore\) \}\)\n\s+\.eq\('notification_id', notificationId\);\n\s+\};/);
+  assert.match(src, /status: 'error', error: ezcaterEventError\(msg, queueWrittenBefore\)/);
+});
+
+test('R3b. the retry after a failed link write: same row, never a second insert', () => {
+  const row = build(HKX77V());
+  // First attempt inserted, then the link write failed. The event row now carries the marker.
+  const priorEvent = { status: 'error', error: `${EZ_QUEUE_WRITTEN_MARKER}; link write failed: timeout` };
+  assert.equal(ezcaterQueueWrittenBefore(priorEvent), true);
+  assert.equal(ezcaterQueueWrittenBefore({ status: 'error', error: 'order fetch failed: 500' }), false);
+  assert.equal(ezcaterQueueWrittenBefore(null), false);
+  // Retry, row still there (the usual case): replaced in place or left alone, never inserted.
+  assert.equal(ezcaterWritePlan({ next: row, existing: stored(row), nowIso: 'n', linkKnown: true }).kind, 'unfired');
+  const fired = stored(row, { status: 'prep', kitchen_routed_at: 'x' });
+  assert.equal(ezcaterWritePlan({ next: row, existing: fired, nowIso: 'n', linkKnown: true }).kind, 'skip');
+  // Retry after staff finished and removed the row: no link yet, but the marker makes it known.
+  assert.equal(ezcaterWritePlan({ next: row, existing: null, nowIso: 'n', linkKnown: ezcaterQueueWrittenBefore(priorEvent) }).kind, 'skip');
+  // A later failure on the same notification keeps the marker, so a third attempt is still safe.
+  const again = ezcaterEventError('order fetch failed: 500', true);
+  assert.ok(again.startsWith(EZ_QUEUE_WRITTEN_MARKER));
+  assert.equal(ezcaterQueueWrittenBefore({ error: again }), true);
+  assert.equal(ezcaterEventError(priorEvent.error, true), priorEvent.error, 'never doubled');
+  assert.equal(ezcaterEventError('plain', false), 'plain');
+  assert.equal(ezcaterEventError('x'.repeat(3000), true).length, 2000);
+  assert.ok(ezcaterEventError('x'.repeat(3000), true).startsWith(EZ_QUEUE_WRITTEN_MARKER));
+});
+
+test('R3c. a collected order is finished: a later cancel or change writes nothing and raises no alert', () => {
+  const row = build(HKX77V());
+  const dead = build(HKX77V({ lifecycle: { orderIsCurrently: 'cancelled' } }));
+  const o = HKX77V();
+  o.catererCart = { ...o.catererCart, orderItems: [{ uuid: 'oi-1', name: 'Sandwich Platter', quantity: 9, totalInSubunits: money(30000) }] };
+  const changed = build(o);
+  for (const routed of ['2026-09-23T17:30:05Z', null]) {
+    const collected = stored(row, { status: 'collected', kitchen_routed_at: routed });
+    for (const [label, next] of [['cancel', dead], ['change', changed], ['repeat', row]]) {
+      const plan = ezcaterWritePlan({ next, existing: collected, nowIso: 'n', linkKnown: true });
+      assert.equal(plan.kind, 'skip', `${label}, routed ${routed}`);
+      assert.match(plan.reason, /collected/);
+      assert.equal(plan.flag, undefined);
+      assert.equal(plan.patch, undefined);
+    }
+  }
+  // No status write means no realtime cancel alert either.
+  const collected = stored(row, { status: 'collected', kitchen_routed_at: 'x' });
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: collected, new: collected }), null);
+  // Any case.
+  assert.equal(ezcaterWritePlan({ next: dead, existing: stored(row, { status: 'Collected', kitchen_routed_at: 'x' }), nowIso: 'n' }).kind, 'skip');
+  // The webhook logs every skip with its reason.
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.match(src, /console\.log\('\[ezcater-webhook\]', row\.ref, 'queue row not written:', plan\.reason\);/);
+  // Prep and ready still take a cancel after firing, as before.
+  const ready = ezcaterWritePlan({ next: dead, existing: stored(row, { status: 'ready', kitchen_routed_at: 'x' }), nowIso: 'n' });
+  assert.equal(ready.kind, 'fired');
+  assert.equal(ready.flag.text, FLAG_CANCELLED_AFTER_FIRE);
 });

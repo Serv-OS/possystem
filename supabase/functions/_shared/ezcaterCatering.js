@@ -333,6 +333,10 @@ export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false }) 
   if (norm(existing.source) !== 'catering') return { kind: 'skip', reason: 'row written before ezCater orders were catering orders, left as it is' };
   // Cancelled is terminal. Nothing revives it.
   if (norm(existing.status) === 'cancelled') return { kind: 'skip', reason: 'already cancelled' };
+  // Collected is finished too: the food has gone. A later cancel or change on ezCater writes
+  // nothing and raises no alert (the webhook logs the reason), so a handed over order is never
+  // turned into a "cancelled after the kitchen" alarm or a "changed" flag.
+  if (norm(existing.status) === 'collected') return { kind: 'skip', reason: 'already collected (finished), a later cancel or change is not applied' };
 
   const fired = !!existing.kitchen_routed_at;
   const prevCustomer = existing.customer && typeof existing.customer === 'object' ? existing.customer : {};
@@ -366,6 +370,49 @@ export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false }) 
     return { kind: 'fired', flag: null, patch: { customer: { ...prevCustomer, ezcater_lifecycle: next.customer.ezcater_lifecycle, ezcater_awaiting_acceptance: false } } };
   }
   return { kind: 'skip', reason: 'already in the kitchen, nothing changed' };
+}
+
+// ── The link and the retry marker ────────────────────────────────────────────
+
+/**
+ * The prior ezcater_order_links state for an order, from the rows a read returned (an array, a
+ * single row or null). ANY row means the order is known. Should more than one ever come back
+ * (the unique index on ez_order_id missing on some database), the highest accepted_count, the
+ * latest event_at and that latest row's lifecycle are used, so the monotonic guard and the
+ * modification count never go backwards. Returns null when there is no row.
+ */
+export function ezcaterPriorLink(rows) {
+  const list = (Array.isArray(rows) ? rows : (rows ? [rows] : [])).filter((r) => r && typeof r === 'object');
+  if (!list.length) return null;
+  let accepted = 0;
+  let latest = null;
+  for (const r of list) {
+    accepted = Math.max(accepted, Number(r.accepted_count) || 0);
+    const t = ms(r.event_at);
+    if (Number.isFinite(t) && (!latest || t > ms(latest.event_at))) latest = r;
+  }
+  const pick = latest || list[0];
+  return { accepted_count: accepted, event_at: pick.event_at ?? null, ez_lifecycle: pick.ez_lifecycle ?? null };
+}
+
+/**
+ * Written into ezcater_events.error when the order_queue write succeeded but the link write did
+ * not. The notification is retried, and on that retry this marker says "we already filed this
+ * order", so if staff finished and removed the row in between it is NOT inserted a second time.
+ * It is kept on every later error message for the same notification until it is processed.
+ */
+export const EZ_QUEUE_WRITTEN_MARKER = 'QUEUE ROW WRITTEN, link write pending';
+
+/** True when a prior attempt at this notification wrote the queue row (see the marker). */
+export function ezcaterQueueWrittenBefore(priorEvent) {
+  return String(priorEvent?.error ?? '').includes(EZ_QUEUE_WRITTEN_MARKER);
+}
+
+/** The error text for an event row, keeping the marker when an earlier attempt set it. */
+export function ezcaterEventError(msg, queueWrittenBefore = false) {
+  const m = String(msg ?? '');
+  const out = queueWrittenBefore && !m.includes(EZ_QUEUE_WRITTEN_MARKER) ? `${EZ_QUEUE_WRITTEN_MARKER}; ${m}` : m;
+  return out.slice(0, 2000);
 }
 
 // ── Alerts staff must see ────────────────────────────────────────────────────
