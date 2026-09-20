@@ -211,10 +211,18 @@ $locks$;
 -- 0c. closed_checks accepts QR (gap G15). closed_checks_source_check had no 'qr', so
 -- every QR paid check was refused and never reached reports. Widening a check cannot
 -- break an existing row.
+--
+-- NOT VALID, on purpose (fix round 5, 19 Sep). A plain ADD CONSTRAINT re-reads every row in
+-- closed_checks, the largest table in the Ops DB, while this file holds ACCESS EXCLUSIVE on
+-- it, and the runbook promises step 3 locks the busy tables for about 5 seconds. On a venue
+-- with a long history it would take far longer. NOT VALID skips that scan and costs nothing
+-- here: the new list is a strict superset of the live one, so no existing row can break it,
+-- and a NOT VALID check still refuses every INSERT and UPDATE from now on, which is the only
+-- thing the fence needs. There is no VALIDATE step to come back for.
 alter table public.closed_checks drop constraint if exists closed_checks_source_check;
 alter table public.closed_checks add constraint closed_checks_source_check
   check (source = any (array['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise', 'pax_table_pay',
-                             'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr']));
+                             'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr'])) not valid;
 
 -- 0d. order_queue remembers who wrote each row, set by the database, never by the
 -- writer: 'rpc' (place_public_order), 'staff' (a linked till, kiosk or Back Office of
@@ -780,8 +788,11 @@ $fn$;
 -- (lib/menuPricing.js variantFromPrice skips zeros, which is exactly why a variants parent
 -- carries base 0 and menu_items.pricing defaults to {"base": 0}), so returning 0 here made
 -- a row the storefront never sells worth nothing and it rode along free on a paid ticket.
--- The caller must never read NULL as free: the line is UNKNOWN, it counts at no less than
--- what the page said, and the order comes out SHORT for staff to confirm.
+-- On a row the storefront does NOT sell, NULL is never free: the line is UNKNOWN, it counts
+-- at no less than what the page said, and the order comes out SHORT for staff to confirm.
+-- On a row the storefront DOES sell, the caller (_public_order_value) reads NULL as 0,
+-- because 0.00 is what the customer was charged: resolveItemPrice answers 0 for {"base": 0}
+-- and for a row with no pricing at all, and a genuinely free side is a real thing on a menu.
 create or replace function public._menu_item_floor_minor(p_pricing jsonb, p_channel text, p_base_only boolean)
 returns bigint
 language plpgsql
@@ -2689,24 +2700,35 @@ $fn$;
 -- priced option can never reach zero, and legitimate free and minus priced options are
 -- untouched. The options themselves still reach the kitchen exactly as the customer sent them.
 --
--- WHAT THE STOREFRONT REALLY SELLS (fix round 4, 19 Sep). A menu_items row of the venue was
--- enough: nothing asked whether the storefront sells it. A variants parent (base 0, the row
--- behind Half and Pint), an option only sub item, an archived row, a row hidden from the
--- channel and an 86'd row all passed, and _menu_item_floor_minor valued them at 0, so ten
--- Colas rode along free on a legitimately paid ticket. A line now counts as the server's own
--- value ONLY when the row is one the storefront sells for this channel:
+-- WHAT THE STOREFRONT REALLY SELLS (fix round 4, 19 Sep; narrowed in fix round 5). A
+-- menu_items row of the venue was enough: nothing asked whether the storefront sells it. A
+-- variants parent (base 0, the row behind Half and Pint), an option only sub item, an archived
+-- row and an 86'd row all passed, and _menu_item_floor_minor valued them at 0, so ten Colas
+-- rode along free on a legitimately paid ticket. A line now counts as the server's own value
+-- ONLY when the row is one the storefront sells:
 --   * not a variants parent (no live child row points at it: lib/menuPricing.js variantChildren);
 --   * not an option only sub item (lib/menuRules.js rule 1, the ONE rule every screen reads:
 --     type 'subitem' and not sold alone. NOT "sold_alone is false" on its own: that column
 --     DEFAULTS to false in the live Ops DB, so on its own it would refuse real products);
 --   * not archived (both storefronts fetch archived = false);
---   * not hidden from the channel (visibility.online false; catering has no such switch);
---   * not 86'd (eighty_six, which online and catering both read to grey an item out);
--- and only when _menu_item_floor_minor can put a price on it. Anything else is UNKNOWN: it
--- counts at no less than what the page said and no less than any price we do have, it is
--- never worth zero, it is counted in unknown_lines (so the order can never pay for itself
--- and a manager confirms it), and it still reaches the kitchen under the MENU's name. Lines
--- like that take no part in the venue's automatic discounts either.
+--   * not 86'd (eighty_six, which online and catering both read to grey an item out).
+-- Anything else is UNKNOWN: it counts at no less than what the page said and no less than any
+-- price we do have, it is never worth zero, it is counted in unknown_lines (so the order can
+-- never pay for itself and a manager confirms it), and it still reaches the kitchen under the
+-- MENU's name. Lines like that take no part in the venue's automatic discounts either.
+--
+-- THE TEST IS THE STOREFRONT'S, NOT A STRICTER ONE (fix round 5, 19 Sep). Round 4 also refused
+-- a row whose visibility.online was false. No storefront reads that key: OnlineSurface (which
+-- is also the QR screen) filters on parent_id, archived, sold_alone and allergens only, and
+-- catering has no such switch at all. Back Office still WRITES it, so an item a manager
+-- switched off for Online is on the storefront and selling today, and the fence refused the
+-- order that bought it: an honest customer who paid in full sat in "Payment short", and the
+-- same two lines as a QR TAB ROUND were refused outright ("no longer on the menu"). The four
+-- tests left are the ones that are certain, every one of them a rule a storefront really
+-- applies. The one place the fence is deliberately LOOSER than the storefront is sold_alone:
+-- online and the HubRise catalog hide any row whose sold_alone is exactly false, whatever its
+-- type, but that column defaults to false in the live Ops DB, so the strict rule would have
+-- refused real products. It costs nothing: such a row counts at its own menu price.
 create or replace function public._public_order_value(p_loc text, p_source text, p_type text, p_items jsonb)
 returns jsonb
 language plpgsql
@@ -2717,7 +2739,6 @@ as $fn$
 declare
   v_channel  text := public._menu_channel_key(p_type);
   v_base     boolean := p_source = 'catering';
-  v_vis      text := case when p_source = 'catering' then null else 'online' end;
   v_86       text[] := '{}'::text[];
   v_parents  text[] := '{}'::text[];
   v_sell     boolean;
@@ -2804,7 +2825,7 @@ begin
     if r.id is not null and r.parent_id is not null then
       select * into p from public.menu_items m where m.id = r.parent_id and m.location_id = p_loc;
     end if;
-    -- Does the storefront sell this row on this channel, and can the server price it?
+    -- Does the storefront sell this row, and can the server price it?
     v_sell := false;
     v_floor := null;
     if r.id is not null then
@@ -2812,8 +2833,18 @@ begin
       v_sell := not (r.id = any(v_parents))
                 and coalesce(r.archived, false) = false
                 and not (coalesce(r.type, '') = 'subitem' and r.sold_alone is not true)
-                and (v_vis is null or coalesce(r.visibility ->> v_vis, 'true') <> 'false')
                 and not (r.id = any(v_86));
+      -- A row the storefront SELLS but the server could not put a price on is not unknown: it
+      -- is FREE, because that is exactly what the customer was charged. resolveItemPrice
+      -- (lib/menuPricing.js) answers 0 for {"base": 0} and for a row with no pricing at all,
+      -- and nothing on the storefront hides a 0.00 row, so a tap water, a cutlery pack or a no
+      -- charge side is shown, added and sold for nothing (fix round 5). Refusing to price it
+      -- put honest fully paid orders into "Payment short" and REFUSED a QR tab round that
+      -- carried one. The rows that used to ride along free are held by the sellability test
+      -- above, not by this.
+      if v_sell and v_floor is null then
+        v_floor := 0;
+      end if;
     end if;
     v_item := round(public._fence_num(it ->> 'price') * 100)::bigint;
     if v_sell and v_floor is not null then
@@ -3376,8 +3407,8 @@ $fn$;
 -- The loyalty discount the server can prove for this order: a redemption row in the
 -- loyalty ledgers (loyalty_transactions for points, stamp_transactions for stamp cards,
 -- both server written) whose key names THIS order's check, never more than the page
--- declared, and per redemption never more than what the SERVER can say that reward is
--- worth. In pence.
+-- declared, never more than what the SERVER can say the reward is worth, ONE reward per
+-- order, and never more than the order itself is worth. In pence.
 --
 -- WHAT A REWARD IS WORTH (fix round 4, 19 Sep). This used to fall back to the dearest single
 -- item on the basket whenever the loyalty proof carried no money value, and payment-proof
@@ -3385,7 +3416,7 @@ $fn$;
 -- discount_percent. So one genuine free coffee redemption paid for a 95 pound Feast, and two
 -- of them paid a 190 pound basket for a penny. Now, per redemption:
 --   * the proof's own amount when it is a real money value (a fixed amount reward);
---   * a percent reward: that percent of the server's OWN goods value;
+--   * a percent reward: that percent of what is left to pay for the goods (below);
 --   * a free item reward: the cheapest line on the order the reward could make free, priced
 --     by the server (_loyalty_free_item_minor);
 --   * anything the server cannot value, including a redemption with no proof at all: ZERO.
@@ -3393,9 +3424,29 @@ $fn$;
 -- company's loyalty_rewards row or stamp card programme). There is no dearest item fallback
 -- any more: a reward we cannot value takes nothing off, the order is short, and staff see it
 -- and confirm on the till.
+--
+-- ONE REWARD, AND NEVER MORE THAN THE ORDER (fix round 5, 19 Sep). Round 4 valued each
+-- redemption honestly and then ADDED them up, with nothing tying the sum to what the order is
+-- worth. loyalty-redeem keys on 'redeem:<check_id>:<reward_id>', so two DIFFERENT rewards
+-- against the same check are two legal redemptions, each spending its own points: a crafted
+-- page on an authorised path, not a forgery. Two genuine 50 percent rewards took a 125 pound
+-- order to 0.00 and it booked as PAID with no money at all; 10 percent plus 20 percent gave a
+-- flat 30 percent where the venue meant one reward; three free coffee stamp cards took 9.00
+-- off an order carrying ONE 3 pound coffee. Two rules close it, and they are the rules the
+-- app already follows (OnlineCheckout's rewardApplied is a SINGLE object: the storefront never
+-- applies two):
+--   * ONE reward per order counts. Of every redemption the server can value, the DEAREST one
+--     is the discount; the rest take nothing off.
+--   * p_base_minor is the ceiling: the server's own goods value AFTER the venue's automatic
+--     deals and any promo code, which is what is actually left to pay for the goods. A percent
+--     reward is worked out on that same figure, not the raw goods, so it can never discount
+--     money another discount already took off.
+-- An order that declares more loyalty than that is simply short: it books nothing, staff see
+-- "Payment short" and confirm on the till.
 drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint);
+drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint, jsonb);
 create or replace function public._public_order_loyalty(p_loc text, p_ref text, p_check_id text,
-                                                        p_declared bigint, p_goods_minor bigint, p_lines jsonb)
+                                                        p_declared bigint, p_base_minor bigint, p_lines jsonb)
 returns bigint
 language plpgsql
 stable
@@ -3403,6 +3454,7 @@ security definer
 set search_path = public
 as $fn$
 declare
+  v_base bigint := greatest(0, coalesce(p_base_minor, 0));
   v_cap  bigint := 0;
   v_val  bigint;
   v_amt  bigint;
@@ -3439,14 +3491,16 @@ begin
       v_type := lower(coalesce(v_rw ->> 'type', ''));
       if v_type = 'discount_percent' then
         v_pct := least(100, greatest(0, public._fence_num(v_rw ->> 'percent')));
-        v_val := floor(greatest(0, coalesce(p_goods_minor, 0)) * v_pct / 100)::bigint;
+        v_val := floor(v_base * v_pct / 100)::bigint;
       elsif v_type = 'free_item' then
         v_val := public._loyalty_free_item_minor(v_rw -> 'items', p_lines);
       end if;
     end if;
-    v_cap := v_cap + greatest(0, coalesce(v_val, 0));
+    -- ONE reward per order: the dearest redemption the server can value, never the sum.
+    v_cap := greatest(v_cap, greatest(0, coalesce(v_val, 0)));
   end loop;
-  return least(p_declared, v_cap);
+  -- Never more than the page declared, and never more than the order has left to give away.
+  return least(p_declared, v_cap, v_base);
 end;
 $fn$;
 
@@ -3916,8 +3970,13 @@ begin
     end if;
     v_loy_decl := (v_decl ->> 'loyalty_minor')::bigint;
     if v_check is not null then
+      -- Loyalty is valued against what is LEFT to pay for the goods: the server's own goods
+      -- value less the venue's automatic deals and the promo code above it (fix round 5). A
+      -- percent reward is that percent of this figure, and the whole loyalty benefit can never
+      -- be more than it, so an order can never be given away twice over.
       v_loy_minor := public._public_order_loyalty(v_loc, v_ref, v_check_id, v_loy_decl,
-                                                  v_goods_minor, v_val -> 'lines');
+                                                  greatest(0, v_goods_minor - v_auto_minor - v_promo_minor),
+                                                  v_val -> 'lines');
     end if;
     v_client_due := greatest(round(v_total * 100)::bigint,
                              case when v_check is not null
@@ -3942,7 +4001,10 @@ begin
         return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders from this network. Please ask a member of staff.');
       end if;
       -- Nothing refuses the order from here on: use the promo code up now. A code another
-      -- order used up a moment ago is no discount after all.
+      -- order used up a moment ago is no discount after all. The loyalty discount worked out
+      -- above keeps the smaller ceiling it was given (it was valued net of a promo code that
+      -- turned out not to apply). That can only make the order MORE short, never less, which
+      -- is the right way round: staff confirm it on the till.
       if v_promo_minor > 0 then
         v_promo := public._public_order_promo(v_loc, v_decl ->> 'promo_code', v_goods_minor - v_auto_minor,
                                               v_check_id, true);
@@ -4129,11 +4191,15 @@ begin
   if v_pend.pricing is not null then
     -- A redemption that landed after the order is valued now, against the SAME lines the
     -- order was priced from (the kept check carries the server's own priced items, so
-    -- re-valuing them gives back the lines a free item reward is matched against).
+    -- re-valuing them gives back the lines a free item reward is matched against), and
+    -- against the same ceiling the order was priced with: the goods less the venue's
+    -- automatic deals and the promo code (fix round 5).
     v_loy := greatest(coalesce((v_pend.pricing ->> 'loyalty_minor')::bigint, 0),
                       public._public_order_loyalty(v_loc, p_ref, v_check_id,
                                                    coalesce((v_pend.pricing ->> 'loyalty_declared_minor')::bigint, 0),
-                                                   coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0),
+                                                   greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)
+                                                               - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)
+                                                               - coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)),
                                                    public._public_order_value(v_loc, coalesce(v_q.source, 'online'),
                                                                               coalesce(v_q.type, 'collection'),
                                                                               v_pend.check_row -> 'items') -> 'lines'));
@@ -4292,6 +4358,7 @@ declare
   v_check_id   text;
   v_cc         jsonb;
   v_items      jsonb;
+  v_goods      bigint := 0;
   v_tip        numeric;
   v_booked     numeric;
 begin
@@ -4364,9 +4431,24 @@ begin
     from public.order_queue q
     cross join lateral jsonb_array_elements(case when jsonb_typeof(q.items) = 'array' then q.items else '[]'::jsonb end) as e(item)
    where q.location_id = v_loc and q.ref = any(v_refs);
+  -- THE TIP IS CAPPED AT WHAT WAS TAKEN OVER THE GOODS (fix round 5, 19 Sep). The tip was the
+  -- one money field on a QR check still decided by the phone: a tab of one 95 pound Feast
+  -- placed with customer.tip = 95 and a genuine 9500 capture booked subtotal 0.00 and tip
+  -- 95.00, so the venue booked no sale at all and then paid 95 pounds of its OWN takings out
+  -- through tronc and the P&L. A tip can only be money taken ABOVE the server's own value of
+  -- the rounds: goods less the venue's automatic deals (a round's order_pricing, or the
+  -- server's own valuation for a round an old page placed). A page that declares more than
+  -- that has the rest booked as the sale it is.
+  select coalesce(sum(greatest(0, coalesce((q.customer -> 'order_pricing' ->> 'goods_minor')::bigint,
+                                           (public._public_order_value(v_loc, 'qr', q.type, q.items) ->> 'goods_minor')::bigint, 0)
+                                  - coalesce((q.customer -> 'order_pricing' ->> 'auto_minor')::bigint, 0))), 0)
+    into v_goods
+    from public.order_queue q
+   where q.location_id = v_loc and q.ref = any(v_refs);
   select coalesce(sum(public._fence_num(q.customer ->> 'tip')), 0) into v_tip
     from public.order_queue q
    where q.location_id = v_loc and q.ref = any(v_refs);
+  v_tip := least(greatest(0, v_tip), greatest(0, round((v_taken - v_goods)::numeric / 100, 2)));
   v_booked := round(v_taken::numeric / 100, 2);
 
   update public.order_queue

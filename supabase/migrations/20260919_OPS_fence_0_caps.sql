@@ -31,6 +31,13 @@
 -- RULES OF THE FILE: no begin or commit (the SQL editor runs the paste as one transaction);
 -- every statement can run twice; roll back block in the comments at the end.
 
+-- This is the ONE file run during service, and both ALTERs below take ACCESS EXCLUSIVE on
+-- devices, the table every till heartbeats to (fix round 5, 19 Sep: it had no bound). With no
+-- limit the ALTER would wait behind any open transaction on devices and every till read and
+-- write would queue behind the ALTER. Three seconds, then it stops and nothing has changed:
+-- wait 10 seconds and press Run again.
+set local lock_timeout = '3s';
+
 do $guard$
 begin
   if to_regclass('public.devices') is null
@@ -41,8 +48,14 @@ begin
 end
 $guard$;
 
-alter table public.devices add column if not exists client_caps        text[];
-alter table public.devices add column if not exists device_secret_hash text;
+do $caps$
+begin
+  alter table public.devices add column if not exists client_caps        text[];
+  alter table public.devices add column if not exists device_secret_hash text;
+exception when lock_not_available or deadlock_detected then
+  raise exception 'STOPPED, NOTHING WAS CHANGED. A till was busy with the devices table for more than 3 seconds. Wait 10 seconds and press Run again.';
+end
+$caps$;
 
 comment on column public.devices.client_caps is
   '20260919a fence: what the running app on this device can do (reported by device_heartbeat, or written by the device itself while that function does not exist). Files 1 and 2 wait until every device switched on reports fence_v1.';

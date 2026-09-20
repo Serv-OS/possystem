@@ -890,14 +890,120 @@ expect('a QR order pays by the same rule: a reward the server cannot value takes
        j(o).get('paid') is False and pricing('R4-QRLOY').get('loyalty_minor') == 0, o + e)
 
 # A reward can never be made free against a line the server could not price.
-k = loy_row(chk('R4-LOYUNK'), 'rw-water')
-lp = proof(k, 'loyalty', 1, proc='loyalty', meta={'reward': {'type': 'free_item', 'items': [{'name': 'Water'}]}})
+k = loy_row(chk('R4-LOYUNK'), 'rw-old')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta={'reward': {'type': 'free_item', 'items': [{'name': 'Old Special'}]}})
 cp = proof('pi_r4_unk', 'card', 1, order_ref='R4-LOYUNK')
-o, e, r = place('attacker', online('R4-LOYUNK', [line('mi-water', 95, name='Water')], 0.01,
-                                   discounts=[{'type': 'loyalty', 'label': 'Free water', 'amount_minor': 9500}]),
+o, e, r = place('attacker', online('R4-LOYUNK', [line('mi-old', 95, name='Old Special')], 0.01,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free Old Special', 'amount_minor': 9500}]),
                 {'id': chk('R4-LOYUNK'), 'total': 0.01}, [lp, cp])
-expect('a free item reward cannot be worth a line the server could not price (95 pound "Water")',
+expect('a free item reward cannot be worth a line the storefront does not sell (a 95 pound archived row)',
        j(o).get('paid') is False and pricing('R4-LOYUNK').get('loyalty_minor') == 0, o + e)
+run("delete from public.fence_attempts where bucket like 'order:uid:%'")
+
+# ----- THE ELEVENTH WAY (fix round 4 review, fixed in round 5): every redemption keyed to the
+# check was valued honestly and then ADDED UP, with nothing tying the sum to what the order is
+# worth. loyalty-redeem keys on 'redeem:<check_id>:<reward_id>', so two DIFFERENT rewards on
+# one check are two legal redemptions, each spending its own points: a crafted page on an
+# authorised path, not a forgery. ONE reward counts now (the dearest the server can value),
+# the whole loyalty benefit is capped at the goods value AFTER the venue's own deals and any
+# promo code, and a percent reward is worked out on that same figure.
+
+# The reviewer's first scenario, to the penny: two genuine 50 percent rewards, 125 pounds, free.
+c = chk('R5-LOY50')
+HALF = {'reward': {'type': 'discount_percent', 'percent': 50}}
+ids = [proof(loy_row(c, rw), 'loyalty', 1, proc='loyalty', meta=HALF) for rw in ('rw-half-a', 'rw-half-b')]
+o, e, r = place('attacker', online('R5-LOY50', [line('mi-feast', 95), line('mi-wine', 30)], 0,
+                                   discounts=[{'type': 'loyalty', 'label': 'Half price', 'amount_minor': 12500}]),
+                {'id': c, 'total': 0}, ids)
+pr = pricing('R5-LOY50')
+expect('ELEVENTH WAY: two genuine 50% rewards on a 125 pound order take off 62.50, not 125: NOT paid, 62.50 still due',
+       j(o).get('paid') is False and pr.get('goods_minor') == 12500 and pr.get('loyalty_minor') == 6250
+       and pr.get('due_minor', 0) >= 6240, o + e + json.dumps(pr))
+o, _, _ = run(f"select count(*) from public.closed_checks where id = '{c}'")
+expect('and no 0.00 paid check was written for a 125 pound basket', o == '0', o)
+
+# The same shape with ordinary rewards a company really has: 10% + 20% is not 30%.
+c = chk('R5-LOYMIX')
+ids = [proof(loy_row(c, rw), 'loyalty', 1, proc='loyalty',
+             meta={'reward': {'type': 'discount_percent', 'percent': p}}) for rw, p in (('rw-ten', 10), ('rw-twenty', 20))]
+cp = proof('pi_r5_mix', 'card', 6650, order_ref='R5-LOYMIX')
+o, e, r = place('attacker', online('R5-LOYMIX', [line('mi-feast', 95)], 66.5,
+                                   discounts=[{'type': 'loyalty', 'label': '30% off', 'amount_minor': 2850}]),
+                {'id': c, 'total': 66.5}, ids + [cp])
+pr = pricing('R5-LOYMIX')
+expect('10% plus 20% is ONE reward, the dearest (19.00), never a flat 30%',
+       pr.get('loyalty_minor') == 1900 and j(o).get('paid') is False, o + e + json.dumps(pr))
+
+# Three stamp card free coffees against ONE coffee take off one coffee.
+c = chk('R5-LOY3CUP')
+ids = [proof(loy_row(c, rw, stamp=True), 'loyalty', 1, proc='loyalty', meta=FREE_COFFEE)
+       for rw in ('prog-a', 'prog-b', 'prog-c')]
+cp = proof('pi_r5_3cup', 'card', 8900, order_ref='R5-LOY3CUP')
+o, e, r = place('attacker', online('R5-LOY3CUP', [line('mi-feast', 95), line('mi-coffee', 3)], 89,
+                                   discounts=[{'type': 'loyalty', 'label': '3 free coffees', 'amount_minor': 900}]),
+                {'id': c, 'total': 89}, ids + [cp])
+pr = pricing('R5-LOY3CUP')
+expect('three free coffee stamp cards against ONE 3 pound coffee take off 3.00, not 9.00: 89 paid of 94.95',
+       pr.get('goods_minor') == 9800 and pr.get('loyalty_minor') == 300
+       and j(o).get('paid') is False and state('R5-LOY3CUP') == 'false|short', o + e + json.dumps(pr))
+run("delete from public.fence_attempts where bucket like 'order:%'")
+
+# The cap is the order itself: a reward worth more than what is left to pay gives back no change.
+c = chk('R5-LOYCAP')
+k = loy_row(c, 'rw-fifty')
+lp = proof(k, 'loyalty', 5000, proc='loyalty')          # a real 50 pound money reward
+cp = proof('pi_r5_cap', 'card', 1, order_ref='R5-LOYCAP')
+o, e, r = place('attacker', online('R5-LOYCAP', [line('mi-coffee', 3)], 0.01,
+                                   discounts=[{'type': 'loyalty', 'label': '50 off', 'amount_minor': 5000}]),
+                {'id': c, 'total': 0.01}, [lp, cp])
+pr = pricing('R5-LOYCAP')
+expect('a 50 pound reward on a 3 pound coffee is worth 3 pounds, never more than the order',
+       pr.get('loyalty_minor') == 300, o + e + json.dumps(pr))
+
+# A percent reward comes off what is LEFT after the venue's own deal and the promo code.
+c = chk('R5-LOYAFTER')
+k = loy_row(c, 'rw-half')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta=HALF)
+cp = proof('pi_r5_after', 'card', 250, order_ref='R5-LOYAFTER')
+o, e, r = place('customer', online('R5-LOYAFTER', [line('mi-donut', 2, qty=3)], 2.5,
+                                   discounts=[{'type': 'auto', 'label': 'Third half price', 'amount_minor': 100},
+                                              {'type': 'promo', 'label': 'MULTI10', 'amount_minor': 50},
+                                              {'type': 'loyalty', 'label': 'Half price', 'amount_minor': 300}]),
+                {'id': c, 'total': 2.5}, [lp, cp])
+pr = pricing('R5-LOYAFTER')
+# goods 600, the venue's deal 100, the promo 10% of 500 = 50, so 450 is left and half of it is 225.
+expect('a 50% reward is half of what is LEFT after the deal and the promo (2.25), not half the goods',
+       pr.get('goods_minor') == 600 and pr.get('auto_minor') == 100 and pr.get('promo_minor') == 50
+       and pr.get('loyalty_minor') == 225, o + e + json.dumps(pr))
+
+# And one reward of each kind, on its own, still pays for the order exactly as before.
+c = chk('R5-LOYOK1')
+k = loy_row(c, 'rw-half')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta=HALF)
+cp = proof('pi_r5_ok1', 'card', 6250, order_ref='R5-LOYOK1')
+o, e, r = place('customer', online('R5-LOYOK1', [line('mi-feast', 95), line('mi-wine', 30)], 62.5,
+                                   discounts=[{'type': 'loyalty', 'label': 'Half price', 'amount_minor': 6250}]),
+                {'id': c, 'total': 62.5}, [lp, cp])
+expect('NORMAL: ONE 50% reward on the same 125 pound order is worth 62.50 and the order is paid',
+       j(o).get('paid') is True and pricing('R5-LOYOK1').get('loyalty_minor') == 6250, o + e + json.dumps(pricing('R5-LOYOK1')))
+c = chk('R5-LOYOK2')
+k = loy_row(c, 'prog-one', stamp=True)
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta=FREE_COFFEE)
+cp = proof('pi_r5_ok2', 'card', 9500, order_ref='R5-LOYOK2')
+o, e, r = place('customer', online('R5-LOYOK2', [line('mi-feast', 95), line('mi-coffee', 3)], 95,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}]),
+                {'id': c, 'total': 95}, [lp, cp])
+expect('NORMAL: ONE free coffee stamp card is worth the coffee and the order is paid',
+       j(o).get('paid') is True and pricing('R5-LOYOK2').get('loyalty_minor') == 300, o + e + json.dumps(pricing('R5-LOYOK2')))
+c = chk('R5-LOYOK3')
+k = loy_row(c, 'rw-money')
+lp = proof(k, 'loyalty', 500, proc='loyalty')
+cp = proof('pi_r5_ok3', 'card', 2000, order_ref='R5-LOYOK3')
+o, e, r = place('customer', online('R5-LOYOK3', [line('mi-meal', 25)], 20,
+                                   discounts=[{'type': 'loyalty', 'label': '5 off', 'amount_minor': 500}]),
+                {'id': c, 'total': 20}, [lp, cp])
+expect('NORMAL: ONE fixed 5 pound reward still takes 5 pounds off and the order is paid',
+       j(o).get('paid') is True and pricing('R5-LOYOK3').get('loyalty_minor') == 500, o + e + json.dumps(pricing('R5-LOYOK3')))
 run("delete from public.fence_attempts where bucket like 'order:uid:%'")
 
 # ----- THE TENTH WAY (fix round 3 review, fixed in round 4): a menu_items row of the venue
@@ -928,18 +1034,54 @@ ok, d = unsellable('R4-OLD', 'mi-old', 0, 20, 3200)
 expect('an archived item is not sellable, and still counts at its 12 pound menu price', ok, d)
 ok, d = unsellable('R4-NOICE', 'mi-noice', 0, 20, 2000)
 expect('an option only sub item (type subitem, not sold alone) is not sellable', ok, d)
-ok, d = unsellable('R4-SECRET', 'mi-secret', 0, 20, 2900)
-expect('an item hidden from online (visibility.online false) is not sellable, and counts at 9 pounds', ok, d)
 ok, d = unsellable('R4-86', 'mi-soup', 0, 20, 2700)
 expect('an 86\'d item is not sellable for value, and counts at its 7 pound menu price', ok, d)
-ok, d = unsellable('R4-WATER', 'mi-water', 0, 20, 2000)
-expect('an item with no pricing at all is UNKNOWN, never free', ok, d)
-ok, d = unsellable('R4-BREAD', 'mi-bread', 0, 20, 2000)
-expect('an item priced {"base": 0} is UNKNOWN too (a zero is not a price)', ok, d)
-o, _, _ = run("select coalesce((customer->'order_pricing'->>'goods_minor')::int, -1) from public.order_queue where ref = 'R4-WATER'")
-o2, _, _ = run("select items->1->>'price' from public.order_queue where ref = 'R4-WATER'")
-expect('an unknown line is never worth zero: what the page said still counts', o == '2000' and o2 == '0.00', o + '|' + o2)
-run("delete from public.fence_attempts where bucket like 'order:uid:%'")
+ok, d = unsellable('R4-OLD2', 'mi-old', 30, 50, 5000)
+expect('an unknown line is never worth zero: what the page said counts when it is MORE than the menu', ok, d)
+run("delete from public.fence_attempts where bucket like 'order:%'")
+
+# ----- FIX ROUND 5: the sellability test is the STOREFRONT's, not a stricter one. Round 4
+# also refused a row whose visibility.online was false and any row the server could not put a
+# price on. No storefront reads visibility.online (OnlineSurface, which is also the QR screen,
+# filters on parent_id, archived, sold_alone and allergens only; catering has no such switch),
+# and nothing hides a 0.00 row, so honest customers who had paid in full sat in "Payment
+# short" and the same lines as a QR TAB ROUND were refused outright.
+def sells(ref, items, total, source='online', type_='collection', customer=None, extra=None):
+    cp = proof('pi_' + ref.lower().replace('-', '_'), 'card', int(round(total * 100)), order_ref=ref)
+    order = dict({'ref': ref, 'source': source, 'type': type_, 'items': items, 'total': total,
+                  'customer': customer or {}}, **(extra or {}))
+    o, e, r = place('customer', order, {'id': chk(ref), 'total': total}, [cp])
+    pr = pricing(ref)
+    return (j(o).get('paid') is True and pr.get('unknown_lines') == 0), o + e + json.dumps(pr)
+
+ok, d = sells('R5-SECRET', [line('mi-burger', 20), line('mi-secret', 9, name='Staff Pie')], 29)
+expect('an item a manager hid from Online is still on the storefront, so it is priced and PAID as usual', ok, d)
+ok, d = sells('R5-BREAD', [line('mi-burger', 20), line('mi-bread', 0, name='House Bread')], 20)
+expect('a genuinely free side (base 0) is paid at 0.00, never "Payment short"', ok, d)
+ok, d = sells('R5-WATER', [line('mi-burger', 20), line('mi-water', 0, name='Water')], 20)
+expect('an item with no pricing at all is paid at 0.00 too (the storefront charges 0.00 for it)', ok, d)
+o, _, _ = run("select coalesce((customer->'order_pricing'->>'goods_minor')::int, -1) || '|' || (items->1->>'price') from public.order_queue where ref = 'R5-WATER'")
+expect('and the free line is on the order at 0.00, with the burger the whole goods value', o == '2000|0.00', o)
+
+# A plain live item is paid normally on every channel the server prices.
+for tag, src, typ, cust, xtra in (('ONLINE', 'online', 'collection', None, None),
+                                  ('DELIV', 'online', 'delivery', None, None),
+                                  ('DTHRU', 'online', 'driveThru', None, None),
+                                  ('QR', 'qr', 'dineIn', {'tableId': 'T7', 'tableLabel': '7'}, None),
+                                  ('CATER', 'catering', 'delivery', None, {'event_date': '2026-12-01'})):
+    ok, d = sells('R5-LIVE-' + tag, [line('mi-meal', 25)], 25, source=src, type_=typ, customer=cust, extra=xtra)
+    expect(f'NORMAL: a plain live item is priced and paid on {tag.lower()}', ok, d)
+run("delete from public.fence_attempts where bucket like 'order:%'")
+
+# And the same two lines as a QR TAB round are carried on the tab instead of being refused.
+run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by) "
+    f"values ('stripe', 'pi_r5_tab', 'preauth', '{L1}', 5000, 'test')")
+o, e, r = place('customer', {'ref': 'R5-TAB', 'source': 'qr', 'type': 'dineIn', 'total': 20,
+                             'items': [line('mi-burger', 20), line('mi-bread', 0, name='House Bread')],
+                             'customer': {'tab_open': True, 'payment_intent_id': 'pi_r5_tab', 'tableLabel': '9'}})
+expect('a QR tab round carrying a free side is ACCEPTED, not refused as "no longer on the menu"',
+       j(o).get('ok') is True, o + e)
+run("delete from public.fence_attempts where bucket like 'order:%'")
 
 # What the storefront DOES sell is untouched.
 p = proof('pi_r4_salad', 'card', 2250, order_ref='R4-SALAD')
@@ -1222,6 +1364,34 @@ o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_ne
 expect('once the capture covers the real value the tab closes normally', j(o).get('ok') is True and j(o).get('closed') == 1, o + e)
 o, _, _ = run("select total from public.closed_checks where ref = 'QR-NEG2' and source = 'qr'")
 expect('and the check books 19.46', o.startswith('19.4'), o)
+
+# ----- FIX ROUND 5: the tip was the last money field on a QR check still decided by the phone.
+# settle_qr_tab summed customer.tip across the rounds and booked subtotal = taken - tip, so a
+# tab of one 95 pound Feast placed with customer.tip = 95 and a genuine 9500 capture closed
+# with subtotal 0.00 and tip 95.00: the venue booked NO sale and then paid 95 pounds of its own
+# takings out through tronc and the Daily Trading P&L. A tip can only be money taken ABOVE the
+# server's own value of the rounds.
+proof('pi_tab_tip', 'preauth', 20000)
+tiptab = dict(tab, ref='QR-TIP1', items=[line('mi-feast', 95)], total=95,
+              customer=dict(tab['customer'], payment_intent_id='pi_tab_tip', tableId='T9', tip=95))
+o, e, r = place('customer', tiptab)
+expect('a tab round carrying a 95 pound tip on a 95 pound Feast is placed', j(o).get('ok') is True, o + e)
+proof('pi_tab_tip', 'capture', 9500)
+o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_tip', '{{}}'::jsonb, '{{}}'::uuid[]);")
+expect('the tab closes on its genuine 95 pound capture', j(o).get('ok') is True, o + e)
+o, _, _ = run("select subtotal || '|' || tip || '|' || total from public.closed_checks where ref = 'QR-TIP1' and source = 'qr'")
+expect('the whole 95 is booked as the SALE, and the declared tip is 0: nothing to pay out of the venue\'s own takings',
+       o == '95.00|0|95.00', o)
+
+# A real tip is money taken over the bill, and it is kept.
+proof('pi_tab_tip2', 'preauth', 20000)
+tiptab2 = dict(tab, ref='QR-TIP2', items=[line('mi-feast', 95)], total=105,
+               customer=dict(tab['customer'], payment_intent_id='pi_tab_tip2', tableId='T10', tip=10))
+o, e, r = place('customer', tiptab2)
+proof('pi_tab_tip2', 'capture', 10500)
+o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_tip2', '{{}}'::jsonb, '{{}}'::uuid[]);")
+o, _, _ = run("select subtotal || '|' || tip || '|' || total from public.closed_checks where ref = 'QR-TIP2' and source = 'qr'")
+expect('NORMAL: a genuine 10 pound tip on a 95 pound tab is kept as a tip, sale 95.00', o == '95.00|10|105.00', o)
 
 # ---------- closed_checks.tenders (v5.9.11, after the rebase onto main): what paid the check.
 # The accounting layer posts card, cash, gift card and credits from it, so a check the SERVER
