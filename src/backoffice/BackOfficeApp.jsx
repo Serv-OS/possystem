@@ -649,13 +649,16 @@ export default function BackOfficeApp() {
     // TOKEN_REFRESHED only, never on MFA_CHALLENGE_VERIFIED. Without this, a fresh sign in left
     // every live channel on the password only token for up to an hour, and once enforcement is
     // on the fence refuses those rows and live alerts go quiet (fix round, 20 Sep 2026).
-    const passed = async () => {
+    const passed = async (result) => {
       try {
         const { data } = await supabase.auth.getSession();
         const token = data?.session?.access_token;
         if (token && supabase.realtime?.setAuth) await supabase.realtime.setAuth(token);
       } catch { /* the reload below, or the next refresh, puts it right */ }
-      if (bootedPasswordOnly.current) window.location.reload(); else setSecondStepOk(true);
+      // Only a real upgrade is worth a reload; stepping aside must never reload, or a password
+      // only session with the break glass off loops for ever (20 Sep 2026).
+      if (result?.upgraded && bootedPasswordOnly.current) window.location.reload();
+      else setSecondStepOk(true);
     };
     return <SecondStepGate supabase={supabase} mode="login" area="Back Office" onPassed={passed} onSignOut={signOutHere} />;
   }

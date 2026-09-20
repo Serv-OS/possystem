@@ -57,10 +57,15 @@ export default function SecondStepGate({
   const passed = useRef(false);
   const onPassedRef = useRef(onPassed);
   useEffect(() => { onPassedRef.current = onPassed; }, [onPassed]);
-  const pass = useCallback(() => {
+  // upgraded: this gate really moved the session on (a code, a passkey, a new factor). When it
+  // is false the gate simply stepped aside, because the session already proved itself or the
+  // break glass is off, and the caller must NOT reload: on 20 Sep a password only session plus
+  // app_gate = false reloaded, booted the same way, passed again and reloaded for ever, which
+  // is the "Checking sign in" flashing Peter saw.
+  const pass = useCallback((opts) => {
     if (passed.current) return;
     passed.current = true;
-    onPassedRef.current?.();
+    onPassedRef.current?.({ upgraded: !!(opts && opts.upgraded) });
   }, []);
 
   const evaluate = useCallback(async ({ justSetUp = false } = {}) => {
@@ -112,7 +117,7 @@ export default function SecondStepGate({
           passkeys: mine, factors: all, canUsePasskey: !!can.usable,
           emailProved: p.proved, needsEmail: p.needs_email,
         });
-        if (next === 'ok') { pass(); return; }
+        if (next === 'ok') { pass({ upgraded: justSetUp }); return; }
         if (next === 'prove_email') { setPhase('prove'); return; }
         if (next === 'register_passkey') { setPhase('passkey'); return; }
         setPhase('setup');   // app_code: no passkey maker here
@@ -185,7 +190,7 @@ export default function SecondStepGate({
 
   const addFace = async () => {
     setErr(''); setBusy(true);
-    try { await client.addFaceId({ email }); pass(); }
+    try { await client.addFaceId({ email }); pass({ upgraded: true }); }
     catch (e) { setErr(explainError(e)); }
     finally { setBusy(false); }
   };

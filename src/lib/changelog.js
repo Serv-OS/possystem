@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.17',
+    date: '20 Sep 2026',
+    items: [
+      'Fixed a sign in loop. If the second step was switched off while you were already signed in with a password, Back Office could sit flashing "Checking sign in" for ever, because it kept reloading itself. It now steps aside quietly and lets you in.',
+      'Signing in with your passkey still reloads once, as it must, so live updates use the new session.',
+    ],
+  },
+  {
     v: '5.9.16',
     date: '20 Sep 2026',
     items: [
