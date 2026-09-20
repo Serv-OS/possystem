@@ -20,6 +20,8 @@ import {
   TOTP_ISSUER, friendlyName, leftoverFactorIds, rpIdFor, faceIdSupport, isInAppShell, normaliseCode,
   isCodeComplete,
 } from './rules';
+import { createPasskeyClient, passkeySupport } from './passkey';
+import { suggestPasskeyName, passkeyHostAllowed } from './passkeyRules';
 
 const FACE_CREATE = {
   authenticatorSelection: {
@@ -149,6 +151,64 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
     throw new Error(message);
   }
 
+  // ── PASSKEYS (20 Sep 2026): the Toast flow. A fingerprint on a laptop, a face on a phone,
+  // Windows Hello on Windows. This is the second step from now on; the authenticator app stays
+  // only for a device that cannot make one. lib/secondStep/passkey.js says why we talk to the
+  // GoTrue endpoints ourselves instead of supabase.auth.signInWithPasskey (auth-js 2.103 has no
+  // passkey code, and MFA WebAuthn is refused on this project).
+  const passkeys = createPasskeyClient({
+    url: supabase?.supabaseUrl || supabase?.rest?.url?.replace(/\/rest\/v1\/?$/, '') || '',
+    anonKey: supabase?.supabaseKey || '',
+    getToken: async () => {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token || null;
+    },
+    setSession: async ({ access_token, refresh_token }) => {
+      await supabase.auth.setSession({ access_token, refresh_token });
+    },
+  });
+
+  /** Can this place make or use a passkey at all? Host first, then the device itself. */
+  async function canUsePasskey() {
+    const host = typeof location !== 'undefined' ? location.hostname : '';
+    if (!passkeyHostAllowed(host, { allowLocalhost })) return { usable: false, reason: 'host' };
+    if (isInAppShell(typeof navigator !== 'undefined' ? navigator.userAgent : '')) return { usable: false, reason: 'app' };
+    return passkeySupport();
+  }
+
+  /** The passkeys this login holds (never the keys themselves). */
+  async function listPasskeys() {
+    try { return await passkeys.list(); } catch { return []; }
+  }
+
+  /**
+   * Make a passkey on THIS device and tell our own server it exists (the switch on count and
+   * the Back Office list read that; the fence itself proves a passkey from the session).
+   */
+  async function addPasskey({ name } = {}) {
+    const friendly = name || suggestPasskeyName(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+    const made = await passkeys.register({ friendlyName: friendly });
+    try {
+      await supabase.rpc('second_step_passkey_record', {
+        p_credential_id: made.credentialId,
+        p_friendly_name: made.friendlyName || friendly,
+        p_device_hint: friendly,
+      });
+    } catch { /* the passkey is made; our own record catches up at the next sign in */ }
+    return made;
+  }
+
+  /** Sign in with a passkey. No password, no code. */
+  async function signInWithPasskey() {
+    return passkeys.signIn();
+  }
+
+  /** Remove one (the screen checks canRemovePasskey first). */
+  async function removePasskey(id) {
+    await passkeys.remove(id);
+    try { await supabase.rpc('second_step_passkey_forget', { p_credential_id: id }); } catch { /* record only */ }
+  }
+
   /** Start an authenticator app: returns what the screen shows (QR code, secret for typing). */
   async function startAuthenticatorApp() {
     const before = await listFactors();
@@ -235,6 +295,7 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
     getSession, listFactors, appGate, status, startAuthenticatorApp, verifyCode, verifyAnyCode,
     addFaceId, useFaceId, removeFactor, changePassword, cleanupLeftovers,
     emailProofStatus, sendEmailCode, claimEmailCode,
+    canUsePasskey, listPasskeys, addPasskey, signInWithPasskey, removePasskey,
   };
 }
 

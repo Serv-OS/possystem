@@ -100,8 +100,11 @@ test('the edge function never sends the code anywhere but the address on the acc
 test('the screens ask for the code before a FIRST set up, and never instead of the server', () => {
   const gate = read('src/components/secondStep/SecondStepGate.jsx');
   assert.match(gate, /phase === 'prove'/);
-  assert.match(gate, /const p = await client\.emailProofStatus\(\);/);
-  assert.match(gate, /if \(p\.needs_email && !p\.proved\) \{ setPhase\('prove'\); return; \}/);
+  assert.match(gate, /client\.emailProofStatus\(\)/);
+  // From 20 Sep 2026 the plan is decided by the rules, and 'prove_email' still comes FIRST:
+  // a stolen password must never be enough to register the thief's own passkey.
+  assert.match(gate, /emailProved: p\.proved, needsEmail: p\.needs_email/);
+  assert.match(gate, /if \(next === 'prove_email'\) \{ setPhase\('prove'\); return; \}/);
   assert.match(gate, /Email me a code/);
   const client = read('src/lib/secondStep/client.js');
   for (const call of ['emailProofStatus', 'sendEmailCode', 'claimEmailCode']) {

@@ -17,6 +17,7 @@ import {
   createSecondStepClient, detectFaceId, clearWeakPasswordNote, callResetFunction,
 } from '../../lib/secondStep/client';
 import AuthenticatorSetup from '../../components/secondStep/AuthenticatorSetup';
+import { canRemovePasskey, suggestPasskeyName, explainPasskeyError } from '../../lib/secondStep/passkeyRules';
 
 const ALLOW_LOCALHOST = !!import.meta.env?.DEV;
 
@@ -37,6 +38,11 @@ const msgBox = (kind) => ({
   color: kind === 'error' ? 'var(--red)' : 'var(--t1)',
 });
 
+/**
+ * PASSKEYS (20 Sep 2026): a person holds as many as they like, one per device. This page lists
+ * them, adds one for the device they are on, and removes one, but never the last way in
+ * (lib/secondStep/passkeyRules.js canRemovePasskey).
+ */
 export default function SignInSecurity({ orgCtx }) {
   const client = useMemo(() => (supabase ? createSecondStepClient(supabase, { allowLocalhost: ALLOW_LOCALHOST }) : null), []);
   const [factors, setFactors] = useState([]);
@@ -47,6 +53,8 @@ export default function SignInSecurity({ orgCtx }) {
   const [msg, setMsg] = useState({ kind: '', text: '' });
   const [busy, setBusy] = useState('');
   const [addingApp, setAddingApp] = useState(false);
+  const [passkeys, setPasskeys] = useState([]);
+  const [canPasskey, setCanPasskey] = useState({ usable: false, reason: 'browser' });
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -54,8 +62,11 @@ export default function SignInSecurity({ orgCtx }) {
       const session = await client.getSession();
       setAal(sessionAal(session));
       setEmail(session?.user?.email || '');
-      const [all, f, s] = await Promise.all([client.listFactors(), detectFaceId({ allowLocalhost: ALLOW_LOCALHOST }), client.status()]);
-      setFactors(all); setFace(f); setStatus(s);
+      const [all, f, s, mine, can] = await Promise.all([
+        client.listFactors(), detectFaceId({ allowLocalhost: ALLOW_LOCALHOST }), client.status(),
+        client.listPasskeys(), client.canUsePasskey(),
+      ]);
+      setFactors(all); setFace(f); setStatus(s); setPasskeys(mine); setCanPasskey(can);
     } catch (e) { setMsg({ kind: 'error', text: explainError(e) }); }
   }, [client]);
 
@@ -77,6 +88,26 @@ export default function SignInSecurity({ orgCtx }) {
     finally { setBusy(''); }
   };
 
+  const addPasskey = async () => {
+    setBusy('passkey'); setMsg({ kind: '', text: '' });
+    try {
+      const made = await client.addPasskey({ name: suggestPasskeyName(navigator.userAgent) });
+      setMsg({ kind: 'ok', text: `Passkey added for ${made.friendlyName || 'this device'}.` });
+      await load();
+    } catch (e) { setMsg({ kind: 'error', text: explainPasskeyError(e) }); }
+    finally { setBusy(''); }
+  };
+
+  const removePasskey = async (k) => {
+    const check = canRemovePasskey({ passkeys, factors, id: k.id });
+    if (!check.ok) { setMsg({ kind: 'error', text: check.message }); return; }
+    if (!window.confirm(`Remove "${k.friendlyName || 'this passkey'}"? That device will not be able to sign in with it any more.`)) return;
+    setBusy(k.id); setMsg({ kind: '', text: '' });
+    try { await client.removePasskey(k.id); setMsg({ kind: 'ok', text: 'Passkey removed.' }); await load(); }
+    catch (e) { setMsg({ kind: 'error', text: explainPasskeyError(e) }); }
+    finally { setBusy(''); }
+  };
+
   const addFace = async () => {
     setBusy('face'); setMsg({ kind: '', text: '' });
     try { await client.addFaceId({ email }); setMsg({ kind: 'ok', text: `${face.label} is set up on this device.` }); await load(); }
@@ -95,6 +126,48 @@ export default function SignInSecurity({ orgCtx }) {
       </div>
 
       {msg.text && <div style={msgBox(msg.kind)} role={msg.kind === 'error' ? 'alert' : undefined}>{msg.text}</div>}
+
+      <div style={{ ...card, marginTop: 16 }} data-testid="passkey-card">
+        <div style={h2}>Your passkeys</div>
+        <div style={{ fontSize: 14, color: 'var(--t2)', lineHeight: 1.55, marginBottom: 12 }}>
+          A passkey is the fingerprint, face or PIN of one device. Add one for each device you use:
+          your laptop and your phone. They only work at <strong>app.serv-os.app</strong>.
+        </div>
+        {passkeys.length === 0 && (
+          <div style={{ fontSize: 14, color: 'var(--t3)', marginBottom: 12 }}>You have no passkeys yet.</div>
+        )}
+        {passkeys.map((k) => (
+          <div key={k.id} data-testid="passkey-row" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: '1px solid var(--bdr)' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{k.friendlyName || 'Passkey'}</div>
+              <div style={{ fontSize: 12, color: 'var(--t3)' }}>
+                Added {k.createdAt ? new Date(k.createdAt).toLocaleDateString('en-GB') : 'recently'}
+                {k.lastUsedAt ? ` · last used ${new Date(k.lastUsedAt).toLocaleDateString('en-GB')}` : ''}
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="passkey-remove"
+              onClick={() => removePasskey(k)}
+              disabled={busy === k.id}
+              style={{ ...btn('ghost'), opacity: canRemovePasskey({ passkeys, factors, id: k.id }).ok ? 1 : 0.45 }}
+            >
+              {busy === k.id ? 'Removing...' : 'Remove'}
+            </button>
+          </div>
+        ))}
+        {canPasskey.usable ? (
+          <button type="button" data-testid="passkey-add" onClick={addPasskey} disabled={busy === 'passkey'} style={{ ...btn('primary'), marginTop: 12 }}>
+            {busy === 'passkey' ? 'Waiting for your device...' : (passkeys.length ? 'Add a passkey for this device' : 'Set up a passkey')}
+          </button>
+        ) : (
+          <div style={{ fontSize: 13.5, color: 'var(--t3)', marginTop: 10, lineHeight: 1.55 }}>
+            {canPasskey.reason === 'host'
+              ? 'Open Back Office at app.serv-os.app to add a passkey.'
+              : 'This device cannot make a passkey. Open Back Office on your phone or laptop and add one there.'}
+          </div>
+        )}
+      </div>
 
       <div style={{ ...card, marginTop: 16 }}>
         <div style={h2}>Your second steps</div>
@@ -207,11 +280,13 @@ function TeamSecondSteps({ orgCtx }) {
 
   const reset = async (row) => {
     const who = row.email || 'this person';
-    if (!window.confirm(`Reset the second step for ${who}?\n\nThis removes their Face ID, fingerprint and authenticator apps. They set up again at their next sign in, and we email them. Only do this if they asked you (for example a lost phone).`)) return;
+    if (!window.confirm(`Reset the second step for ${who}?\n\nThis removes their passkeys and their authenticator apps. They set up again at their next sign in, and we email them. Only do this if they asked you (for example a lost phone).`)) return;
     setBusy(row.user_id); setNote(''); setErr('');
     try {
       const r = await callResetFunction(supabase, { action: 'reset', user_id: row.user_id, location_id: locationId, reason: 'reset from Back Office' });
-      setNote(r.note || `Done. ${who} will set up again at their next sign in${r.emailed ? ', and we emailed them' : ''}.`);
+      // A passkey left behind can still sign in on its own: that is a warning, not a tick.
+      if (r.passkeys_left > 0) setErr(r.note || 'Some passkeys are still on that login. Ask ServOS support.');
+      else setNote(r.note || `Done. ${who} will set up again at their next sign in${r.emailed ? ', and we emailed them' : ''}.`);
       await load();
     } catch (e) { setErr(explainError(e)); }
     finally { setBusy(''); }
@@ -243,7 +318,9 @@ function TeamSecondSteps({ orgCtx }) {
                 background: r.second_step.set_up ? 'var(--acc-d)' : 'rgba(245,166,35,0.14)',
                 color: r.second_step.set_up ? 'var(--acc)' : 'var(--amber, #F5A623)',
               }}>
-                {r.second_step.set_up ? `Set up${r.second_step.face_id ? ' · Face ID' : ''}` : 'Not set up yet'}
+                {r.second_step.set_up
+                  ? `Set up${r.second_step.passkeys ? ` · ${r.second_step.passkeys} passkey${r.second_step.passkeys === 1 ? '' : 's'}` : r.second_step.face_id ? ' · Face ID' : ''}`
+                  : 'Not set up yet'}
               </span>
               {!r.is_you && (
                 r.can_reset

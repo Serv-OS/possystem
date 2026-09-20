@@ -27,6 +27,7 @@ import json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 MIG = os.path.join(ROOT, 'supabase', 'migrations', '20260919s_OPS_second_step.sql')
+PK_MIG = os.path.join(ROOT, 'supabase', 'migrations', '20260920p_OPS_passkey_second_step.sql')
 PSQL = ['psql', '-h', os.environ.get('SS_PGHOST', '127.0.0.1'), '-p', os.environ.get('SS_PGPORT', '55988'),
         '-U', 'postgres', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1']
 
@@ -228,6 +229,108 @@ expect('BREAK GLASS 3: a second super admin can be made in one line', o == '2', 
 o, _, _ = run("select public.second_step_reach('10000000-0000-4000-8000-000000000009')")
 expect('and the new super admin counts as a Back Office login', o == 'back_office', o)
 run("update public.second_step_settings set enforce = true, app_gate = true where id")
+
+# ── PASSKEYS: 20260920p on top of the live file ──────────────────────────────
+# Peter, 20 Sep 2026: "I just want it more secure I hate multi factor auth apps, this is what
+# toast does I want this". A passkey sign in is a FIRST factor, so the session is aal1, so the
+# aal2 rule on its own would lock out every single person the day they switch to passkeys. This
+# section proves the passkey file fixes exactly that and nothing else.
+S_PASS = '50000000-0000-4000-8000-00000000000a'     # a session that signed in with a passkey
+S_PW   = '50000000-0000-4000-8000-00000000000b'     # a session that signed in with a password
+
+out, err, rc = run_file(PK_MIG)
+expect('PASSKEYS: the file applies as one paste, on top of the live one', rc == 0, err[-1200:])
+out2, err2, rc2 = run_file(PK_MIG)
+expect('PASSKEYS: it applies a second time (idempotent)', rc2 == 0, err2[-1200:])
+# Running it again puts right anything that has drifted: a stray grant on the passkey record
+# is taken away, and the self test at the end of the file would abort the whole paste if it
+# could not be. (Every statement is in one transaction, so a failed apply changes nothing.)
+run("grant select on table public.second_step_passkeys to authenticated")
+_, err3, rc3 = run_file(PK_MIG)
+expect('PASSKEYS: applying it again takes back a stray grant on the passkey record', rc3 == 0, (err3 or '')[-600:])
+o, _, _ = run("select has_table_privilege('authenticated', 'public.second_step_passkeys', 'select')")
+expect('PASSKEYS: so a signed in login can never read who holds which passkey', o == 'f', o)
+
+o, _, _ = run("select passkey_methods from public.second_step_settings")
+expect('PASSKEYS: the method names are a setting, not a guess in the code',
+       o == '{webauthn,passkey,webauthn_credential}', o)
+
+# The pure rule, every branch.
+o, _, _ = run("select public.second_step_decide('{\"role\":\"authenticated\",\"sub\":\"x\",\"aal\":\"aal1\"}'::jsonb, true, true)")
+expect('PASSKEYS: a passkey session passes with enforcement ON, at aal1', o == 't', o)
+o, _, _ = run("select public.second_step_decide('{\"role\":\"authenticated\",\"sub\":\"x\",\"aal\":\"aal1\"}'::jsonb, true, false)")
+expect('PASSKEYS: a password only session is still refused', o == 'f', o)
+o, _, _ = run("select public.second_step_decide('{\"role\":\"authenticated\",\"sub\":\"x\",\"aal\":\"aal1\"}'::jsonb, true)")
+expect('PASSKEYS: the old two argument call still means "no passkey"', o == 'f', o)
+
+# The proof itself: the session, not anything the app says about itself.
+run(f"""insert into auth.mfa_amr_claims (session_id, authentication_method) values
+        ('{S_PASS}', 'password'), ('{S_PASS}', 'webauthn'), ('{S_PW}', 'password')""")
+def claims_session(sub, session, amr=None, aal='aal1'):
+    c = {'role': 'authenticated', 'sub': sub, 'is_anonymous': False, 'aal': aal, 'session_id': session}
+    if amr:
+        c['amr'] = amr
+    return json.dumps(c).replace("'", "''")
+
+expect('PASSKEYS: a passkey sign in passes, enforcement ON, no authenticator app anywhere',
+       ok_for(claims_session(U_OWNER, S_PASS)) == 't')
+expect('PASSKEYS: the same login on a password only session is still refused',
+       ok_for(claims_session(U_OWNER, S_PW)) == 'f')
+expect('PASSKEYS: a made up session id proves nothing',
+       ok_for(claims_session(U_OWNER, '50000000-0000-4000-8000-0000000000ff')) == 'f')
+expect('PASSKEYS: a token that carries its own amr is enough (no table read needed)',
+       ok_for(claims_session(U_OWNER, '50000000-0000-4000-8000-0000000000ff',
+                             amr=[{'method': 'password'}, {'method': 'webauthn'}])) == 't')
+expect('PASSKEYS: an amr of ordinary methods is NOT a passkey',
+       ok_for(claims_session(U_OWNER, S_PW, amr=[{'method': 'password'}, {'method': 'otp'}])) == 'f')
+o, e, r = as_('authenticated', claims_session(U_OWNER, S_PASS), 'select count(*) from public.menu_items;')
+expect('PASSKEYS: and the tables open up for that session', r == 0 and last(o) == '1', (o + e)[-160:])
+expect('PASSKEYS: the staff app is still never refused', ok_for(claims(U_STAFF)) == 't')
+expect('PASSKEYS: an anonymous till is still never refused', ok_for(claims(U_TILL, anon=True)) == 't')
+
+# Who has finished: an authenticator app OR a passkey, so the lock out never takes a passkey user.
+run(f"""insert into public.second_step_passkeys (user_id, credential_id, friendly_name)
+        values ('{U_OWNER}', 'cred-owner-1', 'Mac') on conflict do nothing""")
+o, _, _ = run(f"select public.second_step_has_second_step('{U_OWNER}')")
+expect('PASSKEYS: a passkey counts as a finished second step', o == 't', o)
+o, _, _ = run(f"select public.second_step_has_second_step('{U_MGR}')")
+expect('PASSKEYS: so does the authenticator app set up before this file', o == 't', o)
+o, _, _ = run(f"select public.second_step_has_second_step('{U_PETER}')")
+expect('PASSKEYS: and somebody with neither still counts as not set up', o == 'f', o)
+
+# Our own record is ours alone: it never lets anybody in, and nobody can read anyone else's.
+o, e, r = as_('authenticated', claims(U_MGR), "select count(*) from public.second_step_passkeys;")
+expect('PASSKEYS: a signed in login cannot read the passkey table at all', r != 0, (e or '')[-160:])
+o, e, r = as_('anon', claims(role='anon'), "select count(*) from public.second_step_passkeys;")
+expect('PASSKEYS: nor can the public key', r != 0, (e or '')[-160:])
+o, e, r = as_('authenticated', claims_session(U_MGR, S_PASS),
+              f"select public.second_step_passkey_record('cred-mgr-1', 'iPhone', 'iPhone');")
+expect('PASSKEYS: a login records its OWN passkey', r == 0, (e or '')[-200:])
+o, _, _ = run("select count(*) from public.second_step_passkeys where user_id = '" + U_MGR + "'")
+expect('PASSKEYS: and the row is written for that login only', o == '0', o)   # rolled back in as_()
+
+# The roll back of the passkey file: back to aal2 only, nothing dropped.
+pk_src = open(PK_MIG).read()
+pk_block = pk_src[pk_src.index('-- -- ============================================================================\n-- -- ROLL BACK'):]
+bad = [l for l in pk_block.split('\n') if l.strip() and not l.startswith('--')]
+expect('PASSKEYS: every line of its roll back is a comment, so one Cmd+/ runs it', not bad, bad[:1])
+pk_plain = '\n'.join((l[3:] if l.startswith('-- ') else (l[2:] if l.startswith('--') else l)) for l in pk_block.split('\n'))
+pk_rb = os.path.join(HERE, '.rollback_pk.sql')
+open(pk_rb, 'w').write(pk_plain + '\n')
+try:
+    o, e, r = run_file(pk_rb, one_tx=False)
+finally:
+    os.remove(pk_rb)
+expect('PASSKEYS: the roll back runs exactly as it is written', r == 0, (e or '')[-600:])
+o, _, _ = run("select enforce from public.second_step_settings")
+expect('PASSKEYS: the roll back switches enforcement OFF first, so nobody is locked out by it', o == 'f', o)
+run("update public.second_step_settings set enforce = true where id")
+expect('PASSKEYS: with enforcement back on it is aal2 only again, as it was on 19 September',
+       ok_for(claims_session(U_OWNER, S_PASS)) == 'f')
+expect('PASSKEYS: and an aal2 sign in still passes, so nothing else moved',
+       ok_for(claims(U_OWNER, aal='aal2')) == 't')
+o, _, _ = run("select count(*) from public.second_step_passkeys")
+expect('PASSKEYS: the record of who holds one is KEPT, not dropped', o == '1', o)
 
 # ── the roll back ────────────────────────────────────────────────────────────
 o, _, _ = run("select count(*) from pg_policy where polname = 'second_step_fence'")

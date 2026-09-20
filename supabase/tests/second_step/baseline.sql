@@ -80,3 +80,12 @@ create table storage.objects (id uuid primary key, name text);
 alter table storage.objects enable row level security;
 grant usage on schema storage to anon, authenticated, service_role;
 grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
+
+-- GoTrue records what each session was authenticated with, one row per method.
+create table auth.mfa_amr_claims (
+  session_id uuid not null,
+  authentication_method text not null,
+  created_at timestamptz not null default now(),
+  id uuid primary key default gen_random_uuid()
+);
+grant select on auth.mfa_amr_claims to service_role;

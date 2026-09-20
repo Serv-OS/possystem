@@ -75,8 +75,21 @@ test('helpers: owned and reachable venues, owner level links, factor counts', ()
   assert.deepEqual(factorSummary([
     { factor_type: 'totp', status: 'verified' }, { factor_type: 'webauthn', status: 'verified' },
     { factor_type: 'totp', status: 'unverified' }, { factor_type: 'phone', status: 'verified' },
-  ]), { authenticator_app: 1, face_id: 1, other: 1, set_up: true });
-  assert.deepEqual(factorSummary(null), { authenticator_app: 0, face_id: 0, other: 0, set_up: false });
+  ]), { authenticator_app: 1, face_id: 1, other: 1, passkeys: 0, set_up: true });
+  assert.deepEqual(factorSummary(null), { authenticator_app: 0, face_id: 0, other: 0, passkeys: 0, set_up: false });
+  // A passkey is a second step on its own: somebody with nothing but a passkey IS set up.
+  assert.deepEqual(factorSummary(null, 2), { authenticator_app: 0, face_id: 0, other: 0, passkeys: 2, set_up: true });
+});
+
+test('a reset takes the passkeys too, and never reports a clean reset when one is left behind', () => {
+  const src = fs.readFileSync(new URL('../../../supabase/functions/second-step-reset/index.ts', import.meta.url), 'utf8');
+  // A lost phone may hold a passkey, and a passkey signs in with no password at all.
+  assert.match(src, /removePasskeys\(targetId, webauthnGone\)/, 'the reset must clear passkeys');
+  assert.match(src, /second_step_passkeys/, 'our own record of who holds a passkey');
+  assert.match(src, /if \(keys\.left > 0 && outcome !== 'failed'\) outcome = 'partial'/, 'a passkey left behind is a partial reset');
+  assert.match(src, /passkeys_left/, 'the operator is told how many are still out there');
+  // The team list counts passkeys, so a passkey only person does not read as "not set up".
+  assert.match(src, /factorSummary\(t\.user\.factors, passkeyCount\.get\(id\) \?\? 0\)/);
 });
 
 test('the second-step-reset function: aal2 always, getUser, audit before removing, rules from the shared file', () => {

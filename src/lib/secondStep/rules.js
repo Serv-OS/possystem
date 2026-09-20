@@ -74,6 +74,33 @@ export function sessionAal(session) {
   return claims?.aal === 'aal2' ? 'aal2' : 'aal1';
 }
 
+/**
+ * PASSKEYS (20 Sep 2026). A passkey sign in is a FIRST factor, so the session is aal1, however
+ * strong it is. What proves it is the token's own 'amr' claim: the list of methods this session
+ * was authenticated with. The database rule reads the same thing
+ * (public.second_step_session_passkey, 20260920p), so the screens and the fence agree.
+ * The names match public.second_step_settings.passkey_methods; keep the two lists together.
+ */
+export const PASSKEY_AMR_METHODS = Object.freeze(['webauthn', 'passkey', 'webauthn_credential']);
+
+/** Did THIS session sign in with a passkey? */
+export function sessionUsedPasskey(session, methods = PASSKEY_AMR_METHODS) {
+  const claims = decodeJwtClaims(session?.access_token);
+  const amr = claims?.amr;
+  if (!Array.isArray(amr)) return false;
+  const want = new Set((methods || []).map((m) => String(m).toLowerCase()));
+  return amr.some((e) => want.has(String(typeof e === 'string' ? e : e?.method || '').toLowerCase()));
+}
+
+/**
+ * Has this session done a second step at all? Either an MFA factor was verified (aal2) or it
+ * signed in with a passkey. Anything that used to ask "is this aal2" asks this instead, or a
+ * passkey sign in would be sent round the second step loop for ever.
+ */
+export function sessionProvesSecondStep(session) {
+  return sessionAal(session) === 'aal2' || sessionUsedPasskey(session);
+}
+
 export function verifiedFactors(factors) {
   return (Array.isArray(factors) ? factors : []).filter((f) => f && f.status === 'verified');
 }
@@ -99,10 +126,14 @@ export function gateStep({ session, factors, appGate = true, mode = 'login' } = 
   if (appGate === false) return 'ok';
   const aal = sessionAal(session);
   const verified = verifiedFactors(factors);
+  // A PASSKEY SIGN IN IS DONE (20 Sep 2026). It is aal1 by design, and asking such a person for
+  // an authenticator code as well would be asking twice and would strand anyone without one.
+  const passkey = sessionUsedPasskey(session);
   if (mode === 'recovery') {
-    if (aal === 'aal2' || verified.length === 0) return 'ok';
+    if (aal === 'aal2' || passkey || verified.length === 0) return 'ok';
     return 'challenge';
   }
+  if (passkey) return 'ok';
   if (aal === 'aal2') return hasVerified(verified, 'totp') ? 'ok' : 'backup';
   return verified.length ? 'challenge' : 'setup';
 }
@@ -113,6 +144,8 @@ export function gateStep({ session, factors, appGate = true, mode = 'login' } = 
  */
 export function passesWithoutNetwork(session) {
   if (!isRealLogin(session)) return false;
+  // A passkey session carries its own proof in the token, so it never waits on a call.
+  if (sessionUsedPasskey(session)) return true;
   return sessionAal(session) === 'aal2' && hasVerified(session?.user?.factors, 'totp');
 }
 

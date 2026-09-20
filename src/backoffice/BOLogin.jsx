@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { VERSION } from '../lib/version';
 import { MIN_PASSWORD_LENGTH, passwordProblem } from '../lib/secondStep/rules';
-import { noteWeakPassword, clearWeakPasswordNote } from '../lib/secondStep/client';
+import { noteWeakPassword, clearWeakPasswordNote, createSecondStepClient } from '../lib/secondStep/client';
+import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError } from '../lib/secondStep/passkeyRules';
 import {
   AuthFrame, Heading, Stack, PrimaryButton, LinkButton, Note, TextInput, MonoLabel,
 } from '../components/secondStep/AuthUi';
@@ -15,6 +16,11 @@ import { tokens } from '../components/secondStep/authTokens';
 //     step (docs/SECOND_STEP.md) the app first asks a login that HAS a second step to pass it:
 //     a reset link alone must never be enough to take over an account.
 // Brand v2 look shared with the second step screens (components/secondStep/AuthUi.jsx).
+/**
+ * PASSKEY SIGN IN (20 Sep 2026): the big button. The password is the fallback, for a device
+ * with no fingerprint or face, for our own apps, and for anybody who has not set one up yet.
+ * A passkey only works on app.serv-os.app (lib/secondStep/passkeyRules.js says why).
+ */
 export default function BOLogin({ onLogin, recovery = false, onResetDone, area = 'Back Office' }) {
   const tone = 'dark';
   const t = tokens(tone);
@@ -27,6 +33,40 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [showPass, setShowPass] = useState(false);
+  // PASSKEY SIGN IN (20 Sep 2026). The screen asks the device what it can do, then offers the
+  // passkey first and keeps the password underneath. Nothing here decides who gets in: the auth
+  // server does, and the database fence proves the passkey from the session itself.
+  const [pk, setPk] = useState({ ready: false, canUse: false, primary: 'password' });
+  const [pkBusy, setPkBusy] = useState(false);
+  const stepClient = createSecondStepClient(supabase, { allowLocalhost: !!import.meta.env?.DEV });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const can = await stepClient.canUsePasskey();
+        const plan = signInPlan({
+          hostname: window.location.hostname,
+          supported: !!can.usable,
+          allowLocalhost: !!import.meta.env?.DEV,
+        });
+        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary });
+      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password' }); }
+    })();
+    return () => { alive = false; };
+    // once per mount: the device does not change under us
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePasskey = async () => {
+    if (pkBusy) return;
+    setPkBusy(true); setError(''); setInfo('');
+    try {
+      const { user } = await stepClient.signInWithPasskey();
+      onLogin(user);
+    } catch (e) {
+      setError(explainPasskeyError(e));
+    } finally { setPkBusy(false); }
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -114,7 +154,24 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
     body = (
       <form onSubmit={handleLogin}>
         <Stack>
-          <Heading tone={tone} title="Sign in" sub={`Sign in to the ${area}. After your password you will confirm it is you with Face ID, fingerprint or a code from your phone.`} />
+          <Heading
+            tone={tone}
+            title="Sign in"
+            sub={pk.canUse
+              ? `Sign in to the ${area} with ${passkeyPrompt(navigator.userAgent)}. No password to remember, and nobody can use it but you.`
+              : `Sign in to the ${area}. After your password you will set up, or use, your second step.`}
+          />
+          {pk.canUse && (
+            <>
+              <PrimaryButton tone={tone} busy={pkBusy} onClick={handlePasskey} testId="bo-passkey">
+                Sign in with a passkey
+              </PrimaryButton>
+              <div style={{ textAlign: 'center', fontSize: 13, color: t.sub, margin: '2px 0 6px' }}>or use your password</div>
+            </>
+          )}
+          {pk.ready && pk.primary === 'wrong_host' && (
+            <Note tone={tone} kind="warn" testId="bo-passkey-host">{wrongHostMessage(window.location.hostname)}</Note>
+          )}
           <TextInput tone={tone} label="Email address" type="email" value={email} onChange={setEmail}
             placeholder="you@restaurant.com" autoComplete="username" autoFocus testId="bo-email" />
           <TextInput tone={tone} label="Password" type={showPass ? 'text' : 'password'} value={password} onChange={setPassword}

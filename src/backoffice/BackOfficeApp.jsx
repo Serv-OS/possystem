@@ -8,7 +8,7 @@ import { supabase, isMock, platformSupabase, getLocationId, setResolvedLocationI
 import BOLogin from './BOLogin';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import SignInSecurity from './sections/SignInSecurity';
-import { isRealLogin, sessionAal } from '../lib/secondStep/rules';
+import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { hasWeakPasswordNote } from '../lib/secondStep/client';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
@@ -354,7 +354,7 @@ export default function BackOfficeApp() {
       // A page that STARTS on a password only sign in (reloaded mid second step): the rest of
       // the page (SyncBridge, realtime) booted with a token the database may refuse, so once
       // the gate passes we reload for a clean start on the finished sign in.
-      bootedPasswordOnly.current = !!(data?.session && isRealLogin(data.session) && sessionAal(data.session) !== 'aal2');
+      bootedPasswordOnly.current = !!(data?.session && isRealLogin(data.session) && !sessionProvesSecondStep(data.session));
       if (!cleanAnon(u)) setAuthUser(realUser(u));
       setAuthChecked(true);
     });
@@ -373,7 +373,8 @@ export default function BackOfficeApp() {
       }
       // Second step: a real login whose token is back to password only (aal1) must pass the
       // gate again. Never re-opened here: only SecondStepGate calls setSecondStepOk(true).
-      if (session && isRealLogin(session) && sessionAal(session) !== 'aal2') setSecondStepOk(false);
+      // A passkey sign in is aal1 and is DONE (docs/SECOND_STEP.md): never re-gate it.
+      if (session && isRealLogin(session) && !sessionProvesSecondStep(session)) setSecondStepOk(false);
       // Ignore anonymous sessions entirely (and don't re-sign-out on the
       // SIGNED_IN(anon) event — ensureAuthToken no longer creates them in
       // office mode, so this only guards legacy/edge cases).
