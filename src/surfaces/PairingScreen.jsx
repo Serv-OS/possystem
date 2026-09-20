@@ -1,5 +1,8 @@
 import { useState } from 'react';
-import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken } from '../lib/supabase';
+import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFromClaim, pairingCodeHint } from '../lib/deviceFence';
+import { getPendingCount, reconcilePendingChecks } from '../sync/DataSafe';
+import { getQueueSize, replayQueue } from '../sync/OfflineQueue';
 import { VERSION } from '../lib/version';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -8,41 +11,99 @@ export default function PairingScreen({ onPaired }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handlePair = async () => {
-    const clean = code.trim().toUpperCase();
-    if (!clean) return setError('Enter the pairing code from your back office');
-    setLoading(true); setError('');
-
-    // Look up the code in Supabase — allow re-pairing even if already active
+  // Database fence stage 1 (contract A3): ONE server call. claim_device_v2 binds this session
+  // to the device with that live code and hands back the venue and a one time device secret.
+  // A refused claim NEVER pairs locally (before, a failed claim still paired and left a
+  // silently untrusted till).
+  // FENCE STAGE 1 FALLBACK: while 20260919a is not run claim_device_v2 does not exist and the
+  // old flow below (SELECT by code, UPDATE, best effort claim_device) runs. Delete
+  // legacyPair once 20260919b has run.
+  const legacyPair = async (clean) => {
     const { data, error: err } = await supabase
       .from('devices')
       .select('*, locations(*)')
       .eq('pairing_code', clean)
       .neq('status', 'removed')  // only block explicitly removed devices
       .single();
-
-    if (err || !data) {
-      setLoading(false);
-      return setError('Pairing code not found. Check the code and try again.');
-    }
-
-    // Mark device as active (re-pairing kicks any existing session via session_token realtime)
+    if (err || !data) return { error: 'Pairing code not found. Check the code and try again.' };
     await supabase.from('devices').update({
       status: 'active',
       paired_at: new Date().toISOString(),
       last_seen: new Date().toISOString(),
+      // Fence stage 1, fix round 2: every write of last_seen carries the build, so file A's version
+      // check (a device seen in the last 2 hours on an older app stops it) always sees this one.
+      app_version: VERSION,
       session_token: null,  // clear session token so old session gets kicked on next check
     }).eq('id', data.id);
-
-    // v5.5.757 — POS-core RLS cutover, Stage 1: securely bind this device's anonymous
-    // session to the paired location server-side (devices.device_uid = auth.uid()), so a
-    // future RLS pass can scope it via pos_can_access(). The RPC takes device_uid from the
-    // JWT, never client input. Best-effort — pairing must NEVER fail on it.
     try {
       await ensureAuthToken();
       await supabase.rpc('claim_device', { p_code: clean });
     } catch (e) {
       console.warn('[pair] claim_device failed (non-fatal):', e?.message);
+    }
+    return {
+      claim: {
+        device_id: data.id, name: data.name, type: data.type, location_id: data.location_id,
+        profile_id: data.profile_id || null, centre_id: data.centre_id || null,
+        location: { name: data.locations?.name || 'Unknown', org_id: data.locations?.org_id || null },
+      },
+      legacyCode: clean,
+    };
+  };
+
+  // Unsent work (a parked sale, a buffered write) is sent BEFORE the claim, while this till
+  // still has its old link. Pairing to ANOTHER venue wipes the old venue's local data (tenant
+  // fence), so work that still could not be sent is warned about first (contract A3).
+  const unsentWork = async () => {
+    let n = 0;
+    try { n += getPendingCount(); } catch { /* none */ }
+    try { n += await getQueueSize(); } catch { /* unreadable */ }
+    return n;
+  };
+
+  const handlePair = async () => {
+    const typed = code.trim().toUpperCase();
+    const clean = normalizePairingCode(code);
+    if (!clean) return setError('Enter the pairing code from your back office');
+    // Fix round (19 Sep): a mistyped server code (a 0, 1, I or O, or a symbol short) is caught
+    // here, before the server answers it "no longer valid" as if it were an old code.
+    const hint = pairingCodeHint(code);
+    if (hint) return setError(hint);
+    setLoading(true); setError('');
+
+    if ((await unsentWork()) > 0) {
+      try { await reconcilePendingChecks(); } catch { /* next boot retries */ }
+      try { await replayQueue(supabase); } catch { /* next boot retries */ }
+    }
+
+    try { await ensureAuthToken(); } catch (e) { console.warn('[pair] no auth session:', e?.message); }
+    let claim = null;
+    let legacyCode = null;
+    const { data: res, error: rpcErr } = await supabase.rpc('claim_device_v2', { p_code: clean });
+    if (rpcErr && isMissingRpc(rpcErr)) {
+      const old = await legacyPair(typed);
+      if (old.error) { setLoading(false); return setError(old.error); }
+      claim = old.claim; legacyCode = old.legacyCode;
+    } else if (rpcErr || !res?.ok) {
+      setLoading(false);
+      return setError(claimRefusalMessage(res, rpcErr));
+    } else {
+      claim = res;
+    }
+    const data = {
+      id: claim.device_id, name: claim.name, type: claim.type, location_id: claim.location_id,
+      profile_id: claim.profile_id || null, centre_id: claim.centre_id || null,
+    };
+
+    // A different venue while this till still holds unsent work: ask first. Cancelling keeps
+    // everything on this till (it shows the not linked banner until it is paired back).
+    const prevLoc = getActiveLocationSync();
+    if (prevLoc && data.location_id && prevLoc !== data.location_id) {
+      const left = await unsentWork();
+      if (left > 0 && !window.confirm(`This till still holds ${left} unsent item(s) for its old venue. Pairing it to ${claim.location?.name || 'another venue'} removes them from this till. Pair anyway?`)) {
+        setLoading(false);
+        return setError('Pairing cancelled. The unsent work is still on this till.');
+      }
     }
 
     // v5.5.3: TENANT FENCE at pair-time. If this terminal was previously paired to a
@@ -55,17 +116,9 @@ export default function PairingScreen({ onPaired }) {
     enforceTenantFence(data.location_id);
 
     // Store device identity in localStorage
-    const deviceEntry = {
-      id: data.id,
-      name: data.name,
-      type: data.type,
-      locationId: data.location_id,
-      locationName: data.locations?.name || 'Unknown',
-      orgId: data.locations?.org_id,
-      profileId: data.profile_id || null,
-      pairingCode: clean,   // v5.5.758: persisted so boot can re-establish the RLS device link
-      pairedAt: new Date().toISOString(),
-    };
+    const deviceEntry = deviceEntryFromClaim(claim);
+    // FENCE STAGE 1 FALLBACK: the old flow keeps the code so boot can re-link with it.
+    if (legacyCode) deviceEntry.pairingCode = legacyCode;
     localStorage.setItem('rpos-device', JSON.stringify(deviceEntry));
     // Clear any previous session token so old sessions get kicked
     sessionStorage.removeItem(`rpos-session-${data.id}`);
@@ -143,8 +196,12 @@ export default function PairingScreen({ onPaired }) {
           value={code}
           onChange={e => setCode(e.target.value.toUpperCase())}
           onKeyDown={e => e.key === 'Enter' && handlePair()}
-          placeholder="e.g. DONUT-4821"
-          maxLength={12}
+          placeholder="XXXX-XXXX-XXXX"
+          maxLength={20}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
           style={{
             width: '100%', padding: '14px 16px', borderRadius: 12,
             border: `2px solid ${error ? '#fca5a5' : 'var(--bdr)'}`,
@@ -182,7 +239,8 @@ export default function PairingScreen({ onPaired }) {
         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, fontFamily: 'monospace' }}>v{VERSION}</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>
           Generate a pairing code in your back office:<br />
-          <strong>Back Office → Hardware → Terminals</strong>
+          <strong>Back Office → Hardware → Terminals</strong><br />
+          Type it with or without the dashes. A code works once, for 60 minutes.
         </div>
 
         {/* Admin bypass link */}

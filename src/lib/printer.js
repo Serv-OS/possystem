@@ -12,6 +12,8 @@
  */
 
 import { supabase, getLocationId } from './supabase';
+import { reportWriteRefused } from './deviceLink';
+import { mustChangeRow } from './rowWrites';
 import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation } from './receiptBranding';
 import { money } from './currency.js';
@@ -563,6 +565,7 @@ class PrintService {
               jobId = existing.id;
             }
           } else {
+            reportWriteRefused(error);   // fence stage 1: a refused print job may mean a lost link
             console.warn('[Print] Durable insert failed, will try offline queue:', error.message);
           }
         }
@@ -606,10 +609,16 @@ class PrintService {
       const deviceId = getDeviceId();
       if (jobId && supabase) {
         // Claim the job so retrier won't race us
+        // Fix round 2 (the zero row blocker): this and the status writes below count the rows
+        // they changed, so a till that is not linked shows the banner. Only 'done' is kept and
+        // sent once the till is linked again: a late 'sending' or 'failed' would hand a ticket
+        // that is already on paper back to the retry sweep (a second print). Left unrecorded,
+        // the job is simply retried by the sweep, as when this till loses its network.
         try {
-          await supabase.from('print_jobs')
-            .update({ status: 'sending', claimed_by: deviceId, claimed_at: new Date().toISOString() })
-            .eq('id', jobId);
+          await mustChangeRow({
+            table: 'print_jobs', type: 'update', match: { id: jobId }, parkable: false,
+            payload: { status: 'sending', claimed_by: deviceId, claimed_at: new Date().toISOString() },
+          });
         } catch {}
       }
       try {
@@ -617,11 +626,10 @@ class PrintService {
         // Update job row to printed
         if (jobId && supabase) {
           try {
-            await supabase.from('print_jobs').update({
-              status: 'done',
-              processed_at: new Date().toISOString(),
-              agent_id: deviceId,
-            }).eq('id', jobId);
+            await mustChangeRow({
+              table: 'print_jobs', type: 'update', match: { id: jobId }, kind: 'print_job', label: 'Print job printed',
+              payload: { status: 'done', processed_at: new Date().toISOString(), agent_id: deviceId },
+            });
           } catch {}
         }
         return { ...result, transport: 'native', printer: printer.name, jobId };
@@ -631,15 +639,18 @@ class PrintService {
         if (jobId && supabase) {
           try {
             const nextRetry = new Date(Date.now() + 2000).toISOString();
-            await supabase.from('print_jobs').update({
-              status: 'failed',
-              error_message: errMsg,
-              attempts: 1,
-              next_retry_at: nextRetry,
-              claimed_by: null,
-              claimed_at: null,
-              processed_at: new Date().toISOString(),
-            }).eq('id', jobId);
+            await mustChangeRow({
+              table: 'print_jobs', type: 'update', match: { id: jobId }, parkable: false,
+              payload: {
+                status: 'failed',
+                error_message: errMsg,
+                attempts: 1,
+                next_retry_at: nextRetry,
+                claimed_by: null,
+                claimed_at: null,
+                processed_at: new Date().toISOString(),
+              },
+            });
           } catch {}
         }
         console.warn('[Print] Native bridge failed — row marked for retry:', errMsg);
@@ -699,15 +710,12 @@ class PrintService {
     const bytes = Uint8Array.from(atob(jobRow.payload), c => c.charCodeAt(0));
     try {
       await nativePrint(bytes, jobRow.printer_ip, jobRow.printer_port || 9100);
-      // Mark printed
+      // Mark printed (fix round 2: counted, and kept while this till is not linked)
       if (supabase) {
-        await supabase.from('print_jobs').update({
-          status: 'done',
-          processed_at: new Date().toISOString(),
-          agent_id: deviceId,
-          claimed_by: null,
-          claimed_at: null,
-        }).eq('id', jobRow.id);
+        await mustChangeRow({
+          table: 'print_jobs', type: 'update', match: { id: jobRow.id }, kind: 'print_job', label: 'Print job printed',
+          payload: { status: 'done', processed_at: new Date().toISOString(), agent_id: deviceId, claimed_by: null, claimed_at: null },
+        });
       }
       return { ok: true };
     } catch (e) {

@@ -13,9 +13,19 @@
 // }
 //
 // Returns: { ok, refund_id, amount, status }
+//
+// WHO (database fence stage 1, 19 Sep 2026, enforced always): the service role, staff of the
+// venue (user_locations, or a verified super admin), or a device BOUND to the venue (the device
+// arm of pos_can_access). It used to refund any payment of any venue for ANY session, and a
+// customer knows their own payment intent id, so a customer could pay, eat and refund themselves.
+// Callers: store.refundCheck through src/lib/payments/cardReversal.js (a bound till, MPOS, or a
+// Back Office login on Transactions). Rules: _shared/gift-authority.ts decideCardRefundAuthority.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
+import { callerStaffOrDevice, recordAuthority, isServiceRoleRequest, deviceHintOf } from '../_shared/loyalty-utils.ts';
+import { decideCardRefundAuthority } from '../_shared/gift-authority.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -46,8 +56,13 @@ Deno.serve(async (req) => {
   // Auth
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) return json({ error: 'Unauthorized' }, 401);
-  const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
-  if (!caller) return json({ error: 'Invalid token' }, 401);
+  const serviceRole = isServiceRoleRequest(req);
+  let caller: any = null;
+  if (!serviceRole) {
+    const { data: { user } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
+    if (!user) return json({ error: 'Invalid token' }, 401);
+    caller = user;
+  }
 
   let body: {
     payment_intent_id?: string;
@@ -65,6 +80,21 @@ Deno.serve(async (req) => {
   if (!payment_intent_id) return json({ error: 'payment_intent_id required' }, 400);
   if (!amount_minor || amount_minor <= 0) return json({ error: 'amount_minor must be positive' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
+
+  // ── Who may refund (stage 1, enforced always), before anything is read or moved ──
+  if (!serviceRole) {
+    const who = await callerStaffOrDevice(caller, String(location_id), null);
+    const authority = decideCardRefundAuthority({ serviceRole, user: caller, staff: who.staff, device: who.device, deviceReason: who.deviceReason });
+    if (!authority.ok) {
+      recordAuthority(authorityLogRow({
+        fn: 'stripe-refund', mode: 'enforce', outcome: 'refused',
+        decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
+        user: caller, locationId: location_id, closedCheckId: closed_check_id,
+        deviceHint: deviceHintOf(body), detail: { device_reason: who.deviceReason },
+      }));
+      return json({ error: authority.error, code: 'refund_not_allowed', reason: authority.reason }, authority.status);
+    }
+  }
 
   // Resolve platform location from ops location_id
   const { data: platformLoc } = await platformAdmin.from('locations')

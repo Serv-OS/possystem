@@ -12,6 +12,10 @@ import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
 import { isSessionClosed } from './sessionClosure';
 import { pruneClosedRemoved, rebuildOrphans, loadPlanState } from '../lib/tablePlan';
+import { isDeviceLinkUncertain } from '../lib/deviceLink';
+import { trustSharedRead } from '../lib/deviceFence';
+import { mustChangeRows } from '../lib/rowWrites';
+import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -46,6 +50,10 @@ export async function startSessionReconciler() {
         .eq('location_id', _locationId);
 
       if (error || !heads) return;
+      // Database fence stage 1 (contract A9): an empty read while this till may have lost its
+      // link is unknown, never "no tables". Nothing is healed or cleared on it (self heal
+      // writes would only be refused); the next poll after the till is linked again decides.
+      if (!trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: heads.length })) return;
 
       const presentIds = new Set();
       const changedIds = [];
@@ -87,9 +95,18 @@ export async function startSessionReconciler() {
         });
       }
       if (ghostRows.length && supabase) {
+        // Fix round 2: each ghost's occupation, for a delete kept for later (see below).
+        const ghostSeated = {};
+        for (const id of ghostRows) ghostSeated[id] = seatedAtOf(_dbCache.get(id)?.session);
         ghostRows.forEach(id => _dbCache.delete(id)); // don't re-issue the delete every poll
         console.warn(`[SessionReconciler] deleting ${ghostRows.length} cashed-off ghost row(s):`, ghostRows.join(', '));
-        Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', ghostRows))
+        // Fix round 2 (the zero row blocker): counted, and kept while this device is not linked.
+        // A kept delete carries the ghost's occupation, so it can never remove a table seated since.
+        mustChangeRows({
+          table: 'active_sessions', type: 'delete', match: { location_id: _locationId },
+          inColumn: 'table_id', keys: ghostRows, identityFor: (id) => occupationMatch(ghostSeated[id]),
+          kind: 'session_delete', label: 'Paid table removed from the floor',
+        }).then(r => { if (r?.outcome === 'error') console.warn('[SessionReconciler] ghost delete failed:', r.error?.message || r.error); })
           .catch(e => console.warn('[SessionReconciler] ghost delete threw —', e?.message || e));
       }
 

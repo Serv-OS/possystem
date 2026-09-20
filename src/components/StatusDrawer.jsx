@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
+import { mustChangeRow } from '../lib/rowWrites';
 import { VERSION } from '../lib/version';
 import { printEnvironment, printFailureWords, printPathIndicator } from '../lib/printPathWords';
 import { printerErrorGuidance, printerViewingDevice } from '../lib/printerErrorWords';
@@ -258,7 +259,8 @@ export default function StatusDrawer({ onClose }) {
       await operatorRetryJob(job.id);
     } catch {
       // Fallback to legacy path if orchestrator module unavailable for any reason
-      await supabase.from('print_jobs').update({ status: 'pending', error: null, error_message: null }).eq('id', job.id);
+      // (fence stage 1, fix round 2: counted, and kept while this till is not linked)
+      await mustChangeRow({ table: 'print_jobs', type: 'update', payload: { status: 'pending', error: null, error_message: null }, match: { id: job.id }, kind: 'print_job', label: 'Print job retry' });
     }
     loadJobs();
   };
@@ -269,7 +271,7 @@ export default function StatusDrawer({ onClose }) {
       const { operatorDismissJob } = await import('../sync/PrintOrchestrator.js');
       await operatorDismissJob(job.id);
     } catch {
-      await supabase.from('print_jobs').update({ status: 'dismissed', dismissed_at: new Date().toISOString() }).eq('id', job.id);
+      await mustChangeRow({ table: 'print_jobs', type: 'update', payload: { status: 'dismissed', dismissed_at: new Date().toISOString() }, match: { id: job.id }, kind: 'print_job', label: 'Print job dismissed' });
     }
     loadJobs();
   };

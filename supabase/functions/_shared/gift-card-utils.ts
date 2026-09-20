@@ -121,6 +121,13 @@ export const platformAdmin = createClient(
 
 // Auth helper: extract and validate caller from Authorization header.
 // Returns the user object or a Response (error).
+//
+// AUTHENTICATION ONLY, NEVER AUTHORITY (database fence stage 1, 19 Sep 2026). Any JWT passes here,
+// and anybody gets one from the public anon key (signInAnonymously). Every gift function now
+// decides who the caller is AFTER this: staff of the venue (requireStaff / callerIsStaffFor), a
+// device bound to the venue (callerStaffOrDevice, the device arm of pos_can_access), the member's
+// own loyalty token, or a code holder. The rules are in _shared/gift-authority.ts; the facts are
+// gathered in _shared/loyalty-utils.ts. Never treat a user returned by this as allowed to act.
 export async function authenticateCaller(
   req: Request,
 ): Promise<{ user: any } | Response> {

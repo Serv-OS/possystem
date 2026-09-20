@@ -126,15 +126,20 @@ export function prepRuleFromLocation(location) {
  *   3. raw active_sessions counted five tables at Provo where the floor plan
  *      has two. The rest are orphans left by table splits, one from June.
  *
- * Never throws and never blocks a customer: any source that fails is skipped,
- * and if they all fail we return null and the flat lead time applies.
+ * Never throws and never blocks a customer: if the server count fails we return
+ * null and the flat lead time applies.
  *
  * @returns {Promise<{live:number, load:number}|null>}
  */
 export async function liveOrderCount(supabase, opsLocationId) {
   if (!supabase || !opsLocationId) return null;
 
-  // Preferred path: one server-side count that can see bar tabs.
+  // One server-side count that can see bar tabs (online_kitchen_load, live on Ops since
+  // before the database fence; checked 18 Sep 2026).
+  // Database fence stage 1 (contract C12): the old fallback that read active_sessions,
+  // bar_tabs and order_queue straight from a customer's browser is gone. After 20260919b a
+  // customer cannot read those tables, and the counts were never theirs to see. When the
+  // function answers nothing, null means "no load known" and the flat lead time applies.
   try {
     const { data, error } = await supabase.rpc('online_kitchen_load', { p_location_id: opsLocationId });
     if (!error && data) {
@@ -143,43 +148,8 @@ export async function liveOrderCount(supabase, opsLocationId) {
       const load = Number(row?.kitchen_load);
       if (Number.isFinite(live) && Number.isFinite(load)) return { live, load };
     }
-  } catch { /* function not deployed on this project — fall through */ }
-
-  const rows = (q) => q.then(r => (r?.error ? null : (Array.isArray(r?.data) ? r.data : null)));
-  const head = (q) => q.then(r => (r?.error ? null : (typeof r?.count === 'number' ? r.count : null)));
-  const nowIso = new Date().toISOString();
-  try {
-    const [floor, sessions, tabs, queue] = await Promise.all([
-      rows(supabase.from('floor_tables').select('id').eq('location_id', opsLocationId).limit(1000)),
-      rows(supabase.from('active_sessions').select('table_id').eq('location_id', opsLocationId).limit(1000)),
-      head(supabase.from('bar_tabs').select('id', { count: 'exact', head: true })
-        .eq('location_id', opsLocationId).neq('status', 'closed')),
-      // Statuses rather than a head count, so one read gives both figures.
-      // sent_at.lte.now holds pre-orders out until their kitchen fire moment.
-      rows(supabase.from('order_queue').select('status').eq('location_id', opsLocationId)
-        .not('status', 'in', `(${DONE_STATUSES.join(',')})`)
-        .or(`sent_at.is.null,sent_at.lte.${nowIso}`)
-        .limit(2000)),
-    ]);
-
-    // Only sessions whose table is actually ON the floor plan count, because
-    // that is what the Orders Hub shows.
-    let tables = null;
-    if (floor && sessions) {
-      const onFloor = new Set(floor.map(f => String(f.id)));
-      tables = sessions.filter(s2 => onFloor.has(String(s2.table_id))).length;
-    }
-
-    let qLive = null, qLoad = null;
-    if (queue) {
-      qLive = queue.length;
-      qLoad = queue.filter(q2 => !KITCHEN_FINISHED.includes(q2?.status)).length;
-    }
-
-    if (tables === null && tabs === null && qLive === null) return null;
-    const base = (tables || 0) + (tabs || 0);
-    return { live: base + (qLive || 0), load: base + (qLoad || 0) };
-  } catch { return null; }
+  } catch { /* offline: the flat lead time applies */ }
+  return null;
 }
 
 /**

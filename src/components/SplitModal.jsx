@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
@@ -229,6 +230,11 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
+        // Database fence stage 1, fix round 2: no card leg starts on a till that is not linked
+        // to its venue (lib/deviceLink.js confirmLinkBeforeCard). Nothing has been charged.
+        const linkGate = await confirmLinkBeforeCard();
+        if (cancelled) return;
+        if (!linkGate.ok) { setState('error'); setErrorMsg(linkGate.message); return; }
         // v5.5.808: dispatch by processor. Non-definitive lookups do NOT count
         // as Stripe — see the no-reader guard below.
         let procInfo = { processor: 'stripe', definitive: false };

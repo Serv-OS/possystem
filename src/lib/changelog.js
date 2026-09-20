@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.12',
+    date: '20 Sep 2026',
+    items: [
+      'Groundwork for locking the database down. Tills, kiosks, KDS screens and TVs now prove which device they are, using a key only your Back Office can hand out, instead of anyone being able to claim to be one of your tills. Everything still works exactly as before until you run the database steps in the guide.',
+      'Pairing codes are now made by the server, last an hour, work once, and can only be read by your own Back Office. Guessing is throttled.',
+      'A till, handheld or kiosk that loses its right to write can no longer lose your work. Before, a refused save looked like a success: a closed bar tab, a cleared table or a refund could quietly stay open on the server. Now the till holds that save, tells you on screen, and sends it the moment it is linked again.',
+      'A kiosk or till that is not properly linked stops before starting a card payment, instead of taking the money and failing to record the sale. A till that has never been fenced still takes payments exactly as it does today, so nothing gets stricter until you run the database steps.',
+      'Every gift card, loyalty, promo and card refund function now checks who is calling. Until the database steps are run they only make a note, so nothing changes for your staff yet.',
+      'A dropped connection can no longer give a device a new identity and orphan its own orders, tables and tickets.',
+      'Gift card and loyalty settings screens now warn when a reward names no item, because customers could otherwise claim any item free.',
+      'Two guides ship with this release: what to run now, and the payment half later. Both are in the repo under docs.',
+    ],
+  },
+  {
     v: '5.9.11',
     date: '19 Sep 2026',
     items: [

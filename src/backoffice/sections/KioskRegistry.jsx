@@ -16,8 +16,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
+import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
 import KioskSettings from './KioskSettings';
 
+// Database fence stage 1 (contract A6): kiosk codes come from the SERVER
+// (issue_pairing_code, 60 minutes). This browser made code is the FENCE STAGE 1 FALLBACK
+// only, while 20260919a1 is not run. Delete PAIRING_WORDS and generatePairingCode once
+// 20260919b has run.
 // Word list for human-friendly pairing codes (matches DeviceRegistry style)
 const PAIRING_WORDS = [
   'BAKER','PIZZA','SUSHI','GRILL','BURGER','PASTA','TACO','CURRY',
@@ -80,17 +85,20 @@ export default function KioskRegistry() {
     setError(null);
     try {
       const locId = await getLocationId();
-      const code = generatePairingCode();
       const { data, error } = await supabase.from('devices').insert({
         location_id: locId,
         name: newName.trim(),
         type: 'kiosk',
         profile_id: newProfileId,
-        pairing_code: code,
         status: 'awaiting_pairing',
       }).select().single();
       if (error) throw error;
-      setActiveCode({ id: data.id, name: data.name, code: data.pairing_code });
+      const res = await issueCode(data.id, true);
+      if (!res.ok) {
+        await load();
+        throw new Error('The kiosk was added but no pairing code was issued: ' + res.message + ' Press New code on it.');
+      }
+      setActiveCode({ id: data.id, name: data.name, code: formatPairingCode(res.code), expiresAt: res.expires_at });
       setShowNewModal(false);
       setNewName('');
       await load();
@@ -102,17 +110,30 @@ export default function KioskRegistry() {
     }
   };
 
+  // The server issues the code (p_force: the operator already confirmed below).
+  const issueCode = (deviceId, force) => issuePairingCodeWithFallback({
+    rpc: (name, args) => supabase.rpc(name, args),
+    deviceId,
+    force,
+    // FENCE STAGE 1 FALLBACK: today's browser made code, written directly.
+    legacyIssue: async () => {
+      const code = generatePairingCode();
+      const { error } = await supabase.from('devices').update({
+        pairing_code: code,
+        paired_at: null,
+        session_token: null,
+        status: 'awaiting_pairing',
+      }).eq('id', deviceId);
+      if (error) { setError(error.message); return null; }
+      return code;
+    },
+  });
+
   const regenerateCode = async (kiosk) => {
-    if (!confirm('Generate a new pairing code for ' + kiosk.name + '? The old code stops working.')) return;
-    const code = generatePairingCode();
-    const { error } = await supabase.from('devices').update({
-      pairing_code: code,
-      paired_at: null,
-      session_token: null,
-      status: 'awaiting_pairing',
-    }).eq('id', kiosk.id);
-    if (error) { setError(error.message); return; }
-    setActiveCode({ id: kiosk.id, name: kiosk.name, code: code });
+    if (!confirm('Generate a new pairing code for ' + kiosk.name + '? The old code stops working and a paired kiosk is disconnected until it is paired again.')) return;
+    const res = await issueCode(kiosk.id, true);
+    if (!res.ok) { setError(res.message); return; }
+    setActiveCode({ id: kiosk.id, name: kiosk.name, code: formatPairingCode(res.code), expiresAt: res.expires_at });
     await load();
   };
 
@@ -194,7 +215,7 @@ export default function KioskRegistry() {
                   <div style={{ color: 'var(--t3)', fontSize: 12 }}>{fmtLastSeen(k.last_seen)}</div>
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     {!isPaired && (
-                      <button onClick={() => setActiveCode({ id: k.id, name: k.name, code: k.pairing_code })}
+                      <button onClick={() => setActiveCode({ id: k.id, name: k.name, code: k.pairing_code ? formatPairingCode(k.pairing_code) : null, expiresAt: k.pairing_expires_at || null })}
                         title="Show pairing code"
                         style={{ background: 'var(--bg3)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '4px 8px', fontSize: 11, color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit' }}>Code</button>
                     )}
@@ -257,13 +278,13 @@ export default function KioskRegistry() {
           <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 32, width: 480, maxWidth: '100%', textAlign: 'center' }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Pairing code for</div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 24 }}>{activeCode.name}</div>
-            <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 56, fontWeight: 800, letterSpacing: '0.05em', color: 'var(--acc)', padding: '24px 16px', background: 'var(--bg2)', border: '2px solid var(--bdr)', borderRadius: 12, marginBottom: 20 }}>
+            <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 40, fontWeight: 800, letterSpacing: '0.05em', color: 'var(--acc)', padding: '24px 16px', background: 'var(--bg2)', border: '2px solid var(--bdr)', borderRadius: 12, marginBottom: 20 }}>
               {activeCode.code || '—'}
             </div>
             <p style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.6, marginBottom: 4 }}>
               On the kiosk screen, tap <b>Pair this kiosk</b> and enter this code.
             </p>
-            <p style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 22 }}>This code stays valid until you regenerate it.</p>
+            <p style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 22 }}>{activeCode.expiresAt ? 'This code is valid for 60 minutes and works once.' : 'This code stays valid until you regenerate it.'}</p>
             <button onClick={() => setActiveCode(null)}
               style={{ background: 'var(--acc)', color: '#fff', border: 0, padding: '10px 22px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
               Done

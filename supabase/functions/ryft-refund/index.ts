@@ -11,11 +11,18 @@
 //     refund_platform_fee: default = give our markup back on a FULL refund, keep
 //     it (proportional) on a partial. Overridable.
 //
-// Auth mirrors stripe-refund: any valid signed-in user (the POS/back-office
-// refund path uses an anonymous device JWT). location_id resolves the account.
+// Auth mirrors stripe-refund. location_id resolves the account.
+// WHO (database fence stage 1, 19 Sep 2026, enforced always): the service role, staff of the
+// venue (user_locations, or a verified super admin), or a device BOUND to the venue (the device
+// arm of pos_can_access; the POS refund path runs on the till's anonymous device session). The
+// header above always promised this; the code accepted ANY valid session, so a customer could
+// refund their own payment session. Rules: _shared/gift-authority.ts decideCardRefundAuthority.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { refundPaymentSession, ryftConfigured } from '../_shared/ryft.ts';
+import { callerStaffOrDevice, recordAuthority, isServiceRoleRequest, deviceHintOf } from '../_shared/loyalty-utils.ts';
+import { decideCardRefundAuthority } from '../_shared/gift-authority.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -33,14 +40,34 @@ Deno.serve(async (req) => {
 
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) return json({ error: 'Unauthorized' }, 401);
-  const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
-  if (!caller) return json({ error: 'Invalid token' }, 401);
+  const serviceRole = isServiceRoleRequest(req);
+  let caller: any = null;
+  if (!serviceRole) {
+    const { data: { user } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
+    if (!user) return json({ error: 'Invalid token' }, 401);
+    caller = user;
+  }
 
   let body: any;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const opsLocationId = String(body?.location_id ?? body?.ops_location_id ?? '').trim();
   const sessionId = String(body?.payment_session_id ?? '').trim();
   if (!opsLocationId || !sessionId) return json({ error: 'location_id and payment_session_id required' }, 400);
+
+  // ── Who may refund (stage 1, enforced always), before anything is read or moved ──
+  if (!serviceRole) {
+    const who = await callerStaffOrDevice(caller, opsLocationId, null);
+    const authority = decideCardRefundAuthority({ serviceRole, user: caller, staff: who.staff, device: who.device, deviceReason: who.deviceReason });
+    if (!authority.ok) {
+      recordAuthority(authorityLogRow({
+        fn: 'ryft-refund', mode: 'enforce', outcome: 'refused',
+        decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
+        user: caller, locationId: opsLocationId, closedCheckId: body?.closed_check_id ?? null,
+        deviceHint: deviceHintOf(body), detail: { device_reason: who.deviceReason },
+      }));
+      return json({ error: authority.error, code: 'refund_not_allowed', reason: authority.reason }, authority.status);
+    }
+  }
   if (!ryftConfigured()) return json({ error: 'Ryft not configured' }, 500);
 
   // Resolve the location's Ryft sub-account (the Account header for the refund).

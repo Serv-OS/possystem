@@ -10,6 +10,15 @@
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
 import { missingColumnOf } from '../lib/closedCheckWrite';
+import { isParkedPermissionItem, releaseParkedItem, isPermissionError, shouldReleaseParkedOnLink } from '../lib/deviceFence';
+import { getLastDeviceLinkOutcome } from '../lib/supabase';
+// Fix round 2 (the zero row blocker): a replayed update or delete that changes 0 rows is judged
+// against the device link (lib/rowWriteFence.js), never counted as sent on its own.
+import {
+  replayMustChangeItem, heldBehindParked, parkedAgain, rowKeyOf, waitingRowKeys, replayBlocksRow,
+  isLateSafeParkedDelete, PARKED_LINK, OCCUPATION_KEY, ZERO_ROWS_UNKNOWN,
+} from '../lib/rowWriteFence';
+import { confirmLinkAfterZeroRows, getLinkEpoch, checkDeviceLink } from '../lib/deviceLink';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -153,9 +162,42 @@ export async function bufferedUpsertKeys(table) {
   return out;
 }
 
+// Fix round 2: what a replayed update or delete needs to judge 0 rows (the device link check,
+// which starts after the write answered, and the link epoch).
+const zeroRowDeps = (supabase) => ({ client: supabase, confirmLink: confirmLinkAfterZeroRows, linkEpoch: getLinkEpoch });
+
+/**
+ * Fix round 2: keys (ref for order_queue, id for bar_tabs) with a DELETE this till still has to
+ * send: waiting, retrying, or parked while the till was not linked. The reconciler never adopts
+ * such a row back from the server (it would put an order or tab this till finished back on
+ * screen, open, until the delete lands: the "charged again" risk). A delete that failed for good,
+ * went stale or was dismissed does not count. Returns an empty set when the store cannot be read
+ * (adoption then works as it always did).
+ */
+export async function bufferedDeleteKeys(table) {
+  const out = new Set();
+  let timer;
+  const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('IndexedDB read timed out')), 5000); });
+  try {
+    const items = await Promise.race([dbGetAll(), timeout]);
+    for (const it of items) {
+      if (it?.type !== 'delete' || it.table !== table) continue;
+      if (it.status !== 'pending' && it.status !== 'retry_pending' && it.status !== PARKED_LINK) continue;
+      if (it.permanentFailure) continue;
+      const k = table === 'order_queue' ? it.match?.ref : it.match?.id;
+      if (k != null) out.add(String(k));
+    }
+  } catch (e) { console.warn('[OfflineQueue] bufferedDeleteKeys:', e?.message || e); }
+  finally { clearTimeout(timer); }
+  return out;
+}
+
 // Replay ONE buffered write with the original per-item error attribution (attempts →
 // retry_pending → permanent after MAX_AUTO_RETRIES). Used directly for deletes and as the
 // per-item fallback when a batched statement errors.
+// Fix round 2: resolves what happened, so a later write of the same row waits when this one did
+// not land: 'done' (sent, or nothing left to change while linked), 'parked' (kept until the
+// device is linked again), 'failed' (refused or not sent: retried later, or failed for good).
 async function replayItem(supabase, item) {
   try {
     if (item.type === 'upsert') {
@@ -174,26 +216,50 @@ async function replayItem(supabase, item) {
     } else if (item.type === 'insert') {
       const { error } = await supabase.from(item.table).insert(item.payload);
       if (error) throw error;
-    } else if (item.type === 'update') {
-      // v5.8.86: a change to a row the server already confirmed. An update of a row the
-      // server has since removed touches nothing, so it can never re-create it.
-      let q = supabase.from(item.table).update(item.payload);
-      for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
-      for (const [k, v] of Object.entries(item.notMatch || {})) q = q.neq(k, v);   // e.g. a bar tab: never re-open a closed one
-      const { error } = await q;
-      if (error) throw error;
-    } else if (item.type === 'delete') {
-      let q = supabase.from(item.table).delete();
-      for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
-      const { error } = await q;
-      if (error) throw error;
+    } else if (item.type === 'update' || item.type === 'delete') {
+      // v5.8.86: an update is a change to a row the server already confirmed. An update of a
+      // row the server has since removed touches nothing, so it can never re-create it; a bar
+      // tab update carries notMatch status closed, so it never re-opens a closed tab.
+      // Fix round 2 (the zero row blocker): row level security hides a row from a device that
+      // lost its link, and the update or delete then changes 0 rows WITHOUT an error. So the
+      // rows changed are counted (lib/rowWriteFence.js): none changed while the device is
+      // linked means the row is gone (done, as before); none changed while it is NOT linked
+      // keeps the write here, parked, until it is linked again (never counted as sent).
+      const r = await replayMustChangeItem(item, zeroRowDeps(supabase));
+      if (r.outcome === 'error') throw r.error;
+      if (r.outcome === 'park') {
+        const parked = parkedAgain(item);
+        await dbPut(parked);
+        console.warn(`[OfflineQueue] ${item.type} ${item.table} changed 0 rows while this device is not linked: kept until it is linked again`);
+        if (r.epoch !== undefined && getLinkEpoch() !== r.epoch) {
+          // A link answer landed while it was being stored: the relink release may have run
+          // without it, so it goes back to pending now.
+          await dbPut(releaseParkedItem(parked));
+          scheduleFlush();
+        } else {
+          checkDeviceLink();   // the re-link with the device secret; its relinked event releases the write
+        }
+        return 'parked';
+      }
+      if (r.outcome === 'retry_later') {
+        const e = new Error(ZERO_ROWS_UNKNOWN);
+        e.code = '42501';
+        throw e;   // a refused attempt: retried with the next replay, released on relink
+      }
     } else {
       // Unknown/corrupt type: surface it in the failure queue rather than silently dbDelete-ing it
       // (which would lose the buffered write with no trace). The catch below records the attempt.
       throw new Error(`OfflineQueue: unknown item type "${item.type}"`);
     }
     await dbDelete(item.id);
+    return 'done';
   } catch (e) {
+    // Database fence stage 1 (contract A7): a refused write may mean this till lost its link.
+    // Tell the app (lib/deviceLink.js checks the link and shows the banner); the write itself
+    // stays parked here and is released on rpos-device-relinked (below).
+    if (isPermissionError(e)) {
+      try { window.dispatchEvent(new CustomEvent('rpos-write-refused', { detail: { code: e?.code || null, message: e?.message || '' } })); } catch { /* no window */ }
+    }
     const attempts = (item.attempts || 0) + 1;
     const patch = { ...item, attempts, lastError: e.message, lastFailedAt: Date.now(), firstFailedAt: item.firstFailedAt || Date.now() };
     if (attempts >= MAX_AUTO_RETRIES) {
@@ -206,12 +272,18 @@ async function replayItem(supabase, item) {
       console.warn(`[OfflineQueue] Item ${item.id} failed (attempt ${attempts}/${MAX_AUTO_RETRIES}):`, e.message);
     }
     await dbPut(patch);
+    return 'failed';
   }
 }
 
+// Fix round 2: a replay asked for while one is running (parked writes just released on relink)
+// runs once more when it ends, instead of waiting for the next queued write or reconnect.
+let _replayAgain = false;
+
 export async function replayQueue(supabase) {
-  if (_replaying) return;
+  if (_replaying) { _replayAgain = true; return; }
   _replaying = true;
+  _replayAgain = false;
 
   try {
     // The guard re-checks the server first. If that could not complete (offline again, a hung
@@ -224,8 +296,13 @@ export async function replayQueue(supabase) {
     }
     const isStateWrite = (it) => it.table === 'order_queue' || it.table === 'bar_tabs';
     const items = await dbGetAll();
-    // Only replay items that aren't permanently failed or dismissed
-    const candidates = items.filter(it => !it.permanentFailure && it.status !== 'dismissed');
+    // Only replay items that aren't permanently failed or dismissed.
+    // Fix round 2: nor a write parked while this device was not linked ('parked_link': it waits
+    // for rpos-device-relinked), nor a later write of the same row (it waits behind the parked
+    // one, so the row ends as its last write says).
+    const heldBehind = heldBehindParked(items);
+    const candidates = items.filter(it => !it.permanentFailure && it.status !== 'dismissed'
+      && it.status !== PARKED_LINK && !heldBehind.has(it.id));
 
     // STALENESS GUARD: a device dormant for a long time must NOT replay months-old STATE writes —
     // upserting them resurrects completed/deleted orders, re-seats cleared tables and reopens closed
@@ -234,7 +311,10 @@ export async function replayQueue(supabase) {
     // ALWAYS replayed — we must never lose a sale taken offline, however old. Quarantined rows are
     // retained in IndexedDB (returned by getFailedItems) — not auto-replayed, not deleted.
     const now = Date.now();
-    const ALWAYS_REPLAY = (it) => it.table === 'closed_checks' || it.kind === 'closed_check';
+    // Fix round 2: plus a delete kept while this device was not linked that can only remove its own
+    // row (a bar tab by id, a table by its occupation): it goes whenever the device is linked again
+    // (lib/rowWriteFence.js isLateSafeParkedDelete).
+    const ALWAYS_REPLAY = (it) => it.table === 'closed_checks' || it.kind === 'closed_check' || isLateSafeParkedDelete(it);
     // v5.5.639: an active_sessions DELETE is a STATE mutation, not append-only. A stale one replayed
     // on reconnect/boot blind-deletes whatever now occupies (location,table) — the queued match
     // carries no session identity, so it wipes a table that was RE-SEATED since (root cause of the
@@ -243,7 +323,11 @@ export async function replayQueue(supabase) {
     // apply blind. Quarantine it fast; a ts-less one counts as stale. The self-heal reconciler
     // re-publishes the rare table that genuinely still needed clearing.
     const SESSION_DELETE_MAX_AGE_MS = 2 * 60 * 1000;
-    const isSessionDelete = (it) => it.type === 'delete' && it.table === 'active_sessions';
+    // Fix round 2: a session delete that carries its OCCUPATION (session->>seatedAt, write once
+    // per occupation) can only ever remove that occupation, never a table seated again since, so
+    // it replays like any other state write (12 h limit below). That is what lets a table closed
+    // on a till that lost its link leave the floor once the till is paired again.
+    const isSessionDelete = (it) => it.type === 'delete' && it.table === 'active_sessions' && !(it.match && it.match[OCCUPATION_KEY]);
     const live = [];
     for (const it of candidates) {
       if (_guard && !reconciled && isStateWrite(it)) continue;   // left queued, order preserved
@@ -313,20 +397,34 @@ export async function replayQueue(supabase) {
       else runs.push({ k, type: item.type, table: item.table, onConflict: item.onConflict || 'id', items: [item] });
     }
 
+    // Fix round 2: once a write of a row does not land in this pass (kept for the link, kept to
+    // try again, refused), every later write of that row waits for the next pass, in order, so
+    // the row ends as its LAST write says (lib/rowWriteFence.js replayBlocksRow).
+    const blockedRows = new Set();
+    const isBlocked = (it) => { const k = rowKeyOf(it); return !!k && blockedRows.has(k); };
+    const noteOutcome = (it, outcome) => { const k = rowKeyOf(it); if (k && replayBlocksRow(outcome)) blockedRows.add(k); };
+
     for (const run of runs) {
+      const items = run.items.filter(it => !isBlocked(it));
+      if (!items.length) continue;
       if (run.type === 'update') {
         // Updates replay one by one in queue order (two updates of one row must land in order).
-        for (const it of run.items) await replayItem(supabase, it);
+        for (const it of items) {
+          if (isBlocked(it)) continue;
+          noteOutcome(it, await replayItem(supabase, it));
+        }
         continue;
       }
       if (run.type === 'delete') {
         // Deletes within a run are mutually independent (different keys) or idempotent (same key
         // twice) — safe to fire concurrently. Varied match shapes make a single batched delete unsafe.
-        await Promise.allSettled(run.items.map(it => replayItem(supabase, it)));
+        const outs = await Promise.all(items.map(it => replayItem(supabase, it).catch(() => 'failed')));
+        items.forEach((it, i) => noteOutcome(it, outs[i]));
         continue;
       }
+      run.items = items;
 
-      if (run.items.length === 1) { await replayItem(supabase, run.items[0]); continue; }
+      if (run.items.length === 1) { noteOutcome(run.items[0], await replayItem(supabase, run.items[0])); continue; }
 
       if (run.type === 'upsert') {
         // Collapse to the freshest write per conflict-key within this consecutive run (a row changed
@@ -346,14 +444,15 @@ export async function replayQueue(supabase) {
           byKey.set(kv, it);
         }
         const fresh = [...byKey.values()];
-        if (fresh.length === 1) { await replayItem(supabase, fresh[0]); continue; }
+        if (fresh.length === 1) { noteOutcome(fresh[0], await replayItem(supabase, fresh[0])); continue; }
         try {
           const { error } = await supabase.from(run.table).upsert(fresh.map(i => i.payload), { onConflict: run.onConflict });
           if (error) throw error;
           await Promise.allSettled(fresh.map(i => dbDelete(i.id)));
         } catch (e) {
           console.warn(`[OfflineQueue] batch upsert ${run.table} x${fresh.length} failed — per-item fallback:`, e?.message || e);
-          await Promise.allSettled(fresh.map(i => replayItem(supabase, i)));
+          const outs = await Promise.all(fresh.map(i => replayItem(supabase, i).catch(() => 'failed')));
+          fresh.forEach((it, i) => noteOutcome(it, outs[i]));
         }
       } else { // insert
         try {
@@ -362,13 +461,55 @@ export async function replayQueue(supabase) {
           await Promise.allSettled(run.items.map(i => dbDelete(i.id)));
         } catch (e) {
           console.warn(`[OfflineQueue] batch insert ${run.table} x${run.items.length} failed — per-item fallback:`, e?.message || e);
-          await Promise.allSettled(run.items.map(i => replayItem(supabase, i)));
+          const outs = await Promise.all(run.items.map(i => replayItem(supabase, i).catch(() => 'failed')));
+          run.items.forEach((it, i) => noteOutcome(it, outs[i]));
         }
       }
     }
   } finally {
     _replaying = false;
+    if (_replayAgain) {
+      _replayAgain = false;
+      setTimeout(() => { replayQueue(supabase); }, 0);
+    }
   }
+}
+
+/**
+ * Fix round 2: keep an update or delete that changed 0 rows while this device was not linked
+ * (lib/rowWriteFence.js parkedWriteItem). Stored as is: 'parked_link' waits for the link,
+ * 'retry_pending' goes again with the next replay. If a link answer landed while it was being
+ * stored, the relink event may already have released the parked writes without it, so it is
+ * released now.
+ */
+export async function parkWrite(item) {
+  const id = await dbPut(item);
+  if (item && item.status === PARKED_LINK && getLinkEpoch() !== item.linkEpoch) {
+    try { await dbPut(releaseParkedItem({ ...item, id })); } catch { /* stays parked until the next relink */ }
+    if (_isOnline) scheduleFlush();
+  } else if (item && item.status === 'retry_pending' && _isOnline) {
+    // "Could not check the link": try again soon even on a quiet till.
+    setTimeout(() => { if (_supabaseRef) replayQueue(_supabaseRef); }, 15_000);
+  }
+  return id;
+}
+
+/**
+ * Row keys (lib/rowWriteFence.js rowKeyOf) with a write parked for the link, or a 0 row write still
+ * waiting to go again (lib/rowWriteFence.js waitingRowKeys). A later write of the same row is
+ * queued behind it instead of being sent. null when the queue cannot be read in time (the caller
+ * then writes as it always did).
+ */
+export async function parkedRowKeys() {
+  let timer;
+  const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('IndexedDB read timed out')), 3000); });
+  try {
+    const items = await Promise.race([dbGetAll(), timeout]);
+    return waitingRowKeys(items);
+  } catch (e) {
+    console.warn('[OfflineQueue] parkedRowKeys:', e?.message || e);
+    return null;
+  } finally { clearTimeout(timer); }
 }
 
 // ── Failure management ────────────────────────────────────────────────────────
@@ -407,8 +548,54 @@ function scheduleFlush() {
   }, 1000);
 }
 
+/**
+ * Database fence stage 1 (contract A8): writes the server refused while this till had lost its
+ * link (42501, "row-level security", "permission denied") were parked after 5 tries. When the
+ * till is linked again they are released (attempts and status reset, buffered time kept) and
+ * replayed through every existing guard: before(), keep(), the staleness quarantine and the
+ * reconciler rules all still apply. Kitchen tickets and print jobs written during a lapse
+ * arrive. A stale quarantine and a dismissed item are never released here.
+ */
+export async function releaseParkedPermissionWrites() {
+  let released = 0;
+  try {
+    const items = await dbGetAll();
+    for (const it of items) {
+      if (!isParkedPermissionItem(it)) continue;
+      await dbPut(releaseParkedItem(it));
+      released += 1;
+    }
+  } catch (e) { console.warn('[OfflineQueue] could not release parked writes:', e?.message || e); }
+  if (released) console.log(`[OfflineQueue] till linked again: ${released} parked write(s) released for replay`);
+  return released;
+}
+
+// Contract A12 (fix round): the boot link after a pairing answers 'linked', so parked writes are
+// released on the FIRST 'rpos-device-linked' of the page as well (shouldReleaseParkedOnLink).
+let _releasedOnLinkThisPage = false;
+
+async function releaseOnLink(supabase, { event, outcome }) {
+  if (!shouldReleaseParkedOnLink({ event, outcome, releasedOnLinkThisPage: _releasedOnLinkThisPage })) return;
+  if (event === 'rpos-device-linked' || outcome === 'linked') _releasedOnLinkThisPage = true;
+  await releaseParkedPermissionWrites();
+  if (_isOnline) replayQueue(supabase);
+}
+
 export function initOfflineQueue(supabase) {
   _supabaseRef = supabase;
+
+  window.addEventListener('rpos-device-relinked', async () => {
+    await releaseOnLink(supabase, { event: 'rpos-device-relinked' });
+  });
+  window.addEventListener('rpos-device-linked', async () => {
+    await releaseOnLink(supabase, { event: 'rpos-device-linked' });
+  });
+  // The boot link may have answered before this queue started (it runs from useSupabaseInit,
+  // this from SyncBridge): act on that answer instead of waiting for an event already gone.
+  const bootLink = getLastDeviceLinkOutcome();
+  if (bootLink === 'linked' || bootLink === 'relinked') {
+    setTimeout(() => { releaseOnLink(supabase, { outcome: bootLink }).catch(() => {}); }, 0);
+  }
 
   window.addEventListener('online', () => {
     _isOnline = true;

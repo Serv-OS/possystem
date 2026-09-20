@@ -35,11 +35,14 @@
 //   patch_branding            { ops_location_id, patch:{...} }  → online_branding MERGE
 //                                                                (BRANDING_FIELDS, same discipline)
 //   reset_challenge21_counter { ops_location_id }               → counter = 0
+//   save_reader_settings      { ops_location_id, patch:{...} }  → location_reader_settings upsert
+//                                                                (six columns, database fence stage 1 P2)
 //
 // Requires migration 20260806_PLATFORM_location_rpcs.sql on the platform DB
 // (location_branding_merge / challenge21_reset).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { cleanReaderSettingsPatch } from '../_shared/readerSettingsPatch.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -486,6 +489,22 @@ Deno.serve(async (req) => {
     if (error) return json({ error: error.message }, 500);
     if (!data) return json({ error: 'update matched 0 rows' }, 500);
     return json({ ok: true, online_branding: data });
+  }
+
+  // ── save_reader_settings ──────────────────────────────────────────────────
+  // Database fence stage 1 (contract P2). The card reader tipping and idle screen settings
+  // on Platform location_reader_settings, written for the venue the fence above allowed.
+  // Only the six columns in READER_SETTINGS_FIELDS; the Stripe configuration fields stay
+  // server only. Upsert on location_id (the Platform id, resolved server side).
+  if (action === 'save_reader_settings') {
+    const got = cleanReaderSettingsPatch(body.patch);
+    if (!got.ok) return json({ error: got.error, field: got.field ?? null }, 400);
+    const { data, error } = await platformAdmin.from('location_reader_settings')
+      .upsert({ location_id: loc.id, ...got.row }, { onConflict: 'location_id' })
+      .select(['location_id', ...Object.keys(got.row)].join(', ')).maybeSingle();
+    if (error) return json({ error: error.message }, 500);
+    if (!data) return json({ error: 'update matched 0 rows' }, 500);
+    return json({ ok: true, settings: data });
   }
 
   // ── reset_challenge21_counter ─────────────────────────────────────────────

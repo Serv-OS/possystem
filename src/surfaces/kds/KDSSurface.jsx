@@ -22,6 +22,9 @@ import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { supabase, isMock } from '../../lib/supabase';
 import { updateDeviceHeartbeat } from '../../lib/db';
+import { isDeviceLinkUncertain } from '../../lib/deviceLink';
+import { trustSharedRead } from '../../lib/deviceFence';
+import { mustChangeRow, writeErrorOf } from '../../lib/rowWrites';
 import { loadStaffRoster } from '../../lib/staffRoster';
 import { getLocationConfig } from '../../lib/locationTime';
 import {
@@ -34,6 +37,13 @@ import { gridColumnWidth, cardScale } from '../../lib/kds/kdsFit';
 import { KdsTicketCard, KdsTicketModal } from './KdsTicketCard';
 import { KdsSettingsSheet, KdsManagerPin } from './KdsSettingsSheet';
 import { C, SANS, MONO, ghostBtn, pill, monoLabel, KDS_KEYFRAMES } from './kdsStyles';
+
+// Database fence stage 1, fix round 2 (the zero row blocker): every kds_tickets update here counts
+// the rows it changed. One that changes nothing while this screen is not linked is kept and sent
+// once it is linked again (the banner shows), never counted as done. Resolves { error, outcome }.
+const ticketWrite = (id, payload, label) =>
+  mustChangeRow({ table: 'kds_tickets', type: 'update', payload, match: { id }, kind: 'kds_ticket', label })
+    .then((r) => ({ error: writeErrorOf(r), outcome: r.outcome }));
 
 const UNDO_MS = 5000;
 const MANAGER_GRACE_MS = 90 * 1000;
@@ -204,6 +214,8 @@ export function KDSSurface() {
   // ── heartbeat (Status drawer shows the KDS online) ──────────────────────────
   useEffect(() => {
     if (!device.id || isMock) return;
+    // Database fence stage 1 (contract A10): device_heartbeat (with the old direct write as
+    // the FENCE STAGE 1 FALLBACK inside updateDeviceHeartbeat while the function is missing).
     const beat = () => { updateDeviceHeartbeat(device.id).catch?.(() => {}); };
     beat();
     const id = setInterval(beat, 60000);
@@ -252,6 +264,9 @@ export function KDSSurface() {
         let q = supabase.from('kds_tickets').select('*').eq('location_id', locationId).in('status', ['pending', 'held']).order('sent_at', { ascending: true });
         if (centreId) q = q.eq('centre_id', centreId);
         const { data } = await q;
+        // Database fence stage 1 (contract A9): an empty read while this screen may have lost
+        // its link is unknown, never "no tickets". Keep what is on screen.
+        if (data && !trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: data.length })) return;
         if (data && writeSeq.current === seqAtStart) {
           setRows(data.map(mapRow));
           // A ticket bumped somewhere else while it was open closes the pop out.
@@ -380,7 +395,7 @@ export function KDSSurface() {
     if (live) {
       setRows(prev => prev.filter(r => r.id !== id));
       setLastBumpedToday(true);
-      const p = tracked(() => supabase.from('kds_tickets').update({ status: 'bumped', bumped_at: new Date().toISOString() }).eq('id', id));
+      const p = tracked(() => ticketWrite(id, { status: 'bumped', bumped_at: new Date().toISOString() }, 'Kitchen ticket bumped'));
       pendingBumps.current.set(id, p);
       const { error } = await p;
       if (pendingBumps.current.get(id) === p) pendingBumps.current.delete(id);
@@ -395,7 +410,7 @@ export function KDSSurface() {
     patchRow(id, { status: 'held', held: true });
     showToast('Ticket held', 'info');
     if (live) {
-      const { error } = await tracked(() => supabase.from('kds_tickets').update({ status: 'held' }).eq('id', id));
+      const { error } = await tracked(() => ticketWrite(id, { status: 'held' }, 'Kitchen ticket held'));
       if (error) writeFailed('Hold');
     }
   }, [live, patchRow, showToast, writeFailed, tracked]);
@@ -405,7 +420,7 @@ export function KDSSurface() {
     patchRow(id, { status: 'pending', held: false });
     showToast('Ticket back in queue', 'success');
     if (live) {
-      const { error } = await tracked(() => supabase.from('kds_tickets').update({ status: 'pending' }).eq('id', id));
+      const { error } = await tracked(() => ticketWrite(id, { status: 'pending' }, 'Kitchen ticket resumed'));
       if (error) writeFailed('Resume');
     }
   }, [live, patchRow, showToast, writeFailed, tracked]);
@@ -418,7 +433,7 @@ export function KDSSurface() {
     if (items.filter(i => !i.voided).every(i => i._bumped)) { bump(id); return; }
     patchRow(id, { items });
     if (live) {
-      const { error } = await tracked(() => supabase.from('kds_tickets').update({ items }).eq('id', id));
+      const { error } = await tracked(() => ticketWrite(id, { items }, 'Kitchen item ticked'));
       if (error) writeFailed('Item tick');
     }
   }, [live, patchRow, bump, writeFailed, tracked]);
@@ -427,7 +442,7 @@ export function KDSSurface() {
   const restore = useCallback(async (row, status = 'pending') => {
     if (!row) return false;
     if (live) {
-      const { error } = await tracked(() => supabase.from('kds_tickets').update({ status, bumped_at: null }).eq('id', row.id));
+      const { error } = await tracked(() => ticketWrite(row.id, { status, bumped_at: null }, 'Kitchen ticket recalled'));
       if (error) { writeFailed('Recall'); return false; }
       const back = { ...row, status, held: status === 'held', bumpedAt: null };
       setRows(prev => (prev.some(r => r.id === row.id) ? prev : [...prev, back]));

@@ -350,7 +350,8 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
       : delivery.serviceType === 'collection' ? 'COLLECTION'
       : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
     // v5.5.850: 3-state: partial channel payments show what's paid vs what to collect.
-    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART ${money(+delivery.paidAmount)} — COLLECT ${money(+delivery.due)}` : 'UNPAID — COLLECT')}`).bold(false);
+    // Fence S3 (fix round): a payment being checked prints as that, never "UNPAID, COLLECT".
+    b.bold(true).line(`${st}  ·  ${delivery.paymentShort ? 'PAYMENT SHORT, DO NOT CHARGE IN FULL' : delivery.paymentChecking ? 'PAYMENT BEING CHECKED, DO NOT CHARGE' : delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART ${money(+delivery.paidAmount)} — COLLECT ${money(+delivery.due)}` : 'UNPAID — COLLECT')}`).bold(false);
     if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
     if (delivery.name) b.line(delivery.name);
     if (delivery.phone) b.line(delivery.phone);

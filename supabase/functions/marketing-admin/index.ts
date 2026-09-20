@@ -12,6 +12,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { genCode } from '../_shared/promo.ts';
+import { normalisePromoCode, escapeLike, pickPromoRow, planSaveOffer } from '../_shared/promoLookup.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -61,10 +62,21 @@ Deno.serve(async (req) => {
     const incoming = body.offer || {};
     const row: Record<string, unknown> = { org_id, company_id, updated_at: new Date().toISOString() };
     for (const k of OFFER_FIELDS) if (k in incoming) row[k] = incoming[k];
-    if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
-    const { data, error } = await opsAdmin.from('offers').upsert(row, { onConflict: 'id' }).select('*').maybeSingle();
+    // Review round four (5c): never upsert on a caller supplied id (that let an owner take over
+    // another company's offer). An id means "update MY offer": it must exist in this org.
+    const incomingId = incoming.id ?? null;
+    const { data: existing } = incomingId && typeof incomingId === 'string'
+      ? await opsAdmin.from('offers').select('id, org_id').eq('id', incomingId).eq('org_id', org_id).maybeSingle()
+      : { data: null };
+    const plan = planSaveOffer(incomingId, existing, org_id);
+    if (!plan.ok) return json({ error: plan.error }, plan.status);
+    const q = plan.mode === 'update'
+      ? opsAdmin.from('offers').update(row).eq('id', plan.id).eq('org_id', org_id)
+      : opsAdmin.from('offers').insert(row);
+    const { data, error } = await q.select('*').maybeSingle();
     if (error) return json({ error: error.message }, 500);
+    if (!data) return json({ error: 'offer not found' }, 404);
     return json({ ok: true, offer: data });
   }
 
@@ -92,21 +104,29 @@ Deno.serve(async (req) => {
   }
 
   if (action === 'lookup_code') {
-    const code = String(body.code ?? '').trim();
-    if (!code) return json({ error: 'code required' }, 400);
-    const { data: row } = await opsAdmin.from('promo_codes').select('*').ilike('code', code).eq('org_id', org_id).maybeSingle();
+    // Exact code only (never a wildcard or a prefix), this org only. See _shared/promoLookup.ts.
+    const code = normalisePromoCode(body.code);
+    if (!code) return json({ found: false });
+    const { data: rows } = await opsAdmin.from('promo_codes').select('*').eq('org_id', org_id).ilike('code', escapeLike(code)).limit(5);
+    const row = pickPromoRow(rows, code, org_id);
     if (!row) return json({ found: false });
     const [{ data: offer }, { data: reds }] = await Promise.all([
-      opsAdmin.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('id', row.offer_id).maybeSingle(),
+      opsAdmin.from('offers').select('id, name, reward_type, reward_value, reward_label').eq('id', row.offer_id).eq('org_id', org_id).maybeSingle(),
       opsAdmin.from('promo_redemptions').select('redeemed_at, location_id, order_id, discount_value, customer_id').eq('promo_code_id', row.id).order('redeemed_at', { ascending: false }),
     ]);
     return json({ found: true, code: row, offer, redemptions: reds ?? [] });
   }
 
   if (action === 'void_code') {
-    const code = String(body.code ?? '').trim();
+    // Review round four (5c): void exactly ONE code of this org, by its row id. The raw input used
+    // to go into ilike, so '%' (or a prefix) voided every code of the org at once.
+    const code = normalisePromoCode(body.code);
     if (!code) return json({ error: 'code required' }, 400);
-    const { error } = await opsAdmin.from('promo_codes').update({ status: 'voided', voided_at: new Date().toISOString(), updated_at: new Date().toISOString() }).ilike('code', code).eq('org_id', org_id);
+    const { data: rows } = await opsAdmin.from('promo_codes').select('id, code, org_id').eq('org_id', org_id).ilike('code', escapeLike(code)).limit(5);
+    const row = pickPromoRow(rows, code, org_id);
+    if (!row) return json({ error: 'code not found' }, 404);
+    const now = new Date().toISOString();
+    const { error } = await opsAdmin.from('promo_codes').update({ status: 'voided', voided_at: now, updated_at: now }).eq('id', row.id).eq('org_id', org_id);
     if (error) return json({ error: error.message }, 500);
     return json({ ok: true });
   }

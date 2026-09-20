@@ -14,6 +14,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { resolvePlatformLocationId } from '../../lib/networkReader';
+import { saveReaderSettingsWithFallback } from '../../lib/readerSettingsClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
 import PaxTerminals from './PaxTerminals';
@@ -806,18 +807,33 @@ function ReaderSettingsPanel({ locationId }) {
       const token = session?.session?.access_token;
       if (!token) throw new Error('not authenticated');
 
-      // 1. Update our settings table directly via platform supabase
+      // 1. Save the settings. Database fence stage 1 (contract P2): through location-admin
+      // (save_reader_settings), never the Platform table from the browser. FENCE STAGE 1
+      // FALLBACK inside saveReaderSettingsWithFallback: the old direct update while the
+      // deployed location-admin does not know the action yet.
       const cleanedPcts = tipPcts.filter(p => Number.isFinite(p) && p > 0 && p < 100).slice(0, 5);
       const thresholdMinor = smartThreshold ? Math.round(Number(smartThreshold) * 100) : null;
-      const { error: updErr } = await platformSupabase.from('location_reader_settings').update({
-        tipping_enabled: tipEnabled,
-        tip_percentages: cleanedPcts.length > 0 ? cleanedPcts : [15, 18, 20],
-        allow_custom_tip: allowCustom,
-        smart_tip_threshold_minor: thresholdMinor,
-        idle_screen_enabled: ssEnabled,
-        idle_screen_image_url: ssImageUrl,
-      }).eq('location_id', locationId);
-      if (updErr) throw updErr;
+      const saved = await saveReaderSettingsWithFallback({
+        opsLocationId: getActiveLocationSync(),
+        patch: {
+          tipping_enabled: tipEnabled,
+          tip_percentages: cleanedPcts.length > 0 ? cleanedPcts : [15, 18, 20],
+          allow_custom_tip: allowCustom,
+          smart_tip_threshold_minor: thresholdMinor,
+          idle_screen_enabled: ssEnabled,
+          idle_screen_image_url: ssImageUrl,
+        },
+        callFunction: async (fnBody) => {
+          const r = await fetch(`${FUNCTIONS_URL}/location-admin`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: JSON.stringify(fnBody),
+          });
+          return { status: r.status, data: await r.json().catch(() => ({})) };
+        },
+        legacyWrite: (row) => platformSupabase.from('location_reader_settings').update(row).eq('location_id', locationId),
+      });
+      if (!saved.ok) throw new Error(saved.error || 'Could not save the reader settings');
 
       // 2. Sync to Stripe Terminal Configuration
       const res = await fetch(`${FUNCTIONS_URL}/stripe-sync-location-reader-config`, {

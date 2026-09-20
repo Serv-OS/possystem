@@ -31,6 +31,15 @@ import CourierTrackingQR from '../components/CourierTrackingQR';
 import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
 import { isPrepaidByChannel, ezcaterBadge, ezcaterFlagText, isAwaitingEzcaterAcceptance, cateringChannelLabel, AWAITING_LABEL } from '../lib/ezcaterCatering';
+import PaymentCheckModal from '../components/PaymentCheckModal';
+import {
+  orderPaymentState, PAYMENT_CHECKING_LABEL, paymentStatusLabel, paymentShortLine, PAYMENT_SHORT_HELP, PAYMENT_CHECKING_HELP,
+  qrTabShortInfo, qrTabShortLine, shortTabClosedCheck,
+} from '../lib/orderPayment';
+// Database fence stage 1, fix round 2: writes that must change a row are counted and kept while
+// this till is not linked; no card capture starts on a till that is not linked.
+import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
+import { confirmLinkBeforeCard } from '../lib/deviceLink';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -84,10 +93,13 @@ function dayKeyOf(source, tz) {
 // from a channel that is ALWAYS prepaid before it reaches the queue (online/kiosk). Anything else —
 // catering pay-later, an unpaid walk-in/phone order, an unpaid (test/cash) HubRise order — still
 // owes money, so it must be CHARGED before it can be marked collected (never silently cleared).
-const PREPAID_CHANNELS = ['online', 'kiosk'];
+// Database fence stage 1, fix round (S3): a THIRD state, 'checking' (customer.payment_state), for a
+// public order whose payment the server has not proven yet. It is neither paid nor unpaid: it is
+// never charged here (lib/orderPayment.js orderPaymentState, tested).
 // An ezCater order (a catering order with customer.channel 'ezcater') was paid through ezCater:
-// it never reads as unpaid, so it is never routed to the till pay flow.
-const isOrderPaid = (o) => !!(o?.paid || o?.customer?.paid || PREPAID_CHANNELS.includes(o?.source) || isPrepaidByChannel(o));
+// it never reads as unpaid either, so it is never routed to the till pay flow (v5.9.9).
+const isOrderPaid = (o) => orderPaymentState(o) === 'paid' || isPrepaidByChannel(o);
+const isPaymentChecking = (o) => !isPrepaidByChannel(o) && orderPaymentState(o) === 'checking';
 
 function elapsed(date) {
   if (!date) return '';
@@ -123,6 +135,7 @@ export default function OrdersHub() {
   const [tick, setTick]         = useState(0);
   const [closingTabRef, setClosingTabRef] = useState(null); // ref currently being captured
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
+  const [paymentCheckOrder, setPaymentCheckOrder] = useState(null); // fence S3: "Payment being checked"
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
   const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
   const [printBusy, setPrintBusy] = useState(false);
@@ -367,6 +380,13 @@ export default function OrdersHub() {
     // v5.5.659: never let an order with money still owing be "marked collected" (which clears it
     // with no payment taken). Route to the POS pay flow instead — once paid + closed, it leaves
     // the queue. Paid / prepaid-channel orders advance to collected as before.
+    // Fence S3: a payment being checked is never charged again. It is checked (or confirmed by a
+    // manager) first; only then is it handed over.
+    if (next === 'collected' && isPaymentChecking(o)) {
+      showToast(`${shortOrderRef(o.ref)}: ${paymentStatusLabel(o).toLowerCase()}. Check it before handing it over. Do not charge it again.`, 'info');
+      setPaymentCheckOrder(o);
+      return;
+    }
     if (next === 'collected' && !isOrderPaid(o)) {
       showToast(`Take payment for ${shortOrderRef(o.ref)} before marking collected`, 'info');
       openOrder(o);
@@ -434,9 +454,14 @@ export default function OrdersHub() {
       for (const r0 of rows || []) {
         if (!r0?.id) continue;
         try {
-          await supabase.from('order_queue')
-            .update({ status: 'collected', customer: { ...(r0.customer || {}), tab_closed: true, tab_cancelled: true, tab_cancelled_at: now } })
-            .eq('id', r0.id).eq('location_id', getActiveLocationSync());
+          // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked
+          // (the hold is already released on Adyen; the rounds must still leave the queue).
+          const mr = await mustChangeRow({
+            table: 'order_queue', type: 'update',
+            payload: { status: 'collected', customer: { ...(r0.customer || {}), tab_closed: true, tab_cancelled: true, tab_cancelled_at: now } },
+            match: { id: r0.id, location_id: getActiveLocationSync() }, kind: 'queue_status', label: `Tab round ${r0.ref || r0.id} cancelled`,
+          });
+          if (mr.outcome === 'error') console.warn('[releaseAdyenHold] mark-collected:', mr.error?.message || mr.error);
           if (r0.ref) updateQueueStatus(r0.ref, 'collected');
         } catch (e) { console.warn('[releaseAdyenHold] mark-collected:', e?.message); }
       }
@@ -451,11 +476,71 @@ export default function OrdersHub() {
     }
   };
 
+  // Fence stage 1, fix round 2 (S5): a QR tab the guest closed on their phone, whose capture came
+  // up short of the tab as the server values it (settle_qr_tab 'short': every round carries
+  // customer.tab_close_short). The card hold is ALREADY captured, so nothing is captured or charged
+  // again. Staff close it here: the rounds leave the queue and ONE check books only what the
+  // capture took (lib/orderPayment.js shortTabClosedCheck, one id per hold, so it can never book
+  // twice). The rest is taken on the till as its own sale.
+  const closeShortQrTab = async (tab, short) => {
+    const check = shortTabClosedCheck(tab, short);
+    if (!check) { showToast('This tab has no card payment on record. Close it with a manager.', 'error'); return; }
+    if (!confirm(
+      `Table ${tab.tableLabel}: the guest closed this tab on their phone and their card paid ${money(short.paidMinor / 100)} of ${money(short.dueMinor / 100)}.\n\n`
+      + `The card is NOT charged again. Close the tab now, booking ${money(short.paidMinor / 100)}?`
+      + (short.restMinor > 0 ? `\n\nTake the remaining ${money(short.restMinor / 100)} on the till as its own sale.` : '')
+    )) return;
+    setClosingTabRef(tab.payment_intent_id || tab.key);
+    try {
+      const refs = (tab.rows || []).map(r => r.ref).filter(Boolean);
+      if (refs.length) {
+        // Counted, and kept while this till is not linked (the zero row blocker).
+        const mr = await mustChangeRows({
+          table: 'order_queue', type: 'update', payload: { status: 'collected' },
+          match: { location_id: getActiveLocationSync() }, inColumn: 'ref', keys: refs,
+          kind: 'queue_status', label: `QR tab ${tab.tableLabel || ''} closed short`,
+        });
+        if (mr.outcome === 'error') console.warn('[closeShortQrTab] mark-collected:', mr.error?.message || mr.error);
+        refs.forEach(ref => updateQueueStatus(ref, 'collected'));
+      }
+      const { error: ccErr } = await supabase.from('closed_checks').insert(check);
+      if (ccErr && String(ccErr.code || '') !== '23505') {
+        showToast(`⚠ The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
+      } else {
+        showToast(`Table ${tab.tableLabel}: closed, ${money(short.paidMinor / 100)} booked from the guest's card`
+          + (short.restMinor > 0 ? `. Take ${money(short.restMinor / 100)} on the till.` : ''), 'success', 9000);
+      }
+      (tab.rows || []).forEach(r => setTimeout(() => removeFromQueue(r.ref), 8000));
+      if (tab.tableId && tab.firstRow?.location_id) {
+        syncQrTableSession(tab.firstRow.location_id, tab.tableId).catch(() => {});
+      }
+    } catch (e) {
+      console.error('[closeShortQrTab] failed:', e);
+      showToast(`Close failed: ${e?.message || 'unknown'}`, 'error');
+    } finally {
+      setClosingTabRef(null);
+    }
+  };
+
   const forceCloseQrTab = async (tab) => {
     if (closingTabRef) return;
     // TRAINING MODE: these are REAL customer tabs (synced in). Never capture a card
     // or write closed_checks/order_queue from a training till — block with a notice.
     if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return; }
+    // Fix round 2 (S5): the phone already closed this tab and its card was captured, but short of
+    // the tab as the server values it (settle_qr_tab 'short'). The hold is gone: NEVER capture or
+    // charge it again (closeShortQrTab books only what was paid; the rest is its own sale).
+    const shortTab = qrTabShortInfo(tab.rows);
+    // Database fence stage 1, fix round 2: no card capture on a till that is not linked to its
+    // venue (its closed check could not be saved). Nothing is taken; the hold stays.
+    const linkGate = await confirmLinkBeforeCard();
+    if (!linkGate.ok) {
+      showToast(shortTab
+        ? 'This till is not linked to its venue, so it cannot close this tab. Use another till, or ask a manager to pair it again.'
+        : linkGate.message, 'error');
+      return;
+    }
+    if (shortTab) { await closeShortQrTab(tab, shortTab); return; }
     // Route by processor. Default missing processor → stripe (tabs opened
     // before dual-processor). Ryft holds are addressed by payment_session_id;
     // the ryft-tab edge fn resolves the merchant account from location_id.
@@ -617,8 +702,14 @@ export default function OrdersHub() {
           // v5.5.988: MUST be fenced on the venue. Order refs are not globally unique — the queue's
           // key is (location_id, ref) — so matching on ref alone would mark another venue's live
           // orders collected. Same class as the delete paths fixed in QueueSync.
-          await supabase.from('order_queue').update({ status: 'collected' })
-            .eq('location_id', getActiveLocationSync()).in('ref', refs);
+          // Fix round 2 (the zero row blocker): each round is counted, and a round this till could
+          // not mark while it is not linked is kept and marked once it is linked again.
+          const mr = await mustChangeRows({
+            table: 'order_queue', type: 'update', payload: { status: 'collected' },
+            match: { location_id: getActiveLocationSync() }, inColumn: 'ref', keys: refs,
+            kind: 'queue_status', label: `QR tab ${tab.tableLabel || ''} closed`,
+          });
+          if (mr.outcome === 'error') console.warn('[forceCloseQrTab] mark-collected:', mr.error?.message || mr.error);
           refs.forEach(ref => updateQueueStatus(ref, 'collected'));
         }
       } catch (e) { console.warn('[forceCloseQrTab] mark-collected:', e?.message); }
@@ -722,6 +813,9 @@ export default function OrdersHub() {
       // v5.5.157: refresh the floor-plan table session so the closed
       // tab's items disappear from TablesSurface. If other QR tabs are
       // still open at this table the helper preserves their items.
+      // Database fence stage 1 (contract S1): the helper now only writes or removes a session
+      // QR owns, never a till's. STAGE 1 CLEANUP: remove this call after 20260919b (its
+      // order_queue_qr_floor trigger keeps the floor plan).
       if (tab.tableId && tab.firstRow?.location_id) {
         syncQrTableSession(tab.firstRow.location_id, tab.tableId).catch(() => {});
       }
@@ -755,6 +849,12 @@ export default function OrdersHub() {
     if (isAdyenTab && Number(o.total || 0) <= 0) {
       await releaseAdyenHold({ pspReference: pi, locationId: o.location_id, rows: [o], label: shortOrderRef(o.ref) });
       return;
+    }
+    // Database fence stage 1, fix round 2: no card capture on a till that is not linked to its
+    // venue (its closed check could not be saved). Nothing is taken; the hold stays.
+    {
+      const linkGate = await confirmLinkBeforeCard();
+      if (!linkGate.ok) { showToast(linkGate.message, 'error'); return; }
     }
 
     // v5.5.151: auto-surcharge for left-open tabs. Config snapshotted on
@@ -882,7 +982,10 @@ export default function OrdersHub() {
     // reach the queue, so even if the paid flag is missing (older rows / column absent on a venue)
     // they must never re-open into the editable pay flow. Catering (can be pay-later), QR (open
     // tabs) and HubRise (test/manual orders) stay flag-driven so genuinely unpaid ones remain payable.
-    else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source) || isPrepaidByChannel(o)) { setViewOrder(o); }
+    // Fence S3: an order whose payment is being checked opens read-only too (with Check payment),
+    // never in the pay flow: the customer already paid on their phone. So does an ezCater order,
+    // which ezCater already took the money for (v5.9.9).
+    else if (o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source) || isPrepaidByChannel(o) || isPaymentChecking(o)) { setViewOrder(o); }
     else {
       // v5.5.853: an unpaid / PART-PAID channel order must charge exactly what is still
       // OWED — never a cart recomputation. The generic walk-in load fed channel items
@@ -1095,6 +1198,8 @@ export default function OrdersHub() {
                         ? () => releaseAdyenHold({ pspReference: t.payment_intent_id, locationId: t.firstRow?.location_id, rows: t.rows, label: `Table ${t.tableLabel}` })
                         : null}
                       onAdvance={() => t.firstRow && advance(t.firstRow)}
+                      paymentChecking={!t.isOpenTab && t.rows.some(isPaymentChecking)}
+                      onCheckPayment={() => { const r = t.rows.find(isPaymentChecking); if (r) setPaymentCheckOrder(r); }}
                       closingTab={closingTabRef === (t.payment_intent_id || t.key)}/>
                   ))}
                 </div>
@@ -1270,10 +1375,24 @@ export default function OrdersHub() {
               )}
               <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>
             </div>
-            <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>
+            {isPaymentChecking(viewOrder) ? (
+              <div style={{ marginTop:10, padding:'10px 12px', borderRadius:10, background:'#f59e0b18', border:'1px solid #f59e0b66' }}>
+                <div style={{ fontSize:12, fontWeight:800, color:'#b45309' }}>{paymentStatusLabel(viewOrder)}{paymentShortLine(viewOrder, money) ? `: ${paymentShortLine(viewOrder, money)}` : ''}</div>
+                <div style={{ fontSize:11.5, color:'var(--t2)', marginTop:3, lineHeight:1.5 }}>{paymentShortLine(viewOrder, money) ? PAYMENT_SHORT_HELP : PAYMENT_CHECKING_HELP}</div>
+                <button onClick={() => setPaymentCheckOrder(viewOrder)} style={{ marginTop:8, padding:'8px 12px', borderRadius:8, background:'#f59e0b', border:'none', color:'#0b0c10', fontWeight:800, fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>Check payment</button>
+              </div>
+            ) : (
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>
+            )}
             <button onClick={() => { setViewOrder(null); setDelDetail(null); }} style={{ width:'100%', marginTop:12, padding:12, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Close</button>
           </div>
         </div>
+      )}
+      {paymentCheckOrder && (
+        <PaymentCheckModal
+          order={paymentCheckOrder}
+          onClose={() => setPaymentCheckOrder(null)}
+          onSettled={() => { if (viewOrder && viewOrder.ref === paymentCheckOrder.ref) setViewOrder(null); }}/>
       )}
     </div>
   );
@@ -1283,9 +1402,14 @@ export default function OrdersHub() {
 // v5.5.157: pooled QR-tab card. One per payment_intent_id, even when the
 // customer has added multiple rounds. Shows running total, rounds count,
 // time open, single Force-close button that captures the lot.
-function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab }) {
+function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymentChecking = false, onCheckPayment }) {
   const ageMin = tab.tabOpenedAt ? Math.round((Date.now() - new Date(tab.tabOpenedAt).getTime()) / 60_000) : 0;
   const headerColor = tab.isOpenTab ? '#10b981' : '#22d3ee'; // emerald for tabs, cyan for paid
+  // Fence stage 1, fix round 2 (S5): the guest closed this tab on their phone and the capture came
+  // up short. The card was already charged: the button closes the tab, never charges it again.
+  const shortLine = tab.isOpenTab ? qrTabShortLine(tab.rows, money) : '';
+  // A pay now QR order being checked reads 'Payment short' when the server found it short (S5).
+  const checkingRow = paymentChecking ? (tab.rows || []).find(r => orderPaymentState(r) === 'checking') : null;
   return (
     <div style={{
       background:'var(--bg1)', borderRadius:13, overflow:'hidden',
@@ -1306,10 +1430,18 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab }) {
             <span>⏱ {ageMin} min open</span>
           </div>
         </div>
-        {tab.isOpenTab ? (
+        {tab.isOpenTab && shortLine ? (
+          <span title={`The guest's card was charged on their phone. ${shortLine}. Do not charge it again: take the rest on the till as its own sale.`} style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
+            background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
+          }}>PAYMENT SHORT · {shortLine.toUpperCase()}</span>
+        ) : tab.isOpenTab ? (
           <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
             background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
           }}>{currencySymbol()}{tab.preAuthAmount.toFixed(0)} HELD</span>
+        ) : paymentChecking ? (
+          <span title={checkingRow && paymentShortLine(checkingRow, money) ? `${paymentShortLine(checkingRow, money)}. ${PAYMENT_SHORT_HELP}` : PAYMENT_CHECKING_HELP} style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
+            background:'#fde68a', color:'#78350f', border:'1px solid #f59e0b', whiteSpace:'nowrap',
+          }}>{(checkingRow ? paymentStatusLabel(checkingRow) : PAYMENT_CHECKING_LABEL).toUpperCase()}</span>
         ) : (
           <span style={{ fontSize:10, fontWeight:800, padding:'3px 8px', borderRadius:12,
             background:'#bbf7d0', color:'#14532d', border:'1px solid #22c55e', whiteSpace:'nowrap',
@@ -1332,10 +1464,10 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab }) {
       </div>
       <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(tab.total)}</span>
-        <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : 'paid'}</span>
+        <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : paymentChecking ? 'being checked' : 'paid'}</span>
         {tab.isOpenTab ? (
           <>
-            {onRelease && (
+            {onRelease && !shortLine && (
               <button onClick={onRelease} disabled={!!closingTab} title="Void the card hold without charging (walked out, abandoned, nothing to pay)" style={{
                 marginLeft:'auto', padding:'6px 10px', borderRadius:8,
                 cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
@@ -1346,23 +1478,35 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab }) {
               </button>
             )}
             <button onClick={onForceClose} disabled={!!closingTab} style={{
-              marginLeft: onRelease ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
+              marginLeft: (onRelease && !shortLine) ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
               cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
               background:'#f59e0b', border:'none', color:'#0b0c10',
               fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
             }}>
-              {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+              {shortLine ? (closingTab ? 'Closing…' : 'Close (already charged)') : (closingTab ? 'Capturing…' : '🔒 Close & charge')}
             </button>
           </>
         ) : (
-          <button onClick={onAdvance} style={{
-            marginLeft:'auto', padding:'6px 14px', borderRadius:8,
-            cursor:'pointer', fontFamily:'inherit',
-            background:'var(--acc)', border:'none', color:'#0b0c10',
-            fontSize:12, fontWeight:800,
-          }}>
-            Advance →
-          </button>
+          <>
+            {paymentChecking && onCheckPayment && (
+              <button onClick={onCheckPayment} style={{
+                marginLeft:'auto', padding:'6px 12px', borderRadius:8,
+                cursor:'pointer', fontFamily:'inherit',
+                background:'#f59e0b', border:'none', color:'#0b0c10',
+                fontSize:12, fontWeight:800,
+              }}>
+                Check payment
+              </button>
+            )}
+            <button onClick={onAdvance} style={{
+              marginLeft: paymentChecking && onCheckPayment ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
+              cursor:'pointer', fontFamily:'inherit',
+              background:'var(--acc)', border:'none', color:'#0b0c10',
+              fontSize:12, fontWeight:800,
+            }}>
+              Advance →
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -1480,6 +1624,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {ezcaterBadge(order) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f9731618', border:'1px solid #f9731655', color:'#f97316', letterSpacing:'.03em' }}>{ezcaterBadge(order).toUpperCase()}</span>}
             {isAwaitingEzcaterAcceptance(order) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b55', color:'#f59e0b' }}>{AWAITING_LABEL.toUpperCase()}</span>}
             {(order.paid || order.customer?.paid) && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}
+            {isPaymentChecking(order) && <span title={paymentShortLine(order, money) ? `${paymentShortLine(order, money)}. ${PAYMENT_SHORT_HELP}` : PAYMENT_CHECKING_HELP} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b22', border:'1px solid #f59e0b66', color:'#b45309' }}>{paymentStatusLabel(order).toUpperCase()}</span>}
             {/* v5.5.850: a HubRise partial payment no longer reads as PAID — amber badge with the balance due */}
             {!(order.paid || order.customer?.paid) && Number(order.customer?.paidAmount) > 0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>PART-PAID · {money(Number(order.customer?.due) || 0)} due</span>}
           </div>
@@ -1601,6 +1746,15 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
           {!isOpenTab && canAdvance && (() => {
             // v5.5.659: the final step on an order that still owes money is "Charge", not
             // "Mark collected" — it opens the order for payment (advance() routes it there).
+            // Fence S3: a payment being checked never gets the charge step; its last step checks it.
+            if (order.status === 'ready' && isPaymentChecking(order)) {
+              return (
+                <button onClick={onAdvance} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',
+                  background:'#f59e0b', border:'none', color:'#0b0c10', fontSize:11, fontWeight:800 }}>
+                  Check payment →
+                </button>
+              );
+            }
             const chargeStep = order.status === 'ready' && !isOrderPaid(order);
             return (
               <button onClick={onAdvance} style={{ padding:'4px 12px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',

@@ -19,6 +19,7 @@
 
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
+import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
@@ -472,6 +473,12 @@ export async function flushQueues() {
   }
 
   if (online) {
+    // Database fence stage 1, fix round 2 (the zero row blocker): every update and delete below was
+    // queued in the durable OfflineQueue FIRST (queueWrite above). These live calls are only the
+    // fast path and never mark anything as sent: the queue's replay, a second later, counts the
+    // rows it changed (lib/rowWriteFence.js). On a till that lost its link, row level security
+    // hides the row and the write changes nothing without an error; the replay then KEEPS it
+    // (parked) until the till is linked again, instead of counting it as done.
     // order_queue is keyed (location_id, ref). A ref alone is one global namespace
     // shared by every venue, so both statements MUST carry the location: an upsert
     // on 'ref' would land this venue's order on top of another venue's live order,
@@ -483,7 +490,7 @@ export async function flushQueues() {
       const sent = new Map(queueUpserts.map(r => [r.ref, rowHash(r)]));
       Promise.resolve(supabase.from('order_queue').upsert(queueUpserts, { onConflict: 'location_id,ref' }).select('ref, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] order_queue batch upsert:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] order_queue batch upsert:', error.message); return; }
           const at = new Map((data || []).map(r => [r.ref, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('orderQueue', o => o.ref, queueHash, sent, at);
         })
@@ -492,7 +499,7 @@ export async function flushQueues() {
     for (const row of queueUpdates) {
       Promise.resolve(supabase.from('order_queue').update(row).eq('location_id', _locationId).eq('ref', row.ref).select('ref, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] order_queue update:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] order_queue update:', error.message); return; }
           const at = new Map((data || []).map(r => [r.ref, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('orderQueue', o => o.ref, queueHash, new Map([[row.ref, rowHash(row)]]), at);
         })
@@ -503,7 +510,7 @@ export async function flushQueues() {
       const sent = new Map(tabUpserts.map(r => [r.id, rowHash(r)]));
       Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' }).select('id, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] bar_tabs batch upsert:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] bar_tabs batch upsert:', error.message); return; }
           const at = new Map((data || []).map(r => [r.id, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('tabs', t => t.id, tabHash, sent, at);
         })
@@ -512,7 +519,7 @@ export async function flushQueues() {
     for (const row of tabUpdates) {
       Promise.resolve(supabase.from('bar_tabs').update(row).eq('id', row.id).neq('status', 'closed').select('id, updated_at'))
         .then(({ data, error }) => {
-          if (error) { console.warn('[QueueSync] bar_tabs update:', error.message); return; }
+          if (error) { reportWriteRefused(error); console.warn('[QueueSync] bar_tabs update:', error.message); return; }
           const at = new Map((data || []).map(r => [r.id, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));
           stampConfirmed('tabs', t => t.id, tabHash, new Map([[row.id, rowHash(row)]]), at);
         })

@@ -291,8 +291,14 @@ test('QueueSync uses the rule at boot, stamps every confirmed row, and the recon
   assert.equal((qs.match(/keepIfPending: \(\) => true/g) || []).length, 1, 'tabs with unsent changes are kept at boot');
   assert.ok(qs.includes('export function scheduleQueueFlush(immediate = false)') && qs.includes('export function hasNewUnsentRows('), 'a new order or tab is flushed at once');
   const oq2 = fs.readFileSync(path.join(here, '../sync/OfflineQueue.js'), 'utf8');
-  assert.ok(oq2.includes("for (const [k, v] of Object.entries(item.notMatch || {})) q = q.neq(k, v);"), 'the replay honours the guard');
-  assert.ok(oq2.includes("} else if (item.type === 'update') {") && oq2.includes("it.type === 'update' ? `x|${it.table}`"), 'the replay knows update writes');
+  // Fence stage 1, fix round 2: the replay of an update or delete builds its query in
+  // lib/rowWriteFence.js (buildWriteQuery), which counts the rows it changed. The notMatch guard
+  // (a bar tab is never re-opened) is applied there, for the replay and the live writes alike
+  // (behaviour pinned in rowWriteFence.test.js).
+  const rwf = fs.readFileSync(path.join(here, './rowWriteFence.js'), 'utf8');
+  assert.ok(rwf.includes('for (const [k, v] of Object.entries(isPlainObject(notMatch) ? notMatch : {})) q = q.neq(k, v);'), 'the replay honours the guard');
+  assert.ok(oq2.includes("} else if (item.type === 'update' || item.type === 'delete') {") && oq2.includes('const r = await replayMustChangeItem(item, zeroRowDeps(supabase));'), 'the replay knows update writes');
+  assert.ok(oq2.includes("it.type === 'update' ? `x|${it.table}`"), 'updates replay one by one, in order');
   assert.ok(oq2.includes("return null; }") && oq2.includes("it.status === 'dismissed') continue;") && !oq2.includes('it.permanentFailure || it.status'), 'a refused write is still evidence, an unreadable store is unknown');
   assert.ok(qs.includes('function duePublish(') && qs.includes('PUBLISH_RETRY_MS'), 'publishing is rate limited per row');
   assert.ok(!qs.includes('rpos-queue-stamped'), 'no one shot upgrade flag: the age rule holds on every boot');

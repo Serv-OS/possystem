@@ -9,7 +9,19 @@
 //   channel,         -- 'pos'|'kiosk'|'online'|'qr'
 //   closed_check_id, -- for audit trail (optional at time of redeem)
 //   staff_id?,
+//   member_token?,   -- the member's loyalty session token (online checkout)
 // }
+//
+// AUTHORITY (database fence stage 1, 19 Sep 2026): the caller must be a device BOUND to the venue
+// (the device arm of pos_can_access), a Back Office user of the venue, or the member themselves
+// via their loyalty session token for their own customer_id (a token past its 24 hours still
+// counts for the order it was live for, so a parked redemption can replay). Decided before a
+// balance is read. This matters for money since stage 1: place_public_order counts a loyalty
+// discount on an online order only when a redeem row keyed to that order's check exists, so a
+// stranger's redeem would fund an attacker's order with a member's points. Report before
+// 20260919a (every call goes through, the ones enforce would refuse are logged), enforced by
+// itself once it has run; LOYALTY_AUTHORITY_MODE may force either. See
+// _shared/loyalty-authority.ts and checkLoyaltyAuthority in _shared/loyalty-utils.ts.
 //
 // Returns: { status, points_deducted, balance, reward }
 //
@@ -18,7 +30,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation,
+  resolveCompanyForLocation, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -42,6 +54,7 @@ Deno.serve(async (req) => {
     channel = 'pos',
     closed_check_id,
     staff_id,
+    member_token,
   } = body as any;
 
   if (!customer_id) return json({ error: 'customer_id required' }, 400);
@@ -52,6 +65,23 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Authority: who may spend THIS customer's rewards ───────────────────
+  // customer_id comes from the body, so it proves nothing on its own. Decided before any
+  // balance is read or moved. Facts are gathered only as far as needed. Report mode (before
+  // 20260919a) allows the call and logs it when enforce would refuse; enforce refuses.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-redeem',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer_id),
+    memberToken: member_token,
+    closedCheckId: closed_check_id,
+    channel,
+    deviceHint: deviceHintOf(body),
+  });
+  if (!gate.allow) return gate.response!;
 
   // ── Stamp-card reward redemption ───────────────────────────────────────
   // A completed stamp card IS the reward — there is no voucher row. Availability is derived:

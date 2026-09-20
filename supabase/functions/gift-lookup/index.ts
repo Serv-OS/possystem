@@ -15,6 +15,9 @@ import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
+import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
+import { classifyGiftLookup, decideGiftLookupAuthority, codeHolderView } from '../_shared/gift-authority.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -35,6 +38,33 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, bodyLocationId as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── Who may search (18 Sep 2026, enforced now) ─────────────────────────
+  // By the exact full code: anybody. Typing the code is proof of possession, and it is how a
+  // customer pays at the kiosk, online and by QR, and how the till and split bill take a card.
+  // By anything else (last 4, email, name, last 4 plus email): staff only. That search used to
+  // answer any session and return card_id, balance, name and email, and gift-redeem spent a
+  // card by card_id alone, so a card could be stolen knowing the recipient's name.
+  // Callers: Back Office GiftCards.jsx Lookup (staff; code, search and last 4 plus email), the
+  // till CheckoutModal.jsx and SplitModal.jsx, kiosk KioskApp.jsx and kiosk/kioskApi.js, and
+  // online OnlineCheckout.jsx (all by full code). See _shared/gift-authority.ts.
+  const lookupKind = classifyGiftLookup(body);
+  const staff = lookupKind === 'code' || lookupKind === 'staff_search'
+    ? await callerIsStaffFor(caller, (bodyLocationId as string) || null, companyId)
+    : false;
+  const authority = decideGiftLookupAuthority(lookupKind, { user: caller, staff });
+  if (!authority.ok) {
+    if (authority.status === 403) {
+      recordAuthority(authorityLogRow({
+        fn: 'gift-lookup', mode: 'enforce', outcome: 'refused',
+        decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
+        user: caller, companyId, locationId: bodyLocationId,
+      }));
+    }
+    return json({ error: authority.error }, authority.status);
+  }
+  // The reply for a caller who is not staff: no recipient email, note or history.
+  const shape = (full: Record<string, unknown>) => (authority.view === 'full' ? full : codeHolderView(full));
 
   let card: any = null;
   let cards: any[] = [];
@@ -91,6 +121,10 @@ Deno.serve(async (req) => {
   } else if (search) {
     // ── Smart search: auto-detect what was typed ──────────────────────
     const q = String(search).trim();
+    // Steps 2 to 4 (last 4, email, name) are staff only. A code holder's search that misses the
+    // exact code stops at step 1: without this a crafted 16 letter "code" would fall through to
+    // the name search.
+    const fullSearch = authority.view === 'full';
 
     // 1. Looks like a full 16-char code?
     const cleaned = q.replace(/[\s-]/g, '').toUpperCase();
@@ -123,7 +157,7 @@ Deno.serve(async (req) => {
     }
 
     // 2. If no full-code match, try by last4 (2-4 uppercase chars)
-    if (!card && /^[A-Z2-9]{2,4}$/i.test(cleaned)) {
+    if (fullSearch && !card && /^[A-Z2-9]{2,4}$/i.test(cleaned)) {
       const { data } = await platformAdmin
         .from('gift_cards')
         .select('*')
@@ -140,7 +174,7 @@ Deno.serve(async (req) => {
     }
 
     // 3. If no match yet, try email (contains @)
-    if (!card && !multiResult && q.includes('@')) {
+    if (fullSearch && !card && !multiResult && q.includes('@')) {
       const { data } = await platformAdmin
         .from('gift_cards')
         .select('*')
@@ -157,7 +191,7 @@ Deno.serve(async (req) => {
     }
 
     // 4. Try name search (ilike)
-    if (!card && !multiResult && q.length >= 2 && !q.includes('@')) {
+    if (fullSearch && !card && !multiResult && q.length >= 2 && !q.includes('@')) {
       const { data } = await platformAdmin
         .from('gift_cards')
         .select('*')
@@ -218,7 +252,7 @@ Deno.serve(async (req) => {
     .order('created_at', { ascending: false })
     .limit(20);
 
-  return json({
+  return json(shape({
     card_id: card.id,
     status: card.status,
     balance: card.balance_minor,
@@ -231,5 +265,5 @@ Deno.serve(async (req) => {
     recipient_email: card.recipient_email,
     note: card.note,
     recent_transactions: txns ?? [],
-  });
+  }));
 });

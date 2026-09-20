@@ -52,7 +52,9 @@ Deno.serve(async (req) => {
   }
 
   return json({
-    status: purchase.status,
+    // 18 Sep 2026: gift-fulfill now claims a purchase ('fulfilling') while it issues the card.
+    // The success page only knows pending / paid / fulfilled, so a claim reads as paid.
+    status: purchase.status === 'fulfilling' ? 'paid' : purchase.status,
     amount_minor: purchase.amount_minor,
     currency: purchase.currency || 'gbp',
     recipient_name: purchase.recipient_name,

@@ -23,6 +23,9 @@ import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
+import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
+import { openTabsFromResult, chooseTrackKey, UNVERIFIED_MESSAGE, mergeResumeTab, publicOrderRefusalMessage } from '../../lib/publicOrder';
+import { isMissingRpc } from '../../lib/deviceFence';
 import OnlineCart from './OnlineCart';
 import OnlineCheckout from './OnlineCheckout';
 import OnlineItemSheet from './OnlineItemSheet';
@@ -101,6 +104,18 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [showCheckout, setShowCheckout] = useState(false);
   const [confirmation, setConfirmation] = useState(null); // { id, when, type }
   const [trackerRef, setTrackerRef] = useState(null); // shows OrderTracker for this ref
+  // Database fence stage 1 (contract C3): the key the tracker is read with (tracking token,
+  // QR tab card payment id, or last 4 digits of an old link), and the "venue will confirm
+  // your payment" note for an order placed without proof of payment.
+  const [trackKey, setTrackKey] = useState(null);
+  const [unverifiedNotice, setUnverifiedNotice] = useState(null);
+  // Fix round (C17): the page keeps checking an unproven payment in the background
+  // (publicOrderClient startPaymentVerification); once it is proven the notice goes.
+  useEffect(() => {
+    const onVerified = (e) => { if (!trackerRef || e?.detail?.ref === trackerRef) setUnverifiedNotice(null); };
+    window.addEventListener('rpos-public-payment-verified', onVerified);
+    return () => window.removeEventListener('rpos-public-payment-verified', onVerified);
+  }, [trackerRef]);
   const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
   // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
   // always dine-in. Online mode keeps the existing welcome flow.
@@ -137,14 +152,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // v5.5.159: also list ANY open tab at this tableId (not just the
       // localStorage match). Lets the start screen offer "Settle bill".
       try {
-        const { data: anyTabs } = await supabase
-          .from('order_queue')
-          .select('ref, status, items, total, customer, location_id, created_at')
-          .eq('location_id', opsLocationId)
-          .eq('source', 'qr')
-          .neq('status', 'collected')
-          .filter('customer->>tableId', 'eq', String(tableId))
-          .filter('customer->>tab_open', 'eq', 'true');
+        // Database fence stage 1 (contract C4, gaps G4 and G17): qr_table_open_tabs returns
+        // opaque handles only (no card payment ids, names or codes).
+        // FENCE STAGE 1 FALLBACK: the direct read below runs only while it does not exist.
+        const openRes = await publicRead('qr_table_open_tabs',
+          { p_location_id: String(opsLocationId), p_table_id: String(tableId) },
+          () => supabase
+            .from('order_queue')
+            .select('ref, status, items, total, customer, location_id, created_at')
+            .eq('location_id', opsLocationId)
+            .eq('source', 'qr')
+            .neq('status', 'collected')
+            .filter('customer->>tableId', 'eq', String(tableId))
+            .filter('customer->>tab_open', 'eq', 'true'));
+        if (alive && !openRes.legacy && !openRes.error) setTableTabs(openTabsFromResult(openRes.data));
+        const anyTabs = openRes.legacy ? openRes.data : null;
         if (alive && Array.isArray(anyTabs) && anyTabs.length) {
           // Pool by payment_intent_id (one card per tab even if multiple rounds)
           const byPi = {};
@@ -181,22 +203,38 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       const stashed = getStashedTab(location.online_slug, tableId);
       if (!stashed?.payment_intent_id) { if (alive) setResumeChecked(true); return; }
       try {
-        // All rounds for this tab share customer.payment_intent_id. Use a
-        // jsonb @> filter to find them. status != 'collected' = still open.
-        const { data, error } = await supabase
-          .from('order_queue')
-          .select('ref, status, items, total, customer, location_id')
-          .eq('location_id', opsLocationId)
-          .eq('source', 'qr')
-          .neq('status', 'collected')
-          .filter('customer->>payment_intent_id', 'eq', stashed.payment_intent_id);
+        // Database fence stage 1 (contract C5): qr_tab_rounds, keyed to the tab's card payment
+        // id this phone stashed when it opened (or joined) the tab. NULL means the tab closed.
+        const rr = await publicRead('qr_tab_rounds',
+          { p_location_id: String(opsLocationId), p_payment_intent_id: String(stashed.payment_intent_id) },
+          // FENCE STAGE 1 FALLBACK: today's direct read of the rounds (all share
+          // customer.payment_intent_id; status != 'collected' = still open).
+          () => supabase
+            .from('order_queue')
+            .select('ref, status, items, total, customer, location_id')
+            .eq('location_id', opsLocationId)
+            .eq('source', 'qr')
+            .neq('status', 'collected')
+            .filter('customer->>payment_intent_id', 'eq', stashed.payment_intent_id));
         if (!alive) return;
-        if (error || !data?.length) {
-          // Tab no longer open — clear the stale stash
+        if (rr.legacy) {
+          if (rr.error || !rr.data?.length) {
+            // Tab no longer open: clear the stale stash
+            clearStashedTab(location.online_slug, tableId);
+          } else {
+            setResumeTab(stashed);
+            setResumeRounds(rr.data);
+          }
+        } else if (rr.error) {
+          // Unknown (network): keep the stash, the customer can reload.
+          console.warn('[OnlineSurface] resume check failed:', rr.error.message);
+        } else if (!rr.data || !rr.data.tab) {
           clearStashedTab(location.online_slug, tableId);
         } else {
-          setResumeTab(stashed);
-          setResumeRounds(data);
+          // Fence C16: qr_tab_rounds returns the table code only to the opener and members;
+          // the code the stash holds is kept (the resume screen shows it).
+          setResumeTab(mergeResumeTab(stashed, rr.data.tab));
+          setResumeRounds(Array.isArray(rr.data.rounds) ? rr.data.rounds : []);
         }
       } catch (e) { console.warn('[OnlineSurface] resume check failed:', e?.message); }
       finally { if (alive) setResumeChecked(true); }
@@ -215,9 +253,22 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     const url = new URL(window.location.href);
     const trackRef = url.searchParams.get('track');
     const p4       = url.searchParams.get('p');
-    if (!trackRef || !p4 || !supabase) return;
+    const tok      = url.searchParams.get('t');
+    if (!trackRef || (!p4 && !tok) || !supabase) return;
     (async () => {
       try {
+        // Database fence stage 1 (contract C3): order_track_check with the tracking token
+        // (?t=) or, for old links, the last 4 phone digits (?p=, throttled on the server).
+        const key = tok || String(p4 || '').replace(/\D/g, '').slice(-4);
+        if (!key || !opsLocationId) return;
+        const gate = await supabase.rpc('order_track_check', { p_location_id: String(opsLocationId), p_ref: String(trackRef), p_key: key });
+        if (!gate.error) {
+          if (gate.data === true) { setTrackKey(key); setTrackerRef(trackRef); }
+          return;
+        }
+        if (!isMissingRpc(gate.error) || !p4) return;
+        // FENCE STAGE 1 FALLBACK: today's last 4 digits gate, only while order_track_check
+        // does not exist.
         // v5.5.830 SECURITY: this gate used to SELECT the customer block and compare
         // the last 4 digits in client JS — so the full phone number was already on the
         // wire before the check, and the check could simply be skipped. It was also
@@ -233,6 +284,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           .filter('customer->>phone', 'like', `%${digits}`)
           .maybeSingle();
         if (error || !data) return;
+        setTrackKey(digits);
         setTrackerRef(trackRef);
       } catch (e) { console.warn('[OnlineSurface] track lookup failed:', e?.message); }
     })();
@@ -649,13 +701,19 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           presetLabel={tableLabel || tableId || ''}
           mode={qrTableMode}
           openTabs={tableTabs}
-          onSettleTab={(tab) => {
+          onSettleTab={async (tab) => {
             // v5.5.716: only the OPENER (device holds the matching stash) settles silently. Any other
             // phone must pass the join-code gate first — route it there by confirming the table; the
             // gate (below) then requires the code before showing the tab.
+            // Database fence stage 1 (contract C6): the list carries handles, not payment ids, so
+            // the opener is matched on tab_ref and the tab is read with the stashed payment id.
             const stashed = getStashedTab(location.online_slug, tableId);
-            if (stashed?.payment_intent_id && stashed.payment_intent_id === tab.payment_intent_id) {
-              enterTab(tab);
+            if (!tab.tab_handle && stashed?.payment_intent_id && stashed.payment_intent_id === tab.payment_intent_id) {
+              enterTab(tab);   // FENCE STAGE 1 FALLBACK: the old list carried the payment id
+            } else if (tab.tab_handle && stashed?.payment_intent_id && stashed.tab_ref && stashed.tab_ref === tab.tab_ref) {
+              const { data } = await supabase.rpc('qr_tab_rounds', { p_location_id: String(opsLocationId), p_payment_intent_id: String(stashed.payment_intent_id) });
+              if (data?.tab) enterTab({ ...mergeResumeTab(stashed, data.tab), rounds: data.rounds || [] });
+              else { setPickedTableTab(tab); setTableConfirmed(true); }
             } else {
               setPickedTableTab(tab);
               setTableConfirmed(true);
@@ -677,8 +735,30 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <JoinTabScreen
           theme={theme}
           tableLabel={effectiveTableLabel}
-          hasCode={!!openTabAtTable.tab_join_code}
-          onJoin={(code) => {
+          hasCode={openTabAtTable.tab_handle ? openTabAtTable.has_join_code === true : !!openTabAtTable.tab_join_code}
+          onJoin={async (code) => {
+            // Database fence stage 1 (contract C6, gap G5): the code is checked on the server
+            // (qr_tab_join, 8 wrong tries per tab per hour), never against a code in this page.
+            if (openTabAtTable.tab_handle) {
+              // Fix round (C16): a session FIRST, so the server remembers this phone as a member
+              // of the tab and its later rounds need no code.
+              await ensureCustomerSession();
+              const { data, error } = await supabase.rpc('qr_tab_join', {
+                p_location_id: String(opsLocationId), p_tab_handle: String(openTabAtTable.tab_handle), p_join_code: String(code),
+              });
+              if (!error && data?.ok && data.tab) {
+                enterTab({ ...data.tab, rounds: data.rounds || [] });
+                return true;
+              }
+              return {
+                ok: false,
+                message: data?.reason === 'locked' || data?.reason === 'tab_not_yours'
+                  ? publicOrderRefusalMessage(data, null)
+                  : (data?.message || null),
+                locked: data?.reason === 'locked' || data?.reason === 'staff_only',
+              };
+            }
+            // FENCE STAGE 1 FALLBACK: the old list carried the code (only while qr_table_open_tabs does not exist).
             if (openTabAtTable.tab_join_code && String(code) === String(openTabAtTable.tab_join_code)) {
               enterTab(openTabAtTable);
               return true;
@@ -710,6 +790,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onAddMore={() => setExistingTab({ ...resumeTab, runningTotal, rounds: resumeRounds })}
           onClosed={() => {
             setResumeTab(null); setResumeRounds([]); setExistingTab(null);
+            setTrackKey(chooseTrackKey({ paymentIntentId: resumeTab.payment_intent_id }));   // fence stage 1 (C3)
             setTrackerRef(resumeTab.tab_ref); // jump to live tracker
           }}
           onAbandon={() => {
@@ -730,8 +811,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             <button onClick={() => setJustOpenedCode(null)} style={{ marginLeft: 10, background: 'rgba(255,255,255,.25)', border: 'none', borderRadius: 7, color: '#fff', padding: '3px 10px', cursor: 'pointer', fontWeight: 700 }}>Got it</button>
           </div>
         )}
+        {unverifiedNotice && (
+          <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 50, background: '#b45309', color: '#fff', padding: '12px 16px', textAlign: 'center', fontSize: 13.5, fontWeight: 700, lineHeight: 1.5 }}>
+            {unverifiedNotice}
+            <button onClick={() => setUnverifiedNotice(null)} style={{ marginLeft: 10, background: 'rgba(255,255,255,.25)', border: 'none', borderRadius: 7, color: '#fff', padding: '3px 10px', cursor: 'pointer', fontWeight: 700 }}>OK</button>
+          </div>
+        )}
         <OrderTracker tz={location?.timezone || 'Europe/London'} orderRef={trackerRef} locationId={opsLocationId} theme={theme}
-          onClose={() => { setTrackerRef(null); if (!isQr) setOrderType(null); }}/>
+          trackKey={trackKey}
+          onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr) setOrderType(null); }}/>
       </>
     );
   }
@@ -994,6 +1082,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCheckout
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
+          menuId={effectiveMenuId} /* fence stage 1: the menu these prices came from, so the server prices from the same one */
           menuItems={items} /* free item rewards match by name across sites (loyaltyMenuMatch.js) */
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
@@ -1004,12 +1093,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onPlaced={(info) => {
             setShowCheckout(false);
             setCart([]);
+            setTrackKey(chooseTrackKey({ trackToken: info.trackToken, phone: info.phone }));   // fence stage 1 (C3)
+            setUnverifiedNotice(info.paymentUnverified ? UNVERIFIED_MESSAGE : null);
             setTrackerRef(info.ref); // → live OrderTracker
           }}/>
       )}
       {showCheckout && isQr && (
         <QrCheckout
           cart={cart} theme={theme} location={location}
+          menuId={effectiveMenuId} /* fence stage 1: the menu these prices came from */
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
@@ -1020,6 +1112,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             setShowCheckout(false);
             setCart([]);
             if (info.joinCode) setJustOpenedCode(info.joinCode);   // v5.5.716: show the opener their share code
+            setTrackKey(chooseTrackKey({ trackToken: info.trackToken, paymentIntentId: info.paymentIntentId }));   // fence stage 1 (C3)
+            setUnverifiedNotice(info.paymentUnverified ? UNVERIFIED_MESSAGE : null);
             setTrackerRef(info.ref);
           }}/>
       )}
@@ -1714,6 +1808,9 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
 // free-type table modes. Pre-fills with the QR-encoded table id when present;
 // "Change" or empty preset switches to a numeric input. Locked table mode
 // skips this entirely (set tableConfirmed=true on mount).
+// A tab row from qr_table_open_tabs carries a round COUNT; the old direct read carried the rounds.
+const tabRoundCount = (t) => (Array.isArray(t?.rounds) ? t.rounds.length : (Number(t?.rounds) || 0));
+
 function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, mode, onConfirm, openTabs = [], onSettleTab }) {
   const [editing, setEditing] = useState(mode === 'free' || !presetLabel);
   const [value, setValue] = useState(presetLabel || '');
@@ -1778,14 +1875,14 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
                     💳 Open bill{openTabs.length > 1 ? 's' : ''} at this table
                   </div>
                   {openTabs.map(t => (
-                    <button key={t.payment_intent_id} onClick={() => onSettleTab(t)}
+                    <button key={t.tab_handle || t.payment_intent_id} onClick={() => onSettleTab(t)}
                       style={{
                         width:'100%', padding:'12px 14px', marginBottom:6, borderRadius:10,
                         background:'rgba(255,255,255,0.95)', color:'#1a1a1a', border:'none',
                         fontSize:14, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
                         display:'flex', justifyContent:'space-between', alignItems:'center',
                       }}>
-                      <span>Table {t.table_label} · {t.rounds.length} round{t.rounds.length===1?'':'s'}</span>
+                      <span>Table {t.table_label} · {tabRoundCount(t)} round{tabRoundCount(t)===1?'':'s'}</span>
                       <span>{money(t.total)}</span>
                     </button>
                   ))}

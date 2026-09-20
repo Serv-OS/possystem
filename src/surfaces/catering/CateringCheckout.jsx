@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
+import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
@@ -217,8 +218,16 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     try {
       await ensureAuthToken();
       const cateringRow = queueRow(false, { pay_later: true });
-      const { error } = await supabase.from('order_queue').insert(cateringRow);
-      if (error) throw error;
+      // Database fence stage 1 (contract C11): one server call (no payment was taken).
+      // FENCE STAGE 1 FALLBACK: the direct insert, only while place_public_order does not exist.
+      const placed = await placePublicOrder({
+        opsLocationId: opsId, order: cateringRow,
+        legacyInsert: async () => {
+          const { error } = await supabase.from('order_queue').insert(cateringRow);
+          return error ? { ok: false, error } : { ok: true };
+        },
+      });
+      if (!placed.ok) throw new Error(placed.message || 'Could not place the order.');
       try { logOrderActivity(opsId, cateringRow); } catch { /* feed best-effort */ }
       redeemPromo(ref);
       logDeliverySurcharge();
@@ -255,9 +264,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       const pay = { payment_intent_id: payId, processor, pay_later: false, paid: true };
       // order_queue (paid)
       const cateringPaidRow = queueRow(true, pay);
-      await supabase.from('order_queue').insert(cateringPaidRow);
-      try { logOrderActivity(opsId, cateringPaidRow); } catch { /* feed best-effort */ }
-      logDeliverySurcharge();
+      // Database fence stage 1 (contract C11): proof of the card payment (read from the
+      // processor by the payment-proof function) in parallel with building the check.
+      const proofPromise = payId
+        ? requestPaymentProof({ opsLocationId: opsId, processor, kind: 'card', paymentRef: payId })
+        : Promise.resolve({ failed: true, reason: 'missing' });
       // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
       // event day at the event time, so a pre-order counts on the day of the event — not the day it
       // was placed. Payment is still captured now. (eventMs is computed once in the component body.)
@@ -272,7 +283,35 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
-      await writeClosedCheckRow(supabase, closedCheck, { tag: 'CateringCheckout' });
+      // ONE server call writes the order and (with proof) the paid check. The money was taken,
+      // so the order is never dropped: without proof it is placed unpaid for the venue to confirm.
+      const proof = await proofPromise;
+      const placed = await placePublicOrder({
+        opsLocationId: opsId, order: cateringPaidRow, check: closedCheck,
+        proofIds: proof.proofId ? [proof.proofId] : [],
+        proofUnavailable: !!proof.unavailable, moneyTaken: true,
+        // Fix round (C17): an order the server could not prove yet is checked again in the background.
+        reprove: payId ? [{ processor, kind: 'card', paymentRef: payId }] : null,
+        // FENCE STAGE 1 FALLBACK: today's two direct inserts, only while place_public_order
+        // does not exist (or the proof function is not deployed yet).
+        legacyInsert: async () => {
+          const { error: qErr } = await supabase.from('order_queue').insert(cateringPaidRow);
+          if (qErr) return { ok: false, error: qErr };
+          // v5.9.11: writeClosedCheckRow drops a column the database does not have yet and
+          // retries, so a paid sale is never lost to a migration Peter has not run.
+          const { error: cErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'CateringCheckout' });
+          if (cErr) console.warn('[CateringCheckout] closed_checks insert failed:', cErr.message);
+          return { ok: true };
+        },
+      });
+      if (!placed.ok) throw new Error('Payment captured but saving the order failed. Please contact the venue with your reference ' + ref + '.');
+      try { logOrderActivity(opsId, cateringPaidRow); } catch { /* feed best-effort */ }
+      if (placed.unverified) {
+        logActivity(opsId, { kind: 'order', severity: 'action', refType: 'order', refId: ref,
+          title: `Catering order ${ref}: payment not confirmed`,
+          body: 'The card payment could not be verified automatically. Check the payment before confirming the order.' }).catch(() => {});
+      }
+      logDeliverySurcharge();
       redeemPromo(ref);
       // Email the customer their confirmation/receipt (best-effort; never blocks the
       // on-screen confirmation). Reuses the receipt pipeline; the just-inserted

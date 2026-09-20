@@ -32,6 +32,8 @@ import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
+import { onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs } from '../../lib/publicOrder';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
 import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
@@ -83,7 +85,7 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [] }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -160,9 +162,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [rewardError, setRewardError] = useState('');
   const [availableRewards, setAvailableRewards] = useState(null); // fetched when entering rewards step
   const hasLoyalty = !!(loyalty?.verified && loyalty?.loyalty);
+  // The signed in member's customer id. loyalty-otp verify puts it on `customer.id`; its `loyalty`
+  // block has no customer_id, so reading loyalty.loyalty.customer_id sent null and every online
+  // reward failed to deduct (loyalty-redeem 400 'customer_id required'), and promo codes lost
+  // their customer. The old field is kept as a fallback only.
+  const memberCustomerId = loyalty?.customer?.id || loyalty?.loyalty?.customer_id || null;
 
   // v5.5.243: Phone → loyalty member detection
-  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code, points_enabled, stamps_enabled }
+  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_enabled, stamps_enabled } (loyalty-balance view=summary)
 
   // Loyalty program mode flags (from loyalty-balance / loyalty-member-lookup).
   // A venue can run points-only, stamp-cards-only, or both. Treat a
@@ -193,8 +200,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // await the SAME request instead of firing a second cold call — the double
   // fetch was the multi-second freeze on "Continue to payment".
   const loyaltyLookupRef = useRef({ phone: null, promise: null });
+  // Database fence stage 1: view=summary. This browser is anonymous and only needs "is this number
+  // a member" plus the points and stamps switches; loyalty-balance no longer hands a stranger's
+  // balance, member code or history to an anonymous caller (the full reply needs the member's own
+  // token). A member is recognised by `enrolled`, which both the summary and the full reply carry.
   const lookupLoyaltyMember = (normalised, companyId) =>
-    fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
+    fetch(`${FUNCTIONS_URL}/loyalty-balance?view=summary&phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
       .then(r => (r.ok ? r.json() : null))
       .catch(() => null);
   useEffect(() => {
@@ -206,7 +217,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const timer = setTimeout(() => {
       const promise = lookupLoyaltyMember(normalised, companyId);
       loyaltyLookupRef.current = { phone: normalised, promise };
-      promise.then(j => { if (j?.member_code) setLoyaltyHint(j); });
+      promise.then(j => { if (j?.enrolled) setLoyaltyHint(j); });
     }, 600);
     return () => clearTimeout(timer);
   }, [phone, loyalty?.verified, loyaltyHintDismissed, location.company_id]);
@@ -387,6 +398,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Compose order ref + customer + items + collection ISO once details are valid.
   // Used by both the createPaymentIntent description/metadata and the
   // post-payment order_queue write.
+  const orderIdsRef = useRef(null);
   const orderShape = useMemo(() => {
     const collectionAt = timeMode === 'asap'
       ? new Date(Date.now() + leadMin * 60_000)
@@ -404,7 +416,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const sentAt = timeMode === 'asap'
       ? new Date(collectionAt.getTime() - leadMin * 60_000)
       : new Date(collectionAt.getTime() - kitchenStartMin * 60_000);
-    const ref = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    // Fix round (19 Sep, contract C18): the ref is minted ONCE per checkout, not per step. The
+    // Stripe payment is created before the step moves to 'pay' and carries metadata.ref; the
+    // proof records that ref as meta.order_ref, and the server never lets a payment made for one
+    // ref pay another. A new ref per step would have put every card order in "Payment being
+    // checked".
+    if (!orderIdsRef.current) {
+      const r = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+      orderIdsRef.current = { ref: r, checkId: `chk-${r}-${wideId()}` };
+    }
+    const { ref } = orderIdsRef.current;
     // ONE id for the order: the closed_checks row id AND the idempotency anchor for the promo +
     // loyalty redemptions. They MUST be the same value — loyalty-refund finds the rows to reverse
     // by closed_check_id and the POS refund sends closed_checks.id, so a redemption filed under
@@ -417,7 +438,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // already-processed duplicate — the guest gets the reward and nothing is deducted, or the
     // deduction is refused outright. The ref stays in front because a human reads the ledger's
     // order_id / order_ref in Back Office → Promotions; the UUID is what makes it unique.
-    const checkId = `chk-${ref}-${wideId()}`;
+    const { checkId } = orderIdsRef.current;
     const customer = {
       name: name.trim(),
       phone: phone.replace(/\s+/g, ''),
@@ -518,9 +539,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         const j = await Promise.race([p, new Promise(res => setTimeout(() => res('timeout'), 2500))]);
         if (j === 'timeout') {
           p.then(late => {
-            if (late?.member_code && stepRef.current === 'gift') { setLoyaltyHint(late); setShowLoyaltyGate(true); }
+            if (late?.enrolled && stepRef.current === 'gift') { setLoyaltyHint(late); setShowLoyaltyGate(true); }
           });
-        } else if (j?.member_code) {
+        } else if (j?.enrolled) {
           setLoyaltyHint(j); setShowLoyaltyGate(true); return;
         }
       } finally {
@@ -601,7 +622,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
         body: JSON.stringify({
           action: 'validate', code, location_id: opsLocationId,
-          customer_id: loyalty?.loyalty?.customer_id || null,
+          customer_id: memberCustomerId,
           basket: { subtotal: discountedSubtotalMinor / 100 },
         }),
       });
@@ -941,7 +962,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // v5.5.888: same customer identity as validate — without it a customer-locked
       // code fails redeem with customer_required AFTER the discount was granted,
       // and per-customer limits lose their attribution in the ledger.
-      customerId: loyalty?.loyalty?.customer_id || null,
+      customerId: memberCustomerId,
       channel: 'online',
       code: promoApplied.code,
       basketValue: discountedSubtotalMinor / 100,
@@ -966,10 +987,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       closedCheckId: orderShape.checkId,
       // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one).
       locationId: opsLocationId,
-      customerId: loyalty?.loyalty?.customer_id || null,
+      customerId: memberCustomerId,
       channel: 'online',
       stampProgramId: rewardApplied.stamp_program_id || null,
       rewardId: rewardApplied.reward_id || null,
+      // Proves to loyalty-redeem that this browser IS the member (database fence stage 1: an
+      // anonymous online session on its own may not spend anybody's points).
+      memberToken: loyalty?.token || null,
     }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsLocationId, {
@@ -1009,6 +1033,48 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     } catch { /* best-effort */ }
   };
 
+  // Database fence stage 1, fix round (contract C15): the order's total is what the customer is
+  // charged across card and gift card (net of the promo code and the reward; auto discounts are
+  // already net), and the order DECLARES its discounts, so place_public_order can work out the
+  // amount due from the order's own lines. Without these, every order with a gift card, a promo
+  // or a reward would arrive "Payment being checked".
+  const chargedTotal = () => onlineChargedTotalMinor({ remainingMinor, giftAppliedMinor }) / 100;
+  const declaredDiscounts = () => buildDeclaredDiscounts({
+    autoDiscounts,
+    promo: promoApplied ? { code: promoApplied.code, amountMinor: promoAppliedMinor } : null,
+    reward: rewardApplied ? { name: rewardApplied.reward_name, amountMinor: rewardDiscountMinor } : null,
+  });
+  // A declared loyalty discount counts only with a redemption proof, so the reward is redeemed
+  // BEFORE the order is placed (the money is already taken, so this is bounded: a slow redeem
+  // never holds the order back; it then arrives "Payment being checked" and is still redeemed).
+  const loyaltyRedeemedRef = useRef(false);
+  const redeemLoyaltyBeforePlacing = async () => {
+    if (!rewardApplied) return { proofIds: [], unavailable: false, key: null };
+    const run = (async () => {
+      if (!loyaltyRedeemedRef.current) {
+        loyaltyRedeemedRef.current = true;
+        try { await redeemLoyaltyAfterOrder(); } catch { /* recorded on the check either way */ }
+      }
+      const key = loyaltyProofKey(rewardApplied, orderShape.checkId);
+      if (!key) return { proofIds: [], unavailable: false, key: null };
+      const lp = await requestPaymentProof({ opsLocationId, processor: 'loyalty', kind: 'loyalty', paymentRef: key });
+      return { proofIds: lp.proofId ? [lp.proofId] : [], unavailable: !!lp.unavailable, key };
+    })();
+    const r = await withinMs(run, 7000);
+    return r || { proofIds: [], unavailable: false, key: loyaltyProofKey(rewardApplied, orderShape.checkId) };
+  };
+
+  // Database fence stage 1 (contract C1 step 4): an order placed without proof of payment.
+  // The money was taken, so the order stands (unpaid, marked for the venue); staff see it in
+  // the activity feed and the customer is told the venue will confirm the payment.
+  const notePaymentUnverified = (ref) => {
+    try {
+      logActivity(opsLocationId, { kind: 'order', severity: 'action', refType: 'order', refId: ref,
+        title: `Online order ${ref}: payment not confirmed`,
+        body: 'The card payment could not be verified automatically. Check the payment before handing the order over.' });
+    } catch { /* feed best-effort */ }
+  };
+
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
   const onGiftOnlyPayment = async () => {
     const gate = deliveryGateError();
@@ -1044,7 +1110,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // collection_at: the full instant (collection_time is a bare HH:MM and
         // cannot say WHICH day). SMS, tracker, Hub and ticket all read this.
         customer: { ...customer, collection_at: collectionAt.toISOString(), ...(tipMinor > 0 ? { tip: tipMinor / 100 } : {}) },
-        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
+        total: chargedTotal(),   // fence C15: card + gift card (v5.5.657 delivery fee, v5.5.787 net of offers, v5.8.8 + tip all still in)
         // v5.8.43: the money is taken BEFORE the row is written, so stamp the
         // COLUMNS too. customer.paid has been set since v5.5.658 but the Orders
         // Hub reads the column, so every online order showed as unpaid (proven
@@ -1056,16 +1122,30 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
-      const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
-      if (insErr) {
-        console.error('[OnlineCheckout] order_queue write failed:', insErr);
-        setError('Could not save the order. Contact the venue with ref ' + ref + '.');
-        return;
+      // Database fence stage 1 (contract C2): the order and its paid check are written by ONE
+      // server call, place_public_order, which counts the gift debit as paid only with a proof
+      // the payment-proof function wrote from the ledger. A reward is redeemed BEFORE placing
+      // (a declared loyalty discount, and a zero total check, need that proof; fence C15).
+      let rewardProofIds = [];
+      let proofUnavailable = false;
+      const reprove = [];
+      if (rewardApplied) {
+        const lr = await redeemLoyaltyBeforePlacing();
+        rewardProofIds = lr.proofIds;
+        if (lr.unavailable) proofUnavailable = true;
+        if (lr.key) reprove.push({ processor: 'loyalty', kind: 'loyalty', paymentRef: lr.key });
       }
-      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      let giftProofIds = [];
+      if (giftApplied && giftCommit?.idempotency_key) {
+        const gp = await requestPaymentProof({ opsLocationId, processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key });
+        if (gp.proofId) giftProofIds = [gp.proofId];
+        else if (gp.unavailable) proofUnavailable = true;
+        reprove.push({ processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key });
+      }
 
+      let closedCheck = null;
       try {
-        const closedCheck = {
+        closedCheck = {
           id: checkId,
           ref,
           location_id: opsLocationId,
@@ -1112,16 +1192,52 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
-        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
-        // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
-        // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
-        sendOrderConfirmation(closedCheck);
-        redeemPromoAfterOrder();
-        redeemLoyaltyAfterOrder();
       } catch (e) {
-        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+        console.warn('[OnlineCheckout] closed check build threw:', e?.message);
+      }
+
+      const placed = await placePublicOrder({
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null, discounts: declaredDiscounts() }, check: closedCheck,
+        proofIds: [...giftProofIds, ...rewardProofIds], proofUnavailable, moneyTaken: true, reprove,
+        // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while
+        // place_public_order does not exist (or the proof function is not deployed yet).
+        legacyInsert: async () => {
+          const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
+          if (insErr) return { ok: false, error: insErr };
+          if (closedCheck) {
+            // v5.9.11: writeClosedCheckRow drops a column the database does not have yet and
+            // retries, so a paid sale is never lost to a migration Peter has not run.
+            const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
+            if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+          }
+          return { ok: true };
+        },
+      });
+      if (!placed.ok) {
+        console.error('[OnlineCheckout] order write failed:', placed.reason, placed.message);
+        setError('Could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      if (placed.unverified) notePaymentUnverified(ref);
+
+      try {
+        if (closedCheck) {
+          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
+          sendOrderConfirmation(closedCheck);
+        }
+        redeemPromoAfterOrder();
+        // The reward was redeemed above, before placing (fence C15).
+      } catch (e) {
+        console.warn('[OnlineCheckout] after order work threw:', e?.message);
       }
 
       attributeOnlineOrder({
@@ -1130,13 +1246,17 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // checkId: loyalty-earn earns from the server's own closed_checks row, whose id this is.
+        orderRecord: { ref, checkId, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // loyalty-earn's proof that this browser is the member (database fence stage 1).
+        memberToken: loyalty?.token || null,
+        memberCustomerId,
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent: null });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent: null, trackToken: placed.trackToken, phone: customer?.phone || null, paymentUnverified: !!placed.unverified });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
       setError('Could not save the order. Contact the venue.');
@@ -1175,7 +1295,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // collection_at: the full instant (collection_time is a bare HH:MM and
         // cannot say WHICH day). SMS, tracker, Hub and ticket all read this.
         customer: { ...customer, collection_at: collectionAt.toISOString(), ...(tipMinor > 0 ? { tip: tipMinor / 100 } : {}) },
-        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
+        total: chargedTotal(),   // fence C15: card + gift card (v5.5.657 delivery fee, v5.5.787 net of offers, v5.8.8 + tip all still in)
         // v5.8.43: the money is taken BEFORE the row is written, so stamp the
         // COLUMNS too. customer.paid has been set since v5.5.658 but the Orders
         // Hub reads the column, so every online order showed as unpaid (proven
@@ -1187,13 +1307,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
       };
-      const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
-      if (insErr) {
-        console.error('[OnlineCheckout] order_queue write failed AFTER payment:', insErr);
-        setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
-        return;
-      }
-      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      // Database fence stage 1 (contract C1): ask the server to record proof of the card
+      // payment (it reads the processor, never this page), in parallel with the gift commit.
+      const proofPromise = payId
+        ? requestPaymentProof({ opsLocationId, processor, kind: 'card', paymentRef: payId })
+        : Promise.resolve({ failed: true, reason: 'missing' });
 
       // v5.5.901: gift card — debit at COMMIT, like promo + loyalty below. The card leg is
       // already captured and the order is already queued, so the debit CANNOT block or fail
@@ -1206,13 +1324,33 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       } else if (giftCommit?.shortfall > 0) {
         console.warn('[OnlineCheckout] gift card commit partial — uncollected minor:', giftCommit.shortfall);
       }
+      // Fence C15: card plus gift must cover the order total, so the gift debit is proven too
+      // (the gift only path already did this), and the reward is redeemed before placing.
+      const reprove = payId ? [{ processor, kind: 'card', paymentRef: payId }] : [];
+      let giftProofIds = [];
+      let giftProofUnavailable = false;
+      if (giftApplied && giftCommit?.ok && giftCommit?.idempotency_key) {
+        const gp = await requestPaymentProof({ opsLocationId, processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key });
+        if (gp.proofId) giftProofIds = [gp.proofId];
+        else if (gp.unavailable) giftProofUnavailable = true;
+        reprove.push({ processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key });
+      }
+      let rewardProofIds = [];
+      let rewardProofUnavailable = false;
+      if (rewardApplied) {
+        const lr = await redeemLoyaltyBeforePlacing();
+        rewardProofIds = lr.proofIds;
+        rewardProofUnavailable = lr.unavailable;
+        if (lr.key) reprove.push({ processor: 'loyalty', kind: 'loyalty', paymentRef: lr.key });
+      }
 
       // v5.5.127: also write to closed_checks so the paid online order shows
       // up in History / EOD / Payments reports identically to in-store paid
       // orders. status='paid' (not 'open') because Stripe already collected.
       // The receipt formatter prints check.ref as "ORDER #" — no extra wiring.
+      let closedCheck = null;
       try {
-        const closedCheck = {
+        closedCheck = {
           id: checkId,
           ref,
           location_id: opsLocationId,
@@ -1269,16 +1407,59 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             idempotency_key: rewardApplied.idempotency_key,
           } : null,
         };
-        const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
-        if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
-        // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-        depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
-        // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
-        sendOrderConfirmation(closedCheck);
-        redeemPromoAfterOrder();
-        redeemLoyaltyAfterOrder();
       } catch (e) {
-        console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
+        console.warn('[OnlineCheckout] closed check build threw:', e?.message);
+      }
+
+      // ONE server call writes the order and (when the card proof covers it) the paid check.
+      // The money was taken, so the order is never dropped: without proof it still reaches the
+      // kitchen, unpaid and marked for the venue to confirm.
+      const proof = await proofPromise;
+      const placed = await placePublicOrder({
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null, discounts: declaredDiscounts() }, check: closedCheck,
+        proofIds: [...(proof.proofId ? [proof.proofId] : []), ...giftProofIds, ...rewardProofIds],
+        proofUnavailable: !!proof.unavailable || giftProofUnavailable || rewardProofUnavailable, moneyTaken: true, reprove,
+        // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while
+        // place_public_order does not exist (or the proof function is not deployed yet).
+        legacyInsert: async () => {
+          const { error: insErr } = await supabase.from('order_queue').insert(queueRow);
+          if (insErr) return { ok: false, error: insErr };
+          if (closedCheck) {
+            // v5.9.11: writeClosedCheckRow drops a column the database does not have yet and
+            // retries, so a paid sale is never lost to a migration Peter has not run.
+            const { error: ccErr } = await writeClosedCheckRow(supabase, closedCheck, { tag: 'OnlineCheckout' });
+            if (ccErr) console.warn('[OnlineCheckout] closed_checks insert failed:', ccErr.message);
+          }
+          return { ok: true };
+        },
+      });
+      if (!placed.ok) {
+        console.error('[OnlineCheckout] order write failed AFTER payment:', placed.reason, placed.message);
+        setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + ref + '.');
+        return;
+      }
+      try { logOrderActivity(opsLocationId, queueRow); } catch { /* feed best-effort */ }
+      if (placed.unverified) notePaymentUnverified(ref);
+
+      try {
+        if (closedCheck) {
+          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
+          sendOrderConfirmation(closedCheck);
+        }
+        redeemPromoAfterOrder();
+        // The reward was redeemed above, before placing (fence C15); loyalty-redeem is
+        // idempotent on its check key, so this only runs when that step was skipped.
+        if (!loyaltyRedeemedRef.current) redeemLoyaltyAfterOrder();
+      } catch (e) {
+        console.warn('[OnlineCheckout] after order work threw:', e?.message);
       }
 
       // Customer profile: every online order/visit flows into the same CRM
@@ -1290,7 +1471,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // checkId: loyalty-earn earns from the server's own closed_checks row, whose id this is.
+        orderRecord: { ref, checkId, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // loyalty-earn's proof that this browser is the member (database fence stage 1).
+        memberToken: loyalty?.token || null,
+        memberCustomerId,
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
@@ -1311,7 +1496,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         }
       }
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent, trackToken: placed.trackToken, phone: customer?.phone || null, paymentUnverified: !!placed.unverified });
     } catch (e) {
       console.error('[OnlineCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');

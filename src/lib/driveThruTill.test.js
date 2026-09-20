@@ -132,7 +132,7 @@ test('store/index.js: kitchen label, receipt header words and the channel ticket
 // ── The gates that keep other venues unchanged ───────────────────────────────
 
 test('seed and fallback profiles never enable drive thru on their own', () => {
-  for (const [rel, name] of [['../App.jsx', 'App.jsx'], ['../components/DevSwitcher.jsx', 'DevSwitcher.jsx'], ['../surfaces/PairingScreen.jsx', 'PairingScreen.jsx'], ['../store/index.js', 'store/index.js'], ['../surfaces/mpos/MNewOrder.jsx', 'MNewOrder.jsx']]) {
+  for (const [rel, name] of [['../App.jsx', 'App.jsx'], ['../surfaces/PairingScreen.jsx', 'PairingScreen.jsx'], ['../store/index.js', 'store/index.js'], ['../surfaces/mpos/MNewOrder.jsx', 'MNewOrder.jsx']]) {
     const src = read(rel);
     const lists = [...src.matchAll(/enabledOrderTypes\s*(?:\|\||:|=)\s*\[([^\]]*)\]/g)].map(m => m[1]);
     assert.ok(lists.length, `${name} has at least one enabledOrderTypes default`);

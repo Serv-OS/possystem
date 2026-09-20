@@ -4,17 +4,23 @@
 // Follows the same patterns as gift-card-utils.ts:
 //   - CORS headers, JSON helper, opsAdmin + platformAdmin clients
 //   - Auth + company resolution
+//   - CALLER AUTHORITY (database fence stage 1, 19 Sep 2026): who is calling, for the gift card,
+//     loyalty, promo and refund functions. authenticateCaller only proves a JWT; anybody can get
+//     one with the public anon key. Authority is: staff of the venue (staffAccess.ts), a device
+//     BOUND to the venue (deviceAuthority.ts, the device arm of pos_can_access), the member's
+//     own loyalty session token (loyalty-session.ts), or the service role.
 //   - Member code generation
 //   - Points calculation helpers
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createCallerFacts, uuidOr0, deviceHintOf } from './callerFacts.ts';
 
 // ── CORS + JSON helpers ────────────────────────────────────────────────────
 export const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type',
+    'authorization, x-client-info, apikey, content-type, x-member-token',
 };
 
 export const json = (body: unknown, status = 200) =>
@@ -37,6 +43,8 @@ export const platformAdmin = createClient(
 );
 
 // ── Auth helper ────────────────────────────────────────────────────────────
+// Authentication only: any JWT passes (an anonymous one is free with the public anon key).
+// Authority is decided below (checkLoyaltyAuthority, requireStaff, callerStaffOrDevice).
 export async function authenticateCaller(
   req: Request,
 ): Promise<{ user: any } | Response> {
@@ -47,6 +55,72 @@ export async function authenticateCaller(
   } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!user) return json({ error: 'Invalid token' }, 401);
   return { user };
+}
+
+/**
+ * The caller of a PUBLIC endpoint (loyalty-balance GET), or null. Never refuses: a missing or
+ * bad header just means "no session", and the endpoint decides what that caller may see.
+ * The bare anon key is not a user and comes back null too.
+ */
+export async function optionalCaller(req: Request): Promise<any | null> {
+  const raw = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  if (!raw) return null;
+  try {
+    const { data: { user } } = await opsAdmin.auth.getUser(raw);
+    return user ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ══ CALLER AUTHORITY (database fence stage 1) ══════════════════════════════
+// The secret loyalty-otp signs member session tokens with. Same fallback chain as loyalty-otp.
+export const OTP_SECRET =
+  Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
+
+export { uuidOr0, deviceHintOf };
+
+/** Is this request made with the service role key (another edge function)? */
+export function isServiceRoleRequest(req: Request): boolean {
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  const raw = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  return !!key && raw === key;
+}
+
+// The facts and decisions live in callerFacts.ts (no remote imports, so node tests drive it with a
+// fake client); this is the one instance the edge functions use, on the service role clients.
+const facts = createCallerFacts({
+  ops: opsAdmin,
+  platform: platformAdmin,
+  env: (name) => Deno.env.get(name),
+  otpSecret: OTP_SECRET,
+  json,
+});
+
+/** The venue a call acts for: its resolved Ops id and its company. */
+export const resolveVenue = facts.resolveVenue;
+/** 'fenced' once 20260919a has run (fence_state 'file_a'), 'legacy' before it. */
+export const fenceState = facts.fenceState;
+/** The device arm of pos_can_access for one venue (bound devices after 20260919a). */
+export const callerDeviceFor = facts.callerDeviceFor;
+/** Staff of the venue (or company): user_locations, a verified super admin, or a company role. */
+export const callerIsStaffFor = facts.callerIsStaffFor;
+/** Staff, or a device bound to the venue. */
+export const callerStaffOrDevice = facts.callerStaffOrDevice;
+/** LOYALTY_AUTHORITY_MODE and the fence: report before 20260919a, enforce after it. */
+export const currentLoyaltyAuthorityMode = facts.loyaltyMode;
+/** One rate limited `[authority]` log line. */
+export const recordAuthority = facts.recordAuthority;
+/** The member's own loyalty session, or null. */
+export const memberSessionFor = facts.memberSessionFor;
+/** The whole loyalty fence: facts, decision, mode, log. */
+export const checkLoyaltyAuthority = facts.checkLoyaltyAuthority;
+/** Staff only, enforced always. */
+export const requireStaff = facts.requireStaff;
+
+/** A signed in Back Office user (never anonymous) with access to this ops location, or super_admin. */
+export async function callerHasStaffAccess(user: any, opsLocationId: string): Promise<boolean> {
+  return callerIsStaffFor(user, opsLocationId, null);
 }
 
 // ── Company resolution (location-based, same as gift-card-utils) ──────────

@@ -766,6 +766,12 @@ function RewardsPanel({ rewards, onReload, menuItems = [] }) {
                 selected={form.reward_value.eligible_items || []}
                 onChange={items => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_items: items } }))}
               />
+              {!(form.reward_value.eligible_items || []).length && (
+                <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
+                  No item picked yet. A free item reward with nothing named gives away the cheapest
+                  line on the order, capped at £15.00. Pick the items you mean.
+                </div>
+              )}
             </div>
           )}
 
@@ -803,6 +809,13 @@ function RewardsPanel({ rewards, onReload, menuItems = [] }) {
               {r.reward_value?.percent && ` — ${r.reward_value.percent}%`}
               {r.total_redeemed > 0 && ` · ${r.total_redeemed} redeemed`}
             </div>
+            {/* Fix round 7 (fence stage 1): a free item reward that names no item gives away the
+                cheapest line on the order, capped at £15.00. Say so where it can be seen. */}
+            {r.reward_type === 'free_item' && !(r.reward_value?.eligible_items || []).length && (
+              <div style={{ fontSize: 11, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 4 }}>
+                No items named: this gives away the cheapest line on the order (up to £15.00). Edit it and pick the items.
+              </div>
+            )}
           </div>
           <div style={{ fontWeight: 800, color: 'var(--acc)', fontSize: 15, whiteSpace: 'nowrap' }}>
             {r.points_cost} pts
@@ -1990,6 +2003,12 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
               selected={rewardConfig.eligible_items || []}
               onChange={items => setRewardConfig(rc => ({ ...rc, eligible_items: items }))}
             />
+            {!(rewardConfig.eligible_items || []).length && (
+              <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
+                No item picked yet. A stamp card with nothing named gives away the cheapest line on
+                the order, capped at £15.00. Pick the items this card is for.
+              </div>
+            )}
           </div>
         )}
 

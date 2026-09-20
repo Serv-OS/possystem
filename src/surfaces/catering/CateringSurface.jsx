@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
+import { publicRead } from '../../lib/publicOrderClient';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { receiptOverride } from '../../lib/itemDisplay';
@@ -28,6 +29,20 @@ const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const addDays = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d; };
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const isLightBackground = (hex) => { if (!hex) return true; const c = String(hex).replace('#', ''); const n = c.length === 3 ? c.split('').map((x) => x + x).join('') : c; if (n.length !== 6) return true; const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16); return (0.299 * r + 0.587 * g + 0.114 * b) > 128; };
+
+// Database fence stage 1 (contract C11): the day's catering load (count and value of the
+// non cancelled orders) from catering_day_load, never the order rows themselves.
+// FENCE STAGE 1 FALLBACK: today's direct read, only while catering_day_load does not exist.
+async function cateringDayLoad(opsId, date) {
+  const res = await publicRead('catering_day_load', { p_location_id: String(opsId), p_date: date },
+    () => supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', date));
+  if (res.legacy) {
+    const rows = (res.data || []).filter((r) => r.status !== 'cancelled');
+    return { count: rows.length, value: rows.reduce((s, r) => s + Number(r.total || 0), 0) };
+  }
+  const row = Array.isArray(res.data) ? res.data[0] : res.data;
+  return { count: Number(row?.order_count) || 0, value: Number(row?.order_value) || 0 };
+}
 
 export default function CateringSurface({ location }) {
   const opsId = location.ops_location_id || location.id;
@@ -128,10 +143,9 @@ export default function CateringSurface({ location }) {
     if (!eventDate || !cfg) { setDayLoad(null); return; }
     let live = true;
     (async () => {
-      const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', eventDate);
+      const load = await cateringDayLoad(opsId, eventDate);
       if (!live) return;
-      const rows = (data || []).filter((r) => r.status !== 'cancelled');
-      setDayLoad({ count: rows.length, value: rows.reduce((s, r) => s + Number(r.total || 0), 0) });
+      setDayLoad(load);
     })();
     return () => { live = false; };
   }, [eventDate, cfg, opsId]);
@@ -214,9 +228,8 @@ export default function CateringSurface({ location }) {
         if (dateClosed(ds)) continue;
         const lim = cfg.capacity_overrides?.[ds] ?? cfg.capacity_per_day;
         if (lim == null || lim === '') { found = ds; break; }
-        const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).eq('source', 'catering').eq('event_date', ds);
-        const rows = (data || []).filter((r) => r.status !== 'cancelled');
-        const used = cfg.capacity_mode === 'value' ? rows.reduce((s, r) => s + Number(r.total || 0), 0) : rows.length;
+        const load = await cateringDayLoad(opsId, ds);
+        const used = cfg.capacity_mode === 'value' ? load.value : load.count;
         const cap = cfg.capacity_mode === 'value' ? Number(lim) / 100 : Number(lim);
         if (used < cap) found = ds;
       }

@@ -24,6 +24,21 @@
 //      caller that mints a fresh key per attempt still can't debit twice for one order.
 // Callers MUST pass a closedCheckId that is STABLE across retries of the same order.
 
+import { activeMemberToken } from './memberSession.js';
+
+// Database fence stage 1: the id this browser was paired as (till rpos-device, or kiosk
+// rpos-kiosk-id), sent as device_hint so the server's authority log can name a till or kiosk to
+// pair again. Never trusted by the server. Same rule as lib/supabase.js localDeviceHint, inline so
+// this module stays importable by node tests.
+const deviceHint = () => {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+    if (dev && dev.id && dev.id !== 'admin' && !dev.adminMode) return String(dev.id);
+    return localStorage.getItem('rpos-kiosk-id') || null;
+  } catch { return null; }
+};
+
 const newId = () => (
   typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
@@ -73,11 +88,13 @@ export function stageGiftCard({ cardId, code = null, codeLast4 = null, balanceMi
  *        commit, take whatever IS left. Correct when the card leg has already been charged
  *        (kiosk, online+Stripe). Pass FALSE on a gift-only order, where a short card must
  *        debit NOTHING so the customer can go back and pay by card with the balance intact.
+ * @param {string|null} [opts.memberToken] the member's loyalty-otp session token (kiosk linked
+ *        cards, which gift-redeem may only spend by card_id for the member they belong to).
  * @returns {Promise<{ ok:boolean, applied:number, remaining_balance:number|null,
  *                     idempotency_key:string|null, card_id:string|null,
  *                     shortfall:number, error:string|null }>}
  */
-export async function commitGiftCard(staged, { functionsUrl, token, locationId, channel, closedCheckId, allowPartial = true }) {
+export async function commitGiftCard(staged, { functionsUrl, token, locationId, channel, closedCheckId, allowPartial = true, memberToken = null }) {
   const wanted = staged?.applied || 0;
   const fail = (error) => ({
     ok: false, applied: 0, remaining_balance: null, idempotency_key: null,
@@ -109,6 +126,15 @@ export async function commitGiftCard(staged, { functionsUrl, token, locationId, 
         location_id: locationId,
         channel,
         idempotency_key: staged.commit_key,
+        // Database fence stage 1: gift-redeem spends a card by card_id ALONE (no code) only for
+        // staff, a device bound to the venue, or the member whose proven phone the card is
+        // addressed to. A kiosk
+        // card listed after the member's one time code may have no stored code, so the kiosk
+        // sends the member's loyalty session token. A card entered by its code needs nothing.
+        // The kiosk's frozen submitOrder cannot pass it, so the member signed in on this screen
+        // (lib/memberSession) is used when the caller gave none.
+        ...((memberToken || activeMemberToken()) ? { member_token: String(memberToken || activeMemberToken()) } : {}),
+        ...(deviceHint() ? { device_hint: deviceHint() } : {}),
       }),
     });
     const j = await res.json().catch(() => ({}));
@@ -210,6 +236,7 @@ export async function reverseGiftCard(record, { functionsUrl, token, locationId,
         reason: reason || 'Payment did not complete',
         staff_id: staffId,
         location_id: locationId,
+        ...(deviceHint() ? { device_hint: deviceHint() } : {}),
       }),
     });
     const j = await res.json().catch(() => ({}));
@@ -266,6 +293,23 @@ export function giftRecordFrom(paymentInfo = {}) {
   if (legs.length > 1) return { ...legs[0], legs };
   if (legs.length === 1) return legs[0];
   return paymentInfo.giftCard || null;
+}
+
+/**
+ * The till toast when a refund could NOT give a gift card its money back (18 Sep 2026, lockdown
+ * step 1, review item f). It used to say "Restore it from Back Office", but Back Office has no way
+ * to put a balance back on a card. What staff CAN do: give that amount back another way, or
+ * issue the customer a new gift card for it (Back Office, Gift cards, Issue card).
+ * `fmtMinor` formats a minor unit amount in the venue currency (the store passes money()).
+ */
+export function giftReversalFailedMessage(leg, error, fmtMinor = (m) => (Number(m || 0) / 100).toFixed(2)) {
+  const last4 = leg?.code_last4 ? ` ending ${leg.code_last4}` : '';
+  const applied = Number(leg?.applied || 0);
+  const amount = applied > 0 ? `${fmtMinor(applied)} ` : '';
+  const why = error ? ` (${error})` : '';
+  return `Gift card${last4}: ${amount}NOT put back on the card${why}. `
+    + `Give the customer ${amount ? 'that amount' : 'the gift card amount'} another way, `
+    + 'or issue them a new gift card for it in Back Office, Gift cards, Issue card.';
 }
 
 /**

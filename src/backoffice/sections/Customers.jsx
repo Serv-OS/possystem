@@ -20,10 +20,12 @@ async function callGift(endpoint, body) {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
   if (!token) throw new Error('Not authenticated');
+  // 18 Sep 2026: gift-list is staff only and checks the caller's access to the venue, so send
+  // the active venue (as GiftCards.jsx callGift always has).
   const res = await fetch(`${FUNCTIONS_URL}/${endpoint}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, location_id: body?.location_id || getActiveLocationSync() || undefined }),
   });
   const j = await res.json();
   if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);

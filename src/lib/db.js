@@ -8,7 +8,8 @@
  * All queries are scoped to a location_id for multi-tenancy.
  */
 
-import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
+import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
+import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
 import { VERSION } from './version';
@@ -24,6 +25,8 @@ import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
 import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 import { saveSectionsChecked } from './sectionPlan';
+import { mustChangeRow } from './rowWrites';
+import { patchPendingCheck } from '../sync/DataSafe';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -654,6 +657,7 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
   // v4.3 — durable send: if the network/Supabase fails, queue the write to
   // IndexedDB so it replays when the device comes back online. No lost tickets.
   const handleFailure = async (err) => {
+    reportWriteRefused(err);   // fence stage 1: a refused kitchen ticket may mean a lost link (banner); it is queued below
     try {
       const { queueWrite } = await import('../sync/OfflineQueue');
       // v5.8.66: the queued copy carries meta ONLY once this session has seen the column
@@ -689,7 +693,13 @@ export const bumpKDSTicket = async (id) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard on KDS ticket bump
   const locationId = getActiveLocationSync() || await getLocationId();
-  return supabase.from('kds_tickets').update({ status: 'bumped', bumped_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
+  // Fix round 2 (the zero row blocker): a bump that changes no row while this device is not
+  // linked is kept and sent once it is linked again, never counted as done.
+  const r = await mustChangeRow({
+    table: 'kds_tickets', type: 'update', payload: { status: 'bumped', bumped_at: new Date().toISOString() },
+    match: { id, location_id: locationId }, kind: 'kds_bump', label: 'Kitchen ticket bumped',
+  });
+  return { data: r.data || null, error: r.outcome === 'error' ? r.error : null, outcome: r.outcome };
 };
 
 // v4.6.20 — historical fetch for the KDS performance report. Returns both
@@ -792,14 +802,24 @@ export const updateClosedCheckRefunds = async (checkId, refunds, status) => {
   try {
     // v5.5.279: location_id guard on refund updates
     const locationId = getActiveLocationSync() || await getLocationId();
-    const { error } = await supabase
-      .from('closed_checks')
-      .update({ refunds: refunds || [], status: status || 'paid' })
-      .eq('id', checkId)
-      .eq('location_id', locationId);
-    if (error) {
-      console.warn('[DB] updateClosedCheckRefunds failed:', error.message);
-      return { ok: false, error };
+    const patch = { refunds: refunds || [], status: status || 'paid' };
+    // Fix round 2: a sale this till has not sent yet (DataSafe keeps it, for example while the
+    // till is not linked) carries the refund too, so whichever lands first, the other agrees.
+    try { patchPendingCheck(checkId, patch); } catch { /* the kept sale is best effort */ }
+    // Fix round 2 (the zero row blocker): an update that changes no row while this till is not
+    // linked (a refund on a "pair again" till) is kept and sent once it is linked again, in order
+    // (the pending entry, then its outcome). It is never counted as done.
+    const r = await mustChangeRow({
+      table: 'closed_checks', type: 'update', payload: patch,
+      match: { id: checkId, location_id: locationId }, kind: 'refund', label: `Refund on check ${checkId}`,
+    });
+    if (r.outcome === 'error') {
+      console.warn('[DB] updateClosedCheckRefunds failed:', r.error?.message || r.error);
+      return { ok: false, error: r.error };
+    }
+    if (r.outcome === 'parked' || r.outcome === 'queued') {
+      console.warn('[DB] updateClosedCheckRefunds: kept on this till until it is linked again', checkId);
+      return { ok: true, kept: true };
     }
     return { ok: true };
   } catch (e) {
@@ -976,6 +996,12 @@ export const fetchStaff = async (locationId = null) => {
 // ── Devices ───────────────────────────────────────────────────────────────────
 export const updateDeviceHeartbeat = async (deviceId) => {
   if (isMock) return { data: null, error: null };
+  // Database fence stage 1 (contract A10): the server heartbeat reports last_seen, the build
+  // and fence_v1. FENCE STAGE 1 FALLBACK: while device_heartbeat does not exist (20260919a1
+  // not run) the old direct write below runs. Delete the fallback once 20260919b has run.
+  const hb = await sendDeviceHeartbeat();
+  if (hb && !hb.unsupported) return { data: hb, error: null };
+  if (!hb) return { data: null, error: null };
   // v5.5.279: location_id guard on device heartbeat
   const locationId = getActiveLocationSync() || await getLocationId();
   // v5.5.870: report the running app version so Back Office → Network Status can flag a till that

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { findPaxTerminal, getPosDeviceId } from '../lib/payments/terminalJobs';
@@ -64,6 +65,12 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
         }
         const opsLocationId = getActiveLocationSync();
         if (!opsLocationId) { setState('error'); setErrorMsg('Location not resolved'); return; }
+
+        // Database fence stage 1, fix round 2: no card hold starts on a till that is not linked
+        // to its venue (lib/deviceLink.js confirmLinkBeforeCard). Nothing has been held.
+        const linkGate = await confirmLinkBeforeCard();
+        if (cancelled) return;
+        if (!linkGate.ok) { setState('error'); setErrorMsg(linkGate.message); return; }
 
         // v5.5.871: a card HOLD (pre-auth) is a Stripe-Terminal-only capability.
         // Ryft's in-person / PAX API has no auth-only primitive (captureFlow is

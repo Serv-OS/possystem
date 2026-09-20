@@ -19,6 +19,7 @@ import {
   generateCode, normalizeCode, codeLast4, formatCode,
   hmacLookup, hashValue, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -39,6 +40,15 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── Staff only (18 Sep 2026, round three, enforced now) ────────────────
+  // Any session could create 500 cards of any value and be handed every code. The only caller is
+  // Back Office (GiftCards.jsx Bulk create, a signed in user).
+  const refused = await requireStaff({
+    fn: 'gift-bulk-create', caller, locationId: (body.location_id as string) || null, companyId,
+    what: 'create gift cards', body,
+  });
+  if (refused) return refused;
 
   // Validate
   const amountMinor = Math.round(Number(amount));

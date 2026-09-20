@@ -25,7 +25,9 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
-import { setReplayGuard, bufferedUpsertKeys } from './OfflineQueue';
+import { setReplayGuard, bufferedUpsertKeys, bufferedDeleteKeys } from './OfflineQueue';
+import { isDeviceLinkUncertain } from '../lib/deviceLink';
+import { trustSharedRead } from '../lib/deviceFence';
 import { reconcileList, changedKeys, keepBufferedWrite as keepRule, stampedKeys } from '../lib/queueReconcile';
 import {
   queueHash, tabHash, queueFromRow, tabFromRow, QUEUE_ROW_CAP, openQueueQuery, openTabQuery,
@@ -83,24 +85,36 @@ async function runPass() {
         openTabQuery(_locationId, 'id, updated_at').limit(QUEUE_ROW_CAP),
         bufferedUpsertKeys('order_queue'),
         bufferedUpsertKeys('bar_tabs'),
+        // Fix round 2: a row this till still has a delete to send for (parked while it was not
+        // linked, for example) is never adopted back: after a re-pair the reconcile runs before
+        // the parked delete, and adopting would show a finished order or tab open again.
+        bufferedDeleteKeys('order_queue'),
+        bufferedDeleteKeys('bar_tabs'),
       ]), timeout]);
     } finally { clearTimeout(timer); }
-    const [qHeads, tHeads, bufQ, bufT] = heads;
+    const [qHeads, tHeads, bufQ, bufT, delQ, delT] = heads;
     let ok = true;
     let partial = !bufQ || !bufT;   // the buffered writes could not be read: nothing is judged finally
-    if (!qHeads.error && Array.isArray(qHeads.data)) {
+    // Database fence stage 1 (contract A9): while this till may have lost its link (the server
+    // said so, or a write was just refused), an EMPTY read is unknown, not "the server has
+    // nothing": after file 2 row level security hides every row from an unlinked till. That
+    // list is skipped this pass (nothing dropped, nothing published, the empty streak untouched).
+    const linkUnsure = isDeviceLinkUncertain();
+    const qTrusted = !qHeads.error && Array.isArray(qHeads.data) && trustSharedRead({ linkUncertain: linkUnsure, rowCount: qHeads.data.length });
+    const tTrusted = !tHeads.error && Array.isArray(tHeads.data) && trustSharedRead({ linkUncertain: linkUnsure, rowCount: tHeads.data.length });
+    if (qTrusted) {
       // A read that returns nothing while this till holds confirmed rows is not believed until
       // it repeats: a device whose session was lost reads as empty under the tenant fence.
       _emptyQ = (qHeads.data.length === 0 && droppableQ.size > 0) ? _emptyQ + 1 : 0;
       const inconclusive = _emptyQ > 0 && _emptyQ < EMPTY_STREAK;
       partial = partial || inconclusive || qHeads.data.length >= QUEUE_ROW_CAP;
-      ok = (await reconcileQueue(qHeads.data, droppableQ, bufQ, inconclusive)) && ok;
+      ok = (await reconcileQueue(qHeads.data, droppableQ, bufQ, inconclusive, delQ)) && ok;
     } else ok = false;
-    if (!tHeads.error && Array.isArray(tHeads.data)) {
+    if (tTrusted) {
       _emptyT = (tHeads.data.length === 0 && droppableT.size > 0) ? _emptyT + 1 : 0;
       const inconclusive = _emptyT > 0 && _emptyT < EMPTY_STREAK;
       partial = partial || inconclusive || tHeads.data.length >= QUEUE_ROW_CAP;
-      ok = (await reconcileTabs(tHeads.data, droppableT, bufT, inconclusive)) && ok;
+      ok = (await reconcileTabs(tHeads.data, droppableT, bufT, inconclusive, delT)) && ok;
     } else ok = false;
     // The closed check tests started by this pass must land before the offline replay reads
     // the store, or a buffered write for an order paid elsewhere would replay first.
@@ -116,7 +130,7 @@ async function runPass() {
 
 const headAt = (h) => (h.updated_at ? new Date(h.updated_at).getTime() : 0);
 
-async function reconcileQueue(heads, droppable, buffered, inconclusive) {
+async function reconcileQueue(heads, droppable, buffered, inconclusive, pendingDeletes) {
   const keyOf = (o) => o.ref;
   const remoteHeads = heads.filter(h => h && h.ref).map(h => ({ key: h.ref, at: headAt(h) }));
   // The list before the wait only decides WHAT to fetch. Phase 2: full rows for what moved.
@@ -127,13 +141,20 @@ async function reconcileQueue(heads, droppable, buffered, inconclusive) {
     if (error) return false;
     for (const row of (data || [])) fresh.set(row.ref, queueFromRow(row));
   }
-  applyQueueReconcile(fresh, remoteHeads, inconclusive || heads.length >= QUEUE_ROW_CAP, droppable, buffered);
+  applyQueueReconcile(fresh, remoteHeads, inconclusive || heads.length >= QUEUE_ROW_CAP, droppable, buffered, pendingDeletes);
   return true;
+}
+
+/** Keys the reconciler must not adopt: finished here recently, or with a delete still to send. */
+function noAdoptKeys(kind, pendingDeletes) {
+  const out = clearedKeys(kind);
+  for (const k of pendingDeletes || []) out.add(String(k));
+  return out;
 }
 
 // Synchronous: reads the store now and writes it in the same step, so nothing can change
 // in between (an order sent during the phase 2 wait is in `local` and survives).
-function applyQueueReconcile(fresh, remoteHeads, capped, droppable, buffered) {
+function applyQueueReconcile(fresh, remoteHeads, capped, droppable, buffered, pendingDeletes) {
   const local = useStore.getState().orderQueue || [];
   const localByRef = new Map(local.map(o => [o.ref, o]));
   const remote = [];
@@ -144,7 +165,7 @@ function applyQueueReconcile(fresh, remoteHeads, capped, droppable, buffered) {
   }
   const r = reconcileList({
     local, remote, keyOf: o => o.ref, hashOf: queueHash, isDone: isQueueDone, isTraining,
-    skipAdopt: clearedKeys('queue'), capped,
+    skipAdopt: noAdoptKeys('queue', pendingDeletes), capped,
     unconfirmedIsStale: staleUnconfirmedRule('queue', buffered),
     canDrop: o => droppable.has(String(o.ref)),
     hold: holdUnknownRule('queue', buffered),
@@ -152,7 +173,7 @@ function applyQueueReconcile(fresh, remoteHeads, capped, droppable, buffered) {
   apply('orderQueue', 'queue', r, markQueueDropped, publishQueueRows, latchQueueRows);
 }
 
-async function reconcileTabs(heads, droppable, buffered, inconclusive) {
+async function reconcileTabs(heads, droppable, buffered, inconclusive, pendingDeletes) {
   const keyOf = (t) => t.id;
   const remoteHeads = heads.filter(h => h && h.id).map(h => ({ key: h.id, at: headAt(h) }));
   const need = changedKeys(useStore.getState().tabs || [], remoteHeads, keyOf);
@@ -162,11 +183,11 @@ async function reconcileTabs(heads, droppable, buffered, inconclusive) {
     if (error) return false;
     for (const row of (data || [])) fresh.set(row.id, tabFromRow(row));
   }
-  applyTabReconcile(fresh, remoteHeads, inconclusive || heads.length >= QUEUE_ROW_CAP, droppable, buffered);
+  applyTabReconcile(fresh, remoteHeads, inconclusive || heads.length >= QUEUE_ROW_CAP, droppable, buffered, pendingDeletes);
   return true;
 }
 
-function applyTabReconcile(fresh, remoteHeads, capped, droppable, buffered) {
+function applyTabReconcile(fresh, remoteHeads, capped, droppable, buffered, pendingDeletes) {
   const local = useStore.getState().tabs || [];
   const wasOrphan = new Set(local.filter(t => t?._orphan).map(t => String(t.id)));
   const localById = new Map(local.map(t => [t.id, t]));
@@ -177,7 +198,7 @@ function applyTabReconcile(fresh, remoteHeads, capped, droppable, buffered) {
   }
   const r = reconcileList({
     local, remote, keyOf: t => t.id, hashOf: tabHash, isDone: isTabDone, isTraining: () => false,
-    skipAdopt: clearedKeys('tab'), capped,
+    skipAdopt: noAdoptKeys('tab', pendingDeletes), capped,
     unconfirmedIsStale: staleUnconfirmedRule('tab', buffered),
     canDrop: t => droppable.has(String(t.id)),
     keepIfPending: () => true,   // a tab with unsent rounds is money: kept and flagged, never dropped

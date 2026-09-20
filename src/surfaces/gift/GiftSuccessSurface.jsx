@@ -48,7 +48,7 @@ export default function GiftSuccessSurface({ location }) {
           setStatus('complete');
           return;
         }
-        if (data.status === 'paid' || data.status === 'pending') {
+        if (data.status === 'paid' || data.status === 'pending' || data.status === 'fulfilling') {
           attempts++;
           if (attempts < maxAttempts) {
             setTimeout(poll, 2000);

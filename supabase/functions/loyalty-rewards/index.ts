@@ -8,7 +8,7 @@
 // DELETE: { location_id, id }                   → soft-delete (set active=false)
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
+  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation, requireStaff,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -44,6 +44,15 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id as string);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Staff only for POST, PATCH and DELETE (18 Sep 2026, round three, enforced now) ──
+  // Any session could add a "1 point: free item" reward, reprice or switch off rewards. The only
+  // writer is Back Office (LoyaltyManager.jsx, a signed in user). GET stays as it was.
+  const refused = await requireStaff({
+    fn: 'loyalty-rewards', caller, locationId: location_id ? String(location_id) : null, companyId,
+    what: 'change loyalty rewards', body,
+  });
+  if (refused) return refused;
 
   // ── POST: create reward ────────────────────────────────────────────────
   if (req.method === 'POST') {

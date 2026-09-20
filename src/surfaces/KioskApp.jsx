@@ -49,8 +49,10 @@ import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
+import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
+import { setActiveMemberSession } from '../lib/memberSession.js';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -466,7 +468,18 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
   // v5.5.265: Verified customer loyalty data (from OTP flow)
   const [verifiedLoyalty, setVerifiedLoyalty] = useState(null);
-  // verifiedLoyalty: { customer, loyalty, stampCards, giftCards }
+  // verifiedLoyalty: { customer, loyalty, stampCards, giftCards, token }
+  // Database fence stage 1: publish the signed in member's session token for the loyalty and gift
+  // card calls submitOrder fires (earn, reward redemption, linked gift card by card_id).
+  // submitOrder is frozen by the card path guard, so it cannot pass the token itself;
+  // lib/memberSession carries it, only for THIS member, and it is cleared the moment the session
+  // resets. A kiosk bound to its venue needs no token; this covers a kiosk whose link is missing.
+  useEffect(() => {
+    setActiveMemberSession(verifiedLoyalty?.token
+      ? { token: verifiedLoyalty.token, customerId: verifiedLoyalty.customer?.id || null }
+      : null);
+  }, [verifiedLoyalty]);
+  useEffect(() => () => setActiveMemberSession(null), []);
   // Track where to return after early loyalty sign-in (from orderType screen)
   const [loyaltyReturnScreen, setLoyaltyReturnScreen] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
@@ -1168,7 +1181,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       resetIdle, resetSession, idleWarning, warningCountdown,
       setIdlePaused, deviceLocationId: device?.location_id || null,
     };
-    return <KioskV2Root engine={engine} ScreenPay={ScreenPay} />;
+    return <KioskV2Root engine={engine} ScreenPay={LinkedScreenPay} />;
   }
 
   // ─── Render ───
@@ -1214,7 +1227,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
       {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
-      {screen === 'pay' && <ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} />}
+      {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
+          only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
+      {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskPayLinkGate>}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -3110,6 +3125,17 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
 // ============================================================
 // SCREEN: PAY
 // ============================================================
+// Database fence stage 1, fix round 2: the new design gets ScreenPay behind the same link gate as
+// the old kiosk (surfaces/kiosk/KioskPayLinkGate.jsx): the reader starts only on a kiosk the
+// server says is linked. ScreenPay itself is unchanged (kioskCardPathGuard.test.js).
+function LinkedScreenPay(props) {
+  return (
+    <KioskPayLinkGate brandColor={props.brandColor} onBack={props.onBack} onCancel={props.onCancel}>
+      <ScreenPay {...props} />
+    </KioskPayLinkGate>
+  );
+}
+
 function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2 }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
@@ -3630,6 +3656,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           },
           stampCards: data.stamp_cards || [],
           giftCards: data.gift_cards || [],
+          // The member's loyalty session token: proves earn, reward and linked gift card calls
+          // are this member's own (database fence stage 1). Never shown.
+          token: data.token || null,
         });
         setOtpStep('verified');
       }

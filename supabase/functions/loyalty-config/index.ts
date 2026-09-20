@@ -9,7 +9,7 @@
 
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
-  getOrCreateConfig,
+  getOrCreateConfig, requireStaff,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -61,6 +61,17 @@ Deno.serve(async (req) => {
     const resolved = await resolveCompanyForLocation(caller.id, location_id);
     if (resolved instanceof Response) return resolved;
     const companyId = resolved;
+
+    // ── Staff only for every write (18 Sep 2026, round three, enforced now) ──
+    // Any session could rewrite the points rules here (points per pound, registration bonus,
+    // exclusions, switch loyalty off). The only writer is Back Office (LoyaltyManager.jsx, a
+    // signed in user). Reads (GET) stay as open as their callers need: the customer display and
+    // tills read the enabled flag.
+    const refused = await requireStaff({
+      fn: 'loyalty-config', caller, locationId: location_id ? String(location_id) : null, companyId,
+      what: 'change loyalty settings', body,
+    });
+    if (refused) return refused;
 
     // Ensure config exists
     await getOrCreateConfig(companyId);

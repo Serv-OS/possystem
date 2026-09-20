@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
+import PrintAgentKeys from './PrintAgentKeys';
 import { money } from '../../lib/currency';
 import { ORDER_TYPES } from '../../lib/orderScreen/orderScreenStatus';
 import {
@@ -683,6 +684,8 @@ export default function PrintRouting() {
               </div>
             );
           })}
+          {/* Database fence stage 1 (contract G3): keys for LAN print agents. */}
+          <PrintAgentKeys S={S} />
         </div>
 
         <div style={{ padding:12, borderTop:'1px solid var(--bdr)', flexShrink:0 }}>

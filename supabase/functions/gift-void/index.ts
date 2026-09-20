@@ -8,6 +8,7 @@
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -26,6 +27,15 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── Staff only (18 Sep 2026, round three, enforced now) ────────────────
+  // Any session could zero any card of the company. The only caller is Back Office
+  // (GiftCards.jsx Void, a signed in user).
+  const refused = await requireStaff({
+    fn: 'gift-void', caller, locationId: (body.location_id as string) || null, companyId,
+    what: 'void gift cards', body,
+  });
+  if (refused) return refused;
 
   const { card_id, reason, staff_id } = body as any;
 

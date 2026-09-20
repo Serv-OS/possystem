@@ -61,6 +61,9 @@ export default function KioskOtpSheet({
           },
           stampCards: data.stamp_cards || [],
           giftCards: [],
+          // The member's loyalty session token: proves earn and reward calls are this member's
+          // own (18 Sep 2026, lib/memberSession via KioskApp). Never shown.
+          token: data.token || null,
         });
         setStep('rewards');
       } else {

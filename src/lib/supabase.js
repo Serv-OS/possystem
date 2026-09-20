@@ -1,4 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import { resolveAuthToken, lastAuthOutcome, AUTH_OUTCOMES, DEFAULT_STORAGE_KEY } from './authSession';
+import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
+import { VERSION } from './version';
 
 // ── Ops DB (POS operational data — source of truth for all POS operations) ───
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL  || '';
@@ -17,11 +20,13 @@ export const staffSupabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE
   auth: { storageKey: 'rpos-staff-auth', persistSession: true, autoRefreshToken: true },
 });
 
+export const AUTH_STORAGE_KEY = DEFAULT_STORAGE_KEY;
+
 export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    storageKey: 'rpos-auth',
+    storageKey: AUTH_STORAGE_KEY,
   },
 });
 
@@ -137,31 +142,48 @@ export const LOCATION_ID = 'loc-demo';
 /**
  * v5.5.183: Get a valid Supabase access token for edge-function calls.
  * Back-office users already have a session (signInWithPassword). POS devices
- * (paired via pairing code) do NOT — so we fall back to signInAnonymously()
+ * (paired via pairing code) do NOT, so we fall back to signInAnonymously()
  * which gives us a lightweight JWT with role='authenticated'. The same
  * approach QR and Online checkout already use.
+ *
+ * v5.8.57 (ported into the database fence release, contract A1): AN ANONYMOUS SIGN-IN
+ * MUST NEVER REPLACE AN IDENTITY THAT STILL EXISTS. auth-js reports session === null both
+ * for "this browser has no session" and for "the refresh call failed on the network, the
+ * session is still in storage" (AuthRetryableFetchError; see the proof written up in
+ * lib/authSession.js). This used to take the second case as the first and mint a NEW
+ * auth.uid(), which silently cut a paired till, kiosk or TV off from every row fenced on
+ * its old one (devices.device_uid, menu_board_screens.device_uid).
+ *
+ * resolveAuthToken rides out a short outage (two retries, under a second in total) and
+ * then falls back to the token already in storage while it is still valid. It only ever
+ * signs in anonymously when storage holds no refresh token.
+ *
+ * The contract callers see is UNCHANGED: a token string, or null, and the only throw is
+ * still the anonymous sign-in failing on a device with no identity.
  */
 export const ensureAuthToken = async () => {
   if (!supabase) return null;
-  const { data: existing } = await supabase.auth.getSession();
-  const token = existing?.session?.access_token;
-  if (token) return token;
-  // v5.5.307: NEVER create an anonymous session in back-office / admin mode.
-  // The Supabase client shares storageKey 'rpos-auth', so an anonymous session
-  // created here would be picked up by BackOfficeApp.getSession() and mistaken
-  // for a (userless) login — "blank back office, logged in with no user".
-  // The back office only calls edge functions when a real user is signed in,
-  // so returning null here is safe — it just means "not authenticated yet".
-  // v5.5.311: use isBackOfficeMode() which also matches the 'backoffice'
-  // spelling (the previous check only matched 'office', so a BO device whose
-  // persisted mode is 'backoffice' and URL lacks ?mode= could still mint an
-  // anon session → blank back office).
-  if (isBackOfficeMode()) return null;
-  // No session (POS device, expired, etc.) — anonymous sign-in
-  const { data, error } = await supabase.auth.signInAnonymously();
-  if (error) throw new Error('Could not start auth session: ' + error.message);
-  return data?.session?.access_token || null;
+  // v5.5.307 / v5.5.311: NEVER create an anonymous session in back-office / admin mode.
+  // The Supabase client shares storageKey 'rpos-auth', so an anonymous session created
+  // here would be picked up by BackOfficeApp.getSession() and mistaken for a (userless)
+  // login. The back office still gets the retry and the stored-token fallback.
+  const res = await resolveAuthToken({
+    auth: supabase.auth,
+    storage: typeof localStorage !== 'undefined' ? localStorage : null,
+    storageKey: AUTH_STORAGE_KEY,
+    allowAnonymous: !isBackOfficeMode(),
+  });
+  if (res.outcome === AUTH_OUTCOMES.ANON_FAILED) {
+    throw new Error('Could not start auth session: ' + (res.error?.message || 'unknown error'));
+  }
+  if (res.outcome === AUTH_OUTCOMES.STORED || res.outcome === AUTH_OUTCOMES.HELD) {
+    console.warn('[auth] session refresh is failing. Keeping this device identity rather than signing in anonymously. Outcome:', res.outcome);
+  }
+  return res.token;
 };
+
+/** Last auth outcome, for on-device diagnostics. */
+export const getAuthTokenOutcome = () => lastAuthOutcome();
 
 /**
  * v5.5.758 — POS-core RLS cutover, Stage 1: bind this already-paired POS-family device
@@ -194,23 +216,136 @@ export const claimPairedDeviceOnBoot = () => {
   return _claimPromise;
 };
 
-const _claimDevice = async () => {
-  if (!supabase) return;
-  let dev; try { dev = JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return; }
-  if (!dev || !dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;
+// Database fence stage 1 (contract A2): the boot re-link uses the device SECRET, never a
+// code read back from the table. Order: reclaim_device (secret), else device_status and, for
+// a till that is bound but has no secret yet (every grandfathered till), device_issue_secret,
+// else claim_device_v2 with the code saved before this release (works until file 2). A
+// refusal dispatches rpos-device-link-lost (the banner, components/DeviceLinkBanner.jsx), a
+// re-link dispatches rpos-device-relinked (parked writes are sent again), and the heartbeat
+// then reports fence_v1.
+// FENCE STAGE 1 FALLBACK: while 20260919a is not run the new functions are missing and
+// runDeviceLink runs today's claim (read pairing_code once, then claim_device). Remove the
+// readLegacyCode and saveLegacyCode arguments below once 20260919b has run.
+export const KIOSK_ID_KEY = 'rpos-kiosk-id';
+export const KIOSK_SECRET_KEY = 'rpos-kiosk-secret';
+
+/** The device this browser is paired as: a till (rpos-device) or a kiosk (rpos-kiosk-id). */
+export function readLocalDevice() {
+  try {
+    const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+    if (dev && dev.id && dev.id !== 'admin' && !dev.adminMode && dev.locationId) {
+      return { kind: 'till', id: dev.id, deviceSecret: dev.deviceSecret || null, pairingCode: dev.pairingCode || null, locationName: dev.locationName || null };
+    }
+  } catch { /* fall through */ }
+  try {
+    if (getDeviceMode() === 'kiosk') {
+      const id = localStorage.getItem(KIOSK_ID_KEY);
+      if (id) return { kind: 'kiosk', id, deviceSecret: localStorage.getItem(KIOSK_SECRET_KEY) || null, pairingCode: null, locationName: null };
+    }
+  } catch { /* none */ }
+  return null;
+}
+
+/** Keep the one time device secret the server handed out (shown once, never readable again). */
+export function saveDeviceSecret(kind, secret) {
+  if (!secret) return;
+  if (kind === 'kiosk') { localStorage.setItem(KIOSK_SECRET_KEY, secret); return; }
+  const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+  if (!dev) return;
+  dev.deviceSecret = secret;
+  localStorage.setItem('rpos-device', JSON.stringify(dev));
+}
+
+const dispatchLink = (name, detail) => {
+  try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch { /* no window */ }
+};
+
+/**
+ * Report this build to the server (contract A10). Resolves the device_heartbeat answer,
+ * { unsupported: true } while the function does not exist, or null on a failure.
+ * Fix round (19 Sep):
+ *   A13: the device id saved on this till (or the kiosk id) goes with it, so the server can see a
+ *        device that is switched on but not linked (file B waits until there is none).
+ *   A14: while device_heartbeat does not exist, this till writes its own last_seen and
+ *        app_version, so the runbook's step 2 query shows every till is on this release BEFORE
+ *        file A. FENCE STAGE 1 FALLBACK (the KDS also keeps its db.js updateDeviceHeartbeat).
+ */
+export const sendDeviceHeartbeat = async () => {
+  if (!supabase) return null;
+  const local = readLocalDevice();
+  try {
+    const { data, error } = await supabase.rpc('device_heartbeat', heartbeatArgs({ version: VERSION, caps: FENCE_CAPS, deviceId: local?.id }));
+    if (error) {
+      if (!isMissingRpc(error)) return null;
+      if (local?.id) {
+        try {
+          const patch = legacyHeartbeatPatch({ version: VERSION });
+          const { error: patchErr } = await supabase.from('devices').update(patch).eq('id', local.id);
+          if (patchErr && isMissingColumn(patchErr, 'client_caps')) {
+            // Step 1b (20260919_OPS_fence_0_caps.sql) is not run yet: write the rest, so the
+            // runbook's version query still shows this build.
+            const { client_caps: _caps, ...rest } = patch;
+            await supabase.from('devices').update(rest).eq('id', local.id);
+          }
+        } catch { /* best effort: the row stays as it was */ }
+      }
+      return { unsupported: true };
+    }
+    return data || null;
+  } catch { return null; }
+};
+
+// The last answer of the device link on this page (contract A12: OfflineQueue may start after
+// the boot link already answered, so it asks here instead of waiting for an event it missed).
+let _lastLinkOutcome = null;
+export const getLastDeviceLinkOutcome = () => _lastLinkOutcome;
+
+/**
+ * Re-link this browser's device and tell the app what happened. allowLegacy runs today's
+ * claim when the fence functions are missing (boot only, so a wake never repeats it).
+ */
+export const linkDevice = async ({ allowLegacy = true } = {}) => {
+  if (!supabase) return { outcome: 'skipped' };
+  const dev = readLocalDevice();
+  if (!dev) return { outcome: 'skipped' };
+  let res;
   try {
     await ensureAuthToken();
-    let code = dev.pairingCode;
-    if (!code) {
-      const { data } = await supabase.from('devices').select('pairing_code').eq('id', dev.id).maybeSingle();
-      code = data?.pairing_code || null;
-      if (code) { dev.pairingCode = code; try { localStorage.setItem('rpos-device', JSON.stringify(dev)); } catch { /* quota */ } }
-    }
-    if (code) await supabase.rpc('claim_device', { p_code: code });
+    res = await runDeviceLink({
+      rpc: (name, args) => (args ? supabase.rpc(name, args) : supabase.rpc(name)),
+      device: dev,
+      allowLegacy,
+      saveSecret: (secret) => { try { saveDeviceSecret(dev.kind, secret); } catch { /* quota */ } },
+      // FENCE STAGE 1 FALLBACK (today's path, tills only).
+      readLegacyCode: dev.kind === 'till' ? async () => {
+        const { data } = await supabase.from('devices').select('pairing_code').eq('id', dev.id).maybeSingle();
+        return data?.pairing_code || null;
+      } : null,
+      saveLegacyCode: dev.kind === 'till' ? (code) => {
+        const cur = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+        if (cur) { cur.pairingCode = code; localStorage.setItem('rpos-device', JSON.stringify(cur)); }
+      } : null,
+      // Contract A15: once the fence functions exist a saved code can never re-link: drop it.
+      forgetLegacyCode: dev.kind === 'till' ? () => {
+        const cur = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+        if (cur && 'pairingCode' in cur) { delete cur.pairingCode; localStorage.setItem('rpos-device', JSON.stringify(cur)); }
+      } : null,
+    });
   } catch (e) {
-    console.warn('[boot] device claim failed (non-fatal):', e?.message);
+    console.warn('[boot] device link failed (non-fatal):', e?.message);
+    res = { outcome: 'unknown', message: e?.message };
   }
+  const detail = { ...res, kind: dev.kind, deviceId: dev.id };
+  _lastLinkOutcome = res.outcome;
+  if (res.outcome === 'lost') dispatchLink('rpos-device-link-lost', detail);
+  else if (res.outcome === 'relinked') dispatchLink('rpos-device-relinked', detail);
+  else if (res.outcome === 'linked') dispatchLink('rpos-device-linked', detail);
+  else if (res.outcome === 'legacy' || res.outcome === 'unsupported') dispatchLink('rpos-device-link-unsupported', detail);
+  if (res.outcome !== 'skipped') { sendDeviceHeartbeat(); }
+  return res;
 };
+
+const _claimDevice = () => linkDevice({ allowLegacy: true });
 
 // ──────────────────────────────────────────────────────────────────
 // v5.5.3 — TENANT FENCE  (hotfixed in v5.5.4)
@@ -273,6 +408,9 @@ const TENANT_FENCE_KEEP = new Set([
   'rpos-kiosk-id',
   'rpos-kiosk-token',
   'rpos-kiosk-lang',
+  // Database fence stage 1 (contract A4): the kiosk's one time device secret. Wiping it
+  // would force a re-pair with a new Back Office code.
+  'rpos-kiosk-secret',
 ]);
 
 /**
