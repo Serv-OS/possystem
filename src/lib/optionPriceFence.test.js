@@ -45,7 +45,8 @@ test('anything else can only add to a line, never take money off', () => {
   assert.ok(value.includes("v_mod := greatest(v_mod, coalesce(v_menu, 0), 0);"),
     'an option that is not this item\'s, or one copy too many, counts at the largest of the page price, its menu price and 0');
   assert.ok(value.includes('v_unit := greatest(0, v_item + v_modsum);'), 'and a line is never worth less than nothing');
-  assert.ok(value.includes("v_item := greatest(v_item, public._menu_item_floor_minor(r.pricing, v_channel, v_base));"),
+  assert.ok(value.includes("v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base);")
+    && value.includes('v_item := greatest(v_item, v_floor);'),
     'the item itself is still floored at its menu price, so a line is never below that floor plus the options the venue allows');
 });
 

@@ -213,3 +213,40 @@ export function loyaltyRewardValueMinor(reward) {
   if (!v || typeof v !== 'object') return 0;
   return posInt(v.amount_minor);
 }
+
+/**
+ * Fix round 4 (19 Sep 2026): WHAT the reward is, for the rewards that have no money value of
+ * their own, recorded as meta.reward on the loyalty proof. Without it the server had nothing
+ * to go on and fell back to the dearest single item on the basket, so one genuine free coffee
+ * paid for a 95 pound Feast (_public_order_loyalty in 20260919a).
+ *   free_item        { type, items: [{ id, name }] }   valued at the cheapest matching line
+ *   discount_percent { type, percent }                 valued at percent x the server's goods
+ * Reads a points reward (loyalty_rewards.reward_value) or a stamp card programme
+ * (stamp_card_programs.reward_config). Null when there is nothing the server could use: a
+ * fixed amount reward (its value is the proof's own amount), a free item reward that names no
+ * item, or a shape we do not know. Null means the server values that reward at NOTHING and
+ * the order comes out short, which is the safe way round.
+ */
+export function loyaltyRewardMeta(reward) {
+  if (!reward || typeof reward !== 'object') return null;
+  const type = String(reward.reward_type || '').trim().toLowerCase();
+  const v = (reward.reward_value && typeof reward.reward_value === 'object' && reward.reward_value)
+    || (reward.reward_config && typeof reward.reward_config === 'object' && reward.reward_config)
+    || {};
+  if (type === 'discount_percent') {
+    const pct = Number(v.percent);
+    if (!Number.isFinite(pct) || pct <= 0) return null;
+    return { type, percent: Math.min(100, Math.round(pct * 100) / 100) };
+  }
+  if (type === 'free_item') {
+    const items = (Array.isArray(v.eligible_items) ? v.eligible_items : [])
+      .filter((ei) => ei && typeof ei === 'object' && (ei.id || ei.name))
+      .slice(0, 50)
+      .map((ei) => ({
+        id: ei.id ? String(ei.id).slice(0, 80) : null,
+        name: ei.name ? String(ei.name).slice(0, 120) : null,
+      }));
+    return items.length ? { type, items } : null;
+  }
+  return null;
+}

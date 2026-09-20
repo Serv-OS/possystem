@@ -478,6 +478,18 @@ as $fn$
   select case when p ~ '^\s*-?[0-9]{1,12}(\.[0-9]{1,6})?\s*$' then trim(p)::numeric else 0 end;
 $fn$;
 
+-- The same number rule as _fence_num, but NULL (never 0) when there is no plain number
+-- there. Fix round 4 (19 Sep): the difference between "the venue priced this at zero" and
+-- "the server has nothing to go on" is the difference between free food and a short order.
+create or replace function public._fence_num_or_null(p text)
+returns numeric
+language sql
+immutable
+set search_path = pg_catalog
+as $fn$
+  select case when p ~ '^\s*-?[0-9]{1,12}(\.[0-9]{1,6})?\s*$' then trim(p)::numeric end;
+$fn$;
+
 create or replace function public._fence_bool(p text)
 returns boolean
 language sql
@@ -759,8 +771,17 @@ $fn$;
 -- The LOWEST price the resolver (menuPricing resolveItemPrice) can give this item on this
 -- channel, whichever menu is active: every menu tier's price for the channel (the channel,
 -- then all, then base) and the item's own channel price (then base). Drive thru falls to
--- takeaway. Catering prices from base only (CateringSurface). In pence; 0 for an item with
--- no pricing. A line priced below this counts at this.
+-- takeaway. Catering prices from base only (CateringSurface). In pence. A line priced below
+-- this counts at this.
+--
+-- NULL means the server cannot work out what this item is worth (fix round 4, 19 Sep): no
+-- pricing object, no plain number where a price should be, or nothing above zero anywhere.
+-- A ZERO IS NOT A PRICE. Every ordering screen already reads a zero as "unpriced"
+-- (lib/menuPricing.js variantFromPrice skips zeros, which is exactly why a variants parent
+-- carries base 0 and menu_items.pricing defaults to {"base": 0}), so returning 0 here made
+-- a row the storefront never sells worth nothing and it rode along free on a paid ticket.
+-- The caller must never read NULL as free: the line is UNKNOWN, it counts at no less than
+-- what the page said, and the order comes out SHORT for staff to confirm.
 create or replace function public._menu_item_floor_minor(p_pricing jsonb, p_channel text, p_base_only boolean)
 returns bigint
 language plpgsql
@@ -775,32 +796,36 @@ declare
   k      text;
 begin
   if jsonb_typeof(p_pricing) is distinct from 'object' then
-    return 0;
+    return null;
   end if;
   if p_base_only then
-    return round(public._fence_num(p_pricing ->> 'base') * 100)::bigint;
+    v_min := public._fence_num_or_null(p_pricing ->> 'base');
+    return case when coalesce(v_min, 0) > 0 then round(v_min * 100)::bigint end;
   end if;
   foreach k in array v_keys loop
-    if v_val is null and p_pricing ? k and jsonb_typeof(p_pricing -> k) <> 'null' then
-      v_val := public._fence_num(p_pricing ->> k);
+    if v_val is null and p_pricing ? k then
+      v_val := public._fence_num_or_null(p_pricing ->> k);
     end if;
   end loop;
-  v_min := coalesce(v_val, public._fence_num(p_pricing ->> 'base'));
+  v_min := coalesce(v_val, public._fence_num_or_null(p_pricing ->> 'base'));
+  if coalesce(v_min, 0) <= 0 then
+    v_min := null;
+  end if;
   if jsonb_typeof(p_pricing -> 'menus') = 'object' then
     for v_tier in select t.value from jsonb_each(p_pricing -> 'menus') t loop
       continue when jsonb_typeof(v_tier) is distinct from 'object';
       v_val := null;
       foreach k in array v_keys || array['all', 'base'] loop
-        if v_val is null and v_tier ? k and jsonb_typeof(v_tier -> k) <> 'null' then
-          v_val := public._fence_num(v_tier ->> k);
+        if v_val is null and v_tier ? k then
+          v_val := public._fence_num_or_null(v_tier ->> k);
         end if;
       end loop;
-      if v_val is not null then
-        v_min := least(v_min, v_val);
+      if coalesce(v_val, 0) > 0 then
+        v_min := least(v_min, v_val);   -- least() skips a NULL v_min
       end if;
     end loop;
   end if;
-  return round(v_min * 100)::bigint;
+  return case when v_min is not null then round(v_min * 100)::bigint end;
 end;
 $fn$;
 
@@ -810,7 +835,7 @@ declare
 begin
   foreach f in array array[
     'public._fence_api_role()', 'public._fence_bypass()', 'public._fence_norm_code(text)',
-    'public._fence_num(text)', 'public._fence_bool(text)', 'public._fence_is_uuid(text)',
+    'public._fence_num(text)', 'public._fence_num_or_null(text)', 'public._fence_bool(text)', 'public._fence_is_uuid(text)',
     'public._fence_is_server_code(text)', 'public._fence_client_ip()',
     'public._fence_random_code(integer)', 'public._fence_random_digits(integer)', 'public._fence_is_locked(text)',
     'public._fence_count(text, integer, interval, interval)', 'public._fence_clear(text)',
@@ -2638,8 +2663,9 @@ $fn$;
 -- server's price and quantity, loses any void flag or line discount, and keeps the page's
 -- name only when it is one of the menu's names for that id (otherwise the menu's name goes
 -- to the kitchen: a cheap item's id can never be sent under a dear item's name). Returns
--- { items, lines (known lines, for the discount rules), goods_minor, unknown_lines,
--- max_unit_minor } in pence.
+-- { items, lines (only the lines the storefront really sells, for the discount rules and for
+-- what a loyalty reward can make free), goods_minor, unknown_lines, max_unit_minor (the
+-- dearest line the server could price, recorded for staff) } in pence.
 --
 -- OPTIONS (fix round 3, 19 Sep). An eighth way to forge "paid" was to repeat the venue's OWN
 -- minus priced option until the line priced itself to zero: a 95 pound Feast with one real
@@ -2662,6 +2688,25 @@ $fn$;
 -- the item's own floor price plus the options the venue really allows on it, a repeated minus
 -- priced option can never reach zero, and legitimate free and minus priced options are
 -- untouched. The options themselves still reach the kitchen exactly as the customer sent them.
+--
+-- WHAT THE STOREFRONT REALLY SELLS (fix round 4, 19 Sep). A menu_items row of the venue was
+-- enough: nothing asked whether the storefront sells it. A variants parent (base 0, the row
+-- behind Half and Pint), an option only sub item, an archived row, a row hidden from the
+-- channel and an 86'd row all passed, and _menu_item_floor_minor valued them at 0, so ten
+-- Colas rode along free on a legitimately paid ticket. A line now counts as the server's own
+-- value ONLY when the row is one the storefront sells for this channel:
+--   * not a variants parent (no live child row points at it: lib/menuPricing.js variantChildren);
+--   * not an option only sub item (lib/menuRules.js rule 1, the ONE rule every screen reads:
+--     type 'subitem' and not sold alone. NOT "sold_alone is false" on its own: that column
+--     DEFAULTS to false in the live Ops DB, so on its own it would refuse real products);
+--   * not archived (both storefronts fetch archived = false);
+--   * not hidden from the channel (visibility.online false; catering has no such switch);
+--   * not 86'd (eighty_six, which online and catering both read to grey an item out);
+-- and only when _menu_item_floor_minor can put a price on it. Anything else is UNKNOWN: it
+-- counts at no less than what the page said and no less than any price we do have, it is
+-- never worth zero, it is counted in unknown_lines (so the order can never pay for itself
+-- and a manager confirms it), and it still reaches the kitchen under the MENU's name. Lines
+-- like that take no part in the venue's automatic discounts either.
 create or replace function public._public_order_value(p_loc text, p_source text, p_type text, p_items jsonb)
 returns jsonb
 language plpgsql
@@ -2672,6 +2717,12 @@ as $fn$
 declare
   v_channel  text := public._menu_channel_key(p_type);
   v_base     boolean := p_source = 'catering';
+  v_vis      text := case when p_source = 'catering' then null else 'online' end;
+  v_86       text[] := '{}'::text[];
+  v_parents  text[] := '{}'::text[];
+  v_sell     boolean;
+  v_floor    bigint;
+  v_pname    text;
   v_opts     jsonb;
   v_out      jsonb := '[]'::jsonb;
   v_lines    jsonb := '[]'::jsonb;
@@ -2702,6 +2753,20 @@ declare
   v_kitchen  text;
   v_receipt  text;
 begin
+  -- What the venue has switched off today (eighty_six: one row per 86'd item per venue, the
+  -- table both storefronts read). Through to_regclass and EXECUTE, so this file still runs
+  -- on a database that has no such table.
+  if to_regclass('public.eighty_six') is not null then
+    execute 'select coalesce(array_agg(e.item_id::text), ''{}''::text[]) from public.eighty_six e where e.location_id::text = $1'
+      into v_86 using p_loc;
+  end if;
+
+  -- Every row that is the parent of a live size, once for the whole order (a variants parent
+  -- is the row behind Half and Pint: it carries base 0 and is never sold itself).
+  select coalesce(array_agg(distinct m.parent_id), '{}'::text[]) into v_parents
+    from public.menu_items m
+   where m.location_id = p_loc and m.parent_id is not null and coalesce(m.archived, false) = false;
+
   -- Every option of every modifier group at this venue, by option id: which group holds it,
   -- how many times that group allows one on a line, whether the group lets the SAME option be
   -- picked more than once ("pick with qty"), its menu price in pence and the menu's name for
@@ -2739,12 +2804,25 @@ begin
     if r.id is not null and r.parent_id is not null then
       select * into p from public.menu_items m where m.id = r.parent_id and m.location_id = p_loc;
     end if;
-    v_item := round(public._fence_num(it ->> 'price') * 100)::bigint;
+    -- Does the storefront sell this row on this channel, and can the server price it?
+    v_sell := false;
+    v_floor := null;
     if r.id is not null then
-      v_item := greatest(v_item, public._menu_item_floor_minor(r.pricing, v_channel, v_base));
+      v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base);
+      v_sell := not (r.id = any(v_parents))
+                and coalesce(r.archived, false) = false
+                and not (coalesce(r.type, '') = 'subitem' and r.sold_alone is not true)
+                and (v_vis is null or coalesce(r.visibility ->> v_vis, 'true') <> 'false')
+                and not (r.id = any(v_86));
+    end if;
+    v_item := round(public._fence_num(it ->> 'price') * 100)::bigint;
+    if v_sell and v_floor is not null then
+      v_item := greatest(v_item, v_floor);
     else
+      -- Not on this venue's menu, not something the storefront sells, or nothing the server
+      -- can put a price on: UNKNOWN. Never free, never paid by itself.
       v_unknown := v_unknown + 1;
-      v_item := greatest(v_item, 0);
+      v_item := greatest(v_item, coalesce(v_floor, 0), 0);
     end if;
 
     -- Which groups this item's options may come from: its own list, or (a size with none of
@@ -2831,7 +2909,9 @@ begin
     v_qty := case when v_q >= 1 then least(999, ceil(v_q))::integer else 1 end;
     v_unit := greatest(0, v_item + v_modsum);
     v_goods := v_goods + v_unit * v_qty;
-    v_max_unit := greatest(v_max_unit, greatest(0, v_item));
+    if v_sell and v_floor is not null then
+      v_max_unit := greatest(v_max_unit, greatest(0, v_item));
+    end if;
 
     it := (it - 'voided' - 'discount') || jsonb_build_object('qty', v_qty, 'price', round(v_item / 100.0, 2));
     if it ? 'mods' then
@@ -2840,11 +2920,13 @@ begin
 
     if r.id is not null then
       v_name := coalesce(nullif(r.menu_name, ''), r.name);
+      v_pname := null;
       v_names := array[lower(btrim(coalesce(r.name, ''))), lower(btrim(coalesce(r.menu_name, ''))),
                        lower(btrim(coalesce(r.receipt_name, ''))), lower(btrim(coalesce(r.kitchen_name, '')))];
       if p.id is not null then
         -- The storefront names a size "Parent - Size" with a long dash (OnlineItemSheet).
-        v_name := coalesce(nullif(p.menu_name, ''), p.name) || ' ' || chr(8212) || ' ' || coalesce(nullif(r.menu_name, ''), r.name);
+        v_pname := coalesce(nullif(p.menu_name, ''), p.name);
+        v_name := v_pname || ' ' || chr(8212) || ' ' || coalesce(nullif(r.menu_name, ''), r.name);
         v_names := v_names || lower(v_name);
       end if;
       if lower(btrim(coalesce(it ->> 'name', ''))) <> all (array_remove(v_names, '')) then
@@ -2859,9 +2941,17 @@ begin
          and lower(v_receipt) <> all (array_remove(v_names, '')) then
         it := (it - 'receipt_name') || jsonb_build_object('receiptName', nullif(r.receipt_name, ''));
       end if;
-      v_lines := v_lines || jsonb_build_array(jsonb_build_object(
-                   'unit', v_unit, 'qty', v_qty, 'cat', r.cat,
-                   'cats', to_jsonb(coalesce(r.cats, '{}'::text[]))));
+      if v_sell and v_floor is not null then
+        -- Only a line the storefront really sells, at the server's own price, takes part in
+        -- the venue's automatic discounts or can be what a free item loyalty reward makes
+        -- free (id, parent id and the names lib/loyaltyMenuMatch.js matches on).
+        v_lines := v_lines || jsonb_build_array(jsonb_build_object(
+                     'unit', v_unit, 'qty', v_qty, 'cat', r.cat,
+                     'cats', to_jsonb(coalesce(r.cats, '{}'::text[])),
+                     'id', r.id, 'pid', r.parent_id, 'item', greatest(0, v_item),
+                     'name', coalesce(nullif(r.menu_name, ''), r.name),
+                     'pname', v_pname, 'label', v_name));
+      end if;
     end if;
     v_out := v_out || jsonb_build_array(it);
   end loop;
@@ -3217,14 +3307,95 @@ begin
 end;
 $fn$;
 
+-- The comparison key for an item name, exactly as lib/loyaltyMenuMatch.js makes it (trim,
+-- runs of whitespace to one space, lower case, and a spaced dash of any kind folded to
+-- " - "). Loyalty is per COMPANY and menu_items ids are per site, so a Free Latte set up at
+-- one venue is matched at another by NAME.
+create or replace function public._loyalty_label_key(p text)
+returns text
+language sql
+immutable
+set search_path = pg_catalog
+as $fn$
+  select regexp_replace(
+           lower(btrim(regexp_replace(coalesce(p, ''), '\s+', ' ', 'g'))),
+           ' [-' || chr(8208) || '-' || chr(8213) || chr(8722) || '] ', ' - ', 'g');
+$fn$;
+
+-- What a FREE ITEM loyalty reward is worth on this order, in pence: the CHEAPEST line the
+-- reward could make free, priced by the server (p_lines carries only lines the storefront
+-- really sells, at the server's own price). A line is eligible on the same rule every
+-- surface uses (lib/loyaltyMenuMatch.js): one of its ids (the item, or the size's parent) is
+-- a saved id, or one of its names matches a saved name (its own name, "Parent - Size", or
+-- the parent alone). 0 when the reward names no item, or names nothing that is on this
+-- order: the server cannot value it, so it is worth nothing and the order comes out short.
+create or replace function public._loyalty_free_item_minor(p_reward_items jsonb, p_lines jsonb)
+returns bigint
+language plpgsql
+immutable
+set search_path = pg_catalog
+as $fn$
+declare
+  v_ids  text[] := '{}'::text[];
+  v_keys text[] := '{}'::text[];
+  v_min  bigint := null;
+  v_key  text;
+  e      jsonb;
+  l      jsonb;
+begin
+  if jsonb_typeof(p_reward_items) is distinct from 'array' or jsonb_typeof(p_lines) is distinct from 'array' then
+    return 0;
+  end if;
+  for e in select x from jsonb_array_elements(p_reward_items) x loop
+    continue when jsonb_typeof(e) is distinct from 'object';
+    if nullif(btrim(coalesce(e ->> 'id', '')), '') is not null then
+      v_ids := v_ids || btrim(e ->> 'id');
+    end if;
+    v_key := public._loyalty_label_key(e ->> 'name');
+    if v_key <> '' then
+      v_keys := v_keys || v_key;
+    end if;
+  end loop;
+  if cardinality(v_ids) = 0 and cardinality(v_keys) = 0 then
+    return 0;
+  end if;
+  for l in select x from jsonb_array_elements(p_lines) x loop
+    continue when jsonb_typeof(l) is distinct from 'object';
+    if coalesce(l ->> 'id', '') = any(v_ids)
+       or coalesce(l ->> 'pid', '') = any(v_ids)
+       or (public._loyalty_label_key(l ->> 'name') <> '' and public._loyalty_label_key(l ->> 'name') = any(v_keys))
+       or (public._loyalty_label_key(l ->> 'label') <> '' and public._loyalty_label_key(l ->> 'label') = any(v_keys))
+       or (public._loyalty_label_key(l ->> 'pname') <> '' and public._loyalty_label_key(l ->> 'pname') = any(v_keys)) then
+      v_min := least(v_min, greatest(0, coalesce((l ->> 'item')::bigint, 0)));
+    end if;
+  end loop;
+  return greatest(0, coalesce(v_min, 0));
+end;
+$fn$;
+
 -- The loyalty discount the server can prove for this order: a redemption row in the
 -- loyalty ledgers (loyalty_transactions for points, stamp_transactions for stamp cards,
 -- both server written) whose key names THIS order's check, never more than the page
--- declared, and per redemption never more than the reward's money value (the payment-proof
--- function records it on the loyalty proof for a fixed value reward) or, when that is not
--- known (a free item), the dearest single item on the order. In pence.
+-- declared, and per redemption never more than what the SERVER can say that reward is
+-- worth. In pence.
+--
+-- WHAT A REWARD IS WORTH (fix round 4, 19 Sep). This used to fall back to the dearest single
+-- item on the basket whenever the loyalty proof carried no money value, and payment-proof
+-- writes the marker 1 for every reward that has none: free_item (the stamp card default) and
+-- discount_percent. So one genuine free coffee redemption paid for a 95 pound Feast, and two
+-- of them paid a 190 pound basket for a penny. Now, per redemption:
+--   * the proof's own amount when it is a real money value (a fixed amount reward);
+--   * a percent reward: that percent of the server's OWN goods value;
+--   * a free item reward: the cheapest line on the order the reward could make free, priced
+--     by the server (_loyalty_free_item_minor);
+--   * anything the server cannot value, including a redemption with no proof at all: ZERO.
+-- The reward's shape reaches us on the proof (payment-proof writes meta.reward from the
+-- company's loyalty_rewards row or stamp card programme). There is no dearest item fallback
+-- any more: a reward we cannot value takes nothing off, the order is short, and staff see it
+-- and confirm on the till.
+drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint);
 create or replace function public._public_order_loyalty(p_loc text, p_ref text, p_check_id text,
-                                                        p_declared bigint, p_max_unit bigint)
+                                                        p_declared bigint, p_goods_minor bigint, p_lines jsonb)
 returns bigint
 language plpgsql
 stable
@@ -3232,9 +3403,14 @@ security definer
 set search_path = public
 as $fn$
 declare
-  v_cap bigint := 0;
-  v_val bigint;
-  k     text;
+  v_cap  bigint := 0;
+  v_val  bigint;
+  v_amt  bigint;
+  v_meta jsonb;
+  v_rw   jsonb;
+  v_type text;
+  v_pct  numeric;
+  k      text;
 begin
   if coalesce(p_declared, 0) <= 0 or not public._public_order_check_bound(p_check_id, p_ref) then
     return 0;
@@ -3250,10 +3426,25 @@ begin
      where st.location_id::text = p_loc and st.type = 'redeem'
        and left(st.idempotency_key, length('stampredeem:' || p_check_id || ':')) = 'stampredeem:' || p_check_id || ':'
   loop
-    select max(pp.amount_minor) into v_val
+    select pp.amount_minor, pp.meta into v_amt, v_meta
       from public.payment_proofs pp
-     where pp.kind = 'loyalty' and pp.payment_ref = k and pp.location_id = p_loc and pp.amount_minor > 1;
-    v_cap := v_cap + coalesce(v_val, greatest(0, coalesce(p_max_unit, 0)));
+     where pp.kind = 'loyalty' and pp.payment_ref = k and pp.location_id = p_loc
+     order by pp.amount_minor desc nulls last
+     limit 1;
+    v_val := 0;
+    if coalesce(v_amt, 0) > 1 then
+      v_val := v_amt;
+    elsif v_amt is not null then
+      v_rw := case when jsonb_typeof(v_meta -> 'reward') = 'object' then v_meta -> 'reward' end;
+      v_type := lower(coalesce(v_rw ->> 'type', ''));
+      if v_type = 'discount_percent' then
+        v_pct := least(100, greatest(0, public._fence_num(v_rw ->> 'percent')));
+        v_val := floor(greatest(0, coalesce(p_goods_minor, 0)) * v_pct / 100)::bigint;
+      elsif v_type = 'free_item' then
+        v_val := public._loyalty_free_item_minor(v_rw -> 'items', p_lines);
+      end if;
+    end if;
+    v_cap := v_cap + greatest(0, coalesce(v_val, 0));
   end loop;
   return least(p_declared, v_cap);
 end;
@@ -3423,7 +3614,9 @@ begin
                            'public._public_order_proof_bound(text, text, text, text, text, jsonb, timestamp with time zone)',
                            'public._public_order_declared(jsonb, jsonb, text)',
                            'public._public_order_promo(text, text, bigint, text, boolean)',
-                           'public._public_order_loyalty(text, text, text, bigint, bigint)',
+                           'public._loyalty_label_key(text)',
+                           'public._loyalty_free_item_minor(jsonb, jsonb)',
+                           'public._public_order_loyalty(text, text, text, bigint, bigint, jsonb)',
                            'public._public_order_due(jsonb, bigint)',
                            'public._public_order_payment_refs(jsonb, text)',
                            'public._public_order_check_row(text, text, text, text, jsonb, jsonb, jsonb)',
@@ -3723,7 +3916,8 @@ begin
     end if;
     v_loy_decl := (v_decl ->> 'loyalty_minor')::bigint;
     if v_check is not null then
-      v_loy_minor := public._public_order_loyalty(v_loc, v_ref, v_check_id, v_loy_decl, (v_val ->> 'max_unit_minor')::bigint);
+      v_loy_minor := public._public_order_loyalty(v_loc, v_ref, v_check_id, v_loy_decl,
+                                                  v_goods_minor, v_val -> 'lines');
     end if;
     v_client_due := greatest(round(v_total * 100)::bigint,
                              case when v_check is not null
@@ -3933,10 +4127,16 @@ begin
     from public.payment_proofs p
    where p.id = any(v_ids);
   if v_pend.pricing is not null then
+    -- A redemption that landed after the order is valued now, against the SAME lines the
+    -- order was priced from (the kept check carries the server's own priced items, so
+    -- re-valuing them gives back the lines a free item reward is matched against).
     v_loy := greatest(coalesce((v_pend.pricing ->> 'loyalty_minor')::bigint, 0),
                       public._public_order_loyalty(v_loc, p_ref, v_check_id,
                                                    coalesce((v_pend.pricing ->> 'loyalty_declared_minor')::bigint, 0),
-                                                   coalesce((v_pend.pricing ->> 'max_unit_minor')::bigint, 0)));
+                                                   coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0),
+                                                   public._public_order_value(v_loc, coalesce(v_q.source, 'online'),
+                                                                              coalesce(v_q.type, 'collection'),
+                                                                              v_pend.check_row -> 'items') -> 'lines'));
     v_due := public._public_order_due(v_pend.pricing, v_loy);
   else
     v_due := v_pend.due_minor;

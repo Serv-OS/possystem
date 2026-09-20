@@ -580,9 +580,14 @@ o, e, r = place('customer', online('OL-LOY', [line('mi-coffee', 3)], 0, discount
 expect('NORMAL: a points reward worth 3 (its redemption row names this order) pays for a coffee', j(o).get('paid') is True and pricing('OL-LOY').get('loyalty_minor') == 300, o + e)
 run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{chk('OL-STAMP')}:prog1')")
 p = proof('pi_stamp', 'card', 2500, order_ref='OL-STAMP')
+# Fix round 4: the stamp card's proof says WHAT the reward is (payment-proof reads the
+# programme's reward_config), so the server values the free coffee from the coffee on the order.
+sp = proof(f"stampredeem:{chk('OL-STAMP')}:prog1", 'loyalty', 1, proc='loyalty',
+           meta={'reward': {'type': 'free_item', 'items': [{'id': None, 'name': 'Coffee'}]}})
 o, e, r = place('customer', online('OL-STAMP', [line('mi-coffee', 3), line('mi-meal', 25)], 25, discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 300}]),
-                {'id': chk('OL-STAMP'), 'total': 25}, [p])
-expect('NORMAL: a stamp card free coffee (stamp redemption row) is paid at 25', j(o).get('paid') is True, o + e)
+                {'id': chk('OL-STAMP'), 'total': 25}, [p, sp])
+expect('NORMAL: a stamp card free coffee (its proof names the free item) is paid at 25',
+       j(o).get('paid') is True and pricing('OL-STAMP').get('loyalty_minor') == 300, o + e)
 p = proof('pi_stamp2', 'card', 500, order_ref='OL-STAMP2')
 o, e, r = place('attacker', online('OL-STAMP2', [line('mi-coffee', 3), line('mi-meal', 25)], 5, discounts=[{'type': 'loyalty', 'label': 'x', 'amount_minor': 2300}]),
                 {'id': chk('OL-STAMP2'), 'total': 5}, [p])
@@ -591,8 +596,8 @@ run(f"insert into public.stamp_transactions (customer_id, program_id, location_i
 p = proof('pi_bigloy', 'card', 1, order_ref='OL-BIGLOY')
 o, e, r = place('attacker', online('OL-BIGLOY', [line('mi-coffee', 3), line('mi-meal', 25)], 0.01, discounts=[{'type': 'loyalty', 'label': 'x', 'amount_minor': 2800}]),
                 {'id': chk('OL-BIGLOY'), 'total': 0.01}, [p])
-expect('EXPLOIT: a real free item reward never takes off more than the dearest single item (25 of 28)',
-       j(o).get('paid') is False and pricing('OL-BIGLOY').get('loyalty_minor') == 2500 and pricing('OL-BIGLOY').get('due_minor', 0) >= 290, o + e)
+expect('EXPLOIT: a real redemption the server cannot value (no proof at all) takes off NOTHING (fix round 4)',
+       j(o).get('paid') is False and pricing('OL-BIGLOY').get('loyalty_minor') == 0 and pricing('OL-BIGLOY').get('due_minor', 0) >= 2790, o + e)
 run(f"insert into public.loyalty_transactions (customer_id, company_id, location_id, type, points, balance_after, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 'redeem', -100, 0, 'redeem:{chk('OL-FIXLOY')}:rw2')")
 lp2 = proof(f"redeem:{chk('OL-FIXLOY')}:rw2", 'loyalty', 200, proc='loyalty')
 p = proof('pi_fixloy', 'card', 1, order_ref='OL-FIXLOY')
@@ -613,8 +618,11 @@ o, e, r = place('customer', online('OL-LATE', [line('mi-coffee', 3), line('mi-me
                 {'id': chk('OL-LATE'), 'total': 25}, [p])
 expect('a reward redeemed too slowly: the order arrives short, never paid', j(o).get('paid') is False and state('OL-LATE') == 'false|short', o + e)
 run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{chk('OL-LATE')}:prog1')")
+proof(f"stampredeem:{chk('OL-LATE')}:prog1", 'loyalty', 1, proc='loyalty',
+      meta={'reward': {'type': 'free_item', 'items': [{'id': 'mi-coffee', 'name': 'Coffee'}]}})
 o, e, r = as_commit('customer', f"select public.verify_public_order_payment('{L1}', 'OL-LATE', array['{p}']::uuid[]);")
-expect('once the redemption row lands, Check payment finds it and the order is paid', j(o).get('paid') is True and state('OL-LATE').startswith('true|verified'), o + e)
+expect('once the redemption row lands, Check payment values it from the kept check\'s own lines and the order is paid',
+       j(o).get('paid') is True and state('OL-LATE').startswith('true|verified'), o + e)
 
 # ----- discount rules can prove a discount because nobody but Back Office writes them now
 o, e, r = as_('attacker', f"insert into public.discount_rules (location_id, name, trigger_type, trigger_category_ids, trigger_qty, reward_type, reward_value, reward_qty) values ('{L1}', 'evil', 'buy_x', '{{cat-mains}}', 0, 'free', 0, 1);")
@@ -771,6 +779,194 @@ o, _, _ = run("select items->0->'mods'->1->>'name', items->0->'mods'->1->>'price
 expect('the option still reaches the kitchen, under the menu\'s own name', o == 'On the side|-0.20', o)
 # These 13 orders would otherwise use up the 30 per session the throttle allows, which the
 # checks below are not about (the throttle has its own checks).
+run("delete from public.fence_attempts where bucket like 'order:uid:%'")
+
+# ----- THE NINTH WAY (fix round 3 review, fixed in round 4): a loyalty reward with no money
+# value of its own was worth the DEAREST SINGLE ITEM on the basket, and stacked per redeem
+# row. payment-proof writes the marker 1 for exactly the rewards that have no money value
+# (free_item, the stamp card default, and discount_percent), so this was one genuine free
+# coffee away from a free Feast. A reward is now worth what the SERVER can say it is worth.
+def loy_row(check_id, key, stamp=False):
+    if stamp:
+        run(f"insert into public.stamp_transactions (customer_id, program_id, location_id, stamps, type, idempotency_key) "
+            f"values (gen_random_uuid(), gen_random_uuid(), '{L1}', 0, 'redeem', 'stampredeem:{check_id}:{key}')")
+        return f'stampredeem:{check_id}:{key}'
+    run(f"insert into public.loyalty_transactions (customer_id, company_id, location_id, type, points, balance_after, idempotency_key) "
+        f"values (gen_random_uuid(), gen_random_uuid(), '{L1}', 'redeem', -100, 0, 'redeem:{check_id}:{key}')")
+    return f'redeem:{check_id}:{key}'
+
+FREE_COFFEE = {'reward': {'type': 'free_item', 'items': [{'id': 'mi-coffee', 'name': 'Coffee'}]}}
+
+# The reviewer's scenario, to the penny: a real free coffee redemption on a 95 pound Feast.
+k = loy_row(chk('R4-LOY1'), 'rw-free-coffee')
+lp = proof(k, 'loyalty', 1, proc='loyalty')                       # payment-proof's marker: no money value
+cp = proof('pi_r4_loy1', 'card', 300, order_ref='R4-LOY1')
+o, e, r = place('attacker', online('R4-LOY1', [line('mi-feast', 95), line('mi-coffee', 3)], 3,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 9500}]),
+                {'id': chk('R4-LOY1'), 'total': 3}, [lp, cp])
+pr = pricing('R4-LOY1')
+expect('NINTH WAY: a genuine free coffee redemption declared as 95 pounds off takes off NOTHING: not paid, "short", 95 still due',
+       j(o).get('paid') is False and state('R4-LOY1') == 'false|short'
+       and pr.get('loyalty_minor') == 0 and pr.get('due_minor', 0) >= 9700, o + e + json.dumps(pr))
+o, _, _ = run(f"select count(*) from public.closed_checks where id = '{chk('R4-LOY1')}'")
+expect('and no 3 pound check was written for a 98 pound basket', o == '0', o)
+
+# The same reward, valued: its proof now says what it is (payment-proof reads the reward).
+k = loy_row(chk('R4-LOY1B'), 'rw-free-coffee')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta=FREE_COFFEE)
+cp = proof('pi_r4_loy1b', 'card', 9500, order_ref='R4-LOY1B')
+o, e, r = place('customer', online('R4-LOY1B', [line('mi-feast', 95), line('mi-coffee', 3)], 95,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 9500}]),
+                {'id': chk('R4-LOY1B'), 'total': 95}, [lp, cp])
+expect('NORMAL: the same free coffee is worth the coffee (3), so the Feast is paid at 95',
+       j(o).get('paid') is True and pricing('R4-LOY1B').get('loyalty_minor') == 300, o + e + json.dumps(pricing('R4-LOY1B')))
+
+# The reviewer's second scenario: two redemptions, two Feasts, a penny.
+c = chk('R4-LOY2')
+ids = [proof(loy_row(c, rw), 'loyalty', 1, proc='loyalty') for rw in ('rw-a', 'rw-b')]
+cp = proof('pi_r4_loy2', 'card', 1, order_ref='R4-LOY2')
+o, e, r = place('attacker', online('R4-LOY2', [line('mi-feast', 95, qty=2)], 0.01,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 19000}]),
+                {'id': c, 'total': 0.01}, ids + [cp])
+pr = pricing('R4-LOY2')
+expect('NINTH WAY: two free item redemptions on two 95 pound Feasts no longer pay for them (190 pounds for 1p)',
+       j(o).get('paid') is False and pr.get('loyalty_minor') == 0 and pr.get('due_minor', 0) >= 18900, o + e + json.dumps(pr))
+
+# A percent reward is worth its percent of the server's own goods value, never an item.
+k = loy_row(chk('R4-LOYPCT'), 'rw-tenth')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta={'reward': {'type': 'discount_percent', 'percent': 10}})
+cp = proof('pi_r4_pct', 'card', 2250, order_ref='R4-LOYPCT')
+o, e, r = place('customer', online('R4-LOYPCT', [line('mi-meal', 25)], 22.5,
+                                   discounts=[{'type': 'loyalty', 'label': '10% off', 'amount_minor': 2500}]),
+                {'id': chk('R4-LOYPCT'), 'total': 22.5}, [lp, cp])
+expect('NORMAL: a 10% reward on a 25 pound meal is worth 2.50 (not the meal), and the order is paid at 22.50',
+       j(o).get('paid') is True and pricing('R4-LOYPCT').get('loyalty_minor') == 250, o + e + json.dumps(pricing('R4-LOYPCT')))
+
+# A free item reward for something that is not on this order is worth nothing.
+k = loy_row(chk('R4-LOYMISS'), 'rw-lobster')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta={'reward': {'type': 'free_item', 'items': [{'name': 'Lobster'}]}})
+cp = proof('pi_r4_miss', 'card', 300, order_ref='R4-LOYMISS')
+o, e, r = place('attacker', online('R4-LOYMISS', [line('mi-feast', 95), line('mi-coffee', 3)], 3,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free lobster', 'amount_minor': 9500}]),
+                {'id': chk('R4-LOYMISS'), 'total': 3}, [lp, cp])
+expect('a free item reward for something not on the order takes off nothing',
+       j(o).get('paid') is False and pricing('R4-LOYMISS').get('loyalty_minor') == 0, o + e)
+
+# Loyalty is per COMPANY and menu ids are per site, so a reward saved at another venue is
+# matched by NAME, including the "Parent - Size" label with a dash of any kind.
+k = loy_row(chk('R4-LOYNAME'), 'rw-size')
+lp = proof(k, 'loyalty', 1, proc='loyalty',
+           meta={'reward': {'type': 'free_item', 'items': [{'id': 'mi-other-venue-id', 'name': 'Cola - Half'}]}})
+cp = proof('pi_r4_name', 'card', 2500, order_ref='R4-LOYNAME')
+o, e, r = place('customer', online('R4-LOYNAME', [line('mi-cola-half', 3.02), line('mi-meal', 25)], 25,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free Cola', 'amount_minor': 302}]),
+                {'id': chk('R4-LOYNAME'), 'total': 25}, [lp, cp])
+expect('NORMAL: a free size saved at another venue matches this venue\'s "Cola - Half" by name and is worth 3.02',
+       j(o).get('paid') is True and pricing('R4-LOYNAME').get('loyalty_minor') == 302, o + e + json.dumps(pricing('R4-LOYNAME')))
+
+# The cheapest matching line, never the dearest.
+k = loy_row(chk('R4-LOYCHEAP'), 'rw-drink')
+lp = proof(k, 'loyalty', 1, proc='loyalty',
+           meta={'reward': {'type': 'free_item', 'items': [{'name': 'Coffee'}, {'name': 'Wine'}]}})
+cp = proof('pi_r4_cheap', 'card', 300, order_ref='R4-LOYCHEAP')
+o, e, r = place('attacker', online('R4-LOYCHEAP', [line('mi-coffee', 3), line('mi-wine', 30)], 3,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free drink', 'amount_minor': 3000}]),
+                {'id': chk('R4-LOYCHEAP'), 'total': 3}, [lp, cp])
+pr = pricing('R4-LOYCHEAP')
+expect('a free drink claimed as the 30 pound wine is worth the COFFEE (3), the cheapest it matches: 30 still due',
+       j(o).get('paid') is False and pr.get('loyalty_minor') == 300 and pr.get('due_minor', 0) >= 2900, o + e + json.dumps(pr))
+
+# The same rule on the QR path (a QR order that pays now is valued the same way; a round of
+# an open tab never takes a loyalty discount at all, it is held under its card hold).
+k = loy_row(chk('R4-QRLOY'), 'rw-free-coffee')
+lp = proof(k, 'loyalty', 1, proc='loyalty')
+cp = proof('pi_r4_qr', 'card', 300, order_ref='R4-QRLOY')
+o, e, r = place('attacker', {'ref': 'R4-QRLOY', 'source': 'qr', 'type': 'dine-in', 'total': 3,
+                             'items': [line('mi-feast', 95), line('mi-coffee', 3)],
+                             'customer': {'tableId': 'T7', 'tableLabel': '7'},
+                             'discounts': [{'type': 'loyalty', 'label': 'Free coffee', 'amount_minor': 9500}]},
+                {'id': chk('R4-QRLOY'), 'total': 3}, [lp, cp])
+expect('a QR order pays by the same rule: a reward the server cannot value takes off nothing',
+       j(o).get('paid') is False and pricing('R4-QRLOY').get('loyalty_minor') == 0, o + e)
+
+# A reward can never be made free against a line the server could not price.
+k = loy_row(chk('R4-LOYUNK'), 'rw-water')
+lp = proof(k, 'loyalty', 1, proc='loyalty', meta={'reward': {'type': 'free_item', 'items': [{'name': 'Water'}]}})
+cp = proof('pi_r4_unk', 'card', 1, order_ref='R4-LOYUNK')
+o, e, r = place('attacker', online('R4-LOYUNK', [line('mi-water', 95, name='Water')], 0.01,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free water', 'amount_minor': 9500}]),
+                {'id': chk('R4-LOYUNK'), 'total': 0.01}, [lp, cp])
+expect('a free item reward cannot be worth a line the server could not price (95 pound "Water")',
+       j(o).get('paid') is False and pricing('R4-LOYUNK').get('loyalty_minor') == 0, o + e)
+run("delete from public.fence_attempts where bucket like 'order:uid:%'")
+
+# ----- THE TENTH WAY (fix round 3 review, fixed in round 4): a menu_items row of the venue
+# that the storefront never sells (a variants parent, an option only sub item, an archived or
+# hidden row, an 86'd row) priced at a floor of 0, so any number of them rode along free on a
+# legitimately paid ticket. Only what the storefront really sells counts; anything else is
+# UNKNOWN, so the order can never pay for itself and staff confirm it.
+cp = proof('pi_r4_val1', 'card', 2000, order_ref='R4-VAL1')
+o, e, r = place('attacker', online('R4-VAL1', [line('mi-burger', 20), line('mi-cola', 0, qty=10, name='Cola')], 20),
+                {'id': chk('R4-VAL1'), 'total': 20}, [cp])
+pr = pricing('R4-VAL1')
+expect('TENTH WAY: ten free Colas (the variants parent, base 0) on a paid 20 pound ticket: NOT paid, "short", flagged',
+       j(o).get('paid') is False and state('R4-VAL1') == 'false|short' and pr.get('unknown_lines') == 1, o + e + json.dumps(pr))
+o, _, _ = run("select items->1->>'name' || ' x' || (items->1->>'qty') from public.order_queue where ref = 'R4-VAL1'")
+expect('and the line still reaches the kitchen, under the menu\'s own name', o == 'Cola x10', o)
+o, _, _ = run(f"select count(*) from public.closed_checks where id = '{chk('R4-VAL1')}'")
+expect('and no check was written', o == '0', o)
+
+def unsellable(ref, item, price, declared, expect_goods):
+    cp = proof('pi_' + ref.lower(), 'card', int(round(declared * 100)), order_ref=ref)
+    o, e, r = place('attacker', online(ref, [line('mi-burger', 20), line(item, price, name=item)], declared),
+                    {'id': chk(ref), 'total': declared}, [cp])
+    pr = pricing(ref)
+    return (j(o).get('paid') is False and pr.get('unknown_lines') == 1
+            and pr.get('goods_minor') == expect_goods), o + e + json.dumps(pr)
+
+ok, d = unsellable('R4-OLD', 'mi-old', 0, 20, 3200)
+expect('an archived item is not sellable, and still counts at its 12 pound menu price', ok, d)
+ok, d = unsellable('R4-NOICE', 'mi-noice', 0, 20, 2000)
+expect('an option only sub item (type subitem, not sold alone) is not sellable', ok, d)
+ok, d = unsellable('R4-SECRET', 'mi-secret', 0, 20, 2900)
+expect('an item hidden from online (visibility.online false) is not sellable, and counts at 9 pounds', ok, d)
+ok, d = unsellable('R4-86', 'mi-soup', 0, 20, 2700)
+expect('an 86\'d item is not sellable for value, and counts at its 7 pound menu price', ok, d)
+ok, d = unsellable('R4-WATER', 'mi-water', 0, 20, 2000)
+expect('an item with no pricing at all is UNKNOWN, never free', ok, d)
+ok, d = unsellable('R4-BREAD', 'mi-bread', 0, 20, 2000)
+expect('an item priced {"base": 0} is UNKNOWN too (a zero is not a price)', ok, d)
+o, _, _ = run("select coalesce((customer->'order_pricing'->>'goods_minor')::int, -1) from public.order_queue where ref = 'R4-WATER'")
+o2, _, _ = run("select items->1->>'price' from public.order_queue where ref = 'R4-WATER'")
+expect('an unknown line is never worth zero: what the page said still counts', o == '2000' and o2 == '0.00', o + '|' + o2)
+run("delete from public.fence_attempts where bucket like 'order:uid:%'")
+
+# What the storefront DOES sell is untouched.
+p = proof('pi_r4_salad', 'card', 2250, order_ref='R4-SALAD')
+o, e, r = place('customer', online('R4-SALAD', [line('mi-burger', 20), line('mi-salad', 2.5, name='Side Salad')], 22.5),
+                {'id': chk('R4-SALAD'), 'total': 22.5}, [p])
+expect('NORMAL: a sub item the venue DOES sell on its own is priced and paid as usual',
+       j(o).get('paid') is True and pricing('R4-SALAD').get('unknown_lines') == 0, o + e)
+p = proof('pi_r4_size', 'card', 302, order_ref='R4-SIZE')
+o, e, r = place('customer', online('R4-SIZE', [line('mi-cola-half', 3.02)], 3.02), {'id': chk('R4-SIZE'), 'total': 3.02}, [p])
+expect('NORMAL: a SIZE of a variants parent is still sold (only the parent row is not)', j(o).get('paid') is True, o + e)
+
+# A row the storefront never sells takes no part in the venue's automatic discounts either.
+p = proof('pi_r4_deal', 'card', 600, order_ref='R4-DEAL')
+o, e, r = place('attacker', online('R4-DEAL', [line('mi-donut', 2, qty=2), line('mi-donut-old', 2, name='Old Donut')], 6,
+                                   discounts=[{'type': 'auto', 'label': 'Third half price', 'amount_minor': 100}]),
+                {'id': chk('R4-DEAL'), 'total': 6}, [p])
+expect('an archived donut cannot be the third donut that fires "buy two get the third half price"',
+       pricing('R4-DEAL').get('auto_minor') == 0, o + e + json.dumps(pricing('R4-DEAL')))
+
+# A QR tab round must be entirely on the menu (it is settled from its value later).
+o, e, r = run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by) "
+              f"values ('stripe', 'pi_r4_tab', 'preauth', '{L1}', 5000, 'test')")
+o, e, r = place('customer', {'ref': 'R4-TAB', 'source': 'qr', 'type': 'dineIn', 'total': 20,
+                             'items': [line('mi-burger', 20), line('mi-cola', 0, qty=5, name='Cola')],
+                             'customer': {'tab_open': True, 'payment_intent_id': 'pi_r4_tab', 'tableLabel': '9'}})
+expect('a QR tab round with a row the storefront does not sell is refused, not carried on the tab',
+       j(o).get('ok') is False and j(o).get('reason') == 'items', o + e)
 run("delete from public.fence_attempts where bucket like 'order:uid:%'")
 
 # A cheap item's id sent under a dear item's name goes to the kitchen under its own name.
@@ -1166,8 +1362,9 @@ expect('function grants: claim not for raw anon, core private, order and confirm
 o, e, r = run("select has_table_privilege('authenticated', 'public.payment_proofs', 'select'), has_table_privilege('anon', 'public.public_order_pending_checks', 'select'), has_table_privilege('authenticated', 'public.qr_tab_members', 'select'), has_table_privilege('authenticated', 'public.device_unlinked_pings', 'select'), has_table_privilege('authenticated', 'public.device_secret_stash', 'select'), has_table_privilege('anon', 'public.device_secret_stash', 'select')")
 expect('private tables are private (the device secret stash too)', o == 'f|f|f|f|f|f', o)
 helpers = ['_public_order_value(text, text, text, jsonb)', '_public_order_auto(text, text, jsonb)',
-           '_public_order_promo(text, text, bigint, text, boolean)', '_public_order_loyalty(text, text, text, bigint, bigint)',
+           '_public_order_promo(text, text, bigint, text, boolean)', '_public_order_loyalty(text, text, text, bigint, bigint, jsonb)',
            '_public_order_proof_bound(text, text, text, text, text, jsonb, timestamp with time zone)',
+           '_loyalty_label_key(text)', '_loyalty_free_item_minor(jsonb, jsonb)', '_fence_num_or_null(text)',
            '_device_mint_secret(uuid, uuid)', '_menu_item_floor_minor(jsonb, text, boolean)', '_fence_rule_live(jsonb, text, timestamp with time zone)']
 o, e, r = run("select bool_or(has_function_privilege(r, ('public.' || f)::regprocedure, 'execute')) from unnest(array[" +
               ','.join(f"'{h}'" for h in helpers) + "]) f cross join unnest(array['anon', 'authenticated']) r")

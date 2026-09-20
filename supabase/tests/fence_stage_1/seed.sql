@@ -111,6 +111,36 @@ insert into public.menu_items (id, location_id, name, menu_name, kitchen_name, t
   -- Beta One (L3): the same id name at another venue is never this venue's item
   ('mi-beta-soup', '10000000-0000-4000-8000-000000000003', 'Soup', null, null, 'simple', 'cat-mains', '{}', null, '{"base": 1}', '[]');
 
+-- Fix round 4: rows that ARE on the venue's menu but the storefront never sells, and rows the
+-- server cannot put a price on. Every one of these used to be worth nothing on a paid order.
+-- (sold_alone and archived DEFAULT to false in the live Ops DB, which is why every row above
+-- carries the default: "sold_alone is false" on its own would refuse real products, so the
+-- rule is lib/menuRules.js rule 1, type 'subitem' AND not sold alone.)
+insert into public.menu_items (id, location_id, name, type, cat, cats, parent_id, pricing, assigned_modifier_groups,
+                               archived, sold_alone, visibility) values
+  ('mi-old', '10000000-0000-4000-8000-000000000001', 'Old Special', 'simple', 'cat-mains', '{}', null, '{"base": 12}', '[]',
+   true, false, '{"pos": true, "kiosk": true, "online": true}'),
+  ('mi-noice', '10000000-0000-4000-8000-000000000001', 'No Ice', 'subitem', 'cat-drinks', '{}', null, '{"base": 0}', '[]',
+   false, false, '{"pos": true, "kiosk": true, "online": true}'),
+  ('mi-salad', '10000000-0000-4000-8000-000000000001', 'Side Salad', 'subitem', 'cat-sides', '{}', null, '{"base": 2.5}', '[]',
+   false, true, '{"pos": true, "kiosk": true, "online": true}'),
+  ('mi-secret', '10000000-0000-4000-8000-000000000001', 'Staff Pie', 'simple', 'cat-mains', '{}', null, '{"base": 9}', '[]',
+   false, false, '{"pos": true, "kiosk": true, "online": false}'),
+  ('mi-soup', '10000000-0000-4000-8000-000000000001', 'Soup', 'simple', 'cat-mains', '{}', null, '{"base": 7}', '[]',
+   false, false, '{"pos": true, "kiosk": true, "online": true}'),
+  ('mi-water', '10000000-0000-4000-8000-000000000001', 'Water', 'simple', 'cat-drinks', '{}', null, null, '[]',
+   false, false, '{"pos": true, "kiosk": true, "online": true}'),
+  ('mi-bread', '10000000-0000-4000-8000-000000000001', 'House Bread', 'simple', 'cat-sides', '{}', null, '{"base": 0}', '[]',
+   false, false, '{"pos": true, "kiosk": true, "online": true}'),
+  -- an archived donut, to prove a row the storefront does not sell cannot fire a deal either
+  ('mi-donut-old', '10000000-0000-4000-8000-000000000001', 'Old Donut', 'simple', 'cat-donuts', '{}', null, '{"base": 2}', '[]',
+   true, false, '{"pos": true, "kiosk": true, "online": true}');
+
+-- Soup is off today. eighty_six is the live table both storefronts read to grey an item out;
+-- it is not part of the stage 1 catalog dump, so build_baseline.py creates the two columns
+-- the app (lib/db.js) and the fence use.
+insert into public.eighty_six (location_id, item_id) values ('10000000-0000-4000-8000-000000000001', 'mi-soup');
+
 -- Fix round 3: the groups the server checks a line's options against. mg-extras is a "pick
 -- many" group (each option once, at most 3 picks) and carries a free option, a minus priced
 -- one and one that opens a sub group; mg-shots is a "pick with qty" group (the SAME option up

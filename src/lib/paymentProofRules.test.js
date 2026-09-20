@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
-  processorOrderRef, processorParentRef, loyaltyRewardValueMinor,
+  processorOrderRef, processorParentRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
 } from '../../supabase/functions/_shared/paymentProofRules.js';
 
 const OPS = '7218c716-eeb4-4f96-b284-f3500823595c';
@@ -106,6 +106,35 @@ test('C18: a loyalty reward with a fixed money value is proven at that value, el
   const row = { type: 'redeem', company_id: 'c1' };
   assert.equal(loyaltyProof(row, { companyId: 'c1', rewardValueMinor: loyaltyRewardValueMinor({ reward_value: { amount_minor: 350 } }) }).amount_minor, 350);
   assert.equal(loyaltyProof(row, { companyId: 'c1', rewardValueMinor: 0 }).amount_minor, 1);
+});
+
+test('C25: a reward with no money value records WHAT it is, so the server never guesses', () => {
+  // free item: the items it can make free (the server prices the cheapest one on the order)
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [{ id: 'mi-1', name: 'Latte' }] } }),
+    { type: 'free_item', items: [{ id: 'mi-1', name: 'Latte' }] });
+  // a stamp card programme keeps its items on reward_config
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_config: { eligible_items: [{ name: 'Coffee' }] } }),
+    { type: 'free_item', items: [{ id: null, name: 'Coffee' }] });
+  // percent: the percentage only
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 10 } }), { type: 'discount_percent', percent: 10 });
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 500 } }), { type: 'discount_percent', percent: 100 });
+  // nothing the server could use: null, which values the reward at zero and the order is short
+  assert.equal(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [] } }), null);
+  assert.equal(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: {} }), null);
+  assert.equal(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 0 } }), null);
+  assert.equal(loyaltyRewardMeta({ reward_type: 'discount_fixed', reward_value: { amount_minor: 350 } }), null, 'a fixed reward is already the proof amount');
+  assert.equal(loyaltyRewardMeta(null), null);
+  // a long list is trimmed, so one proof can never carry a whole menu
+  const many = { reward_type: 'free_item', reward_value: { eligible_items: Array.from({ length: 80 }, (_, i) => ({ id: `mi-${i}` })) } };
+  assert.equal(loyaltyRewardMeta(many).items.length, 50);
+});
+
+test('C25: payment-proof writes meta.reward for points rewards and stamp cards', () => {
+  const src = fs.readFileSync(fileURLToPath(new URL('../../supabase/functions/payment-proof/index.ts', import.meta.url)), 'utf8');
+  assert.ok(src.includes('rewardMeta = loyaltyRewardMeta(reward);'), 'points reward');
+  assert.ok(src.includes("from('stamp_card_programs')") && src.includes('reward_type, reward_config'), 'stamp card programme');
+  assert.ok(src.includes('if (rewardMeta) meta.reward = rewardMeta;'));
+  assert.ok(src.includes("select('type, location_id, program_id')"), 'the stamp ledger read carries the programme');
 });
 
 test('C18: payment-proof records meta.order_ref for every processor and the reward value', () => {

@@ -56,6 +56,9 @@ create sequence if not exists public.venue_code_seq;
 grant usage on sequence public.venue_code_seq to anon, authenticated, service_role;
 -- minimal extra tables some functions read
 create table if not exists public.floor_table_tombstones (location_id text, table_id text, deleted_at timestamptz);
+-- 86'd items. A live table (lib/db.js writes (location_id, item_id)) that is not part of the
+-- stage 1 catalog dump; fix round 4 reads it when it values a public order's lines.
+create table if not exists public.eighty_six (location_id text, item_id text, created_at timestamptz default now());
 create table if not exists public.menu_board_screens (id uuid primary key default gen_random_uuid(), device_uid uuid, status text, order_display_id uuid, location_id uuid);
 """)
 

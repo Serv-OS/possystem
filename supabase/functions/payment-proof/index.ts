@@ -24,7 +24,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getPaymentSession } from '../_shared/ryft.ts';
 import {
   parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
-  processorOrderRef, processorParentRef, loyaltyRewardValueMinor,
+  processorOrderRef, processorParentRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
 } from '../_shared/paymentProofRules.js';
 
 const cors = {
@@ -117,19 +117,31 @@ Deno.serve(async (req) => {
       const { data: lt } = await opsAdmin.from('loyalty_transactions')
         .select('type, company_id, location_id, reward_id').eq('idempotency_key', ref).maybeSingle();
       row = lt;
+      let stamp: any = null;
       if (!row) {
         const { data: st } = await opsAdmin.from('stamp_transactions')
-          .select('type, location_id').eq('idempotency_key', ref).maybeSingle();
+          .select('type, location_id, program_id').eq('idempotency_key', ref).maybeSingle();
         row = st;
+        stamp = st;
       }
       // Fix round (C18): a reward with a fixed money value is recorded at that value (the
       // server caps a declared loyalty discount at it); otherwise the marker 1.
+      // Fix round 4 (C25): a reward with NO money value (free_item, which is the stamp card
+      // default, and discount_percent) now records WHAT it is on the proof, so the server can
+      // value it from the order's own lines instead of falling back to the dearest item.
       let rewardValueMinor = 0;
+      let rewardMeta: Record<string, unknown> | null = null;
       if (row?.reward_id && companyId) {
         const { data: reward } = await platformAdmin.from('loyalty_rewards')
-          .select('reward_value').eq('id', row.reward_id).eq('company_id', companyId).maybeSingle();
+          .select('reward_type, reward_value').eq('id', row.reward_id).eq('company_id', companyId).maybeSingle();
         rewardValueMinor = loyaltyRewardValueMinor(reward);
+        rewardMeta = loyaltyRewardMeta(reward);
+      } else if (stamp?.program_id && companyId) {
+        const { data: prog } = await platformAdmin.from('stamp_card_programs')
+          .select('reward_type, reward_config').eq('id', stamp.program_id).eq('company_id', companyId).maybeSingle();
+        rewardMeta = loyaltyRewardMeta(prog && { reward_type: prog.reward_type || 'free_item', reward_config: prog.reward_config });
       }
+      if (rewardMeta) meta.reward = rewardMeta;
       verdict = loyaltyProof(row, { companyId, opsLocationId: opsId, rewardValueMinor });
     }
   } catch (e) {
