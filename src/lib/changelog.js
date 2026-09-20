@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.16',
+    date: '20 Sep 2026',
+    items: [
+      'Customer records are no longer readable by anyone with the public web key. Until now the rule on your customer list said "or anyone anonymous", and every kiosk, online and QR page carries that key, so any visitor could have read every customer and phone number you hold. Now only your own staff and your own paired tills can.',
+      'The till and kiosk ask the server for a customer instead of reading the table, and they get only what the screen shows: name, email and marketing choice. Never your notes, tags or saved card.',
+      'An online or QR order attaches itself to its customer on the server, and only when it proves it is that order. A page can no longer invent a customer, change a name you curated, or count a visit twice.',
+      'Needs one database update (20260921), run outside service. Until it is run, everything works exactly as before.',
+    ],
+  },
+  {
     v: '5.9.15',
     date: '20 Sep 2026',
     items: [

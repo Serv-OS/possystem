@@ -15,6 +15,9 @@
 
 import { supabase, platformSupabase, getLocationId, ensureAuthToken, whenDeviceClaimed } from './supabase';
 
+export { isMissingFn } from './customerFenceRules';
+import { isMissingFn } from './customerFenceRules';
+
 // Mirror of store._normalisePhone — kept local so this util can be used
 // without depending on the Zustand store (the kiosk's customer-details
 // screen runs without store hydration in some flows).
@@ -82,16 +85,30 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
   if (!orgId) return null;
 
   try {
-    const { data, error } = await supabase
-      .from('customers')
-      .select('id, name, email, marketing_opt_in')
-      .eq('org_id', orgId)
-      .eq('phone', phoneN)
-      .is('deleted_at', null)
-      .maybeSingle();
-    if (error) {
-      console.warn('[customerLookup] query failed:', error.message);
+    // Database fence stage 2 (20260921_OPS_customers_fence.sql): the customers table is no
+    // longer readable by an anonymous session, because the public key is in every page. The
+    // server answers instead, and only for a till, kiosk or Back Office of THIS venue.
+    // FENCE STAGE 2 FALLBACK: while the function does not exist we read the table as before.
+    let data = null;
+    const rpc = await supabase.rpc('customer_by_phone', { p_location_id: String(locId), p_phone: phoneN });
+    if (isMissingFn(rpc.error)) {
+      const legacy = await supabase
+        .from('customers')
+        .select('id, name, email, marketing_opt_in')
+        .eq('org_id', orgId)
+        .eq('phone', phoneN)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (legacy.error) {
+        console.warn('[customerLookup] query failed:', legacy.error.message);
+        return null;
+      }
+      data = legacy.data;
+    } else if (rpc.error) {
+      console.warn('[customerLookup] customer_by_phone failed:', rpc.error.message);
       return null;
+    } else {
+      data = rpc.data || null;
     }
     if (!data) return null;
 
@@ -268,6 +285,7 @@ export async function attributeOnlineOrder({
   orderRecord,                   // { ref, total, items, type }
   memberToken = null,            // the signed in member's loyalty session token (online)
   memberCustomerId = null,       // ...and whose it is (sent only when it is this order's customer)
+  trackKey = null,               // fence stage 2: this order's own key (token, payment ref or last 4)
 }) {
   if (!supabase || !phone || !locationId || !orderRecord) return null;
   const phoneN = normalisePhone(phone);
@@ -280,7 +298,49 @@ export async function attributeOnlineOrder({
   }
 
   let customerId = null;
+  let serverDidIt = false;
+  let serverCreated = false;
+
+  // Database fence stage 2: the customer tables are no longer writable from a customer's
+  // browser. The server does the whole attribution, and only for someone who holds this
+  // order's own key. FENCE STAGE 2 FALLBACK: while the function does not exist, the old
+  // path below runs exactly as before.
   try {
+    const rpc = await supabase.rpc('attribute_public_order', {
+      p_location_id: String(locationId),
+      p_ref: String(orderRecord.ref || ''),
+      p_key: trackKey ? String(trackKey) : '',
+      p_customer: { phone, name: name || '', email: email || null, marketing_opt_in: !!marketingOptIn },
+      p_order: {
+        total: Number(orderRecord.total) || 0,
+        channel: orderRecord.channel || 'online',
+        items: (orderRecord.items || []).map((i) => ({ name: i.name, qty: i.qty, price: i.price })),
+      },
+    });
+    if (!isMissingFn(rpc.error)) {
+      if (rpc.error) {
+        console.warn('[attributeOnlineOrder] attribute_public_order failed:', rpc.error.message);
+      } else if (rpc.data && rpc.data.ok) {
+        customerId = rpc.data.customer_id || null;
+        serverCreated = !!rpc.data.created;
+        serverDidIt = true;
+      } else {
+        console.warn('[attributeOnlineOrder] attribute_public_order refused:', rpc.data && rpc.data.reason);
+      }
+      // the server had its say: never fall through to the direct writes it replaced
+      if (!customerId) return null;
+    }
+  } catch (e) {
+    console.warn('[attributeOnlineOrder] attribute_public_order threw:', e?.message || e);
+  }
+
+  try {
+    if (serverDidIt) {
+      // the rows are written; the welcome and the loyalty earn still run below
+      if (serverCreated) await sendWelcomeFor(customerId, locationId);
+      await earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId });
+      return customerId;
+    }
     // 1. Upsert customers row. Use lookup-then-insert/update — same pattern
     // as store.upsertCustomer to avoid relying on a unique constraint.
     const { data: existing } = await supabase
@@ -331,36 +391,7 @@ export async function attributeOnlineOrder({
         customerId = ins?.id;
       }
 
-      // Fire-and-forget: send branded welcome SMS + email for new customers (only when THIS call
-      // created the row; a lost race means the winner already welcomed them)
-      if (customerId && !insErr) {
-        try {
-          let companyId = null;
-          if (platformSupabase) {
-            const { data: pLoc } = await platformSupabase
-              .from('locations')
-              .select('company_id')
-              .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
-              .limit(1).maybeSingle();
-            companyId = pLoc?.company_id;
-          }
-          if (companyId) {
-            const welcomeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`;
-            const wToken = await ensureAuthToken();
-            fetch(welcomeUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...(wToken ? { Authorization: `Bearer ${wToken}` } : {}) },
-              body: JSON.stringify({
-                customer_id: customerId,
-                company_id: companyId,
-                location_id: locationId,
-              }),
-            }).catch(() => {});
-          }
-        } catch (e) {
-          console.warn('[attributeOnlineOrder] welcome send failed (non-fatal):', e?.message);
-        }
-      }
+      if (customerId && !insErr) await sendWelcomeFor(customerId, locationId);
     }
     if (!customerId) return null;
 
@@ -408,66 +439,105 @@ export async function attributeOnlineOrder({
     });
     if (e3) console.warn('[attributeOnlineOrder] customer_orders insert:', e3.message);
 
-    // v5.5.218: Loyalty points earn for online orders — fire-and-forget.
-    // Uses the same edge function as the POS store's attributeOrderToCustomer.
-    (async () => {
-      try {
-        const token = await ensureAuthToken();
-        if (!token) return;
-        const earnBody = {
-          customer_id: customerId,
-          location_id: locationId,
-          // Round three (18 Sep 2026): loyalty-earn now earns from the server's own closed_checks
-          // row, so this must be that row's id (checkId, 'chk-OL-...'), not the display ref.
-          closed_check_id: orderRecord.checkId || orderRecord.ref || `online-${Date.now()}`,
-          channel: 'online',
-          items: (orderRecord.items || []).map(i => ({
-            name: i.name, qty: i.qty || 1, price: i.price || 0,
-            cat: i.cat || i.category || null,
-            id: i.itemId || i.id || null,
-            isGiftCard: !!i.isGiftCard,
-          })),
-          subtotal: Number(orderRecord.total) || 0,
-          // Database fence stage 1: loyalty-earn checks the caller. An online customer's browser
-          // is anonymous, so the member's own token is its only proof. Sent only when the signed
-          // in member IS this customer; a guest order (no sign in) earns before 20260919a (report
-          // mode, logged) and not after it (enforced): signing in with the one time code earns.
-          ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
-        };
-        const sendEarn = () => fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-            body: JSON.stringify(earnBody),
-          }
-        );
-        let res = await sendEarn();
-        // 409 check_not_found means the closed_checks row has not landed yet (enforce only; an
-        // order whose payment is still being checked has no check until it is proven). Try again
-        // a little later; idempotent on the check id server side.
-        for (const waitMs of [3000, 10000]) {
-          if (res.status !== 409) break;
-          let code = null;
-          try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
-          if (code !== 'check_not_found') break;
-          await new Promise((r) => setTimeout(r, waitMs));
-          res = await sendEarn();
-        }
-        const j = await res.json().catch(() => ({}));
-        if (res.ok) {
-          console.info('[attributeOnlineOrder] loyalty earn:', j.points_earned, 'pts → balance:', j.balance);
-        } else if (res.status !== 404) {
-          console.warn('[attributeOnlineOrder] loyalty earn HTTP', res.status, j.error || '');
-        }
-      } catch (le) {
-        console.warn('[attributeOnlineOrder] loyalty earn failed (non-fatal):', le?.message || le);
-      }
-    })();
+    earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId });
 
     return customerId;
   } catch (e) {
     console.warn('[attributeOnlineOrder] unexpected:', e?.message || e);
     return customerId;
   }
+}
+
+/**
+ * Loyalty points for an online or QR order. Fire and forget, and idempotent server side on
+ * the check id. Used by both paths, the server one and the old one.
+ */
+export async function earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken = null, memberCustomerId = null }) {
+  if (!customerId || !locationId || !orderRecord) return;
+  try {
+    const token = await ensureAuthToken();
+    if (!token) return;
+    const earnBody = {
+      customer_id: customerId,
+      location_id: locationId,
+      // Round three (18 Sep 2026): loyalty-earn now earns from the server's own closed_checks
+      // row, so this must be that row's id (checkId, 'chk-OL-...'), not the display ref.
+      closed_check_id: orderRecord.checkId || orderRecord.ref || `online-${Date.now()}`,
+      channel: 'online',
+      items: (orderRecord.items || []).map(i => ({
+        name: i.name, qty: i.qty || 1, price: i.price || 0,
+        cat: i.cat || i.category || null,
+        id: i.itemId || i.id || null,
+        isGiftCard: !!i.isGiftCard,
+      })),
+      subtotal: Number(orderRecord.total) || 0,
+      // Database fence stage 1: loyalty-earn checks the caller. An online customer's browser
+      // is anonymous, so the member's own token is its only proof. Sent only when the signed
+      // in member IS this customer; a guest order (no sign in) earns before 20260919a (report
+      // mode, logged) and not after it (enforced): signing in with the one time code earns.
+      ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
+    };
+    const sendEarn = () => fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify(earnBody),
+      }
+    );
+    let res = await sendEarn();
+    // 409 check_not_found means the closed_checks row has not landed yet (enforce only; an
+    // order whose payment is still being checked has no check until it is proven). Try again
+    // a little later; idempotent on the check id server side.
+    for (const waitMs of [3000, 10000]) {
+      if (res.status !== 409) break;
+      let code = null;
+      try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
+      if (code !== 'check_not_found') break;
+      await new Promise((r) => setTimeout(r, waitMs));
+      res = await sendEarn();
+    }
+    const j = await res.json().catch(() => ({}));
+    if (res.ok) {
+      console.info('[attributeOnlineOrder] loyalty earn:', j.points_earned, 'pts → balance:', j.balance);
+    } else if (res.status !== 404) {
+      console.warn('[attributeOnlineOrder] loyalty earn HTTP', res.status, j.error || '');
+    }
+  } catch (le) {
+    console.warn('[attributeOnlineOrder] loyalty earn failed (non-fatal):', le?.message || le);
+  }
+}
+
+/**
+ * Branded welcome SMS and email for a customer we have just created. Fire and forget: a
+ * failure here never fails an order. Used by both paths, the server one and the old one.
+ */
+export async function sendWelcomeFor(customerId, locationId) {
+  if (!customerId) return;
+    try {
+      let companyId = null;
+      if (platformSupabase) {
+        const { data: pLoc } = await platformSupabase
+          .from('locations')
+          .select('company_id')
+          .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
+          .limit(1).maybeSingle();
+        companyId = pLoc?.company_id;
+      }
+      if (companyId) {
+        const welcomeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-welcome`;
+        const wToken = await ensureAuthToken();
+        fetch(welcomeUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(wToken ? { Authorization: `Bearer ${wToken}` } : {}) },
+          body: JSON.stringify({
+            customer_id: customerId,
+            company_id: companyId,
+            location_id: locationId,
+          }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[attributeOnlineOrder] welcome send failed (non-fatal):', e?.message);
+    }
 }

@@ -33,7 +33,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
-import { onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs } from '../../lib/publicOrder';
+import { onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs , chooseTrackKey } from '../../lib/publicOrder';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
 import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
@@ -1251,6 +1251,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // loyalty-earn's proof that this browser is the member (database fence stage 1).
         memberToken: loyalty?.token || null,
         memberCustomerId,
+        // Database fence stage 2: this order's own key proves the page placed it.
+        trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: paymentIntent?.id || null, phone: customer.phone }),
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
@@ -1476,6 +1478,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // loyalty-earn's proof that this browser is the member (database fence stage 1).
         memberToken: loyalty?.token || null,
         memberCustomerId,
+        // Database fence stage 2: this order's own key proves the page placed it.
+        trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: paymentIntent?.id || null, phone: customer.phone }),
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
