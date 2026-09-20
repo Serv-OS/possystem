@@ -19,7 +19,7 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { supabase } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
-import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor } from '../../lib/publicOrder';
+import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey } from '../../lib/publicOrder';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -614,7 +614,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           phone: customer.phone, name: customer.name, email: customer.email,
           marketingOptIn: false,
           locationId: opsLocationId,
-          orderRecord: { ref, total, items, type: 'dine-in' },
+          orderRecord: { ref, total, items, type: 'dine-in', channel: 'qr' },
+          // Database fence stage 2: this order's own key proves the page placed it.
+          trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: payId || tabPi || null, phone: customer.phone }),
         }).catch(e => console.warn('[QrCheckout] attribute failed:', e?.message));
       }
 
