@@ -267,8 +267,13 @@ export async function confirmLinkBeforeCard() {
     try { noteStatusAnswer(linkState); } catch { /* state only */ }
   }
   const d = cardLinkDecision({
-    linkState, relinkOutcome, lost: state.lost, supported: state.supported,
+    linkState, relinkOutcome, lost: state.lost, suspect: state.suspect, supported: state.supported,
     boundAgoMs: _boundAt ? Date.now() - _boundAt : null,
+    // Only the fence's own functions hand out a device secret, so holding one means this device
+    // has been through them: without one, and with no fence answer on this page, a check that
+    // cannot reach the server takes today's path instead of refusing a card payment that works
+    // today (lib/deviceFence.js cardLinkDecision, "never worse than today").
+    hasSecret: !!local.deviceSecret,
   });
   if (!d.ok && linkState === 'unbound' && !state.lost) markLost({ reason: 'not_bound', message: 'This device is not linked to its venue.' });
   const result = {

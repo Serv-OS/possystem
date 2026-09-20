@@ -415,12 +415,25 @@ export function cardLinkCheckNeeded({ supported, lost = false, suspect = false, 
  *   linkState      a fresh device_status: 'bound' | 'unbound' | 'unsupported' | 'unknown' | 'not_device'
  *   relinkOutcome  when unbound: the answer of one re-link with the device secret
  *   lost           the monitor's state (the server said this device is not linked)
+ *   suspect        a write was refused and the link has not been confirmed since
  *   supported      false while the fence functions do not exist (today's path)
  *   boundAgoMs     since the server last said this device is linked (null: never on this page)
+ *   hasSecret      this device holds its device secret (only file A's own functions hand one out)
  * Returns { ok, reason }: reason 'not_device' | 'unsupported' | 'linked' | 'relinked' |
- * 'recently_linked' | 'not_linked' | 'unknown'.
+ * 'recently_linked' | 'never_fenced' | 'not_linked' | 'unknown'.
+ *
+ * NEVER WORSE THAN TODAY (fix round, 20 Sep 2026). The release goes out BEFORE file a1, so on a
+ * device that has never had a fence answer the only thing this check can add is a refusal the
+ * live app would not have made: a first card payment whose device_status does not answer within
+ * 5 seconds came out 'unknown' and was refused, and on an Adyen terminal that IS the reader (the
+ * on-device nexo path) that payment works today with Supabase unreachable. So a device that has
+ * NOTHING to go on takes today's path: no fence answer on this page (supported null), never told
+ * it is linked (boundAgoMs null), and no device secret, which only claim_device_v2, reclaim_device
+ * or device_issue_secret can have handed out. It closes by itself: once a1 is in, the first
+ * heartbeat collects the secret, and from then on this branch can never be reached. It never
+ * weakens a real refusal: 'unbound', a lost monitor state and a suspect one all refuse above it.
  */
-export function cardLinkDecision({ linkState, relinkOutcome = null, lost = false, supported = null, boundAgoMs = null, maxStaleMs = CARD_LINK_STALE_MS } = {}) {
+export function cardLinkDecision({ linkState, relinkOutcome = null, lost = false, suspect = false, supported = null, boundAgoMs = null, hasSecret = false, maxStaleMs = CARD_LINK_STALE_MS } = {}) {
   if (linkState === 'not_device') return { ok: true, reason: 'not_device' };
   if (linkState === 'unsupported') return { ok: true, reason: 'unsupported' };   // FENCE STAGE 1 FALLBACK: before 20260919a1
   if (linkState === 'bound') return { ok: true, reason: 'linked' };
@@ -433,6 +446,11 @@ export function cardLinkDecision({ linkState, relinkOutcome = null, lost = false
   if (supported === false) return { ok: true, reason: 'unsupported' };           // FENCE STAGE 1 FALLBACK
   if (boundAgoMs !== null && boundAgoMs !== undefined && boundAgoMs >= 0 && boundAgoMs <= maxStaleMs) {
     return { ok: true, reason: 'recently_linked' };
+  }
+  // Nothing to go on, and nothing the fence has ever handed this device: today's path.
+  // FENCE STAGE 1 FALLBACK (see the note above; it closes itself once a secret exists).
+  if (!suspect && supported === null && (boundAgoMs === null || boundAgoMs === undefined) && !hasSecret) {
+    return { ok: true, reason: 'never_fenced' };
   }
   return { ok: false, reason: 'unknown' };
 }

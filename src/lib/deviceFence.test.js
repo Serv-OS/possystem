@@ -516,8 +516,8 @@ test('fix round 2 (HIGH): no card payment on a device that is not linked', () =>
   // The check itself failed: a device the server said is lost never pays; one linked moments ago does.
   assert.deepEqual(cardLinkDecision({ linkState: 'unknown', lost: true, boundAgoMs: 1000 }), { ok: false, reason: 'not_linked' });
   assert.deepEqual(cardLinkDecision({ linkState: 'unknown', boundAgoMs: 1000 }), { ok: true, reason: 'recently_linked' });
-  assert.deepEqual(cardLinkDecision({ linkState: 'unknown', boundAgoMs: CARD_LINK_STALE_MS + 1 }), { ok: false, reason: 'unknown' });
-  assert.deepEqual(cardLinkDecision({ linkState: 'unknown', boundAgoMs: null }), { ok: false, reason: 'unknown' });
+  assert.deepEqual(cardLinkDecision({ linkState: 'unknown', boundAgoMs: CARD_LINK_STALE_MS + 1, hasSecret: true }), { ok: false, reason: 'unknown' });
+  assert.deepEqual(cardLinkDecision({ linkState: 'unknown', boundAgoMs: null, hasSecret: true }), { ok: false, reason: 'unknown' });
   assert.deepEqual(cardLinkDecision({ linkState: 'unknown', supported: false }), { ok: true, reason: 'unsupported' });
   assert.match(cardLinkRefusalMessage({ kind: 'kiosk' }), /ask a member of staff\. Nothing has been charged\./);
   assert.match(cardLinkRefusalMessage({ kind: 'till', venueName: 'Beta', reason: 'not_linked' }), /^This till is not linked to Beta, so it cannot take card payments\. Nothing has been charged\./);
@@ -530,6 +530,55 @@ test('fix round 2 (HIGH): no card payment on a device that is not linked', () =>
   assert.equal(cardLinkCheckNeeded({ supported: false, unsupportedAgoMs: 1000, suspect: true }), true);
   assert.equal(cardLinkCheckNeeded({ supported: true, unsupportedAgoMs: 1000 }), true);
   assert.equal(cardLinkCheckNeeded({ supported: null }), true);
+});
+
+test('NEVER WORSE THAN TODAY: a device the fence has never touched still starts a card payment', () => {
+  // The release ships BEFORE file a1. On a device with no fence answer on this page and no device
+  // secret, a device_status that does not answer in 5 s used to come out 'unknown' and REFUSE a
+  // payment the live app would have taken (an Adyen terminal that is its own reader takes it over
+  // the local bridge with Supabase unreachable). That device now takes today's path.
+  const nothingKnown = { linkState: 'unknown', supported: null, boundAgoMs: null, hasSecret: false };
+  assert.deepEqual(cardLinkDecision(nothingKnown), { ok: true, reason: 'never_fenced' },
+    'first card payment, slow network, nothing the fence has ever said: it starts');
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, boundAgoMs: undefined }), { ok: true, reason: 'never_fenced' },
+    'an undefined boundAgoMs is the same as never');
+
+  // IT CLOSES BY ITSELF. The moment a1 is in, the first heartbeat collects the device secret
+  // (deviceFence heartbeatNextStep 'collect_secret'), and a device that holds one can never reach
+  // the branch again: a check it cannot make is 'unknown' and the payment is refused.
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, hasSecret: true }), { ok: false, reason: 'unknown' },
+    'a device that HAS a secret and cannot check refuses');
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, supported: true }), { ok: false, reason: 'unknown' },
+    'a device that has had a fence answer on this page refuses');
+
+  // IT NEVER WEAKENS A REAL REFUSAL.
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, linkState: 'unbound' }), { ok: false, reason: 'not_linked' },
+    'the server said unbound: refused, secret or no secret');
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, lost: true }), { ok: false, reason: 'not_linked' },
+    'the monitor was told this device is not linked: refused');
+  assert.deepEqual(cardLinkDecision({ ...nothingKnown, suspect: true }), { ok: false, reason: 'unknown' },
+    'a write was refused and the link is not confirmed since: refused');
+  // A stale "linked ages ago" is still not good enough on its own.
+  assert.deepEqual(cardLinkDecision({ linkState: 'unknown', supported: null, boundAgoMs: CARD_LINK_STALE_MS + 1, hasSecret: false }),
+    { ok: false, reason: 'unknown' }, 'it has been told it is linked before, so it is held to the check');
+
+  // The live gate hands the decision both new facts, read from THIS device.
+  const dl = read('./deviceLink.js');
+  const gate = dl.slice(dl.indexOf('export async function confirmLinkBeforeCard()'), dl.indexOf('let _started = false;'));
+  assert.ok(gate.includes('suspect: state.suspect'), 'the gate passes the suspect state');
+  assert.ok(gate.includes('hasSecret: !!local.deviceSecret'), 'and whether this device holds its device secret');
+  // Every card path goes through that one gate, so the kiosk and the handheld follow the same rule.
+  for (const [file, why] of [['../surfaces/kiosk/KioskPayLinkGate.jsx', 'kiosk ScreenPay'],
+                             ['../surfaces/mpos/MCardFlow.jsx', 'MPOS, including the on-device Adyen bridge'],
+                             ['../surfaces/CheckoutModal.jsx', 'the till'],
+                             ['../components/TabPreAuthTerminal.jsx', 'a bar tab card hold'],
+                             ['../components/SplitModal.jsx', 'a split payment']]) {
+    assert.ok(read(file).includes('confirmLinkBeforeCard()'), `${why} uses the one gate`);
+  }
+  // MPOS: the gate is still BEFORE the local Adyen bridge, which is the path this fix protects.
+  const mc = read('../surfaces/mpos/MCardFlow.jsx');
+  assert.ok(mc.indexOf('const linkGate = await confirmLinkBeforeCard();') < mc.indexOf('if (adyenLocalBridgeAvailable())'),
+    'the gate runs before the on-device terminal, and now answers ok on a device the fence never touched');
 });
 
 test('fix round 2 (HIGH): every card start on a till or kiosk checks the link FIRST', () => {
