@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.18',
+    date: '20 Sep 2026',
+    items: [
+      'A size ordered online reached the kitchen as just the size. "Americano, Small" printed as "Small". The server had replaced the line with the menu row\'s own words, and a size row is called Small. It now follows the same rule every screen uses: a kitchen or receipt name only replaces the line when the venue actually typed a different one.',
+      'The receipt and the closed check were always right; this was the kitchen ticket and the Orders Hub line.',
+      'Needs one database update (20260921b), safe to run any time, including during service.',
+    ],
+  },
+  {
     v: '5.9.17',
     date: '20 Sep 2026',
     items: [
