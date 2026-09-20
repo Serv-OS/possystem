@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import {
   SECOND_STEP_CODE, SECOND_STEP_CHECK_FAILED, FLAG_TTL_MS, FLAG_RETRY_MS,
   bearerToken, decodeJwtClaims, classifyCaller, mustRefuse, createFlagReader, fetchFlagFromDb,
-  secondStepRefusal, passesSecondStep, requireAal2, refusalResponse,
+  secondStepRefusal, passesSecondStep, requireAal2, refusalResponse, amrHasPasskey, PASSKEY_METHODS,
 } from '../../../supabase/functions/_shared/second-step.ts';
 
 const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -209,4 +209,46 @@ test('PARITY: the SQL rule (second_step_decide) and the edge rule agree on every
     const allowed = !mustRefuse(kind, enforced);
     assert.equal(allowed, expectedRaw === 'true', `row "${label}": edge says ${allowed}, SQL expects ${expectedRaw}`);
   }
+});
+
+
+// ── PASSKEYS (20 Sep 2026) ─────────────────────────────────────────────────────────────────
+// Supabase calls a passkey a FIRST factor, so a passkey sign in is aal1 forever. Without this,
+// every edge function would refuse every person who did exactly what we asked them to do.
+const passkeyJwt = (amr) => jwt({ sub: 'u9', role: 'authenticated', is_anonymous: false, aal: 'aal1', amr });
+
+test('a passkey sign in is its own kind of caller, not a password only one', () => {
+  assert.deepEqual(PASSKEY_METHODS, ['webauthn', 'passkey', 'webauthn_credential']);
+  assert.equal(classifyCaller(passkeyJwt([{ method: 'webauthn' }]), [SERVICE_KEY]), 'passkey');
+  assert.equal(classifyCaller(passkeyJwt(['passkey']), [SERVICE_KEY]), 'passkey');
+  assert.equal(classifyCaller(passkeyJwt([{ method: 'WEBAUTHN_CREDENTIAL' }]), [SERVICE_KEY]), 'passkey');
+  assert.equal(classifyCaller(passkeyJwt([{ method: 'password' }]), [SERVICE_KEY]), 'aal1');
+  assert.equal(classifyCaller(passkeyJwt([]), [SERVICE_KEY]), 'aal1');
+  // The reader itself, on claims.
+  assert.equal(amrHasPasskey({ amr: [{ method: 'password' }, { method: 'webauthn' }] }), true);
+  assert.equal(amrHasPasskey({ amr: [{ method: 'otp' }] }), false);
+  assert.equal(amrHasPasskey({}), false);
+  assert.equal(amrHasPasskey(null), false);
+});
+
+test('a passkey session is never refused, switch on or off, and may do a reset', async () => {
+  const on = { read: async () => ({ enforced: true, source: 'db' }) };
+  assert.equal(mustRefuse('passkey', true), false, 'the whole rule in one line');
+  assert.equal(
+    await secondStepRefusal({ headers: { get: () => `Bearer ${passkeyJwt([{ method: 'webauthn' }])}` } }, { reader: on, serviceKeys: [SERVICE_KEY] }),
+    null,
+  );
+  // requireAal2 is the always on check (the lost phone reset). A passkey counts.
+  assert.equal(requireAal2({ headers: { get: () => `Bearer ${passkeyJwt([{ method: 'webauthn' }])}` } }, [SERVICE_KEY]), null);
+  // And a password only login still does not.
+  const refused = requireAal2({ headers: { get: () => `Bearer ${T.aal1}` } }, [SERVICE_KEY]);
+  assert.equal(refused?.status, 403);
+});
+
+test('the database rule and this file still agree, now including the passkey branch', () => {
+  const sql = fs.readFileSync(new URL('../../../supabase/migrations/20260920p_OPS_passkey_second_step.sql', import.meta.url), 'utf8');
+  assert.match(sql, /when coalesce\(p_passkey, false\)\s+then true/, 'the SQL has the same branch');
+  assert.match(sql, /passkey_methods/, 'and the same list of method names, as a setting');
+  const ts = fs.readFileSync(new URL('../../../supabase/functions/_shared/second-step.ts', import.meta.url), 'utf8');
+  assert.match(ts, /if \(amrHasPasskey\(c\)\) return 'passkey';/);
 });

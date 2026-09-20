@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
-import { isRealLogin, sessionAal } from '../lib/secondStep/rules';
+import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 
 const money = (n, currency = 'GBP', dp = 0) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -62,7 +62,8 @@ export default function OwnerSurface() {
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       setSession(s || null);
-      if (!s || (isRealLogin(s) && sessionAal(s) !== 'aal2')) setSecondStepOk(false);
+      // A passkey sign in is aal1 and is DONE, so it stays in.
+      if (!s || (isRealLogin(s) && !sessionProvesSecondStep(s))) setSecondStepOk(false);
     });
     return () => sub?.subscription?.unsubscribe?.();
   }, []);

@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import AdminSecondSteps from './sections/AdminSecondSteps';
-import { isRealLogin, sessionAal, MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
+import { isRealLogin, sessionProvesSecondStep, MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 import { currentAccessToken } from '../lib/secondStep/client';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
@@ -121,7 +121,8 @@ export default function CompanyAdminApp() {
       // v5.5.343: a password-reset link shows the set-new-password form instead of logging in.
       if (event === 'PASSWORD_RECOVERY') { setRecovering(true); return; }
       if (event === 'SIGNED_OUT') setSecondStepOk(false);
-      if (session && isRealLogin(session) && sessionAal(session) !== 'aal2') setSecondStepOk(false);
+      // A passkey sign in is aal1 and is DONE, so it must not be sent round the gate again.
+      if (session && isRealLogin(session) && !sessionProvesSecondStep(session)) setSecondStepOk(false);
       setAuthUser(accept(session));
     });
     return () => data?.subscription?.unsubscribe?.();

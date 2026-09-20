@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   gateStep, passesWithoutNetwork, challengePlan, explainError, hasVerified, isCodeComplete,
+  sessionProvesSecondStep,
 } from '../../lib/secondStep/rules';
 import { createSecondStepClient, detectFaceId, rememberedFaceIdFactor } from '../../lib/secondStep/client';
 import {
@@ -31,6 +32,7 @@ import {
 } from './AuthUi';
 import { tokens } from './authTokens';
 import AuthenticatorSetup from './AuthenticatorSetup';
+import { secondStepPlan, suggestPasskeyName, passkeyPrompt, explainPasskeyError } from '../../lib/secondStep/passkeyRules';
 
 const ALLOW_LOCALHOST = !!import.meta.env?.DEV;
 
@@ -47,6 +49,9 @@ export default function SecondStepGate({
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [proof, setProof] = useState({ sentTo: '', sent: false });
+  const [passkeys, setPasskeys] = useState([]);
+  const [canPasskey, setCanPasskey] = useState(false);
+  const [optional, setOptional] = useState(false);   // the passkey screen after a set up: skippable
 
   // Fire once, through a ref (never re-run by a parent re-render: the v5.7.12 handoff trap).
   const passed = useRef(false);
@@ -74,17 +79,44 @@ export default function SecondStepGate({
       if (step === 'none') { setPhase('ended'); return; }
       if (step !== 'ok' && !(await client.appGate())) step = 'ok';
       if (step === 'ok') {
-        if (mode === 'login' && justSetUp && faceSupport.usable && !hasVerified(all, 'webauthn')) { setPhase('faceid'); return; }
+        // Just set up, and this device could hold a passkey: offer one, because it is the
+        // better version of the Face ID factor we used to offer here (and Supabase refused
+        // WebAuthn as an MFA factor on this project). They are already in, so it is optional.
+        if (mode === 'login' && justSetUp && faceSupport.usable && !hasVerified(all, 'webauthn')) {
+          const can = await client.canUsePasskey();
+          if (can.usable) {
+            const mine = await client.listPasskeys();
+            if (mine.length === 0) { setCanPasskey(true); setPasskeys(mine); setOptional(true); setPhase('passkey'); return; }
+          } else {
+            setPhase('faceid');
+            return;
+          }
+        }
         pass();
         return;
       }
       setUseCode(false);
       setCode('');
-      // A FIRST set up: prove the email first, when the server asks for it.
+      // A FIRST set up. From 20 Sep 2026 the second step is a PASSKEY: the fingerprint, face or
+      // Windows Hello on the device in front of them. The emailed code still comes first (a
+      // stolen password must not be able to register the thief's own passkey), and the
+      // authenticator app is left as the way through on a device that cannot make one.
       if (step === 'setup') {
-        const p = await client.emailProofStatus();
+        const [p, can, mine] = await Promise.all([
+          client.emailProofStatus(), client.canUsePasskey(), client.listPasskeys(),
+        ]);
         setProof((was) => ({ ...was, sentTo: p.sentTo || was.sentTo }));
-        if (p.needs_email && !p.proved) { setPhase('prove'); return; }
+        setCanPasskey(!!can.usable);
+        setPasskeys(mine);
+        const next = secondStepPlan({
+          passkeys: mine, factors: all, canUsePasskey: !!can.usable,
+          emailProved: p.proved, needsEmail: p.needs_email,
+        });
+        if (next === 'ok') { pass(); return; }
+        if (next === 'prove_email') { setPhase('prove'); return; }
+        if (next === 'register_passkey') { setPhase('passkey'); return; }
+        setPhase('setup');   // app_code: no passkey maker here
+        return;
       }
       setPhase(step);
     } catch (e) {
@@ -129,8 +161,25 @@ export default function SecondStepGate({
     const c = value ?? code;
     if (!isCodeComplete(c) || busy) return;
     setErr(''); setBusy(true);
-    try { await client.claimEmailCode(c); setCode(''); setPhase('setup'); }
+    try { await client.claimEmailCode(c); setCode(''); setPhase(canPasskey ? 'passkey' : 'setup'); }
     catch (e) { setErr(explainError(e)); setCode(''); }
+    finally { setBusy(false); }
+  };
+
+  const addPasskey = async () => {
+    if (busy) return;
+    setErr(''); setBusy(true);
+    try {
+      await client.addPasskey({ name: suggestPasskeyName(navigator.userAgent) });
+      // THE SESSION STILL SAYS "password". Registering a passkey does not change how this
+      // session signed in, and the database reads the session, not the list of passkeys. So
+      // sign in with the new passkey straight away: one more touch, and the token carries the
+      // proof. If that does not work they are still set up, and their next sign in proves it.
+      try {
+        if (!sessionProvesSecondStep(await client.getSession())) await client.signInWithPasskey();
+      } catch { /* set up either way: the next sign in is the passkey one */ }
+      await evaluate({ justSetUp: true });
+    } catch (e) { setErr(explainPasskeyError(e)); }
     finally { setBusy(false); }
   };
 
@@ -247,6 +296,30 @@ export default function SecondStepGate({
         {signOutButton}
       </Stack>
     );
+  } else if (phase === 'passkey') {
+    const prompt = passkeyPrompt(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+    body = (
+      <Stack>
+        <Heading
+          tone={tone}
+          step={optional ? 'Done. One last option' : 'New: a second sign in step'}
+          title="Set up your passkey"
+          sub={optional
+            ? `Next time, sign in with ${prompt} on this device instead of typing anything. Your authenticator app stays as the backup.`
+            : `From now on you sign in with ${prompt} instead of typing a password. It takes a few seconds, it is safer than any password, and nobody can use it but you on this device.`}
+        />
+        <PrimaryButton tone={tone} busy={busy} onClick={addPasskey} testId="second-step-add-passkey" icon={<FaceIdIcon />}>
+          Set up my passkey
+        </PrimaryButton>
+        <Note tone={tone} kind="error" testId="second-step-error">{err}</Note>
+        <div style={{ fontSize: 13.5, color: tokens(tone).sub, lineHeight: 1.6 }}>
+          You can add another one later for your phone, or your other laptop. Settings, Sign in security.
+        </div>
+        {optional
+          ? <SecondaryButton tone={tone} onClick={pass} testId="second-step-not-now">Not now</SecondaryButton>
+          : signOutButton}
+      </Stack>
+    );
   } else if (phase === 'setup' || phase === 'backup') {
     body = (
       <Stack>
@@ -255,8 +328,8 @@ export default function SecondStepGate({
           step={phase === 'setup' ? 'New: a second sign in step' : 'One more thing'}
           title={phase === 'setup' ? 'Protect your account' : 'Add your backup'}
           sub={phase === 'setup'
-            ? 'From now on, signing in needs your password AND your phone. Even if someone learns your password, they cannot get in. This takes about a minute and you only do it once.'
-            : 'Add an authenticator app as your backup. It works everywhere, including our apps and the tills, and gets you in if Face ID is not available.'}
+            ? 'This device cannot make a passkey, so use an authenticator app instead. On your phone or laptop you will be offered a passkey, which is quicker and safer.'
+            : 'Add an authenticator app as your backup. It works everywhere, including our apps and the tills, and gets you in if your passkey is not available.'}
         />
         <AuthenticatorSetup client={client} tone={tone} onDone={() => evaluate({ justSetUp: true })} />
         {signOutButton}

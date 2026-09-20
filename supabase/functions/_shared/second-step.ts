@@ -36,7 +36,14 @@ export const FLAG_TTL_MS = 30_000;
 export const FLAG_RETRY_MS = 5_000;
 
 export const SECOND_STEP_MESSAGE =
-  'Your sign in needs its second step. Sign out, then sign in again and use Face ID, fingerprint or your authenticator app code.';
+  'Your sign in needs its second step. Sign out, then sign in again with your passkey, or your authenticator app code.';
+/**
+ * PASSKEYS (20 Sep 2026). Supabase treats a passkey as a FIRST factor, so a passkey sign in is
+ * aal1 however strong it is. Without this list every person who moved to a passkey would be
+ * refused by every edge function the moment the switch went on. The same names live in
+ * public.second_step_settings.passkey_methods and in src/lib/secondStep/rules.js.
+ */
+export const PASSKEY_METHODS = ['webauthn', 'passkey', 'webauthn_credential'];
 export const SECOND_STEP_CHECK_FAILED_MESSAGE =
   'We could not check your sign in security just now. Please try again in a moment.';
 
@@ -97,7 +104,15 @@ export function decodeJwtClaims(token: string): Record<string, unknown> | null {
  *   aal2        a real login that finished its second step
  *   aal1        a real login that has only typed a password
  */
-export type CallerKind = 'none' | 'service' | 'unreadable' | 'no_user' | 'anonymous' | 'aal2' | 'aal1';
+export type CallerKind = 'none' | 'service' | 'unreadable' | 'no_user' | 'anonymous' | 'aal2' | 'passkey' | 'aal1';
+
+/** Did this token's session sign in with a passkey? Read from its own 'amr' claim. */
+export function amrHasPasskey(claims: Record<string, unknown> | null, methods: string[] = PASSKEY_METHODS): boolean {
+  const amr = (claims as any)?.amr;
+  if (!Array.isArray(amr)) return false;
+  const want = new Set(methods.map((m) => String(m).toLowerCase()));
+  return amr.some((e: unknown) => want.has(String(typeof e === 'string' ? e : (e as any)?.method ?? '').toLowerCase()));
+}
 
 export function classifyCaller(token: string, serviceKeys: string[] = []): CallerKind {
   if (!token) return 'none';
@@ -108,6 +123,7 @@ export function classifyCaller(token: string, serviceKeys: string[] = []): Calle
   if (typeof c.sub !== 'string' || !c.sub) return 'no_user';
   if (c.is_anonymous === true || c.is_anonymous === 'true') return 'anonymous';
   if (c.aal === 'aal2') return 'aal2';
+  if (amrHasPasskey(c)) return 'passkey';   // aal1 by design, and done
   return 'aal1';
 }
 
@@ -261,11 +277,12 @@ export async function passesSecondStep(input: HeaderSource, opts: SecondStepOpti
 
 /**
  * For actions that need the second step ALWAYS, switch or no switch (the reset function).
- * Null when the caller is a real login at aal2.
+ * Null when the caller is a real login that did a second step: aal2, or a passkey sign in.
  */
 export function requireAal2(input: HeaderSource, serviceKeys: string[] = [envValue('SUPABASE_SERVICE_ROLE_KEY')]): Response | null {
   const kind = classifyCaller(bearerToken(input), serviceKeys);
-  if (kind === 'aal2') return null;
+  // A passkey sign in counts: it is a second step, it is just not called aal2.
+  if (kind === 'aal2' || kind === 'passkey') return null;
   if (kind === 'aal1') return refusalResponse(403);
   return refusalResponse(401, 'sign_in_required', 'Sign in to Back Office first.');
 }

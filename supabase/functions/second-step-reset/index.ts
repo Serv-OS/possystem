@@ -105,20 +105,72 @@ async function teamIds(locationId: string | null): Promise<string[]> {
   return ids;
 }
 
+/**
+ * PASSKEYS (20 Sep 2026). A lost phone may hold a PASSKEY, and a passkey signs in on its own,
+ * with no password: leaving one behind would leave the door open. So a reset must take the
+ * passkeys too.
+ *
+ * GoTrue keeps a passkey as a webauthn credential on the login, and on this project those come
+ * back from the admin factor list, so the factor loop above already removes them. We do not rely
+ * on that alone: we also ask the admin passkey route to remove each credential we know about,
+ * and if neither route took them we say so, loudly, instead of reporting a clean reset.
+ */
+async function removePasskeys(targetId: string, webauthnFactorsDeleted: number): Promise<{
+  known: number; removed: number; left: number;
+}> {
+  const { data, error } = await admin
+    .from('second_step_passkeys')
+    .select('credential_id')
+    .eq('user_id', targetId)
+    .is('removed_at', null);
+  // No table yet (the passkey update has not been run): nothing of ours to clear.
+  if (error) return { known: 0, removed: 0, left: 0 };
+  const ids = (data ?? []).map((r: any) => String(r.credential_id)).filter(Boolean);
+  if (ids.length === 0) return { known: 0, removed: 0, left: 0 };
+
+  let removed = 0;
+  for (const credentialId of ids) {
+    let gone = false;
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/auth/v1/admin/users/${targetId}/passkeys/${encodeURIComponent(credentialId)}`,
+        { method: 'DELETE', headers: { apikey: SERVICE_ROLE, authorization: `Bearer ${SERVICE_ROLE}` } },
+      );
+      // 404 can mean "no such route" OR "already gone"; the factor count below decides.
+      gone = res.ok || res.status === 204;
+    } catch { gone = false; }
+    if (gone) removed++;
+  }
+  // The factor loop counts too: a webauthn credential removed there IS a passkey removed.
+  const takenByFactors = Math.max(0, webauthnFactorsDeleted);
+  const reallyGone = Math.max(removed, Math.min(ids.length, takenByFactors));
+  const left = Math.max(0, ids.length - reallyGone);
+
+  // Our own record follows what actually happened, so the team list never shows a ghost.
+  const clear = reallyGone >= ids.length ? ids : ids.slice(0, reallyGone);
+  if (clear.length) {
+    await admin.from('second_step_passkeys')
+      .update({ removed_at: new Date().toISOString() })
+      .eq('user_id', targetId)
+      .in('credential_id', clear);
+  }
+  return { known: ids.length, removed: reallyGone, left };
+}
+
 async function sendNotice(opts: { to: string; firstName: string; who: string; venueId: string | null }): Promise<boolean> {
   if (!opts.to || !opts.venueId) return false;
   const when = new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   const text =
     `Hi ${opts.firstName},\n\n` +
     `${opts.who} reset the second sign in step on your ServOS Back Office login on ${when}.\n\n` +
-    `The next time you sign in you will be asked to set it up again: scan a new code with your authenticator app, ` +
-    `and add Face ID or fingerprint if your device has it.\n\n` +
+    `The next time you sign in you will be asked to set it up again. We will email you a code to prove it is you, ` +
+    `then your device will ask for your fingerprint, face or PIN to make a new passkey.\n\n` +
     `If you did not ask for this, tell your manager or ServOS support straight away.`;
   const html =
     `<div style="font-family:'Space Grotesk',system-ui,sans-serif;max-width:560px;color:#0F1211">` +
     `<p>Hi ${escapeHtml(opts.firstName)},</p>` +
     `<p><strong>${escapeHtml(opts.who)}</strong> reset the second sign in step on your ServOS Back Office login on ${escapeHtml(when)}.</p>` +
-    `<p>The next time you sign in you will be asked to set it up again: scan a new code with your authenticator app, and add Face ID or fingerprint if your device has it.</p>` +
+    `<p>The next time you sign in you will be asked to set it up again. We will email you a code to prove it is you, then your device will ask for your fingerprint, face or PIN to make a new passkey.</p>` +
     `<p style="color:#8C938C">If you did not ask for this, tell your manager or ServOS support straight away.</p></div>`;
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/send-receipt`, {
@@ -168,6 +220,20 @@ Deno.serve(async (req) => {
       }
     }
     const ids = await teamIds(locationId);
+    // One read for everybody's passkeys: a passkey counts as set up, and for most people from
+    // 20 Sep 2026 it is the only second step they have.
+    const passkeyCount = new Map<string, number>();
+    if (ids.length) {
+      const { data: keys } = await admin
+        .from('second_step_passkeys')
+        .select('user_id')
+        .in('user_id', ids)
+        .is('removed_at', null);
+      for (const k of (keys ?? []) as any[]) {
+        const u = String(k.user_id);
+        passkeyCount.set(u, (passkeyCount.get(u) ?? 0) + 1);
+      }
+    }
     const rows = (await mapLimit(ids, 5, async (id) => {
       const t = await targetFor(id);
       if (!t) return null;
@@ -180,7 +246,7 @@ Deno.serve(async (req) => {
         venue_role: venueRole,
         is_you: id === caller.id,
         servos_admin: t.target.isSuperAdmin,
-        second_step: factorSummary(t.user.factors),
+        second_step: factorSummary(t.user.factors, passkeyCount.get(id) ?? 0),
         last_sign_in_at: t.user.last_sign_in_at ?? null,
         can_reset: decision.ok,
         reset_note: decision.ok ? null : decision.reason,
@@ -220,21 +286,36 @@ Deno.serve(async (req) => {
 
     let removed = 0;
     let failed = 0;
+    let webauthnGone = 0;
     const types: string[] = [];
     const { data: listed, error: listErr } = await admin.auth.admin.mfa.listFactors({ userId: targetId });
     const factors = listErr ? [] : ((listed as any)?.factors ?? []);
-    if (!listErr && factors.length === 0) {
+    const { count: knownKeys } = await admin
+      .from('second_step_passkeys')
+      .select('credential_id', { count: 'exact', head: true })
+      .eq('user_id', targetId)
+      .is('removed_at', null);
+    if (!listErr && factors.length === 0 && !(knownKeys ?? 0)) {
       await admin.from('second_step_resets').update({
         factors_removed: 0, factor_types: [], outcome: 'done', emailed: false, finished_at: new Date().toISOString(),
       }).eq('id', (auditRow as any).id);
-      return json({ ok: true, outcome: 'done', removed: 0, emailed: false, note: 'They have not set up a second step yet, so there was nothing to reset.' });
+      return json({ ok: true, outcome: 'done', removed: 0, passkeys_removed: 0, emailed: false, note: 'They have not set up a second step yet, so there was nothing to reset.' });
     }
     for (const f of factors) {
       const { error } = await admin.auth.admin.mfa.deleteFactor({ id: f.id, userId: targetId });
       if (error) failed++;
-      else { removed++; types.push(String(f.factor_type ?? 'unknown')); }
+      else {
+        removed++;
+        const kind = String(f.factor_type ?? 'unknown');
+        types.push(kind);
+        if (kind === 'webauthn' || kind === 'passkey') webauthnGone++;
+      }
     }
-    const outcome = listErr || failed ? (removed ? 'partial' : 'failed') : 'done';
+    // The passkeys, which sign in on their own and so matter most on a lost phone.
+    const keys = await removePasskeys(targetId, webauthnGone);
+    if (keys.removed) types.push(...Array.from({ length: keys.removed }, () => 'passkey'));
+    let outcome = listErr || failed ? (removed ? 'partial' : 'failed') : 'done';
+    if (keys.left > 0 && outcome !== 'failed') outcome = 'partial';
 
     const firstName = String(t.profile?.full_name || '').trim().split(/\s+/)[0] || 'there';
     const venueForEmail = locationId || [...new Set([...t.target.links.map((l) => l.venueId), t.target.profileVenueId].filter(Boolean) as string[])][0] || null;
@@ -242,7 +323,7 @@ Deno.serve(async (req) => {
     const emailed = outcome === 'failed' ? false : await sendNotice({ to: t.user.email ?? '', firstName, who, venueId: venueForEmail });
 
     await admin.from('second_step_resets').update({
-      factors_removed: removed,
+      factors_removed: removed + keys.removed,
       factor_types: types,
       outcome,
       emailed,
@@ -250,7 +331,12 @@ Deno.serve(async (req) => {
     }).eq('id', (auditRow as any).id);
 
     if (outcome === 'failed') return json({ error: 'The reset did not go through. Please try again.', removed, emailed }, 502);
-    return json({ ok: true, outcome, removed, emailed });
+    // Say it plainly when a passkey is still out there: that device can still sign in.
+    const note = keys.left > 0
+      ? `${keys.left} passkey${keys.left === 1 ? '' : 's'} could not be removed from here, so that device can still sign in. `
+        + 'Ask ServOS support to remove them, and tell this person to change their password now.'
+      : undefined;
+    return json({ ok: true, outcome, removed: removed + keys.removed, passkeys_removed: keys.removed, passkeys_left: keys.left, emailed, note });
   }
 
   return json({ error: 'unknown action' }, 400);

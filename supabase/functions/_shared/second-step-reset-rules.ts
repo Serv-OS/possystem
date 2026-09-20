@@ -98,8 +98,17 @@ export function resetDecision(caller: ResetCaller, target: ResetTarget, venueId?
   return { ok: true, code: 'ok', reason: 'Owner of every venue they can reach' };
 }
 
-/** Count verified factors by kind, for lists. Never exposes factor secrets. */
-export function factorSummary(factors: Array<{ factor_type?: string; status?: string }> | null | undefined) {
+/**
+ * Count verified factors by kind, for lists. Never exposes factor secrets.
+ *
+ * PASSKEYS (20 Sep 2026): a passkey is a second step too, and for most people it is now the
+ * ONLY one, so it counts towards set_up. It is passed in separately because the auth server
+ * does not always report a passkey as a factor; our own second_step_passkeys table is the count.
+ */
+export function factorSummary(
+  factors: Array<{ factor_type?: string; status?: string }> | null | undefined,
+  passkeys: number = 0,
+) {
   let app = 0; let face = 0; let other = 0;
   for (const f of factors || []) {
     if (f?.status !== 'verified') continue;
@@ -107,5 +116,6 @@ export function factorSummary(factors: Array<{ factor_type?: string; status?: st
     else if (f.factor_type === 'webauthn') face++;
     else other++;
   }
-  return { authenticator_app: app, face_id: face, other, set_up: app + face + other > 0 };
+  const keys = Math.max(0, Number(passkeys) || 0);
+  return { authenticator_app: app, face_id: face, other, passkeys: keys, set_up: app + face + other + keys > 0 };
 }
