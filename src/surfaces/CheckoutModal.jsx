@@ -10,6 +10,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
+import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
@@ -238,13 +239,26 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       return;
     }
 
+    // Database fence stage 1, fix round 2: no card payment starts on a till that is not linked
+    // to its venue (lib/deviceLink.js confirmLinkBeforeCard). Its paid check could not be saved.
+    // Nothing has been charged at this point; staff take cash or use another till.
+    const linkGate = await confirmLinkBeforeCard();
+    if (!linkGate.ok) {
+      setRestState('error');
+      setErrorMsg(linkGate.message);
+      return;
+    }
+
     // Ryft locations take the terminal payment via Ryft's in-person API.
     // Adyen NEVER comes through here: an Adyen venue with a linked reader took
     // the terminal_jobs path (startTerminalJob) before this screen; reaching
     // this line means no reader is linked — say so instead of dead-ending.
     if (processor === 'ryft') return runRyftTerminalFlow();
     if (processor === 'adyen') {
-      setError('No card reader is linked to this venue yet — register one in Back Office → Card readers → Card terminals.');
+      // (Found by the fence fix round 2 lint pass: this called setError, which CardTerminal does not
+      // have, so the screen threw and hung on "Pushing cart to reader". Shown as a card error now.)
+      setRestState('error');
+      setErrorMsg('No card reader is linked to this venue yet. Register one in Back Office, Card readers, Card terminals.');
       return;
     }
 
@@ -1197,6 +1211,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (customer?.paid) {
       try { useStore.getState().showToast?.('This order has already been paid — opening read-only.', 'error'); } catch {}
       onClose?.();
+    } else if (customer?.payment_state === 'checking' || customer?.payment_unverified === true) {
+      // Fence S3 (fix round): the customer paid on their phone and the server is confirming it.
+      // Never charge it again here: Orders Hub, Check payment (or a manager's Confirm payment).
+      try { useStore.getState().showToast?.('Payment being checked: the customer already paid. Use Check payment in Orders. Do not charge it again.', 'error'); } catch {}
+      onClose?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1825,6 +1844,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const startTerminalJob = async () => {
     setPaxError(''); setPaxBusy(true);
     try {
+      // Database fence stage 1, fix round 2: a till that is not linked never sends a card job
+      // (and never debits a staged gift card for one). Nothing is charged; the reason is shown.
+      const linkGate = await confirmLinkBeforeCard();
+      if (!linkGate.ok) throw new Error(linkGate.message);
       const locationId = getActiveLocationSync();
       const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
       // Mint once per checkout (see checkIdRef). Table checks keep the shared

@@ -14,11 +14,21 @@
 //   found, customer_id, member_code, name, phone, email,
 //   points_balance, tier, rewards_available[], gift_cards[]
 // }
+// or, for a caller without authority, the limited reply
+// { found, enrolled, limited, loyalty_enabled, points_enabled, stamps_enabled } (_shared/memberReply.ts).
+// Round three (18 Sep 2026): ENFORCED NOW (modeOverride 'enforce', no report period, as it has no
+// callers), every customer read fenced to the venue's org, location_id must be an id.
+//
+// CALLERS (checked 18 Sep 2026): none in src/. The till, host stand and kiosk look members up
+// through loyalty-balance (src/lib/customerLookup.js fetchCustomerByPhone) or loyalty-otp.
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, getOrCreateConfig, ensureMembership,
+  resolveCompanyForLocation, getOrCreateConfig, ensureMembership, checkLoyaltyAuthority,
+  uuidOr0, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
+import { giftCardRecipientFilter, cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
+import { limitedMemberReply } from '../_shared/memberReply.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -46,17 +56,25 @@ Deno.serve(async (req) => {
   const companyId = resolved;
 
   // ── Resolve org_id for customer queries ────────────────────────────────
+  // Round three: location_id reaches a PostgREST filter, so only a real id gets there.
+  // Lockdown step 1: Platform locations has NO org_id column (the old select failed, so this
+  // always answered 404). The org is on the Ops row (_shared/orgScope.ts).
   const { data: locData } = await platformAdmin
     .from('locations')
-    .select('org_id, ops_location_id')
-    .or(`ops_location_id.eq.${location_id},id.eq.${location_id}`)
+    .select('ops_location_id')
+    .or(`ops_location_id.eq.${uuidOr0(location_id)},id.eq.${uuidOr0(location_id)}`)
     .limit(1)
     .maybeSingle();
+  const { data: opsLoc } = locData?.ops_location_id
+    ? await opsAdmin.from('locations').select('org_id').eq('id', uuidOr0(locData.ops_location_id)).maybeSingle()
+    : { data: null as any };
 
-  const orgId = locData?.org_id;
+  const orgId = opsLoc?.org_id;
+  // Every customer read below is fenced to this venue's org. Without an org nothing is found.
+  if (!orgId) return json({ found: false, error: 'Customer not found' }, 404);
 
   // ── Find the customer ──────────────────────────────────────────────────
-  let custId: string | null = customer_id || null;
+  let custId: string | null = customer_id ? String(customer_id) : null;
   let custData: any = null;
 
   if (member_code && !custId) {
@@ -90,15 +108,46 @@ Deno.serve(async (req) => {
   }
 
   // ── Get customer profile from ops DB ───────────────────────────────────
+  // Round three: customer_id came from the body and was read with no org filter, so any
+  // customer of any tenant could be looked up (and enrolled below) by id. Fenced to this org.
   const { data: customer } = await opsAdmin
     .from('customers')
     .select('id, name, phone, email, allergens')
-    .eq('id', custId)
+    .eq('id', uuidOr0(custId))
+    .eq('org_id', orgId)
     .is('deleted_at', null)
     .maybeSingle();
 
   if (!customer) {
     return json({ found: false, error: 'Customer not found' }, 404);
+  }
+
+  // ── Who may see the full member (database fence stage 1) ───────────────
+  // This returns name, phone, email, allergens, points and rewards for a phone number, and any
+  // session could call it. Full detail now needs staff of the venue, a device bound to the
+  // venue, or the member's own token (same rule as loyalty-redeem). Anybody else gets only what
+  // a sign in prompt needs: is this number a member, and are points and stamps on. The limited
+  // reply never enrols.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-member-lookup',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer.id),
+    memberToken: (body as any).member_token,
+    channel: (body as any).channel ?? null,
+    // ENFORCED ALWAYS, whatever LOYALTY_AUTHORITY_MODE and the fence say. Nothing in src/ calls
+    // this function, so there is no real caller a refusal could break.
+    modeOverride: 'enforce',
+    deviceHint: deviceHintOf(body),
+  });
+  if (!gate.allow) {
+    const [{ data: cfg }, { data: member }] = await Promise.all([
+      platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle(),
+      platformAdmin.from('customer_loyalty').select('id').eq('customer_id', customer.id).eq('company_id', companyId).maybeSingle(),
+    ]);
+    if (!member) return json({ found: false, error: 'Customer not found' }, 404);
+    return json(limitedMemberReply(cfg));
   }
 
   // ── Get or create loyalty membership ───────────────────────────────────
@@ -142,20 +191,21 @@ Deno.serve(async (req) => {
   // ── Get linked gift cards ──────────────────────────────────────────────
   let giftCards: any[] = [];
   try {
-    // Find gift cards linked to this customer's email or phone
-    const conditions: string[] = [];
-    if (customer.email) conditions.push(`recipient_email.eq.${customer.email}`);
-    if (customer.phone) conditions.push(`recipient_phone.eq.${customer.phone}`);
-
-    if (conditions.length > 0) {
+    // 18 Sep 2026: matched on the customer's PHONE only (never email: a member can set any email
+    // in the portal with no verification) and returned WITHOUT the card id. This function accepts
+    // any session including an anonymous one, and gift-redeem spends a card by its id, so an id
+    // here is as good as the code. last4 and balance are all a lookup needs.
+    const filter = giftCardRecipientFilter(customer.phone);
+    if (filter) {
       const { data: cards } = await platformAdmin
         .from('gift_cards')
-        .select('id, code_last4, balance_minor, status, expires_at')
+        .select('code_last4, balance_minor, status, expires_at, recipient_phone')
         .eq('company_id', companyId)
         .eq('status', 'active')
-        .or(conditions.join(','));
-      giftCards = (cards || []).map(c => ({
-        id: c.id,
+        .or(filter);
+      // The filter is a wide net (cards typed as '07931 123 456' must still be found); the match
+      // is the normalised phone, row by row.
+      giftCards = (cards || []).filter(c => cardBelongsToPhone(c, customer.phone)).map(c => ({
         last4: c.code_last4,
         balance: c.balance_minor,
         expires_at: c.expires_at,

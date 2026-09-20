@@ -23,6 +23,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
+import { confirmLinkBeforeCard } from '../../lib/deviceLink';
 import { Sx, money } from './MShellStyles';
 import { stripeCurrency, getActiveCurrencyCode } from '../../lib/currency';
 import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
@@ -101,6 +102,14 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         setStatusMsg('TRAINING — no card charged');
         setPhase('approved');
         onApproved?.({ method:'card', paymentIntentId:`training_${Date.now()}`, tip: payment.tip, grand, simulated:true, training:true });
+        return;
+      }
+      // Database fence stage 1, fix round 2: no card payment starts on a handset that is not
+      // linked to its venue (lib/deviceLink.js confirmLinkBeforeCard). Nothing is charged.
+      const linkGate = await confirmLinkBeforeCard();
+      if (!linkGate.ok) {
+        setErrorMsg(linkGate.message);
+        setPhase('error');
         return;
       }
       // TIER 0 — this device IS the reader (Adyen Android terminal).

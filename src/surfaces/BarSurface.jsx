@@ -9,6 +9,7 @@ import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
@@ -546,6 +547,12 @@ export default function BarSurface() {
     const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
     const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
     if (captureMinor <= 0) { setHoldCloseErr('Nothing to charge'); setHoldCloseState('error'); return; }
+    // Database fence stage 1, fix round 2: no card capture on a till that is not linked to its
+    // venue (lib/deviceLink.js confirmLinkBeforeCard). Nothing is taken; the hold stays.
+    if (!isTrainingMode()) {
+      const linkGate = await confirmLinkBeforeCard();
+      if (!linkGate.ok) { setHoldCloseErr(linkGate.message); setHoldCloseState('error'); return; }
+    }
     setHoldCloseState('capturing'); setHoldCloseErr(null);
     try {
       let capturedMinor;

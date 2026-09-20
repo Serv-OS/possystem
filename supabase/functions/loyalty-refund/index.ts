@@ -25,7 +25,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, updateBalance,
+  resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -60,6 +60,29 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id as string);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Authority (database fence stage 1) ─────────────────────────────────
+  // Resolving the company proves nothing about the caller (the location id is public), so any
+  // anonymous session could reverse anybody's transactions (a refunded redemption gives the
+  // points back). A device bound to this venue or a Back Office user of the venue; NOT the
+  // member's own token. Report before 20260919a (refunds as before, the ones enforce would
+  // refuse are logged), enforced by itself once it has run.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-refund',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer_id),
+    memberToken: (body as any).member_token,
+    closedCheckId: closed_check_id,
+    channel: (body as any).channel ?? null,
+    // A refund is a TILL action. A member's own token never passes it (a member refunding their
+    // own redemption would keep the reward and get the points back); only a device bound to the
+    // venue or staff may refund.
+    memberAllowed: false,
+    deviceHint: deviceHintOf(body),
+  });
+  if (!gate.allow) return gate.response!;
 
   // ── Idempotency check (scoped to company) ─────────────────────────────
   const idempotencyKey = `refund:${closed_check_id}`;

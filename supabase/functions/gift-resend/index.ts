@@ -3,12 +3,15 @@
 // v5.5.198: Re-send the gift card delivery email to the recipient.
 //
 // Called from the back office when an original email failed to deliver or
-// the operator needs to resend. Reads the plaintext code from the
-// gift_card_purchases.fulfilled_code column (stored at fulfillment time).
+// the operator needs to resend. Reads the plaintext code from the card itself
+// (gift_cards.code_plain; database fence stage 1), falling back to an old purchase row.
 //
 // Body: { card_id }
 //
 // Auth: Supabase Auth (back office user must belong to the card's company)
+// STAFF ONLY (database fence stage 1, 19 Sep 2026, enforced always): the header always said
+// "back office user" and nothing checked it. The only caller is Back Office (GiftCards.jsx
+// Resend). The email still only ever goes to the card's own recipient.
 //
 // For manually-issued cards (no purchase record), the code is not stored
 // and cannot be resent — returns an error explaining this.
@@ -16,6 +19,7 @@
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
 
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CUSTOMER_DOMAIN = Deno.env.get('CUSTOMER_DOMAIN') ?? 'serv-os.app';
@@ -96,13 +100,20 @@ Deno.serve(async (req) => {
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 
+  // Staff of the venue (or company) only, before anything is read.
+  const refused = await requireStaff({
+    fn: 'gift-resend', caller, locationId: (body.location_id as string) || null, companyId,
+    what: 'resend gift cards', body,
+  });
+  if (refused) return refused;
+
   const cardId = body.card_id as string;
   if (!cardId) return json({ error: 'card_id required' }, 400);
 
   // Look up the card
   const { data: card } = await platformAdmin
     .from('gift_cards')
-    .select('id, company_id, code_last4, initial_amount_minor, balance_minor, status, expires_at, issued_at, recipient_name, recipient_email, note')
+    .select('id, company_id, code_last4, code_plain, initial_amount_minor, balance_minor, status, expires_at, issued_at, recipient_name, recipient_email, note')
     .eq('id', cardId)
     .eq('company_id', companyId)
     .maybeSingle();
@@ -124,7 +135,12 @@ Deno.serve(async (req) => {
     }, 400);
   }
 
-  if (!purchase.fulfilled_code) {
+  // Database fence stage 1 (contract P3): the code comes from the card itself
+  // (gift_cards.code_plain). gift_card_purchases.fulfilled_code is no longer written (and
+  // 20260919d clears it where the card holds its own code); it is read here only for an old
+  // purchase whose card has no code of its own.
+  const resendCode = (card as any).code_plain || purchase.fulfilled_code || null;
+  if (!resendCode) {
     return json({
       error: 'No code stored for this purchase. The card was issued before the resend feature was added. You will need to void this card and issue a new one.',
     }, 400);
@@ -160,7 +176,7 @@ Deno.serve(async (req) => {
     senderName: purchase.sender_name || 'Someone',
     recipientName: card.recipient_name || purchase.recipient_name || 'there',
     message: purchase.message || card.note || null,
-    code: formatCode(purchase.fulfilled_code),
+    code: formatCode(resendCode),
     amountFormatted,
     expiresAt: card.expires_at,
     venueName,

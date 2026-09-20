@@ -1,0 +1,7 @@
+.baseline.sql
+__pycache__/
+schema/
+.rollback_*
+.rbc.sql
+.rbd.sql
+.trip_keep.sql

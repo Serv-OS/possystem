@@ -12,23 +12,56 @@
 // transaction, the promo_redeem_atomic RPC (migration 20260806c). Only ONE concurrent till can win a
 // single-use code; a second attempt gets reason 'already_used'. Idempotent on retry via
 // promo_redemptions.idempotency_key (default `${order_id}:${code}`).
+//
+// WHO (database fence stage 1, 19 Sep 2026): whoever holds the code, like a gift card code; no
+// session is needed (the till, kiosk, online, QR and catering pages all call it, catering without a
+// session). What a caller can NOT do any more: find or use a code they do not hold. The lookup is
+// an exact, case insensitive match inside the org of the venue the call names, never a wildcard
+// or a prefix, and the offer must be that org's too (_shared/promoLookup.ts). For a public order
+// the server uses the code up itself at placing (place_public_order, key `<check id>:<CODE>`, the
+// same key the page's own redeem call sends, so that call answers "already done").
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { computeDiscount } from '../_shared/promo.ts';
+import { normalisePromoCode, escapeLike, pickPromoRow, offerInOrg } from '../_shared/promoLookup.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
 const norm = (c: string) => String(c ?? '').trim().toUpperCase();
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The Ops org of the venue this request is for, resolved server side. The till, kiosk and online
+// send the Ops location id; a Platform id is mapped through ops_location_id. No venue, no org.
+async function orgForLocation(locationId: string): Promise<string | null> {
+  if (!UUID.test(locationId)) return null;
+  const { data: loc } = await opsAdmin.from('locations').select('org_id').eq('id', locationId).maybeSingle();
+  if (loc?.org_id) return String(loc.org_id);
+  const platformUrl = Deno.env.get('PLATFORM_SUPABASE_URL') ?? '';
+  const platformKey = Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  if (!platformUrl || !platformKey) return null;
+  const platformAdmin = createClient(platformUrl, platformKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  const { data: pl } = await platformAdmin.from('locations').select('ops_location_id').eq('id', locationId).maybeSingle();
+  if (!pl?.ops_location_id || !UUID.test(String(pl.ops_location_id))) return null;
+  const { data: ol } = await opsAdmin.from('locations').select('org_id').eq('id', pl.ops_location_id).maybeSingle();
+  return ol?.org_id ? String(ol.org_id) : null;
+}
 
 // Load code + its offer, and run all eligibility checks. Returns { code, offer, discount } or { reason }.
 async function evaluate(codeStr: string, locationId: string, customerId: string | null, subtotal: number) {
-  const code = norm(codeStr);
+  // Lockdown step 1 (d): an exact, case insensitive match, inside the venue's own org. The raw
+  // input used to go straight into ilike with no org filter, so '%' or a prefix matched (and
+  // enumerated) another company's codes. See _shared/promoLookup.ts.
+  const code = normalisePromoCode(codeStr);
   if (!code) return { reason: 'not_found' as const };
-  // case-insensitive match (unique index is on upper(code))
-  const { data: rows } = await opsAdmin.from('promo_codes').select('*').ilike('code', code).limit(1);
-  const row = rows?.[0];
+  const orgId = await orgForLocation(locationId);
+  if (!orgId) return { reason: 'not_found' as const };
+  const { data: rows } = await opsAdmin.from('promo_codes').select('*')
+    .eq('org_id', orgId)
+    .ilike('code', escapeLike(code))
+    .limit(5);
+  const row = pickPromoRow(rows, code, orgId);
   if (!row) return { reason: 'not_found' as const };
   if (row.status === 'voided') return { reason: 'voided' as const, row };
   if (row.status === 'expired') return { reason: 'expired' as const, row };
@@ -43,7 +76,9 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   // customer instead of refusing. A DIFFERENT attached customer is still refused above.
   const effectiveCustomerId = customerId || row.customer_id || null;
 
-  const { data: offer } = await opsAdmin.from('offers').select('*').eq('id', row.offer_id).maybeSingle();
+  // Review round four (5c): the offer must be this org's too, never just "the offer with that id".
+  const { data: offerRow } = await opsAdmin.from('offers').select('*').eq('id', row.offer_id).eq('org_id', orgId).maybeSingle();
+  const offer = offerInOrg(offerRow, orgId) ? offerRow : null;
   if (!offer) return { reason: 'not_found' as const, row };
   if (!offer.active) return { reason: 'inactive' as const, row, offer };
   const nowMs = Date.now();

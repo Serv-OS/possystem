@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -21,6 +21,10 @@ import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSecti
 // Same import shape bookingsSlice already uses; SessionSync touches the store
 // only at call time, so the module cycle is benign.
 import { persistTransfer } from '../sync/SessionSync';
+// Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
+// change a row count the rows they changed and are kept while this device is not linked.
+import { mustChangeRow } from '../lib/rowWrites';
+import { patchPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
@@ -31,7 +35,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage } from '../lib/giftCommit';
 import { tendersFromPaymentInfo, channelTenders, finishTenders, tender, giftTenders, bookingTenders } from '../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
@@ -41,7 +45,53 @@ import {
   rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt,
 } from '../lib/payments/refundMath';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
-import { commitRedemption } from '../lib/commitRedemptions';
+import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { memberTokenFor } from '../lib/memberSession.js';
+
+// Database fence stage 1 (money functions): loyalty-redeem, loyalty-earn and loyalty-refund accept
+// a till or kiosk only when its session is BOUND to its devices row at this venue (the device arm
+// of pos_can_access). Every loyalty call from this store (and the kiosk's, which uses
+// commitRedemption) waits for the boot link first and re-links once after a 403, the way
+// openShift does since v5.8.97. See lib/commitRedemptions setDeviceClaimHooks.
+setDeviceClaimHooks({ waitForClaim: () => whenDeviceClaimed(), reclaim: () => claimPairedDeviceOnBoot() });
+
+// POST to a loyalty edge function the way openShift writes a shift: wait (bounded) for the device
+// link, and on a 403 re-link and try ONCE more. Returns the last Response, or null with no auth
+// token. Only used for calls that are idempotent server side (earn:<check>, refund:<check>), so a
+// retry can never count twice.
+async function postLoyaltyWithDeviceLink(fn, body) {
+  // device_hint names this till or kiosk in the server's authority log (never trusted).
+  let hint = null;
+  try { hint = readLocalDevice()?.id || null; } catch { hint = null; }
+  const payload = hint && !body.device_hint ? { ...body, device_hint: hint } : body;
+  const send = async () => {
+    const token = await ensureAuthToken();
+    if (!token) return null;
+    return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+  };
+  await whenDeviceClaimed();
+  let res = await send();
+  if (res && res.status === 403) {
+    try { await claimPairedDeviceOnBoot(); } catch { /* best effort */ }
+    res = await send();
+  }
+  // loyalty-earn reads the server's own closed_checks row. When the till calls it a moment before
+  // that row has landed it answers 409 check_not_found (once it enforces); wait and try again a
+  // few times. Idempotent server side on the check id, so a retry never double earns.
+  for (const waitMs of [3000, 10000, 30000]) {
+    if (fn !== 'loyalty-earn' || !res || res.status !== 409) break;
+    let code = null;
+    try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
+    if (code !== 'check_not_found') break;
+    await new Promise((r) => setTimeout(r, waitMs));
+    res = await send();
+  }
+  return res;
+}
 import { waitlistSlice } from './waitlistSlice';
 import { bookingsSlice } from './bookingsSlice';
 import { reportSave } from '../lib/saveHealth';
@@ -3133,9 +3183,12 @@ export const useStore = create((set, get) => ({
           if ((ticket.fired_courses||[]).includes(courseNum)) continue;
           const firedCourses = [...new Set([...(ticket.fired_courses||[0,1]), courseNum])];
           const updatedItems = (ticket.items||[]).map(i => i.course === courseNum ? { ...i, fired:true } : i);
-          await supabase.from('kds_tickets')
-            .update({ fired_courses: firedCourses, items: updatedItems })
-            .eq('id', ticket.id);
+          // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked.
+          const r = await mustChangeRow({
+            table: 'kds_tickets', type: 'update', payload: { fired_courses: firedCourses, items: updatedItems },
+            match: { id: ticket.id }, kind: 'kds_fire', label: `Course ${courseNum} fired`,
+          });
+          if (r.outcome === 'error') console.warn('fireCourse kds_tickets update failed', r.error?.message || r.error);
         }
       } catch (e) { console.warn('fireCourse Supabase update failed', e); }
     });
@@ -3730,11 +3783,12 @@ export const useStore = create((set, get) => ({
       // to avoid the cross-location ref collision that would otherwise update
       // closed_checks at OTHER locations sharing the same ref string).
       if (orderRecord.ref) {
-        const { error: stampErr } = await supabase.from('closed_checks')
-          .update({ customer_id: customerId })
-          .eq('ref', orderRecord.ref)
-          .eq('location_id', locId);
-        if (stampErr) console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stampErr.message);
+        // Fix round 2 (the zero row blocker): counted, and kept while this device is not linked.
+        const stamp = await mustChangeRow({
+          table: 'closed_checks', type: 'update', payload: { customer_id: customerId },
+          match: { ref: orderRecord.ref, location_id: locId }, kind: 'customer_stamp', label: `Customer on check ${orderRecord.ref}`,
+        });
+        if (stamp.outcome === 'error') console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stamp.error?.message || stamp.error);
       }
 
       // v5.5.272: Send welcome SMS invite for new customers (pre-register for loyalty).
@@ -3845,15 +3899,15 @@ export const useStore = create((set, get) => ({
             }),
             subtotal: Number(orderRecord.total) || 0,
             staff_id: orderRecord.staffId || null,
+            // Database fence stage 1: the member signed in at the kiosk proves the earn is theirs
+            // even when the kiosk's device link is missing (lib/memberSession, only for THIS
+            // customer). A bound till or kiosk needs nothing more.
+            ...(memberTokenFor(customerId) ? { member_token: memberTokenFor(customerId) } : {}),
           };
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify(earnBody),
-            }
-          );
+          // Waits for the device link and re-links once on a 403 (postLoyaltyWithDeviceLink).
+          // Idempotent server side on earn:<closed_check_id>, so the retry cannot double earn.
+          const res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody);
+          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[loyalty-earn] ✓', j.points_earned, 'pts → balance:', j.balance, j.is_new_member ? '(new member)' : '');
@@ -3897,11 +3951,13 @@ export const useStore = create((set, get) => ({
               // Best-effort persist loyalty jsonb to Supabase
               // v5.5.279: location_id guard on closed_checks update
               const loyLocId = getActiveLocationSync();
-              supabase.from('closed_checks')
-                .update({ loyalty: loyaltySummary })
-                .eq('id', orderRecord.id)
-                .eq('location_id', loyLocId)
-                .then(({ error: le }) => { if (le) console.warn('[loyalty-earn] closed_check update:', le.message); });
+              // Fix round 2: a sale not sent yet carries it too; the update is counted and kept
+              // while this device is not linked (the zero row blocker).
+              try { patchPendingCheck(orderRecord.id, { loyalty: loyaltySummary }); } catch { /* best effort */ }
+              mustChangeRow({
+                table: 'closed_checks', type: 'update', payload: { loyalty: loyaltySummary },
+                match: { id: orderRecord.id, location_id: loyLocId }, kind: 'loyalty_stamp', label: `Loyalty on check ${orderRecord.id}`,
+              }).then((r) => { if (r.outcome === 'error') console.warn('[loyalty-earn] closed_check update:', r.error?.message || r.error); });
             }
           } else {
             // 404 = loyalty not configured for this company — not an error
@@ -3945,8 +4001,10 @@ export const useStore = create((set, get) => ({
       if (supabase && locId && ref) {
         // v5.5.971: PostgREST resolves with { error } — the old .catch()-only handler
         // never saw a refusal, which is exactly how the order RESURRECTS at next boot.
-        Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref).eq('location_id', locId))
-          .then(({ error }) => reportSave('order queue delete', error))
+        // Fix round 2 (the zero row blocker): a delete that removes nothing while this device is
+        // not linked is kept and sent once it is linked again, never counted as done.
+        mustChangeRow({ table: 'order_queue', type: 'delete', match: { ref, location_id: locId }, kind: 'queue_delete', label: `Order ${ref} removed` })
+          .then((r) => reportSave('order queue delete', r.outcome === 'error' ? r.error : null))
           .catch(e => { reportSave('order queue delete', e); console.warn('[removeFromQueue] db delete:', e?.message); });
       }
     } catch { /* non-fatal */ }
@@ -5960,7 +6018,9 @@ export const useStore = create((set, get) => ({
         get().showToast?.('Gift card balance restored — the card machine payment was cancelled.', 'info');
       } else if (!r.ok) {
         console.warn('[reverseTerminalJobGift] gift reversal failed:', r.error);
-        get().showToast?.('Could not restore a gift card from the cancelled card-machine payment — check the balance in Back Office.', 'error');
+        // Database fence stage 1: gift-reverse-redeem needs a till bound to this venue or a
+        // manager. Say what staff can actually do (Back Office cannot put a balance back).
+        get().showToast?.(giftReversalFailedMessage(leg, r.error || 'reversal failed', (m) => money(Number(m || 0) / 100)), 'error');
       }
     } catch (e) {
       console.warn('[reverseTerminalJobGift] gift reversal failed:', e?.message || e);
@@ -6574,7 +6634,13 @@ export const useStore = create((set, get) => ({
               staffId: manager?.id || null,
             });
             if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
-            else console.warn('[refundCheck] gift reversal failed for leg:', r.error);
+            else {
+              console.warn('[refundCheck] gift reversal failed for leg:', r.error);
+              // Database fence stage 1: gift-reverse-redeem needs a till bound to this venue or a
+              // manager. Say so, and say what staff can actually do (Back Office cannot restore a
+              // balance).
+              get().showToast?.(giftReversalFailedMessage(leg, r.error || 'reversal failed', (m) => money(Number(m || 0) / 100)), 'error');
+            }
           }
         } catch (e) {
           console.warn('[refundCheck] gift reversal failed:', e?.message || e);
@@ -6595,23 +6661,19 @@ export const useStore = create((set, get) => ({
             console.warn('[refundCheck] loyalty reversal skipped — no customer_id on check');
             return;
           }
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-refund`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify({
-                customer_id: customerId,
-                location_id: getActiveLocationSync(),
-                // v5.5.311: must match the unique id used at earn time (chk-<ts>)
-                // so loyalty-refund finds the right earn rows. Was check.ref
-                // which cycles R1–R99 and could reverse the WRONG order's points.
-                closed_check_id: check.id || check.ref,
-                reason: reason || 'refund',
-                staff_id: manager?.id || null,
-              }),
-            }
-          );
+          // Waits for the device link and re-links once on a 403 (database fence stage 1).
+          // Idempotent server side on refund:<closed_check_id>, so the retry cannot reverse twice.
+          const res = await postLoyaltyWithDeviceLink('loyalty-refund', {
+            customer_id: customerId,
+            location_id: getActiveLocationSync(),
+            // v5.5.311: must match the unique id used at earn time (chk-<ts>)
+            // so loyalty-refund finds the right earn rows. Was check.ref
+            // which cycles R1 to R99 and could reverse the WRONG order's points.
+            closed_check_id: check.id || check.ref,
+            reason: reason || 'refund',
+            staff_id: manager?.id || null,
+          });
+          if (!res) { console.warn('[refundCheck] loyalty reversal skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[refundCheck] loyalty reversed:', j.status, 'points:', j.points_reversed);
@@ -7388,7 +7450,15 @@ export const useStore = create((set, get) => ({
         channel: isEzcaterOrder(order) ? 'ezCater'
           : (order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null)),
         serviceType: _svcType,
-        paid: order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        paid: (order.customer?.payment_state === 'checking' || order.customer?.payment_unverified === true) && order.paid !== true
+          ? false
+          : order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
+        // Fence S3 (fix round): the server could not prove the payment yet. The ticket says so,
+        // never "UNPAID, COLLECT" (which would invite a second charge at the pass).
+        paymentChecking: (order.customer?.payment_state === 'checking' || order.customer?.payment_unverified === true) && order.paid !== true,
+        // Fence S5 (fix round 2): the server priced the order above what was paid. Still never
+        // charged in full at the pass: staff take only the difference, then a manager confirms.
+        paymentShort: order.customer?.payment_state === 'short' && order.paid !== true,
         // v5.5.850: partial channel payments — printed as PART-PAID £x / COLLECT £y (printer.js)
         paidAmount: order.customer?.paidAmount ?? null,
         due: order.customer?.due ?? null,
@@ -7529,10 +7599,15 @@ export const useStore = create((set, get) => ({
             if (!cur || cur.error || !cur.data) return;
             const base = cur.data.customer && typeof cur.data.customer === 'object' && !Array.isArray(cur.data.customer) ? cur.data.customer : {};
             if ((!kioskTable || base.kioskTable === kioskTable) && (!idCheck || base.idCheck === true)) return;
-            const { error: kqErr } = await supabase.from('order_queue')
-              .update({ customer: { ...base, ...(kioskTable ? { kioskTable } : {}), ...(idCheck ? { idCheck: true } : {}) } })
-              .eq('ref', order.ref).eq('location_id', locId);
-            if (kqErr) console.warn('[routeKioskOrderPrints] kiosk flags update failed:', kqErr.message || kqErr);
+            // Fix round 2: rows counted (the zero row blocker). Never kept for later: it rewrites
+            // the customer block read a moment ago, and a late copy would put back an old one
+            // over a change staff made since (paid, tab closed). The banner still shows.
+            const kq = await mustChangeRow({
+              table: 'order_queue', type: 'update', parkable: false,
+              payload: { customer: { ...base, ...(kioskTable ? { kioskTable } : {}), ...(idCheck ? { idCheck: true } : {}) } },
+              match: { ref: order.ref, location_id: locId },
+            });
+            if (kq.outcome === 'error' || kq.outcome === 'unlinked') console.warn('[routeKioskOrderPrints] kiosk flags update failed:', kq.error?.message || kq.outcome);
           } catch (e) { console.warn('[routeKioskOrderPrints] kiosk flags update failed:', e?.message || e); }
         })();
       }
@@ -7588,11 +7663,14 @@ export const useStore = create((set, get) => ({
       if (Object.keys(byCentre).length > 0) {
         try {
           // v5.5.279: location_id guard — refs collide across locations
-          await supabase.from('order_queue')
-            .update({ status: 'prep' })
-            .eq('ref', order.ref)
-            .eq('location_id', locId)
-            .eq('status', 'received');
+          // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked.
+          // The status condition rides with it, so a late copy only moves an order that is STILL
+          // received (never over a status staff set since).
+          const pr = await mustChangeRow({
+            table: 'order_queue', type: 'update', payload: { status: 'prep' },
+            match: { ref: order.ref, location_id: locId, status: 'received' }, kind: 'queue_status', label: `Order ${order.ref} to the kitchen`,
+          });
+          if (pr.outcome === 'error') console.warn('[routeKioskOrderPrints] status→prep update failed:', pr.error?.message || pr.error);
         } catch (e) {
           console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
         }
@@ -7716,13 +7794,14 @@ export const useStore = create((set, get) => ({
       // Reset the job to pending so the agent / native path picks it up again
       // v5.5.279: location_id guard on print job reprint
       const locId = getActiveLocationSync() || await getLocationId();
-      const { error } = await supabase
-        .from('print_jobs')
-        .update({ status: 'pending', error: null, attempts: 0 })
-        .eq('id', supabaseRow.id)
-        .eq('location_id', locId);
-      if (error) throw error;
-      get().showToast('Job requeued for printing', 'info');
+      // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked.
+      const r = await mustChangeRow({
+        table: 'print_jobs', type: 'update', payload: { status: 'pending', error: null, attempts: 0 },
+        match: { id: supabaseRow.id, location_id: locId }, kind: 'print_job', label: 'Reprint requested',
+      });
+      if (r.outcome === 'error') throw r.error;
+      if (r.outcome === 'gone') throw new Error('that print job is no longer there');
+      get().showToast((r.outcome === 'parked' || r.outcome === 'queued') ? 'Reprint kept on this till, sent once it is linked again' : 'Job requeued for printing', 'info');
       return { ok: true };
     } catch (err) {
       get().showToast(`Reprint failed: ${err.message}`, 'error');

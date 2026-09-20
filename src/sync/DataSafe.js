@@ -20,6 +20,8 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
+import { reportWriteRefused } from '../lib/deviceLink';
+import { mustChangeRow } from '../lib/rowWrites';
 
 const LS_PENDING_CHECKS   = 'rpos-pending-checks';
 const LS_PENDING_SESSIONS = 'rpos-session-backup';
@@ -54,6 +56,7 @@ export async function safeInsertClosedCheck(check, row) {
     // (tenders, before its migration) is dropped instead of failing the sale.
     const { error } = await writeClosedCheckRow(supabase, row, { tag: 'DataSafe' });
     if (error) {
+      reportWriteRefused(error);   // fence stage 1: a refused sale may mean a lost link (banner)
       console.warn('[DataSafe] Supabase write failed, check queued for retry:', error.message);
       return { ok: false, queued: true };
     }
@@ -84,6 +87,7 @@ export async function safeUpsertClosedCheck(check, row) {
   try {
     const { data, error } = await writeClosedCheckRow(supabase, row, { upsert: true, select: 'id', tag: 'DataSafe' });
     if (error) {
+      reportWriteRefused(error);
       console.warn('[DataSafe] upsert failed, check queued for retry:', error.message);
       return { ok: false, queued: true, created: false };
     }
@@ -100,6 +104,44 @@ export async function safeUpsertClosedCheck(check, row) {
 function removePendingCheck(checkId) {
   const pending = getPendingChecks().filter(c => c.id !== checkId);
   setPendingChecks(pending);
+}
+
+/**
+ * Fix round 2 (the zero row blocker): a change made to a sale this till has NOT sent yet (a refund
+ * or the loyalty summary on a check kept while the till was not linked) is written into the kept
+ * copy too. The update of the server row finds nothing to change until the sale lands; this way
+ * the sale lands WITH the change, whichever of the two goes first. camelPatch uses the check's own
+ * keys (refunds, status, loyalty). Returns true when a kept sale was changed.
+ */
+export function patchPendingCheck(checkId, camelPatch) {
+  if (!checkId || !camelPatch || typeof camelPatch !== 'object') return false;
+  const pending = getPendingChecks();
+  let hit = false;
+  const next = pending.map(c => {
+    if (c.id !== checkId) return c;
+    hit = true;
+    return { ...c, ...camelPatch, _rev: (Number(c._rev) || 0) + 1 };
+  });
+  if (hit) setPendingChecks(next);
+  return hit;
+}
+
+// The fields patchPendingCheck may change, as closed_checks columns.
+const PATCHABLE = [['refunds', 'refunds'], ['status', 'status'], ['loyalty', 'loyalty']];
+
+async function sendLatePatch(sent, locationId) {
+  const cur = getPendingChecks().find(c => c.id === sent.id);
+  if (!cur || (Number(cur._rev) || 0) === (Number(sent._rev) || 0)) return;
+  const patch = {};
+  for (const [camel, col] of PATCHABLE) if (cur[camel] !== undefined) patch[col] = cur[camel];
+  if (!Object.keys(patch).length) return;
+  try {
+    const r = await mustChangeRow({
+      table: 'closed_checks', type: 'update', payload: patch,
+      match: { id: sent.id, location_id: locationId }, kind: 'refund', label: `Change to check ${sent.id}`,
+    });
+    if (r.outcome === 'error') console.warn(`[DataSafe] late change to check ${sent.id} failed:`, r.error?.message || r.error);
+  } catch (e) { console.warn(`[DataSafe] late change to check ${sent.id} threw:`, e?.message || e); }
 }
 
 /**
@@ -136,9 +178,13 @@ export async function reconcilePendingChecks() {
       const row = closedCheckRow(check, locationId);
       const { error } = await writeClosedCheckRow(supabase, row, { tag: 'DataSafe' });
       if (!error) {
+        // Fix round 2: a refund (or loyalty summary) patched into the kept copy WHILE this insert
+        // was in flight went to the server row before it existed and changed nothing. Send it now.
+        await sendLatePatch(check, locationId);
         removePendingCheck(check.id);
         console.log(`[DataSafe] Reconciled check ${check.id}`);
       } else {
+        reportWriteRefused(error);
         console.warn(`[DataSafe] Failed to reconcile check ${check.id}:`, error.message);
       }
     } catch (e) {
@@ -177,6 +223,11 @@ export function loadSessionBackup() {
  * Call this when the device comes back online.
  * Replays all pending data to Supabase.
  */
+// Database fence stage 1 (contract A8): a till linked again sends the sales it kept.
+if (typeof window !== 'undefined') {
+  window.addEventListener('rpos-device-relinked', () => { reconcilePendingChecks().catch(() => {}); });
+}
+
 export async function onReconnect() {
   console.log('[DataSafe] Reconnected — reconciling pending data');
   await reconcilePendingChecks();

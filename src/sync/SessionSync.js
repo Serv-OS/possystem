@@ -10,6 +10,9 @@
 
 import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
+import { reportWriteRefused } from '../lib/deviceLink';
+import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
+import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
@@ -166,6 +169,10 @@ export async function flushSessions() {
   }
 
   const toDelete = [];
+  // Fix round 2: the occupation (write once seatedAt) of each table being cleared, read from the
+  // session this device last sent. A delete kept for later (offline, or this device not linked)
+  // carries it, so it can only ever remove THAT occupation, never a table seated again since.
+  const seatedOf = {};
   for (const tid of availableIds) {
     // Only clear a row THIS device actually wrote a session for. _lastSent[tid] is set when we
     // upsert a table's session (and by loadSessions / the realtime handler on a full POS). If it's
@@ -188,6 +195,7 @@ export async function flushSessions() {
         continue;
       }
       delete _clearedAt[tid];
+      seatedOf[tid] = seatedAtOf(prevSent);
       _lastSent[tid] = 'cleared';
       if (_backup[tid] !== undefined) { delete _backup[tid]; _backupDirty = true; }   // batched backup removal
       // v5.5.892: delete goes through the direct batch below; queued only offline/on-failure.
@@ -206,19 +214,28 @@ export async function flushSessions() {
     for (const r of upsertRows) queueWrite({ type: 'upsert', table: 'active_sessions', payload: r, onConflict: 'location_id,table_id' });
   };
   const _queueDeletes = () => {
-    for (const tid of toDelete) queueWrite({ type: 'delete', table: 'active_sessions', match: { location_id: _locationId, table_id: tid } });
+    for (const tid of toDelete) queueWrite({ type: 'delete', table: 'active_sessions', match: { location_id: _locationId, table_id: tid, ...occupationMatch(seatedOf[tid]) } });
   };
   if (isOnline()) {
     if (upsertRows.length) {
       Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
-        .then(res => { if (res?.error) { console.warn('[SessionSync] batch upsert error — queueing for replay:', res.error.message || res.error); _queueUpserts(); }
+        .then(res => { if (res?.error) { reportWriteRefused(res.error); console.warn('[SessionSync] batch upsert error, queueing for replay:', res.error.message || res.error); _queueUpserts(); }
                        else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
         .catch(e => { console.warn('[SessionSync] batch upsert threw — queueing for replay:', e?.message || e); _queueUpserts(); });
     }
     if (toDelete.length) {
-      Promise.resolve(supabase.from('active_sessions').delete().eq('location_id', _locationId).in('table_id', toDelete))
-        .then(res => { if (res?.error) { console.warn('[SessionSync] batch delete error — queueing for replay:', res.error.message || res.error); _queueDeletes(); } })
-        .catch(e => { console.warn('[SessionSync] batch delete threw — queueing for replay:', e?.message || e); _queueDeletes(); });
+      // Fix round 2 (the zero row blocker): row level security hides the rows of a device that
+      // lost its link, and the delete then removes nothing WITHOUT an error. mustChangeRows counts
+      // what was deleted; a table it could not remove while this device is not linked is kept
+      // (with its occupation) and removed once the device is linked again.
+      mustChangeRows({
+        table: 'active_sessions', type: 'delete', match: { location_id: _locationId },
+        inColumn: 'table_id', keys: toDelete, identityFor: (tid) => occupationMatch(seatedOf[tid]),
+        kind: 'session_delete', label: 'Table closed on this till',
+      }).then(r => {
+        if (r?.outcome === 'error') { reportWriteRefused(r.error); console.warn('[SessionSync] batch delete error, queueing for replay:', r.error?.message || r.error); _queueDeletes(); }
+        else if (r?.parked?.length) console.warn('[SessionSync] table(s) kept on this till until it is linked again:', r.parked.join(', '));
+      }).catch(e => { console.warn('[SessionSync] batch delete threw, queueing for replay:', e?.message || e); _queueDeletes(); });
     }
   } else {
     _queueUpserts();
@@ -310,7 +327,7 @@ export async function flushSingleSession(tableId) {
   if (isOnline()) {
     try {
       const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });
-      if (error) console.warn('[SessionSync] flushSingleSession upsert error —', error.message || error);
+      if (error) { reportWriteRefused(error); console.warn('[SessionSync] flushSingleSession upsert error:', error.message || error); }
       else console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id);
     } catch (e) { console.warn('[SessionSync] flushSingleSession threw —', e?.message || e); }
   }
@@ -342,6 +359,8 @@ export async function persistTransfer(fromId, toId) {
   await flushSingleSession(toId);
 
   delete _clearedAt[fromId];
+  // Fix round 2: the moved occupation (seatedAt is carried, never re-stamped, through a transfer).
+  const fromSeated = seatedAtOf(_lastSent[fromId]);
   _lastSent[fromId] = 'cleared';   // the delete-pass latch: already handled
   try {
     const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
@@ -349,14 +368,17 @@ export async function persistTransfer(fromId, toId) {
   } catch { /* backup best-effort */ }
 
   const match = { location_id: _locationId, table_id: fromId };
+  // A copy sent late only ever removes the moved occupation, never a party seated there since.
+  const replayMatch = { ...match, ...occupationMatch(fromSeated) };
   if (isOnline()) {
-    try {
-      const { error } = await supabase.from('active_sessions').delete().match(match);
-      if (error) { console.warn('[SessionSync] persistTransfer delete error — queueing:', error.message || error); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
-      else console.log('[SessionSync] ✓ transfer persisted:', fromId, '→', toId);
-    } catch (e) { console.warn('[SessionSync] persistTransfer threw — queueing:', e?.message || e); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
+    // Fix round 2 (the zero row blocker): a delete that removes nothing while this device is not
+    // linked is kept (mustChangeRow), never counted as done.
+    const r = await mustChangeRow({ table: 'active_sessions', type: 'delete', match, replayMatch, kind: 'session_delete', label: 'Table moved on this till' });
+    if (r.outcome === 'error') { reportWriteRefused(r.error); console.warn('[SessionSync] persistTransfer delete error, queueing:', r.error?.message || r.error); queueWrite({ type: 'delete', table: 'active_sessions', match: replayMatch }); }
+    else if (r.outcome === 'parked' || r.outcome === 'queued') console.warn('[SessionSync] transfer kept on this till until it is linked again:', fromId, '→', toId);
+    else console.log('[SessionSync] ✓ transfer persisted:', fromId, '→', toId);
   } else {
-    queueWrite({ type: 'delete', table: 'active_sessions', match });
+    queueWrite({ type: 'delete', table: 'active_sessions', match: replayMatch });
   }
 }
 

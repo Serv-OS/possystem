@@ -11,6 +11,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getAccount, getPaymentSession } from '../_shared/ryft.ts';
+import { fulfilResponseRetryable } from '../_shared/giftFulfilPlan.ts';
 
 const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
@@ -132,8 +133,15 @@ async function maybeFulfilGift(evt: any) {
 
   await platformAdmin.from('gift_card_purchases')
     .update({ status: 'paid', ryft_payment_session_id: ps.id ?? null })
-    .eq('id', p.id);
+    .eq('id', p.id).eq('status', 'pending');   // never rewind a fulfilling or fulfilled purchase
 
+  // Lockdown step 1 (e): a failure a retry can fix (Ryft or our database briefly unavailable, a
+  // claim another attempt holds) now makes Ryft send the event again (0, 1, 5, 10, 10, 10 min):
+  // the handler forgets the event id and answers 503. gift-fulfill issues at most one card per
+  // purchase, so a retry can never double issue. After Ryft's last retry the purchase stays at
+  // 'paid' and Back Office -> Gift cards -> Online purchases -> Fulfill finishes it.
+  let status = 0;
+  let body: any = null;
   try {
     const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/gift-fulfill`, {
       method: 'POST',
@@ -143,13 +151,20 @@ async function maybeFulfilGift(evt: any) {
       },
       body: JSON.stringify({ purchase_id: p.id }),
     });
-    if (!r.ok) console.error('[ryft-webhook] gift-fulfill failed', p.id, await r.text());
+    status = r.status;
+    body = await r.json().catch(() => null);
   } catch (e) {
-    // The purchase is left at 'paid', so Back Office -> Gift cards -> Manual Fulfill can
-    // finish it. Never throw: a 500 here makes Ryft retry the whole event.
     console.error('[ryft-webhook] gift-fulfill error', p.id, (e as Error).message);
   }
+  if (status >= 200 && status < 300) return;
+  if (fulfilResponseRetryable(status, body)) {
+    throw new RetryableWebhookError(`gift-fulfill ${status || 'unreachable'} for purchase ${p.id}: ${body?.code || body?.error || ''}`);
+  }
+  console.error('[ryft-webhook] gift-fulfill refused (final)', p.id, status, body);
 }
+
+// A failure a later delivery of the same event can fix. The handler answers 503 for it.
+class RetryableWebhookError extends Error {}
 
 async function reconcilePayment(evt: any, type: string) {
   const dataPs: any = evt?.data ?? {};
@@ -404,6 +419,15 @@ Deno.serve(async (req) => {
       if (accountId) await platformAdmin.from('merchant_ryft_accounts').update({ last_webhook_at: new Date().toISOString() }).eq('ryft_account_id', accountId);
     }
   } catch (e) {
+    if (e instanceof RetryableWebhookError) {
+      // A paid gift card purchase with no card yet. Forget the event id so the retried delivery
+      // is processed (not answered as a duplicate), and answer non 2xx so Ryft retries.
+      console.error('[ryft-webhook] retryable failure, asking Ryft to retry', type, e.message);
+      if (eventId) {
+        try { await platformAdmin.from('ryft_webhook_events').delete().eq('event_id', eventId); } catch { /* the retry is then a duplicate; Back Office Fulfill remains */ }
+      }
+      return new Response(JSON.stringify({ received: true, retry: true }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+    }
     console.error('[ryft-webhook] handler error', (e as Error).message);
     // Still 200 — we verified the signature; don't trigger Ryft retries for our bug.
   }

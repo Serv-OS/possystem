@@ -42,7 +42,15 @@ try {
 // Config
 const SUPABASE_URL   = process.env.SUPABASE_URL || 'https://tbetcegmszzotrwdtqhi.supabase.co';
 const SUPABASE_KEY   = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || '';
-const LOCATION_ID    = process.env.LOCATION_ID  || '';
+const LOCATION_ID    = process.env.LOCATION_ID  || '';   // logs and the stage 2 printer_agents/printer_health rows only
+// Database fence stage 1 (contract G1): the key Back Office issued for this venue
+// (Production printing, "Print agent key"). With it the agent claims and reports jobs through
+// print_agent_claim / print_agent_report and never touches print_jobs directly, which the
+// fence closes to the bare anon key. Without it (or while those functions do not exist yet)
+// the agent runs exactly as before. FENCE STAGE 1 FALLBACK: remove the legacy mode once
+// 20260919b has run (the direct path is refused after it).
+const PRINT_AGENT_TOKEN = process.env.PRINT_AGENT_TOKEN || '';
+const TOKEN_POLL_MS  = parseInt(process.env.TOKEN_POLL_MS || '2000');
 const PRINTER_PORT   = parseInt(process.env.PRINTER_PORT || '9100');
 const POLL_MS        = parseInt(process.env.POLL_MS      || '3000');
 const TCP_TIMEOUT    = parseInt(process.env.TCP_TIMEOUT  || '5000');
@@ -66,6 +74,32 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 const AGENT_ID = randomUUID();
+let tokenMode = !!PRINT_AGENT_TOKEN;
+
+const isMissingRpc = (error) => !!error && (String(error.code || '') === 'PGRST202' || String(error.code || '') === '42883'
+  || /could not find the function/i.test(String(error.message || '')));
+
+// One way to write a job's outcome: the report function with the key, or the old direct
+// update (legacy mode). Resolves true when the row was updated.
+async function reportJob(jobId, status, { attempts = null, error = null, nextRetryAt = null } = {}) {
+  if (tokenMode) {
+    const { data, error: rpcErr } = await supabase.rpc('print_agent_report', {
+      p_token: PRINT_AGENT_TOKEN, p_job_id: jobId, p_agent_id: AGENT_ID, p_status: status,
+      p_attempts: attempts, p_error: error, p_next_retry_at: nextRetryAt,
+    });
+    if (rpcErr) { console.warn('  report failed:', rpcErr.message); return false; }
+    if (data && data.ok === false && data.reason === 'bad_key') console.error('  PRINT_AGENT_TOKEN was refused (revoked or wrong). Issue a new key in Back Office.');
+    return !!(data && data.ok);
+  }
+  const now = new Date().toISOString();
+  let patch;
+  if (status === 'sending') patch = { status: 'sending', attempts };
+  else if (status === 'printed') patch = { status: 'printed', processed_at: now, agent_id: AGENT_ID, claimed_by: null, claim_expires_at: null, error_message: null };
+  else if (status === 'failed_permanent') patch = { status: 'failed_permanent', attempts, error_message: error, error, agent_id: AGENT_ID, claimed_by: null, claim_expires_at: null, processed_at: now };
+  else patch = { status: 'failed', attempts, error_message: error, error, agent_id: AGENT_ID, next_retry_at: nextRetryAt, claimed_by: null, claim_expires_at: null };
+  const { error: upErr } = await supabase.from('print_jobs').update(patch).eq('id', jobId);
+  return !upErr;
+}
 const HOSTNAME  = os.hostname();
 
 const knownPrinterIds = new Set();
@@ -76,12 +110,7 @@ const inflight = new Set();
 const broadcastHandled = new Map();
 
 async function markRowPrinted(jobId) {
-  try {
-    await supabase.from('print_jobs').update({
-      status: 'printed', processed_at: new Date().toISOString(),
-      claimed_by: null, claim_expires_at: null, error_message: null,
-    }).eq('id', jobId);
-  } catch {}
+  try { await reportJob(jobId, 'printed'); } catch {}
 }
 
 // Heartbeat. Errors surfaced (not swallowed) so upsert failures are visible.
@@ -129,6 +158,7 @@ async function markAgentOffline() {
 // Startup self-check: show what's actually in the queue so config issues are
 // visible immediately instead of manifesting as silent "no jobs".
 async function startupSelfCheck() {
+  if (tokenMode) { console.log('  self-check: key mode, jobs are claimed through print_agent_claim'); return; }
   try {
     const { data: all } = await supabase
       .from('print_jobs')
@@ -249,15 +279,12 @@ async function processClaimedJob(job) {
   catch { await recordFailure(job, attempts, 'Invalid payload (base64 decode failed)'); return; }
 
   try {
-    await supabase.from('print_jobs').update({ status: 'sending', attempts }).eq('id', job.id);
+    await reportJob(job.id, 'sending', { attempts });
   } catch {}
 
   try {
     await printTCP(ip, port, bytes);
-    await supabase.from('print_jobs').update({
-      status: 'printed', processed_at: new Date().toISOString(), agent_id: AGENT_ID,
-      claimed_by: null, claim_expires_at: null, error_message: null,
-    }).eq('id', job.id);
+    await reportJob(job.id, 'printed', { attempts });
     await updatePrinterHealth(printerId, 'online');
     console.log(`  [${shortId}] ok ${bytes.length}b -> ${ip}:${port} (${job.job_type}, attempt ${attempts})`);
   } catch (err) {
@@ -270,20 +297,50 @@ async function processClaimedJob(job) {
 
 async function recordFailure(job, attempts, errMsg) {
   if (attempts >= MAX_ATTEMPTS) {
-    await supabase.from('print_jobs').update({
-      status: 'failed_permanent', attempts, error_message: errMsg, error: errMsg,
-      agent_id: AGENT_ID, claimed_by: null, claim_expires_at: null,
-      processed_at: new Date().toISOString(),
-    }).eq('id', job.id);
+    await reportJob(job.id, 'failed_permanent', { attempts, error: errMsg });
     return;
   }
   const delayMs = RETRY_SCHEDULE_MS[attempts] ?? RETRY_SCHEDULE_MS[RETRY_SCHEDULE_MS.length - 1];
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
-  await supabase.from('print_jobs').update({
-    status: 'failed', attempts, error_message: errMsg, error: errMsg,
-    agent_id: AGENT_ID, next_retry_at: nextRetryAt,
-    claimed_by: null, claim_expires_at: null,
-  }).eq('id', job.id);
+  await reportJob(job.id, 'failed', { attempts, error: errMsg, nextRetryAt });
+}
+
+// Key mode: claim due jobs of this key's venue in one call and print them. A job this agent
+// already printed from the broadcast fast path is only reported printed.
+let _claiming = false;
+async function claimBatch() {
+  if (_claiming) return;
+  _claiming = true;
+  try {
+    const { data, error } = await supabase.rpc('print_agent_claim', {
+      p_token: PRINT_AGENT_TOKEN, p_agent_id: AGENT_ID, p_limit: 20, p_claim_seconds: Math.round(CLAIM_TTL_MS / 1000),
+    });
+    if (error) {
+      if (isMissingRpc(error)) {
+        // FENCE STAGE 1 FALLBACK: the key functions are not deployed yet. Run as before.
+        console.warn('  print_agent_claim does not exist yet: running without the key (legacy mode)');
+        tokenMode = false;
+        return;
+      }
+      console.error('  claim error:', error.message);
+      return;
+    }
+    if (!data || data.ok !== true) {
+      if (data && data.reason === 'bad_key') console.error('  PRINT_AGENT_TOKEN was refused (revoked or wrong). Issue a new key in Back Office.');
+      return;
+    }
+    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+    if (jobs.length) console.log(`  claimed ${jobs.length} job(s)`);
+    for (const job of jobs) {
+      if (job.idempotency_key && broadcastHandled.has(job.idempotency_key)) {
+        await markRowPrinted(job.id);
+        continue;
+      }
+      if (inflight.has(job.id)) continue;
+      inflight.add(job.id);
+      try { await processClaimedJob(job); } finally { inflight.delete(job.id); }
+    }
+  } finally { _claiming = false; }
 }
 
 async function claimAndDispatch(jobId) {
@@ -297,6 +354,7 @@ async function claimAndDispatch(jobId) {
 }
 
 async function drainEligible() {
+  if (tokenMode) { await claimBatch(); if (tokenMode) return; }
   const nowIso = new Date().toISOString();
   let q = supabase.from('print_jobs')
     .select('id, status, next_retry_at, created_at')
@@ -319,6 +377,7 @@ async function main() {
   console.log('  -----------------------------------------');
   console.log(`  Supabase:  ${SUPABASE_URL}`);
   console.log(`  Location:  ${LOCATION_ID || 'all locations'}`);
+  console.log(`  Mode:      ${tokenMode ? 'venue key (print_agent_claim)' : 'legacy (no PRINT_AGENT_TOKEN)'}`);
   console.log(`  Agent ID:  ${AGENT_ID.slice(0, 8)}...`);
   console.log(`  Hostname:  ${HOSTNAME}`);
   console.log(`  Heartbeat: every ${HEARTBEAT_MS / 1000}s`);
@@ -329,7 +388,10 @@ async function main() {
   await startupSelfCheck();
   await drainEligible();
 
-  const channel = supabase
+  // Key mode: the database sends this agent nothing over realtime once the fence closes
+  // print_jobs, so it polls the claim function every 2 s instead. Legacy mode keeps the
+  // realtime INSERT and UPDATE subscriptions.
+  const channel = tokenMode ? null : supabase
     .channel('print-jobs-agent-v3')
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'print_jobs',
@@ -397,10 +459,11 @@ async function main() {
           await printTCP(ip, port, bytes);
           const elapsed = Date.now() - t0;
           console.log(`  [fast ${shortId}] ok ${bytes.length}b -> ${ip}:${port} in ${elapsed}ms`);
-          // Upsert audit row to status='printed'. ON CONFLICT (idempotency_key)
-          // means whether the web app's INSERT or this upsert lands first,
-          // the row ends up consistent.
-          supabase.from('print_jobs').upsert({
+          // Key mode: the till writes the row itself; the next claim reports it printed
+          // (broadcastHandled). Legacy mode: upsert the audit row to status='printed'.
+          // ON CONFLICT (idempotency_key) means whether the web app's INSERT or this
+          // upsert lands first, the row ends up consistent.
+          if (!tokenMode) supabase.from('print_jobs').upsert({
             location_id:     payload.location_id,
             printer_id:      payload.printer_id,
             printer_ip:      payload.printer_ip,
@@ -436,13 +499,13 @@ async function main() {
     }, 60_000);
   }
 
-  setInterval(drainEligible, POLL_MS);
+  setInterval(drainEligible, tokenMode ? TOKEN_POLL_MS : POLL_MS);
   setInterval(() => { _heartbeatErrLogged = false; sendHeartbeat(); }, HEARTBEAT_MS);
 
   const shutdown = async (sig) => {
     console.log(`\n  ${sig} received, shutting down...`);
     await markAgentOffline();
-    supabase.removeChannel(channel);
+    if (channel) supabase.removeChannel(channel);
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

@@ -1,13 +1,14 @@
 // v5.5.716 — QR "join an open tab" gate.
 //
 // When a phone scans a table that ALREADY has an open QR tab and this device is NOT the one that
-// opened it (no matching localStorage stash), it must enter the 4-digit table code before it can add
+// opened it (no matching localStorage stash), it must enter the table code (6 digits, 4 on tabs opened before the database fence) before it can add
 // to / settle that tab. The opener sees the code on their own tab screen and shares it with the table.
 // This stops a passer-by scanning the printed QR and ordering against (or closing) someone else's tab.
 //
 // The code is validated against order_queue.customer.tab_join_code (read in OnlineSurface). A short
 // attempt limit blunts brute-forcing a 4-digit code through the UI.
 import { useState } from 'react';
+import { normalizeJoinCode, joinCodeReady } from '../../lib/publicOrder';
 
 const MAX_ATTEMPTS = 5;
 
@@ -20,17 +21,22 @@ export default function JoinTabScreen({ theme, tableLabel, hasCode, onJoin }) {
   const [attempts, setAttempts] = useState(0);
   const locked = attempts >= MAX_ATTEMPTS;
 
-  const submit = () => {
-    if (locked) return;
-    const ok = onJoin(code.trim());
-    if (!ok) {
-      const n = attempts + 1;
-      setAttempts(n);
-      setError(n >= MAX_ATTEMPTS
-        ? 'Too many tries. Please ask a member of staff to help.'
-        : 'That code didn’t match. Check the code on the phone that opened the tab.');
-      setCode('');
-    }
+  // Database fence stage 1 (contract C6): onJoin asks the server (qr_tab_join), so it is awaited.
+  // It answers true, false, or { ok: false, message, locked } (the server's own lock: 8 wrong
+  // codes per tab per hour, or an old tab that only staff can join).
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (locked || busy) return;
+    setBusy(true);
+    let res;
+    try { res = await onJoin(normalizeJoinCode(code)); } catch { res = false; } finally { setBusy(false); }
+    if (res === true) return;
+    const n = (res && res.locked) ? MAX_ATTEMPTS : attempts + 1;
+    setAttempts(n);
+    setError((res && res.message) || (n >= MAX_ATTEMPTS
+      ? 'Too many tries. Please ask a member of staff to help.'
+      : 'That code didn’t match. Check the code on the phone that opened the tab.'));
+    setCode('');
   };
 
   return (
@@ -49,7 +55,7 @@ export default function JoinTabScreen({ theme, tableLabel, hasCode, onJoin }) {
         <>
           <input
             value={code}
-            onChange={(e) => { setError(''); setCode(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
+            onChange={(e) => { setError(''); setCode(normalizeJoinCode(e.target.value)); }}
             onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
             disabled={locked}
             inputMode="numeric"
@@ -66,12 +72,12 @@ export default function JoinTabScreen({ theme, tableLabel, hasCode, onJoin }) {
           {error && <div style={{ color: '#ef4444', fontSize: 13, marginTop: 12 }}>{error}</div>}
           <button
             onClick={submit}
-            disabled={locked || code.length < 4}
+            disabled={locked || busy || !joinCodeReady(code)}
             style={{
               width: '100%', marginTop: 18, padding: '16px', borderRadius: 14, border: 'none',
-              background: (locked || code.length < 4) ? cardBdr : theme.accent,
-              color: (locked || code.length < 4) ? muted : '#fff',
-              fontSize: 16, fontWeight: 800, cursor: (locked || code.length < 4) ? 'default' : 'pointer',
+              background: (locked || !joinCodeReady(code)) ? cardBdr : theme.accent,
+              color: (locked || !joinCodeReady(code)) ? muted : '#fff',
+              fontSize: 16, fontWeight: 800, cursor: (locked || !joinCodeReady(code)) ? 'default' : 'pointer',
             }}>
             Join tab
           </button>

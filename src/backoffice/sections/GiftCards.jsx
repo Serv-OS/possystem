@@ -1262,6 +1262,16 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
   const loadPurchases = useCallback(async () => {
     if (!companyId || !platformSupabase) { setLoading(false); return; }
     try {
+      // Database fence stage 1 (contract P3): the list comes from gift-list (action
+      // 'purchases'), for staff of this company only, without fulfilled_code (a spendable
+      // code; the card's own code stays in gift_cards). FENCE STAGE 1 FALLBACK: a gift-list
+      // deployed before this release ignores the action and answers { cards }, so the old
+      // direct read runs until it is deployed. After 20260919d only the function path works.
+      const j = await callGift('gift-list', { action: 'purchases', limit: 50 });
+      if (Array.isArray(j?.purchases)) {
+        setPurchases(j.purchases);
+        return;
+      }
       const { data, error: qErr } = await platformSupabase
         .from('gift_card_purchases')
         .select('id, amount_minor, currency, sender_name, sender_email, recipient_name, recipient_email, delivery_type, status, code_last4, fulfilled_code, created_at, fulfilled_at')

@@ -400,8 +400,10 @@ test('exclusion: money, never unpaid and never refunded through our processors',
   assert.equal(row.paid, true); assert.equal(row.customer.paid, true); assert.equal(row.customer.due, 0);
   assert.equal(row.customer.pay_later, undefined);
   const hub = read('../surfaces/OrdersHub.jsx');
-  assert.match(hub, /const isOrderPaid = \(o\) => !!\(o\?\.paid \|\| o\?\.customer\?\.paid \|\| PREPAID_CHANNELS\.includes\(o\?\.source\) \|\| isPrepaidByChannel\(o\)\);/);
-  assert.match(hub, /\['online', 'kiosk'\]\.includes\(o\.source\) \|\| isPrepaidByChannel\(o\)\) \{ setViewOrder\(o\); \}/);
+  // The fence's own three-state rule (lib/orderPayment.js) reads "paid" for the prepaid
+  // channels; ezCater sits beside it, so an ezCater order is never unpaid here either.
+  assert.match(hub, /const isOrderPaid = \(o\) => orderPaymentState\(o\) === 'paid' \|\| isPrepaidByChannel\(o\);/);
+  assert.match(hub, /\['online', 'kiosk'\]\.includes\(o\.source\) \|\| isPrepaidByChannel\(o\) \|\| isPaymentChecking\(o\)\) \{ setViewOrder\(o\); \}/);
   const store = read('../store/index.js');
   const refund = store.slice(store.indexOf('refundCheck: async (checkId'), store.indexOf('const bd = refundBreakdown(chkBefore'));
   assert.match(refund, /if \(!mayTakeOrRefundMoney\(chkBefore\)\)/);
@@ -478,7 +480,8 @@ test('QueueSync, the advance list and capacity key on source catering, which the
   const bo = read('../backoffice/sections/CateringOrders.jsx');
   assert.match(bo, /\.in\('source', \['catering', 'online'\]\)/);
   const cs = read('../surfaces/catering/CateringSurface.jsx');
-  assert.match(cs, /\.eq\('source', 'catering'\)\.eq\('event_date', eventDate\)/);
+  // The day's load now comes from catering_day_load; this is its fence fallback read.
+  assert.match(cs, /\.eq\('source', 'catering'\)\.eq\('event_date', \w+\)/);
   assert.equal(ez().source, 'catering');
   assert.equal(ez().event_date, '2026-09-23');
 });

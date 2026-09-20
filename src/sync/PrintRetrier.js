@@ -60,6 +60,7 @@
 import { supabase, getLocationId, isMock } from '../lib/supabase';
 import { printService, isNativeBridgeAvailable } from '../lib/printer';
 import { printedLocallyIds, getOrchestratorStatus } from './PrintOrchestrator';
+import { mustChangeRow } from '../lib/rowWrites';
 
 // v5.6.83: was 5s, and each tick fired THREE sequential statements — 36 round trips a
 // minute on a till that prints nothing most of the day. Retries are still bounded by
@@ -233,15 +234,15 @@ async function processRetry(job) {
   }
 
   // Slow path: no native bridge on master — hand off to agent by resetting to pending
+  // Fix round 2 (the zero row blocker): rows counted, so a till that is not linked shows the
+  // banner. Not kept for later (parkable false): an unrecorded status leaves the claim to expire
+  // and the sweep retries the job, while a late copy could hand a printed ticket back.
   try {
-    await supabase.from('print_jobs')
-      .update({
-        status:       'pending',
-        claimed_by:   null,
-        claimed_at:   null,
-        next_retry_at: null,
-      })
-      .eq('id', job.id);
+    const r = await mustChangeRow({
+      table: 'print_jobs', type: 'update', match: { id: job.id }, parkable: false,
+      payload: { status: 'pending', claimed_by: null, claimed_at: null, next_retry_at: null },
+    });
+    if (r.outcome === 'error') console.warn('[PrintRetrier] Handoff-to-agent update failed:', r.error?.message || r.error);
   } catch (e) {
     console.warn('[PrintRetrier] Handoff-to-agent update failed:', e.message);
   }
@@ -266,7 +267,10 @@ async function markFailedOrPermanent(job, attemptNumber, errorMsg) {
   };
 
   try {
-    await supabase.from('print_jobs').update(patch).eq('id', job.id);
+    // Fix round 2: rows counted (the banner shows on a till that is not linked); not kept for
+    // later, the claim expires and the sweep retries the job (see the handoff above).
+    const r = await mustChangeRow({ table: 'print_jobs', type: 'update', payload: patch, match: { id: job.id }, parkable: false });
+    if (r.outcome === 'error') { console.warn('[PrintRetrier] final-status update failed:', r.error?.message || r.error); return; }
   } catch (e) {
     console.warn('[PrintRetrier] final-status update failed:', e.message);
     return;

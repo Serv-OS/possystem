@@ -13,7 +13,7 @@
 // same key resolves whether saved via POS or kiosk.
 // ============================================================
 
-import { supabase, platformSupabase, getLocationId, ensureAuthToken } from './supabase';
+import { supabase, platformSupabase, getLocationId, ensureAuthToken, whenDeviceClaimed } from './supabase';
 
 // Mirror of store._normalisePhone — kept local so this util can be used
 // without depending on the Zustand store (the kiosk's customer-details
@@ -111,9 +111,17 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
         .maybeSingle();
       const companyId = locRow?.company_id;
       if (companyId) {
+        // Database fence stage 1: loyalty-balance returns full detail only to staff of the
+        // venue, a device bound to the venue, or the member (report before 20260919a, enforced
+        // after it). Send who we are: this session's token (till, host stand, customer display or
+        // Back Office) and the venue, after the boot device link has had its chance to land.
+        // A host stand is not a devices row, so after the fence it gets the summary (no points).
         const balanceUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-balance`
-          + `?customer_id=${encodeURIComponent(data.id)}&company_id=${encodeURIComponent(companyId)}`;
-        const balRes = await fetch(balanceUrl);
+          + `?customer_id=${encodeURIComponent(data.id)}&company_id=${encodeURIComponent(companyId)}`
+          + `&location_id=${encodeURIComponent(locId)}`;
+        await whenDeviceClaimed().catch(() => false);
+        const authToken = await ensureAuthToken().catch(() => null);
+        const balRes = await fetch(balanceUrl, authToken ? { headers: { authorization: `Bearer ${authToken}` } } : undefined);
         if (balRes.ok) {
           loyaltyData = await balRes.json();
           credit = loyaltyData.points_balance || 0;
@@ -258,6 +266,8 @@ export async function attributeOnlineOrder({
   phone, name, email, marketingOptIn = false,
   locationId,                    // ops_location_id (locations.id in ops DB)
   orderRecord,                   // { ref, total, items, type }
+  memberToken = null,            // the signed in member's loyalty session token (online)
+  memberCustomerId = null,       // ...and whose it is (sent only when it is this order's customer)
 }) {
   if (!supabase || !phone || !locationId || !orderRecord) return null;
   const phoneN = normalisePhone(phone);
@@ -292,22 +302,38 @@ export async function attributeOnlineOrder({
       const { error: updErr } = await supabase.from('customers').update(patch).eq('id', customerId);
       if (updErr) console.warn('[attributeOnlineOrder] customer update:', updErr.message);
     } else {
+      // customers.name is NOT NULL with no default: a null name was refused, so a nameless online
+      // order never linked to a member (same bug loyalty-otp had, fixed 17 Sep 2026). Store an
+      // empty name; the operator UI treats '' exactly like no name.
       const { data: ins, error: insErr } = await supabase
         .from('customers')
         .insert({
           org_id: orgId, phone: phoneN, phone_raw: phone,
-          name: name || null, email: email || null,
+          name: typeof name === 'string' ? name.trim() : '', email: email || null,
           marketing_opt_in: !!marketingOptIn,
         })
         .select('id').maybeSingle();
       if (insErr) {
-        console.warn('[attributeOnlineOrder] customer insert:', insErr.message);
-        return null;
+        // Lost a race with another tab or device creating the same phone: use the winner's row.
+        const { data: again } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('org_id', orgId)
+          .eq('phone', phoneN)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (!again?.id) {
+          console.warn('[attributeOnlineOrder] customer insert:', insErr.code, insErr.message);
+          return null;
+        }
+        customerId = again.id;
+      } else {
+        customerId = ins?.id;
       }
-      customerId = ins?.id;
 
-      // Fire-and-forget: send branded welcome SMS + email for new customers
-      if (customerId) {
+      // Fire-and-forget: send branded welcome SMS + email for new customers (only when THIS call
+      // created the row; a lost race means the winner already welcomed them)
+      if (customerId && !insErr) {
         try {
           let companyId = null;
           if (platformSupabase) {
@@ -391,7 +417,9 @@ export async function attributeOnlineOrder({
         const earnBody = {
           customer_id: customerId,
           location_id: locationId,
-          closed_check_id: orderRecord.ref || `online-${Date.now()}`,
+          // Round three (18 Sep 2026): loyalty-earn now earns from the server's own closed_checks
+          // row, so this must be that row's id (checkId, 'chk-OL-...'), not the display ref.
+          closed_check_id: orderRecord.checkId || orderRecord.ref || `online-${Date.now()}`,
           channel: 'online',
           items: (orderRecord.items || []).map(i => ({
             name: i.name, qty: i.qty || 1, price: i.price || 0,
@@ -400,8 +428,13 @@ export async function attributeOnlineOrder({
             isGiftCard: !!i.isGiftCard,
           })),
           subtotal: Number(orderRecord.total) || 0,
+          // Database fence stage 1: loyalty-earn checks the caller. An online customer's browser
+          // is anonymous, so the member's own token is its only proof. Sent only when the signed
+          // in member IS this customer; a guest order (no sign in) earns before 20260919a (report
+          // mode, logged) and not after it (enforced): signing in with the one time code earns.
+          ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
         };
-        const res = await fetch(
+        const sendEarn = () => fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
           {
             method: 'POST',
@@ -409,6 +442,18 @@ export async function attributeOnlineOrder({
             body: JSON.stringify(earnBody),
           }
         );
+        let res = await sendEarn();
+        // 409 check_not_found means the closed_checks row has not landed yet (enforce only; an
+        // order whose payment is still being checked has no check until it is proven). Try again
+        // a little later; idempotent on the check id server side.
+        for (const waitMs of [3000, 10000]) {
+          if (res.status !== 409) break;
+          let code = null;
+          try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
+          if (code !== 'check_not_found') break;
+          await new Promise((r) => setTimeout(r, waitMs));
+          res = await sendEarn();
+        }
         const j = await res.json().catch(() => ({}));
         if (res.ok) {
           console.info('[attributeOnlineOrder] loyalty earn:', j.points_earned, 'pts → balance:', j.balance);

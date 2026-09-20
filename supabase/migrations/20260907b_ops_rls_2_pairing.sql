@@ -1,3 +1,6 @@
+-- SUPERSEDED 18 Sep 2026: do not run this file. The database fence stage 1 replaces it:
+-- 20260919a/b (Ops) and 20260919c/d (Platform), runbook docs/FENCE_STAGE_1.md.
+
 -- DRAFT, DO NOT RUN (8 Sep 2026). The adversarial pass found 12 breaks and 25 gaps that are NOT applied yet;
 -- they are listed at the end of docs/PRE_LIVE_SECURITY_MIGRATIONS.md. A fix pass must land before this file is run.
 

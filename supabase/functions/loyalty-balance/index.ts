@@ -7,9 +7,20 @@
 //   or ?phone=+447700900000&company_id=xxx
 //   or ?customer_id=xxx&company_id=xxx
 //
-// Returns: { member_code, points_balance, tier, rewards_available[], enrolled_at }
+//   optional: &view=summary, &location_id=<ops location> (staff or device check), &channel=
+//   optional headers: Authorization (staff, or a device bound to that venue), x-member-token
+//
+// Returns: { member_code, points_balance, tier, rewards_available[], enrolled_at, gift_cards: [] }
+// gift_cards is ALWAYS empty here: a public lookup never returns gift card codes, ids or balances.
+// ?view=summary, or a caller without authority once the mode enforces (after 20260919a, or
+// LOYALTY_AUTHORITY_MODE=enforce), gets only
+// { found, enrolled, limited, loyalty_enabled, points_enabled, stamps_enabled } (_shared/memberReply.ts).
 
-import { cors, json, platformAdmin, opsAdmin } from '../_shared/loyalty-utils.ts';
+import {
+  cors, json, platformAdmin, opsAdmin, optionalCaller, checkLoyaltyAuthority, resolveCompanyForLocation,
+  isServiceRoleRequest,
+} from '../_shared/loyalty-utils.ts';
+import { limitedMemberReply } from '../_shared/memberReply.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -106,6 +117,39 @@ Deno.serve(async (req) => {
   if (!membership) {
     return json({ error: 'Member not found', enrolled: false }, 404);
   }
+
+  // Loyalty type availability (points vs stamp cards) so client surfaces hide the disabled half.
+  const { data: _cfg } = await platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle();
+
+  // ── Who may see the member's detail (database fence stage 1) ───────────
+  // Points, visits, rewards, stamp rewards and history for any phone number, to anybody. Now:
+  //   * ?view=summary (online checkout's sign in prompt) gets ONLY "is a member" and whether
+  //     points and stamps are on. Never logged: it asks for nothing more.
+  //   * full detail needs staff of the venue, a device bound to the venue (both via the
+  //     Authorization header plus &location_id), the member's own token (x-member-token header,
+  //     which loyalty-otp refresh sends) or the service role. Before 20260919a (report) full
+  //     detail still goes to every caller and the ones enforce would refuse are logged; once it
+  //     has run everybody else gets the summary instead.
+  if (url.searchParams.get('view') === 'summary') return json(limitedMemberReply(_cfg));
+  const serviceRole = isServiceRoleRequest(req);
+  const caller = serviceRole ? null : await optionalCaller(req);
+  // A location id only counts when it is one of THIS company's (staff of another company could
+  // otherwise name their own venue and read this company's members).
+  let staffLocationId: string | null = url.searchParams.get('location_id');
+  if (staffLocationId) {
+    const locCompany = await resolveCompanyForLocation(caller?.id ?? '', staffLocationId);
+    if (locCompany instanceof Response || locCompany !== companyId) staffLocationId = null;
+  }
+  const gate = serviceRole ? null : await checkLoyaltyAuthority({
+    fn: 'loyalty-balance',
+    caller,
+    locationId: staffLocationId,
+    companyId: String(companyId),
+    customerId: String(membership.customer_id),
+    memberToken: req.headers.get('x-member-token'),
+    channel: url.searchParams.get('channel'),
+  });
+  if (gate && !gate.allow) return json(limitedMemberReply(_cfg));
 
   // ── Get tier info ──────────────────────────────────────────────────────
   let tier: any = null;
@@ -221,41 +265,24 @@ Deno.serve(async (req) => {
     }
   } catch {}
 
-  // ── v5.5.264: Gift cards linked to this customer ─────────────────────
-  let giftCards: any[] = [];
-  try {
-    // Resolve customer phone/email/name from ops DB for gift card lookup
-    const { data: custRow } = await opsAdmin
-      .from('customers')
-      .select('phone, email, name')
-      .eq('id', membership.customer_id)
-      .maybeSingle();
-    if (custRow) {
-      const conditions: string[] = [];
-      if (custRow.phone) conditions.push(`recipient_phone.eq.${custRow.phone}`);
-      if (custRow.email) conditions.push(`recipient_email.eq.${custRow.email}`);
-      if (custRow.name) conditions.push(`recipient_name.eq.${custRow.name}`);
-      if (conditions.length > 0) {
-        const { data: cards } = await platformAdmin
-          .from('gift_cards')
-          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
-          .eq('company_id', companyId)
-          .eq('status', 'active')
-          .or(conditions.join(','));
-        giftCards = (cards || []).map((c: any) => ({
-          id: c.id,
-          last4: c.code_last4,
-          code: c.code_plain || null,
-          balance: c.balance_minor,
-          initial: c.initial_amount_minor,
-          expires_at: c.expires_at,
-        }));
-      }
-    }
-  } catch {}
+  // ── Gift cards: NEVER from this endpoint (18 Sep 2026) ───────────────
+  // This is a public GET that needs only company_id plus a phone number, member code or
+  // customer id; it cannot tell who is asking. It used to return every active card addressed to
+  // the member's phone, email or NAME, with the full code. A code is spendable money, and so is a
+  // card id (gift-redeem accepts card_id), and even last4 plus balance tells a stranger what a
+  // phone number's owner holds. CALLERS (corrected 18 Sep 2026, round two):
+  //   * src/lib/customerLookup.js fetchCustomerByPhone copies this list into `giftCards`, for the
+  //     till (CheckoutModal.jsx:1229), the host stand (store/waitlistSlice.js lookupGuestByPhone)
+  //     and the customer display (POSSurface captureLoyaltyByPhone). None of them renders it.
+  //   * KioskApp.jsx imports fetchCustomerByPhone but never calls it. The kiosk's gift cards,
+  //     rendered by ScreenLoyalty at KioskApp.jsx:4301-4312 (customerLookup.giftCards) and
+  //     spent from ScreenGiftPromo at :2863 (verifiedLoyalty.giftCards), come from loyalty-otp
+  //     verify AFTER the one time code (matched on the proven phone only, _shared/giftCardMatch.ts).
+  //     The new kiosk design (kiosk/KioskOtpSheet.jsx) sets giftCards to [].
+  //   * The portal gets its cards from loyalty-otp verify and refresh.
+  // `gift_cards` stays in the reply, always empty, so older clients reading it keep working.
+  const giftCards: never[] = [];
 
-  // Loyalty type availability (points vs stamp cards) so client surfaces hide the disabled half.
-  const { data: _cfg } = await platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle();
   const _loyOn = _cfg?.enabled !== false;
 
   return json({
@@ -285,11 +312,12 @@ Deno.serve(async (req) => {
     })),
     enrolled_at: membership.enrolled_at,
     last_earn_at: membership.last_earn_at,
-    // v5.5.264: stamp cards and gift cards for kiosk/online surfaces
+    // v5.5.264: stamp cards for kiosk/online surfaces
     stamp_cards: stampCards,
     // v5.5.884: earned stamp-card rewards (completed cards not yet redeemed) — the POS/portal
     // rewards lists were points-only, so a completed card never appeared anywhere.
     stamp_rewards: stampRewards,
+    // Always empty: gift cards are only shown to a member who has proven their phone (loyalty-otp).
     gift_cards: giftCards,
     // v5.5.218: referral_code and birthday redacted from public endpoint.
     // These are returned by the authenticated loyalty-member-lookup instead.

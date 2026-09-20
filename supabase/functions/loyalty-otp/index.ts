@@ -21,6 +21,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName } from '../_shared/twilio-verify.ts';
+import { createSessionToken as mintSessionToken, verifySessionToken as readSessionToken } from '../_shared/loyalty-session.ts';
+import { giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS } from '../_shared/giftCardMatch.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -121,41 +123,36 @@ async function listCompanyVerifySids(companyId: string): Promise<string[]> {
 // The session token below is still ours (HMAC of customer+company), used post-verification.
 
 // ── HMAC session token ──────────────────────────────────────────────────
-async function createSessionToken(customerId: string, companyId: string): Promise<string> {
-  const payload = `${customerId}:${companyId}:${Date.now()}`;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(OTP_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
-  const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-  // Token format: base64(payload):signature
-  return btoa(payload) + '.' + hex;
+// Format and verification live in _shared/loyalty-session.ts (shared with loyalty-redeem, which
+// accepts the member's own token online). Since 18 Sep 2026 the token also carries the phone the
+// member proved with the code: gift cards are matched on that phone and nothing else.
+function createSessionToken(customerId: string, companyId: string, provenPhone: string | null): Promise<string> {
+  return mintSessionToken(customerId, companyId, provenPhone, OTP_SECRET);
 }
 
-async function verifySessionToken(token: string): Promise<{ customerId: string; companyId: string } | null> {
+function verifySessionToken(token: string) {
+  return readSessionToken(token, OTP_SECRET);
+}
+
+// ── Gift cards the signed in member may see ─────────────────────────────
+// ONLY cards addressed to the phone the member proved with the one time code. Never by name
+// (that handed a member every card addressed to anybody with the same name) and never by email
+// (update_profile lets a member set any email with no verification). The full code is kept for
+// these cards: the portal shows it so the member can spend their OWN card online, where typing
+// the code is the only way to pay by gift card. See _shared/giftCardMatch.ts.
+async function giftCardsForProvenPhone(companyId: string, provenPhone: string | null): Promise<any[]> {
+  const filter = giftCardRecipientFilter(provenPhone);
+  if (!filter) return [];
   try {
-    const [payloadB64, sig] = token.split('.');
-    if (!payloadB64 || !sig) return null;
-    const payload = atob(payloadB64);
-    const [customerId, companyId, timestampStr] = payload.split(':');
-    if (!customerId || !companyId || !timestampStr) return null;
-    // Check expiry (24 hours)
-    const age = Date.now() - Number(timestampStr);
-    if (age > 24 * 60 * 60 * 1000) return null;
-    // Verify signature
-    const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      'raw', enc.encode(OTP_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'],
-    );
-    const sigBytes = new Uint8Array(sig.match(/.{2}/g)!.map(h => parseInt(h, 16)));
-    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(payload));
-    if (!valid) return null;
-    return { customerId, companyId };
+    const { data: cards } = await platformAdmin
+      .from('gift_cards')
+      .select(MEMBER_GIFT_CARD_COLUMNS)
+      .eq('company_id', companyId)
+      .eq('status', 'active')
+      .or(filter);
+    return memberGiftCards(cards, provenPhone);
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -462,38 +459,9 @@ Deno.serve(async (req) => {
       console.warn('[loyalty-otp] loyalty data fetch failed:', e);
     }
 
-    // ── Get linked gift cards ────────────────────────────────────────
-    let giftCards: any[] = [];
-    try {
-      const conditions: string[] = [];
-      if (customer.email) conditions.push(`recipient_email.eq.${customer.email}`);
-      if (customer.phone) {
-        conditions.push(`recipient_phone.eq.${customer.phone}`);
-        // Also match alternative UK phone formats (e.g. +447931... vs 07931...)
-        if (customer.phone.startsWith('+44')) {
-          conditions.push(`recipient_phone.eq.0${customer.phone.slice(3)}`);
-        } else if (customer.phone.startsWith('0')) {
-          conditions.push(`recipient_phone.eq.+44${customer.phone.slice(1)}`);
-        }
-      }
-      if (customer.name) conditions.push(`recipient_name.eq.${customer.name}`);
-      if (conditions.length > 0) {
-        const { data: cards } = await platformAdmin
-          .from('gift_cards')
-          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
-          .eq('company_id', companyId)
-          .eq('status', 'active')
-          .or(conditions.join(','));
-        giftCards = (cards || []).map(c => ({
-          id: c.id,
-          last4: c.code_last4,
-          code: c.code_plain || null,
-          balance: c.balance_minor,
-          initial: c.initial_amount_minor,
-          expires_at: c.expires_at,
-        }));
-      }
-    } catch {}
+    // ── Get linked gift cards (proven phone only) ────────────────────
+    // `phone` is the number Twilio just approved the code for; the customer row was found by it.
+    const giftCards = await giftCardsForProvenPhone(companyId, phone);
 
     // ── Fetch stamp card programs + customer progress ──────────────
     let stampCardsVerify: any[] = [];
@@ -560,7 +528,7 @@ Deno.serve(async (req) => {
     } catch {}
 
     // ── Create session token ─────────────────────────────────────────
-    const token = await createSessionToken(customer.id, companyId);
+    const token = await createSessionToken(customer.id, companyId, phone);
 
     return json({
       verified: true,
@@ -623,7 +591,9 @@ Deno.serve(async (req) => {
     // Fetch fresh loyalty data
     const balanceUrl = `${OPS_URL}/functions/v1/loyalty-balance`
       + `?customer_id=${encodeURIComponent(session.customerId)}&company_id=${encodeURIComponent(session.companyId)}`;
-    const balRes = await fetch(balanceUrl);
+    // The member's own token proves to loyalty-balance that this is the member (18 Sep 2026: the
+    // full reply needs staff, a paired device or the member; report first, see loyalty-authority).
+    const balRes = await fetch(balanceUrl, { headers: { 'x-member-token': token } });
     if (!balRes.ok) return json({ error: 'Failed to fetch loyalty data' }, 500);
     const loyaltyData = await balRes.json();
 
@@ -634,35 +604,11 @@ Deno.serve(async (req) => {
       .eq('id', session.customerId)
       .maybeSingle();
 
-    // Fetch gift cards
-    let giftCards: any[] = [];
-    try {
-      const conditions: string[] = [];
-      if (cust?.email) conditions.push(`recipient_email.eq.${cust.email}`);
-      if (cust?.phone) {
-        conditions.push(`recipient_phone.eq.${cust.phone}`);
-        // Also match alternative UK phone formats (e.g. +447931... vs 07931...)
-        if (cust.phone.startsWith('+44')) {
-          conditions.push(`recipient_phone.eq.0${cust.phone.slice(3)}`);
-        } else if (cust.phone.startsWith('0')) {
-          conditions.push(`recipient_phone.eq.+44${cust.phone.slice(1)}`);
-        }
-      }
-      if (cust?.name) conditions.push(`recipient_name.eq.${cust.name}`);
-      if (conditions.length > 0) {
-        const { data: cards } = await platformAdmin
-          .from('gift_cards')
-          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
-          .eq('company_id', session.companyId)
-          .eq('status', 'active')
-          .or(conditions.join(','));
-        giftCards = (cards || []).map(c => ({
-          id: c.id, last4: c.code_last4, code: c.code_plain || null,
-          balance: c.balance_minor, initial: c.initial_amount_minor,
-          expires_at: c.expires_at,
-        }));
-      }
-    } catch {}
+    // Gift cards: the phone PROVEN at sign in, carried on the token. A token minted before the
+    // phone was added (at most 24 hours old) falls back to the customer's stored phone, which is
+    // the number that row was found by at sign in; update_profile cannot change it.
+    const provenPhone = session.phone || cust?.phone || null;
+    const giftCards = await giftCardsForProvenPhone(session.companyId, provenPhone);
 
     // Fetch stamp card programs + customer progress
     let stampCards: any[] = [];

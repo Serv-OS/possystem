@@ -3552,7 +3552,19 @@ function ModifiersTab() {
                   <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={opt.name} onChange={e=>updOpt(opt.id,{name:e.target.value})} placeholder="Option name"/>
                   <div style={{ position:'relative' }}>
                     <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
-                    <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:12, color:'var(--acc)' }} value={opt.price||''} placeholder="0.00" onChange={e=>updOpt(opt.id,{price:parseFloat(e.target.value)||0})}/>
+                    {/* Database fence stage 1 (fix round 3, 19 Sep): min="0" is only a hint to
+                        the spinner, so a typed minus sign saved a minus priced option in
+                        silence. A minus price is a real setting (a venue may price "No cheese"
+                        at -0.50 and the server honours it), but it takes money off every bill
+                        that carries it, so it is confirmed once when the box is left. */}
+                    <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:12, color:'var(--acc)' }} value={opt.price||''} placeholder="0.00"
+                      onChange={e=>updOpt(opt.id,{price:parseFloat(e.target.value)||0})}
+                      onBlur={e=>{
+                        const v = parseFloat(e.target.value) || 0;
+                        if (v >= 0) return;
+                        const ok = window.confirm(`"${opt.name || 'This option'}" is priced £${v.toFixed(2)}. A minus price takes money OFF the bill every time a customer picks it. Is that what you want?`);
+                        if (!ok) updOpt(opt.id,{price:0});
+                      }}/>
                   </div>
                   <button onClick={()=>delOpt(opt.id)} style={{ width:28,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                 </div>

@@ -29,6 +29,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
+import { saveReaderSettingsWithFallback } from '../../lib/readerSettingsClient';
 
 const S = {
   card:    { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:24, marginBottom:20 },
@@ -466,11 +467,28 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
       // writing the Ops id here violated location_reader_settings_location_id_fkey.
       // Non-fatal if the venue has no platform row — the image is already uploaded
       // and the terminal reads it from its own Ops row, so don't lose the upload.
+      // Database fence stage 1 (contract P2): through location-admin (save_reader_settings) with
+      // only idle_screen_image_url. FENCE STAGE 1 FALLBACK: the old direct upsert while the
+      // deployed location-admin does not know the action yet.
       if (platformSupabase && platformLocId) {
-        const { error: rsErr } = await platformSupabase
-          .from('location_reader_settings')
-          .upsert({ location_id: platformLocId, idle_screen_image_url: url }, { onConflict: 'location_id' });
-        if (rsErr) setErr(`Image uploaded and will work on this terminal, but sharing it with the Stripe reader failed: ${rsErr.message}`);
+        const { data: sess } = await supabase.auth.getSession();
+        const token = sess?.session?.access_token || '';
+        const saved = await saveReaderSettingsWithFallback({
+          opsLocationId: getActiveLocationSync(),
+          patch: { idle_screen_image_url: url },
+          callFunction: async (fnBody) => {
+            const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/location-admin`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              body: JSON.stringify(fnBody),
+            });
+            return { status: r.status, data: await r.json().catch(() => ({})) };
+          },
+          legacyWrite: (row) => platformSupabase
+            .from('location_reader_settings')
+            .upsert({ location_id: platformLocId, ...row }, { onConflict: 'location_id' }),
+        });
+        if (!saved.ok) setErr(`Image uploaded and will work on this terminal, but sharing it with the Stripe reader failed: ${saved.error}`);
       }
 
       setSsImage(url);

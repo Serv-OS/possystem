@@ -88,7 +88,10 @@ function AIAssistantSurface() {
 // all admin screens) and tills/kiosks never open it. Splitting it out is the single biggest
 // first-load win for every operational device and customer page.
 const BackOfficeApp = lazy(() => import('./backoffice/BackOfficeApp'));
-import { isMock, supabase } from './lib/supabase';
+import { isMock, supabase, linkDevice } from './lib/supabase';
+import { classifyDeviceRead, decideDeviceRefresh, isMissingRpc } from './lib/deviceFence';
+import { checkDeviceLink, reportWriteRefused } from './lib/deviceLink';
+import DeviceLinkBanner from './components/DeviceLinkBanner';
 import PairingScreen from './surfaces/PairingScreen';
 import ModeSelector from './surfaces/ModeSelector';
 import CompanyAdminApp from './admin/CompanyAdminApp';
@@ -317,11 +320,11 @@ export default function App() {
   // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
   // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
   // Kiosk card problems stay on screen until staff tap OK (components/KioskStaffAlert.jsx).
-  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /><KioskStaffAlert /></>;
+  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /><KioskStaffAlert /><DeviceLinkBanner /></>;
 
   // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
   // Pairs to a location like a POS; punches write server-side via workforce-clock.
-  if (deviceMode === 'clock') return <><KioskAutoUpdate /><TimeClockSurface /></>;
+  if (deviceMode === 'clock') return <><KioskAutoUpdate /><TimeClockSurface /><DeviceLinkBanner /></>;
 
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
@@ -438,7 +441,7 @@ function MposDeviceProfileSync({ pairedDevice }) {
     const refresh = async () => {
       if (inFlight) return; inFlight = true;
       try {
-        const { data } = await supabase.from('devices').select('id, status, profile_id').eq('id', pairedDevice.id).single();
+        const { data } = await supabase.from('devices').select('id, status, profile_id').eq('id', pairedDevice.id).maybeSingle();
         if (!data?.profile_id) return;
         const { data: row } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
         if (!row) return;
@@ -648,26 +651,62 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       .subscribe();
   };
 
+  // Database fence stage 1 (contract A5, gap B3): a till is NEVER unpaired because it could
+  // not read its own row. .single() answered data: null for a network error and (after file 2)
+  // for a row that row level security hides, and both used to wipe the pairing. Now only a
+  // successful read of status 'removed' is a removal; a read error keeps the till and shows
+  // the banner; a missing row asks the server (device_status and the secret re-link). A
+  // refused session token write is not a kick either: it shows the banner instead.
+  let tokenWriteRefused = false;
+  const writeSessionToken = async () => {
+    const { error } = await supabase.from('devices').update({ session_token: mySessionToken }).eq('id', pairedDevice.id);
+    if (error) {
+      tokenWriteRefused = true;
+      reportWriteRefused(error);
+      console.warn('[device] session token write refused, keeping the till:', error.message);
+    } else {
+      tokenWriteRefused = false;
+    }
+  };
+
   const refreshDevice = async () => {
-      // If reclaiming: write our token to Supabase FIRST — this kicks the other session immediately
-      if (isReclaim) {
-        await supabase.from('devices').update({ session_token: mySessionToken }).eq('id', pairedDevice.id);
-      }
-      const { data } = await supabase.from('devices').select('id, status, profile_id, name, session_token').eq('id', pairedDevice.id).single();
-      if (!data || data.status === 'removed') {
-        localStorage.removeItem('rpos-device');
-        setDeviceValid(false);
+      // If reclaiming: write our token to Supabase FIRST, this kicks the other session immediately
+      if (isReclaim) await writeSessionToken();
+      const { data, error: readError } = await supabase.from('devices').select('id, status, profile_id, name, session_token').eq('id', pairedDevice.id).maybeSingle();
+      const read = classifyDeviceRead({ error: readError, row: data });
+      if (read !== 'present') {
+        let statusSupported = null;
+        let link = null;
+        if (read !== 'removed' && !readError) {
+          const probe = await supabase.rpc('device_status');
+          statusSupported = !(probe.error && isMissingRpc(probe.error));
+          if (statusSupported) link = await linkDevice({ allowLegacy: false });
+        }
+        const decision = decideDeviceRefresh({ read, readError, statusSupported, linkOutcome: link?.outcome, linkReason: link?.reason });
+        if (decision === 'removed') {
+          localStorage.removeItem('rpos-device');
+          setDeviceValid(false);
+          return;
+        }
+        if (decision === 'pair') {
+          // The server says this device was unpaired or removed in Back Office. Show the
+          // pairing screen but keep rpos-device, so pairing it again keeps its open orders.
+          setDeviceValid(false);
+          return;
+        }
+        // Unknown: keep everything, keep working, the banner explains.
+        if (decision === 'banner') checkDeviceLink();
+        setDeviceValid(true);
         return;
       }
-      // Check if another session has claimed this device (only if we're NOT reclaiming)
-      if (!isReclaim && data.session_token && data.session_token !== mySessionToken) {
+      // Check if another session has claimed this device (only if we're NOT reclaiming).
+      // A token we could not write is not proof of another session.
+      if (!isReclaim && !tokenWriteRefused && data.session_token && data.session_token !== mySessionToken) {
         setDeviceValid('kicked');
         return;
       }
       // Claim this device for our session (if not already done via reclaim above)
-      if (!isReclaim) {
-        await supabase.from('devices').update({ session_token: mySessionToken }).eq('id', pairedDevice.id);
-      }
+      if (!isReclaim) await writeSessionToken();
       // Refresh device name + profile
       const current = JSON.parse(localStorage.getItem('rpos-device') || '{}');
       if (data.name !== current.name || data.profile_id !== current.profileId) {
@@ -771,7 +810,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       if (refreshInFlight || !pairedDevice?.id) return;
       refreshInFlight = true;
       try {
-        const { data } = await supabase.from('devices').select('id, status, profile_id, name').eq('id', pairedDevice.id).single();
+        const { data } = await supabase.from('devices').select('id, status, profile_id, name').eq('id', pairedDevice.id).maybeSingle();
         if (!data || data.status === 'removed') return;   // removal/kick handling stays refreshDevice's job
         const current = JSON.parse(localStorage.getItem('rpos-device') || '{}');
         if (data.name !== current.name || data.profile_id !== current.profileId) {
@@ -862,8 +901,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         filter: `id=eq.${pairedDevice.id}`,
       }, (payload) => {
         const updatedToken = payload.new?.session_token;
-        // If session_token changed and it's not ours → we've been displaced
-        if (updatedToken && updatedToken !== mySessionToken) {
+        // If session_token changed and it's not ours → we've been displaced (never while our
+        // own token write is being refused: that is a lost link, not another session)
+        if (updatedToken && updatedToken !== mySessionToken && !tokenWriteRefused) {
           setDeviceValid('kicked');
           return;
         }
@@ -1005,6 +1045,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     <>
       <SyncBridge onSyncPulse={handleSyncPulse}/>
       {body}
+      {/* Database fence stage 1 (contract A7): red banner only when the server says this till lost its link. */}
+      <DeviceLinkBanner />
       {showKioskStaffAlert && <KioskStaffAlert />}
     </>
   );

@@ -37,6 +37,7 @@
 
 import { supabase } from '../lib/supabase';
 import { printService } from '../lib/printer';
+import { mustChangeRow } from '../lib/rowWrites';
 
 // Detect native bridge (Android/iOS TCP socket injection) — same check used by printService
 function hasNativeBridge() {
@@ -269,13 +270,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * (The claim update already relies on select-after-update, so SELECT is available
  * on this table wherever UPDATE is.)
  */
-async function updateJobRow(jobId, patch) {
+async function updateJobRow(jobId, patch, { keep = false } = {}) {
   if (!supabase) return { error: new Error('no supabase client') };
   try {
-    const { data, error } = await supabase.from('print_jobs').update(patch).eq('id', jobId).select('id, idempotency_key');
-    if (error) return { error };
-    if (!data || data.length === 0) return { error: new Error(`matched 0 rows for job ${jobId} — RLS blocked it or the row is gone`) };
-    return { error: null, row: data[0] };
+    // Database fence stage 1, fix round 2 (the zero row blocker): 0 rows now also asks whether
+    // this till is still linked, so the banner shows when it is not. The engine's own writes are
+    // NOT kept in the offline queue (keep false): this file already keeps retrying them
+    // (markPrintedDurable, scheduleParkRetry) and guards the printed ticket locally, and a queued
+    // copy would race those retries and could land out of order. An operator's Retry, Dismiss or
+    // Reroute is kept (keep true) and sent once the till is linked again.
+    const r = await mustChangeRow({ table: 'print_jobs', type: 'update', payload: patch, match: { id: jobId }, returning: 'id, idempotency_key', parkable: keep, kind: 'print_job', label: 'Print job changed by staff' });
+    if (r.outcome === 'error') return { error: r.error || new Error('print_jobs update failed') };
+    if (r.outcome === 'parked' || r.outcome === 'queued') return { error: null, row: null, kept: true };
+    if (r.outcome !== 'applied' || !Array.isArray(r.data) || r.data.length === 0) {
+      return { error: new Error(`matched 0 rows for job ${jobId}: ${r.outcome === 'unlinked' ? 'this till is not linked' : 'RLS blocked it or the row is gone'}`) };
+    }
+    return { error: null, row: r.data[0] };
   } catch (e) {
     return { error: e instanceof Error ? e : new Error(String(e)) };
   }
@@ -687,7 +697,7 @@ export async function operatorRetryJob(jobId) {
     claimed_by:    null,
     claim_expires_at: null,
     dismissed_at:  null,
-  });
+  }, { keep: true });
   if (error) return { ok: false, error: error.message };
   // An operator asking for this job again overrides BOTH dedup guards — they can see
   // the ticket (or its absence) and we can't. Miss the broadcast one and the retry is
@@ -701,7 +711,7 @@ export async function operatorDismissJob(jobId) {
   const { error } = await updateJobRow(jobId, {
     status:       'dismissed',
     dismissed_at: new Date().toISOString(),
-  });
+  }, { keep: true });
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
@@ -720,7 +730,7 @@ export async function operatorRerouteJob(jobId, newPrinterId) {
     claimed_by:        null,
     claim_expires_at:  null,
     dismissed_at:      null,
-  });
+  }, { keep: true });
   if (error) return { ok: false, error: error.message };
   clearReprintGuards(jobId, row);   // deliberate operator action, same as Retry
   return { ok: true };
