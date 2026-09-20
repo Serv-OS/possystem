@@ -165,8 +165,12 @@ test('the app: every password login surface waits for the second step before loa
 test('person sign in surfaces never get an anonymous session at app start; tills heal after a sign out', () => {
   const sb = read('src/lib/supabase.js');
   assert.match(sb, /const LOGIN_SURFACE_MODES = new Set\(\['office', 'backoffice', 'admin', 'owner', 'staff'\]\);/);
-  // ensureAuthToken keeps its Back Office only rule, so customer checkout pages are untouched
-  assert.match(sb, /if \(isBackOfficeMode\(\)\) return null;\n\s*\/\/ No session \(POS device, expired, etc\.\)/);
+  // Rebased onto the fence release (v5.9.12): ensureAuthToken now goes through the fence's
+  // resolver, which never throws away a device's own identity. The second step's rule is kept and
+  // widened: no anonymous session on ANY surface a person signs in on. Customer checkout pages and
+  // the POS family are not login surfaces, so they still get theirs.
+  assert.match(sb, /allowAnonymous: !isLoginSurfaceMode\(\),/);
+  assert.doesNotMatch(sb, /allowAnonymous: !isBackOfficeMode\(\),/);
   const init = read('src/lib/useSupabaseInit.js');
   assert.match(init, /if \(!isLoginSurfaceMode\(\)\) \{\s*try \{ await ensureAuthToken\(\); \}/);
   assert.match(init, /event !== 'SIGNED_OUT' \|\| isLoginSurfaceMode\(\)/);

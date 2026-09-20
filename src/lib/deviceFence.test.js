@@ -304,7 +304,10 @@ test('supabase.js boot claim goes through runDeviceLink, and no longer reads pai
   assert.ok(i > 0 && src.slice(Math.max(0, i - 400), i).includes('FENCE STAGE 1 FALLBACK'), 'the code read is marked as the stage 1 fallback');
   assert.ok(src.includes("dispatchLink('rpos-device-link-lost', detail)") && src.includes("dispatchLink('rpos-device-relinked', detail)"));
   assert.ok(src.includes("'rpos-kiosk-secret',"), 'the kiosk secret survives a tenant fence wipe');
-  assert.ok(src.includes('allowAnonymous: !isBackOfficeMode(),'), 'A1: ensureAuthToken uses resolveAuthToken');
+  // A1: ensureAuthToken goes through resolveAuthToken. The second sign in step widened the
+  // "no anonymous session here" rule from Back Office to every surface a person signs in on
+  // (office, backoffice, admin, owner, staff); customer pages and the POS family are untouched.
+  assert.ok(src.includes('allowAnonymous: !isLoginSurfaceMode(),'), 'A1: ensureAuthToken uses resolveAuthToken');
 });
 
 // ── A3, A4: pairing screens ──────────────────────────────────────────────────
