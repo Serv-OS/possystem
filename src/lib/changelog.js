@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.14',
+    date: '20 Sep 2026',
+    items: [
+      'Sign in to Back Office with a passkey: your fingerprint on a laptop, your face on a phone, or Windows Hello. No password to type and no authenticator app. Your password still works as a fallback.',
+      'Setting up a passkey is the second step every Back Office login is asked for. The first time, you also type a code we email you, so somebody who only has your password cannot set up their own.',
+      'You can hold several passkeys, for example your laptop and your phone. Back Office, Settings, Sign in security lists them, adds one and removes one, and never lets you remove your last way in.',
+      'Lost your phone: an owner resets a member of staff and ServOS resets an owner. A passkey that could not be removed is reported, because a passkey on a lost phone can sign in on its own.',
+      'No fingerprint reader on the machine: the 6 digit app code route is still there, so nobody is stuck.',
+      'Passkeys only work at app.serv-os.app, so that is the address for people from now on. Tills and screens keep their own address.',
+    ],
+  },
+  {
     v: '5.9.13',
     date: '20 Sep 2026',
     items: [
