@@ -106,7 +106,7 @@ comment on table public.second_step_passkeys is
 create index if not exists second_step_passkeys_user_idx on public.second_step_passkeys (user_id) where removed_at is null;
 
 alter table public.second_step_passkeys enable row level security;
-revoke all on table public.second_step_passkeys from anon, authenticated;
+revoke all on table public.second_step_passkeys from public, anon, authenticated;
 grant select, insert, update, delete on table public.second_step_passkeys to service_role;
 
 
@@ -131,7 +131,7 @@ as $$
              select lower(m) from unnest(coalesce(p_methods, '{}'::text[])) m)
   )
 $$;
-revoke all on function public.second_step_amr_has_passkey(jsonb, text[]) from public;
+revoke all on function public.second_step_amr_has_passkey(jsonb, text[]) from public, anon, authenticated;
 
 create or replace function public.second_step_session_passkey(p_claims jsonb, p_methods text[])
 returns boolean
@@ -163,7 +163,7 @@ exception when others then
   return false;
 end
 $$;
-revoke all on function public.second_step_session_passkey(jsonb, text[]) from public;
+revoke all on function public.second_step_session_passkey(jsonb, text[]) from public, anon, authenticated;
 
 
 -- ============================================================================
@@ -190,7 +190,7 @@ as $$
     else not coalesce(p_enforce, false)                        -- password only: allowed only while OFF
   end
 $$;
-revoke all on function public.second_step_decide(jsonb, boolean, boolean) from public;
+revoke all on function public.second_step_decide(jsonb, boolean, boolean) from public, anon, authenticated;
 
 -- The two argument shape stays, so anything that already calls it keeps working.
 create or replace function public.second_step_decide(p_claims jsonb, p_enforce boolean)
@@ -201,7 +201,7 @@ set search_path = ''
 as $$
   select public.second_step_decide(p_claims, p_enforce, false)
 $$;
-revoke all on function public.second_step_decide(jsonb, boolean) from public;
+revoke all on function public.second_step_decide(jsonb, boolean) from public, anon, authenticated;
 
 create or replace function public.second_step_ok()
 returns boolean
@@ -265,7 +265,7 @@ exception when others then
   return false;
 end
 $$;
-revoke all on function public.second_step_has_second_step(uuid) from public;
+revoke all on function public.second_step_has_second_step(uuid) from public, anon, authenticated;
 grant execute on function public.second_step_has_second_step(uuid) to service_role;
 
 
@@ -300,7 +300,7 @@ begin
         removed_at    = null;
 end
 $$;
-revoke all on function public.second_step_passkey_record(text, text, text) from public;
+revoke all on function public.second_step_passkey_record(text, text, text) from public, anon, authenticated;
 grant execute on function public.second_step_passkey_record(text, text, text) to authenticated;
 
 create or replace function public.second_step_passkey_forget(p_credential_id text)
@@ -318,8 +318,30 @@ begin
    where user_id = v_user and credential_id = left(btrim(coalesce(p_credential_id, '')), 400);
 end
 $$;
-revoke all on function public.second_step_passkey_forget(text) from public;
+revoke all on function public.second_step_passkey_forget(text) from public, anon, authenticated;
 grant execute on function public.second_step_passkey_forget(text) to authenticated;
+
+
+-- ============================================================================
+-- 6b. Tighten what 20260919s left open
+--
+-- On this project every NEW function in schema public starts out callable by the public
+-- app key: pg_default_acl grants EXECUTE to anon and authenticated when the function is
+-- created, so "revoke all ... from public" does not take it away. The file before this one
+-- revoked only from public, so these answer yes or no to anyone holding the anon key.
+--
+-- Left alone on purpose:
+--   second_step_ok             every RLS policy calls it as the caller's own role
+--   second_step_check_request  the PostgREST pre request hook; revoking it would refuse
+--                              every request on the whole database
+--   second_step_status         the app calls it (src/lib/secondStep/client.js), so
+--                              authenticated keeps it, anon does not need it
+-- ============================================================================
+
+revoke all on function public.second_step_may_enrol(uuid, boolean, boolean, boolean) from public, anon, authenticated;
+revoke all on function public.second_step_reach(uuid) from public, anon, authenticated;
+revoke all on function public.second_step_status() from public, anon;
+grant execute on function public.second_step_status() to authenticated, service_role;
 
 
 -- ============================================================================
@@ -359,8 +381,19 @@ begin
   end if;
   -- grants
   if has_function_privilege('anon', 'public.second_step_passkey_record(text, text, text)', 'execute')
+     or has_function_privilege('anon', 'public.second_step_passkey_forget(text)', 'execute')
      or has_table_privilege('authenticated', 'public.second_step_passkeys', 'select') then
     raise exception 'Self test: the passkey record is not private. Nothing was changed.';
+  end if;
+  if has_function_privilege('anon', 'public.second_step_decide(jsonb, boolean)', 'execute')
+     or has_function_privilege('anon', 'public.second_step_reach(uuid)', 'execute')
+     or has_function_privilege('anon', 'public.second_step_may_enrol(uuid, boolean, boolean, boolean)', 'execute')
+     or has_function_privilege('anon', 'public.second_step_status()', 'execute') then
+    raise exception 'Self test: a rule function is still callable by the public key. Nothing was changed.';
+  end if;
+  if not has_function_privilege('authenticated', 'public.second_step_status()', 'execute')
+     or not has_function_privilege('anon', 'public.second_step_ok()', 'execute') then
+    raise exception 'Self test: a function the app needs was revoked. Nothing was changed.';
   end if;
 end
 $selftest$;

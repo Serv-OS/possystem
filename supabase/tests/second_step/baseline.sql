@@ -13,6 +13,17 @@ end
 $roles$;
 grant usage on schema public to anon, authenticated, service_role, supabase_auth_admin;
 
+-- THE TRAP THIS HARNESS EXISTS TO CATCH (20 Sep 2026). On the live Ops database, schema public
+-- carries DEFAULT PRIVILEGES that grant EXECUTE on every NEW function, and the usual rights on
+-- every NEW table, to anon, authenticated and service_role (pg_default_acl, defaclobjtype 'f'
+-- and 'r'). So a function is callable by the public key the instant it is created, and
+-- "revoke all ... from public" does NOT take that away: those are explicit grants to named
+-- roles, not the PUBLIC pseudo role. Every migration must revoke from anon and authenticated
+-- BY NAME. Without these two lines the harness would be kinder than production, which is how
+-- 20260920p reached Peter's SQL editor and stopped on its own self test.
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
+alter default privileges in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role;
+
 create schema if not exists auth;
 create schema if not exists storage;
 

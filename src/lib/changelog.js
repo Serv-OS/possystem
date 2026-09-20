@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.15',
+    date: '20 Sep 2026',
+    items: [
+      'The database update for passkey sign in, corrected. The first attempt refused to run and changed nothing, because on this database every new function starts out reachable by the public web key and has to be closed by name. It now closes each one, and checks itself before it changes anything.',
+      'The same update closes four leftover rule functions from the sign in security release, so the public key cannot call those either.',
+    ],
+  },
+  {
     v: '5.9.14',
     date: '20 Sep 2026',
     items: [
