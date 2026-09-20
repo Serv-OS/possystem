@@ -223,9 +223,17 @@ export function loyaltyRewardValueMinor(reward) {
  *   discount_percent { type, percent }                 valued at percent x the server's goods
  * Reads a points reward (loyalty_rewards.reward_value) or a stamp card programme
  * (stamp_card_programs.reward_config). Null when there is nothing the server could use: a
- * fixed amount reward (its value is the proof's own amount), a free item reward that names no
- * item, or a shape we do not know. Null means the server values that reward at NOTHING and
- * the order comes out short, which is the safe way round.
+ * fixed amount reward (its value is the proof's own amount) or a shape we do not know. Null
+ * means the server values that reward at NOTHING and the order comes out short, which is the
+ * safe way round.
+ *
+ * Fix round 6 (19 Sep 2026): a free item reward that names NO item is still recorded, with an
+ * empty items list. It used to return null, so the stamp card default (free_item with no
+ * eligible_items) reached the server as no reward at all, was valued at 0, and every honest
+ * redemption landed in "Payment short" with the guest's stamp card already spent. The
+ * storefront has always given the cheapest line in the basket away in that case
+ * (src/surfaces/online/OnlineCheckout.jsx:911-913), and _loyalty_free_item_minor in
+ * 20260919a now mirrors that, but only if it is told the reward is a free item at all.
  */
 export function loyaltyRewardMeta(reward) {
   if (!reward || typeof reward !== 'object') return null;
@@ -246,7 +254,7 @@ export function loyaltyRewardMeta(reward) {
         id: ei.id ? String(ei.id).slice(0, 80) : null,
         name: ei.name ? String(ei.name).slice(0, 120) : null,
       }));
-    return items.length ? { type, items } : null;
+    return { type, items };
   }
   return null;
 }

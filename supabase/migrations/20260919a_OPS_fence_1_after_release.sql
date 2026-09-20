@@ -793,6 +793,18 @@ $fn$;
 -- On a row the storefront DOES sell, the caller (_public_order_value) reads NULL as 0,
 -- because 0.00 is what the customer was charged: resolveItemPrice answers 0 for {"base": 0}
 -- and for a row with no pricing at all, and a genuinely free side is a real thing on a menu.
+--
+-- A ZERO TYPED INTO A MENU TIER *IS* A PRICE (fix round 6, 19 Sep). The "a zero is not a
+-- price" rule above is about the item's OWN price, where a 0 is the default a variants parent
+-- and menu_items.pricing both carry. A per menu tier is different: it only exists because a
+-- manager typed it, and the storefront charges it as typed. src/lib/menuPricing.js
+-- menuTierPrice (lines 78 to 80) takes the tier's channel key, then `all`, then `base` with
+-- isSet(), which accepts 0, and resolveItemPrice (line 90) returns that tier and never looks
+-- further. So {"base": 4, "menus": {"menu-kids": {"all": 0}}} is 0.00 on the kids menu on
+-- every screen, while this floor said 4.00 and put the honest, fully paid order into "Payment
+-- short". The floor is already the SMALLEST price any tier gives the row (the server cannot
+-- know which menu was live when the basket was built), so an explicit zero simply joins them.
+-- A negative tier is still ignored: no storefront pays a customer to take an item.
 create or replace function public._menu_item_floor_minor(p_pricing jsonb, p_channel text, p_base_only boolean)
 returns bigint
 language plpgsql
@@ -831,7 +843,8 @@ begin
           v_val := public._fence_num_or_null(v_tier ->> k);
         end if;
       end loop;
-      if coalesce(v_val, 0) > 0 then
+      -- mirrors src/lib/menuPricing.js menuTierPrice:78-80 (isSet, so 0 is a price)
+      if v_val is not null and v_val >= 0 then
         v_min := least(v_min, v_val);   -- least() skips a NULL v_min
       end if;
     end loop;
@@ -2745,6 +2758,7 @@ declare
   v_floor    bigint;
   v_pname    text;
   v_opts     jsonb;
+  v_onames   jsonb;
   v_out      jsonb := '[]'::jsonb;
   v_lines    jsonb := '[]'::jsonb;
   v_goods    bigint := 0;
@@ -2808,6 +2822,28 @@ begin
          and jsonb_typeof(o) = 'object'
          and coalesce(o ->> 'id', '') <> ''
        group by o ->> 'id'
+    ) t;
+
+  -- The dearest menu price of every option NAME at this venue (fix round 6, 19 Sep). An
+  -- option id the venue's menu does not have used to cost the larger of what the page said
+  -- and nothing, so "Bacon" with a made up id rode a kitchen ticket at 0.00 while the venue's
+  -- own Bacon is 5.00, and the order still counted as fully paid. The id cannot simply be
+  -- refused: the storefront's own instruction groups mint ids of the shape ig-<group>-<value>
+  -- that are in no modifier group (src/surfaces/online/OnlineItemSheet.jsx:450) and are free
+  -- by design. So the NAME decides, which is the same rule the item lines already follow (a
+  -- cheap item's id can never be sent under a dear item's name): an option the server cannot
+  -- find by id is charged at no less than what the venue charges for an option of that name,
+  -- and free text the menu has no option for ("No onions", "Well done") stays free.
+  select coalesce(jsonb_object_agg(k, v), '{}'::jsonb) into v_onames
+    from (
+      select lower(btrim(coalesce(o ->> 'name', o ->> 'label'))) as k,
+             max(round(public._fence_num(o ->> 'price') * 100)::bigint) as v
+        from public.modifier_groups g
+        cross join lateral jsonb_array_elements(case when jsonb_typeof(g.options) = 'array' then g.options else '[]'::jsonb end) o
+       where g.location_id = p_loc
+         and jsonb_typeof(o) = 'object'
+         and nullif(btrim(coalesce(o ->> 'name', o ->> 'label', '')), '') is not null
+       group by lower(btrim(coalesce(o ->> 'name', o ->> 'label')))
     ) t;
 
   for it in select x from jsonb_array_elements(case when jsonb_typeof(p_items) = 'array' then p_items else '[]'::jsonb end) x loop
@@ -2925,7 +2961,13 @@ begin
         v_name := coalesce(nullif(coalesce(v_pick ->> 'n', ''), ''), v_name);
       else
         -- Not one of this item's options, or more copies than its group allows: it can only
-        -- add to the line, never take anything off.
+        -- add to the line, never take anything off. An id the venue's menu does not have at
+        -- all is charged at what the venue charges for an option of the same NAME (fix round
+        -- 6), so a real extra can never ride the ticket for nothing; free text the menu has
+        -- no option for costs what the page said, which is what the storefront charged.
+        if v_ents is null then
+          v_menu := (v_onames ->> lower(btrim(coalesce(md ->> 'name', md ->> 'label', ''))))::bigint;
+        end if;
         v_mod := greatest(v_mod, coalesce(v_menu, 0), 0);
       end if;
       if v_name is not null then
@@ -3387,8 +3429,23 @@ begin
       v_keys := v_keys || v_key;
     end if;
   end loop;
+  -- A FREE ITEM REWARD THAT NAMES NOTHING IS THE CHEAPEST LINE (fix round 6, 19 Sep). This
+  -- used to return 0, so the stamp card default (free_item with no eligible_items) was worth
+  -- nothing to the server and EVERY honest redemption landed in "Payment short" with the
+  -- guest's stamp card already spent. The storefront does the opposite and always has:
+  -- src/surfaces/online/OnlineCheckout.jsx:911-913 - when the reward configures no item,
+  -- "fallback to cheapest in cart", the cart sorted by price and the first line's price taken
+  -- as the discount. Mirrored here over the lines the SERVER priced (p_lines carries only the
+  -- rows the storefront really sells, at the server's own prices), so a reward that names
+  -- nothing is worth the cheapest of those and nothing else. The ceilings above it are
+  -- unchanged: one reward per order, never more than the page declared, never more than the
+  -- order has left to give away.
   if cardinality(v_ids) = 0 and cardinality(v_keys) = 0 then
-    return 0;
+    for l in select x from jsonb_array_elements(p_lines) x loop
+      continue when jsonb_typeof(l) is distinct from 'object';
+      v_min := least(v_min, greatest(0, coalesce((l ->> 'item')::bigint, 0)));
+    end loop;
+    return greatest(0, coalesce(v_min, 0));
   end if;
   for l in select x from jsonb_array_elements(p_lines) x loop
     continue when jsonb_typeof(l) is distinct from 'object';
@@ -3437,16 +3494,30 @@ $fn$;
 -- applies two):
 --   * ONE reward per order counts. Of every redemption the server can value, the DEAREST one
 --     is the discount; the rest take nothing off.
---   * p_base_minor is the ceiling: the server's own goods value AFTER the venue's automatic
---     deals and any promo code, which is what is actually left to pay for the goods. A percent
---     reward is worked out on that same figure, not the raw goods, so it can never discount
---     money another discount already took off.
+--   * p_cap_minor is the ceiling: the server's own goods value AFTER the venue's automatic
+--     deals and any promo code, which is what is actually left to pay for the goods, so the
+--     whole loyalty benefit can never be worth more than the order still owes.
 -- An order that declares more loyalty than that is simply short: it books nothing, staff see
 -- "Payment short" and confirm on the till.
+--
+-- A PERCENT REWARD IS THE STOREFRONT'S PERCENT (fix round 6, 19 Sep). Round 5 worked the
+-- percent out on the ceiling above, which is net of the promo code. The storefront does not:
+-- src/surfaces/online/OnlineCheckout.jsx:891 takes the percent of discountedSubtotalMinor,
+-- which is the subtotal less the venue's AUTOMATIC deals only (:291), before any promo code;
+-- :338 then subtracts the reward and the promo side by side from that same figure. So a guest
+-- using a promo code and a percent reward together was charged one number by our own page and
+-- refused by the server for paying it: 50 percent plus MULTI10 on a 125 pound basket asks for
+-- 50.00 and came out due 56.20, "Payment short", no kitchen ticket, and "Check payment" could
+-- never clear it because verify repeated the sum. The percent is now worked out on
+-- p_base_minor, the goods less the venue's automatic deals, exactly as the page does; the
+-- total benefit still cannot exceed p_cap_minor, so the order can never be given away twice
+-- over and the eleventh forgery stays shut.
 drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint);
 drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint, jsonb);
+drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint, bigint, jsonb);
 create or replace function public._public_order_loyalty(p_loc text, p_ref text, p_check_id text,
-                                                        p_declared bigint, p_base_minor bigint, p_lines jsonb)
+                                                        p_declared bigint, p_base_minor bigint,
+                                                        p_cap_minor bigint, p_lines jsonb)
 returns bigint
 language plpgsql
 stable
@@ -3455,6 +3526,7 @@ set search_path = public
 as $fn$
 declare
   v_base bigint := greatest(0, coalesce(p_base_minor, 0));
+  v_ceil bigint := greatest(0, coalesce(p_cap_minor, 0));
   v_cap  bigint := 0;
   v_val  bigint;
   v_amt  bigint;
@@ -3490,6 +3562,7 @@ begin
       v_rw := case when jsonb_typeof(v_meta -> 'reward') = 'object' then v_meta -> 'reward' end;
       v_type := lower(coalesce(v_rw ->> 'type', ''));
       if v_type = 'discount_percent' then
+        -- mirrors OnlineCheckout.jsx:891 (percent of discountedSubtotalMinor, :291)
         v_pct := least(100, greatest(0, public._fence_num(v_rw ->> 'percent')));
         v_val := floor(v_base * v_pct / 100)::bigint;
       elsif v_type = 'free_item' then
@@ -3499,8 +3572,11 @@ begin
     -- ONE reward per order: the dearest redemption the server can value, never the sum.
     v_cap := greatest(v_cap, greatest(0, coalesce(v_val, 0)));
   end loop;
-  -- Never more than the page declared, and never more than the order has left to give away.
-  return least(p_declared, v_cap, v_base);
+  -- Never more than the page declared, and never more than the order has left to give away
+  -- (mirrors OnlineCheckout.jsx:338, where the reward and the promo code come off the same
+  -- discounted subtotal inside a max(0, ...): the customer is never charged below zero, and
+  -- the venue never gives away more than the order is worth).
+  return least(p_declared, v_cap, v_ceil);
 end;
 $fn$;
 
@@ -3606,7 +3682,32 @@ $fn$;
 -- Write a public order's paid check: total = the verified card amount (in pence). A
 -- catering check keeps the event time as its sales date (the old catering page did
 -- this), within a year ahead; every other check is dated now.
-create or replace function public._public_order_write_check(p_cc jsonb, p_total_minor bigint, p_extra_customer jsonb)
+--
+-- THE MONEY ON THE CHECK IS THE SERVER'S OWN (fix round 6, 19 Sep). Round 5 capped the tip a
+-- TAB CLOSE books (settle_qr_tab), and left the commonest paths alone: an online, QR pay now
+-- or catering check still booked the subtotal, the service charge, the tip and the tender
+-- list the phone declared, with only `total` replaced by the money the server proved. A 95
+-- pound Feast paid with a real 9500 card proof, sent as subtotal 0.00 and tip 95.00, booked
+-- exactly that: the venue booked a zero sale, and 95 pounds of its own takings became a tip
+-- that flows into tronc, the Daily Trading P&L and the Xero posting. Four figures are now the
+-- server's:
+--   * subtotal: the server's own cart sum (p_server.goods_minor), which is precisely what
+--     every storefront sends - OnlineCheckout.jsx:237 and :1358, QrCheckout.jsx:119 and :528,
+--     CateringCheckout.jsx:281 all send the basket at menu prices, before any discount;
+--   * service, then tip: only out of money the proof actually captured ABOVE what the order
+--     owed for its goods, the same ceiling settle_qr_tab uses. On the pages the service
+--     charge and the tip sit on top of the discounted subtotal (OnlineCheckout.jsx:338), so
+--     money that is not there was never a tip;
+--   * tenders: kept only when what the page declared adds up to the money the server itself
+--     proved (src/lib/accounting/tenders.js: "the sum is the full bill plus tips"), otherwise
+--     rebuilt from the server's own figures exactly as OnlineCheckout.jsx:1366-1371 builds
+--     it - the gift card as debited, the loyalty and promo credits, then the card.
+-- p_server: { goods_minor, owed_minor, proven_minor, gift_minor, loyalty_minor, promo_minor }.
+-- An empty p_server leaves the old behaviour, so nothing that has not been given the figures
+-- silently books zero.
+drop function if exists public._public_order_write_check(jsonb, bigint, jsonb);
+create or replace function public._public_order_write_check(p_cc jsonb, p_total_minor bigint, p_extra_customer jsonb,
+                                                            p_server jsonb default '{}'::jsonb)
 returns text
 language plpgsql
 security definer
@@ -3618,6 +3719,16 @@ declare
   v_want   timestamptz;
   v_row    jsonb;
   v_tip    bigint;
+  v_svc    bigint;
+  v_head   bigint;
+  v_gift   bigint;
+  v_loy    bigint;
+  v_promo  bigint;
+  v_sum    bigint;
+  v_tsum   bigint;
+  v_ok     boolean;
+  v_list   jsonb;
+  g        jsonb;
 begin
   if p_cc ->> 'source' = 'catering' then
     begin
@@ -3635,19 +3746,97 @@ begin
   v_row := (p_cc - 'closed_at_wanted')
            || jsonb_build_object('id', v_id, 'total', round(greatest(0, p_total_minor) / 100.0, 2),
                                  'status', 'paid', 'closed_at', v_closed);
+
+  v_gift  := greatest(0, coalesce((p_server ->> 'gift_minor')::bigint, 0));
+  v_loy   := greatest(0, coalesce((p_server ->> 'loyalty_minor')::bigint, 0));
+  v_promo := greatest(0, coalesce((p_server ->> 'promo_minor')::bigint, 0));
+  v_tip   := greatest(0, round(public._fence_num(v_row ->> 'tip') * 100)::bigint);
+  v_svc   := greatest(0, round(public._fence_num(v_row ->> 'service') * 100)::bigint);
+  if coalesce(p_server, '{}'::jsonb) <> '{}'::jsonb then
+    -- Money the proof captured over what the order owed for its goods: all a service charge
+    -- and a tip can ever have come out of (settle_qr_tab uses the same ceiling). The service
+    -- charge is part of the bill so it is served first, the tip is what is left.
+    v_head := greatest(0, greatest(0, coalesce((p_server ->> 'proven_minor')::bigint, 0))
+                          - greatest(0, coalesce((p_server ->> 'owed_minor')::bigint, 0)));
+    v_svc  := least(v_svc, v_head);
+    v_tip  := least(v_tip, v_head - v_svc, greatest(0, p_total_minor));
+    -- mirrors OnlineCheckout.jsx:237/:1358, QrCheckout.jsx:119/:528, CateringCheckout.jsx:281
+    v_row := v_row || jsonb_build_object(
+               'subtotal', round(greatest(0, coalesce((p_server ->> 'goods_minor')::bigint, 0)) / 100.0, 2),
+               'service', round(v_svc / 100.0, 2),
+               'tip', round(v_tip / 100.0, 2));
+    -- The declared tender list is kept only when it adds up to the money the server itself
+    -- proved: the card it is booking, plus the gift card, loyalty and promo it verified
+    -- (src/lib/accounting/tenders.js THE RULE). Two pence of slack, because the pages count
+    -- in floating point. Its methods must also be ones these three storefronts really use
+    -- (OnlineCheckout.jsx:1366-1371, QrCheckout.jsx:536, CateringCheckout.jsx:282 emit card,
+    -- gift_card, loyalty and promo and nothing else), so a page cannot book a card sale into
+    -- the cash drawer. Anything else is not booked at all: it is rebuilt below.
+    -- The tips ON the tenders must add up to the tip the server allowed too, or a page could
+    -- send the right grand total split the wrong way ("card 0.00, tip 95.00") and the
+    -- accounting layer would still pay 95 pounds of takings out through tronc.
+    if jsonb_typeof(v_row -> 'tenders') = 'array' then
+      select coalesce(sum(round(public._fence_num(t ->> 'amount') * 100)::bigint
+                          + round(public._fence_num(t ->> 'tip') * 100)::bigint), 0),
+             coalesce(sum(round(public._fence_num(t ->> 'tip') * 100)::bigint), 0),
+             bool_and(lower(coalesce(t ->> 'method', '')) in ('card', 'gift_card', 'loyalty', 'promo'))
+        into v_sum, v_tsum, v_ok from jsonb_array_elements(v_row -> 'tenders') t;
+      if not coalesce(v_ok, false)
+         or abs(v_sum - (greatest(0, p_total_minor) + v_gift + v_loy + v_promo)) > 2
+         or abs(v_tsum - v_tip) > 2 then
+        v_row := v_row - 'tenders';
+      end if;
+    end if;
+  else
+    v_tip := least(v_tip, greatest(0, p_total_minor));
+  end if;
+
   -- tenders (v5.9.11): the accounting layer posts card, cash, gift card and credits from this
   -- column, so a check written here must never leave it empty or the sale lands in
   -- Unallocated. The page normally sends its own list; when it did not (an older page, or the
-  -- tab close, which the server values itself), one card tender for the money that was really
-  -- taken, with the tip on it, exactly as singleTender() builds it.
-  if jsonb_typeof(v_row -> 'tenders') is distinct from 'array' and p_total_minor > 0 then
-    v_tip := least(greatest(0, round(public._fence_num(v_row ->> 'tip') * 100)::bigint), p_total_minor);
-    v_row := jsonb_set(v_row, '{tenders}', jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
-               'method', 'card',
-               'amount', round((p_total_minor - v_tip) / 100.0, 2),
-               'tip', round(v_tip / 100.0, 2),
-               'psp_ref', nullif(v_row ->> 'stripe_payment_intent_id', ''),
-               'processor', nullif(v_row ->> 'processor', '')))));
+  -- tab close, which the server values itself), or when what it sent did not add up, the
+  -- server's own list: the gift card as debited, the loyalty and promo credits, then the card
+  -- with the tip on it, exactly as OnlineCheckout.jsx:1366-1371 and singleTender() build it.
+  if jsonb_typeof(v_row -> 'tenders') is distinct from 'array'
+     and (p_total_minor > 0 or v_gift > 0 or v_loy > 0 or v_promo > 0) then
+    v_list := '[]'::jsonb;
+    for g in select x from jsonb_array_elements(
+               case when jsonb_typeof(v_row -> 'gift_card' -> 'legs') = 'array' and v_gift > 0
+                         and jsonb_array_length(v_row -> 'gift_card' -> 'legs') > 0
+                    then v_row -> 'gift_card' -> 'legs'
+                    when v_gift > 0 then jsonb_build_array(coalesce(v_row -> 'gift_card', '{}'::jsonb))
+                    else '[]'::jsonb end) x loop
+      v_list := v_list || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+                  'method', 'gift_card',
+                  'amount', round(least(v_gift, greatest(0, round(public._fence_num(g ->> 'applied'))::bigint)) / 100.0, 2),
+                  'tip', 0,
+                  'gift_card_id', nullif(g ->> 'card_id', ''))));
+    end loop;
+    -- One gift entry for the money proved when the check carried no usable record of it.
+    if v_gift > 0 and (select coalesce(sum(round(public._fence_num(t ->> 'amount') * 100)::bigint), 0)
+                         from jsonb_array_elements(v_list) t) = 0 then
+      v_list := jsonb_build_array(jsonb_build_object('method', 'gift_card',
+                                                     'amount', round(v_gift / 100.0, 2), 'tip', 0));
+    end if;
+    if v_loy > 0 then
+      v_list := v_list || jsonb_build_array(jsonb_build_object('method', 'loyalty',
+                                                               'amount', round(v_loy / 100.0, 2), 'tip', 0));
+    end if;
+    if v_promo > 0 then
+      v_list := v_list || jsonb_build_array(jsonb_build_object('method', 'promo',
+                                                               'amount', round(v_promo / 100.0, 2), 'tip', 0));
+    end if;
+    if p_total_minor > 0 then
+      v_list := v_list || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+                  'method', 'card',
+                  'amount', round((p_total_minor - v_tip) / 100.0, 2),
+                  'tip', round(v_tip / 100.0, 2),
+                  'psp_ref', nullif(v_row ->> 'stripe_payment_intent_id', ''),
+                  'processor', nullif(v_row ->> 'processor', ''))));
+    end if;
+    if jsonb_array_length(v_list) > 0 then
+      v_row := jsonb_set(v_row, '{tenders}', v_list);
+    end if;
   end if;
   if coalesce(p_extra_customer, '{}'::jsonb) <> '{}'::jsonb then
     v_row := jsonb_set(v_row, '{customer}', coalesce(v_row -> 'customer', '{}'::jsonb) || p_extra_customer);
@@ -3670,11 +3859,11 @@ begin
                            'public._public_order_promo(text, text, bigint, text, boolean)',
                            'public._loyalty_label_key(text)',
                            'public._loyalty_free_item_minor(jsonb, jsonb)',
-                           'public._public_order_loyalty(text, text, text, bigint, bigint, jsonb)',
+                           'public._public_order_loyalty(text, text, text, bigint, bigint, bigint, jsonb)',
                            'public._public_order_due(jsonb, bigint)',
                            'public._public_order_payment_refs(jsonb, text)',
                            'public._public_order_check_row(text, text, text, text, jsonb, jsonb, jsonb)',
-                           'public._public_order_write_check(jsonb, bigint, jsonb)'] loop
+                           'public._public_order_write_check(jsonb, bigint, jsonb, jsonb)'] loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
 end
@@ -3970,11 +4159,13 @@ begin
     end if;
     v_loy_decl := (v_decl ->> 'loyalty_minor')::bigint;
     if v_check is not null then
-      -- Loyalty is valued against what is LEFT to pay for the goods: the server's own goods
-      -- value less the venue's automatic deals and the promo code above it (fix round 5). A
-      -- percent reward is that percent of this figure, and the whole loyalty benefit can never
-      -- be more than it, so an order can never be given away twice over.
+      -- A percent reward is worked out on the goods less the venue's AUTOMATIC deals, which is
+      -- the figure the storefront takes its percent of (OnlineCheckout.jsx:891 and :291), and
+      -- a free item reward is the cheapest line the server priced. The whole loyalty benefit
+      -- is then capped at what is LEFT to pay for the goods, deals and promo code off
+      -- (OnlineCheckout.jsx:338), so an order can never be given away twice over.
       v_loy_minor := public._public_order_loyalty(v_loc, v_ref, v_check_id, v_loy_decl,
+                                                  greatest(0, v_goods_minor - v_auto_minor),
                                                   greatest(0, v_goods_minor - v_auto_minor - v_promo_minor),
                                                   v_val -> 'lines');
     end if;
@@ -4081,7 +4272,14 @@ begin
   perform set_config('servos.public_order', 'off', true);
 
   if v_paid and v_check is not null then
-    v_written_id := public._public_order_write_check(v_cc, least(v_card_minor, v_due_minor), '{}'::jsonb);
+    v_written_id := public._public_order_write_check(
+                      v_cc, least(v_card_minor, v_due_minor), '{}'::jsonb,
+                      jsonb_build_object('goods_minor', v_goods_minor,
+                                         'owed_minor', greatest(0, v_goods_minor - v_auto_minor
+                                                                   - v_promo_minor - v_loy_minor),
+                                         'proven_minor', v_card_minor + v_gift_minor,
+                                         'gift_minor', v_gift_minor, 'loyalty_minor', v_loy_minor,
+                                         'promo_minor', v_promo_minor));
     update public.payment_proofs
        set used_by_ref = v_loc || ':' || v_ref, used_at = now()
      where location_id = v_loc and used_by_ref is null
@@ -4191,12 +4389,15 @@ begin
   if v_pend.pricing is not null then
     -- A redemption that landed after the order is valued now, against the SAME lines the
     -- order was priced from (the kept check carries the server's own priced items, so
-    -- re-valuing them gives back the lines a free item reward is matched against), and
-    -- against the same ceiling the order was priced with: the goods less the venue's
-    -- automatic deals and the promo code (fix round 5).
+    -- re-valuing them gives back the lines a free item reward is matched against), and on the
+    -- same two figures place_public_order used: a percent reward on the goods less the
+    -- venue's automatic deals (OnlineCheckout.jsx:891 and :291), the whole benefit capped at
+    -- what is left to pay once the promo code is off too (:338).
     v_loy := greatest(coalesce((v_pend.pricing ->> 'loyalty_minor')::bigint, 0),
                       public._public_order_loyalty(v_loc, p_ref, v_check_id,
                                                    coalesce((v_pend.pricing ->> 'loyalty_declared_minor')::bigint, 0),
+                                                   greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)
+                                                               - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)),
                                                    greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)
                                                                - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)
                                                                - coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)),
@@ -4229,8 +4430,18 @@ begin
                                               then 'Something on this order is not on the menu. A manager must check it and confirm the payment.'
                                               else 'The payment is not confirmed yet.' end);
   end if;
-  v_check_id_written := public._public_order_write_check(v_pend.check_row, least(v_card, v_due),
-                                                         jsonb_build_object('payment_verified_at', now()));
+  v_check_id_written := public._public_order_write_check(
+                          v_pend.check_row, least(v_card, v_due),
+                          jsonb_build_object('payment_verified_at', now()),
+                          jsonb_build_object(
+                            'goods_minor', coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0),
+                            'owed_minor', greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)
+                                                      - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)
+                                                      - coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)
+                                                      - v_loy),
+                            'proven_minor', v_card + v_gift,
+                            'gift_minor', v_gift, 'loyalty_minor', v_loy,
+                            'promo_minor', coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)));
   update public.payment_proofs set used_by_ref = v_loc || ':' || p_ref, used_at = now() where id = any(v_ids);
   update public.order_queue
      set paid = true,
@@ -4303,7 +4514,19 @@ begin
                   v_pend.check_row, v_book,
                   jsonb_strip_nulls(jsonb_build_object('payment_confirmed_by', v_uid, 'payment_confirmed_at', now(),
                                                        'payment_confirmed_note', left(p_note, 200),
-                                                       'payment_confirmed_amount_minor', v_book)));
+                                                       'payment_confirmed_amount_minor', v_book)),
+                  -- Staff confirmed it, so the money is what they say; the subtotal, service
+                  -- charge, tip and tenders are still the server's own (fix round 6).
+                  jsonb_build_object(
+                    'goods_minor', coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0),
+                    'owed_minor', greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)
+                                              - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)
+                                              - coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)
+                                              - coalesce((v_pend.pricing ->> 'loyalty_minor')::bigint, 0)),
+                    'proven_minor', v_book + v_gift,
+                    'gift_minor', v_gift,
+                    'loyalty_minor', coalesce((v_pend.pricing ->> 'loyalty_minor')::bigint, 0),
+                    'promo_minor', coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)));
   update public.order_queue
      set paid = true,
          payment_method = coalesce(payment_method, left(coalesce(nullif(v_pend.check_row ->> 'method', ''), 'card'), 40)),

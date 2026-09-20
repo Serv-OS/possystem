@@ -118,9 +118,13 @@ test('C25: a reward with no money value records WHAT it is, so the server never 
   // percent: the percentage only
   assert.deepEqual(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 10 } }), { type: 'discount_percent', percent: 10 });
   assert.deepEqual(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 500 } }), { type: 'discount_percent', percent: 100 });
+  // fix round 6: a free item reward that names NOTHING is still recorded, with an empty list.
+  // It is the stamp card default, and the storefront gives the cheapest line in the basket
+  // away (OnlineCheckout.jsx:911-913), so the server has to be told it is a free item at all.
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [] } }),
+    { type: 'free_item', items: [] });
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: {} }), { type: 'free_item', items: [] });
   // nothing the server could use: null, which values the reward at zero and the order is short
-  assert.equal(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [] } }), null);
-  assert.equal(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: {} }), null);
   assert.equal(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 0 } }), null);
   assert.equal(loyaltyRewardMeta({ reward_type: 'discount_fixed', reward_value: { amount_minor: 350 } }), null, 'a fixed reward is already the proof amount');
   assert.equal(loyaltyRewardMeta(null), null);

@@ -136,6 +136,14 @@ insert into public.menu_items (id, location_id, name, type, cat, cats, parent_id
   ('mi-donut-old', '10000000-0000-4000-8000-000000000001', 'Old Donut', 'simple', 'cat-donuts', '{}', null, '{"base": 2}', '[]',
    true, false, '{"pos": true, "kiosk": true, "online": true}');
 
+-- Fix round 6: a kids menu tier priced at 0.00. resolveItemPrice (lib/menuPricing.js) reads an
+-- explicit tier zero as a real price and every storefront charges 0.00 for this row on that
+-- menu, while the server's floor skipped it and priced the line at its 4 pound base, so an
+-- honest, fully paid order came out short.
+insert into public.menu_items (id, location_id, name, type, cat, cats, parent_id, pricing, assigned_modifier_groups) values
+  ('mi-kidsdrink', '10000000-0000-4000-8000-000000000001', 'Kids Squash', 'simple', 'cat-drinks', '{}', null,
+   '{"base": 4, "menus": {"menu-kids": {"all": 0}}}', '[]');
+
 -- Soup is off today. eighty_six is the live table both storefronts read to grey an item out;
 -- it is not part of the stage 1 catalog dump, so build_baseline.py creates the two columns
 -- the app (lib/db.js) and the fence use.

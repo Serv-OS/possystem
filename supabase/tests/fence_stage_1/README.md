@@ -23,6 +23,23 @@ pg_ctl -D /some/scratch/pgdata stop    # and delete the folder
 On 19 Sep (fix round 2): 325, 12, 56, 20 and 39 checks (452), all passing.
 On 19 Sep (fix round 3, rebased on v5.9.11): 349, 25, 56, 21 and 39 checks (490), all passing.
 On 19 Sep (fix round 4): 373, 25, 56, 21 and 39 checks (514), all passing. `20260919_OPS_fence_0_caps.sql` (step 1b) is run by `testTrip.py`; `seed.sql` does what it does, because it is the state of the database on the night file A is pasted.
-On 19 Sep (fix round 5): 393, 25, 56, 21 and 39 checks (534), all passing. New in `testA.py`: the ELEVENTH way to forge paid (loyalty redemptions added up with no ceiling, the reviewer's three scenarios to the penny: two 50 percent rewards on 125 pounds, 10 plus 20 percent, three stamp free coffees against one coffee), one reward of each kind on its own still paying the order, a percent reward taken off what is LEFT after the venue's deal and the promo code, and the FIX ROUND 5 block: an item hidden from Online, a 0.00 item and an item with no pricing are all sold and PAID like any other, a plain live item is paid on all five channels (online, delivery, drive thru, QR, catering), a QR tab round carrying a free side is accepted instead of refused, and a QR tab's tip is capped at what the card took over the rounds. Every one of those was run against the round 4 file first: the three loyalty scenarios booked as PAID for nothing, the honest orders came out "short", the tab round was refused and the tab booked subtotal 0.00 with a 95 pound tip.
+On 19 Sep (fix round 5): 393, 25, 56, 21 and 39 checks (534), all passing.
+On 19 Sep (fix round 6): 407, 25, 56, 21 and 39 checks (548), all passing. The rule this round: the
+server must charge EXACTLY what our own storefront charged, and where the two differ the storefront
+wins, because the customer paid what we asked. New in `testA.py`, each with the honest case PAID and
+the matching forgery still refused: a percent reward used WITH a promo code (the percent comes off the
+basket after the venue's automatic deals, `OnlineCheckout.jsx:891` and `:291`, with the promo beside it
+at `:338`, so 50 percent plus MULTI10 on a 125 pound basket pays 50.00 and is paid, while two 50 percent
+rewards are still ONE); a free item reward that names no item, the stamp card default, worth the cheapest
+line the server priced (`OnlineCheckout.jsx:911-913`), while three such stamp cards still take off one
+cheapest line; a menu tier typed as 0.00 priced at 0.00 (`menuPricing.js` `menuTierPrice:78-80`), while
+the item beside it is still floored at its own price; an option id on no modifier group charged at the
+venue's price for that NAME, while genuine free text stays free and still reaches the kitchen; and the
+money on the check itself, where a 95 pound order sent as subtotal 0.00 with a 95 pound tip now books a
+95.00 sale, no tip and a rebuilt card tender, an honest 2.00 tip is kept, and a card sale declared as
+cash is rebuilt as the card it was. `seed.sql` gains `mi-kidsdrink` (`{"base": 4, "menus": {"menu-kids":
+{"all": 0}}}`). Every one of those was run against the round 5 file first: the two blockers refused the
+honest customer who had paid in full, the 0.00 tier came out short, and the check booked the phone's
+own subtotal, tip and tenders. New in `testA.py`: the ELEVENTH way to forge paid (loyalty redemptions added up with no ceiling, the reviewer's three scenarios to the penny: two 50 percent rewards on 125 pounds, 10 plus 20 percent, three stamp free coffees against one coffee), one reward of each kind on its own still paying the order, a percent reward taken off what is LEFT after the venue's deal and the promo code, and the FIX ROUND 5 block: an item hidden from Online, a 0.00 item and an item with no pricing are all sold and PAID like any other, a plain live item is paid on all five channels (online, delivery, drive thru, QR, catering), a QR tab round carrying a free side is accepted instead of refused, and a QR tab's tip is capped at what the card took over the rounds. Every one of those was run against the round 4 file first: the three loyalty scenarios booked as PAID for nothing, the honest orders came out "short", the tab round was refused and the tab booked subtotal 0.00 with a 95 pound tip.
 
 Each check runs as a PostgREST caller would: `set local role` plus `request.jwt.claims` (and `request.headers` for the caller's network), inside a transaction that is rolled back unless the test needs the change to stay.

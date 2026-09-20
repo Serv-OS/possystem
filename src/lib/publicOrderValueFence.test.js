@@ -53,7 +53,11 @@ test('a price the server cannot work out is NULL, never zero', () => {
   assert.ok(floor.includes('public._fence_num_or_null('), 'a missing or junk number is nothing, not 0');
   assert.ok(floor.includes('if coalesce(v_min, 0) <= 0 then\n    v_min := null;'),
     'a zero is not a price (every screen reads a zero as unpriced: menuPricing.variantFromPrice)');
-  assert.ok(floor.includes("if coalesce(v_val, 0) > 0 then"), 'a menu tier only counts when it is a real price');
+  // fix round 6: a zero TYPED INTO A MENU TIER is a real price. menuPricing.menuTierPrice
+  // uses isSet(), so 0 counts, and resolveItemPrice returns that tier and looks no further,
+  // which means every storefront charges 0.00 for that row on that menu.
+  assert.ok(floor.includes("if v_val is not null and v_val >= 0 then"), 'an explicit tier price counts, zero included');
+  assert.ok(!floor.includes("if coalesce(v_val, 0) > 0 then"), 'the old rule that skipped a 0.00 tier is gone');
   assert.ok(!/return round\(v_min \* 100\)::bigint;/.test(floor), 'the old unconditional 0 return is gone');
 });
 
@@ -120,22 +124,32 @@ test('ONE reward per order, and never more than the order is worth (fix round 5)
   assert.ok(loyalty.includes('v_cap := greatest(v_cap, greatest(0, coalesce(v_val, 0)));'),
     'the dearest redemption the server can value, never the sum of them');
   assert.ok(!loyalty.includes('v_cap := v_cap +'), 'the adding up is gone: two rewards on one check took a 125 pound order to 0');
-  assert.ok(loyalty.includes('return least(p_declared, v_cap, v_base);'),
+  assert.ok(loyalty.includes('return least(p_declared, v_cap, v_ceil);'),
     'never more than the page declared, and never more than the order has left to give away');
-  assert.ok(loyalty.includes('v_base bigint := greatest(0, coalesce(p_base_minor, 0));'), 'the ceiling is a parameter');
-  // and the ceiling BOTH callers pass is the goods AFTER the venue's deals and the promo code
+  assert.ok(loyalty.includes('v_ceil bigint := greatest(0, coalesce(p_cap_minor, 0));'), 'the ceiling is its own parameter');
+  // fix round 6: the percent BASE and the CEILING are two different figures, because that is
+  // what the storefront does. OnlineCheckout:891 takes the percent of discountedSubtotalMinor
+  // (:291, the subtotal less the venue's AUTOMATIC deals, before any promo), and :338 then
+  // subtracts the reward and the promo side by side inside a max(0, ...).
+  assert.ok(loyalty.includes('v_base bigint := greatest(0, coalesce(p_base_minor, 0));'), 'the percent base is a parameter');
+  assert.ok(loyalty.includes('-- mirrors OnlineCheckout.jsx:891 (percent of discountedSubtotalMinor, :291)'),
+    'the percent line names the storefront line it mirrors');
   assert.equal((FILE_A.match(/public\._public_order_loyalty\(v_loc/g) || []).length, 2,
     'two callers: place_public_order and verify_public_order_payment');
-  assert.ok(FILE_A.includes('greatest(0, v_goods_minor - v_auto_minor - v_promo_minor),'),
-    'place_public_order passes the goods less the automatic deals less the promo code');
+  assert.ok(FILE_A.includes('greatest(0, v_goods_minor - v_auto_minor),\n'
+    + '                                                  greatest(0, v_goods_minor - v_auto_minor - v_promo_minor),'),
+    'place_public_order passes the goods less the deals as the base, less the promo as the ceiling');
   assert.ok(FILE_A.includes("greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)\n"
+    + "                                                               - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)),\n"
+    + "                                                   greatest(0, coalesce((v_pend.pricing ->> 'goods_minor')::bigint, 0)\n"
     + "                                                               - coalesce((v_pend.pricing ->> 'auto_minor')::bigint, 0)\n"
     + "                                                               - coalesce((v_pend.pricing ->> 'promo_minor')::bigint, 0)),"),
-    'and Check payment re-values a late redemption against the same ceiling');
-  // the old 5 arg shape and the round 4 shape are both dropped, so the rename can apply in place
-  assert.ok(FILE_A.includes('drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint);')
-    && FILE_A.includes('drop function if exists public._public_order_loyalty(text, text, text, bigint, bigint, jsonb);'),
-    'both older signatures are dropped first (a parameter rename cannot CREATE OR REPLACE)');
+    'and Check payment re-values a late redemption on the same two figures');
+  // every older shape is dropped, so the new signature can be created in place
+  for (const sig of ['bigint, bigint)', 'bigint, bigint, jsonb)', 'bigint, bigint, bigint, jsonb)']) {
+    assert.ok(FILE_A.includes(`drop function if exists public._public_order_loyalty(text, text, text, ${sig};`),
+      `the ${sig} shape is dropped first (a new parameter cannot CREATE OR REPLACE)`);
+  }
 });
 
 test('a free item reward is the CHEAPEST line it matches, on the same rule every screen uses', () => {
@@ -143,8 +157,15 @@ test('a free item reward is the CHEAPEST line it matches, on the same rule every
     'create or replace function public._public_order_loyalty');
   assert.ok(free.includes('v_min := least(v_min, greatest(0, coalesce((l ->> \'item\')::bigint, 0)));'), 'the cheapest match');
   assert.ok(free.includes('return greatest(0, coalesce(v_min, 0));'), 'nothing matched: worth nothing');
-  assert.ok(free.includes('if cardinality(v_ids) = 0 and cardinality(v_keys) = 0 then\n    return 0;'),
-    'a reward that names no item is worth nothing');
+  // fix round 6: a reward that names NO item is the stamp card default, and the storefront
+  // gives the cheapest line in the basket away (OnlineCheckout.jsx:911-913, "fallback to
+  // cheapest in cart"). Valuing it at 0 put every honest redemption into "Payment short".
+  assert.ok(free.includes('if cardinality(v_ids) = 0 and cardinality(v_keys) = 0 then\n'
+    + '    for l in select x from jsonb_array_elements(p_lines) x loop'),
+    'a reward that names no item falls back to the cheapest line the server priced');
+  assert.ok(free.includes('src/surfaces/online/OnlineCheckout.jsx:911-913'), 'and names the storefront line it mirrors');
+  assert.ok(!free.includes('if cardinality(v_ids) = 0 and cardinality(v_keys) = 0 then\n    return 0;'),
+    'the old zero is gone');
   assert.ok(free.includes("coalesce(l ->> 'id', '') = any(v_ids)") && free.includes("coalesce(l ->> 'pid', '') = any(v_ids)"),
     'matched by the line id or its size parent');
   for (const key of ['name', 'label', 'pname']) {
@@ -179,6 +200,49 @@ test('a QR tab tip can only be money taken ABOVE the server\'s own value of the 
     'the tip is capped at what the card took over that value');
   // the rest is the sale, so a phone can no longer book a 0.00 sale and a 95 pound tip
   assert.ok(settle.includes("'subtotal', greatest(0, v_booked - v_tip)"), 'and the rest is the sale');
+});
+
+/* ── fix round 6: the server charges what our own storefront charged ────────────────── */
+
+test('an online, QR or catering check books the SERVER\'s subtotal, service, tip and tenders', () => {
+  const write = between('create or replace function public._public_order_write_check',
+    'do $order_helper_grants$');
+  // the same ceiling the tab close uses: money taken ABOVE what the order owed for its goods
+  assert.ok(write.includes("v_head := greatest(0, greatest(0, coalesce((p_server ->> 'proven_minor')::bigint, 0))\n"
+    + "                          - greatest(0, coalesce((p_server ->> 'owed_minor')::bigint, 0)));"),
+    'the headroom is the proven money less what the order owed');
+  assert.ok(write.includes('v_svc  := least(v_svc, v_head);')
+    && write.includes('v_tip  := least(v_tip, v_head - v_svc, greatest(0, p_total_minor));'),
+    'the service charge first, then the tip, out of that headroom and never more than is booked');
+  // the subtotal is the server's own cart sum, which is exactly what all three pages send
+  assert.ok(write.includes('-- mirrors OnlineCheckout.jsx:237/:1358, QrCheckout.jsx:119/:528, CateringCheckout.jsx:281'),
+    'and names the storefront lines it mirrors');
+  assert.ok(write.includes("'subtotal', round(greatest(0, coalesce((p_server ->> 'goods_minor')::bigint, 0)) / 100.0, 2),"),
+    'the subtotal is the server\'s own goods value');
+  // the declared tenders are kept only when they add up, split right, on methods a page uses
+  assert.ok(write.includes("in ('card', 'gift_card', 'loyalty', 'promo')"), 'no cash: no storefront takes it');
+  assert.ok(write.includes('abs(v_sum - (greatest(0, p_total_minor) + v_gift + v_loy + v_promo)) > 2'),
+    'the sum is the money the server proved (accounting/tenders.js THE RULE)');
+  assert.ok(write.includes('abs(v_tsum - v_tip) > 2'), 'and the tips on them are the tip the server allowed');
+  assert.ok(write.includes("v_row := v_row - 'tenders';"), 'anything else is dropped and rebuilt below');
+  // all three call sites hand it the server's figures
+  assert.equal((FILE_A.match(/:= public\._public_order_write_check\(/g) || []).length, 3,
+    'place_public_order, verify_public_order_payment and confirm_public_order_payment');
+  assert.ok(FILE_A.includes("'proven_minor', v_card_minor + v_gift_minor,"), 'place_public_order passes what it proved');
+  assert.ok(FILE_A.includes("'proven_minor', v_card + v_gift,"), 'Check payment passes what it proved');
+  assert.ok(FILE_A.includes("'proven_minor', v_book + v_gift,"), 'and a manager confirm passes what it booked');
+});
+
+test('an option the server cannot find by id is charged at the venue\'s price for that NAME', () => {
+  assert.ok(value.includes("select coalesce(jsonb_object_agg(k, v), '{}'::jsonb) into v_onames"),
+    'the dearest menu price of every option name at the venue');
+  assert.ok(value.includes("v_menu := (v_onames ->> lower(btrim(coalesce(md ->> 'name', md ->> 'label', ''))))::bigint;"),
+    'an unknown id falls back to its name');
+  assert.ok(value.includes('if v_ents is null then'), 'only when the id is on no modifier group at all');
+  assert.ok(value.includes('v_mod := greatest(v_mod, coalesce(v_menu, 0), 0);'),
+    'and it can still only ADD to the line, never take anything off');
+  // the storefront's own instruction groups mint ids that are in no group, and must stay free
+  assert.ok(value.includes('OnlineItemSheet.jsx:450'), 'and says why an unknown id cannot simply be refused');
 });
 
 test('every fence file bounds its own locks, step 1b included', () => {
