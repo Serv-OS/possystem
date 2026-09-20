@@ -183,8 +183,13 @@ test('person sign in surfaces never get an anonymous session at app start; tills
   assert.match(sb, /allowAnonymous: !isLoginSurfaceMode\(\),/);
   assert.doesNotMatch(sb, /allowAnonymous: !isBackOfficeMode\(\),/);
   const init = read('src/lib/useSupabaseInit.js');
-  assert.match(init, /if \(!isLoginSurfaceMode\(\)\) \{\s*try \{ await ensureAuthToken\(\); \}/);
+  assert.match(init, /if \(!isLoginSurfaceMode\(\)\) \{[\s\S]{0,1600}?try \{ await ensureAuthToken\(\); \}/);
   assert.match(init, /event !== 'SIGNED_OUT' \|\| isLoginSurfaceMode\(\)/);
+  // A DEVICE SURFACE NEVER RUNS ON A PERSON'S LOGIN (fix round, 20 Sep 2026). A manager who
+  // signs in to Back Office on MPOS and presses Back used to strand the till on their aal1
+  // session, with no SIGNED_OUT to heal it and no sign out button on a POS surface.
+  assert.match(init, /if \(user && user\.is_anonymous === false\) \{/);
+  assert.match(init, /await supabase\.auth\.signOut\(\{ scope: 'local' \}\)/, 'local only: never end their Back Office session');
   assert.match(init, /_healRegistered = true;/, 'one listener per page');
 });
 

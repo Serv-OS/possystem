@@ -47,6 +47,24 @@ export default function useSupabaseInit() {
       // Never on a surface where a PERSON signs in (Back Office, admin, Owner, Staff): an
       // anonymous session there is not theirs (docs/SECOND_STEP.md, lib/supabase.js).
       if (!isLoginSurfaceMode()) {
+        // A DEVICE SURFACE NEVER RUNS ON A PERSON'S LOGIN (fix round, 20 Sep 2026, BLOCKER).
+        // A manager taps "Back office" on MPOS (same WebView, same rpos-auth), signs in, meets
+        // the second step, has no phone and presses Back. The till would boot on their aal1
+        // session: once enforcement is on, every Data API call and every edge function refuses
+        // it, and no SIGNED_OUT ever fires, so nothing heals and a POS surface has no sign out
+        // button. The same thing happens when a factor of theirs is reset (the auth server
+        // downgrades their sessions to aal1 without signing them out).
+        // So: on a POS family surface, a REAL login session is not this device's identity.
+        // Drop it locally (never a server sign out: that would end their Back Office session on
+        // purpose) and take a device session instead.
+        try {
+          const { data } = await supabase.auth.getSession();
+          const user = data?.session?.user;
+          if (user && user.is_anonymous === false) {
+            console.warn('[useSupabaseInit] this device was running on a person sign in: taking its own session back');
+            await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          }
+        } catch { /* no session to judge: ensureAuthToken below decides */ }
         try { await ensureAuthToken(); } catch (e) {
           console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
         }

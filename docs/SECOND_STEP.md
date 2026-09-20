@@ -1,154 +1,99 @@
-# Back Office second sign in step
+# Back Office second sign in step: runbook
 
-Branch `feat/backoffice-second-step`. Peter, 18 Sep 2026: "so no matter if a hacker gets the password they cant login".
+Written 18 Sep 2026. Rebased onto v5.9.12 and finished 20 Sep 2026. Branch `feat/backoffice-second-step`.
 
-## The way we went
+## What this is
 
-- **What changes:** after the password, every Back Office sign in needs a second step that only the person has.
-- **Face ID or fingerprint** in normal browsers on app.serv-os.app: iPhone and iPad Safari, Mac (Touch ID), Windows (Windows Hello). Other devices get it only where the browser says the device has one; everyone else uses the code.
-- **Authenticator app code** for everyone, always, as the backup: Google Authenticator, Microsoft Authenticator or 1Password.
-- **Code only** where Face ID cannot work yet: inside our own iPhone and Android apps, on the Sunmi tills, and on possystem-liard.vercel.app.
-- **Why both:** Face ID is the quick one. The code works everywhere, so nobody is ever stuck.
-- **Why not Face ID only:** our apps need native changes first (listed under Later), and Supabase marks Face ID for sign in as experimental.
-- **Why not passkeys instead of passwords:** Supabase passkey sign in is still beta and cannot be a second step. Later.
-- **Who is asked:** Back Office, the admin portal and the Owner app. Same login, same second step, once per browser or app.
-- **Who is never asked:** tills, KDS, kiosks, TVs, host stands, the Manager app and customers. They are devices with no password.
-- **Staff app:** not included now. It only shows a person their own shifts and details, through one server function. The database refuses it everything else.
-- **Enforced by the database too:** once you switch it on, the database and the server functions refuse a password only sign in, even if someone skips our screens.
-- **One switch:** OFF until everyone has set up. One line of SQL turns it on or off. No deploy.
-- **Lost phone:** owners reset their staff in Back Office. Only ServOS resets owners. Nobody resets themselves. Every reset is logged and emailed.
-- **Platform:** nobody ever signs in to Platform (0 logins), so there is no Platform session to protect. Turn Platform sign ups off (step 1). No Platform SQL file.
+- **The problem**: a password is all anyone needs to get into Back Office today. 13 real logins, no second step.
+- **The answer**: after the password, **Face ID or fingerprint** where it works, and an **authenticator app code** everywhere else. Every real login must have the app code as its backup.
+- **Enforced by the database**, not only by the screens: a password only login is refused by the tables, by the Data API and by every edge function once you switch it on.
+- **Nobody else is touched**: tills, KDS, kiosks, TVs, the host stand, customer pages and the staff app all sign in anonymously or through their own door.
+- **You run every SQL file yourself.** Claude never runs them.
 
-## What is proven, and what is not yet
+## Do these in Supabase yourself, before anything else
 
-- **Proven:** the SQL on a local copy of Postgres 17 with the Supabase roles: 34 checks, run twice, wrong project refused, roll back and re install.
-- **Proven:** the rules in 51 new unit tests (`npm test`, 2688 in all, all passing), including "tills and the service role are never refused".
-- **Proven:** the real sign in screens in a real Chromium browser with its built in Face ID stand in: set up, Face ID sign in, the code, wrong codes, a failed Face ID, phone width, the Owner app, the settings page. 33 checks, against a stand in auth server that checks the signatures (see Proof).
-- **Not proven yet:** the live Supabase auth server with Face ID switched on. It is off today. Step 5 is the first real test, by you, before anyone else.
+- **Turn sign ups OFF** (both projects). Dashboard, Authentication, Sign In / Providers, Email: **Allow new users to sign up** off. Anyone can sign up today and land inside.
+- **Minimum password length 12** (Authentication, Providers, Email). Ours checks it too; this is the server's own rule.
+- **Security emails on** (Authentication, Emails): a sign in from a new device tells the person.
+- **Switch WebAuthn (Face ID) on** (Authentication, Providers, Multi Factor, WebAuthn). Relying party **app.serv-os.app**, and add the same as an allowed origin. TOTP (the authenticator app) is on by default.
+- **Switch the MFA hook on** (Authentication, Hooks, **MFA Verification Attempt**): choose **Postgres function**, `public.second_step_mfa_hook`. Do it **after** you run the SQL file in step 3, and only then.
+- **Leave everything else alone.**
 
-## Runbook: do these in order
+## The order tonight
 
-### Step 1. Supabase settings (you, in the dashboard)
+1. **The app release** goes out.
+2. **Re-pair every device that runs on a person's login** (the list is in the file, V7).
+3. **Run `20260919s_OPS_second_step.sql`** in the Ops SQL editor, outside service.
+4. **Switch the MFA hook on** (above).
+5. **Set your own login up first**, and check it.
+6. **Tell your people**, and watch who has set up.
+7. **Lock out anyone who never did**, then **switch enforcement on**.
 
-What we are looking at: two Supabase projects. Only settings, no code.
+## Step 1: the app release
 
-**Ops project** (tbetcegmszzotrwdtqhi), Authentication:
-- **Multi Factor:** authenticator app (TOTP) enroll and verify ON. They are already on.
-- **Multi Factor:** WebAuthn enroll ON and verify ON.
-- **Passkeys, Relying Party:** Display Name `ServOS`. ID `serv-os.app`. Origins `https://app.serv-os.app,https://dev.serv-os.app,https://stage.serv-os.app` (Supabase allows up to 5).
-- **Passkeys sign in itself:** leave OFF. We only use the Relying Party boxes, which Face ID as a second step shares (one setting in the auth server for both).
-- **Passwords:** minimum length `12`. Leaked password check stays ON.
-- **Security emails:** turn ON the notices for password changed, email changed, and second step added or removed.
-- **Leave sign ups ON:** turning them off also blocks the anonymous sign in every till uses.
-- **Leave session time limits OFF:** they would also end till sessions.
+- **What**: this branch, built and deployed to both web addresses (app.serv-os.app and possystem-liard.vercel.app).
+- **Edge functions**: deploy **`second-step-reset`** and **`second-step-invite`** (they are new), plus every function this branch changed. `npx supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt`.
+- **Nothing changes for anyone yet**: with the switch off, the app asks for a second step at sign in and the database refuses nobody.
 
-**Platform project** (yhzjgyrkyjabvhblqxzu), Authentication:
-- **Sign ups OFF.** Nobody uses Platform logins (0 users), so nothing breaks.
-- **Leaked password check ON**, minimum length `12`.
-- **Security emails ON.**
+## Step 2: re-pair the devices that run on a person's login
 
-If the dashboard names differ, the auth config names are: `mfa_web_authn_enroll_enabled`, `mfa_web_authn_verify_enabled`, the WebAuthn relying party id, display name and origins, `password_min_length`, `password_hibp_enabled`, `disable_signup`.
+- **Why it matters tonight**: when a person sets up their second step, the auth server signs out **their other password only sessions**. A till running on their Back Office login loses its session with them, and **card payments, gift cards and loyalty stop on that till** until it is paired again.
+- **Find them**: run **V7** in the file (Ops SQL editor). It lists every till, KDS, manager app, host stand, TV and card terminal that is running on a person's login.
+- **Re-pair every one of them, tills included.** Back Office, Hardware, Terminals (or Channels, Kiosks) and pair the device again. Do not leave it for later: "tills heal themselves" is **not true** here.
+- **How to be sure**: run V7 again. It must come back empty before step 7.
 
-### Step 2. Before the release: devices signed in as a person
+## Step 3: run the SQL file
 
-What we are looking at: 13 devices run on someone's Back Office login instead of their own device identity (7 seen in the last fortnight). When that person sets up their second step, Supabase signs out their other password only sessions, including those devices.
+- **Where**: the **Ops** SQL editor (tbetcegmszzotrwdtqhi). There is no Platform file: nobody signs in to Platform.
+- **When**: **outside service, and at night**. It takes a lock on every table for a moment, and online ordering never closes, so a kiosk or a QR order can stall for a few seconds while it runs.
+- **What**: paste all of `supabase/migrations/20260919s_OPS_second_step.sql` and press **Run**.
+- **All or nothing**: if it stops, nothing changed. Fix the cause and run it again.
+- **Then check, and treat any of these as a failure**: **V2** shows the Data API check, **V3** shows missing = 0, **V4** shows 1 (storage is fenced). If V2 or V4 is empty, tell Claude before you go on: the fence has a hole in it.
+- **Run it again after any later migration that adds a table** (V3 tells you when one is missing).
 
-- **Tills and KDS:** heal themselves. They take a fresh device session and claim the till again.
-- **Manager app, host stands, menu boards, order screens, card terminals:** show their pairing code again. Pair them again in Back Office.
-- **List them:** query V7 in the SQL file (device and venue names only).
-- **Best fix, now:** on each one, sign out of Back Office, then pair it again as a device.
+## Step 4: switch the MFA hook on
 
-### Step 3. Deploy the server functions (Claude, with the access token)
+- **Where**: Authentication, Hooks, **MFA Verification Attempt**, Postgres function `public.second_step_mfa_hook`.
+- **What it does**: nobody can set up a **first** second step with only a password. They must type a code we email to the address on their account first.
+- **Why it matters**: 7 of your 13 logins have not signed in for a month. Without this, a thief with one of those passwords sets up **their own** phone and the second step protects them, not you.
+- **Check it**: **V9** in the file. Expect `needs_email` true, `hook_rejects_a_first_factor` true, `auth_server_may_call_it` true.
 
-- The 96 functions in the deploy list at the end, plus the new `second-step-reset`.
-- **Safe before the SQL:** the switch reads OFF while its table does not exist, so nothing changes for anyone.
+## Step 5: set your own login up first
 
-### Step 4. Run the SQL (you, outside service)
+- **Sign in to Back Office.** You are asked to set up.
+- **Press "Email me a code"**, open your email, type the 6 digits.
+- **Scan the QR code** with your authenticator app (or press **Open in my authenticator app** if you are on your phone), type the 6 digit code it shows.
+- **Add Face ID** when it offers, on the device you use most.
+- **Sign out and back in.** Face ID or the code is asked for.
+- **Make a second super admin tonight** (the break glass section in the file has the line). One lost phone must never be the end of it. Have them set up their own second step the same day.
 
-What we are looking at: `supabase/migrations/20260919s_OPS_second_step.sql`, Ops project only.
+## Step 6: tell your people
 
-- **When:** outside service. It adds a fence to every table, and a busy table makes it stop (just run it again).
-- **How:** paste into the Ops SQL editor, press Run. One transaction: an error means nothing changed.
-- **Check:** run V1 to V5 from the bottom of the file. Each says what you should see.
-- **If you see "The Data API check was NOT switched on":** tell Claude. The tables are still fenced.
-- **Refuses nobody** until step 6.
+- **What to say**: "From tonight, signing in to Back Office needs your password and your phone. The first time, we email you a code to make sure it is you. It takes a minute and you only do it once."
+- **What they need**: their email, and an authenticator app (Google Authenticator, Microsoft Authenticator, Apple Passwords or 1Password).
+- **Lost phone**: an **owner** resets their own staff in Back Office, Settings, Sign in security. **Owners ask ServOS.** Nobody resets themselves.
+- **No email**: an owner, or ServOS, can set them up instead (the same screen, "Send a set up code").
+- **Watch who has done it**: **V6** in the file (counts only) and **V6b** (who is left, by email).
 
-### Step 5. App release and your own first test
+## Step 7: lock out, then switch on
 
-- **Release:** merge the branch and let Vercel deploy.
-- **You first,** on app.serv-os.app in Safari or Chrome: sign in, set up the authenticator app (scan the code), then add Face ID.
-- **Test 1:** sign out, sign in again with Face ID.
-- **Test 2:** sign in on a second browser with the 6 digit code.
-- **Test 3:** Settings, Sign in security, see your team list.
-- **Then tell owners:** "Next time you sign in to Back Office you will set up a second step. Have your phone ready. It takes a minute."
+- **Only when V6 says** `back_office_without_second_step` = 0 **and** `back_office_password_only_sessions` = 0. The staff app is not counted: it signs in at aal1 by design and never reaches Back Office.
+- **Lock out first**: the one line under **LOCK OUT** in the file bans every Back Office login that never set up. They are not deleted, and one line lets any of them back in when they ask.
+- **Then switch on**: the one line under **SWITCH ENFORCEMENT ON**.
+- **Watch for ten minutes**: open Back Office, the admin portal and the Owner app; take a card payment on a till; place an online order.
 
-### Step 6. Switch enforcement on (you, when everyone is set up)
+## If something goes wrong
 
-- **Watch:** query V6 (counts only, no names). You need `active_without_second_step = 0` and `password_only_sessions_7_days = 0`.
-- **Who is missing:** Company Admin, Sign in security shows each login and its status.
-- **Switch on:** `update public.second_step_settings set enforce = true, updated_at = now(), note = 'switched on by Peter' where id;`
-- **Takes effect:** within 30 seconds. No deploy.
-- **Test:** a password only sign in now sees nothing and gets "Your sign in needs its second step".
+- **Break glass, one line, no deploy, takes effect in 30 seconds**:
+  `update public.second_step_settings set enforce = false, app_gate = false, updated_at = now() where id;`
+- **You lost your phone**: clear your own factors in the SQL editor (the break glass section of the file has the exact line), then sign in and set up again. Or Authentication, Users, your user, Delete MFA factor.
+- **Setting up is broken for everyone**: switch the MFA hook off in the dashboard, or
+  `update public.second_step_settings set first_factor_needs_email = false, updated_at = now() where id;`
+- **The database is refusing everyone**: `alter role authenticator reset pgrst.db_pre_request;` then `notify pgrst, 'reload config';`
+- **Roll it all back**: the ROLL BACK block at the end of the file. Two pastes, ten seconds apart. It drops nothing, so nothing can break while it runs.
 
-## Emergency
+## What is still open after this
 
-- **Break glass, one line:** `update public.second_step_settings set enforce = false, updated_at = now() where id;`
-- **If sign in itself is broken** (Supabase second step down): `update public.second_step_settings set enforce = false, app_gate = false, updated_at = now() where id;` The app then stops asking. Put `app_gate` back to true straight after.
-- **Full roll back:** the two pastes at the end of the SQL file, 10 seconds apart, in that order.
-
-## Lost phone
-
-- **Staff:** the venue owner opens Settings, Sign in security, Your team, and presses Reset.
-- **Owners and ServOS admins:** only ServOS, in Company Admin, Sign in security.
-- **Check it is really them:** call them back on a number you already know.
-- **They set up again** at their next sign in. They get an email. The reset is logged in `second_step_resets`.
-
-## Later
-
-- **Face ID inside our apps:** iOS needs the Associated Domains entitlement (`webcredentials:serv-os.app`) and an apple-app-site-association file on serv-os.app (the website repo). Android needs androidx.webkit, Credential Manager and an assetlinks.json file. Then new app builds.
-- **Passkeys instead of passwords** when Supabase makes them stable.
-- **Staff app:** add the second step for bank detail changes first.
-- **New sign ups get an owner profile** (`handle_new_user`): the database fence project closes this.
-- **Side finding:** the Vercel `api/ai.js` does not check who is calling it.
-
----
-
-## For engineers
-
-### How it fits together
-
-| Layer | What it does | Where |
-|---|---|---|
-| App gate | After the password: challenge, set up, or backup. Nothing loads before it passes. | `src/components/secondStep/SecondStepGate.jsx`, rules in `src/lib/secondStep/rules.js`, auth calls in `src/lib/secondStep/client.js` |
-| Surfaces | Back Office, admin portal, Owner app, password reset landing | `BackOfficeApp.jsx`, `CompanyAdminApp.jsx`, `OwnerSurface.jsx`, `BOLogin.jsx` |
-| Settings page | Your second steps, add Face ID or another app, change password, your team | `src/backoffice/sections/SignInSecurity.jsx`, `src/admin/sections/AdminSecondSteps.jsx` |
-| Edge functions | Refuse an aal1 real login when the switch is on; tills, service role, no token: always pass | `supabase/functions/_shared/second-step.ts`, wired into 78 functions plus `authenticateCaller` (17) and the branded email check |
-| Recovery | Remove a login's factors (owner: their staff; ServOS: anyone else), audit first, email | `supabase/functions/second-step-reset`, rules in `_shared/second-step-reset-rules.ts` |
-| Database | Restrictive `second_step_fence` on every public RLS table and `storage.objects`; PostgREST pre-request check covers the 86 SECURITY DEFINER functions | `supabase/migrations/20260919s_OPS_second_step.sql` |
-
-### Rules worth knowing
-
-- `aal` comes from the access token. A refresh keeps it. Removing a factor drops that session back to aal1 at the next refresh, and the app gate closes again.
-- A successful second step makes Supabase delete that person's OTHER aal1 sessions. That is why step 2 exists.
-- The auth server will not change a password on an aal1 session once the login has a second step. The reset landing asks for the second step first.
-- auth-js `mfa.webauthn.register()` is never used: on a failed enrol it unenrolls the login's VERIFIED factor with the same name. We enrol, challenge and verify ourselves, and only ever clean up unverified leftovers.
-- auth-js defaults ask for a USB security key. We ask for the device's own biometric (`authenticatorAttachment: 'platform'`, `userVerification: 'required'`).
-- The server decides the Face ID domain (`serv-os.app`). The client list `WEBAUTHN_HOSTS` must match the Supabase origins.
-- The edge helper decodes the token without checking the signature. It only ever refuses, never grants; every function still proves the caller with `getUser`.
-- The switch is read with the service role, cached 30 seconds. Table missing or row missing: OFF. Never read and the read fails: ON for aal1 logins only (fail closed), with a "try again" message.
-
-### Proof
-
-- **SQL:** `scratchpad/sstest/run.sh` builds a local Postgres 17 with Supabase like roles (postgres not a superuser; anon, authenticated, service_role, authenticator), runs the file twice as postgres in one transaction, then 34 behaviour checks: password only login refused on a location fenced table, an allow all table and storage; refused by the pre-request check, including a SECURITY DEFINER write that row level security alone would let through; tills, aal2 logins, the public key and the service role untouched; the switch table unreadable and unwritable by logins; break glass; a missing row is OFF. Also: the wrong project guard changes nothing, and the two paste roll back removes everything before a clean re install.
-- **Browser:** `scratchpad/ssproof/proof.mjs` runs real Chromium with its virtual authenticator (internal, user verification on) against `mockauth.mjs`, a stand in for the auth server's password and MFA endpoints that follows the auth-js 2.103 request shapes and really checks: the WebAuthn challenge, origin, relying party hash, user presence and verification flags, the ES256 signature against the key from set up, the sign count, and RFC 6238 codes. It drives the real BOLogin, SecondStepGate, Sign in security page and Owner app through the app's own supabase client. 33 checks pass: no skip on the first set up, QR and typed key, code then Face ID offer, Face ID sign in (signature verified, sign count moves on), wrong code refused, failed Face ID refused then the code works, reload goes straight in, phone width layout, the last authenticator app cannot be removed, removing the Face ID a session used closes the gate again, a new password still needs the second step, the Owner app gate, and no console errors.
-- **Not proven by the stand in:** the real Supabase auth server. Its WebAuthn MFA is switched off today; step 5 is the first real run.
-
-### Deploy list
-
-`second-step-reset` (new), and every function below (they import the changed shared files or were wired):
-
-adyen-create-session, adyen-financial, adyen-modify, adyen-onboard, adyen-terminal-admin, adyen-terminal-charge, challenge21-counter, create-user, customer-import, ezcater-connect, gift-fulfill, hubrise-catalog-push, hubrise-connect, hubrise-inventory-push, hubrise-order-status, location-admin, manager-approve, manager-snapshot, marketing-admin, marketing-campaigns, marketing-compliance, marketing-domains, marketing-report, marketing-segments, marketing-send, marketing-workflows, menu-translate, owner-snapshot, payments-admin, payments-onboard, payments-processor, provision-location, review-admin, review-google, review-reply, review-request, review-sync, ryft-create-payment-session, ryft-disputes, ryft-refund, ryft-tab, ryft-terminal-cancel, ryft-terminal-debug, ryft-terminal-payment, ryft-terminal-poll, ryft-terminals, send-receipt, send-sms, send-welcome, stripe-assign-reader-to-pos, stripe-cancel-reader-action, stripe-create-payment-intent, stripe-increment-authorization, stripe-link-merchant, stripe-poll-reader-action, stripe-process-payment-on-reader, stripe-readers-status, stripe-refund, stripe-register-network-reader, stripe-sync-location-reader-config, stripe-terminal-connection-token, stripe-unregister-reader, stripe-update-reader-display, stripe-upload-reader-splashscreen, terminal-job-cancel, terminal-job-charge, terminal-job-create, terminal-job-status, trading-report, uber-direct, wifi-admin, workforce-clock, workforce-compute, xero-bills, xero-config, xero-connect, xero-sales, po-send, staff-portal, gift-issue, gift-bulk-create, gift-redeem, gift-import, gift-void, gift-lookup, gift-reverse-redeem, gift-config, gift-list, gift-resend, message-templates, loyalty-config, loyalty-earn, loyalty-member-lookup, loyalty-refund, loyalty-redeem, loyalty-rewards.
-
-Also safe to redeploy (they import a changed shared file but call nothing that changed): loyalty-enroll, loyalty-reconcile, loyalty-balance, marketing-run, order-notify.
-
-Command: `SUPABASE_ACCESS_TOKEN=... npx --yes supabase functions deploy <name> --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt`
+- **The staff app** signs in at aal1 and is out of scope. It reaches one person's own records through one server function. Its money actions (bank details) now ask for a second step from anyone who ALSO has Back Office reach.
+- **Anonymous sessions** are not a login, so the second step is not what stops them. That is the database fence: `20260919a1` is live, **`20260919a2` is the half that closes the money functions to a browser with only the public key**. Run it when you are ready (`docs/FENCE_STAGE_1_PAYMENTS.md`).
+- **Sign ups**: turning them off is the first bullet of this runbook. Until it is done, anyone can make themselves an account.
