@@ -7,6 +7,11 @@
 //
 //   checking   reads the session and the login's second steps
 //   challenge  Face ID or fingerprint first where this place supports it, else the 6 digit code
+//   prove      no second step yet AND the server wants the email proved first (fix round, 20 Sep
+//              2026): a code we email to the address on the account. A password on its own must
+//              never be enough to SET a second step up, or a thief with the password of a login
+//              nobody uses becomes that person for good. The auth server enforces it too
+//              (public.second_step_mfa_hook), so this screen is the way through it, not the lock.
 //   setup      no second step yet: authenticator app first (the backup that works everywhere),
 //              then Face ID or fingerprint is offered where it works
 //   backup     passed with Face ID only: add the authenticator app before going in
@@ -41,6 +46,7 @@ export default function SecondStepGate({
   const [useCode, setUseCode] = useState(false);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [proof, setProof] = useState({ sentTo: '', sent: false });
 
   // Fire once, through a ref (never re-run by a parent re-render: the v5.7.12 handoff trap).
   const passed = useRef(false);
@@ -54,6 +60,9 @@ export default function SecondStepGate({
 
   const evaluate = useCallback(async ({ justSetUp = false } = {}) => {
     setErr('');
+    // The screen says "checking" while this runs, so a second tap cannot re-send the same code
+    // and see it refused as used (fix round, 20 Sep 2026).
+    if (justSetUp) setPhase('checking');
     try {
       const session = await client.getSession();
       setEmail(session?.user?.email || '');
@@ -71,6 +80,12 @@ export default function SecondStepGate({
       }
       setUseCode(false);
       setCode('');
+      // A FIRST set up: prove the email first, when the server asks for it.
+      if (step === 'setup') {
+        const p = await client.emailProofStatus();
+        setProof((was) => ({ ...was, sentTo: p.sentTo || was.sentTo }));
+        if (p.needs_email && !p.proved) { setPhase('prove'); return; }
+      }
       setPhase(step);
     } catch (e) {
       setErr(explainError(e));
@@ -95,6 +110,26 @@ export default function SecondStepGate({
     if (!isCodeComplete(c) || busy) return;
     setErr(''); setBusy(true);
     try { await client.verifyAnyCode(plan.codeFactorIds, c); await evaluate(); }
+    catch (e) { setErr(explainError(e)); setCode(''); }
+    finally { setBusy(false); }
+  };
+
+  const sendProof = async () => {
+    if (busy) return;
+    setErr(''); setBusy(true);
+    try {
+      const r = await client.sendEmailCode();
+      setProof({ sentTo: r.sentTo || proof.sentTo, sent: true });
+      setCode('');
+    } catch (e) { setErr(explainError(e)); }
+    finally { setBusy(false); }
+  };
+
+  const claimProof = async (value) => {
+    const c = value ?? code;
+    if (!isCodeComplete(c) || busy) return;
+    setErr(''); setBusy(true);
+    try { await client.claimEmailCode(c); setCode(''); setPhase('setup'); }
     catch (e) { setErr(explainError(e)); setCode(''); }
     finally { setBusy(false); }
   };
@@ -175,6 +210,40 @@ export default function SecondStepGate({
           </>
         )}
         <LostPhoneHint tone={tone} />
+        {signOutButton}
+      </Stack>
+    );
+  } else if (phase === 'prove') {
+    body = (
+      <Stack>
+        <Heading
+          tone={tone}
+          step="New: a second sign in step"
+          title="First, we make sure it is you"
+          sub={proof.sent
+            ? `We sent a 6 digit code to ${proof.sentTo || 'your email address'}. Type it here. It lasts an hour.`
+            : 'Your password is right. Before you set up your second step we send a code to your email address, so a stolen password can never set one up.'}
+        />
+        {!proof.sent && (
+          <PrimaryButton tone={tone} busy={busy} onClick={sendProof} testId="second-step-email-code">
+            Email me a code
+          </PrimaryButton>
+        )}
+        {proof.sent && (
+          <>
+            <CodeInput tone={tone} value={code} onChange={setCode} onDone={(v) => claimProof(v)} autoFocus />
+            <PrimaryButton tone={tone} busy={busy} disabled={!isCodeComplete(code)} onClick={() => claimProof()} testId="second-step-prove-submit">
+              Continue
+            </PrimaryButton>
+            <div style={{ textAlign: 'center' }}>
+              <LinkButton tone={tone} onClick={sendProof} testId="second-step-email-again">Send it again</LinkButton>
+            </div>
+          </>
+        )}
+        <Note tone={tone} kind="error" testId="second-step-error">{err}</Note>
+        <div style={{ fontSize: 13.5, color: tokens(tone).sub, lineHeight: 1.6 }}>
+          No email? Ask the owner of your venue, or ServOS, to set you up.
+        </div>
         {signOutButton}
       </Stack>
     );

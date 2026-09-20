@@ -54,8 +54,8 @@ export default function AuthenticatorSetup({ client, tone = 'dark', onDone, comp
     <Stack gap={16}>
       {!compact && (
         <ol style={{ margin: 0, paddingLeft: 20, color: t.sub, fontSize: 15, lineHeight: 1.7 }}>
-          <li>Install an <strong style={{ color: t.text }}>authenticator app</strong> on your phone: Google Authenticator, Microsoft Authenticator or 1Password.</li>
-          <li>In the app, tap <strong style={{ color: t.text }}>add</strong> and <strong style={{ color: t.text }}>scan</strong> this code.</li>
+          <li>Install an <strong style={{ color: t.text }}>authenticator app</strong> on your phone: Google Authenticator, Microsoft Authenticator, Apple Passwords or 1Password.</li>
+          <li><strong style={{ color: t.text }}>On this phone?</strong> Press the button under the code to open your app. <strong style={{ color: t.text }}>On a computer?</strong> In the app on your phone, tap <strong style={{ color: t.text }}>add</strong> and <strong style={{ color: t.text }}>scan</strong> this code.</li>
           <li>Type the <strong style={{ color: t.text }}>6 digit code</strong> the app shows.</li>
         </ol>
       )}
@@ -71,7 +71,7 @@ export default function AuthenticatorSetup({ client, tone = 'dark', onDone, comp
           </div>
           <div style={{ flex: '1 1 180px', minWidth: 0 }}>
             <MonoLabel tone={tone} style={{ marginBottom: 6 }}>Cannot scan?</MonoLabel>
-            <div style={{ fontSize: 14, color: t.sub, lineHeight: 1.55 }}>Type this key into the app instead (time based).</div>
+            <div style={{ fontSize: 14, color: t.sub, lineHeight: 1.55 }}>In your app choose "Enter a setup key", name it <strong style={{ color: t.text }}>ServOS</strong>, and type this key.</div>
             {showSecret || copied ? (
               <div data-testid="second-step-secret" style={{
                 marginTop: 8, fontFamily: "'JetBrains Mono', monospace", fontSize: 15, color: t.text,
@@ -82,6 +82,21 @@ export default function AuthenticatorSetup({ client, tone = 'dark', onDone, comp
               {!showSecret && <LinkButton tone={tone} onClick={() => setShowSecret(true)} testId="second-step-show-secret">Show the key</LinkButton>}
               <LinkButton tone={tone} onClick={copySecret}>{copied ? 'Copied' : 'Copy the key'}</LinkButton>
             </div>
+            {/* SETTING UP ON THE PHONE ITSELF (fix round, 20 Sep 2026): the QR code is on the
+                screen you would scan with, so hand the link to the phone instead. Both our
+                shells pass a non http link straight to the phone (WebView.swift, ShellActivity). */}
+            {started.uri && (
+              <a
+                href={started.uri}
+                data-testid="second-step-open-app"
+                style={{
+                  display: 'inline-block', marginTop: 10, padding: '10px 14px', borderRadius: 10,
+                  border: `1px solid ${t.line}`, color: t.text, textDecoration: 'none', fontSize: 14, fontWeight: 700,
+                }}
+              >
+                Open in my authenticator app
+              </a>
+            )}
           </div>
         </div>
       )}

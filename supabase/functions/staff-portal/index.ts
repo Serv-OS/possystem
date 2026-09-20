@@ -245,6 +245,29 @@ Deno.serve(async (req) => {
     // is on. The staff app's own actions below (snapshot, clock, details) are deliberately
     // NOT checked: staff app logins reach only that person's own records, through this
     // function, and are out of scope for the Back Office second step.
+    //
+    // CHECKED (fix round, 20 Sep 2026): the money actions, for a caller that ALSO has Back
+    // Office reach. An owner who is a linked staff member has ONE account: a thief with that
+    // password, at aal1, could change the payroll bank account here while enforcement was on
+    // everywhere else. A staff only login is untouched: this is its own door.
+    if (action === 'update_details' || action === 'accept_invite_bank') {
+      const jwt = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+      const { data: who } = jwt ? await admin.auth.getUser(jwt) : { data: null } as any;
+      const callerId = (who as any)?.user?.id ? String((who as any).user.id) : '';
+      if (callerId) {
+        const [{ data: ul }, { data: prof }] = await Promise.all([
+          admin.from('user_locations').select('location_id').eq('user_id', callerId).limit(1),
+          admin.from('user_profiles').select('role, location_id').eq('id', callerId).maybeSingle(),
+        ]);
+        const hasBackOfficeReach = (ul ?? []).length > 0
+          || String((prof as any)?.role ?? '') === 'super_admin'
+          || !!(prof as any)?.location_id;
+        if (hasBackOfficeReach) {
+          const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
+        }
+      }
+    }
+
     if (action === 'invite') {
       const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
       const { data: staff } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();

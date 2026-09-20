@@ -155,7 +155,7 @@ const NAV = [
   { id: 'workflows', label: 'Automations', icon: '\u{1F500}', group: 'Analytics' },
   { id: 'marketing-reports', label: 'Marketing report', icon: '\u{1F4C8}', group: 'Analytics' },
   { id: 'compliance', label: 'Marketing compliance', icon: '\u{1F6E1}', group: 'Analytics' },
-  { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Analytics' },
+  { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Settings' },
 ];
 
 // v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
@@ -644,7 +644,18 @@ export default function BackOfficeApp() {
 
   // The second step: Face ID, fingerprint or an authenticator app code. Cannot be skipped.
   if (!isMock && authUser && !secondStepOk) {
-    const passed = () => { if (bootedPasswordOnly.current) window.location.reload(); else setSecondStepOk(true); };
+    // Realtime keeps the token it joined with: supabase-js hands it a new one on SIGNED_IN and
+    // TOKEN_REFRESHED only, never on MFA_CHALLENGE_VERIFIED. Without this, a fresh sign in left
+    // every live channel on the password only token for up to an hour, and once enforcement is
+    // on the fence refuses those rows and live alerts go quiet (fix round, 20 Sep 2026).
+    const passed = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        if (token && supabase.realtime?.setAuth) await supabase.realtime.setAuth(token);
+      } catch { /* the reload below, or the next refresh, puts it right */ }
+      if (bootedPasswordOnly.current) window.location.reload(); else setSecondStepOk(true);
+    };
     return <SecondStepGate supabase={supabase} mode="login" area="Back Office" onPassed={passed} onSignOut={signOutHere} />;
   }
 

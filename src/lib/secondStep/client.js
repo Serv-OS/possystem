@@ -113,6 +113,42 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
     }
   }
 
+  // ── PROOF OF THE EMAIL, BEFORE A FIRST SECOND STEP (fix round, 20 Sep 2026) ─────────
+  // A password alone must never be enough to SET one up: a thief with the password of a login
+  // nobody uses would otherwise enrol their own app and be that person for good. The auth
+  // server refuses the first factor (the MFA verification attempt hook) until the person has
+  // typed a code we sent to the address on the account. These three calls are that step.
+  // While second-step-invite is not deployed yet, they answer "no code needed", which is
+  // exactly what the database says too (the hook is not switched on either).
+
+  /** { needs_email, proved, sent_to } for this login, or a safe default. */
+  async function emailProofStatus() {
+    try {
+      const res = await withTimeout(supabase.functions.invoke('second-step-invite', { body: { action: 'status' } }), 6000, null);
+      const data = res && res.data;
+      if (!data || data.ok !== true) return { needs_email: false, proved: false, sentTo: '' };
+      return { needs_email: data.needs_email === true, proved: data.proved === true, sentTo: data.sent_to || '' };
+    } catch { return { needs_email: false, proved: false, sentTo: '' }; }
+  }
+
+  /** Send the code to the address on the account. Throws with plain words on a refusal. */
+  async function sendEmailCode() {
+    const res = await supabase.functions.invoke('second-step-invite', { body: { action: 'start' } });
+    const data = res && res.data;
+    if (data && data.ok === true) return { sentTo: data.sent_to || '' };
+    const message = (data && data.error) || (res && res.error && res.error.message) || 'We could not send the code. Try again.';
+    throw new Error(message);
+  }
+
+  /** The code they typed. Throws with the server's own plain words when it does not match. */
+  async function claimEmailCode(code) {
+    const res = await supabase.functions.invoke('second-step-invite', { body: { action: 'claim', code: normaliseCode(code) } });
+    const data = res && res.data;
+    if (data && data.ok === true) return true;
+    const message = (data && data.error) || (res && res.error && res.error.message) || 'That code did not work.';
+    throw new Error(message);
+  }
+
   /** Start an authenticator app: returns what the screen shows (QR code, secret for typing). */
   async function startAuthenticatorApp() {
     const before = await listFactors();
@@ -198,6 +234,7 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
   return {
     getSession, listFactors, appGate, status, startAuthenticatorApp, verifyCode, verifyAnyCode,
     addFaceId, useFaceId, removeFactor, changePassword, cleanupLeftovers,
+    emailProofStatus, sendEmailCode, claimEmailCode,
   };
 }
 

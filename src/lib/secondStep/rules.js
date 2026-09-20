@@ -162,10 +162,17 @@ export function challengePlan({ factors, faceIdUsable = false, preferredFaceIdFa
   const verified = verifiedFactors(factors);
   const face = verified.filter((f) => f.factor_type === 'webauthn').sort(newestFirst);
   const codes = verified.filter((f) => f.factor_type === 'totp').sort(newestFirst);
-  const preferred = face.find((f) => f.id === preferredFaceIdFactorId) || face[0] || null;
-  const faceIdFactorId = faceIdUsable && preferred ? preferred.id : null;
+  // FACE ID FIRST ONLY ON THE DEVICE IT WAS SET UP ON (fix round, 20 Sep 2026). A Face ID
+  // credential belongs to ONE device. An owner who added it on their iPhone and then signs in on
+  // a Windows PC used to get "Use Windows Hello" as the big button, a prompt that cannot work,
+  // and had to find the small "use a code" link. This device is the one that remembered the
+  // factor id when it was added (rememberedFaceIdFactor), so only THAT one comes first; any
+  // other Face ID stays available as a link, in case the browser can still reach it.
+  const remembered = face.find((f) => f.id === preferredFaceIdFactorId) || null;
+  const anyFace = remembered || face[0] || null;
+  const faceIdFactorId = faceIdUsable && anyFace ? anyFace.id : null;
   let primary = 'code';
-  if (faceIdFactorId) primary = 'faceid';
+  if (faceIdUsable && remembered) primary = 'faceid';
   else if (!codes.length && face.length) primary = 'faceid_elsewhere';
   return { faceIdFactorId, codeFactorIds: codes.map((f) => f.id), primary };
 }
@@ -253,7 +260,11 @@ export function explainError(err) {
     return 'That code did not work. Use the newest code in your app. If it keeps failing, check your phone sets its time automatically.';
   }
   if (/challenge_expired|expired/i.test(all)) return 'That took too long. Please try again.';
-  if (/rate|too many|429/i.test(all)) return 'Too many tries. Wait a minute, then try again.';
+  // Whole words and the real codes only: /rate/ also matched "failed to generate challenge"
+  // and told people to wait a minute for an error that had nothing to do with rate limits.
+  if (/over_request_rate_limit|over_email_send_rate_limit|\b429\b|\brate limit\b|\btoo many\b/i.test(all)) {
+    return 'Too many tries. Wait a minute, then try again.';
+  }
   if (/insufficient_aal|aal2 required|AAL2/i.test(all)) return 'Confirm it is you first: sign out, then sign in again.';
   if (/web_?authn.*(disabled|not.*enabled)|enroll_not_enabled|verify_not_enabled/i.test(all)) {
     return 'Face ID is not switched on for ServOS yet. Use your authenticator app for now.';

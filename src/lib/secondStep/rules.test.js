@@ -131,10 +131,17 @@ test('faceIdSupport says yes only where every piece is there, with a plain reaso
   assert.equal(faceIdLabel('X11; Linux'), 'Face ID or fingerprint');
 });
 
-test('challengePlan: Face ID first where it works, the code otherwise, and never a dead end', () => {
+test('challengePlan: Face ID first ONLY on the device it was set up on (fix round, 20 Sep 2026)', () => {
   const both = [totp('t1', 'verified', '2026-09-01T00:00:00Z'), face('w1', 'verified', '2026-09-02T00:00:00Z'), face('w2', 'verified', '2026-09-03T00:00:00Z')];
-  assert.deepEqual(challengePlan({ factors: both, faceIdUsable: true }), { faceIdFactorId: 'w2', codeFactorIds: ['t1'], primary: 'faceid' });
-  assert.equal(challengePlan({ factors: both, faceIdUsable: true, preferredFaceIdFactorId: 'w1' }).faceIdFactorId, 'w1', 'the factor used on this device first');
+  // A Face ID credential belongs to ONE device. An owner who added it on their iPhone and then
+  // signs in on a Windows PC used to be shown "Use Windows Hello" as the big button, a prompt
+  // that cannot work. This device remembered the factor it added, so only that one comes first.
+  assert.deepEqual(challengePlan({ factors: both, faceIdUsable: true }),
+    { faceIdFactorId: 'w2', codeFactorIds: ['t1'], primary: 'code' }, 'another device: the code comes first');
+  assert.deepEqual(challengePlan({ factors: both, faceIdUsable: true, preferredFaceIdFactorId: 'w1' }),
+    { faceIdFactorId: 'w1', codeFactorIds: ['t1'], primary: 'faceid' }, 'the device that set it up: Face ID first');
+  assert.equal(challengePlan({ factors: [face('w1', 'verified')], faceIdUsable: true }).primary, 'faceid_elsewhere',
+    'Face ID only, and not this device: say so instead of a dead prompt');
   assert.deepEqual(challengePlan({ factors: both, faceIdUsable: false }), { faceIdFactorId: null, codeFactorIds: ['t1'], primary: 'code' });
   assert.equal(challengePlan({ factors: [face()], faceIdUsable: false }).primary, 'faceid_elsewhere');
   const twoPhones = [totp('old', 'verified', '2026-01-01T00:00:00Z'), totp('new', 'verified', '2026-09-01T00:00:00Z'), totp('x', 'unverified')];

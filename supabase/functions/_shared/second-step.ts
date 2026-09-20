@@ -125,13 +125,22 @@ export type FlagFetch = () => Promise<FlagRow | 'missing_table'>;
  * The enforcement switch with a short cache.
  *   * a good read is kept for ttlMs
  *   * a failed read keeps using the last good value ("stale") and retries after retryMs
- *   * a failed read with no good value ever is ENFORCED ("error"): fail closed
  *   * a missing table or a missing row is OFF (the SQL has not run yet)
+ *   * a failed read with no good value EVER: see failClosed below.
+ *
+ * FAIL OPEN UNTIL THE SWITCH HAS BEEN READ ONCE (fix round, 20 Sep 2026). The rollout spends
+ * its whole life at enforce = false with everybody at aal1, so a cold instance whose first read
+ * blipped used to refuse every Back Office save and every card payment on a till still running
+ * on a person's session, for five seconds at a time, while the switch was OFF. A read that has
+ * never once succeeded now means "we do not know", and the database fence is what refuses
+ * anyway (it is the thing that cannot be blipped past). Once ANY read has succeeded, a later
+ * failure keeps the last good answer, and if that answer was "on" it stays on.
  */
-export function createFlagReader(opts: { fetchFlag: FlagFetch; now?: () => number; ttlMs?: number; retryMs?: number }) {
+export function createFlagReader(opts: { fetchFlag: FlagFetch; now?: () => number; ttlMs?: number; retryMs?: number; failClosed?: boolean }) {
   const now = opts.now ?? (() => Date.now());
   const ttlMs = opts.ttlMs ?? FLAG_TTL_MS;
   const retryMs = opts.retryMs ?? FLAG_RETRY_MS;
+  const neverRead = opts.failClosed === true;   // tests can ask for the old behaviour
   let good: { enforced: boolean; at: number } | null = null;
   let lastErrorAt = 0;
   let inflight: Promise<FlagState> | null = null;
@@ -154,7 +163,7 @@ export function createFlagReader(opts: { fetchFlag: FlagFetch; now?: () => numbe
     } catch {
       lastErrorAt = now();
       if (good) return { enforced: good.enforced, source: 'stale' };
-      return { enforced: true, source: 'error' };
+      return { enforced: neverRead, source: 'error' };
     }
   }
 
@@ -162,7 +171,7 @@ export function createFlagReader(opts: { fetchFlag: FlagFetch; now?: () => numbe
     const t = now();
     if (good && t - good.at < ttlMs) return { enforced: good.enforced, source: 'cache' };
     if (lastErrorAt && t - lastErrorAt < retryMs) {
-      return good ? { enforced: good.enforced, source: 'stale' } : { enforced: true, source: 'error' };
+      return good ? { enforced: good.enforced, source: 'stale' } : { enforced: neverRead, source: 'error' };
     }
     if (!inflight) inflight = load().finally(() => { inflight = null; });
     return inflight;
@@ -179,8 +188,11 @@ export async function fetchFlagFromDb(
   fetchImpl: typeof fetch = fetch,
 ): Promise<FlagRow | 'missing_table'> {
   if (!url || !key) throw new Error('second step: SUPABASE_URL or the service role key is not set');
+  // A hung PostgREST must never hold a card payment: two seconds, then the reader's own rules
+  // decide (fix round, 20 Sep 2026).
   const res = await fetchImpl(`${url.replace(/\/+$/, '')}/rest/v1/second_step_settings?select=enforce&id=eq.true&limit=1`, {
     headers: { apikey: key, Authorization: `Bearer ${key}`, Accept: 'application/json' },
+    signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(2000) : undefined,
   });
   if (res.ok) {
     const rows = await res.json();

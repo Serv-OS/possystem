@@ -130,8 +130,15 @@ test('the Ops SQL file: guarded, one transaction, restrictive fence, storage, pr
   // break glass and roll back instructions are in the file for Peter
   assert.match(lower, /update public\.second_step_settings set enforce = false, updated_at = now\(\) where id;/);
   const rb = lower.slice(lower.indexOf('roll back (only if told to)'));
-  assert.ok(rb.indexOf('reset pgrst.db_pre_request') >= 0 && rb.indexOf('reset pgrst.db_pre_request') < rb.indexOf('drop function'),
-    'roll back switches the pre-request off BEFORE dropping the function it calls');
+  // FIX ROUND (20 Sep 2026): the roll back DROPS NOTHING. Dropping second_step_check_request
+  // relied on PostgREST having taken the reload within 10 seconds; a missed notify meant every
+  // till failed with "function does not exist". It keeps its name and gets an empty body. And
+  // second_step_status stays, so app_gate = false (the app's own break glass) still works.
+  assert.ok(rb.indexOf('reset pgrst.db_pre_request') < rb.indexOf('create or replace function public.second_step_check_request'),
+    'the pre-request is switched off first, then the function is emptied');
+  assert.ok(!/drop function/.test(rb), 'nothing is dropped');
+  assert.ok(rb.includes('app_gate = false'), 'the roll back leaves the app break glass off');
+  assert.ok(rb.includes('drop policy if exists second_step_fence'), 'and the fence comes off the tables');
 });
 
 test('no Platform second step file: nobody ever signs in to Platform', () => {
@@ -143,7 +150,11 @@ test('no Platform second step file: nobody ever signs in to Platform', () => {
 
 test('the app: every password login surface waits for the second step before loading anything', () => {
   const bo = read('src/backoffice/BackOfficeApp.jsx');
-  assert.match(bo, /if \(!isMock && authUser && !secondStepOk\) \{[\s\S]{0,300}?return <SecondStepGate supabase=\{supabase\} mode="login"/);
+  assert.match(bo, /if \(!isMock && authUser && !secondStepOk\) \{[\s\S]{0,1400}?return <SecondStepGate supabase=\{supabase\} mode="login"/);
+  // The token realtime joined with is replaced when the gate passes: supabase-js hands it a new
+  // one on SIGNED_IN and TOKEN_REFRESHED only, never on MFA_CHALLENGE_VERIFIED, so live channels
+  // used to keep the password only token for up to an hour (fix round, 20 Sep 2026).
+  assert.match(bo, /await supabase\.realtime\.setAuth\(token\);/);
   assert.match(bo, /if \(bootedPasswordOnly\.current\) window\.location\.reload\(\); else setSecondStepOk\(true\);/,
     'a page that booted on a password only sign in reloads once the gate passes (SyncBridge and realtime restart clean)');
   assert.match(bo, /if \(!authUser \|\| isMock \|\| !secondStepOk\) return;/, 'profile load waits for the gate');

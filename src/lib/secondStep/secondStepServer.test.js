@@ -134,13 +134,26 @@ test('the switch cache: 30 second reads, stale value on errors, fail closed only
   assert.deepEqual(await r.read(), { enforced: false, source: 'db' }, 'break glass seen on the next good read');
 });
 
-test('the switch: a missing table or row is OFF (the SQL has not run yet); an error with no history is ON', async () => {
+test('the switch: a missing table or row is OFF; a read that never worked does not refuse (fix round)', async () => {
   const missing = createFlagReader({ fetchFlag: async () => 'missing_table' });
   assert.deepEqual(await missing.read(), { enforced: false, source: 'missing_table' });
   const noRow = createFlagReader({ fetchFlag: async () => null });
   assert.deepEqual(await noRow.read(), { enforced: false, source: 'no_row' });
+  // FAIL OPEN UNTIL THE SWITCH HAS BEEN READ ONCE (fix round, 20 Sep 2026). The rollout spends
+  // its whole life at enforce = false with everyone at aal1: a cold instance whose first read
+  // blipped used to refuse every Back Office save and every card payment on a till still on a
+  // person's session, for five seconds at a time, while the switch was OFF. The database fence
+  // is what refuses; it cannot be blipped past.
   const neverRead = createFlagReader({ fetchFlag: async () => { throw new Error('down'); } });
-  assert.deepEqual(await neverRead.read(), { enforced: true, source: 'error' });
+  assert.deepEqual(await neverRead.read(), { enforced: false, source: 'error' });
+  const strict = createFlagReader({ fetchFlag: async () => { throw new Error('down'); }, failClosed: true });
+  assert.deepEqual(await strict.read(), { enforced: true, source: 'error' }, 'the old behaviour is still one flag away');
+  // and once a GOOD read says "on", a later failure keeps refusing
+  let answer = { enforce: true };
+  const wasOn = createFlagReader({ fetchFlag: async () => { const a = answer; if (!a) throw new Error('down'); return a; }, ttlMs: 0, retryMs: 0 });
+  assert.equal((await wasOn.read()).enforced, true);
+  answer = null;
+  assert.deepEqual(await wasOn.read(), { enforced: true, source: 'stale' });
   const junk = createFlagReader({ fetchFlag: async () => ({ enforce: 'yes' }) });
   assert.equal((await junk.read()).enforced, false, 'only a real true switches it on');
 });
