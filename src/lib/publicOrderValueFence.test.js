@@ -51,9 +51,14 @@ import { itemLabelKey } from './loyaltyMenuMatch.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p) => readFileSync(resolve(here, p), 'utf8');
 
-const FILE_A = read('../../supabase/migrations/20260919a_OPS_fence_1_after_release.sql');
+// THE SPLIT (20 Sep 2026): file A is two files now. a1 carries the guards, the private tables,
+// the helpers (the menu price floor among them), identity and devices; a2 carries everything
+// the customer pages call. The rules below did not move, so the checks read both halves.
+const FILE_A1 = read('../../supabase/migrations/20260919a1_OPS_fence_identity_devices.sql');
+const FILE_A2 = read('../../supabase/migrations/20260919a2_OPS_fence_public_orders.sql');
+const FILE_A = FILE_A1 + '\n' + FILE_A2;
 const between = (from, to) => FILE_A.slice(FILE_A.indexOf(from), FILE_A.indexOf(to));
-const floor = between('create or replace function public._menu_item_floor_minor', 'do $revoke_internal$');
+const floor = FILE_A1.slice(FILE_A1.indexOf('create or replace function public._menu_item_floor_minor'), FILE_A1.indexOf('do $revoke_internal$'));
 const value = between('create or replace function public._public_order_value', 'create or replace function public._public_order_auto');
 const loyalty = between('create or replace function public._loyalty_label_key', 'create or replace function public._public_order_due');
 

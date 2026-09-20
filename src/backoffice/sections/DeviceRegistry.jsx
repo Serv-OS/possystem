@@ -22,7 +22,7 @@ function getProductionCentres() {
 
 // Database fence stage 1 (contract A6): pairing codes come from the SERVER
 // (issue_pairing_code: 12 symbols, about 60 bits, 60 minutes). This browser made code
-// (Math.random, 90,000 values) is the FENCE STAGE 1 FALLBACK only, used while 20260919a
+// (Math.random, 90,000 values) is the FENCE STAGE 1 FALLBACK only, used while 20260919a1
 // is not run. Delete ADJECTIVES and genCode once 20260919b has run.
 const ADJECTIVES = ['APPLE','BAKER','CEDAR','DONUT','EMBER','FROST','GROVE','HONEY','IVORY','JAZZY'];
 const genCode = () => `${ADJECTIVES[Math.floor(Math.random()*10)]}-${Math.floor(1000+Math.random()*9000)}`;

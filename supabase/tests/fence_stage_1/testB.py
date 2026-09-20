@@ -24,8 +24,8 @@ def proof(ref, kind, amount, loc=L1, order_ref=None):
     return o
 
 t.reset()
-out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
-expect('file A applies', rc == 0, err[-1500:])
+out, err, rc = t.apply_a()
+expect('file a1 then a2 apply', rc == 0, err[-1500:])
 
 # --- gate 0 (fix round 2): a full day after file A FIRST ran, recorded by the server
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
@@ -89,8 +89,8 @@ expect('no open policy left, names on, devices not readable by all, every till h
        v == ['none', 't', 'f', '0', 't', '2'], last(out))
 out, err, rc = t.apply('20260919b_OPS_fence_2_after_app.sql')
 expect('file B applies a second time', rc == 0, err[-1500:])
-out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
-expect('file A refuses to run after file B, and changes nothing', rc != 0 and 'has already run' in err, err[-600:])
+out, err, rc = t.apply_a()
+expect('file a1 refuses to run after file B, and changes nothing', rc != 0 and 'has already run' in err, err[-600:])
 o, _, _ = run("select count(*) from pg_policies where tablename = 'order_queue' and policyname = 'allow all'")
 expect('order_queue is still closed after the refused re-run', o == '0', o)
 

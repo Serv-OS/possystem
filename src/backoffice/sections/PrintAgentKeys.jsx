@@ -31,7 +31,7 @@ export default function PrintAgentKeys({ S = {} }) {
     try {
       const { data, error } = await supabase.rpc('issue_print_agent_token', { p_location_id: loc, p_label: label.trim() || null });
       if (error) {
-        setMsg(isMissingRpc(error) ? 'Print agent keys are available once the database update (20260919a) has run.' : (error.message || 'Could not issue a key.'));
+        setMsg(isMissingRpc(error) ? 'Print agent keys are available once the database update (20260919a1) has run.' : (error.message || 'Could not issue a key.'));
         return;
       }
       if (!data?.ok || !data.token) { setMsg('Could not issue a key.'); return; }

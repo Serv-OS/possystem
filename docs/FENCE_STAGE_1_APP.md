@@ -13,7 +13,7 @@ The SQL is in `supabase/migrations`:
 
 Fix round 2 (19 Sep) renamed files A and C (they were `..._safe_now.sql`; both wait for the release). Section 12 lists what changed in the SQL and what the app must do.
 
-Peter runs every SQL file himself, outside service. The runbook is `docs/FENCE_STAGE_1.md`.
+Peter runs every SQL file himself, outside service. The runbooks are `docs/FENCE_STAGE_1.md` (runbook one: the app release, step 1b and file a1, identity and devices) and `docs/FENCE_STAGE_1_PAYMENTS.md` (runbook two: file a2, the Platform files and file B).
 
 ## Rules for this work
 

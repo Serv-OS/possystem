@@ -1,6 +1,6 @@
 # Offline tests for the stage 1 fence migrations
 
-These run the four `20260919*` migrations (`20260919a_OPS_fence_1_after_release.sql`, `20260919b_OPS_fence_2_after_app.sql`, `20260919c_PLATFORM_fence_1_after_release.sql`, `20260919d_PLATFORM_fence_2_after_app.sql`) against a **local, throwaway Postgres 17** that copies the live shape of the tables they touch. They never connect to Supabase.
+These run the five `20260919*` migrations (`20260919a1_OPS_fence_identity_devices.sql`, `20260919a2_OPS_fence_public_orders.sql`, `20260919b_OPS_fence_2_after_app.sql`, `20260919c_PLATFORM_fence_1_after_release.sql`, `20260919d_PLATFORM_fence_2_after_app.sql`) against a **local, throwaway Postgres 17** that copies the live shape of the tables they touch. They never connect to Supabase.
 
 - `schema/*.json`: read only catalog dumps of the stage 1 tables (columns, constraints, unique indexes, policies, functions with their full ACL, triggers, grants; no rows). They are NOT kept in git: produce them with the read only queries in `schema_queries.sql` and save each result under the name it gives. Fix round 2 added the tables the server prices orders from (menu_items, modifier_groups, discount_rules, offers, promo_codes, promo_redemptions, loyalty_transactions, stamp_transactions), `indexes.json`, and `acl` on `functions.json`.
 - `build_baseline.py`: turns the dumps into `.baseline.sql` (roles `anon`, `authenticated`, `service_role`, an `auth` schema with `uid()`, `users` and `sessions`, the tables, the live policies, functions, function ACLs and grants).
@@ -14,7 +14,7 @@ These run the four `20260919*` migrations (`20260919a_OPS_fence_1_after_release.
 initdb -D /some/scratch/pgdata -U postgres --auth=trust -E UTF8
 LC_ALL=en_US.UTF-8 pg_ctl -D /some/scratch/pgdata -o "-p 55432 -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start
 python3 build_baseline.py
-python3 testA.py && python3 testTrip.py && python3 testB.py && python3 testP.py && python3 testRollback.py
+python3 testA.py && python3 testTrip.py && python3 testSplit.py && python3 testB.py && python3 testP.py && python3 testRollback.py
 pg_ctl -D /some/scratch/pgdata stop    # and delete the folder
 ```
 
@@ -24,6 +24,7 @@ On 19 Sep (fix round 2): 325, 12, 56, 20 and 39 checks (452), all passing.
 On 19 Sep (fix round 3, rebased on v5.9.11): 349, 25, 56, 21 and 39 checks (490), all passing.
 On 19 Sep (fix round 4): 373, 25, 56, 21 and 39 checks (514), all passing. `20260919_OPS_fence_0_caps.sql` (step 1b) is run by `testTrip.py`; `seed.sql` does what it does, because it is the state of the database on the night file A is pasted.
 On 19 Sep (fix round 5): 393, 25, 56, 21 and 39 checks (534), all passing.
+On 20 Sep (THE SPLIT): 434, 25, 31, 56, 21 and 48 checks (615), all passing (testA, testTrip, testSplit, testB, testP, testRollback).
 On 20 Sep (fix round 7): 430, 25, 56, 21 and 39 checks (571), all passing.
 On 19 Sep (fix round 6): 407, 25, 56, 21 and 39 checks (548), all passing. The rule this round: the
 server must charge EXACTLY what our own storefront charged, and where the two differ the storefront
@@ -77,3 +78,23 @@ both rebuilt); the check's own `method` and `payment_method` are the server's, s
 declared as cash books as card even with no `tenders` column; a courier fee and added-on US
 sales tax are out of the tip headroom while UK inclusive VAT is not; and a closed QR tab carries
 a server built tender list.
+
+## The split (20 Sep 2026)
+
+File A is two files now, because Peter asked for the identity and device half to go in before the
+payment rules were finished: `20260919a1_OPS_fence_identity_devices.sql` (sections 0 to 6g plus
+the print agent keys) and `20260919a2_OPS_fence_public_orders.sql` (section 6h and section 7).
+It was a cut, not a rewrite: every rule is byte for byte what it was, and the only change to a
+copied statement is the lock list, because each half locks the tables it really touches.
+
+- `t.apply_a()` and `t.rollback_a()` run both halves in the right order, so every older check
+  reads the same as before.
+- `testSplit.py` (new, 31 checks) is a1 on its own: it applies and is idempotent, a2 refuses
+  until it is in and changes nothing when it refuses, pairing and heartbeats work, and with only
+  a1 in a till, a kiosk, a KDS, the host stand, bookings, printing, online, QR, catering and the
+  order tracker all still use the exact paths they use today (the order tables keep "allow all",
+  the customer writes still go straight in stamped `public`, the menu and venue reads are
+  untouched, and the deal tables are still open because closing them is a2's job).
+- `testRollback.py` gained the a1-alone roll back (back to exactly the 18 Sep state with no
+  payment half in), a1 refusing to roll back while a2 is in, and a2 refusing while file B is in.
+- `testA.py` applies a1 then a2 and checks each half's own verification row.

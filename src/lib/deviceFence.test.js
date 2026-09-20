@@ -1,7 +1,7 @@
 // deviceFence.test.js: database fence stage 1, the till side (docs/FENCE_STAGE_1_APP.md A1 to A11).
 //
 // The rules under test:
-//   - every new server call falls back to today's path while 20260919a is not run (PGRST202);
+//   - every new server call falls back to today's path while 20260919a1 is not run (PGRST202);
 //   - a till is never unpaired because it could not read its own row (only status 'removed' is);
 //   - an empty read while the link is uncertain is "unknown", never "no tables / no tickets";
 //   - writes parked by a refusal are released on relink, never a stale quarantine;
@@ -92,7 +92,7 @@ test('refreshDevice decisions: unknown keeps the till, only the server can send 
   assert.equal(decideDeviceRefresh({ read: 'removed' }), 'removed');
   assert.equal(decideDeviceRefresh({ read: 'present' }), 'ok');
   assert.equal(decideDeviceRefresh({ read: 'unknown', readError: { message: 'net' } }), 'banner', 'a read error never unpairs');
-  // FENCE STAGE 1 FALLBACK: before 20260919a reads are open, so no row is today's certain removal.
+  // FENCE STAGE 1 FALLBACK: before 20260919a1 reads are open, so no row is today's certain removal.
   assert.equal(decideDeviceRefresh({ read: 'unknown', statusSupported: false }), 'removed');
   assert.equal(decideDeviceRefresh({ read: 'unknown', statusSupported: true, linkOutcome: 'linked' }), 'ok');
   assert.equal(decideDeviceRefresh({ read: 'unknown', statusSupported: true, linkOutcome: 'relinked' }), 'ok');
@@ -195,7 +195,7 @@ const fakeRpc = (answers) => {
   return { rpc, calls };
 };
 
-test('A2 fallback: before 20260919a the boot runs today\'s claim with the saved or read code', async () => {
+test('A2 fallback: before 20260919a1 the boot runs today\'s claim with the saved or read code', async () => {
   const { rpc, calls } = fakeRpc({ claim_device: { data: 'L1', error: null } });
   const saved = [];
   const r = await runDeviceLink({
@@ -257,7 +257,7 @@ test('A15: once the fence functions exist a saved code is never sent, and it is 
   assert.deepEqual(saved, []);
 });
 
-test('A15: before 20260919a the saved code is still today\'s boot claim (fallback), never dropped', async () => {
+test('A15: before 20260919a1 the saved code is still today\'s boot claim (fallback), never dropped', async () => {
   let forgot = 0;
   const { rpc, calls } = fakeRpc({ claim_device: { data: 'L1', error: null } });
   const r = await runDeviceLink({ rpc, device: { id: 'd1', pairingCode: 'DONUT-4821' }, forgetLegacyCode: () => { forgot += 1; } });
@@ -354,7 +354,7 @@ test('A6: a server code, confirming before a paired till is moved', async () => 
   assert.equal(no.ok, false); assert.equal(no.reason, 'cancelled');
 });
 
-test('A6 fallback: before 20260919a the browser code is written the old way', async () => {
+test('A6 fallback: before 20260919a1 the browser code is written the old way', async () => {
   const rpc = async () => ({ data: null, error: MISSING });
   const r = await issuePairingCodeWithFallback({ rpc, deviceId: 'd1', legacyIssue: async () => 'BAKER-3225' });
   assert.deepEqual(r, { ok: true, code: 'BAKER-3225', expires_at: null, legacy: true });
@@ -386,7 +386,7 @@ test('pairing screen: a mistyped server code is caught before the server calls i
   assert.match(pairingCodeHint('ABCD-EFGH-JK2'), /12 letters and numbers/, 'one short');
   assert.match(pairingCodeHint('ABCD-EFGH-JK234'), /12 letters and numbers/, 'one long');
   assert.match(pairingCodeHint(''), /Enter the pairing code/);
-  // Old browser codes (a word and 4 digits) still go to the server while 20260919a is not run.
+  // Old browser codes (a word and 4 digits) still go to the server while 20260919a1 is not run.
   for (const old of ['DONUT-4821', 'NOODLE-1034', 'BAKER-3225']) assert.equal(pairingCodeHint(old), null, old);
 });
 
@@ -426,7 +426,7 @@ test('A13: the heartbeat names the device this till thinks it is (a real uuid on
   assert.ok(src.includes("supabase.rpc('device_heartbeat', heartbeatArgs({ version: VERSION, caps: FENCE_CAPS, deviceId: local?.id }))"));
 });
 
-test('A14: before 20260919a the till writes its own last_seen, version and capabilities', () => {
+test('A14: before 20260919a1 the till writes its own last_seen, version and capabilities', () => {
   const p = legacyHeartbeatPatch({ version: '5.9.9', now: () => '2026-09-19T10:00:00.000Z' });
   assert.deepEqual(p, { last_seen: '2026-09-19T10:00:00.000Z', app_version: '5.9.9', client_caps: [...FENCE_CAPS] });
   assert.ok(!('status' in p), 'the status is never touched (a linked till may write only its heartbeat after file A)');
@@ -438,9 +438,9 @@ test('A14: before 20260919a the till writes its own last_seen, version and capab
 });
 
 test('fix round 3: the capability is what file A gates on, and a venue without step 1b still reports its build', () => {
-  // File A (20260919a) tests client_caps, NOT a version string: 5.9.10 and 5.9.11 both shipped
+  // File a1 (20260919a1) tests client_caps, NOT a version string: 5.9.10 and 5.9.11 both shipped
   // without the fence app, so a version comparison passed the whole fleet.
-  const fileA = read('../../supabase/migrations/20260919a_OPS_fence_1_after_release.sql');
+  const fileA = read('../../supabase/migrations/20260919a1_OPS_fence_identity_devices.sql');
   assert.ok(fileA.includes("d.client_caps @> array['fence_v1']"), 'file A asks for the capability');
   assert.ok(!/v_release\s+constant/.test(fileA), 'and no version constant is left to gate on');
   assert.ok(fileA.includes('20260919_OPS_fence_0_caps.sql'), 'it names the file that adds the column');

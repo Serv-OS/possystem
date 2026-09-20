@@ -5,7 +5,7 @@
 // fallback to today's path when the new server functions do not exist yet.
 //
 // ORDER OF RELEASE: this app release can go live BEFORE Peter runs
-// 20260919a_OPS_fence_1_after_release.sql. Until then claim_device_v2, reclaim_device,
+// 20260919a1_OPS_fence_identity_devices.sql. Until then claim_device_v2, reclaim_device,
 // device_status, device_issue_secret and device_heartbeat do not exist, PostgREST answers
 // "function not found" (PGRST202, or 42883 from Postgres), and every caller falls back to
 // the path the live app uses today.
@@ -45,11 +45,11 @@ export function normalizePairingCode(code) {
   return String(code || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
 }
 
-/** The server code alphabet (20260919a _fence_random_code): no 0, 1, I or O. */
+/** The server code alphabet (20260919a1 _fence_random_code): no 0, 1, I or O. */
 export const SERVER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const SERVER_CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{12}$/;
 
-/** A code in the server format (12 symbols), the only kind that pairs once 20260919a is in. */
+/** A code in the server format (12 symbols), the only kind that pairs once 20260919a1 is in. */
 export function isServerPairingCode(code) {
   return SERVER_CODE_RE.test(normalizePairingCode(code));
 }
@@ -59,7 +59,7 @@ export function isServerPairingCode(code) {
  * The server answers every code that is not in its format "no longer valid" (it treats it as a
  * code from before the fence), which would send staff to Back Office for a new code when they
  * only misread one symbol. Old browser codes (a word and 4 digits, at most 10 symbols) are never
- * hinted: they still pair while 20260919a is not run.
+ * hinted: they still pair while 20260919a1 is not run.
  * Returns null (send it) or the words to show.
  */
 export function pairingCodeHint(code) {
@@ -268,7 +268,7 @@ export function heartbeatArgs({ version, caps = FENCE_CAPS, deviceId } = {}) {
 }
 
 /**
- * Contract A14: while device_heartbeat does not exist (20260919a not run), the till writes its
+ * Contract A14: while device_heartbeat does not exist (20260919a1 not run), the till writes its
  * own last_seen, app_version and capabilities, so file A can tell a till that really runs this
  * release from one that only reports a new version number. That is the whole gate on file A
  * (fix round 3, 19 Sep): 5.9.10 and 5.9.11 both shipped without a line of the fence app, so a
@@ -395,7 +395,7 @@ export const CARD_UNSUPPORTED_TRUST_MS = 90 * 1000;
 
 /**
  * Fix round 2: does a card payment need a fresh device_status first? Always, except while the
- * fence functions do not exist yet (before 20260919a), which a heartbeat or check said in the last
+ * fence functions do not exist yet (before 20260919a1), which a heartbeat or check said in the last
  * 90 seconds on a device that is neither lost nor suspect: there is no link to check then, and a
  * round trip before every card payment would only slow the till. The heartbeat asks every 60
  * seconds, so within a minute of file A every payment is checked. FENCE STAGE 1 FALLBACK.
@@ -408,7 +408,7 @@ export function cardLinkCheckNeeded({ supported, lost = false, suspect = false, 
 }
 
 /**
- * Fix round 2 (HIGH): may this device START a card payment? After 20260919a (and for every
+ * Fix round 2 (HIGH): may this device START a card payment? After 20260919a1 (and for every
  * kind after 20260919b) a till or kiosk that is not linked cannot save the check the card pays
  * for: the kiosk's closed_checks insert is refused after the card was charged, and nothing keeps
  * that order. So the link is checked BEFORE the reader or terminal starts.
@@ -422,7 +422,7 @@ export function cardLinkCheckNeeded({ supported, lost = false, suspect = false, 
  */
 export function cardLinkDecision({ linkState, relinkOutcome = null, lost = false, supported = null, boundAgoMs = null, maxStaleMs = CARD_LINK_STALE_MS } = {}) {
   if (linkState === 'not_device') return { ok: true, reason: 'not_device' };
-  if (linkState === 'unsupported') return { ok: true, reason: 'unsupported' };   // FENCE STAGE 1 FALLBACK: before 20260919a
+  if (linkState === 'unsupported') return { ok: true, reason: 'unsupported' };   // FENCE STAGE 1 FALLBACK: before 20260919a1
   if (linkState === 'bound') return { ok: true, reason: 'linked' };
   if (linkState === 'unbound') {
     if (relinkOutcome === 'relinked' || relinkOutcome === 'linked') return { ok: true, reason: 'relinked' };

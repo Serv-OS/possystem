@@ -997,7 +997,7 @@ export const fetchStaff = async (locationId = null) => {
 export const updateDeviceHeartbeat = async (deviceId) => {
   if (isMock) return { data: null, error: null };
   // Database fence stage 1 (contract A10): the server heartbeat reports last_seen, the build
-  // and fence_v1. FENCE STAGE 1 FALLBACK: while device_heartbeat does not exist (20260919a
+  // and fence_v1. FENCE STAGE 1 FALLBACK: while device_heartbeat does not exist (20260919a1
   // not run) the old direct write below runs. Delete the fallback once 20260919b has run.
   const hb = await sendDeviceHeartbeat();
   if (hb && !hb.unsupported) return { data: hb, error: null };

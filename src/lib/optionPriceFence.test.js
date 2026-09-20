@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p) => readFileSync(resolve(here, p), 'utf8');
 
-const FILE_A = read('../../supabase/migrations/20260919a_OPS_fence_1_after_release.sql');
+// THE SPLIT (20 Sep 2026): the option rules live in a2 (the payment half), the menu price
+// floor and the helpers in a1. Both halves are read, so the checks do not care which is which.
+const FILE_A = read('../../supabase/migrations/20260919a1_OPS_fence_identity_devices.sql') + '\n'
+             + read('../../supabase/migrations/20260919a2_OPS_fence_public_orders.sql');
 const value = FILE_A.slice(
   FILE_A.indexOf('create or replace function public._public_order_value'),
   FILE_A.indexOf('create or replace function public._public_order_auto'),

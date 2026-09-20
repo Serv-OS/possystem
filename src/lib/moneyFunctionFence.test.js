@@ -4,10 +4,10 @@
 // to take ANY JWT as authority, and an anonymous one is free with the public anon key. This pins
 // the fix, for every function and every kind of caller:
 //   1. the device arm is EXACTLY the device arm of pos_can_access: a session bound to a devices row
-//      of the venue (bound_via after 20260919a; the 18 Sep rule before it), or an ops device;
+//      of the venue (bound_via after 20260919a1; the 18 Sep rule before it), or an ops device;
 //   2. staff is the fenced user_accessible_locations(): user_locations, a verified super admin, or
 //      a company role for the venue's company; never an anonymous session, never a profile venue;
-//   3. the till loyalty paths report before 20260919a and enforce by themselves after it; every
+//   3. the till loyalty paths report before 20260919a2 and enforce by themselves after it; every
 //      other money path is enforced always;
 //   4. each function asks its gate BEFORE it reads or moves anything.
 // The edge functions cannot run under node (Deno.serve, esm.sh), so the facts and decisions live

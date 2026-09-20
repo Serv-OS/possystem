@@ -418,7 +418,7 @@ test('LOW: the phone\'s floor sync never puts an order whose payment is being ch
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_state: 'checking', payment_unverified: true } }), false);
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_state: 'short', payment_unverified: true } }), false);
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_unverified: true } }), false);
-  assert.equal(qrRowOnFloor({ customer: { paid: true } }), true, 'an order the old direct insert wrote (before 20260919a)');
+  assert.equal(qrRowOnFloor({ customer: { paid: true } }), true, 'an order the old direct insert wrote (before 20260919a2)');
   assert.equal(qrRowOnFloor(null), false);
   const src = read('./qrTableSession.js');
   assert.ok(src.includes(".select('ref, items, customer, total, sent_at, paid')"), 'the paid column is read');

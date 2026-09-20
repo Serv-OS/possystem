@@ -31,19 +31,32 @@ for line in o.splitlines():
         predicted[parts[1]] = parts[3]
 expect('runbook pre-check query runs', r == 0 and len(predicted) >= 8, e + o)
 
-out, err, rc = t.apply('20260919a_OPS_fence_1_after_release.sql')
-expect('file A applies cleanly (one transaction)', rc == 0, err[-2000:])
-print('   verify row:', last(out))
-out2, err2, rc2 = t.apply('20260919a_OPS_fence_1_after_release.sql')
-expect('file A applies a second time (idempotent)', rc2 == 0, err2[-2000:])
-expect('verify row: 4 allow all left, codes not readable, no truncate, no untrusted links, stamp trigger, rules and stamp ledger closed',
+# THE SPLIT (20 Sep): a1 (identity, venues, devices) goes in first and stands on its own;
+# a2 (the payment half) refuses without it. Everything below this point is the whole fence, so
+# both halves are applied here, in the order the runbooks give them.
+out, err, rc = t.apply(t.FILE_A1)
+expect('file a1 applies cleanly (one transaction)', rc == 0, err[-2000:])
+print('   a1 verify row:', last(out))
+out2, err2, rc2 = t.apply(t.FILE_A1)
+expect('file a1 applies a second time (idempotent)', rc2 == 0, err2[-2000:])
+expect('a1 verify row: 4 allow all left, codes not readable, no truncate, no untrusted links, placed_via trigger, print agent table',
        last(out2).split('|')[0] == 'active_sessions, kds_tickets, order_queue, table_reservations'
-       and last(out2).split('|')[4:] == ['f', '0', '0', '0', '0', 't', 'f', 'f'], last(out2))
+       and last(out2).split('|')[4:] == ['f', '0', '0', '0', '0', 't', 't'], last(out2))
 o, _, _ = run("select set_at < now() - interval '1 second' or true, count(*) from public.fence_state where key = 'file_a' group by 1")
 o2, _, _ = run("update public.fence_state set set_at = now() - interval '5 hours' where key = 'file_a' returning 1")
-out3, err3, rc3 = t.apply('20260919a_OPS_fence_1_after_release.sql')
+out3, err3, rc3 = t.apply(t.FILE_A1)
 o3, _, _ = run("select set_at < now() - interval '4 hours' from public.fence_state where key = 'file_a'")
-expect('running file A again keeps the time it FIRST ran (file 2 counts its day from that)', rc3 == 0 and o3 == 't', o3 + err3[-500:])
+expect('running a1 again keeps the time it FIRST ran (file 2 counts its day from that)', rc3 == 0 and o3 == 't', o3 + err3[-500:])
+outb, errb, rcb = t.apply(t.FILE_A2)
+expect('file a2 applies cleanly on top of a1', rcb == 0, errb[-2000:])
+print('   a2 verify row:', last(outb))
+outb2, errb2, rcb2 = t.apply(t.FILE_A2)
+expect('file a2 applies a second time (idempotent)', rcb2 == 0, errb2[-2000:])
+expect('a2 verify row: rules and stamp ledger closed, 4 order functions, 4 tab functions, 2 tracker functions, a session needed',
+       last(outb2).split('|')[:7] == ['f', 'f', '4', '4', '2', 't',
+                                      'active_sessions, kds_tickets, order_queue, table_reservations'], last(outb2))
+o, _, _ = run("select value from public.fence_state where key = 'file_a2'")
+expect('and a2 records itself, while file 2 still counts its day from a1', o == '20260919a2', o)
 
 # ---------- grandfathering
 o, e, r = run("select name, coalesce(bound_via,'-'), status, coalesce(pairing_code,'-') from public.devices order by name")

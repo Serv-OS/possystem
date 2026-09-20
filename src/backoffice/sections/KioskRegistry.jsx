@@ -21,7 +21,7 @@ import KioskSettings from './KioskSettings';
 
 // Database fence stage 1 (contract A6): kiosk codes come from the SERVER
 // (issue_pairing_code, 60 minutes). This browser made code is the FENCE STAGE 1 FALLBACK
-// only, while 20260919a is not run. Delete PAIRING_WORDS and generatePairingCode once
+// only, while 20260919a1 is not run. Delete PAIRING_WORDS and generatePairingCode once
 // 20260919b has run.
 // Word list for human-friendly pairing codes (matches DeviceRegistry style)
 const PAIRING_WORDS = [

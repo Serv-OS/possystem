@@ -3,7 +3,7 @@
 -- ############################################################################
 -- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
 -- #  DATABASE FENCE, STAGE 1, STEP 1b. Run this WITH the app release          #
--- #  (runbook docs/FENCE_STAGE_1.md step 1b), BEFORE file 1 (20260919a).      #
+-- #  (runbook docs/FENCE_STAGE_1.md step 1b), BEFORE file a1 (20260919a1).    #
 -- #  It changes no policy, no grant and no row. It only gives devices the two #
 -- #  columns the release writes to, so that file 1 can tell a till that is    #
 -- #  really running the fence app from one that only reports a new version.   #
@@ -58,7 +58,7 @@ end
 $caps$;
 
 comment on column public.devices.client_caps is
-  '20260919a fence: what the running app on this device can do (reported by device_heartbeat, or written by the device itself while that function does not exist). Files 1 and 2 wait until every device switched on reports fence_v1.';
+  '20260919a1 fence: what the running app on this device can do (reported by device_heartbeat, or written by the device itself while that function does not exist). Files 1 and 2 wait until every device switched on reports fence_v1.';
 
 -- What you should see: one row, "client_caps,device_secret_hash".
 select string_agg(column_name, ',' order by column_name) as columns_added
@@ -74,13 +74,13 @@ select string_agg(column_name, ',' order by column_name) as columns_added
 -- -- SQL editor, select all (Cmd+A), press Cmd+/ once so every line loses its first "-- ",
 -- -- and press Run. It can be run twice.
 -- --
--- -- Only roll this back while file 1 (20260919a) is NOT in: file 1 needs both columns. The
+-- -- Only roll this back while a1 (20260919a1) is NOT in: a1 needs both columns. The
 -- -- first statement stops the roll back if it is.
 -- do $rb_guard$
 -- begin
 --   if to_regclass('public.fence_state') is not null
 --      and exists (select 1 from public.fence_state where key = 'file_a') then
---     raise exception 'STOPPED, NOTHING WAS CHANGED. Roll back 20260919a_OPS_fence_1_after_release.sql first: it needs these columns.';
+--     raise exception 'STOPPED, NOTHING WAS CHANGED. Roll back 20260919a1_OPS_fence_identity_devices.sql first: it needs these columns.';
 --   end if;
 -- end
 -- $rb_guard$;

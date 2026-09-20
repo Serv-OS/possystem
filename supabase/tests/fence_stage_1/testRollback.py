@@ -58,23 +58,41 @@ def diff(a, b):
     return '; '.join(out)
 
 # ---------- every roll back section is paste able as it stands
-for f in (t.FILE_A, t.FILE_B, t.FILE_C, t.FILE_D):
+for f in (t.FILE_A1, t.FILE_A2, t.FILE_B, t.FILE_C, t.FILE_D):
     block = t.rollback_block(f)
     prose = [l for l in block if l.startswith('-- -- ')]
     expect(f'{f}: the whole ROLL BACK section is comment lines, its notes double commented (one Cmd+/ leaves them notes)',
            all(l.startswith('--') for l in block if l.strip()) and len(prose) >= 3 and block[0].startswith('-- -- ===='), block[0])
 
-# ---------- Ops file 1
+# ---------- THE SPLIT (20 Sep): a1 on its own goes in, and comes out again exactly
+t.reset()
+s_pre = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
+o, e, r = t.apply(t.FILE_A1)
+expect('a1 applies on its own', r == 0, e[-800:])
+expect('a1 on its own really changed things', snapshot(OPS_A_TABLES, OPS_A_FUNCS)['policies'] != s_pre['policies'])
+o, e, r = t.apply_rollback(t.FILE_A1)
+expect('a1 roll back runs with no payment half in', r == 0, (e or '')[-800:])
+d = diff(s_pre, snapshot(OPS_A_TABLES, OPS_A_FUNCS))
+expect('a1 ALONE rolls back to exactly the 18 Sep policies, grants, function grants, functions, triggers and indexes', not d, d)
+o, _, _ = run("select count(*) from public.fence_state where key = 'file_a'")
+expect('and clears when it ran, so file 2 counts a new day from the next run', o == '0', o)
+
+# ---------- Ops file 1 (both halves)
 t.reset()
 s0 = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
 o, _, _ = run("select string_agg(x::text, ',' order by x::text) from unnest((select proacl from pg_proc where oid = 'public.pos_can_access(text)'::regprocedure)) x")
 expect('the copy starts with the live function grants (PUBLIC may run pos_can_access)', o.startswith('=X/postgres,'), o)
-o, e, r = t.apply(t.FILE_A)
-expect('file A applies', r == 0, e[-800:])
+o, e, r = t.apply_a()
+expect('file a1 then a2 apply', r == 0, e[-800:])
 s_after = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
-expect('file A really changed things (policies, functions, function grants)', s_after['policies'] != s0['policies'] and s_after['functions'] != s0['functions'])
-o, e, r = t.apply_rollback(t.FILE_A)
-expect('file A roll back runs (the whole pasted section, notes included)', r == 0, e[-800:])
+expect('the two halves really changed things (policies, functions, function grants)', s_after['policies'] != s0['policies'] and s_after['functions'] != s0['functions'])
+o, e, r = t.apply_rollback(t.FILE_A1)
+expect('THE SPLIT: a1 roll back refuses while the payment half (a2) is in, and says to roll THAT back first',
+       r != 0 and '20260919a2' in (e or '') and 'NOTHING WAS CHANGED' in (e or ''), (e or '')[-500:])
+d = diff(s_after, snapshot(OPS_A_TABLES, OPS_A_FUNCS))
+expect('and a1 roll back changed nothing when it refused', not d, d)
+o, e, r = t.rollback_a()
+expect('a2 then a1 roll back runs (the whole pasted section, notes included)', r == 0, e[-800:])
 s1 = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
 d = diff(s0, s1)
 expect('file A roll back puts back exactly the 18 Sep policies, grants, function grants (PUBLIC too), functions, triggers and indexes', not d, d)
@@ -82,18 +100,18 @@ gr, _, _ = run("select has_table_privilege('anon', 'public.user_profiles', 'INSE
 expect('file A roll back gives anon no write on user_profiles or user_locations (it never had one)', gr == 'f', gr)
 o, _, _ = run("select count(*) from public.fence_state where key = 'file_a'")
 expect('file A roll back clears when file A ran (file 2 counts a new day from the next run)', o == '0', o)
-o, e, r = t.apply_rollback(t.FILE_A)
-expect('file A roll back runs a second time', r == 0, e[-800:])
+o, e, r = t.rollback_a()
+expect('both roll backs run a second time', r == 0, e[-800:])
 d = diff(s0, snapshot(OPS_A_TABLES, OPS_A_FUNCS))
-expect('and still leaves exactly the 18 Sep state', not d, d)
-o, e, r = t.apply(t.FILE_A)
-expect('file A can be applied again after its roll back', r == 0, e[-800:])
+expect('and still leave exactly the 18 Sep state', not d, d)
+o, e, r = t.apply_a()
+expect('both halves can be applied again after their roll back', r == 0, e[-800:])
 o, _, _ = run("select set_at > now() - interval '1 minute' from public.fence_state where key = 'file_a'")
 expect('and records a fresh time', o == 't', o)
 
 # ---------- Ops file 2, and the order of the roll backs
 t.reset()
-o, e, r = t.apply(t.FILE_A)
+o, e, r = t.apply_a()
 t.age_file_a(25)
 for who in ['dev1', 'dev3', 'dev4', 'dup', 'owner1']:
     as_commit(who, "select public.device_issue_secret();")
@@ -110,9 +128,11 @@ expect('file B applies', r == 0, e[-800:])
 b_after = snapshot(OPS_B_TABLES)
 expect('file B really changed the policies', b_after['policies'] != b0['policies'])
 a_with_b = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
-o, e, r = t.apply_rollback(t.FILE_A)
-expect('MEDIUM: file A roll back refuses while file B is in, and says to roll back file 2 first',
+o, e, r = t.apply_rollback(t.FILE_A1)
+expect('MEDIUM: a1 roll back refuses while file B is in, and says to roll back file 2 first',
        r != 0 and 'Roll back file 2 first' in e and 'NOTHING WAS CHANGED' in e, e[-600:])
+o2, e2, r2 = t.apply_rollback(t.FILE_A2)
+expect('and so does the payment half\'s own roll back', r2 != 0 and 'Roll back file 2 first' in e2, (e2 or '')[-400:])
 d = diff(a_with_b, snapshot(OPS_A_TABLES, OPS_A_FUNCS))
 expect('and changes nothing', not d, d)
 o, e, r = t.apply_rollback(t.FILE_B)
@@ -125,10 +145,10 @@ o, _, _ = run("select count(*) from public.fence_state where key = 'file_b'")
 expect('file B roll back clears its mark', o == '0', o)
 o, e, r = t.apply_rollback(t.FILE_B)
 expect('file B roll back runs a second time', r == 0, e[-800:])
-o, e, r = t.apply_rollback(t.FILE_A)
-expect('with file B rolled back, file A roll back runs', r == 0, e[-800:])
-o, e, r = t.apply(t.FILE_A)
-expect('after both roll backs, file A may run again', r == 0, e[-800:])
+o, e, r = t.rollback_a()
+expect('with file B rolled back, a2 then a1 roll back runs', r == 0, e[-800:])
+o, e, r = t.apply_a()
+expect('after every roll back, both halves may run again', r == 0, e[-800:])
 t.age_file_a(25)
 o, e, r = t.apply(t.FILE_B)
 expect('and file B can be applied again a day later', r == 0, e[-800:])
@@ -136,7 +156,7 @@ expect('and file B can be applied again a day later', r == 0, e[-800:])
 # the roll back pair returns the database to the 18 Sep state for file A's tables too
 t.reset()
 s0 = snapshot(OPS_A_TABLES, OPS_A_FUNCS)
-t.apply(t.FILE_A)
+t.apply_a()
 t.age_file_a(25)
 for who in ['dev1', 'dev3', 'dev4', 'dup', 'owner1']:
     as_commit(who, "select public.device_issue_secret();")
@@ -144,9 +164,9 @@ run("update public.devices set client_caps = array['fence_v1','device_secret'] w
 as_commit('customer', f"select public.place_public_order('{L1}', '{order}'::jsonb, null, '{{}}'::uuid[]);")
 o, e, r = t.apply(t.FILE_B)
 t.apply_rollback(t.FILE_B)
-o, e, r = t.apply_rollback(t.FILE_A)
+o, e, r = t.rollback_a()
 d = diff(s0, snapshot(OPS_A_TABLES, OPS_A_FUNCS, skip_triggers=('order_queue_qr_floor',)))
-expect('B then A roll back leaves file A\'s tables and functions exactly as on 18 Sep (only the QR floor trigger stays, as file B says)',
+expect('B, then a2, then a1 roll back leaves those tables and functions exactly as on 18 Sep (only the QR floor trigger stays, as file B says)',
        r == 0 and not d, d or e[-500:])
 
 # ---------- Platform files

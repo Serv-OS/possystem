@@ -4,7 +4,7 @@
 // legacy writes, so node:test (publicOrder.test.js) covers every branch, including the fallback
 // to today's direct inserts while the server functions do not exist yet.
 //
-// ORDER OF RELEASE: this release can go live before Peter runs 20260919a. Until then
+// ORDER OF RELEASE: this release can go live before Peter runs the fence files. Until a2 (20260919a2) is in,
 // place_public_order, settle_qr_tab, order_track_row, qr_table_open_tabs, qr_tab_rounds,
 // qr_tab_join, qr_table_tab_count and catering_day_load do not exist (PGRST202) and every
 // caller runs the path the live app uses today. After 20260919b (tables closed to the public
@@ -230,7 +230,7 @@ const fenceBool = (v) => v === true || ['true', 't', '1', 'yes', 'y', 'on'].incl
  * replaces it (_qr_sync_table_session: paid, or a round of an open tab). A round of an open tab
  * always counts; an order the server has not proven paid yet ('checking' or 'short',
  * payment_unverified) never does, so it is not shown on the table like a paid one. Anything else
- * (an order the old direct insert wrote, before 20260919a: customer.paid) counts as today.
+ * (an order the old direct insert wrote, before 20260919a2: customer.paid) counts as today.
  */
 export function qrRowOnFloor(row) {
   if (!row || typeof row !== 'object') return false;

@@ -8,9 +8,11 @@ PSQL = ['psql', '-h', os.environ.get('FENCE_PGHOST', '127.0.0.1'), '-p', os.envi
 WT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 MIG = os.path.join(WT, 'supabase', 'migrations')
 
-# The four stage 1 files (fix round 2: file names match their headers; A and C wait for
-# the app release).
-FILE_A = '20260919a_OPS_fence_1_after_release.sql'
+# The stage 1 files. Fix round 2 made the names match their headers (A and C wait for the app
+# release); the 20 Sep split cut file A in half, so Peter can run the identity and device half
+# on its own and the payment half when it is ready. a1 goes in first; a2 refuses without it.
+FILE_A1 = '20260919a1_OPS_fence_identity_devices.sql'
+FILE_A2 = '20260919a2_OPS_fence_public_orders.sql'
 FILE_B = '20260919b_OPS_fence_2_after_app.sql'
 FILE_C = '20260919c_PLATFORM_fence_1_after_release.sql'
 FILE_D = '20260919d_PLATFORM_fence_2_after_app.sql'
@@ -66,6 +68,22 @@ def age_file_a(hours=25):
 
 def apply(fname, db='ops'):
     return run_file(os.path.join(MIG, fname), db=db)
+
+def apply_a(db='ops'):
+    """Both halves of the old file A, in the order the runbooks give them: a1 (runbook one,
+    identity, venues and devices), then a2 (runbook two, the payment half). Stops at the first
+    one that fails and hands back its result."""
+    o, e, r = apply(FILE_A1, db=db)
+    if r != 0:
+        return o, e, r
+    return apply(FILE_A2, db=db)
+
+def rollback_a(db='ops'):
+    """And out in the other order: the payment half first, then identity and devices."""
+    o, e, r = apply_rollback(FILE_A2, db=db)
+    if r != 0:
+        return o, e, r
+    return apply_rollback(FILE_A1, db=db)
 
 def rollback_block(fname):
     """The ROLL BACK section exactly as Peter copies it: from the "-- -- ====" rule line

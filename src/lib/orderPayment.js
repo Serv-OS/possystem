@@ -1,7 +1,7 @@
 // src/lib/orderPayment.js: is a queued order paid, unpaid, or is its payment being checked?
 // Database fence stage 1, fix round (docs/FENCE_STAGE_1_APP.md section 11, S3).
 //
-// Since 20260919a the SERVER decides "paid" for online, QR and catering orders
+// Since 20260919a2 the SERVER decides "paid" for online, QR and catering orders
 // (place_public_order). An order whose payment it could not prove yet (a slow card processor,
 // a webhook that lands late) still reaches the venue, but with paid false and
 // customer.payment_state 'checking'. That is a THIRD state:

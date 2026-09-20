@@ -3,7 +3,7 @@
 // Is this signed in user staff for a location (or a company)? The SAME rule the database uses.
 //
 // Database fence stage 1 (19 Sep 2026): the database rule is user_locations, plus every venue for
-// a verified super admin. 20260919a_OPS_fence_1_after_release.sql (section 4c) redefines
+// a verified super admin. 20260919a1_OPS_fence_identity_devices.sql (section 4c) redefines
 // public.user_accessible_locations() as
 //
 //     select location_id::text from user_locations where user_id = auth.uid() and not is_anon_session()

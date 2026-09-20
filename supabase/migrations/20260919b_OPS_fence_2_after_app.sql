@@ -3,11 +3,12 @@
 -- ############################################################################
 -- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
 -- #  DATABASE FENCE, STAGE 1, FILE 2 OF 2 (Ops).                              #
--- #  ONLY AFTER file 1 (20260919a) has been in for a full day, the app        #
+-- #  ONLY AFTER a1 (20260919a1) has been in for a full day AND a2            #
+-- #  (20260919a2) is in as well, with the app                                 #
 -- #  release is on EVERY till, KDS, kiosk and clock, and the customer pages   #
 -- #  place orders through the new server functions. Outside service.         #
 -- #  The file checks this itself and stops (changing nothing) if it is not:  #
--- #  it refuses to run until 24 hours after file 1 FIRST ran.                 #
+-- #  it refuses to run until 24 hours after a1 FIRST ran.                     #
 -- ############################################################################
 --
 -- WHAT THIS FILE CLOSES
@@ -16,13 +17,13 @@
 --     insert. From now on only a paired till, kiosk or KDS of that venue, a Back
 --     Office login of that venue, a host stand of that venue (tables only), the super
 --     admin, or a server function can read or write them.
---   * Customer pages reach them only through the functions file 1 created
+--   * Customer pages reach them only through the functions a2 created
 --     (place_public_order, verify_public_order_payment, settle_qr_tab, order_track_row,
 --     qr_* and catering_day_load), each keyed to something the customer holds. QR tabs
 --     reach the floor plan through a trigger, never from a phone.
 --   * The raw anon key loses INSERT, UPDATE, DELETE on these tables. Print agents use
 --     print_agent_claim and print_agent_report with a key from Back Office.
---   (devices were finished by file 1: codes hidden, old codes retired, venues pinned,
+--   (devices were finished by a1: codes hidden, old codes retired, venues pinned,
 --   re-link by device secret only. Nothing here changes them.)
 --
 -- WHY IT WAITS FOR THE APP (see docs/FENCE_STAGE_1_APP.md): a till that briefly loses
@@ -32,10 +33,11 @@
 -- B12, G4, G5, G6, G16, G17); the print agents need their key (gap G24).
 --
 -- WHAT THE GATES TRUST (fix round 2, 19 Sep): only what the server wrote. The time since
--- file 1 comes from fence_state (file 1 records when it first ran). A device counts as
+-- a1 comes from fence_state (a1 records when it first ran; the split left that mark with a1,
+-- so the full day is still counted from the half Peter ran first). A device counts as
 -- switched on but unpaired only when its own former session says so. Order rows written
 -- straight into order_queue by an unknown caller no longer hold this file back (anyone
--- could write one while file 1 is in): the full day after file 1 is what gives old
+-- could write one while the fence files are in): the full day after a1 is what gives old
 -- customer pages time to reload, and the verification row counts those rows for you.
 --
 -- RULES OF THE FILE: no begin or commit (any error means nothing changed); every
@@ -45,7 +47,7 @@
 
 
 -- ============================================================================
--- 0. Guards: right project, file 1 in place, the app release really is live
+-- 0. Guards: right project, BOTH halves of file 1 in place, the app release really is live
 -- ============================================================================
 set local lock_timeout = '3s';
 
@@ -68,17 +70,17 @@ begin
      or to_regclass('public.device_secret_stash') is null
      or to_regclass('public.fence_state') is null
      or not exists (select 1 from pg_trigger where tgname = 'order_queue_placed_via' and not tgisinternal) then
-    raise exception 'Run 20260919a_OPS_fence_1_after_release.sql (this version) first. Nothing was changed.';
+    raise exception 'Run 20260919a1_OPS_fence_identity_devices.sql and 20260919a2_OPS_fence_public_orders.sql (this version of both) first. Nothing was changed.';
   end if;
   if to_regprocedure('public.online_kitchen_load(text)') is null then
     raise exception 'online_kitchen_load(text) is missing (20260902_online_kitchen_load.sql). The storefront busy time needs it once order_queue is closed. Nothing was changed.';
   end if;
 
-  -- 0. A full day after file 1 (fix round 2): file 1 records when it first ran. Customer
+  -- 0. A full day after a1 (fix round 2): a1 records when it first ran. Customer
   --    pages and tills that were open before it get a day to reload the release.
   execute 'select set_at from public.fence_state where key = ''file_a''' into v_a_at;
   if v_a_at is null then
-    raise exception 'Run 20260919a_OPS_fence_1_after_release.sql (this version) first. Nothing was changed.';
+    raise exception 'Run 20260919a1_OPS_fence_identity_devices.sql and 20260919a2_OPS_fence_public_orders.sql (this version of both) first. Nothing was changed.';
   end if;
   if v_a_at > now() - interval '24 hours' then
     raise exception 'STOPPED, NOTHING WAS CHANGED. File 1 ran at % (UTC), less than a full day ago. Run this file again after % (UTC).',
@@ -127,7 +129,7 @@ begin
 
   -- 3. (fix round 2) Orders written straight into order_queue by a caller the server does
   --    not know (placed_via 'public') no longer stop this file: anyone could write one
-  --    while file 1 is in, to hold it shut forever. The full day after file 1 (check 0) is
+  --    while the fence files are in, to hold it shut forever. The full day after a1 (check 0) is
   --    what gives an old customer page time to reload; the verification row below counts
   --    such orders of the last 24 hours (public_orders_24h) for you to look at.
 
@@ -142,12 +144,12 @@ end
 $guard$;
 
 
--- 0b. Every lock this file needs, taken now, in one fixed order, exactly as file 1 does (fix
+-- 0b. Every lock this file needs, taken now, in one fixed order, exactly as a1 does (fix
 -- round 3, 19 Sep). Each "enable row level security" below takes ACCESS EXCLUSIVE on its own
 -- table; taking them one at a time in the middle of the file meant a till writing an order
 -- between two of them gave a raw "canceling statement due to lock timeout" with no
 -- instruction, and a real deadlock with a card terminal closing a table was possible. The
--- order is file 1's: the two tables a till writes first, then the rest. If a till holds one of
+-- order is a1's: the two tables a till writes first, then the rest. If a till holds one of
 -- them for more than 3 seconds, or a deadlock is found, the file stops, changes nothing, and
 -- says so.
 do $locks$
@@ -162,12 +164,12 @@ $locks$;
 
 
 -- ============================================================================
--- 1. Mark this file as run (file 1 refuses to run again from now on)
+-- 1. Mark this file as run (a1 and a2 both refuse to run again from now on)
 -- ============================================================================
 insert into public.fence_state (key, value) values ('file_b', '20260919b')
 on conflict (key) do update set value = excluded.value, set_at = now();
 
--- Belt and braces: the interim read policy of an older draft of file 1 never comes back.
+-- Belt and braces: the interim read policy of an older draft of a1 never comes back.
 drop policy if exists devices_read_interim on public.devices;
 
 
@@ -175,7 +177,7 @@ drop policy if exists devices_read_interim on public.devices;
 -- 2. Orders: order_queue, kds_tickets, print_jobs
 -- ============================================================================
 -- Tills, kiosks and KDS screens of the venue (a claimed device), the venue's Back
--- Office logins and the super admin. Customer pages use the file 1 functions; edge
+-- Office logins and the super admin. Customer pages use the a2 functions; edge
 -- functions use the service role; order screens use order_status_feed(). With no
 -- policy of plain "true" left on order_queue, order_status_names_enabled() turns on
 -- and the order screen TVs start showing first names (see INVARIANTS.md).
@@ -321,8 +323,8 @@ select
 -- -- and press Cmd+/ once: every line loses its first "-- ", and the notes (lines
 -- -- that still start with "-- ") stay notes. Then press Run.
 -- -- WHAT: it puts back exactly the open policies and grants this file removed, removes
--- -- the ones it added, and can run twice. After it, file 1 may be run again, or rolled
--- -- back itself (file 1's roll back refuses to run while this file is still in).
+-- -- the ones it added, and can run twice. After it, a1 and a2 may be run again, or rolled
+-- -- back themselves (their roll backs refuse to run while this file is still in).
 -- -- It leaves the order_queue_qr_floor trigger in place on purpose: it only ever writes
 -- -- a QR tab's own session on the floor plan, so it is safe next to the phone's own
 -- -- sync, and once the release's cleanup has removed that sync it is the only thing
