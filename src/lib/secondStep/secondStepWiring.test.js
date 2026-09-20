@@ -155,8 +155,15 @@ test('the app: every password login surface waits for the second step before loa
   // one on SIGNED_IN and TOKEN_REFRESHED only, never on MFA_CHALLENGE_VERIFIED, so live channels
   // used to keep the password only token for up to an hour (fix round, 20 Sep 2026).
   assert.match(bo, /await supabase\.realtime\.setAuth\(token\);/);
-  assert.match(bo, /if \(bootedPasswordOnly\.current\) window\.location\.reload\(\); else setSecondStepOk\(true\);/,
-    'a page that booted on a password only sign in reloads once the gate passes (SyncBridge and realtime restart clean)');
+  // It reloads ONLY when the gate really upgraded the session. Stepping aside (the session
+  // already proves itself, or the break glass is off) must not reload, or a password only
+  // session loops for ever on "Checking sign in" (Peter, 20 Sep 2026).
+  assert.match(bo, /if \(result\?\.upgraded && bootedPasswordOnly\.current\) window\.location\.reload\(\);/,
+    'a real upgrade on a page that booted password only reloads once (SyncBridge and realtime restart clean)');
+  assert.match(bo, /else setSecondStepOk\(true\);/, 'stepping aside never reloads');
+  const gate = read('src/components/secondStep/SecondStepGate.jsx');
+  assert.match(gate, /onPassedRef\.current\?\.\(\{ upgraded: !!\(opts && opts\.upgraded\) \}\)/, 'the gate says whether it upgraded');
+  assert.match(gate, /pass\(\{ upgraded: true \}\)/, 'a new Face ID or factor counts as an upgrade');
   assert.match(bo, /if \(!authUser \|\| isMock \|\| !secondStepOk\) return;/, 'profile load waits for the gate');
   assert.match(bo, /mode="recovery"/, 'a reset link passes the second step first');
   assert.match(bo, /\['security','Sign in security'\]/, 'Settings, Sign in security');
