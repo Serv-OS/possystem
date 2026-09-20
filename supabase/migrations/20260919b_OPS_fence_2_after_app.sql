@@ -62,7 +62,7 @@ begin
   end if;
   if to_regprocedure('public.place_public_order(uuid, jsonb, jsonb, uuid[])') is null
      or to_regprocedure('public.verify_public_order_payment(uuid, text, uuid[])') is null
-     or to_regprocedure('public._public_order_value(text, text, text, jsonb)') is null
+     or to_regprocedure('public._public_order_value(text, text, text, jsonb, text)') is null
      or to_regclass('public.payment_proofs') is null
      or to_regclass('public.device_unlinked_pings') is null
      or to_regclass('public.device_secret_stash') is null

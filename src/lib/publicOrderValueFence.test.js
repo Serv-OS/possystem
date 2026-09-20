@@ -20,6 +20,16 @@
  * customer's favour. It is worth nothing to them, the order comes out short, and staff see it
  * and confirm on the till. A short order is safe; a wrongly paid one is not.
  *
+ * ROUND 7 (20 Sep): both halves of the rule again, in the two places round 6 broke the honest
+ * direction. An option the server cannot match by id is worth NOTHING (round 6 charged it at
+ * the venue's price for that NAME, which charged the storefront's own free instruction picks
+ * and typed notes, and refused guests who had paid in full). A 0.00 menu tier is a real price
+ * on the menu the basket was BUILT on and nowhere else (round 6 let it into the lowest price of
+ * any menu, so an item that is free on one menu was free to order on all of them). Plus: a free
+ * item reward that names nothing is bounded, the tender SPLIT is proven and not just its sum,
+ * the check's own method is the server's too, and a courier fee or added-on sales tax can never
+ * become a tip.
+ *
  * AND THE OTHER HALF OF THE RULE (round 5): the server must not be STRICTER than the storefront
  * either, or honest fully paid orders sit in "Payment short" and QR tab rounds are refused
  * outright. Round 4's sellability test also refused a row whose visibility.online was false (a
@@ -57,8 +67,45 @@ test('a price the server cannot work out is NULL, never zero', () => {
   // uses isSet(), so 0 counts, and resolveItemPrice returns that tier and looks no further,
   // which means every storefront charges 0.00 for that row on that menu.
   assert.ok(floor.includes("if v_val is not null and v_val >= 0 then"), 'an explicit tier price counts, zero included');
-  assert.ok(!floor.includes("if coalesce(v_val, 0) > 0 then"), 'the old rule that skipped a 0.00 tier is gone');
   assert.ok(!/return round\(v_min \* 100\)::bigint;/.test(floor), 'the old unconditional 0 return is gone');
+});
+
+test('a 0.00 menu tier is a price on ITS OWN menu only (fix round 7)', () => {
+  // Round 6 let a 0.00 tier into the lowest-price-of-any-menu floor, which made an item that is
+  // free on one menu free to order on all of them (ten 0.00 Kids Squash beside one real Coffee
+  // came out PAID for 3.00). The page now says which menu it priced on, exactly as
+  // resolveItemPrice was told (OnlineSurface's effectiveMenuId).
+  assert.ok(floor.includes("if nullif(btrim(coalesce(p_menu_id, '')), '') is not null\n"
+    + "     and jsonb_typeof(p_pricing -> 'menus' -> p_menu_id) = 'object' then"),
+    'the named menu\'s own tier is looked at first');
+  assert.ok(floor.includes('-- The menu the basket was built on: its tier is the price, 0.00 included, and nothing else'),
+    'and it wins outright, like resolveItemPrice');
+  assert.ok(floor.includes("if nullif(btrim(coalesce(p_menu_id, '')), '') is null and jsonb_typeof(p_pricing -> 'menus') = 'object' then"),
+    'the lowest-tier scan only runs when the menu is NOT known');
+  assert.ok(floor.includes('if v_val is not null and v_val > 0 then\n        v_min := least(v_min, v_val);'),
+    'and then a 0.00 tier is ignored: short is a question, free is a loss');
+  // the menu id reaches the floor from the order, and is kept for a later re-valuation
+  assert.ok(FILE_A.includes('public._menu_item_floor_minor(r.pricing, v_channel, v_base, v_menu_id);'), 'the valuer passes it');
+  assert.ok(FILE_A.includes("v_menu_id     text := nullif(left(btrim(coalesce(p_order ->> 'menu_id', '')), 80), '');"),
+    'place_public_order reads it off the order');
+  assert.ok(FILE_A.includes("'menu_id', v_menu_id);"), 'and keeps it in order_pricing');
+  assert.ok(FILE_A.includes("v_pend.pricing ->> 'menu_id') -> 'lines'));"), 'Check payment re-values on the same menu');
+  assert.ok(FILE_A.includes("q.customer -> 'order_pricing' ->> 'menu_id') ->> 'goods_minor')::bigint))), 0)"),
+    'and a QR tab close values its rounds on theirs');
+  assert.ok(FILE_A.includes('drop function if exists public._menu_item_floor_minor(jsonb, text, boolean);'),
+    'the old three argument shape is dropped first (a new parameter cannot CREATE OR REPLACE)');
+  assert.ok(FILE_A.includes('drop function if exists public._public_order_value(text, text, text, jsonb);'), 'the same for the valuer');
+  // and the three checkouts really send it
+  const online = read('../surfaces/online/OnlineCheckout.jsx');
+  const qr = read('../surfaces/qr/QrCheckout.jsx');
+  const surface = read('../surfaces/online/OnlineSurface.jsx');
+  assert.equal((online.match(/menu_id: menuId \|\| null/g) || []).length, 2, 'both online payloads carry it');
+  assert.equal((qr.match(/menu_id: menuId \|\| null/g) || []).length, 2, 'the QR round and the QR pay now payload too');
+  assert.ok(surface.includes('menuId={effectiveMenuId}'), 'from the surface that priced the basket');
+  assert.equal((surface.match(/menuId=\{effectiveMenuId\}/g) || []).length, 2, 'to both checkouts');
+  // catering prices from `base` only (CateringSurface), so it never sends one and the server
+  // ignores any it is given
+  assert.ok(FILE_A.includes("v_menu_id  text := case when p_source = 'catering' then null else"), 'catering keeps its base only rule');
 });
 
 test('only what the storefront really sells counts as the server\'s own value', () => {
@@ -193,9 +240,9 @@ test('a QR tab tip can only be money taken ABOVE the server\'s own value of the 
     'create or replace function public._qr_sync_table_session');
   // the server's own goods value for the tab's rounds, net of the venue's automatic deals
   assert.ok(settle.includes("coalesce((q.customer -> 'order_pricing' ->> 'goods_minor')::bigint,")
-    && settle.includes("(public._public_order_value(v_loc, 'qr', q.type, q.items) ->> 'goods_minor')::bigint, 0)")
+    && settle.includes("q.customer -> 'order_pricing' ->> 'menu_id') ->> 'goods_minor')::bigint, 0)")
     && settle.includes("- coalesce((q.customer -> 'order_pricing' ->> 'auto_minor')::bigint, 0)"),
-    'valued from each round, or re-priced by the server for a round an old page placed');
+    'valued from each round, or re-priced by the server on that round\'s own menu for a round an old page placed');
   assert.ok(settle.includes('v_tip := least(greatest(0, v_tip), greatest(0, round((v_taken - v_goods)::numeric / 100, 2)));'),
     'the tip is capped at what the card took over that value');
   // the rest is the sale, so a phone can no longer book a 0.00 sale and a 95 pound tip
@@ -209,8 +256,9 @@ test('an online, QR or catering check books the SERVER\'s subtotal, service, tip
     'do $order_helper_grants$');
   // the same ceiling the tab close uses: money taken ABOVE what the order owed for its goods
   assert.ok(write.includes("v_head := greatest(0, greatest(0, coalesce((p_server ->> 'proven_minor')::bigint, 0))\n"
-    + "                          - greatest(0, coalesce((p_server ->> 'owed_minor')::bigint, 0)));"),
-    'the headroom is the proven money less what the order owed');
+    + "                          - greatest(0, coalesce((p_server ->> 'owed_minor')::bigint, 0))\n"
+    + "                          - v_fee - coalesce(v_xtax, 0));"),
+    'the headroom is the proven money less what the order owed, the courier fee and added-on tax (round 7)');
   assert.ok(write.includes('v_svc  := least(v_svc, v_head);')
     && write.includes('v_tip  := least(v_tip, v_head - v_svc, greatest(0, p_total_minor));'),
     'the service charge first, then the tip, out of that headroom and never more than is booked');
@@ -233,16 +281,90 @@ test('an online, QR or catering check books the SERVER\'s subtotal, service, tip
   assert.ok(FILE_A.includes("'proven_minor', v_book + v_gift,"), 'and a manager confirm passes what it booked');
 });
 
-test('an option the server cannot find by id is charged at the venue\'s price for that NAME', () => {
-  assert.ok(value.includes("select coalesce(jsonb_object_agg(k, v), '{}'::jsonb) into v_onames"),
-    'the dearest menu price of every option name at the venue');
-  assert.ok(value.includes("v_menu := (v_onames ->> lower(btrim(coalesce(md ->> 'name', md ->> 'label', ''))))::bigint;"),
-    'an unknown id falls back to its name');
-  assert.ok(value.includes('if v_ents is null then'), 'only when the id is on no modifier group at all');
+test('an option the server cannot match by id is worth NOTHING, and can never take anything off (fix round 7)', () => {
+  // Round 6 charged such an option at the dearest menu price of any option with the same NAME.
+  // The storefront's own free choices arrive exactly like that: an ig-<group>-<value> id that
+  // is on no modifier group, or no id at all, always at price 0. At a venue whose instruction
+  // wording matches one of its option names ("Sauce", "Cheese") the guest who had paid in full
+  // came out short, with no kitchen ticket and a charge they never paid on their own line.
+  assert.ok(!value.includes('v_onames'), 'the option-name price table is gone');
+  assert.ok(!/jsonb_object_agg\(k, v\), '\{\}'::jsonb\) into v_onames/.test(FILE_A), 'and nothing else builds one');
   assert.ok(value.includes('v_mod := greatest(v_mod, coalesce(v_menu, 0), 0);'),
-    'and it can still only ADD to the line, never take anything off');
-  // the storefront's own instruction groups mint ids that are in no group, and must stay free
-  assert.ok(value.includes('OnlineItemSheet.jsx:450'), 'and says why an unknown id cannot simply be refused');
+    'an unmatched option keeps what the page said, floored at zero: it can only ADD to the line');
+  assert.ok(value.includes('-- AN OPTION THE SERVER CANNOT MATCH BY ID IS WORTH NOTHING (fix round 7, 20 Sep).'),
+    'the rule is written where the loop is');
+  assert.ok(value.includes('THE ACCEPTED COST: a doctored page can put a free extra on a kitchen ticket'),
+    'and so is what it costs');
+  // the storefront lines that mint those ids, so the next reader can check them
+  for (const ref of ['OnlineItemSheet.jsx:450', 'InlineItemFlow.jsx:271', 'kioskBasket.js:51']) {
+    assert.ok(value.includes(ref), `names ${ref}`);
+  }
+  // round 3's repeated minus option forgery is still shut: a copy past the group's limit has
+  // no v_pick either, and lands on the same floor-at-zero line
+  assert.ok(value.includes("v_key := (v_opt ->> 'g') || '|' || (md ->> 'id');"), 'the per group, per option counter is still there');
+  assert.ok(value.includes("or coalesce((v_used ->> v_key)::integer, 0) = 0"), 'and a non repeatable option counts once');
+});
+
+test('the money on a public check does not depend on the tenders column (fix round 7)', () => {
+  const write = between('create or replace function public._public_order_write_check',
+    'do $order_helper_grants$');
+  // accountingDay.js legacyTenders reads `method` and `payment_method`; both were the phone's,
+  // so a card sale declared as cash booked cash takings on a database without the column.
+  assert.ok(write.includes("v_method := case when p_total_minor > 0 then 'card'"), 'the method is the server\'s own');
+  assert.ok(write.includes("'method', v_method,") && write.includes("'payment_method', case"),
+    'and payment_method with it, in the list form legacyTenders parses');
+  const acct = read('../../supabase/functions/_shared/accountingDay.js');
+  assert.ok(acct.includes("const raw = String(row?.payment_method || row?.method || 'other');"),
+    'which is exactly what the fallback reads');
+  // and the tab close carries a server built list too
+  const settle = between('create or replace function public.settle_qr_tab',
+    'create or replace function public._qr_sync_table_session');
+  assert.ok(settle.includes("'tenders', jsonb_build_array(jsonb_strip_nulls(jsonb_build_object("), 'settle_qr_tab writes its own tender');
+  assert.ok(settle.includes("'psp_ref', p_payment_intent_id,"), 'naming the capture it booked');
+});
+
+test('the tender SPLIT is proven, not just the sum (fix round 7)', () => {
+  const write = between('create or replace function public._public_order_write_check',
+    'do $order_helper_grants$');
+  for (const [name, server] of [['card', 'greatest(0, p_total_minor) + 2'], ['gift', 'v_gift + 2'],
+                                ['loy', 'v_loy + 2'], ['prom', 'v_promo + 2']]) {
+    assert.ok(write.includes(`v_t_${name} > ${server}`), `the ${name} line is held to what the server proved`);
+  }
+  assert.ok(write.includes('-- THE SPLIT, NOT JUST THE SUM (fix round 7, 20 Sep).'), 'and says why');
+  assert.ok(write.includes("v_row := v_row - 'tenders';"), 'anything else is dropped and rebuilt from the server\'s figures');
+});
+
+test('a service charge and a tip come out of the GOODS headroom only (fix round 7)', () => {
+  const write = between('create or replace function public._public_order_write_check',
+    'do $order_helper_grants$');
+  assert.ok(write.includes("v_fee  := greatest(0, round(public._fence_num(v_row -> 'customer' ->> 'delivery_fee') * 100)::bigint);"),
+    'the courier fee is not headroom (OnlineCheckout.jsx:450 puts it on the customer)');
+  assert.ok(write.includes("where lower(coalesce(e -> 'rate' ->> 'type', e ->> 'type', '')) = 'exclusive';"),
+    'nor is ADDED-ON sales tax (lib/tax.js: only exclusive rates are charged on top)');
+  assert.ok(write.includes('- v_fee - coalesce(v_xtax, 0));'), 'both come off before a tip can be taken');
+  // UK VAT is inside the goods the server priced, so it must NOT come off, or honest tips die
+  assert.ok(write.includes('-- Only EXCLUSIVE (added-on) tax counts: UK VAT is already inside the goods the server'),
+    'and the file says why inclusive VAT is left alone');
+});
+
+test('a free item reward that names nothing is BOUNDED (fix round 7)', () => {
+  const free = between('drop function if exists public._loyalty_free_item_minor(jsonb, jsonb);',
+    'create or replace function public._public_order_loyalty');
+  assert.ok(free.includes('v_no_item_cap constant bigint := 1500;'), '15.00 when the programme sets no ceiling');
+  assert.ok(free.includes('return least(greatest(0, coalesce(v_min, 0)),\n'
+    + '                 greatest(0, coalesce(nullif(p_cap_minor, 0), v_no_item_cap)));'),
+    'the cheapest line, capped');
+  assert.ok(FILE_A.includes("greatest(0, round(public._fence_num(v_rw ->> 'max_minor'))::bigint));"),
+    'the programme\'s own ceiling comes off the proof meta');
+  const rules = read('../../supabase/functions/_shared/paymentProofRules.js');
+  assert.ok(rules.includes('max_minor: cap') || rules.includes('{ type, items, max_minor: cap }'),
+    'payment-proof writes it');
+  assert.ok(rules.includes('posInt(v.max_value_minor) || posInt(v.max_amount_minor) || posInt(v.cap_minor)'),
+    'from the reward row or the stamp programme');
+  // and the Back Office says so where the rows are made
+  const bo = read('../backoffice/sections/LoyaltyManager.jsx');
+  assert.equal((bo.match(/No item picked yet\./g) || []).length, 2, 'both editors warn while nothing is named');
+  assert.ok(bo.includes('No items named: this gives away the cheapest line on the order'), 'and the saved rewards list warns too');
 });
 
 test('every fence file bounds its own locks, step 1b included', () => {

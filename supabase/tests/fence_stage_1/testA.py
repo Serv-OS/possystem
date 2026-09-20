@@ -474,10 +474,12 @@ def state(ref):
     o, _, _ = run(f"select paid::text || '|' || coalesce(customer->>'payment_state', '-') from public.order_queue where ref = '{ref}'")
     return o
 
-def online(ref, items, total, discounts=None, customer=None, type_='collection'):
+def online(ref, items, total, discounts=None, customer=None, type_='collection', menu_id=None):
     o = {'ref': ref, 'source': 'online', 'type': type_, 'items': items, 'total': total, 'customer': customer or {}}
     if discounts is not None:
         o['discounts'] = discounts
+    if menu_id is not None:
+        o['menu_id'] = menu_id      # fix round 7: the menu the page priced the basket on
     return o
 
 burger = [line('mi-burger', 20)]
@@ -1082,46 +1084,152 @@ expect('FORGERY: three no-item stamp cards still take off ONE cheapest line (3.0
        o + e + json.dumps(pr))
 run("delete from public.fence_attempts where bucket like 'order:%'")
 
-# MEDIUM: a menu tier typed as 0.00 is a real price on every storefront (menuPricing.js
-# menuTierPrice:78-80 uses isSet, so 0 counts, and resolveItemPrice:90 returns it), but the
-# server's floor skipped it and priced the line at its 4 pound base.
-cp = proof('pi_r6_tier', 'card', 2000, order_ref='R6-TIER')
-o, e, r = place('customer', online('R6-TIER', [line('mi-burger', 20), line('mi-kidsdrink', 0)], 20),
-                {'id': chk('R6-TIER'), 'total': 20}, [cp])
-pr = pricing('R6-TIER')
-expect('HONEST: an item whose kids menu tier is 0.00 is priced at 0.00, and the 20.00 order is PAID',
-       j(o).get('paid') is True and pr.get('goods_minor') == 2000 and pr.get('unknown_lines') == 0
-       and state('R6-TIER') == 'true|-', o + e + json.dumps(pr))
-# It is still floored at the tier, never below: the page cannot price the burger at zero too.
-cp = proof('pi_r6_tier2', 'card', 1, order_ref='R6-TIER2')
-o, e, r = place('attacker', online('R6-TIER2', [line('mi-burger', 0), line('mi-kidsdrink', 0)], 0.01),
-                {'id': chk('R6-TIER2'), 'total': 0.01}, [cp])
-pr = pricing('R6-TIER2')
-expect('FORGERY: the burger beside it is still 20.00, so the penny order is short',
-       j(o).get('paid') is False and pr.get('goods_minor') == 2000 and state('R6-TIER2') == 'false|short',
+# ROUND 7 (HIGH): a free item reward that names NO item is the cheapest line, which on a one
+# line basket is the whole order, so an unconfigured stamp programme was a free anything
+# voucher: a genuine redemption took a 95.00 Feast for a penny. The storefront really does give
+# the cheapest line away (OnlineCheckout.jsx:911-913), so the server still mirrors it, BOUNDED:
+# the programme's own ceiling when it has one, else 15.00.
+c = chk('R7-FREEANY')
+lp = proof(loy_row(c, 'prog-any', stamp=True), 'loyalty', 1, proc='loyalty', meta=FREE_ANY)
+cp = proof('pi_r7_freeany', 'card', 1, order_ref='R7-FREEANY')
+o, e, r = place('attacker', online('R7-FREEANY', [line('mi-feast', 95)], 0.01,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free item', 'amount_minor': 9500}]),
+                {'id': c, 'total': 0.01}, [lp, cp])
+pr = pricing('R7-FREEANY')
+expect('BOUNDED: an unconfigured stamp card takes 15.00 off a 95.00 Feast, not 95.00: the penny order is short',
+       j(o).get('paid') is False and pr.get('loyalty_minor') == 1500 and pr.get('due_minor') == 7996   # 80.00 less the 4p rounding tolerance
+       and state('R7-FREEANY') == 'false|short', o + e + json.dumps(pr))
+o2, _, _ = run("select count(*) from public.closed_checks where id = '" + c + "'")
+expect('and no check was written for it', o2 == '0', o2)
+# The programme's OWN ceiling wins when it has one.
+c = chk('R7-FREECAP')
+lp = proof(loy_row(c, 'prog-cap', stamp=True), 'loyalty', 1, proc='loyalty',
+           meta={'reward': {'type': 'free_item', 'items': [], 'max_minor': 500}})
+cp = proof('pi_r7_freecap', 'card', 9000, order_ref='R7-FREECAP')
+o, e, r = place('customer', online('R7-FREECAP', [line('mi-feast', 95)], 90,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free item', 'amount_minor': 500}]),
+                {'id': c, 'total': 90}, [lp, cp])
+pr = pricing('R7-FREECAP')
+expect("a programme that caps its free item at 5.00 gives 5.00, and paying 90.00 is PAID",
+       j(o).get('paid') is True and pr.get('loyalty_minor') == 500 and state('R7-FREECAP') == 'true|-',
+       o + e + json.dumps(pr))
+# An honest cheap line is untouched by the cap: the 3.00 coffee is still the whole reward.
+c = chk('R7-FREECHEAP')
+lp = proof(loy_row(c, 'prog-any2', stamp=True), 'loyalty', 1, proc='loyalty', meta=FREE_ANY)
+cp = proof('pi_r7_freecheap', 'card', 2500, order_ref='R7-FREECHEAP')
+o, e, r = place('customer', online('R7-FREECHEAP', [line('mi-coffee', 3), line('mi-meal', 25)], 25,
+                                   discounts=[{'type': 'loyalty', 'label': 'Free drink', 'amount_minor': 300}]),
+                {'id': c, 'total': 25}, [lp, cp])
+pr = pricing('R7-FREECHEAP')
+expect('HONEST: the cheapest line (3.00) is under the cap and is given in full: PAID',
+       j(o).get('paid') is True and pr.get('loyalty_minor') == 300 and state('R7-FREECHEAP') == 'true|-',
        o + e + json.dumps(pr))
 run("delete from public.fence_attempts where bucket like 'order:%'")
 
-# LOW: an option id the venue's menu does not have, sent under a REAL extra's name, rode the
-# kitchen ticket for nothing on a fully paid order. It is now charged what the venue charges
-# for an option of that name; free text the menu has no option for stays free, because the
-# storefront's own instruction groups mint ids that are in no modifier group.
-cp = proof('pi_r6_opt', 'card', 2000, order_ref='R6-OPT')
-o, e, r = place('attacker', online('R6-OPT', [line('mi-burger', 20, mods=[{'id': 'opt-bacon-2', 'name': 'Bacon', 'price': 0}])], 20),
-                {'id': chk('R6-OPT'), 'total': 20}, [cp])
-pr = pricing('R6-OPT')
-expect('FORGERY: a made up id carrying the name Bacon costs the venue\'s 5.00, so the 20.00 order is short',
-       j(o).get('paid') is False and pr.get('goods_minor') == 2500 and state('R6-OPT') == 'false|short',
+# MEDIUM (round 6, held to ONE menu in round 7): a menu tier typed as 0.00 is a real price on
+# every storefront (menuPricing.js menuTierPrice:78-80 uses isSet, so 0 counts, and
+# resolveItemPrice:90 returns it), but the round 5 floor skipped it and priced the line at its
+# 4 pound base. It is a real price on the menu the basket was BUILT on and nowhere else: round
+# 6 accepted it into the lowest-price-of-any-menu floor, which made an item that is free on one
+# menu free to order on all of them. The page now says which menu it priced on.
+cp = proof('pi_r6_tier', 'card', 2000, order_ref='R6-TIER')
+o, e, r = place('customer', online('R6-TIER', [line('mi-burger', 20), line('mi-kidsdrink', 0)], 20,
+                                   menu_id='menu-kids'),
+                {'id': chk('R6-TIER'), 'total': 20}, [cp])
+pr = pricing('R6-TIER')
+expect('HONEST: on the kids menu the 0.00 tier IS the price, and the 20.00 order is PAID',
+       j(o).get('paid') is True and pr.get('goods_minor') == 2000 and pr.get('unknown_lines') == 0
+       and state('R6-TIER') == 'true|-', o + e + json.dumps(pr))
+o2, _, _ = run("select customer->'order_pricing'->>'menu_id' from public.order_queue where ref = 'R6-TIER'")
+expect('and the menu it was priced on is kept on the order, for a later re-valuation', o2 == 'menu-kids', o2)
+# It is still floored at the tier, never below: the page cannot price the burger at zero too.
+cp = proof('pi_r6_tier2', 'card', 1, order_ref='R6-TIER2')
+o, e, r = place('attacker', online('R6-TIER2', [line('mi-burger', 0), line('mi-kidsdrink', 0)], 0.01,
+                                   menu_id='menu-kids'),
+                {'id': chk('R6-TIER2'), 'total': 0.01}, [cp])
+pr = pricing('R6-TIER2')
+expect('FORGERY: the burger beside it is still 20.00 on the kids menu, so the penny order is short',
+       j(o).get('paid') is False and pr.get('goods_minor') == 2000 and state('R6-TIER2') == 'false|short',
        o + e + json.dumps(pr))
-cp = proof('pi_r6_opt2', 'card', 2000, order_ref='R6-OPT2')
-o, e, r = place('customer', online('R6-OPT2', [line('mi-burger', 20, mods=[{'id': 'ig-cook-well', 'name': 'Well done', 'price': 0}])], 20),
-                {'id': chk('R6-OPT2'), 'total': 20}, [cp])
-pr = pricing('R6-OPT2')
-expect('HONEST: an instruction the menu has no option for is still free, and the order is PAID',
-       j(o).get('paid') is True and pr.get('goods_minor') == 2000 and state('R6-OPT2') == 'true|-',
+# ROUND 7 BLOCKER: the reviewer's basket. A page that does NOT name the kids menu (or names
+# another one) gets the lowest price ABOVE zero, so ten 0.00 Kids Squash beside one real
+# Coffee can never walk off with 40.00 of stock for 3.00.
+cp = proof('pi_r7_tier0', 'card', 300, order_ref='R7-TIER0')
+o, e, r = place('attacker', online('R7-TIER0', [line('mi-coffee', 3), line('mi-kidsdrink', 0, qty=10)], 3),
+                {'id': chk('R7-TIER0'), 'total': 3}, [cp])
+pr = pricing('R7-TIER0')
+expect('FORGERY: ten 0.00 Kids Squash with no menu named count 4.00 each: 43.00 goods, short, no check',
+       j(o).get('paid') is False and pr.get('goods_minor') == 4300 and state('R7-TIER0') == 'false|short',
        o + e + json.dumps(pr))
-o2, _, _ = run("select items->0->'mods'->0->>'name' from public.order_queue where ref = 'R6-OPT2'")
-expect('and it still reaches the kitchen as the customer wrote it', o2 == 'Well done', o2)
+o2, _, _ = run("select count(*) from public.closed_checks where id = '" + chk('R7-TIER0') + "'")
+expect('and no check was written for it', o2 == '0', o2)
+cp = proof('pi_r7_tier1', 'card', 300, order_ref='R7-TIER1')
+o, e, r = place('attacker', online('R7-TIER1', [line('mi-coffee', 3), line('mi-kidsdrink', 0, qty=10)], 3,
+                                   menu_id='menu-happy'),
+                {'id': chk('R7-TIER1'), 'total': 3}, [cp])
+pr = pricing('R7-TIER1')
+expect('FORGERY: naming a DIFFERENT menu does not give the kids price either: 43.00 goods, short',
+       j(o).get('paid') is False and pr.get('goods_minor') == 4300 and state('R7-TIER1') == 'false|short',
+       o + e + json.dumps(pr))
+# The honest kids order placed by an OLD page (no menu id) is short, never free: staff confirm.
+cp = proof('pi_r7_tier2', 'card', 2000, order_ref='R7-TIER2')
+o, e, r = place('customer', online('R7-TIER2', [line('mi-burger', 20), line('mi-kidsdrink', 0)], 20),
+                {'id': chk('R7-TIER2'), 'total': 20}, [cp])
+pr = pricing('R7-TIER2')
+expect('an old page that names no menu comes out SHORT (24.00 goods), never free',
+       j(o).get('paid') is False and pr.get('goods_minor') == 2400 and state('R7-TIER2') == 'false|short',
+       o + e + json.dumps(pr))
+# A menu tier ABOVE zero is still the price on its own menu (the happy hour chips, 2.50).
+cp = proof('pi_r7_tier3', 'card', 250, order_ref='R7-TIER3')
+o, e, r = place('customer', online('R7-TIER3', [line('mi-chips', 2.5)], 2.5, menu_id='menu-happy'),
+                {'id': chk('R7-TIER3'), 'total': 2.5}, [cp])
+pr = pricing('R7-TIER3')
+expect('HONEST: the happy hour 2.50 chips tier is the price on its own menu, and it is PAID',
+       j(o).get('paid') is True and pr.get('goods_minor') == 250 and state('R7-TIER3') == 'true|-',
+       o + e + json.dumps(pr))
+cp = proof('pi_r7_tier4', 'card', 250, order_ref='R7-TIER4')
+o, e, r = place('customer', online('R7-TIER4', [line('mi-chips', 2.5)], 2.5),
+                {'id': chk('R7-TIER4'), 'total': 2.5}, [cp])
+pr = pricing('R7-TIER4')
+expect('and with no menu named the 2.50 tier is still the lowest price above zero: PAID',
+       j(o).get('paid') is True and pr.get('goods_minor') == 250 and state('R7-TIER4') == 'true|-',
+       o + e + json.dumps(pr))
+run("delete from public.fence_attempts where bucket like 'order:%'")
+
+# ROUND 7 BLOCKER: round 6 charged an option the server cannot match by id at the dearest menu
+# price of any option with the same NAME. The storefront's OWN free choices arrive exactly like
+# that (an ig-<group>-<value> id that is on no modifier group, or no id at all, always at price
+# 0), so at any venue whose instruction wording matches one of its option names ("Sauce",
+# "Cheese") the guest who had paid in full was refused. An option the server cannot match by id
+# is worth NOTHING to it now: what the page said stands, floored at zero.
+R7_MODS = (('R7-OPT1', {'id': 'ig-sauce-sauce', 'name': 'Sauce', 'price': 0, '_instruction': True}),
+           ('R7-OPT2', {'groupLabel': 'Cheese?', 'label': 'Cheese', 'price': 0, '_instruction': True}),
+           ('R7-OPT3', {'id': 'ig-cook-well', 'name': 'Well done', 'price': 0}))
+for ref, mod in R7_MODS:
+    cp = proof('pi_' + ref.lower().replace('-', '_'), 'card', 2000, order_ref=ref)
+    o, e, r = place('customer', online(ref, [line('mi-burger', 20, mods=[mod])], 20), {'id': chk(ref), 'total': 20}, [cp])
+    pr = pricing(ref)
+    expect('HONEST: the free instruction pick ' + repr(mod.get('name') or mod.get('label')) + ' stays free and the order is PAID',
+           j(o).get('paid') is True and pr.get('goods_minor') == 2000 and state(ref) == 'true|-',
+           o + e + json.dumps(pr))
+o2, _, _ = run("select (items->0->'mods'->0->>'price') || '|' || (items->0->'mods'->0->>'name') from public.order_queue where ref = 'R7-OPT1'")
+expect('and the kitchen ticket prints it free, exactly as the guest chose it', o2 == '0.00|Sauce', o2)
+o2, _, _ = run("select items->0->'mods'->0->>'price' from public.closed_checks where id = '" + chk('R7-OPT2') + "'")
+expect('and the paid check charges the guest nothing for it', o2 == '0.00', o2)
+# THE ACCEPTED COST, written down on purpose: a doctored page CAN put a free extra on a ticket.
+cp = proof('pi_r7_opt4', 'card', 2000, order_ref='R7-OPT4')
+o, e, r = place('attacker', online('R7-OPT4', [line('mi-burger', 20, mods=[{'id': 'opt-bacon-2', 'name': 'Bacon', 'price': 0}])], 20),
+                {'id': chk('R7-OPT4'), 'total': 20}, [cp])
+pr = pricing('R7-OPT4')
+expect('ACCEPTED COST: a made up option id is worth 0, so a free extra can ride a kitchen ticket',
+       j(o).get('paid') is True and pr.get('goods_minor') == 2000, o + e + json.dumps(pr))
+# What it can never do is take money OFF: round 3's minus option forgery stays shut.
+cp = proof('pi_r7_opt5', 'card', 500, order_ref='R7-OPT5')
+o, e, r = place('attacker', online('R7-OPT5', [line('mi-burger', 20, mods=[{'id': 'opt-made-up', 'name': 'Discount', 'price': -15}])], 5),
+                {'id': chk('R7-OPT5'), 'total': 5}, [cp])
+pr = pricing('R7-OPT5')
+expect('FORGERY: an unmatched option can never take a penny off the line (20.00 stands, short)',
+       pr.get('goods_minor') == 2000 and state('R7-OPT5') == 'false|short', o + e + json.dumps(pr))
 run("delete from public.fence_attempts where bucket like 'order:%'")
 
 # ----- THE TENTH WAY (fix round 3 review, fixed in round 4): a menu_items row of the venue
@@ -1576,7 +1684,93 @@ o, e, r = place('customer', online('R6-CASH', [line('mi-meal', 25)], 25),
 o2, _, _ = run("select tenders->0->>'method' from public.closed_checks where id = 'chk-R6-CASH-a1b2'")
 expect('a card sale the page declared as cash is rebuilt as the card it really was',
        j(o).get('paid') is True and o2 == 'card', o + e + o2)
+
+# ---------- FIX ROUND 7 (20 Sep): the SPLIT is proven, not just the sum. Round 6 kept any
+# list that added up, so a page could move a real card sale onto a credit line: the day then
+# booked 5.00 of card against 95.00 that really hit the PSP, and the card clearing account and
+# the payout reconciliation were 90.00 apart on a sale that looked perfectly normal.
+p = proof('pi_r7_split', 'card', 9500, order_ref='R7-SPLIT')
+o, e, r = place('attacker', online('R7-SPLIT', [line('mi-feast', 95)], 95),
+                {'id': chk('R7-SPLIT'), 'total': 95, 'subtotal': 95, 'tip': 0,
+                 'stripe_payment_intent_id': 'pi_r7_split', 'processor': 'stripe',
+                 'tenders': [{'method': 'loyalty', 'amount': 90, 'tip': 0},
+                             {'method': 'card', 'amount': 5, 'tip': 0, 'psp_ref': 'pi_r7_split', 'processor': 'stripe'}]}, [p])
+o2, _, _ = run("select tenders from public.closed_checks where id = '" + chk('R7-SPLIT') + "'")
+expect('a 95.00 card sale split onto a loyalty line the server never allowed is rebuilt as one 95.00 card tender',
+       j(o).get('paid') is True and json.loads(o2 or 'null') == [{'tip': 0.0, 'amount': 95.0, 'method': 'card',
+                                                                  'psp_ref': 'pi_r7_split', 'processor': 'stripe'}],
+       o + e + o2)
+# The same with a gift card that was never debited: the sum still adds up, the split does not.
+p = proof('pi_r7_split2', 'card', 2500, order_ref='R7-SPLIT2')
+o, e, r = place('attacker', online('R7-SPLIT2', [line('mi-meal', 25)], 25),
+                {'id': chk('R7-SPLIT2'), 'total': 25, 'subtotal': 25, 'tip': 0,
+                 'stripe_payment_intent_id': 'pi_r7_split2', 'processor': 'stripe',
+                 'tenders': [{'method': 'gift_card', 'amount': 20, 'tip': 0, 'gift_card_id': 'gc-made-up'},
+                             {'method': 'card', 'amount': 5, 'tip': 0}]}, [p])
+o2, _, _ = run("select tenders from public.closed_checks where id = '" + chk('R7-SPLIT2') + "'")
+expect('a gift card leg with no gift debit behind it is rebuilt away: one 25.00 card tender',
+       j(o).get('paid') is True and len(json.loads(o2 or '[]')) == 1
+       and json.loads(o2)[0]['method'] == 'card' and json.loads(o2)[0]['amount'] == 25.0, o + e + o2)
+
+# ---------- FIX ROUND 7 (20 Sep): the delivery fee and added-on sales tax are NOT headroom.
+# Both sit inside what the card took over the goods, so a page could relabel them as gratuity.
+p = proof('pi_r7_fee', 'card', 2600, order_ref='R7-FEE')
+o, e, r = place('attacker', online('R7-FEE', [line('mi-burger', 22)], 26, type_='delivery',
+                                   customer={'name': 'Dee', 'delivery_fee': 4}),
+                {'id': chk('R7-FEE'), 'total': 26, 'subtotal': 22, 'tip': 4, 'service': 0,
+                 'stripe_payment_intent_id': 'pi_r7_fee', 'processor': 'stripe'}, [p])
+o2, _, _ = run("select total::text || '|' || subtotal::text || '|' || tip::text from public.closed_checks where id = '" + chk('R7-FEE') + "'")
+expect('a 4.00 courier fee sent as a 4.00 tip books NO tip: the sale is 22.00 and the fee is the fee',
+       j(o).get('paid') is True and o2 == '26.00|22.00|0.00', o + e + o2)
+p = proof('pi_r7_fee2', 'card', 2800, order_ref='R7-FEE2')
+o, e, r = place('customer', online('R7-FEE2', [line('mi-burger', 22)], 28, type_='delivery',
+                                   customer={'name': 'Dee', 'delivery_fee': 4}),
+                {'id': chk('R7-FEE2'), 'total': 28, 'subtotal': 22, 'tip': 2, 'service': 0,
+                 'stripe_payment_intent_id': 'pi_r7_fee2', 'processor': 'stripe'}, [p])
+o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-FEE2') + "'")
+expect('HONEST: a real 2.00 tip on top of the fee is still booked', j(o).get('paid') is True and o2 == '2.00', o + e + o2)
+# US added-on sales tax the same way; UK VAT (inclusive) must NOT be taken off the headroom.
+p = proof('pi_r7_tax', 'card', 2700, order_ref='R7-TAX')
+o, e, r = place('attacker', online('R7-TAX', [line('mi-meal', 25)], 27),
+                {'id': chk('R7-TAX'), 'total': 27, 'subtotal': 25, 'tip': 2, 'service': 0,
+                 'tax_amount': 2, 'tax_breakdown': [{'rate': {'name': 'Sales Tax', 'type': 'exclusive'}, 'tax': 2}],
+                 'stripe_payment_intent_id': 'pi_r7_tax', 'processor': 'stripe'}, [p])
+o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-TAX') + "'")
+expect('added-on US sales tax sent as a tip books NO tip', j(o).get('paid') is True and o2 == '0.00', o + e + o2)
+p = proof('pi_r7_vat', 'card', 2700, order_ref='R7-VAT')
+o, e, r = place('customer', online('R7-VAT', [line('mi-meal', 25)], 27),
+                {'id': chk('R7-VAT'), 'total': 27, 'subtotal': 25, 'tip': 2, 'service': 0,
+                 'tax_amount': 4.17, 'tax_breakdown': [{'rate': {'name': 'VAT20', 'type': 'inclusive'}, 'tax': 4.17}],
+                 'stripe_payment_intent_id': 'pi_r7_vat', 'processor': 'stripe'}, [p])
+o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-VAT') + "'")
+expect('HONEST: UK VAT is inside the goods, so a 2.00 tip on a VAT inclusive bill is still booked',
+       j(o).get('paid') is True and o2 == '2.00', o + e + o2)
+
+# ---------- FIX ROUND 7 (20 Sep): a closed QR tab carries the server's own tender list too.
+proof('pi_tab_tend', 'preauth', 20000)
+tendtab = dict(tab, ref='QR-TEND', items=[line('mi-feast', 95)], total=105,
+               customer=dict(tab['customer'], payment_intent_id='pi_tab_tend', tableId='T11', tip=10))
+o, e, r = place('customer', tendtab)
+proof('pi_tab_tend', 'capture', 10500)
+o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_tend', '{{}}'::jsonb, '{{}}'::uuid[]);")
+o2, _, _ = run("select tenders from public.closed_checks where ref = 'QR-TEND' and source = 'qr'")
+expect('a closed QR tab books one card tender for the capture, with the tip the server allowed on it',
+       j(o).get('ok') is True and json.loads(o2 or 'null') == [{'tip': 10.0, 'amount': 95.0, 'method': 'card',
+                                                                'psp_ref': 'pi_tab_tend', 'processor': 'stripe'}],
+       o + e + (o2 or ''))
 run("alter table public.closed_checks drop column if exists tenders")
+
+# ---------- FIX ROUND 7 (20 Sep): with NO tenders column the check must still book the money
+# as what it really was. accountingDay.js legacyTenders reads `method` and `payment_method`,
+# which were still the phone's: a card sale declared as cash booked cash takings and the drawer
+# was short at close.
+p = proof('pi_r7_meth', 'card', 2500, order_ref='R7-METH')
+o, e, r = place('attacker', online('R7-METH', [line('mi-meal', 25)], 25),
+                {'id': chk('R7-METH'), 'total': 25, 'subtotal': 25, 'tip': 0, 'method': 'cash',
+                 'payment_method': 'cash:25.00', 'stripe_payment_intent_id': 'pi_r7_meth', 'processor': 'stripe'}, [p])
+o2, _, _ = run("select method || '|' || coalesce(payment_method, '-') from public.closed_checks where id = '" + chk('R7-METH') + "'")
+expect('a card sale declared as cash books method card and payment_method card, column or no column',
+       j(o).get('paid') is True and o2 == 'card|card', o + e + o2)
 
 # ---------- an unproven pay now order: checked, never looks unpaid, and gets its check once proven
 qrpay = {'ref': 'QR-PAY1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
@@ -1690,12 +1884,12 @@ o, e, r = run("select has_function_privilege('anon', 'public.claim_device(text)'
 expect('function grants: claim not for raw anon, core private, order and confirm need a session', o == 'f|f|f|f|f', o)
 o, e, r = run("select has_table_privilege('authenticated', 'public.payment_proofs', 'select'), has_table_privilege('anon', 'public.public_order_pending_checks', 'select'), has_table_privilege('authenticated', 'public.qr_tab_members', 'select'), has_table_privilege('authenticated', 'public.device_unlinked_pings', 'select'), has_table_privilege('authenticated', 'public.device_secret_stash', 'select'), has_table_privilege('anon', 'public.device_secret_stash', 'select')")
 expect('private tables are private (the device secret stash too)', o == 'f|f|f|f|f|f', o)
-helpers = ['_public_order_value(text, text, text, jsonb)', '_public_order_auto(text, text, jsonb)',
+helpers = ['_public_order_value(text, text, text, jsonb, text)', '_public_order_auto(text, text, jsonb)',
            '_public_order_promo(text, text, bigint, text, boolean)', '_public_order_loyalty(text, text, text, bigint, bigint, bigint, jsonb)',
            '_public_order_proof_bound(text, text, text, text, text, jsonb, timestamp with time zone)',
            '_public_order_write_check(jsonb, bigint, jsonb, jsonb)',
-           '_loyalty_label_key(text)', '_loyalty_free_item_minor(jsonb, jsonb)', '_fence_num_or_null(text)',
-           '_device_mint_secret(uuid, uuid)', '_menu_item_floor_minor(jsonb, text, boolean)', '_fence_rule_live(jsonb, text, timestamp with time zone)']
+           '_loyalty_label_key(text)', '_loyalty_free_item_minor(jsonb, jsonb, bigint)', '_fence_num_or_null(text)',
+           '_device_mint_secret(uuid, uuid)', '_menu_item_floor_minor(jsonb, text, boolean, text)', '_fence_rule_live(jsonb, text, timestamp with time zone)']
 o, e, r = run("select bool_or(has_function_privilege(r, ('public.' || f)::regprocedure, 'execute')) from unnest(array[" +
               ','.join(f"'{h}'" for h in helpers) + "]) f cross join unnest(array['anon', 'authenticated']) r")
 expect('the pricing, promo, loyalty, proof and secret helpers are private (only the order functions call them)', o == 'f', o)

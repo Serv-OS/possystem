@@ -227,6 +227,11 @@ export function loyaltyRewardValueMinor(reward) {
  * means the server values that reward at NOTHING and the order comes out short, which is the
  * safe way round.
  *
+ * Fix round 7 (20 Sep 2026): a free item reward carries max_minor when the programme sets a
+ * ceiling of its own (max_value_minor / max_amount_minor / cap_minor in pence, max_value /
+ * max_item_price in pounds). A reward that names no item is bounded by it, so an unconfigured
+ * stamp card can no longer give away the dearest thing on a one line order.
+ *
  * Fix round 6 (19 Sep 2026): a free item reward that names NO item is still recorded, with an
  * empty items list. It used to return null, so the stamp card default (free_item with no
  * eligible_items) reached the server as no reward at all, was valued at 0, and every honest
@@ -254,7 +259,14 @@ export function loyaltyRewardMeta(reward) {
         id: ei.id ? String(ei.id).slice(0, 80) : null,
         name: ei.name ? String(ei.name).slice(0, 120) : null,
       }));
-    return { type, items };
+    // Fix round 7 (20 Sep 2026): the programme's OWN ceiling, when it has one. A free item
+    // reward that names no item is worth the cheapest line on the order, which on a one line
+    // basket is the whole order, so an unconfigured programme was a free anything voucher.
+    // The server caps it at this (_loyalty_free_item_minor in 20260919a), and at 15.00 when
+    // the programme sets nothing. Pence keys win over major ones; either may be typed.
+    const cap = posInt(v.max_value_minor) || posInt(v.max_amount_minor) || posInt(v.cap_minor)
+      || Math.round(Math.max(0, Number(v.max_value) || Number(v.max_item_price) || 0) * 100);
+    return cap > 0 ? { type, items, max_minor: cap } : { type, items };
   }
   return null;
 }

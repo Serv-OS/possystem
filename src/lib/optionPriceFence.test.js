@@ -45,16 +45,20 @@ test('anything else can only add to a line, never take money off', () => {
   assert.ok(value.includes("v_mod := greatest(v_mod, coalesce(v_menu, 0), 0);"),
     'an option that is not this item\'s, or one copy too many, counts at the largest of the page price, its menu price and 0');
   assert.ok(value.includes('v_unit := greatest(0, v_item + v_modsum);'), 'and a line is never worth less than nothing');
-  assert.ok(value.includes("v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base);")
+  assert.ok(value.includes("v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base, v_menu_id);")
     && value.includes('v_item := greatest(v_item, v_floor);'),
-    'the item itself is still floored at its menu price, so a line is never below that floor plus the options the venue allows');
+    'the item itself is still floored at its menu price (fix round 7: on the menu the page priced it on), '
+    + 'so a line is never below that floor plus the options the venue allows');
+  // fix round 7: an option the server cannot match by id at all is worth NOTHING to it, so the
+  // storefront's own free instruction picks and typed notes stay free. It still cannot subtract.
+  assert.ok(!value.includes('v_onames'), 'the round 6 option-by-NAME price is gone: it charged our own free choices');
 });
 
 test('the tab rules are valued the same way, so a round cannot walk past its hold', () => {
   assert.ok(FILE_A.includes('v_value_minor := greatest(round(v_total * 100)::bigint, v_goods_minor - v_auto_minor - v_tol);'),
     'a QR round is valued from the server goods total');
-  assert.ok(FILE_A.includes("(public._public_order_value(v_loc, 'qr', q.type, q.items) ->> 'goods_minor')::bigint"),
-    'and settle_qr_tab values a round it has no stored price for the same way');
+  assert.ok(/public\._public_order_value\(v_loc, 'qr', q\.type, q\.items,\s+q\.customer -> 'order_pricing' ->> 'menu_id'\) ->> 'goods_minor'/.test(FILE_A),
+    'and settle_qr_tab values a round it has no stored price for the same way, on that round\'s own menu');
 });
 
 test('Back Office: a minus option price is confirmed, never saved by a stray minus sign', () => {

@@ -38,7 +38,7 @@ import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as cal
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 
-export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced }) {
+export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced, menuId = null }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
   // mode — they already opened a tab earlier and tapped Add more on
   // the resume screen. Skip Stripe pre-auth + card input entirely;
@@ -280,7 +280,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       const tabPi = roundCustomer.payment_intent_id || existingTab?.payment_intent_id || null;
       const tabProcessor = roundCustomer.processor || existingTab?.processor || 'stripe';
       const sendRound = () => placePublicOrder({
-        opsLocationId, order: { ...queueRow, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },
         legacyInsert: async () => {
           const { error: qErr } = await supabase.from('order_queue').insert({ ...queueRow, customer: { ...roundCustomerForServer, tab_join_code: legacyJoinCode } });
           return qErr ? { ok: false, error: qErr } : { ok: true };
@@ -556,7 +562,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         ? await requestPaymentProof({ opsLocationId, processor, kind: tabMode ? 'preauth' : 'card', paymentRef: payId })
         : { failed: true, reason: 'missing' };
       const placed = await placePublicOrder({
-        opsLocationId, order: queueRow, check: closedCheckRow,
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null }, check: closedCheckRow,
         proofIds: proof.proofId ? [proof.proofId] : [],
         proofUnavailable: !!proof.unavailable, moneyTaken: true,
         // Fence C17: a pay now order the server could not prove yet is checked again in the

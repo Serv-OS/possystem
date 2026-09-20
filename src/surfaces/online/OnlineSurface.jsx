@@ -1082,6 +1082,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCheckout
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
+          menuId={effectiveMenuId} /* fence stage 1: the menu these prices came from, so the server prices from the same one */
           menuItems={items} /* free item rewards match by name across sites (loyaltyMenuMatch.js) */
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
@@ -1100,6 +1101,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {showCheckout && isQr && (
         <QrCheckout
           cart={cart} theme={theme} location={location}
+          menuId={effectiveMenuId} /* fence stage 1: the menu these prices came from */
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */

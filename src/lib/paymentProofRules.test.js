@@ -124,6 +124,14 @@ test('C25: a reward with no money value records WHAT it is, so the server never 
   assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [] } }),
     { type: 'free_item', items: [] });
   assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: {} }), { type: 'free_item', items: [] });
+  // fix round 7: the programme's own ceiling rides with it, so the server can bound a reward
+  // that names nothing (it caps at 15.00 when there is none).
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { eligible_items: [], max_value_minor: 450 } }),
+    { type: 'free_item', items: [], max_minor: 450 });
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_config: { max_value: 3.5 } }),
+    { type: 'free_item', items: [], max_minor: 350 });
+  assert.deepEqual(loyaltyRewardMeta({ reward_type: 'free_item', reward_value: { max_value_minor: 0 } }),
+    { type: 'free_item', items: [] }, 'a zero ceiling is no ceiling, not a free nothing');
   // nothing the server could use: null, which values the reward at zero and the order is short
   assert.equal(loyaltyRewardMeta({ reward_type: 'discount_percent', reward_value: { percent: 0 } }), null);
   assert.equal(loyaltyRewardMeta({ reward_type: 'discount_fixed', reward_value: { amount_minor: 350 } }), null, 'a fixed reward is already the proof amount');

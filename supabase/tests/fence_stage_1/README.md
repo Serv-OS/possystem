@@ -24,6 +24,7 @@ On 19 Sep (fix round 2): 325, 12, 56, 20 and 39 checks (452), all passing.
 On 19 Sep (fix round 3, rebased on v5.9.11): 349, 25, 56, 21 and 39 checks (490), all passing.
 On 19 Sep (fix round 4): 373, 25, 56, 21 and 39 checks (514), all passing. `20260919_OPS_fence_0_caps.sql` (step 1b) is run by `testTrip.py`; `seed.sql` does what it does, because it is the state of the database on the night file A is pasted.
 On 19 Sep (fix round 5): 393, 25, 56, 21 and 39 checks (534), all passing.
+On 20 Sep (fix round 7): 430, 25, 56, 21 and 39 checks (571), all passing.
 On 19 Sep (fix round 6): 407, 25, 56, 21 and 39 checks (548), all passing. The rule this round: the
 server must charge EXACTLY what our own storefront charged, and where the two differ the storefront
 wins, because the customer paid what we asked. New in `testA.py`, each with the honest case PAID and
@@ -43,3 +44,36 @@ honest customer who had paid in full, the 0.00 tier came out short, and the chec
 own subtotal, tip and tenders. New in `testA.py`: the ELEVENTH way to forge paid (loyalty redemptions added up with no ceiling, the reviewer's three scenarios to the penny: two 50 percent rewards on 125 pounds, 10 plus 20 percent, three stamp free coffees against one coffee), one reward of each kind on its own still paying the order, a percent reward taken off what is LEFT after the venue's deal and the promo code, and the FIX ROUND 5 block: an item hidden from Online, a 0.00 item and an item with no pricing are all sold and PAID like any other, a plain live item is paid on all five channels (online, delivery, drive thru, QR, catering), a QR tab round carrying a free side is accepted instead of refused, and a QR tab's tip is capped at what the card took over the rounds. Every one of those was run against the round 4 file first: the three loyalty scenarios booked as PAID for nothing, the honest orders came out "short", the tab round was refused and the tab booked subtotal 0.00 with a 95 pound tip.
 
 Each check runs as a PostgREST caller would: `set local role` plus `request.jwt.claims` (and `request.headers` for the caller's network), inside a transaction that is rolled back unless the test needs the change to stay.
+
+## Fix round 7 (20 Sep 2026)
+
+Round 6 kept the rule ("charge exactly what our own storefront charged") but broke the honest
+direction twice, and both are in `testA.py` now, each with the honest case PAID and the forgery
+still refused:
+
+- **An option the server cannot match by id is worth NOTHING.** Round 6 charged it at the
+  dearest menu price of any option with the same NAME, which charged the storefront's OWN free
+  instruction picks and typed notes: they arrive with an `ig-<group>-<value>` id that is on no
+  modifier group (`OnlineItemSheet.jsx:450`) or with no id at all (`InlineItemFlow.jsx:271`,
+  `ProductModal.jsx:169`, `kioskBasket.js:51`), always at price 0. At a venue whose instruction
+  wording matches one of its option names ("Sauce", "Cheese") a guest who had paid in full came
+  out short with no kitchen ticket. New checks: three free instruction picks PAID and printed
+  free on the ticket and on the check; the accepted cost written down (a made up option id can
+  ride a ticket for nothing); and a minus priced unmatched option still unable to take a penny
+  off, so round 3's forgery stays shut.
+- **A 0.00 menu tier is a price on its own menu only.** Round 6 let it into the lowest price of
+  any menu, so an item free on one menu was free to order on all of them (the reviewer's basket:
+  one 3.00 Coffee plus ten 0.00 Kids Squash, PAID for 3.00). The page now sends `menu_id` (the
+  surface's `effectiveMenuId`), the server prices from that menu, and with no menu id it ignores
+  0.00 tiers and floors at the lowest price above zero. New checks: the kids menu order PAID on
+  `menu-kids` and the menu kept on the order; the same basket SHORT with no menu named and with
+  a different menu named; the honest old page order short rather than free; and the happy hour
+  2.50 tier priced both ways.
+
+And four more, each with its honest case beside it: a free item reward that names no item is
+bounded (15.00, or the programme's own `max_minor`); the tender SPLIT is proven, not just its
+sum (a 95.00 card sale moved onto a loyalty line, and a gift card leg with no gift debit, are
+both rebuilt); the check's own `method` and `payment_method` are the server's, so a card sale
+declared as cash books as card even with no `tenders` column; a courier fee and added-on US
+sales tax are out of the tip headroom while UK inclusive VAT is not; and a closed QR tab carries
+a server built tender list.

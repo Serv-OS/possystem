@@ -85,7 +85,7 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [] }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -1197,7 +1197,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       }
 
       const placed = await placePublicOrder({
-        opsLocationId, order: { ...queueRow, discounts: declaredDiscounts() }, check: closedCheck,
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null, discounts: declaredDiscounts() }, check: closedCheck,
         proofIds: [...giftProofIds, ...rewardProofIds], proofUnavailable, moneyTaken: true, reprove,
         // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while
         // place_public_order does not exist (or the proof function is not deployed yet).
@@ -1410,7 +1416,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // kitchen, unpaid and marked for the venue to confirm.
       const proof = await proofPromise;
       const placed = await placePublicOrder({
-        opsLocationId, order: { ...queueRow, discounts: declaredDiscounts() }, check: closedCheck,
+        opsLocationId,
+        // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
+        // of 0.00 is a real price on THAT menu, so the server prices the basket on the same one;
+        // with no menu id it floors every line at the lowest price above zero instead. It rides
+        // on the RPC payload only: order_queue has no such column and the legacy insert uses the
+        // same row (FENCE STAGE 1 FALLBACK).
+        order: { ...queueRow, menu_id: menuId || null, discounts: declaredDiscounts() }, check: closedCheck,
         proofIds: [...(proof.proofId ? [proof.proofId] : []), ...giftProofIds, ...rewardProofIds],
         proofUnavailable: !!proof.unavailable || giftProofUnavailable || rewardProofUnavailable, moneyTaken: true, reprove,
         // FENCE STAGE 1 FALLBACK: today's two direct inserts, used only while

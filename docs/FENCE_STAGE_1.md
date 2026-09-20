@@ -1,6 +1,6 @@
 # Database fence, stage 1: runbook for Peter
 
-Written 18 Sep 2026, fix rounds 1 and 2 on 19 Sep 2026 (round 2 added the money edge functions). Branch `fix/database-fence-1`.
+Written 18 Sep 2026, fix rounds 1 to 6 on 19 Sep 2026, fix round 7 on 20 Sep 2026. Branch `fix/database-fence-1`.
 
 ## What this is
 
@@ -46,7 +46,14 @@ Written 18 Sep 2026, fix rounds 1 and 2 on 19 Sep 2026 (round 2 added the money 
 ## Before you start
 
 - **Backup**: Supabase dashboard, Database, Backups. Check today's backup exists for both projects.
-- **Run `20260919n_OPS_closed_checks_tenders.sql` first if you have not** (it came with v5.9.11, the Xero business day release). It adds `closed_checks.tenders`, which says what paid each check. Step 3's own order function keeps that on every online, QR and catering check it writes, and falls back to one card tender when a page sends none, so the accounts still balance either way. Without the column nothing breaks: the key is dropped and the sale is still recorded.
+- **RUN `20260919n_OPS_closed_checks_tenders.sql` BEFORE STEP 3. It is a prerequisite, not an option** (it came with v5.9.11, the Xero business day release; run it in the **Ops** SQL editor, any time, safe during service). It adds `closed_checks.tenders`, which says what paid each check: the card with its processor reference, the gift card with its card id, the loyalty and promo credits. Step 3's order function builds that list from what it PROVED and keeps a page's own list only when every line of it matches, so with the column your accounts carry the true split. Check it is there (it must answer `1`):
+
+```sql
+select count(*) from information_schema.columns
+ where table_schema = 'public' and table_name = 'closed_checks' and column_name = 'tenders';
+```
+
+- **Without the column no sale is lost and no money is misposted** (fix round 7): the key is dropped on the way in, and step 3 also writes the check's own `method` and `payment_method` from what the server proved (`card`, or `gift_card:5.00,card:20.00`), which is what the accounting layer falls back to. What you lose is the detail: the processor reference, the gift card id and the true split of a mixed payment. Before fix round 7 a page could declare a card sale as `cash` on those two fields and the day booked cash takings that the drawer was short at close.
 - **Outside service**: steps 3 and 6 lock the busy tables for about 5 seconds. Tills may pause for those seconds. No step reads a whole table to do its work, however big your history is (fix round 5: step 3's one widened rule on past bills is added without re-reading them, which it never needed to do). Every step, **step 1b included**, gives up after 3 seconds if a till is holding a table, changes nothing, and tells you to wait 10 seconds and press Run again.
 - **Optional review** (read only, Ops SQL editor). Every login and the venues it is linked to:
 
@@ -60,6 +67,41 @@ select p.email, p.role as login_role, l.name as venue, ul.role as venue_role,
 ```
 
 - **What to look for**: on 19 Sep **2 logins** were linked to venues in more than one company, one of them to **5 venues in 4 companies**. If that is not you, remove the extra links in the admin portal before step 3.
+
+**Three pricing pre-checks (read only, run them before step 3)**
+
+These say nothing is wrong. They tell you which rows the server will now price differently, so nothing surprises you on the night.
+
+- **1. Items priced at 0.00 on a menu** (Ops). Each hit is free to order on the menu named, and only on that one, because the page tells the server which menu it priced on. An older page (or a customer who kept a tab open through the release) names no menu, and then the item is charged at its lowest price **above** zero, so such an order arrives **Payment short** rather than free. If a row here should never be free, price it.
+
+```sql
+select id, name, pricing from public.menu_items
+ where coalesce(archived, false) = false and pricing->'menus' is not null
+   and exists (select 1 from jsonb_each(pricing->'menus') t
+                where jsonb_typeof(t.value) = 'object'
+                  and (t.value->>'all' = '0' or t.value->>'base' = '0' or t.value->>'dineIn' = '0'
+                       or t.value->>'collection' = '0' or t.value->>'delivery' = '0' or t.value->>'takeaway' = '0'));
+```
+
+- **2. Free item rewards that name no item** (Platform). Each one gives away the **cheapest line** on the order, which is what your storefront has always done, capped at **£15.00** (or the reward's own ceiling if it has one). Name the items and the cap never comes into it. Back Office now says so in red on the reward, on the stamp card and in the rewards list.
+
+```sql
+select id, name, reward_type, reward_value from public.loyalty_rewards
+ where reward_type = 'free_item' and coalesce(jsonb_array_length(reward_value->'eligible_items'), 0) = 0;
+select id, name, reward_type, reward_config from public.stamp_card_programs
+ where coalesce(reward_type, 'free_item') = 'free_item'
+   and coalesce(jsonb_array_length(reward_config->'eligible_items'), 0) = 0;
+```
+
+- **3. Modifier options with no id** (Ops). The server matches an option by its id. One with no id is worth nothing to it, so it is charged at what the page said and never less than 0. Nothing is refused and nobody is overcharged; it simply means such an option adds no floor of its own.
+
+```sql
+select g.id, g.name, count(*) as options_with_no_id
+  from public.modifier_groups g
+  cross join lateral jsonb_array_elements(case when jsonb_typeof(g.options) = 'array' then g.options else '[]'::jsonb end) o
+ where jsonb_typeof(o) = 'object' and coalesce(o->>'id', '') = ''
+ group by g.id, g.name order by 3 desc;
+```
 
 ## Step 1: the app release
 
@@ -181,11 +223,14 @@ On 19 Sep (the numbers move every day, a till drops out after 14 idle days):
 - **Only what your storefront really sells is priced** (fix round 4, narrowed in fix round 5): a line that is a size's parent row, an option only sub item, an archived item or an item that is **86'd** is one the server cannot value. It still goes to the kitchen, under your menu's own name, but the order arrives **Payment short** (or **Payment being checked**) for staff to confirm, and it is never free. Before round 4 those lines were worth nothing and rode along on a paid ticket.
   - **Two rules were dropped in round 5 because they were stricter than your own storefront**, and were turning honest fully paid orders into Payment short and refusing QR tab rounds outright. **"Hidden from Online"** (the Visible on toggle in Back Office) is a switch no storefront reads: an item you switch off is still on the Online and QR menu and still selling, so the server now prices it like any other. And a **0.00 item** (tap water, cutlery, a no charge side, an item with no price typed in) is priced at 0.00, because that is exactly what your storefront charges for it.
   - **`sold_alone` is deliberately looser here than on the storefront.** Online and the delivery app catalog hide any item whose Sold alone is off, whatever its type; the server hides only a **sub item** whose Sold alone is off. That column defaults to off in the database, so the strict rule would have refused real products. It costs nothing: such a line is priced at your menu price like any other.
-  - **A 0.00 typed into a per menu price is a real price** (fix round 6). If an item is 4.00 normally and 0.00 on your kids menu, your storefront charges 0.00 for it on that menu, so the server prices it at 0.00 too. It used to hold the line at the 4.00 base and an honest, fully paid order came out short. The server cannot know which menu a basket was built on, so it takes the **lowest** price any of your menus gives that item, which is the same rule it has always used for your other menu prices.
-  - **An extra the server cannot find on your menu is charged at your price for that name** (fix round 6). An option id that is on none of your modifier groups used to cost whatever the page said, so "Bacon" with a made up id rode a kitchen ticket at 0.00 while your own Bacon is 5.00, and the order still counted as fully paid. Such an option is now charged at the dearest price you charge for an option of that name. Free text your menu has no option for ("No onions", "Well done") is still free, because the storefront's own instruction boxes send ids that are on no group by design. A free extra printed on a kitchen ticket is still not proof the server priced it: it may simply be an instruction the customer typed.
+  - **A 0.00 typed into a per menu price is a real price on that menu** (fix round 6, held to one menu in fix round 7). If an item is 4.00 normally and 0.00 on your kids menu, your storefront charges 0.00 for it on that menu, so the server does too: **the page now tells the server which menu it priced the basket on**. Round 6 had no such thing and took the lowest price of **any** of your menus, which meant an item that is free on one menu was free to order on all of them: an order of one 3.00 coffee and ten 0.00 kids squashes booked as fully paid for 3.00. When the menu is not named (an older page, or a tab opened before the release) the server ignores 0.00 tiers and floors each line at the lowest price **above** zero, so such an order arrives **Payment short** for staff instead of free. Pre-check 1 above lists every row this touches.
+  - **An extra the server cannot match on your menu is worth nothing to it** (fix round 7). It matches an option by its **id**. An option whose id is on none of your modifier groups is charged exactly what the page said, never less than zero, so it can never take money off a bill (that hole was closed in round 3 and stays closed). Round 6 charged such an option at your dearest price for an option of that NAME, and that was wrong: your own storefront's instruction boxes and typed notes arrive with ids that are on no group by design, always free, so at any venue whose wording matches one of its option names ("Sauce", "Cheese", "Oat", "Gluten free") a guest who had paid in full was told **Payment short**, got no kitchen ticket, saw a charge on their own line that they never paid, and "Check payment" could never clear it.
+    - **The cost we accept for that**: a doctored page can put a **free extra on a kitchen ticket** (a real 5.00 bacon sent under a made up id at 0.00 reaches the kitchen for nothing). It is one extra on one line, and it is the price of never refusing a guest who paid exactly what we asked. Anything that takes money OFF is still refused. A free extra printed on a ticket is not proof the server priced it: it may simply be an instruction the customer typed.
 - **One loyalty reward per order** (fix round 5): loyalty rewards used to be added together with no ceiling, so two genuine rewards redeemed against one bill (the storefront only ever applies one, but the page can be crafted) took a 125 pound order to 0.00 and it booked as **paid with no money at all**. Now the single dearest reward the server can value counts, and the whole loyalty discount can never be more than what is **left** to pay after your own automatic deals and any promo code. An order that claims more than that arrives **Payment short** for staff.
   - **A percent reward is worked out exactly where your storefront works it out** (fix round 6): on the basket after your **automatic deals**, before any promo code, with the promo code coming off beside it. Round 5 worked it out after the promo as well, which asked for more than our own page had charged: a guest using a 50 percent reward and a 10 percent code on a 125 pound basket was asked for 50.00, paid 50.00, and still landed in Payment short with no kitchen ticket and no way for "Check payment" to clear it.
-  - **A free item reward that names no item is the cheapest line on the order** (fix round 6), which is what your storefront gives away, and what a stamp card normally is. The server used to value it at nothing, so **every** stamp card redemption arrived Payment short with the guest's stamp already spent.
+  - **A free item reward that names no item is the cheapest line on the order, up to £15.00** (fix round 6, bounded in fix round 7), which is what your storefront gives away, and what a stamp card normally is. The server used to value it at nothing, so **every** stamp card redemption arrived Payment short with the guest's stamp already spent. The cap is there because a reward that names nothing is worth the cheapest line, and on a one line order that is the whole order: one stamp against a single 95.00 sharing feast would have given the feast away. The programme's own ceiling is used instead when it has one. Above the cap the order simply arrives **Payment short** and staff confirm it. **Name the items** (pre-check 2 above) and none of this applies: Back Office now warns in red on any free item reward or stamp card with nothing named.
+- **The split on a bill is proven too, not just its total** (fix round 7). A page sends the list of what paid a check (card, gift card, loyalty, promo). Round 6 kept any list that added up to the money the server proved, so a page could move a real card sale onto a credit line ("loyalty 90.00, card 5.00" on a genuine 95.00 card payment): the day then booked 5.00 of card against 95.00 that really reached the processor, and your card clearing account and your payout would not agree, on a sale that looked perfectly normal on the Orders Hub. Each line must now also be no more than what the server proved for **that** method, or the whole list is rebuilt from the server's own figures.
+- **A service charge and a tip come out of the goods only** (fix round 7). The courier fee on a delivery and any **added-on** sales tax (US venues; UK VAT is inside your prices and is not touched) are subtracted before the server works out how much of a payment could have been a gratuity, so neither can be relabelled as a tip and paid out through tronc.
 - **A tip can only be money taken above the bill** (fix round 5 for a QR tab close, fix round 6 everywhere else): the tip was the last money field on a check still decided by the phone. A 95 pound order paid with a real 95 pound card payment could be sent with a subtotal of 0.00 and a tip of 95.00: the venue booked a **0.00 sale** and then paid 95 pounds of its own takings out through tronc, the Daily Trading P&L and the Xero posting. On every online, QR and catering check the server now books its **own** subtotal (your menu prices for what was ordered), allows a service charge and then a tip only out of money the payment really took **over** what the order owed, and rebuilds the tender list from its own figures whenever what the page sent does not add up (or claims a method no storefront takes, such as cash).
 - **Discount deals and stamp cards**: only your Back Office can add or change an automatic deal (anyone could before), and only the server can write the stamp card ledger.
 - **QR tabs**: a round that would take the tab past its card hold is refused. Only the person who opened the tab, someone who joined it with the table code, or staff can close it, and only the tab's own card payment counts. The app now sizes a new tab's card hold to at least its first round, so a first round is never refused (fix round 2).

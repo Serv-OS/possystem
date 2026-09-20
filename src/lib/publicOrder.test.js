@@ -320,7 +320,9 @@ test('C15: a slow reward redeem never holds a paid order back', async () => {
 test('C15: both online paths send the charged total, the declared discounts and all proofs', () => {
   const oc = read('../surfaces/online/OnlineCheckout.jsx');
   assert.equal((oc.match(/total: chargedTotal\(\),/g) || []).length, 2, 'card path and gift only path');
-  assert.equal((oc.match(/order: \{ \.\.\.queueRow, discounts: declaredDiscounts\(\) \}/g) || []).length, 2);
+  // fix round 7: menu_id rides on the RPC payload only (order_queue has no such column, and
+  // the legacy insert writes queueRow itself).
+  assert.equal((oc.match(/order: \{ \.\.\.queueRow, menu_id: menuId \|\| null, discounts: declaredDiscounts\(\) \}/g) || []).length, 2);
   assert.ok(oc.includes('proofIds: [...(proof.proofId ? [proof.proofId] : []), ...giftProofIds, ...rewardProofIds],'), 'the card path sends card, gift and loyalty proofs');
   const card = oc.slice(oc.indexOf('const onPaymentSuccess = async'), oc.indexOf('const placed = await placePublicOrder({', oc.indexOf('const onPaymentSuccess = async')));
   assert.ok(card.includes("processor: 'gift', kind: 'gift', paymentRef: giftCommit.idempotency_key"), 'the gift proof after commitGift');
@@ -336,7 +338,7 @@ test('C16: a round carries the table code only when this phone really holds it',
   assert.equal(tabRoundJoinCode(null), null);
   const qc = read('../surfaces/qr/QrCheckout.jsx');
   assert.ok(qc.includes('const roundCode = tabRoundJoinCode(existingTab);'));
-  assert.ok(qc.includes("order: { ...queueRow, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },"), 'p_order.tab_join_code');
+  assert.ok(qc.includes("order: { ...queueRow, menu_id: menuId || null, customer: roundCustomerForServer, ...(roundCode ? { tab_join_code: roundCode } : {}) },"), 'p_order.tab_join_code');
   assert.ok(qc.includes("throw new Error(publicOrderRefusalMessage(placed, placed.message || 'Could not add to tab.'));"));
 });
 
