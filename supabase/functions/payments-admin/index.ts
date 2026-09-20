@@ -46,6 +46,7 @@ import {
   resellerRateFor, resellerMarginFor, resellerRateLine, resellerFixedTable, parseFixedByCurrency,
   type ResellerRate, type ResellerSettings,
 } from '../_shared/resellerRate.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -162,6 +163,7 @@ async function upsertRyftAccount(loc: any, accountId: string, account: any, user
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   // ── Auth: super_admin (Ops DB) ──────────────────────────────────────────

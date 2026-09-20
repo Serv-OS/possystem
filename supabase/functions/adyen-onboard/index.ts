@@ -57,6 +57,7 @@ import {
 // the two doors write the same profile shape and the same sweep (9 Sep 2026).
 import { findPushSweep } from '../_shared/adyenLink.ts';
 import { ensurePushSweep } from '../_shared/adyenPayouts.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 // THE PAYOUT SWEEP ON THE ROW (9 Sep 2026, shared meaning with
 // adyen-terminal-admin): payouts_ok stays the CAPABILITY (Adyen allows
@@ -233,6 +234,7 @@ const balancesOut = (data: any) => (Array.isArray(data?.balances) ? data.balance
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   try {
     // ── Auth: super_admin (the payments-admin fence, verbatim) ───────────────

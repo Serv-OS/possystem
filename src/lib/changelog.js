@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.13',
+    date: '20 Sep 2026',
+    items: [
+      'A second step at every Back Office sign in. After the password you use Face ID, Touch ID or a fingerprint where the device supports it, or a 6 digit code from an authenticator app. A stolen password on its own is no longer enough.',
+      'Setting up for the first time also needs a code emailed to the address on the account, so somebody who only has the password cannot set up their own Face ID on a login nobody uses.',
+      'Lost your phone: an owner can reset a member of staff, and only ServOS can reset an owner. Nobody resets themselves. Every reset is recorded.',
+      'The database and every server function enforce it, not just the screens, so nobody can go around the login page. It stays switched OFF until the owner switches it on, once everyone has set up.',
+      'Tills, kiosks, KDS screens, TVs, the host stand, customer pages and the staff app are never asked for a second step.',
+      'A handheld or till used to sign in to Back Office now takes its own device identity back when it returns to the till screen, so it cannot be left signed in as a person.',
+      'Back Office, Settings, Sign in security shows your own second steps and lets you remove one, and shows your team and who still has none.',
+    ],
+  },
+  {
     v: '5.9.12',
     date: '20 Sep 2026',
     items: [

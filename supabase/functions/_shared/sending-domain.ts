@@ -7,6 +7,8 @@
 //   Resend / Postmark → use `from` ("Name <email>" or email) + replyTo
 //   SendGrid          → use { email, name } + replyTo
 
+import { passesSecondStep } from './second-step.ts';
+
 export interface Sender { from: string; email: string; name?: string; replyTo?: string }
 
 // RFC 5322 display-name: strip CR/LF, and quote+escape if it contains any specials (commas, quotes, @ …).
@@ -27,6 +29,9 @@ export async function callerCanBrandForLocation(req: Request, admin: any, locati
   try {
     const { data: { user } } = await admin.auth.getUser(token);
     if (!user) return false;
+    // A password only Back Office login gets no venue authority once the second step is
+    // enforced (docs/SECOND_STEP.md); it still sends, from the platform default.
+    if (!(await passesSecondStep(token, { serviceKeys: [serviceRole] }))) return false;
     const { data: ul } = await admin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', locationId).maybeSingle();
     if (ul) return true;
     const { data: prof } = await admin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();

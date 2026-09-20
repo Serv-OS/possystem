@@ -51,6 +51,7 @@ import { insertCaptureRow } from '../_shared/tip_capture.ts';
 import {
   selectUnsentSweepCandidates, UNSENT_SWEEP_MIN_AGE_MS, UNSENT_SWEEP_MAX_AGE_MS, UNSENT_SWEEP_LIMIT,
 } from '../_shared/terminalKick.js';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -317,6 +318,7 @@ async function storeReferenceFor(cfg: AdyenConfig, storeId: string | null | unde
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();

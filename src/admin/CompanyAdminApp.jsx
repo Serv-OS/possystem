@@ -2,6 +2,10 @@ import { useState, useEffect } from 'react';
 import { VERSION } from '../lib/version';
 import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
+import SecondStepGate from '../components/secondStep/SecondStepGate';
+import AdminSecondSteps from './sections/AdminSecondSteps';
+import { isRealLogin, sessionAal, MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
+import { currentAccessToken } from '../lib/secondStep/client';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
 import AdminReseller from './sections/AdminReseller';
@@ -29,15 +33,21 @@ const S = {
   badge: { padding:'3px 8px', borderRadius:20, fontSize:11, fontWeight:700 },
 };
 
+// The admin portal's access token, read through supabase-js (which refreshes it when it
+// expires) instead of straight from localStorage, so it is always the CURRENT token: after the
+// second sign in step that is the aal2 token the database and the edge functions require
+// (docs/SECOND_STEP.md). Null when signed out.
+const getAccessToken = () => currentAccessToken(supabase);
+
 async function sbFetch(path, opts = {}) {
-  const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+  const token = await getAccessToken();
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const url = import.meta.env.VITE_SUPABASE_URL;
   if (!url || !key) return { data: null, error: { message: 'Not configured' } };
   const res = await fetch(`${url}/rest/v1/${path}`, {
     headers: {
       'apikey': key,
-      'Authorization': `Bearer ${auth?.access_token || key}`,
+      'Authorization': `Bearer ${token || key}`,
       'Content-Type': 'application/json',
       'Prefer': opts.prefer !== undefined ? opts.prefer : 'return=representation',
     },
@@ -82,51 +92,72 @@ function VenueCodeChip({ code }) {
   );
 }
 
+// Sign out of the admin portal: ends THIS session on the server too (the old button only
+// deleted the localStorage key, so the session stayed valid).
+const adminSignOut = () => {
+  try { localStorage.removeItem('rpos-bo-location'); } catch { /* private mode */ }
+  supabase.auth.signOut({ scope: 'local' }).finally(() => window.location.reload());
+};
+
 export default function CompanyAdminApp() {
   const [authUser, setAuthUser] = useState(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  const [authChecked, setAuthChecked] = useState(!supabase);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [roleChecked, setRoleChecked] = useState(false);
   const [recovering, setRecovering] = useState(false); // v5.5.343: password-reset link landing
+  const [recoveryStepOk, setRecoveryStepOk] = useState(false);
+  // SECOND SIGN IN STEP (docs/SECOND_STEP.md): the admin portal is the most powerful door, so
+  // nothing loads (not even the role check) until the sign in is aal2.
+  const [secondStepOk, setSecondStepOk] = useState(false);
 
-  // v5.5.343: when an admin clicks a password-reset link, show the set-new-
-  // password form instead of logging them in.
+  // The session comes from supabase-js (it refreshes an expired token) instead of being read
+  // raw from localStorage. v5.5.306 still holds: an anonymous session (a till or payment token
+  // sharing 'rpos-auth') is NOT an admin login, so BOLogin shows.
   useEffect(() => {
-    if (!supabase) return;
-    const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
+    if (!supabase) return undefined;
+    const accept = (session) => (session && isRealLogin(session) && session.user?.email ? session.user : null);
+    supabase.auth.getSession().then(({ data }) => { setAuthUser(accept(data?.session)); setAuthChecked(true); });
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      // v5.5.343: a password-reset link shows the set-new-password form instead of logging in.
+      if (event === 'PASSWORD_RECOVERY') { setRecovering(true); return; }
+      if (event === 'SIGNED_OUT') setSecondStepOk(false);
+      if (session && isRealLogin(session) && sessionAal(session) !== 'aal2') setSecondStepOk(false);
+      setAuthUser(accept(session));
     });
     return () => data?.subscription?.unsubscribe?.();
   }, []);
 
+  // Verify the role from the database once the second step is done (never trust storage).
   useEffect(() => {
-    const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
-    // v5.5.306: ignore anonymous sessions (created by ensureAuthToken for
-    // payments / edge functions). They share the 'rpos-auth' storage key but
-    // are NOT a real admin login — treat them as logged-out so BOLogin shows.
-    if (auth?.user && !auth.user.is_anonymous && auth.user.email && auth?.expires_at && Date.now() < auth.expires_at * 1000) {
-      setAuthUser(auth.user);
-      // Verify role from DB — don't trust localStorage alone
-      sbFetch(`user_profiles?id=eq.${auth.user.id}&select=role`)
-        .then(({ data }) => {
-          const role = Array.isArray(data) ? data[0]?.role : data?.role;
-          setIsSuperAdmin(role === 'super_admin');
-          setAuthChecked(true);
-        })
-        .catch(() => setAuthChecked(true));
-    } else {
-      setAuthChecked(true);
-    }
-  }, []);
+    if (!authUser || !secondStepOk) return;
+    let live = true;
+    sbFetch(`user_profiles?id=eq.${authUser.id}&select=role`)
+      .then(({ data }) => {
+        if (!live) return;
+        const role = Array.isArray(data) ? data[0]?.role : data?.role;
+        setIsSuperAdmin(role === 'super_admin');
+        setRoleChecked(true);
+      })
+      .catch(() => { if (live) setRoleChecked(true); });
+    return () => { live = false; };
+  }, [authUser, secondStepOk]);
 
-  if (recovering) return <BOLogin recovery onResetDone={() => { setRecovering(false); window.location.reload(); }} />;
+  if (recovering && !recoveryStepOk) {
+    return <SecondStepGate supabase={supabase} mode="recovery" area="Company Admin" onPassed={() => setRecoveryStepOk(true)} onSignOut={adminSignOut} />;
+  }
+  if (recovering) return <BOLogin area="Company Admin" recovery onResetDone={() => { setRecovering(false); window.location.reload(); }} />;
   if (!authChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', fontSize:13 }}>Loading…</div>;
-  if (!authUser) return <BOLogin onLogin={(u) => { setAuthUser(u); window.location.reload(); }} />;
+  if (!authUser) return <BOLogin area="Company Admin" onLogin={(u) => setAuthUser(u)} />;
+  if (!secondStepOk) {
+    return <SecondStepGate supabase={supabase} mode="login" area="Company Admin" onPassed={() => setSecondStepOk(true)} onSignOut={adminSignOut} />;
+  }
+  if (!roleChecked) return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', fontSize:13 }}>Loading…</div>;
   if (!isSuperAdmin) return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t3)', gap:16 }}>
       <div style={{ fontSize:32 }}>🔒</div>
       <div style={{ fontSize:16, fontWeight:700, color:'var(--t1)' }}>Access denied</div>
       <div style={{ fontSize:13 }}>This area requires super_admin access.</div>
-      <button onClick={() => { localStorage.removeItem('rpos-auth'); window.location.reload(); }} style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>Sign out</button>
+      <button onClick={adminSignOut} style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>Sign out</button>
     </div>
   );
   return <AdminPanel authUser={authUser} />;
@@ -209,10 +240,10 @@ function AdminPanel({ authUser }) {
   // the ops location is already created; provisioning can be retried.
   const provisionLocation = async (opsLocationId) => {
     try {
-      const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+      const token = await getAccessToken();
       const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/provision-location`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${auth?.access_token}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ ops_location_id: opsLocationId }),
       });
       const pr = await resp.json().catch(() => ({}));
@@ -357,13 +388,13 @@ function AdminPanel({ authUser }) {
   // ── Create user ──────────────────────────────────────────────────────────────
   const createUser = async () => {
     if (!form.inviteEmail?.trim()) return err('Email required');
-    if (!form.invitePassword?.trim() || form.invitePassword.length < 8) return err('Password min 8 chars');
+    if (!form.invitePassword?.trim() || form.invitePassword.length < MIN_PASSWORD_LENGTH) return err(`Password min ${MIN_PASSWORD_LENGTH} characters`);
     setWorking(true); setMsg({ type:'', text:'' });
-    const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+    const token = await getAccessToken();
     try {
       const resp = await fetch('https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/create-user', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${auth?.access_token}` },
+        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
         body: JSON.stringify({ email:form.inviteEmail.trim(), password:form.invitePassword, fullName:form.inviteName||'', orgId:selectedOrg.id, locationId:form.inviteLocationId||locations[0]?.id||null, role:'owner' }),
       });
       const result = await resp.json();
@@ -441,6 +472,7 @@ function AdminPanel({ authUser }) {
           { id:'revenue', label:'Revenue', icon:'📈' },
           { id:'reseller', label:'FranPOS', icon:'🧾' },
           { id:'customer-import', label:'Import customers', icon:'📥' },
+          { id:'second-step', label:'Sign in security', icon:'🔐' },
         ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
@@ -460,7 +492,7 @@ function AdminPanel({ authUser }) {
         <div style={{ flex:1 }} />
         <div style={{ padding:'0 12px' }}>
           <div style={{ fontSize:11, color:'var(--t4)', padding:'0 6px', marginBottom:6 }}>{authUser.email}</div>
-          <button onClick={() => { localStorage.removeItem('rpos-auth'); window.location.reload(); }} style={{ ...S.btn, ...S.btnGhost, width:'100%', fontSize:12 }}>Sign out</button>
+          <button onClick={adminSignOut} style={{ ...S.btn, ...S.btnGhost, width:'100%', fontSize:12 }}>Sign out</button>
           <button onClick={() => { localStorage.removeItem('rpos-device-mode'); window.location.href='/'; }} style={{ width:'100%', padding:'6px', background:'none', border:'none', cursor:'pointer', fontSize:11, color:'var(--t4)', marginTop:4, fontFamily:'inherit' }}>← Switch device mode</button>
           <div style={{ fontSize:10, color:'var(--t4)', textAlign:'center', marginTop:8, fontFamily:'monospace' }}>v{VERSION}</div>
         </div>
@@ -480,6 +512,8 @@ function AdminPanel({ authUser }) {
         {section === 'reseller' && <AdminReseller />}
         {/* Customer import: ServOS staff only, never in Back Office. */}
         {section === 'customer-import' && <AdminCustomerImport orgs={orgs} sbFetch={sbFetch} />}
+        {/* Second sign in step: who has set up, and the ServOS reset for a lost phone. */}
+        {section === 'second-step' && <AdminSecondSteps />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (
@@ -716,7 +750,7 @@ function AdminPanel({ authUser }) {
                   <div><label style={S.label}>Full name</label><input style={S.input} placeholder="Sarah Smith" value={form.inviteName||''} onChange={e=>f('inviteName',e.target.value)} /></div>
                 </div>
                 <div style={S.row}>
-                  <div><label style={S.label}>Password *</label><input type="password" style={S.input} placeholder="Min 8 characters" value={form.invitePassword||''} onChange={e=>f('invitePassword',e.target.value)} /></div>
+                  <div><label style={S.label}>Password *</label><input type="password" style={S.input} placeholder={`Min ${MIN_PASSWORD_LENGTH} characters`} value={form.invitePassword||''} onChange={e=>f('invitePassword',e.target.value)} /></div>
                   <div><label style={S.label}>Primary location</label>
                     <select style={S.input} value={form.inviteLocationId||''} onChange={e=>f('inviteLocationId',e.target.value)}>
                       <option value="">First location (auto)</option>

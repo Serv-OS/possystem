@@ -11,6 +11,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createLocationCatalog, putCatalog, uploadCatalogImage } from '../_shared/hubrise.ts';
 import { buildCatalog } from '../_shared/hubrise-map.ts';
 import { resyncInventory } from '../_shared/hubrise-ingest.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const EMPTY_CATALOG = { variants: [], categories: [], products: [], option_lists: [], deals: [], discounts: [], charges: [] };
 
@@ -164,6 +165,7 @@ export async function pushCatalog(loc: string, force = false): Promise<{ catalog
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: any;

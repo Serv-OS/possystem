@@ -251,6 +251,7 @@ import {
 import { createSplitOnStore, planSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
 import { resellerRateFor, resellerRateLine } from '../_shared/resellerRate.ts';
 import { buildPaymentBreakdown, paymentCardLabel, ruleForTier, ruleRate, venueRateLine } from '../_shared/paymentBreakdown.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -1667,6 +1668,7 @@ async function readProfileRates(cfg: AdyenConfig, merchant: string, profileId: s
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || 'status');

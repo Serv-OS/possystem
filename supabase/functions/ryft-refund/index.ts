@@ -23,6 +23,7 @@ import { refundPaymentSession, ryftConfigured } from '../_shared/ryft.ts';
 import { callerStaffOrDevice, recordAuthority, isServiceRoleRequest, deviceHintOf } from '../_shared/loyalty-utils.ts';
 import { decideCardRefundAuthority } from '../_shared/gift-authority.ts';
 import { authorityLogRow } from '../_shared/loyalty-authority.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -36,6 +37,7 @@ const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', 
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   const authHeader = req.headers.get('Authorization');

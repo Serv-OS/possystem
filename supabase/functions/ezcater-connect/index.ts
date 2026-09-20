@@ -43,6 +43,7 @@ import {
   isSandboxApi, resolveEzcaterApi, ez,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 import {
   readAllLinks, isMissingSyncColumn, isCurrentSyncKey, LINK_PAGE_SIZE, lookAgainOf, decidedAsOf, trustedTarget,
 } from '../_shared/ezcaterMenuSync.ts';
@@ -295,6 +296,7 @@ async function subscribe(
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: any;

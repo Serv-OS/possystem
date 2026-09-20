@@ -34,7 +34,8 @@
 // a bare number without saying what it counts.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isMock } from '../../lib/supabase';
+import { isMock, supabase } from '../../lib/supabase';
+import { currentAccessToken } from '../../lib/secondStep/client';
 import { ymdInTz } from '../../lib/locationTime';
 import {
   readCsv,
@@ -161,8 +162,9 @@ async function callImportFunction(body) {
     err.plain = 'This is a demo screen. Nothing can be imported here.';
     throw err;
   }
-  let token = '';
-  try { token = JSON.parse(localStorage.getItem('rpos-auth') || 'null')?.access_token || ''; } catch { token = ''; }
+  // The CURRENT token through supabase-js (refreshed when expired), which after the second
+  // sign in step is the aal2 token the edge function requires (docs/SECOND_STEP.md).
+  const token = (supabase ? await currentAccessToken(supabase) : null) || '';
   if (!token) {
     const err = new Error('signed out');
     err.plain = 'You are signed out. Sign in again and start over.';

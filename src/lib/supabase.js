@@ -82,6 +82,19 @@ export function isHostStandMode() {
   return HOST_STAND_MODES.has(getDeviceMode());
 }
 
+// Surfaces where a PERSON signs in with a password (Back Office, admin portal, Owner app,
+// Staff app). The app start (useSupabaseInit) must never hand them an anonymous device session:
+// the Owner app treated one as "signed in" and showed an empty dashboard with no login form,
+// and an anonymous sign in racing a password sign in could overwrite it. Since the second sign
+// in step (docs/SECOND_STEP.md) a person's session must be their own, finished with Face ID,
+// fingerprint or an authenticator code. (ensureAuthToken itself keeps its old Back Office only
+// rule, so a customer page never loses its anonymous checkout session because of a mode that
+// was saved on the same address.)
+const LOGIN_SURFACE_MODES = new Set(['office', 'backoffice', 'admin', 'owner', 'staff']);
+export function isLoginSurfaceMode() {
+  return LOGIN_SURFACE_MODES.has(getDeviceMode());
+}
+
 export const getLocationId = async () => {
   if (isMock) return 'loc-demo';
   if (_resolvedLocationId) return _resolvedLocationId;
@@ -167,11 +180,17 @@ export const ensureAuthToken = async () => {
   // The Supabase client shares storageKey 'rpos-auth', so an anonymous session created
   // here would be picked up by BackOfficeApp.getSession() and mistaken for a (userless)
   // login. The back office still gets the retry and the stored-token fallback.
+  // REBASE (20 Sep 2026, the second step onto the fence release): the fence's resolver keeps the
+  // device's own identity instead of minting a new anonymous one, and the second step widened
+  // "never mint an anonymous session here" from Back Office to every surface a PERSON signs in on
+  // (office, backoffice, admin, owner, staff). An anonymous session on one of those would be
+  // picked up as their login on the shared storage key. Customer pages (online, QR, kiosk) and
+  // the POS family are not login surfaces, so they are untouched and still get their anon session.
   const res = await resolveAuthToken({
     auth: supabase.auth,
     storage: typeof localStorage !== 'undefined' ? localStorage : null,
     storageKey: AUTH_STORAGE_KEY,
-    allowAnonymous: !isBackOfficeMode(),
+    allowAnonymous: !isLoginSurfaceMode(),
   });
   if (res.outcome === AUTH_OUTCOMES.ANON_FAILED) {
     throw new Error('Could not start auth session: ' + (res.error?.message || 'unknown error'));

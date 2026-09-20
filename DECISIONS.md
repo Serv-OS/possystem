@@ -313,3 +313,15 @@ Migration: `20260919m_OPS_ezcater_menu_sync_v1.sql` (renamed: its first name cla
 - **Every closed_checks writer** goes through `src/lib/closedCheckWrite.js`, which drops a column PostgREST says is missing and retries: a paid sale never fails on a migration not yet run.
 
 **Consequences:** days already posted by the old code stay as posted. On the old 04:10 UTC schedule (before the migration) a UK day posts a day later than before. Refunds, gift card redemptions and the kiosk's credits were never posted by the old code, so days before the change stay without them. Deploy xero-sales, xero-config, xero-bills and xero-connect (they ship `_shared/xero.ts`).
+---
+
+## ADR-026: Back Office second sign in step, enforced by the database
+
+**Context:** Peter (18 Sep 2026): a stolen or guessed password must not be enough to get into the Back Office. 13 real logins, no MFA; tills and customer pages run on anonymous sessions that must never be affected. Supabase supports TOTP and WebAuthn as MFA factors (WebAuthn marked experimental in auth-js), and passkey sign in is still beta.
+
+**Decision:**
+- Every real login (Back Office, admin portal, Owner app) passes a second step at sign in: Face ID or fingerprint (WebAuthn MFA) where the browser and the serv-os.app relying party allow it, and an authenticator app code that every login must keep as the backup and that works everywhere (our iOS and Android shells and the Sunmi tills cannot do WebAuthn yet). The staff app is out of scope: it reaches only the person's own records through one server function.
+- Enforcement is layered and switchable without a deploy: a RESTRICTIVE `second_step_fence` policy on every public RLS table and storage.objects, the PostgREST pre-request check (covers SECURITY DEFINER functions), and `secondStepRefusal` in every edge function a real login uses. All read one service role only flag, OFF until everyone has enrolled.
+- Lost phones: an owner resets their own staff; only a ServOS super admin resets owners; nobody resets themselves; audited and emailed.
+
+**Consequences:** Two SQL objects must stay in step with the edge helper (parity test). Enrolling signs out the person's other password only sessions, so devices running on a person's login must be re-paired (runbook step 2). Platform has no logins, so its protection is sign ups off plus the database fence project. Face ID inside our own apps needs native entitlement work later.

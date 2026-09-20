@@ -87,6 +87,7 @@ import {
 } from '../_shared/customerImportPlan.ts';
 import type { Decision, ExistingCustomer, Progress } from '../_shared/customerImportPlan.ts';
 import { generateMemberCode, generateReferralCode, getOrCreateConfig } from '../_shared/loyalty-utils.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -238,6 +239,7 @@ async function reReadOne(orgId: string, row: ImportRow): Promise<ExistingCustome
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   let body: Record<string, unknown>;

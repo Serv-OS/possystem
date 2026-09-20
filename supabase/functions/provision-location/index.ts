@@ -15,6 +15,7 @@
 // Returns: { ok, company_id, platform_location_id, created_company, created_location }
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -36,6 +37,7 @@ const platformAdmin = createClient(
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   // Auth: any authenticated user (owner provisioning their own location, or

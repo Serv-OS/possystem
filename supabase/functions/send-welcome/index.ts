@@ -31,6 +31,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
 import { resolveAndRender } from '../_shared/template-resolver.ts';
 import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -117,6 +118,7 @@ async function sendEmail(to: string, subject: string, html: string, sender: Send
 // ═════════════════════════════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
 
   // Auth gate (was missing): service-role for internal callers (loyalty-otp, wifi-capture) OR any valid
