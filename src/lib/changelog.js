@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.27',
+    date: '21 Sep 2026',
+    items: [
+      'A KITCHEN TICKET NO LONGER WAITS ON THE SLOW SCAN. A kiosk order today took twelve seconds to reach the printer. A print job is normally picked up in a tenth of a second by the live connection, and the scan behind it is twenty seconds and deliberately slow because the print queue is empty most of the day. The gap between those two is the whole problem: any moment the connection is down, for a reload or a wifi blip, a ticket lands with nobody listening and then waits for that slow scan. The queue is now swept the instant the connection comes back, which is exactly when something was missed, and while there is work in it the next look is two seconds away instead of twenty. An empty venue costs exactly what it did before.',
+      'THE KIOSK ORDER NUMBER GETS ITS OWN TIME ON SCREEN. The screen that shows the customer their order number was counting down from the moment they last TOUCHED the kiosk, which is before they pay. Taking the card and saving the order can take most of a minute, and every second of that came off the time they had to read the number they need to remember: the slower the payment, the less time they got. The clock now starts when the number appears.',
+    ],
+  },
+  {
     v: '5.9.26',
     date: '21 Sep 2026',
     items: [
