@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.34',
+    date: '21 Sep 2026',
+    items: [
+      'TAPPING A CATEGORY BRINGS THE MENU BACK. If the panel was showing History or Deliveries, picking a category left you looking at the wrong screen and you had to tap Menu first. Picking a category means you are serving somebody, so it now returns to the menu by itself. Sub-categories and All do the same.',
+    ],
+  },
+  {
     v: '5.9.33',
     date: '21 Sep 2026',
     items: [
