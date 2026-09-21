@@ -15,7 +15,12 @@ import {
   offeredWalletTypes, walletConfiguration, missingWalletNote,
   usableWalletMethods, droppedWalletNote,
   walletLabel, isWalletType, wantsNativeThreeDS,
+  isStoreId, storeForPaymentMethods, STORE_REFERENCE_MAX, STORE_REJECTED_ERROR_CODE,
 } from './adyenWallets.js';
+
+import { readFileSync } from 'node:fs';
+
+const EDGE = readFileSync(new URL('../../../supabase/functions/adyen-checkout/index.ts', import.meta.url), 'utf8');
 
 const APPLE_CFG = { merchantName: 'Adyen Merchant Name', merchantId: 'merchant.com.adyen.servos' };
 const GOOGLE_CFG = { gatewayMerchantId: 'ServOSECOM', merchantId: '1234567890', merchantName: 'Adyen Merchant Name' };
@@ -369,4 +374,62 @@ test('wantsNativeThreeDS: Apple Pay is the ONLY exemption', () => {
   assert.equal(wantsNativeThreeDS(undefined), true);
   // The edge function declares this list verbatim: keep the two in step.
   assert.deepEqual([...NO_NATIVE_3DS_TYPES], ['applepay']);
+});
+
+/* ── The store on a /paymentMethods lookup (Peter, Provo, 20 Sep 2026) ────────
+ * Live: "apple pay still not loading on the checkout", iPhone included. The
+ * lookup was answering 910 "Invalid Store" to the venue's Management API store
+ * id, so the form fell back to card only on EVERY device and no wallet could
+ * ever render. /paymentMethods wants the store's REFERENCE (our venue code),
+ * maxLength 16. /payments is untouched: the id has authorised on it for a
+ * month, and the money path does not change to tidy up a lookup.
+ */
+test('a Management API store id is recognised as an id, not a reference', () => {
+  assert.equal(isStoreId('ST32DDL22322BQ5PXJVN95JSM'), true, "Provo's own store id");
+  assert.equal(isStoreId('st32ddl22322bq5pxjvn95jsm'), true, 'case does not matter');
+  assert.equal(isStoreId('SV-1007'), false, 'the venue code is a reference');
+  assert.equal(isStoreId(''), false);
+  assert.equal(isStoreId(null), false);
+});
+
+test('the lookup sends the venue code when the row holds a store id', () => {
+  // The live shape on 20 Sep: merchant_adyen_accounts.store_id is the ST id,
+  // ops.locations.venue_code is SV-1007, which is the store's reference on
+  // Adyen and what every payment webhook for this venue echoes back.
+  assert.equal(
+    storeForPaymentMethods({ store: 'ST32DDL22322BQ5PXJVN95JSM', venueCode: 'SV-1007' }),
+    'SV-1007',
+  );
+  // A row that already holds a reference keeps working, untouched.
+  assert.equal(storeForPaymentMethods({ store: 'SV-1007', venueCode: 'SV-9999' }), 'SV-1007');
+  // Nothing usable = ask without a store: a method list for the account beats
+  // no method list at all, which is what a 910 meant until today.
+  assert.equal(storeForPaymentMethods({ store: 'ST32DDL22322BQ5PXJVN95JSM' }), null);
+  assert.equal(storeForPaymentMethods({}), null);
+  assert.equal(storeForPaymentMethods(), null);
+  // Adyen's documented maximum. A longer venue code would be refused as well,
+  // so it is never sent.
+  assert.equal(STORE_REFERENCE_MAX, 16);
+  assert.equal(storeForPaymentMethods({ venueCode: 'A'.repeat(17) }), null);
+  assert.equal(storeForPaymentMethods({ venueCode: 'A'.repeat(16) }), 'A'.repeat(16));
+  assert.equal(storeForPaymentMethods({ store: '  SV-1007  ' }), 'SV-1007', 'trimmed');
+});
+
+test('the edge function carries the same rule, and keeps the store off nothing else', () => {
+  // The Deno function cannot import this file, so the copy is pinned here.
+  assert.match(EDGE, /const STORE_REFERENCE_MAX = 16;/);
+  assert.match(EDGE, new RegExp(`const STORE_REJECTED_ERROR_CODE = '${STORE_REJECTED_ERROR_CODE}';`));
+  assert.match(EDGE, /const isStoreId = \(v: unknown\) => \/\^ST\[0-9A-Z\]\{10,\}\$\/i/);
+  assert.match(EDGE, /function storeForPaymentMethods\(store: string \| null, venueCode: string \| null\)/);
+  // Both lookups go through the retry helper...
+  assert.match(EDGE, /async function lookupPaymentMethods\(/);
+  assert.match(EDGE, /if \(code !== STORE_REJECTED_ERROR_CODE\) return first;/);
+  const methods = EDGE.slice(EDGE.indexOf("if (action === 'payment_methods')"), EDGE.indexOf("if (action === 'create_session')"));
+  assert.match(methods, /await lookupPaymentMethods\(cfg, request, await storeReferenceFor\(platformLocationId, store\)\)/);
+  assert.doesNotMatch(methods, /request\.store = store;/, 'the raw store id never goes on a lookup again');
+  // ...and the MONEY path still sends the store exactly as it did.
+  const pay = EDGE.slice(EDGE.indexOf("if (action === 'make_payment')"), EDGE.indexOf("if (action === 'payment_details')"));
+  assert.match(pay, /if \(store\) payment\.store = store;/, '/payments is untouched');
+  const session = EDGE.slice(EDGE.indexOf("if (action === 'create_session')"), EDGE.indexOf("if (action === 'make_payment')"));
+  assert.match(session, /if \(store\) session\.store = store;/, '/sessions is untouched');
 });
