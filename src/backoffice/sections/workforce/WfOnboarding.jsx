@@ -169,16 +169,17 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
     try {
       const saved = await wf.saveOnboarding(tmp, ctx.locationId, ctx.orgId);
       setCases(prev => prev.map(x => x.id === tmp.id ? saved : x));
-      // v5.5.996 — starting onboarding also invites them to the STAFF APP: they
-      // get an email with a one-use link to create their login (shifts,
-      // announcements, timesheets, details, and training when it lands).
-      // Best-effort: the onboarding case exists either way.
-      if (member.email) {
-        try { await wf.sendPortalInvite(member.id); showToast(`Onboarding started · staff app invite emailed to ${member.email}`, 'success'); }
-        catch (e) { showToast(`Onboarding started, but the staff app invite failed: ${e.message}`, 'error'); }
-      } else {
-        showToast('Onboarding started. Add an email to their record to invite them to the staff app.', 'info');
-      }
+      // THE INVITE IS THE MANAGER'S TO SEND (Peter, 21 Sep 2026): "I actually
+      // dont think it should trigger the email straight away, we should manully
+      // click it so the manager can create all the documents etc."
+      //
+      // v5.5.996 sent it automatically here, the moment onboarding started. That
+      // emailed the new starter before their offer, contract or anything else
+      // existed, and it fired ONCE: a record with no email yet (the common case
+      // while somebody is still being set up) never got one at all, with no way
+      // to send it afterwards. It is now a button on the card, pressed when the
+      // manager is ready.
+      showToast('Onboarding started. Send the staff app invite from their card when you are ready.', 'success');
       // New-starter training templates: any active module flagged auto-assign
       // (matching their position) lands in their staff app right away.
       try {

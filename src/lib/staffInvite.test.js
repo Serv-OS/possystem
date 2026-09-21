@@ -75,3 +75,18 @@ test('the button is on the onboarding card, and the screen can see the invite st
   // and the token hash is NOT one of them
   assert.doesNotMatch(DATA, /portal_invite_hash/, 'the secret never leaves the server');
 });
+
+test('starting onboarding no longer emails anybody', () => {
+  // Peter, 21 Sep 2026: "I actually dont think it should trigger the email straight
+  // away, we should manully click it so the manager can create all the documents etc."
+  // v5.5.996 sent it the moment onboarding started, which emailed a new starter before
+  // their offer or contract existed, and fired exactly once.
+  const from = SCREEN.indexOf('const startOnboarding = async');
+  const start = SCREEN.slice(from, SCREEN.indexOf('const removeCase', from) > 0 ? SCREEN.indexOf('const removeCase', from) : from + 1800);
+  assert.doesNotMatch(start, /sendPortalInvite/, 'no email goes out on Start onboarding');
+  assert.match(start, /Send the staff app invite from their card when you are ready/);
+  // the ONLY sender is the button
+  assert.equal((SCREEN.match(/wf\.sendPortalInvite\(/g) || []).length, 1);
+  const cmp = SCREEN.slice(SCREEN.indexOf('function StaffAppInvite'), SCREEN.indexOf('function OfferAction'));
+  assert.match(cmp, /wf\.sendPortalInvite\(member\.id\)/, 'and it is the one on the card');
+});
