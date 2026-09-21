@@ -125,6 +125,41 @@ export function importBlockReason(state) {
 /** The blocking line while migration 20260918_OPS_customer_import_batches.sql has not been run. */
 export const BATCH_TABLE_MISSING = 'Run the import_batches migration first.';
 
+/**
+ * Where each kind of balance in this file is going, in words.
+ *
+ * Peter, 21 Sep 2026, looking at the screen: "we have where do stamps go still
+ * but that makes no sense for points and also for gift cards so that will block
+ * the upload." Only stamps have ever needed an answer, and only when the file
+ * carries stamps, but the screen asked the question every time and said nothing
+ * about the other two, so it read as a wall.
+ *
+ * Stamps need a card because a stamp is meaningless without one: 4 of how many?
+ * Points are one balance per customer for the whole company, and a gift card
+ * carries its own code. Neither has anything to choose.
+ */
+export function balanceDestinationLines(summary) {
+  const s = summary || {};
+  const stamps = Number(s.withStamps) || 0;
+  const points = Number(s.withPoints) || 0;
+  const cards = Number(s.withGiftCards) || 0;
+  const lines = [];
+  if (points > 0) {
+    lines.push('Points go straight onto each customer’s own balance, the same balance they have at every site in this company. Nothing to pick.');
+  }
+  if (cards > 0) {
+    lines.push('Gift cards keep the code printed on them, so each one becomes a card at this company. Nothing to pick.');
+  }
+  if (!stamps && !points && !cards) lines.push('Nothing in this file carries a balance, so there is nothing to choose here.');
+  else if (!stamps) lines.push('No stamps in this file, so no stamp card is needed.');
+  return lines;
+}
+
+/** Does this file need the operator to choose a stamp card at all? */
+export function needsStampCard(summary) {
+  return (Number(summary && summary.withStamps) || 0) > 0;
+}
+
 /** The line under the stamp card picker when the company has no programmes. */
 export function noProgrammeLine(withStamps) {
   const n = Number(withStamps) || 0;
