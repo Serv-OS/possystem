@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.36',
+    date: '21 Sep 2026',
+    items: [
+      'SWITCHING VENUE NO LONGER SIGNS YOU OUT. Changing venue clears the previous venue’s data out of the browser, which is right, but since yesterday’s change that clear-out was also taking your sign-in with it, so you landed on the login screen every time you moved between venues. Your sign-in is now protected from it by name, taken from one place in the code so it cannot be missed again.',
+    ],
+  },
+  {
     v: '5.9.35',
     date: '21 Sep 2026',
     items: [
