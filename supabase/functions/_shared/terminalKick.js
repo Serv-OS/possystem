@@ -186,3 +186,81 @@ export function selectUnsentSweepCandidates(jobs, {
   }
   return { kick, skipped };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOBODY WAS DRIVING THE TENDER (21 Sep 2026, live, Provo kiosk)
+//
+// Peter: "card payments not getting to the reader from the kiosk", while pay at
+// table on the SAME reader worked a minute later. The logs say it exactly:
+//
+//   18:28:59.090  adyen-terminal-charge: start requested ... by till
+//   18:28:59.508  adyen-terminal-charge: start requested ... by terminal-job-create
+//   18:28:59.744  [terminal-job-create] server kick ...: 409 {"error":"in_flight"}
+//
+// The kiosk's own kick won the CAS, so the SERVER kick stood down, exactly as
+// designed. Then the kiosk's call went away: a cloud 'start' holds one HTTP
+// request open for the whole cardholder interaction, and a kiosk is an
+// unattended browser that sleeps, backgrounds and reloads. Nothing settled the
+// job, and NOTHING WAS WATCHING IT EITHER: selectUnsentSweepCandidates only
+// covers charging_unsent, and a job that reached 'charging' has no owner at
+// all. It sat there until a human opened pay at table nine minutes later.
+//
+// The cure is not another kick (that is how a card gets charged twice). It is
+// to ASK THE READER what happened, which adyen-terminal-charge 'result' has
+// done since v5.7.37 and which is safe by construction:
+//   - the reader says it is mid-tender and the job is younger than 120s: the
+//     answer is "processing" and nothing is disturbed,
+//   - the reader never saw it: the row resets to charging_unsent, where the
+//     unsent sweep re-kicks it, which is the retry that is actually safe,
+//   - the reader is stuck past 120s with nothing in Adyen's ledger: it is
+//     aborted and cancelled, and the customer is told instead of stranded.
+//
+// So a lost CAS now schedules one early ask, and the reconciler asks before it
+// quarantines anything as needs_human.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * How long after standing down for a client's kick the server waits before
+ * asking the reader what happened.
+ *
+ * WHY 25 SECONDS. Long enough that a customer reaching for a card is mid
+ * tender and simply answers "processing" (the 120s abort rule is measured from
+ * dispatch, so this can never cut a live tender short). Short enough that a
+ * kiosk whose browser dropped the call is found while the customer is still
+ * standing there, instead of at the next sweep minutes later.
+ */
+export const LOST_CAS_ASK_AFTER_MS = 25_000;
+
+/**
+ * Should the server ask the reader about a job it did not itself dispatch?
+ * Only for a cloud Adyen job that really is in flight: everything else either
+ * has its own owner or has nothing at a reader to ask about.
+ */
+export function shouldAskReaderAfterLostCas(job) {
+  if (!job || typeof job !== 'object') return false;
+  if (job.processor !== 'adyen') return false;
+  if (job.simulated === true || job.training === true) return false;
+  return true;
+}
+
+/**
+ * Which jobs the reconciler must ask the reader about instead of quarantining.
+ *
+ * The sweep moves a dispatched job to 'unknown' + needs_human, which is the
+ * right call for a PAX on Ryft (we cannot ask it anything) and the WRONG call
+ * for Adyen, where the reader itself will tell us. The reconciler's own note
+ * says so: "When lookupByReference() exists, the query goes in the marked
+ * block below and unknowns start resolving themselves." For Adyen it exists.
+ *
+ * @param {Array<object>} jobs terminal_jobs rows in 'unknown'
+ * @returns {string[]} job ids to ask about, oldest first
+ */
+export function selectReaderAskCandidates(jobs) {
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((j) => j?.id && j?.status === 'unknown' && shouldAskReaderAfterLostCas(j))
+    // a job that never reached the reader has nothing to ask about: no service
+    // id means the nexo request was never accepted, and the unsent sweep owns it
+    .filter((j) => typeof j.nexo_service_id === 'string' && j.nexo_service_id.length > 0)
+    .sort((a, b) => new Date(a.created_at ?? 0) - new Date(b.created_at ?? 0))
+    .map((j) => j.id);
+}

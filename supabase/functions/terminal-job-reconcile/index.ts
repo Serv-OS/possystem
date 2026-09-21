@@ -40,6 +40,7 @@
 // Spec: docs/PAXPAY_TRANSPORT_SPEC.md § "Money-safety rules", § "Risks".
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { selectReaderAskCandidates } from '../_shared/terminalKick.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -83,6 +84,51 @@ Deno.serve(async (req) => {
   });
   if (sweepErr) return json({ error: sweepErr.message }, 500);
 
+  // ── ADYEN: ASK THE READER BEFORE CALLING FOR A HUMAN (21 Sep 2026) ────────
+  // The block below says: "When lookupByReference() exists, the query goes in
+  // the marked block below and unknowns start resolving themselves." For Adyen
+  // it exists, and has since v5.7.37: adyen-terminal-charge 'result' sends the
+  // reader a nexo TransactionStatusRequest and settles the job from the
+  // reader's OWN answer, checking Adyen's ledger before it decides anything.
+  //
+  // Live that day: a kiosk's cloud 'start' won the CAS and then its browser
+  // took the call away with it. This sweep moved the job to unknown +
+  // needs_human, and a customer stood at a reader that never lit up while the
+  // only thing that could have answered the question was one call away.
+  //
+  // Still NOT a retry: the ask can only settle from what the reader reports,
+  // reset a job the reader never saw (where the unsent sweep re-kicks it
+  // safely), or leave it alone. A job that stays unknown after asking is
+  // quarantined exactly as before.
+  const asked: Array<{ id: string; status: number }> = [];
+  try {
+    const { data: stuck } = await opsAdmin
+      .from('terminal_jobs')
+      .select('id, status, processor, simulated, training, nexo_service_id, created_at')
+      .eq('status', 'unknown')
+      .eq('needs_human', true)
+      .order('created_at', { ascending: true })
+      .limit(20);
+    for (const id of selectReaderAskCandidates(stuck ?? [])) {
+      try {
+        const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+          body: JSON.stringify({ action: 'result', job_id: id, asked_by: 'terminal-job-reconcile' }),
+        });
+        const out = await res.text();
+        asked.push({ id, status: res.status });
+        console.log(`[terminal-job-reconcile] asked the reader about ${id}: ${res.status} ${out.slice(0, 200)}`);
+      } catch (e) {
+        console.error(`[terminal-job-reconcile] reader ask failed for ${id}: ${(e as Error)?.message || e}`);
+      }
+    }
+  } catch (e) {
+    // Asking is a recovery, never a duty: a failure here must not stop the sweep
+    // reporting what it did.
+    console.error(`[terminal-job-reconcile] reader ask pass failed: ${(e as Error)?.message || e}`);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // BLOCKED ON RYFT — the recovery query goes here.
   //
@@ -105,7 +151,11 @@ Deno.serve(async (req) => {
     ok: true,
     swept,
     awaiting_human: count ?? 0,
+    // What the reader was asked about this run, so "why is this still unknown"
+    // is answerable from the cron's own output.
+    asked_reader: asked,
     // Surfaced so the runbook/alerting can see it without reading this source.
-    processor_lookup_available: false,
+    // Adyen CAN be asked (adyen-terminal-charge 'result'); Ryft/PAX still cannot.
+    processor_lookup_available: { adyen: true, ryft: false },
   });
 });
