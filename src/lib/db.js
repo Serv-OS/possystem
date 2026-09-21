@@ -18,6 +18,7 @@ import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
 import { describeMenuChange } from './menuDiff';
+import { normaliseMenuRow } from './rowMapping';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
 import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
@@ -184,6 +185,47 @@ export const fetchMenuCategories = async (locationId = null) => {
   return supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order').order('label').order('id');
 };
 
+// ── Menus ─────────────────────────────────────────────────────────────────────
+// WHY THIS EXISTS (21 Sep 2026, live): Push to POS wrote items and categories
+// and NOT the menus they belong to. menu_categories.menu_id references
+// menus(id), so at a venue whose menus row was never in the database EVERY
+// category upsert died on
+//   23503 ... violates foreign key constraint "menu_categories_menu_id_fkey"
+// Huddersfield lost all four of its categories that way, from April until
+// today: the tills were fine (they run from the push snapshot, which carries
+// the categories) while the database had none, so menu boards, online ordering
+// and the kiosk had nothing to show and nobody could see why.
+//
+// KEEP IN SYNC with _sbUpsertMenuNow in store/index.js (the CLAUDE.md
+// two-paths gotcha): this is the PUSH's writer, that one is the editor's.
+export const upsertMenu = async (menu, locationId = null) => {
+  if (isMock) return { data: null, error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
+  const m = normaliseMenuRow(menu);
+  if (!m?.id) return { data: null, error: null };
+  const result = await supabase.from('menus').upsert({
+    id: m.id,
+    location_id: locationId,
+    name: m.name || 'Menu',
+    description: m.description || '',
+    is_default: m.isDefault || false,
+    is_active: m.isActive !== false,
+    sort_order: m.sortOrder || 0,
+    schedule: m.schedule ?? null,
+    priority: m.priority ?? 0,
+    scope: m.scope || 'local',
+    org_id: m.orgId ?? m.org_id ?? null,
+    updated_at: new Date().toISOString(),
+  });
+  reportSave('menu', result.error);
+  return result;
+};
+
+/** Adyen-style self heal: is this the menu_id foreign key, and nothing else? */
+const isMissingMenuRow = (error) =>
+  String(error?.code || '') === '23503' && /menu_id|menu_categories_menu_id_fkey/i.test(String(error?.message || ''));
+
 export const upsertMenuCategory = async (cat, locationId = null) => {
   if (isMock) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
@@ -225,6 +267,14 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
   if (result.error && row.image && isMissingImageColumn(result.error)) {
     delete row.image;
     result = await supabase.from('menu_categories').upsert(row);
+  }
+  // v5.9.22: the menu this category names is not in the database, so the
+  // foreign key refuses the whole row. Keep the CATEGORY rather than lose it
+  // over the link: a category with no menu still shows on every surface, and a
+  // lost one shows on none. Loud, because it means the menus row needs saving.
+  if (result.error && row.menu_id && isMissingMenuRow(result.error)) {
+    console.warn('[DB] category', row.id, 'names a menu that is not saved (', row.menu_id, ') — saving it without the menu link');
+    result = await supabase.from('menu_categories').upsert({ ...row, menu_id: null });
   }
   reportSave('category', result.error);   // v5.5.951 — loud, not console-only
   if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)

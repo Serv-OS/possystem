@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.22',
+    date: '21 Sep 2026',
+    items: [
+      'PUSH TO POS NOW SAVES THE MENUS THEMSELVES, WHICH IS WHY A VENUE COULD HAVE NO CATEGORIES. A category belongs to a menu, and the database refuses a category whose menu is not saved. The push wrote items and categories and never the menus, so at Huddersfield every category write has failed since April: the tills were fine, because they run from the pushed snapshot which carries the categories inside it, while the database had none. Anything that reads the database, menu boards, online ordering and the kiosk, had nothing to show, and only the browser console knew. The push now saves the menus first and waits for them, so the categories land.',
+      'AND A CATEGORY IS NO LONGER LOST OVER THAT LINK. If the menu it names still cannot be saved, the category is saved without the link rather than thrown away: a category with no menu shows everywhere, a lost one shows nowhere.',
+    ],
+  },
+  {
     v: '5.9.21',
     date: '21 Sep 2026',
     items: [
