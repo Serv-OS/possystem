@@ -205,6 +205,13 @@ function mapStaff(r) {
     bankSortCode: r.bank_sort_code || null, bankAccount: r.bank_account || null, bankMasked: r.bank_account_masked || null,
     bankAccountName: r.bank_account_name || null,
     niNumber: r.ni_number || null,
+    // The staff app: do they have a login yet, and is an invite still live? The
+    // onboarding screen needs both to say "invite sent" or "send it again"
+    // (21 Sep 2026: an invite only ever fired at the moment onboarding started,
+    // so an email added afterwards meant nobody could ever send one).
+    // The token HASH is never read here, and never leaves the server.
+    portalUserId: r.portal_user_id || null,
+    portalInviteExpires: r.portal_invite_expires || null,
     days: {},
   };
 }
@@ -212,7 +219,7 @@ export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
   const { data, error } = await supabase.from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,created_at')
+    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,portal_user_id,portal_invite_expires,created_at')
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);

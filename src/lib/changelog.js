@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.28',
+    date: '21 Sep 2026',
+    items: [
+      'THE STAFF APP INVITE CAN BE SENT WHENEVER YOU LIKE, FROM THE ONBOARDING SCREEN. It used to go out once, at the moment you pressed Start onboarding, and only if that person already had an email on their record. Add the email a minute later, which is what anybody does while they are setting somebody up, and there was no way to send it at all: no button, nothing. Two new starters this evening got no email for exactly that reason. Every card in Onboarding now has a Staff app row that says whether the invite went, when it runs out, and sends it again with one press. Somebody who has already set their login up shows as having the app instead, and somebody with no email is told to add one rather than given a button that does nothing.',
+    ],
+  },
+  {
     v: '5.9.27',
     date: '21 Sep 2026',
     items: [
