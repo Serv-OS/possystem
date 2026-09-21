@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
+import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../../lib/db';
 import { getLocationConfig } from '../../lib/locationTime';
@@ -303,6 +304,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
   const selIds = blocks.map(x => x.categoryId);
   const offCats = cats.filter(c => !selIds.includes(c.id));
   const [dragI, setDragI] = useState(null);
+  const [overI, setOverI] = useState(null);
 
   // Follow timed menus: the preview mirrors the TV. Same shared resolver on the
   // venue clock (tz from the platform locations row), re-evaluated every minute
@@ -390,10 +392,10 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
                 )}
                 {blocks.map((blk, i) => (
                   <div key={blk.categoryId} draggable
-                    onDragStart={() => setDragI(i)}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={() => { reorder(dragI, i); setDragI(null); }}
-                    onDragEnd={() => setDragI(null)}
+                    onDragStart={e => { setDragI(i); beginDrag(e, blk.categoryId); }}
+                    onDragOver={e => dragOver(e, i, overI, setOverI)}
+                    onDrop={() => { reorder(dragI, i); setDragI(null); setOverI(null); }}
+                    onDragEnd={() => { setDragI(null); setOverI(null); }}
                     style={{ ...S.row, cursor: 'grab', borderRadius: 6, background: dragI === i ? 'var(--bg3)' : 'transparent' }}>
                     <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
                     <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span>

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.32',
+    date: '21 Sep 2026',
+    items: [
+      'DRAGGING CATEGORIES AND ITEMS AROUND WORKS PROPERLY AGAIN. The green line that shows where a row will land was a real object in the list, so the moment you hovered a row, that row and everything under it jumped down a few pixels. The row you were aiming at slid out from under the pointer, the line jumped to its neighbour, and the whole list jittered while you tried to hold on. It is now drawn on the row itself: same green line, takes up no space, nothing moves. The list also stopped redrawing itself dozens of times a second while you drag, which is the rest of the stickiness.',
+      'AND DRAGGING NOW WORKS IN FIREFOX AT ALL. Firefox refuses to start a drag that carries nothing with it, and not one of the fifteen drag handles in the menu screen gave it anything, so rows simply sprang back. Anyone on Firefox could not reorder a menu.',
+    ],
+  },
+  {
     v: '5.9.31',
     date: '21 Sep 2026',
     items: [
