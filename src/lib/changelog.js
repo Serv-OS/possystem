@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.21',
+    date: '21 Sep 2026',
+    items: [
+      'A DROPPED CONNECTION NO LONGER COSTS AN EDIT. A member of staff building a menu yesterday kept getting the red "your changes are not saving" bar reading "NetworkError when attempting to fetch resource". The database never saw those saves: across the whole day the server logged one failed write. Nothing sent them again, so a two second blip on the venue wifi threw away the change she had just typed. Every request that never completes is now sent again twice, half a second and then a second and a half later, which covers a blip without anyone noticing. Only work that is safe to repeat is repeated: menu saves and every other keyed save, edits, deletes and reads. An order, a payment, a gift card, a stock movement and a sign in are never repeated, because doing one of those twice is worse than doing it once.',
+      'AND THE BAR NOW SAYS WHAT IS ACTUALLY WRONG. When the connection is the problem it reads "no connection to the server", tells you the change did not reach us, and that it clears itself as soon as a save gets through. It no longer blames the database for the internet, and it no longer tries to refresh a sign in that was never the problem.',
+      'MENU BOARDS: an empty category list now explains itself. It used to read "No categories yet, add some below" with nothing below it, whether the venue had no menu built or we simply could not read it. It now says which of those it is.',
+    ],
+  },
+  {
     v: '5.9.20',
     date: '21 Sep 2026',
     items: [
