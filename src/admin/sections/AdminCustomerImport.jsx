@@ -47,6 +47,7 @@ import {
 } from '../../lib/customerImport';
 import {
   CHUNK_SIZE,
+  chunkSizeFor,
   PREVIEW_CHUNK_SIZE,
   PREVIEW_ROWS,
   MAX_ROWS,
@@ -56,6 +57,7 @@ import {
   importBlockReason,
   noProgrammeLine,
   countryLine,
+  moneyLine,
   confirmLines,
   previewRows,
   problemsByRow,
@@ -401,7 +403,9 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
 
     const key = batchId || newBatchId();
     if (!batchId) setBatchId(key);
-    const chunks = chunkRows(toSend, CHUNK_SIZE);
+    // A file with gift cards goes in smaller slices: every card is hashed with
+    // argon2id and 200 of those in one request is a minute of work.
+    const chunks = chunkRows(toSend, chunkSizeFor(summary));
     const startAt = Math.min(doneBatches, chunks.length);
     let acc = result || { created: 0, updated: 0, skipped: 0, stamped: 0, alreadyStamped: 0, failed: [], skippedRows: [], notes: [], batchId: null };
     // People deleted here were left out at the preview and are never sent, so
@@ -533,6 +537,8 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
               <Tile n={leftOut.size} label="Rows left out" tone={leftOut.size ? 'bad' : undefined} />
               <Tile n={summary.canEmail} label="We can email" />
               <Tile n={summary.withStamps} label="Have stamps" />
+              {summary.withPoints > 0 ? <Tile n={summary.withPoints} label="Have points" /> : null}
+              {summary.withGiftCards > 0 ? <Tile n={summary.withGiftCards} label="Gift cards" tone="bad" /> : null}
             </div>
 
             <div style={{ ...S.body, marginTop: 12 }}>
@@ -541,6 +547,12 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
               {summary.stampsTotal > 0 || summary.rewardsTotal > 0
                 ? <div>Stamps in this file: {count(summary.stampsTotal, 'stamp')} and {count(summary.rewardsTotal, 'free item')} already earned.</div>
                 : <div>No stamps in this file.</div>}
+              {summary.withPoints > 0
+                ? <div>Points in this file: {count(summary.pointsTotal, 'point')} across {count(summary.withPoints, 'person', 'people')}.</div>
+                : null}
+              {summary.withGiftCards > 0
+                ? <div style={{ fontWeight: 700 }}>Gift cards in this file: {count(summary.withGiftCards, 'card')} carrying {moneyLine(summary.giftMinorTotal, ctx?.currency)}. That money can be spent at the till as soon as this import finishes. A code we already have is never topped up.</div>
+                : null}
               {summary.notSaid > 0 ? <div>Marketing not answered for {count(summary.notSaid, 'person', 'people')}. They go in, and we never email them.</div> : null}
               {summary.optedOut > 0 ? <div>Said no in the old system: {count(summary.optedOut, 'person', 'people')}. They still go in. A no in the file changes nothing here: anybody who already said yes here stays yes.</div> : null}
               {summary.phoneFixed > 0 ? <div>We put the 0 back on the front of {count(summary.phoneFixed, 'phone')}. That is what a spreadsheet does to a phone column.</div> : null}
@@ -705,8 +717,17 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
               <Tile n={result.skipped} label="Left out" />
               <Tile n={result.stamped || 0} label="Cards stamped" />
               {result.alreadyStamped > 0 ? <Tile n={result.alreadyStamped} label="Cards left alone" /> : null}
+              {result.pointed > 0 ? <Tile n={result.pointed} label="Points given" /> : null}
+              {result.alreadyPointed > 0 ? <Tile n={result.alreadyPointed} label="Points left alone" /> : null}
+              {result.cardsMade > 0 ? <Tile n={result.cardsMade} label="Gift cards made" tone="good" /> : null}
+              {result.alreadyCarded > 0 ? <Tile n={result.alreadyCarded} label="Cards already here" /> : null}
               <Tile n={(result.failed || []).length} label="Did not go in" tone={(result.failed || []).length ? 'bad' : undefined} />
             </div>
+            {result.cardsMade > 0 ? (
+              <div style={{ ...S.body, marginTop: 10, fontWeight: 700 }}>
+                {moneyLine(result.cardsMinor, ctx?.currency)} is now on gift cards and can be spent at the till.
+              </div>
+            ) : null}
             {/* Lines about the whole run. Never counted as rows, always shown. */}
             {(result.notes || []).length ? (
               <div style={{ ...S.warnBox, marginTop: 14, marginBottom: 0 }}>

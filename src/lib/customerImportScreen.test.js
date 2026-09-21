@@ -411,13 +411,15 @@ test('a real file: read it, check it, count it, decide about the button', () => 
 
   const parsed = readCsv(csv);
   assert.equal(parsed.found, true);
-  assert.deepEqual(parsed.ignored, ['Points'], 'points are recognised and left out on purpose');
+  assert.deepEqual(parsed.ignored, [], 'points are a real column now, not something we drop');
 
   const checked = validateRows(parsed.rows, GB_OPTS);
   const sum = summarise(checked, checked.ready.map((r) => ({ row_number: r.rowNumber, verdict: 'new' })));
   assert.equal(sum.ready, 2);
   assert.equal(sum.newCustomers, 2);
   assert.equal(sum.withStamps, 1);
+  assert.equal(sum.withPoints, 2, 'both readable rows carry a points balance');
+  assert.equal(sum.pointsTotal, 332);
   assert.equal(sum.problems, 1, 'the row with no phone and no email cannot go in');
   assert.equal(sum.phoneFixed, 1, 'the spreadsheet ate a leading zero and we put it back');
   assert.equal(sum.canEmail, 1);
@@ -513,7 +515,10 @@ test('the rows posted are the raw cells, so the server reads them again itself',
   assert.ok(src.includes('rowsToSend(raw, checked)'), 'we send what was in the file, with a shared phone moved to notes');
   assert.ok(src.includes("!== 'blocked'"), 'a row the server will not touch is never sent');
   assert.ok(src.includes('rows: chunks[i]'));
-  assert.ok(src.includes('chunkRows(toSend, CHUNK_SIZE)'), 'it goes up in batches so progress is real');
+  // v5.9.37: the slice size is chosen by the file, because one with gift cards
+  // carries an argon2id hash per card and 200 of those in a request is a minute
+  // of work. Still batched, still real progress, just smaller portions.
+  assert.ok(src.includes('chunkRows(toSend, chunkSizeFor(summary))'), 'it goes up in batches so progress is real');
 });
 
 test('a run that stops half way carries on instead of starting over', () => {

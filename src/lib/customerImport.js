@@ -120,6 +120,9 @@ export const TEMPLATE_COLUMNS = [
   'email',
   'stamps',
   'rewards_unused',
+  'points',
+  'gift_card_code',
+  'gift_card_balance',
   'marketing_opt_in',
   'opt_in_date',
   'opt_in_source',
@@ -145,6 +148,9 @@ export const TEMPLATE_EXAMPLE = {
   email: 'jane@example.com',
   stamps: '4',
   rewards_unused: '1',
+  points: '250',
+  gift_card_code: 'GC-4417-8820',
+  gift_card_balance: '12.50',
   marketing_opt_in: 'yes',
   opt_in_date: '2025-04-12',
   opt_in_source: 'Old loyalty app',
@@ -170,6 +176,12 @@ export const HEADER_ALIASES = {
   email: ['email address', 'e mail', 'e mail address', 'mail'],
   stamps: ['stamp', 'stamps collected', 'stamps on card', 'current stamps', 'stamp count', 'stamp balance'],
   rewards_unused: ['rewards', 'reward', 'rewards available', 'unused rewards', 'rewards owed', 'free drinks', 'free drink', 'free items', 'completed cards'],
+  // Points are a COUNT and gift card money is MONEY. They were both ignored
+  // until 21 Sep 2026 precisely so neither could land in the stamps column and
+  // buy the shop a round; they are read properly now, each with its own cap.
+  points: ['point', 'points balance', 'point balance', 'loyalty points', 'reward points', 'points earned', 'current points'],
+  gift_card_code: ['gift card', 'gift card code', 'gift card number', 'giftcard', 'giftcard code', 'card code', 'voucher', 'voucher code', 'gift voucher'],
+  gift_card_balance: ['gift card balance', 'giftcard balance', 'gift balance', 'gift card value', 'voucher balance', 'stored value', 'credit balance', 'account credit', 'wallet balance'],
   marketing_opt_in: ['opt in', 'opted in', 'optin', 'consent', 'marketing consent', 'marketing', 'subscribed', 'opt in status'],
   opt_in_date: ['opted in date', 'consent date', 'date opted in', 'opt in at', 'subscribed date', 'marketing opt in date'],
   opt_in_source: ['consent source', 'opt in from', 'signed up via', 'where they opted in', 'source'],
@@ -183,10 +195,9 @@ export const HEADER_ALIASES = {
 // operator so nobody thinks we used them. Points are NOT stamps: a points
 // balance dropped into a stamp column would hand out free coffee.
 export const IGNORED_HEADERS = [
-  'points',
-  'point',
-  'points balance',
-  'loyalty points',
+  // 'balance' on its own is the one we still refuse to guess: in one export it
+  // is points, in the next it is money on a gift card, and guessing wrong either
+  // hands out free coffee or invents cash. The screen asks for it to be renamed.
   'balance',
   'visits',
   'visit count',
@@ -211,6 +222,13 @@ export const IGNORED_HEADERS = [
 // has to look at rather than free drinks for everybody.
 export const MAX_STAMPS = 500;
 export const MAX_REWARDS = 100;
+// Points are cheap individually and expensive in bulk: 100,000 is far above any
+// real balance and far below a phone number or a spend figure in pence, which
+// are the two columns that realistically land here by mistake.
+export const MAX_POINTS = 100000;
+// Gift card money is real money. 500 is above any card a venue actually sells
+// and below a date (20250412), an order total in pence, or an account number.
+export const MAX_GIFT_BALANCE = 500;
 export const EARLIEST_BIRTH_YEAR = 1900;
 
 // Words an export writes when it means "nothing here".
@@ -798,6 +816,52 @@ export function readWholeNumber(raw, max, label) {
 }
 
 /**
+ * MONEY out of whatever the other system wrote: '£12.50', '$5', '12,50',
+ * '1,250.00', '12.5', '(3.00)' for a negative.
+ *
+ * Returns { minor, value, ok, empty, reason } where MINOR IS THE ANSWER: an
+ * integer number of pence or cents, because that is what a balance is stored
+ * and spent in. `value` is the same figure as a decimal, for showing back.
+ *
+ * Three decimal places or more is a refusal, not a rounding: '12.500' is far
+ * more likely to be a thousands separator read the European way than half a
+ * penny, and quietly turning it into £12.50 would be inventing money.
+ */
+export function readMoney(raw, max, label) {
+  const what = label || 'That amount';
+  let text = cleanText(raw).replace(/\s/g, '');
+  if (!text || isBlankWord(text)) return { minor: 0, value: 0, ok: true, empty: true, reason: '' };
+  let negative = false;
+  if (/^\(.*\)$/.test(text)) { negative = true; text = text.slice(1, -1); }
+  text = text.replace(/^[£$€]/, '').replace(/[£$€]$/, '');
+  text = text.replace(/^(GBP|USD|EUR)/i, '');
+  if (text.startsWith('-')) { negative = true; text = text.slice(1); }
+  if (text.startsWith('+')) text = text.slice(1);
+  // 1,250.00 (thousands) vs 12,50 (European decimal). A comma with exactly two
+  // digits after it and no dot anywhere is a decimal comma; otherwise commas
+  // are thousands separators.
+  if (/^\d+,\d{2}$/.test(text)) text = text.replace(',', '.');
+  else text = text.replace(/,/g, '');
+  if (!/^\d+(\.\d+)?$/.test(text)) {
+    return { minor: 0, value: 0, ok: false, empty: false, reason: 'We cannot read ' + what.toLowerCase() + '.' };
+  }
+  const dot = text.indexOf('.');
+  if (dot >= 0 && text.length - dot - 1 > 2) {
+    return { minor: 0, value: 0, ok: false, empty: false, reason: what + ' has too many decimal places to be money. Write it as 12.50.' };
+  }
+  const n = Number(text);
+  if (!Number.isFinite(n)) return { minor: 0, value: 0, ok: false, empty: false, reason: 'We cannot read ' + what.toLowerCase() + '.' };
+  if (negative && n !== 0) return { minor: 0, value: 0, ok: false, empty: false, reason: what + ' cannot be less than 0.' };
+  if (typeof max === 'number' && n > max) {
+    return { minor: 0, value: 0, ok: false, empty: false, reason: what + ' is too high. Check the column.' };
+  }
+  // Round the multiplication, never trust it: 12.45 * 100 is 1244.9999... in
+  // binary floating point, and |0 would bank 1244.
+  const minor = Math.round(n * 100);
+  return { minor, value: minor / 100, ok: true, empty: false, reason: '' };
+}
+
+/**
  * Yes or no out of whatever the other system, or the spreadsheet, wrote.
  * TRUE and FALSE are what a spreadsheet tick box saves as.
  * Returns { value, ok, empty, reason }, value true, false or null.
@@ -1019,6 +1083,20 @@ export function normaliseRow(row, opts) {
   const rewards = readWholeNumber(src.rewards_unused, MAX_REWARDS, 'Rewards');
   if (!rewards.ok) say(problems, 'rewards_unused', rewards.reason);
 
+  const points = readWholeNumber(src.points, MAX_POINTS, 'Points');
+  if (!points.ok) say(problems, 'points', points.reason);
+
+  // A gift card needs BOTH its code and its balance to mean anything. A balance
+  // with no code is money we cannot attach to a card anybody holds, and a code
+  // with no balance is an empty card, which is worse than no card at all
+  // because the customer tries it at the till.
+  const giftCode = cleanText(src.gift_card_code);
+  const giftBalance = readMoney(src.gift_card_balance, MAX_GIFT_BALANCE, 'Gift card balance');
+  if (!giftBalance.ok) say(problems, 'gift_card_balance', giftBalance.reason);
+  else if (giftCode && giftBalance.empty) say(problems, 'gift_card_balance', 'This gift card has no balance. Give it one, or take the code out.');
+  else if (!giftCode && !giftBalance.empty) say(problems, 'gift_card_code', 'There is a gift card balance here with no card code to put it on.');
+  else if (giftCode && giftCode.length < 4) say(problems, 'gift_card_code', 'That gift card code is too short to be a real card.');
+
   const optIn = readYesNo(src.marketing_opt_in);
   if (!optIn.ok) say(problems, 'marketing_opt_in', optIn.reason);
 
@@ -1054,6 +1132,9 @@ export function normaliseRow(row, opts) {
     email: e.email,
     stamps: stamps.value,
     rewardsUnused: rewards.value,
+    points: points.value,
+    giftCardCode: giftCode || null,
+    giftCardMinor: giftBalance.minor,
     marketingOptIn: optIn.value,
     optInDate: reads.opt_in_date.date,
     optInSource: cleanText(src.opt_in_source),
@@ -1125,6 +1206,7 @@ export function validateRows(rows, opts) {
   const warnings = [];
   const seenPhone = new Map();
   const seenEmail = new Map();
+  const seenGiftCode = new Map();
   const country = normaliseCountry(opts && opts.country);
 
   const all = [];
@@ -1217,6 +1299,28 @@ export function validateRows(rows, opts) {
         const value = dupField === 'phone' ? (r.phone || '') : (r.email || '');
         duplicatesInFile.push({ rowNumber, field: dupField, value, firstRowNumber: dupFirst, message: dup, text: lineOf(rowNumber, dup) });
       } else {
+        // ONE CARD, ONE OWNER. A gift card code that appears twice in the file
+        // is one physical card written against two people: whoever we put it on
+        // last would own money the other customer is holding a card for. The
+        // person still goes in; the card comes off the second row and is said
+        // out loud, because dropping money silently is how a venue finds out at
+        // the counter.
+        if (r.giftCardCode) {
+          const codeKey = r.giftCardCode.toUpperCase();
+          const cardFirst = seenGiftCode.get(codeKey) || 0;
+          if (cardFirst) {
+            const message = 'Gift card ' + r.giftCardCode + ' is already on row ' + cardFirst + '. A card belongs to one person, so this row goes in without it.';
+            r = {
+              ...r,
+              giftCardCode: null,
+              giftCardMinor: 0,
+              warnings: r.warnings.concat([{ field: 'gift_card_code', message }]),
+            };
+            warnings.push({ rowNumber, field: 'gift_card_code', message, text: lineOf(rowNumber, message) });
+          } else {
+            seenGiftCode.set(codeKey, rowNumber);
+          }
+        }
         const keep = rowPhoneForms(r);
         for (let j = 0; j < keep.length; j++) if (!seenPhone.has(keep[j])) seenPhone.set(keep[j], rowNumber);
         if (r.email && !seenEmail.has(r.email)) seenEmail.set(r.email, rowNumber);
@@ -1328,6 +1432,10 @@ export function summarise(rows, verdicts, opts) {
   let withStamps = 0;
   let stampsTotal = 0;
   let rewardsTotal = 0;
+  let withPoints = 0;
+  let pointsTotal = 0;
+  let withGiftCards = 0;
+  let giftMinorTotal = 0;
   let canEmail = 0;
   let canText = 0;
   let optedOut = 0;
@@ -1347,6 +1455,10 @@ export function summarise(rows, verdicts, opts) {
     if (r.stamps > 0 || r.rewardsUnused > 0) withStamps++;
     stampsTotal += r.stamps;
     rewardsTotal += r.rewardsUnused;
+    if (r.points > 0) { withPoints++; pointsTotal += r.points; }
+    // The money figure is the one to say out loud before anybody presses the
+    // button: it is the total this import is about to make spendable at the till.
+    if (r.giftCardCode && r.giftCardMinor > 0) { withGiftCards++; giftMinorTotal += r.giftCardMinor; }
     if (r.marketingOptIn === true) {
       if (r.email) canEmail++;
       if (r.phone) canText++;
@@ -1368,6 +1480,10 @@ export function summarise(rows, verdicts, opts) {
     withStamps,
     stampsTotal,
     rewardsTotal,
+    withPoints,
+    pointsTotal,
+    withGiftCards,
+    giftMinorTotal,
     canEmail,
     canText,
     optedOut,
