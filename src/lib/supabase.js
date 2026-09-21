@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { resolveAuthToken, lastAuthOutcome, AUTH_OUTCOMES, DEFAULT_STORAGE_KEY } from './authSession';
-import { storageKeyFor, adoptSharedSession } from './authStorageKey';
+import { storageKeyFor, adoptSharedSession, PERSON_STORAGE_KEY } from './authStorageKey';
 import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
 import { VERSION } from './version';
 import { makeRetryingFetch } from './netRetry';
@@ -446,6 +446,13 @@ const _claimDevice = () => linkDevice({ allowLegacy: true });
 
 const TENANT_FENCE_KEEP = new Set([
   'rpos-auth',
+  // A PERSON's sign in, kept under its own key since v5.9.33 so a Back Office
+  // login and the till beside it stop fighting over one session. It MUST be in
+  // here: switching venue is a mismatch, a mismatch wipes every rpos-* key, and
+  // for one release that wipe took the Back Office session with it and signed
+  // Peter out on every location switch (21 Sep 2026). Taken from the module, not
+  // typed again, so renaming the key can never leave this list behind.
+  PERSON_STORAGE_KEY,
   'rpos-bo-location',
   'rpos-active-location',
   'rpos-device-mode',

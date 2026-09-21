@@ -79,3 +79,16 @@ test('the client and its token helper read the SAME key', () => {
   // the staff app keeps its own, as it has since the 6 Aug incident
   assert.match(SUPA, /storageKey: 'rpos-staff-auth'/);
 });
+
+test('switching venue never wipes the person who is signed in', () => {
+  // 21 Sep 2026, live: the tenant fence wipes every rpos-* key on a venue
+  // change and its keep list named 'rpos-auth' by hand. v5.9.33 moved a Back
+  // Office sign in to its own key, which was NOT in that list, so every
+  // location switch signed Peter out.
+  const keep = SUPA.slice(SUPA.indexOf('const TENANT_FENCE_KEEP'));
+  const list = keep.slice(0, keep.indexOf(']);'));
+  assert.match(list, /PERSON_STORAGE_KEY/, 'a signed in person must survive the tenant fence');
+  assert.match(list, /'rpos-auth'/, 'a device session must still survive it too');
+  // taken from the module, never retyped, so a rename cannot leave the list behind
+  assert.match(SUPA, /import \{[^}]*PERSON_STORAGE_KEY[^}]*\} from '\.\/authStorageKey'/);
+});
