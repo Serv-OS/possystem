@@ -22,6 +22,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
+import { beginDrag, dragOver } from '../../lib/dragReorder';
 // PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
@@ -1033,9 +1034,8 @@ function MenuTab() {
             const color    = cat.color||'#3b82f6';
             return (
               <div key={cat.id} style={{ opacity:dragging?.3:1 }}>
-                {isReorder && <div style={{ height:3, background:'var(--acc)', borderRadius:2, margin:'1px 4px' }}/>}
-                <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(cat.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(cat.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,cat.id)} onClick={()=>{setSelCatId(cat.id);setSelItemId(null);setSearch('');}}
-                  style={{ display:'flex', alignItems:'center', gap:7, height:40, padding:'0 8px', borderRadius:8, marginTop:6, cursor:'grab', userSelect:'none', border:`1.5px solid ${!isReorder&&over?'var(--acc)':active?color+'55':'transparent'}`, background:!isReorder&&over?'var(--acc-d)':active?color+'18':'transparent' }}>
+                <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(cat.id);beginDrag(e,cat.id);}} onDragOver={e=>dragOver(e,cat.id,overCatId,setOverCatId)} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,cat.id)} onClick={()=>{setSelCatId(cat.id);setSelItemId(null);setSearch('');}}
+                  style={{ display:'flex', alignItems:'center', gap:7, height:40, padding:'0 8px', borderRadius:8, marginTop:6, cursor:'grab', userSelect:'none', border:`1.5px solid ${!isReorder&&over?'var(--acc)':active?color+'55':'transparent'}`, boxShadow: isReorder ? 'inset 0 3px 0 0 var(--acc)' : undefined, background:!isReorder&&over?'var(--acc-d)':active?color+'18':'transparent' }}>
                   <span className="mm-grip" style={{ fontSize:8, color:'var(--t4)', flexShrink:0 }}>⣿</span>
                   {/* v5.5.815: collapse/expand — only on groups that have children */}
                   {allKids.length > 0 ? (
@@ -1068,7 +1068,7 @@ function MenuTab() {
                     <div key={sub.id} style={{ opacity:dragCatId===sub.id?.3:1 }}>
                       {sr && <div style={{ height:2, background:'var(--acc)', borderRadius:2, margin:'1px 12px' }}/>}
                       {(() => { const subCount = menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&i.cat===sub.id).length; return (
-                      <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(sub.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(sub.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,sub.id)} onClick={()=>{setSelCatId(sub.id);setSelItemId(null);setSearch('');}}
+                      <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(sub.id);beginDrag(e,sub.id);}} onDragOver={e=>dragOver(e,sub.id,overCatId,setOverCatId)} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,sub.id)} onClick={()=>{setSelCatId(sub.id);setSelItemId(null);setSearch('');}}
                         style={{ display:'flex', alignItems:'center', gap:6, height:36, padding:'0 8px 0 12px', margin:'1px 0 0 26px', borderRadius:'0 7px 7px 0', cursor:'grab',
                           borderLeft:'2px solid var(--bdr)',
                           border:`1.5px solid ${!sr&&so?'var(--acc)':sa?sc+'55':'transparent'}`, borderLeftWidth:2, borderLeftColor:!sr&&so?'var(--acc)':sa?sc+'55':'var(--bdr)',
@@ -1253,7 +1253,7 @@ function MenuTab() {
                   if (item._spacer) return (
                     <div key={item.id}
                       draggable
-                      onDragStart={e=>{setDragItemId(item.id);e.dataTransfer.effectAllowed='move';}}
+                      onDragStart={e=>{setDragItemId(item.id);beginDrag(e,item.id);}}
                       onDragOver={e=>{e.preventDefault();if(dragItemId&&dragItemId!==item.id)setOverItemId(item.id);}}
                       onDragLeave={()=>setOverItemId(null)}
                       onDragEnd={()=>{setDragItemId(null);setOverItemId(null);}}
@@ -1280,16 +1280,19 @@ function MenuTab() {
                   const catColor = (menuCategories.find(c=>c.id===item.cat)||selCat)?.color||'#3b82f6';
                   return (
                     <div key={item.id} style={{ opacity:isDragging?.3:1 }}>
-                      {isOver && <div style={{ height:3, background:'var(--acc)', borderRadius:2, marginBottom:3 }}/>}
                       <div
                         draggable
-                        onDragStart={e=>{setDragItemId(item.id);e.dataTransfer.effectAllowed='move';}}
-                        onDragOver={e=>{e.preventDefault();if(dragItemId&&dragItemId!==item.id)setOverItemId(item.id);}}
+                        onDragStart={e=>{setDragItemId(item.id);beginDrag(e,item.id);}}
+                        onDragOver={e=>{ e.preventDefault(); if(dragItemId&&dragItemId!==item.id&&overItemId!==item.id) setOverItemId(item.id); }}
                         onDragLeave={()=>setOverItemId(null)}
                         onDragEnd={()=>{setDragItemId(null);setOverItemId(null);}}
                         onDrop={e=>{e.preventDefault();reorderGrid(dragItemId,item.id);}}
                         onClick={()=>setSelItemId(active?null:item.id)}
-                        style={{
+                        // v5.9.32: the drop marker is drawn ON the tile, not inserted above
+                        // it. As a real element it pushed every tile below down 6px the
+                        // moment you hovered, which moved the target out from under the
+                        // pointer mid drag.
+                        style={{ boxShadow: isOver ? 'inset 0 3px 0 0 var(--acc)' : undefined,
                           // v5.5.813 (handoff marker 6): equal-height cards, ink price,
                           // 2-line clamped description, selection reads as a ring.
                           position:'relative', borderRadius:14, cursor:'pointer', userSelect:'none',
@@ -1500,7 +1503,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
             {/* Main item row */}
             <div
               draggable
-              onDragStart={()=>setDragIdx(i)}
+              onDragStart={e=>{setDragIdx(i);beginDrag(e,i);}}
               onDragOver={e=>{e.preventDefault();setOverIdx(i);}}
               onDrop={e=>{e.preventDefault();if(dragIdx!==null&&dragIdx!==i)reorder(dragIdx,i);setDragIdx(null);setOverIdx(null);}}
               onDragEnd={()=>{setDragIdx(null);setOverIdx(null);}}
@@ -2833,7 +2836,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
                 return (
                   <div key={ag.groupId} draggable
-                    onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                    onDragStart={e=>{setDragModIdx(i);beginDrag(e,i);}} onDragOver={e=>dragOver(e,i,overModIdx,setOverModIdx)}
                     onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
                     onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
                     style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
@@ -2871,7 +2874,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               const isReq = effectiveMin > 0;
               return (
                 <div key={ag.groupId} draggable
-                  onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                  onDragStart={e=>{setDragModIdx(i);beginDrag(e,i);}} onDragOver={e=>dragOver(e,i,overModIdx,setOverModIdx)}
                   onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
                   onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
                   style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
@@ -2952,7 +2955,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               {variants.map((v,vi) => {
                 const vp = v.pricing || { base: v.price || 0 };
                 return (
-                  <div key={v.id} draggable onDragStart={()=>setDragModIdx(vi)} onDragOver={e=>{e.preventDefault();setOverModIdx(vi);}} onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==vi){reorderVariants(dragModIdx,vi);}setDragModIdx(null);setOverModIdx(null);}} onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
+                  <div key={v.id} draggable onDragStart={e=>{setDragModIdx(vi);beginDrag(e,vi);}} onDragOver={e=>dragOver(e,vi,overModIdx,setOverModIdx)} onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==vi){reorderVariants(dragModIdx,vi);}setDragModIdx(null);setOverModIdx(null);}} onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
                     style={{ display:'grid', gridTemplateColumns:'18px 1fr 100px 32px', gap:6, alignItems:'center', marginBottom:6, opacity:dragModIdx===vi?.4:1, background:overModIdx===vi?'var(--acc-d)':'transparent', borderRadius:8, padding:'2px 0' }}>
                     <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab', textAlign:'center' }}>⠿</span>
                     <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`${item.variantLabel||'Size'} ${vi+1}`}/>
@@ -3021,7 +3024,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     const modeLabel = def.selectionType==='quantity' ? `qty pick, max ${def.max>=99?'∞':def.max}` : def.selectionType==='multiple' ? `multi, max ${def.max>=99?'∞':def.max}` : 'pick 1';
                     return (
                       <div key={ag.groupId} draggable
-                        onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                        onDragStart={e=>{setDragModIdx(i);beginDrag(e,i);}} onDragOver={e=>dragOver(e,i,overModIdx,setOverModIdx)}
                         onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderMods(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
                         onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
                         style={{ display:'grid', gridTemplateColumns:'18px 1fr auto', gap:6, alignItems:'center', padding:'8px 10px', marginBottom:5, borderRadius:9, border:`1.5px solid ${overModIdx===i?'var(--acc)':'var(--bdr)'}`, background:overModIdx===i?'var(--acc-d)':'var(--bg3)', opacity:dragModIdx===i?.4:1, cursor:'default' }}>
@@ -3416,7 +3419,7 @@ function ModifiersTab() {
         <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
           {(groups||[]).map((g,gi)=>(
             <div key={g.id} draggable
-              onDragStart={()=>setDragGIdx(gi)} onDragOver={e=>{e.preventDefault();setOverGIdx(gi);}}
+              onDragStart={e=>{setDragGIdx(gi);beginDrag(e,gi);}} onDragOver={e=>dragOver(e,gi,overGIdx,setOverGIdx)}
               onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi){reorderModifierGroupDefs(dragGIdx,gi);markBOChange();/* v5.5.834: was the only modifier-group mutation missing this — add/edit/delete all mark, so a reorder alone never lit the "Push to POS" badge */}setDragGIdx(null);setOverGIdx(null);}}
               onDragEnd={()=>{setDragGIdx(null);setOverGIdx(null);}}
               onClick={()=>setSelId(g.id===selId?null:g.id)}
@@ -3530,7 +3533,7 @@ function ModifiersTab() {
 
             {(sel.options||[]).map((opt,oi)=>(
               <div key={opt.id} draggable
-                onDragStart={()=>setDragOIdx(oi)} onDragOver={e=>{e.preventDefault();setOverOIdx(oi);}}
+                onDragStart={e=>{setDragOIdx(oi);beginDrag(e,oi);}} onDragOver={e=>dragOver(e,oi,overOIdx,setOverOIdx)}
                 onDrop={e=>{e.preventDefault();if(dragOIdx!==null&&dragOIdx!==oi)reorderOpts(dragOIdx,oi);setDragOIdx(null);setOverOIdx(null);}}
                 onDragEnd={()=>{setDragOIdx(null);setOverOIdx(null);}}
                 style={{ marginBottom:8, padding:'8px 10px', borderRadius:10, border:`1px solid ${overOIdx===oi?'var(--acc)':'var(--bdr)'}`, background:'var(--bg2)', opacity:dragOIdx===oi?.4:1 }}>
@@ -3682,7 +3685,7 @@ function InstructionsTab() {
         <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
           {(groups||[]).map((g,gi)=>(
             <div key={g.id} draggable
-              onDragStart={()=>setDragGIdx(gi)} onDragOver={e=>{e.preventDefault();setOverGIdx(gi);}}
+              onDragStart={e=>{setDragGIdx(gi);beginDrag(e,gi);}} onDragOver={e=>dragOver(e,gi,overGIdx,setOverGIdx)}
               onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi)reorderInstructionGroupDefs(dragGIdx,gi);setDragGIdx(null);setOverGIdx(null);}}
               onDragEnd={()=>{setDragGIdx(null);setOverGIdx(null);}}
               onClick={()=>setSelId(g.id===selId?null:g.id)}
@@ -3717,7 +3720,7 @@ function InstructionsTab() {
 
             {(sel.options||[]).map((opt,oi)=>(
               <div key={oi} draggable
-                onDragStart={()=>setDragOIdx(oi)} onDragOver={e=>{e.preventDefault();setOverOIdx(oi);}}
+                onDragStart={e=>{setDragOIdx(oi);beginDrag(e,oi);}} onDragOver={e=>dragOver(e,oi,overOIdx,setOverOIdx)}
                 onDrop={e=>{e.preventDefault();if(dragOIdx!==null&&dragOIdx!==oi)reorderOpts(dragOIdx,oi);setDragOIdx(null);setOverOIdx(null);}}
                 onDragEnd={()=>{setDragOIdx(null);setOverOIdx(null);}}
                 style={{ display:'grid', gridTemplateColumns:'14px 1fr auto', gap:7, marginBottom:6, alignItems:'center',
@@ -4129,7 +4132,7 @@ function QuickScreenManager() {
                     ...(item?.image ? { backgroundImage:`url(${item.image})`, backgroundSize:'cover', backgroundPosition:'center' } : {}),
                   }}
                   draggable={!!item}
-                  onDragStart={e=>{if(item){setDragSrc({type:'slot',id:itemId,slotIdx:idx});e.dataTransfer.effectAllowed='move';}}}
+                  onDragStart={e=>{if(item){setDragSrc({type:'slot',id:itemId,slotIdx:idx});beginDrag(e,itemId);}}}
                   onDragEnd={()=>{setDragSrc(null);setOverSlot(null);}}>
 
                   {/* Dark overlay when image is set — same as POS */}
@@ -4197,7 +4200,7 @@ function QuickScreenManager() {
             return (
               <div key={item.id}
                 draggable={!inScreen}
-                onDragStart={e=>{if(!inScreen){setDragSrc({type:'list',id:item.id});e.dataTransfer.effectAllowed='move';}}}
+                onDragStart={e=>{if(!inScreen){setDragSrc({type:'list',id:item.id});beginDrag(e,item.id);}}}
                 onDragEnd={()=>setDragSrc(null)}
                 onClick={()=>!inScreen && addItem(item.id)}
                 style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 12px',
