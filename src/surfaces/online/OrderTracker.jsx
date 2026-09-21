@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { publicRead } from '../../lib/publicOrderClient';
-import { trackerPaymentChecking, UNVERIFIED_MESSAGE } from '../../lib/publicOrder';
+import { trackerPaymentChecking, mergeTrackerRow, UNVERIFIED_MESSAGE } from '../../lib/publicOrder';
 import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
@@ -60,12 +60,19 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           // avoids re-rendering the whole tree every 5s.
           setOrder(prev => {
             if (!prev) return data;
+            // An order marked collected LEAVES order_queue, so the server answers
+            // from its mark instead, thin, with no items and no total (they went
+            // with the row). Merge that over what is on screen: the customer
+            // keeps their order summary and the last step finally lights up.
+            // Before 21 Sep 2026 this replaced blindly and the page simply never
+            // moved off "Ready" (OL-909CZ, live).
+            const next = mergeTrackerRow(prev, data);
             // Fix round (C17): a change of payment state (checking to verified) is a change too.
-            if (prev.status === data.status && prev.total === data.total
-                && trackerPaymentChecking(prev) === trackerPaymentChecking(data)
-                && JSON.stringify(prev.items) === JSON.stringify(data.items)) return prev;
-            console.log('[OrderTracker]', orderRef, 'status:', prev?.status, '→', data.status);
-            return data;
+            if (prev.status === next.status && prev.total === next.total
+                && trackerPaymentChecking(prev) === trackerPaymentChecking(next)
+                && JSON.stringify(prev.items) === JSON.stringify(next.items)) return prev;
+            console.log('[OrderTracker]', orderRef, 'status:', prev?.status, '→', next.status);
+            return next;
           });
         }
         setLoading(false);

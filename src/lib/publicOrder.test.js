@@ -18,7 +18,7 @@ import {
   openTabsFromResult, qrSessionWriteAction, UNVERIFIED_MESSAGE,
   onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs, publicOrderRefusalMessage,
   tabRoundJoinCode, mergeResumeTab, verifyPaymentInBackground, VERIFY_DELAYS_MS, trackerPaymentChecking,
-  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage,
+  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage, mergeTrackerRow,
 } from './publicOrder.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -397,7 +397,10 @@ test('C17: the customer is told the venue is confirming the payment, never to pa
   assert.equal(trackerPaymentChecking({ paid: true, payment_state: 'checking' }), false, 'paid wins');
   assert.equal(trackerPaymentChecking({ paid: false, payment_state: 'verified' }), false);
   const tr = read('../surfaces/online/OrderTracker.jsx');
-  assert.ok(tr.includes('trackerPaymentChecking(prev) === trackerPaymentChecking(data)'), 'a change of payment state re-renders');
+  // v5.9.26: the answer is merged first (a collected order answers thin), so the
+  // comparison is against the MERGED row. Same guard, one name along.
+  assert.ok(tr.includes('trackerPaymentChecking(prev) === trackerPaymentChecking(next)'), 'a change of payment state re-renders');
+  assert.ok(tr.includes('const next = mergeTrackerRow(prev, data);'), 'and it is the merged row that is compared');
   assert.ok(tr.includes('{UNVERIFIED_MESSAGE} You do not need to pay again.'));
   const client = read('./publicOrderClient.js');
   assert.ok(client.includes("if (placed && placed.ok && placed.unverified && placed.path === 'rpc' && order && order.ref) {"));
@@ -462,4 +465,56 @@ test('C23: closing a tab from the phone: short and not yours in plain words, the
   const tr = read('../surfaces/qr/TabResumeScreen.jsx');
   assert.ok(tr.includes("setError(tabCloseRefusalMessage(settled, { tabRef: tab.tab_ref || '' }));"));
   assert.ok(tr.indexOf('clearStashedTab(slug, tableId);') < tr.indexOf('setError(tabCloseRefusalMessage('), 'the stash goes first, so a second tap never captures again');
+});
+
+// ── the customer's page must reach "Collected" (21 Sep 2026, live) ─────────────────────────
+// Peter marked OL-909CZ collected in Orders Hub and the customer's page stayed on "Ready".
+// Marking an order collected REMOVES it from order_queue, which is what the tracker reads, so
+// there was nothing left to read and the page held its last state for ever. 20260921t answers
+// from order_status_marks instead, deliberately thin (the items and the total went with the
+// queue row), and only for an order that departed FROM ready or collected: telling somebody
+// their CANCELLED order was handed over would be worse than telling them nothing.
+
+test('a collected order finishes the journey without blanking the page', () => {
+  const onScreen = {
+    ref: 'OL-909CZ', status: 'ready', total: 4.5, type: 'collection',
+    items: [{ name: 'Flat White', qty: 1 }], customer: { phone: '1234' },
+  };
+  const fromTheMark = { ref: 'OL-909CZ', status: 'collected', type: 'collection', source: 'online', departed: true };
+  const after = mergeTrackerRow(onScreen, fromTheMark);
+  assert.equal(after.status, 'collected', 'the last step lights up');
+  assert.equal(after.total, 4.5, 'the customer keeps their total');
+  assert.deepEqual(after.items, onScreen.items, 'and their order summary');
+  assert.deepEqual(after.customer, onScreen.customer);
+});
+
+test('a normal answer still replaces, so nothing stale survives', () => {
+  const onScreen = { ref: 'OL-1', status: 'prep', total: 9, items: [{ name: 'Bun' }, { name: 'Fries' }] };
+  // the venue took a line off the order: the new row is the whole truth
+  const fresh = { ref: 'OL-1', status: 'prep', total: 5, items: [{ name: 'Bun' }] };
+  assert.deepEqual(mergeTrackerRow(onScreen, fresh), fresh);
+  assert.equal(mergeTrackerRow(onScreen, fresh).items.length, 1);
+});
+
+test('nothing to merge is never a reason to lose the page', () => {
+  const onScreen = { ref: 'OL-1', status: 'ready' };
+  assert.equal(mergeTrackerRow(onScreen, null), onScreen, 'a null answer keeps the last good state');
+  assert.equal(mergeTrackerRow(null, null), null);
+  assert.deepEqual(mergeTrackerRow(null, { ref: 'OL-1', status: 'received' }), { ref: 'OL-1', status: 'received' });
+});
+
+test('the SQL only says collected for an order that was ready to collect', () => {
+  const sql = read('../../supabase/migrations/20260921t_OPS_order_track_collected.sql');
+  assert.match(sql, /if coalesce\(v_mark\.departed_from, ''\) not in \('ready', 'collected'\) then\s*\n\s*return null;/,
+    'a cancelled order is never reported as handed over');
+  // the token must work after the order leaves the queue, or the customer is locked
+  // out of their own order the moment it is collected
+  const ok = sql.slice(sql.indexOf('create or replace function public._order_track_ok'), sql.indexOf('create or replace function public.order_track_row'));
+  const tokenAt = ok.indexOf('public.public_order_tokens t');
+  const queueAt = ok.indexOf('select * into v_q from public.order_queue');
+  assert.ok(tokenAt > 0 && tokenAt < queueAt, 'the token is checked BEFORE the queue row is needed');
+  // the private helper stays private
+  assert.match(sql, /revoke all on function public\._order_track_ok\(text, text, text\) from public, anon, authenticated;/);
+  assert.match(sql, /grant execute on function public\.order_track_row\(text, text, text\) to anon, authenticated, service_role;/);
+  assert.match(sql, /Self test: the wrong key was accepted/);
 });

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.26',
+    date: '21 Sep 2026',
+    items: [
+      'THE CUSTOMER\'S TRACKING PAGE NOW REACHES "COLLECTED". Peter marked an order collected in Orders Hub and the customer\'s page sat on "Ready" for ever. Marking an order collected takes it off the order queue, and the queue is what that page reads, so from that moment there was nothing left to read: the page kept showing the last thing it had seen, and the customer holding the link was locked out of their own order the moment it was handed over. The page now finishes the journey, and it keeps the order summary on screen while it does. An order that was cancelled rather than collected is still never reported as handed over: only one that was ready and then taken off the board counts, which is the same rule the collection TV uses.',
+    ],
+  },
+  {
     v: '5.9.25',
     date: '21 Sep 2026',
     items: [

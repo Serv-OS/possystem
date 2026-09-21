@@ -418,3 +418,28 @@ export function trackerPaymentChecking(row) {
   // answers 'checking' for it; the old direct read carries 'short' in customer).
   return st === 'checking' || st === 'short' || !!(row.customer && row.customer.payment_unverified === true);
 }
+
+/**
+ * What the tracking page should show next, given what it shows now and what the
+ * server just answered.
+ *
+ * LIVE, 21 Sep 2026: Peter marked OL-909CZ collected in Orders Hub and the
+ * customer's page stayed on "Ready". Marking an order collected REMOVES it from
+ * order_queue, and the tracker reads that table, so from that moment there was
+ * nothing to read and the page held its last state for ever.
+ *
+ * 20260921t gives the server an answer for an order that has left the queue:
+ * it reports `collected` from order_status_marks, but DELIBERATELY THIN, because
+ * the items and the total went with the queue row. Merging is what keeps the
+ * customer's order summary on screen while the status moves on; replacing would
+ * blank the page at the last step.
+ */
+export function mergeTrackerRow(prev, next) {
+  if (!next || typeof next !== 'object') return prev ?? null;
+  if (!prev || typeof prev !== 'object') return next;
+  // Only a thin "it has left the queue" answer merges. A normal row is the whole
+  // truth and replaces, so a removed item or a changed total is never kept alive
+  // by a stale field.
+  if (next.departed !== true) return next;
+  return { ...prev, ...next };
+}
