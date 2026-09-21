@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.24',
+    date: '21 Sep 2026',
+    items: [
+      'HAVING A PASSKEY IS NO LONGER TREATED AS HAVING USED ONE. Peter signed in to a venue login with nothing but its password today and walked straight into Back Office: he was asked for neither his fingerprint nor an emailed code. The sign in screen asked "is there a second step set up on this account", saw the passkey, and let him in, when the question it should ask is "did THIS sign in prove itself". It had not: it signed in with a password. Anyone whose account holds a passkey is now asked to use it, on the spot, with one touch, and only the session that comes back from that counts. This is what the database has always refused; the screen was the part that was wrong.',
+      'MENU BOARDS TURN ON A PORTRAIT TV. The order screens have had "If the TV shows the picture sideways: do not turn, turn right, turn left" since v5.8.56 and the menu boards did not, so a TV hung portrait showed the menu on its side with nothing to fix it. Same setting, same words, and the same one piece of code underneath, so two TVs side by side cannot behave differently. It saves inside the board, so there is nothing to run and an existing board is untouched.',
+    ],
+  },
+  {
     v: '5.9.23',
     date: '21 Sep 2026',
     items: [

@@ -354,9 +354,26 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
           <Section>
             <Field label="Screen name"><input style={S.inp} value={board.name} onChange={e => set({ name: e.target.value })} /></Field>
             <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-              <Field label="Orientation"><Pills opts={[['landscape', 'Landscape'], ['portrait', 'Portrait']]} val={board.orientation} on={v => set({ orientation: v })} /></Field>
+              <Field label="Orientation"><Pills opts={[['landscape', 'Landscape'], ['portrait', 'Portrait']]} val={board.orientation}
+                on={v => { set({ orientation: v }); if (v !== 'portrait') setLayout({ rotate: 0 }); }} /></Field>
               <Field label="Mode"><Pills opts={[['menu', 'Menu'], ['marketing', 'Marketing']]} val={board.mode} on={v => set({ mode: v })} /></Field>
             </div>
+            {/* A PORTRAIT TV (21 Sep 2026). Peter: the order screens turn properly
+                and the menu boards do not, with no setting to force it. Same
+                control, same words, same rule (lib/orderScreen/orderScreenLayout
+                stageSize), so two TVs side by side cannot behave differently. */}
+            {board.orientation === 'portrait' && (
+              <Field label="If the TV shows the picture sideways">
+                <Pills
+                  opts={[['0', 'Do not turn'], ['90', 'Turn right'], ['270', 'Turn left']]}
+                  val={String(Number(board.layout?.rotate) || 0)}
+                  on={v => setLayout({ rotate: Number(v) })}
+                />
+                <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5, maxWidth: 560 }}>
+                  The Serv OS Menu TV app always runs landscape. If your TV hangs portrait, choose Turn right or Turn left.
+                </div>
+              </Field>
+            )}
           </Section>
 
           {board.mode === 'menu' ? (
