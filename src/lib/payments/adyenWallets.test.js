@@ -423,13 +423,47 @@ test('the edge function carries the same rule, and keeps the store off nothing e
   assert.match(EDGE, /function storeForPaymentMethods\(store: string \| null, venueCode: string \| null\)/);
   // Both lookups go through the retry helper...
   assert.match(EDGE, /async function lookupPaymentMethods\(/);
-  assert.match(EDGE, /if \(code !== STORE_REJECTED_ERROR_CODE\) return first;/);
+  assert.match(EDGE, /=== STORE_REJECTED_ERROR_CODE;/, 'a refused store is recognised by its Adyen error code');
   const methods = EDGE.slice(EDGE.indexOf("if (action === 'payment_methods')"), EDGE.indexOf("if (action === 'create_session')"));
-  assert.match(methods, /await lookupPaymentMethods\(cfg, request, await storeReferenceFor\(platformLocationId, store\)\)/);
+  assert.match(methods, /await lookupPaymentMethods\(cfg, request,\s*\n\s*await storeReferenceFor\(platformLocationId, store, cfg, merchantAccount\), merchantAccount, store\)/);
   assert.doesNotMatch(methods, /request\.store = store;/, 'the raw store id never goes on a lookup again');
   // ...and the MONEY path still sends the store exactly as it did.
   const pay = EDGE.slice(EDGE.indexOf("if (action === 'make_payment')"), EDGE.indexOf("if (action === 'payment_details')"));
   assert.match(pay, /if \(store\) payment\.store = store;/, '/payments is untouched');
   const session = EDGE.slice(EDGE.indexOf("if (action === 'create_session')"), EDGE.indexOf("if (action === 'make_payment')"));
   assert.match(session, /if \(store\) session\.store = store;/, '/sessions is untouched');
+});
+
+/* ── A new venue's store names itself (21 Sep 2026) ───────────────────────────
+ * Peter, with 20 sites about to go live: "how do we get it automatically on
+ * everyone's new store as we add them". The venue code guess is right for a
+ * store WE create; a store FranPOS creates by hand in the Customer Area can be
+ * called anything. So a refused store is not the end of the chain: the lookup
+ * asks Adyen's Management API what this store id is really called, uses that,
+ * and remembers it. Nobody types a reference anywhere.
+ */
+test('a refused store asks Adyen for its real name before giving up on it', () => {
+  const fn = EDGE.slice(EDGE.indexOf('async function referenceFromAdyen'), EDGE.indexOf('// One /paymentMethods call'));
+  // it asks the venue's OWN merchant account for its stores, and matches by id
+  assert.match(fn, /\/merchants\/\$\{encodeURIComponent\(merchantAccount\)\}\/stores\?pageSize=100/);
+  assert.match(fn, /rows\.find\(\(s\) => String\(s\?\.id \?\? ''\) === storeId\)/);
+  assert.match(fn, /if \(r && r\.length <= STORE_REFERENCE_MAX\) ref = r;/, 'a reference Adyen could not take is not used');
+  assert.match(fn, /apiKey: cfg\.managementKey/, 'the Management credential, not the Checkout one');
+  // never asked for something that is not a store id, and never asked twice
+  assert.match(fn, /if \(!storeId \|\| !isStoreId\(storeId\)\) return null;/);
+  assert.match(fn, /adyenRefCache\.set\(key, \{ at: Date\.now\(\), ref \}\);/);
+  // a credential without the Management role is a warning and a null, never a throw
+  assert.match(fn, /catch \(e\)/);
+
+  // the three step chain, in order
+  const chain = EDGE.slice(EDGE.indexOf('async function lookupPaymentMethods'), EDGE.indexOf('// Idempotency-Key for /payments'));
+  const guess = chain.indexOf('const first = await ask(storeRef);');
+  const correct = chain.indexOf('await referenceFromAdyen(');
+  const noStore = chain.indexOf('return await ask(null);');
+  assert.ok(guess > 0 && correct > guess && noStore > correct, 'guess, then ask Adyen, then no store');
+  assert.match(chain, /if \(first\.ok \|\| !storeRef \|\| !refused\(first\)\) return first;/, 'a working store never costs an extra call');
+
+  // and once Adyen has corrected us, the correction is used FIRST next time
+  const resolve = EDGE.slice(EDGE.indexOf('async function storeReferenceFor'), EDGE.indexOf('// ── Asking ADYEN'));
+  assert.match(resolve, /adyenRefCache\.get\(`\$\{cfg\.env\}:\$\{merchantAccount\}:\$\{store\}`\)/);
 });
