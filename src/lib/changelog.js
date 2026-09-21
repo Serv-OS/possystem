@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.20',
+    date: '21 Sep 2026',
+    items: [
+      'A NEW VENUE\'S CARD STORE NAMES ITSELF. Adyen wants a store\'s short reference on the payment-methods lookup, and v5.9.19 sent the venue code, which is right for a store we create. A store the acquirer creates by hand can be called anything, and getting it wrong costs that venue Apple Pay. So the lookup now self-corrects: it tries the venue code, and if Adyen refuses it, it asks Adyen what that store id is really called, uses that answer and remembers it for an hour. Nobody types a reference anywhere, for any of the sites going live. A correctly named store never pays for the extra call, and a venue we cannot name at all still gets its wallets, because the last resort is to ask with no store.',
+    ],
+  },
+  {
     v: '5.9.19',
     date: '20 Sep 2026',
     items: [

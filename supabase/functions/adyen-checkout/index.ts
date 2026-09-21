@@ -31,7 +31,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   adyenConfig, adyenAccountForLocation, adyenFallbackEnv, platformLocationIdFor, isUnknownColumnError,
-  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey, effectiveMerchantAccount, adyenSecretName,
+  checkoutBase, managementBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey, effectiveMerchantAccount, adyenSecretName,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
 
@@ -184,9 +184,14 @@ function storeForPaymentMethods(store: string | null, venueCode: string | null):
 // minutes: a venue code does not change, and this must not add two reads to
 // every shopper's first paint. A failure is null, i.e. ask without a store.
 const venueCodeCache = new Map<string, { at: number; code: string | null }>();
-async function storeReferenceFor(platformLocationId: string | null, store: string | null): Promise<string | null> {
+async function storeReferenceFor(platformLocationId: string | null, store: string | null, cfg?: AdyenConfig, merchantAccount?: string): Promise<string | null> {
   const direct = storeForPaymentMethods(store, null);
   if (direct) return direct;                      // the row already holds a reference
+  // What Adyen itself told us about this store, if it ever had to correct us.
+  if (cfg && merchantAccount && store) {
+    const known = adyenRefCache.get(`${cfg.env}:${merchantAccount}:${store}`);
+    if (known && Date.now() - known.at < 3_600_000 && known.ref) return known.ref;
+  }
   if (!platformLocationId) return null;
   const hit = venueCodeCache.get(platformLocationId);
   if (hit && Date.now() - hit.at < 300_000) return storeForPaymentMethods(store, hit.code);
@@ -206,18 +211,79 @@ async function storeReferenceFor(platformLocationId: string | null, store: strin
   return storeForPaymentMethods(store, code);
 }
 
+// ── Asking ADYEN what the store is called (21 Sep 2026) ─────────────────────
+// The venue code guess above is right for a store WE created (adyen-onboard
+// writes the venue code into the store's `reference`, and list_stores matches
+// the two on it). A store FranPOS creates by hand in the Customer Area can be
+// called anything, and Peter is onboarding 20 of them. So when Adyen refuses
+// the guess, ask Adyen for the store's real reference by its id, remember it,
+// and use it from then on. That makes every new venue self-correcting: nobody
+// has to type a reference anywhere, and nothing has to be kept in step.
+//
+//   GET {mgmt}/merchants/{merchantAccount}/stores?pageSize=100
+//     -> { data: [{ id: 'ST32...', reference: 'SV-1007', ... }] }
+//   https://docs.adyen.com/api-explorer/Management/3/get/merchants/_id_/stores
+//
+// It is NEVER on the happy path: the venue code is tried first and costs one
+// cached DB read, so a correctly named store never pays for this call. A
+// credential without the Management role simply fails and we fall through to
+// asking with no store at all, exactly as before.
+const adyenRefCache = new Map<string, { at: number; ref: string | null }>();
+async function referenceFromAdyen(cfg: AdyenConfig, merchantAccount: string, storeId: string | null): Promise<string | null> {
+  if (!storeId || !isStoreId(storeId)) return null;
+  const key = `${cfg.env}:${merchantAccount}:${storeId}`;
+  const hit = adyenRefCache.get(key);
+  if (hit && Date.now() - hit.at < 3_600_000) return hit.ref;
+  let ref: string | null = null;
+  try {
+    const res = await adyenFetch('GET', `${managementBase(cfg)}/merchants/${encodeURIComponent(merchantAccount)}/stores?pageSize=100`,
+      undefined, { cfg, apiKey: cfg.managementKey });
+    if (res.ok) {
+      const rows = ((res.data as Record<string, unknown> | null)?.data ?? []) as Record<string, unknown>[];
+      const mine = rows.find((s) => String(s?.id ?? '') === storeId);
+      const r = String(mine?.reference ?? '').trim();
+      if (r && r.length <= STORE_REFERENCE_MAX) ref = r;
+      if (mine && !ref) console.warn('[adyen-checkout] the store has no usable reference on Adyen:', storeId);
+      if (!mine) console.warn('[adyen-checkout] store id not found under', merchantAccount, ':', storeId);
+    } else {
+      console.warn('[adyen-checkout] Adyen refused the store list (the credential may lack Management):', res.status);
+    }
+  } catch (e) {
+    console.error('[adyen-checkout] store list threw:', (e as Error).message);
+  }
+  adyenRefCache.set(key, { at: Date.now(), ref });
+  return ref;
+}
+
 // One /paymentMethods call, with the store when we have a reference for it.
-// A 910 costs the shopper the routing hint and NOT the wallets: the lookup is
-// retried once without the store, because a method list for the account beats
-// no method list at all (which is what a 910 meant until today).
-async function lookupPaymentMethods(cfg: AdyenConfig, request: Record<string, unknown>, storeRef: string | null) {
-  const first = await adyenFetch('POST', checkoutUrl(cfg, '/paymentMethods'),
-    storeRef ? { ...request, store: storeRef } : request, { cfg });
-  if (first.ok || !storeRef) return first;
-  const code = String((first.data as Record<string, unknown> | null)?.errorCode ?? '');
-  if (code !== STORE_REJECTED_ERROR_CODE) return first;
-  console.warn('[adyen-checkout] Adyen refused the store on /paymentMethods, retrying without it:', storeRef);
-  return await adyenFetch('POST', checkoutUrl(cfg, '/paymentMethods'), request, { cfg });
+// A refused store costs the shopper the routing hint and NEVER the wallets:
+//   1. ask with the reference we believe in (the row's own, else the venue code)
+//   2. on 910, ask ADYEN what this store is really called and try that
+//   3. on 910 again, ask with no store at all
+// because a method list for the account beats no method list, which is what a
+// 910 meant until 20 Sep 2026 (it cost Provo every wallet, on every device).
+async function lookupPaymentMethods(
+  cfg: AdyenConfig, request: Record<string, unknown>,
+  storeRef: string | null, merchantAccount?: string, storeId?: string | null,
+) {
+  const ask = (store: string | null) => adyenFetch('POST', checkoutUrl(cfg, '/paymentMethods'),
+    store ? { ...request, store } : request, { cfg });
+  const refused = (r: { ok: boolean; data: unknown }) =>
+    !r.ok && String((r.data as Record<string, unknown> | null)?.errorCode ?? '') === STORE_REJECTED_ERROR_CODE;
+
+  const first = await ask(storeRef);
+  if (first.ok || !storeRef || !refused(first)) return first;
+
+  if (merchantAccount) {
+    const real = await referenceFromAdyen(cfg, merchantAccount, storeId ?? null);
+    if (real && real !== storeRef) {
+      console.warn('[adyen-checkout] store reference corrected from Adyen:', storeRef, '->', real);
+      const second = await ask(real);
+      if (!refused(second)) return second;
+    }
+  }
+  console.warn('[adyen-checkout] Adyen refused the store on /paymentMethods, asking without it:', storeRef);
+  return await ask(null);
 }
 
 // Idempotency-Key for /payments. The card form mints a UUID per submit
@@ -281,7 +347,7 @@ const NO_NATIVE_3DS_TYPES = ['applepay'];
 // in src/lib/payments/adyenWallets.js, which drops the rest before Drop-in
 // can throw on them). Never throws: a failed probe is { error }.
 interface WalletProbe { applepay: boolean; googlepay: boolean; offered: string[]; error: string | null }
-async function probeWallets(cfg: AdyenConfig, merchantAccount: string, storeRef: string | null): Promise<WalletProbe> {
+async function probeWallets(cfg: AdyenConfig, merchantAccount: string, storeRef: string | null, storeId: string | null): Promise<WalletProbe> {
   const out: WalletProbe = { applepay: false, googlepay: false, offered: [], error: null };
   try {
     const res = await lookupPaymentMethods(cfg, {
@@ -292,7 +358,7 @@ async function probeWallets(cfg: AdyenConfig, merchantAccount: string, storeRef:
       countryCode: defaultCountry(cfg),
       channel: 'Web',
       allowedPaymentMethods: CHECKOUT_PAYMENT_TYPES,
-    }, storeRef);
+    }, storeRef, merchantAccount, storeId);
     const j = res.data ?? {};
     if (!res.ok) {
       out.error = String(j.message || `Adyen refused the payment methods lookup (${res.status})`);
@@ -363,7 +429,7 @@ Deno.serve(async (req) => {
       // does; the checkout never does). This is where "why did Apple Pay not
       // load?" gets an answer an operator can read.
       const wallets = body.wallets === true
-        ? await probeWallets(cfg, merchantAccount, await storeReferenceFor(platformLocationId, store))
+        ? await probeWallets(cfg, merchantAccount, await storeReferenceFor(platformLocationId, store, cfg, merchantAccount), store)
         : null;
       return json({
         ok: true,
@@ -445,7 +511,8 @@ Deno.serve(async (req) => {
       // a 25 character id is error 910 and every wallet is lost with it (Provo,
       // 20 Sep 2026). lookupPaymentMethods drops the store and asks again if
       // Adyen still refuses it, so a wrong reference costs routing, not wallets.
-      const res = await lookupPaymentMethods(cfg, request, await storeReferenceFor(platformLocationId, store));
+      const res = await lookupPaymentMethods(cfg, request,
+        await storeReferenceFor(platformLocationId, store, cfg, merchantAccount), merchantAccount, store);
       const j = res.data ?? {};
       if (!res.ok) {
         console.error('[adyen-checkout] paymentMethods failed:', res.status, JSON.stringify(j).slice(0, 400));
