@@ -14,6 +14,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, initials, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { inviteState } from '../../../lib/staffInvite';
 
 export const STEPS = [
   { key: 'offer', label: 'Offer letter' },
@@ -219,7 +220,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
           : <EmptyState icon="team" title="No one onboarding" body={candidates.length ? 'Start onboarding a new hire to email their offer, collect Right to Work, get the contract signed and capture bank details.' : 'Add a staff member first, then onboard them here.'} cta={candidates.length ? 'Start onboarding' : undefined} onCta={candidates.length ? () => setPicking(true) : undefined} />
       ) : (
         <div style={{ display: 'grid', gap: 14 }}>
-          {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} />)}
+          {shown.map(c => <OnboardingCard key={c.id} c={c} member={nameOf(c.staffId)} rolesMap={rolesMap} ctx={ctx} showToast={showToast} markStep={markStep} patchCase={patchCase} onStaffChanged={reload} />)}
         </div>
       )}
 
@@ -228,7 +229,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
   );
 }
 
-function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCase }) {
+function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCase, onStaffChanged }) {
   const meta = c.meta || {};
   const stepStatus = k => (c.steps || []).find(s => s.key === k)?.status || 'pending';
   const posDone = !!member.posUserId || stepStatus('posUser') === 'complete';
@@ -249,6 +250,13 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
       <div style={{ height: 6, borderRadius: 999, background: 'var(--inset)', overflow: 'hidden', marginBottom: 14 }}>
         <div style={{ height: '100%', width: `${pct}%`, background: allDone ? 'var(--grn)' : 'var(--acc)', transition: 'width .25s' }} />
       </div>
+
+      {/* THE STAFF APP INVITE (21 Sep 2026). It used to fire once, inside "Start
+          onboarding", and only if the record already had an email. Add the email a
+          minute later, as anybody does when setting a person up, and there was no way
+          to send it at all. Now it lives here, where you can see whether it went and
+          send it again. */}
+      <StaffAppInvite member={member} showToast={showToast} onSent={onStaffChanged} />
 
       <div style={{ display: 'grid', gap: 8 }}>
         <StepRow done={stepStatus('offer') === 'complete'} label="Offer letter" hint={
@@ -293,6 +301,51 @@ function StepRow({ done, label, hint, children }) {
 
 const offerAcceptBlock = link => `<p style="margin-top:20px"><a href="${link}" style="display:inline-block;background:#15C26A;color:#06130C;font-weight:700;padding:12px 20px;border-radius:10px;text-decoration:none">Review &amp; accept your offer</a></p>
 <p style="color:#666;font-size:13px">Or paste this link into your browser:<br/>${link}</p>`;
+
+/**
+ * The staff app invite: one email with a one-use link to create their login.
+ *
+ * It is a row of its own rather than a sixth step, because it is not part of
+ * the legal pipeline and it can be sent at any point, as many times as needed
+ * (a lost email, a typo'd address, an invite that ran out). The rule for what
+ * it says and whether it can be pressed is lib/staffInvite.js.
+ */
+function StaffAppInvite({ member, showToast, onSent }) {
+  const [busy, setBusy] = useState(false);
+  const state = inviteState(member);
+  const send = async () => {
+    if (busy || !state.can) return;
+    setBusy(true);
+    try {
+      await wf.sendPortalInvite(member.id);
+      showToast(`Staff app invite emailed to ${member.email}`, 'success');
+      onSent?.();
+    } catch (e) {
+      showToast(`Could not send the invite: ${e.message || 'error'}`, 'error');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      padding: '9px 11px', marginBottom: 12, borderRadius: 10,
+      background: 'var(--inset)', border: '1px solid var(--inset-border)',
+    }}>
+      <Icon name="user" size={15} />
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Staff app</div>
+        <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.45 }}>{state.hint}</div>
+      </div>
+      {state.kind === 'has_app'
+        ? <Badge tone="green">Has the app</Badge>
+        : (
+          <button className="btn btn-ghost btn-sm" disabled={busy || !state.can} onClick={send}
+            title={state.can ? state.hint : 'Add an email to their record in Staff first'}>
+            {busy ? 'Sending…' : state.label}
+          </button>
+        )}
+    </div>
+  );
+}
 
 function OfferAction({ c, member, role, ctx, showToast, markStep, done }) {
   const [pick, setPick] = useState(false);
