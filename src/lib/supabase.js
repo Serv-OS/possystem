@@ -2,6 +2,16 @@ import { createClient } from '@supabase/supabase-js';
 import { resolveAuthToken, lastAuthOutcome, AUTH_OUTCOMES, DEFAULT_STORAGE_KEY } from './authSession';
 import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
 import { VERSION } from './version';
+import { makeRetryingFetch } from './netRetry';
+
+// One retry for a request that never completed. 20 Sep 2026: a member of staff
+// building a menu kept getting the red "YOUR CHANGES ARE NOT SAVING" bar with
+// Firefox's "NetworkError when attempting to fetch resource", while the Ops API
+// logged one 4xx write in the whole day: those saves never reached us, and
+// nothing sent them again. See netRetry.js for what may be replayed and why.
+const retryingFetch = makeRetryingFetch(null, {
+  onRetry: ({ attempt, url }) => console.warn(`[net] request never completed, sending again (${attempt}):`, String(url).split('?')[0]),
+});
 
 // ── Ops DB (POS operational data — source of truth for all POS operations) ───
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL  || '';
@@ -18,6 +28,7 @@ export const isMock  = import.meta.env.VITE_USE_MOCK === 'true' || !SUPABASE_URL
 // POS session, and vice versa.
 export const staffSupabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON, {
   auth: { storageKey: 'rpos-staff-auth', persistSession: true, autoRefreshToken: true },
+  global: { fetch: retryingFetch },
 });
 
 export const AUTH_STORAGE_KEY = DEFAULT_STORAGE_KEY;
@@ -28,13 +39,14 @@ export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON
     autoRefreshToken: true,
     storageKey: AUTH_STORAGE_KEY,
   },
+  global: { fetch: retryingFetch },
 });
 
 // ── Platform DB (company/user management — separate project) ──────────────────
 const PLATFORM_URL  = import.meta.env.VITE_PLATFORM_SUPABASE_URL  || '';
 const PLATFORM_ANON = import.meta.env.VITE_PLATFORM_SUPABASE_ANON_KEY || '';
 export const platformSupabase = (PLATFORM_URL && PLATFORM_ANON)
-  ? createClient(PLATFORM_URL, PLATFORM_ANON, { auth: { persistSession: false } })
+  ? createClient(PLATFORM_URL, PLATFORM_ANON, { auth: { persistSession: false }, global: { fetch: retryingFetch } })
   : null;
 
 // Dynamic location ID — resolved from user_profiles in Ops DB

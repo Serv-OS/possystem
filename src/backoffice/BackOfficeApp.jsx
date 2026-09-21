@@ -249,9 +249,11 @@ function SaveHealthBanner() {
       fontSize:13.5, fontWeight:800, textAlign:'center', lineHeight:1.45,
       boxShadow:'0 2px 18px rgba(0,0,0,.45)',
     }}>
-      ⚠ YOUR CHANGES ARE NOT SAVING{health.authy
-        ? ' — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
-        : ` — ${health.message || 'database write failed'}. Redo the change once this clears.`}
+      {health.offline
+        ? '⚠ NO CONNECTION TO THE SERVER — the last change did not reach us and was not saved. Check this device\u2019s internet; we keep trying, and this bar clears the moment a save gets through.'
+        : health.authy
+          ? '⚠ YOUR CHANGES ARE NOT SAVING — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
+          : `⚠ YOUR CHANGES ARE NOT SAVING — ${health.message || 'database write failed'}. Redo the change once this clears.`}
       <span style={{ fontWeight:500, opacity:.9 }}> Anything edited while this bar is showing will be lost.</span>
     </div>
   );

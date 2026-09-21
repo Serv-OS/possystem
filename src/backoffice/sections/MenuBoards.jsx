@@ -57,6 +57,7 @@ export default function MenuBoards() {
   const [links, setLinks] = useState([]);
   const [tz, setTz] = useState(null);              // venue timezone (platform locations row); null = read failed
   const [menusOk, setMenusOk] = useState(true);    // false = menus could not be read; the preview shows everything
+  const [catsErr, setCatsErr] = useState('');      // why the category list is empty, when it is
   const [editing, setEditing] = useState(null);   // board object (new or existing)
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
@@ -83,6 +84,11 @@ export default function MenuBoards() {
         fetchMenus(id).catch(() => null), fetchMenuCategoryLinks(id).catch(() => null), getLocationConfig(id).catch(() => null),
       ]);
       setScreens(b?.data || []);
+      // WHY there is nothing to offer, not just THAT there is nothing (21 Sep
+      // 2026: Huddersfield's four categories were never in the database, so
+      // this builder said "add some below" with nothing below and the operator
+      // had no way to tell an empty venue from a failed read).
+      setCatsErr(c?.error ? (c.error.message || 'could not be read') : '');
       setAllCats(c?.data || []);
       setCats((c?.data || []).filter(x => !x.parent_id && !x.is_special).sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
       setItems(it?.data || []);
@@ -203,7 +209,7 @@ export default function MenuBoards() {
   if (!locId) return <div style={S.empty}>Pick a location to manage its menu boards.</div>;
 
   if (editing) return (
-    <Editor board={editing} setBoard={setEditing} cats={cats} itemsByCat={itemsByCat} six={six}
+    <Editor board={editing} setBoard={setEditing} cats={cats} catsErr={catsErr} itemsByCat={itemsByCat} six={six}
       allCats={allCats} menus={menus} links={links} tz={tz} menusOk={menusOk}
       onSave={() => save(false)} onPublish={() => save(true)} onCancel={() => setEditing(null)}
       onUpload={upload} busy={busy} err={err} />
@@ -286,7 +292,7 @@ export default function MenuBoards() {
   );
 }
 
-function Editor({ board, setBoard, cats, itemsByCat, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
+function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
   const set = (patch) => setBoard(b => ({ ...b, ...patch }));
   const setLayout = (patch) => setBoard(b => ({ ...b, layout: { ...b.layout, ...patch } }));
   const setDisp = (patch) => setBoard(b => ({ ...b, display_options: { ...b.display_options, ...patch } }));
@@ -356,7 +362,15 @@ function Editor({ board, setBoard, cats, itemsByCat, six, allCats = [], menus = 
           {board.mode === 'menu' ? (
             <>
               <Section title="Categories on this screen" desc="Drag to reorder. “Full width” makes a category span the whole board (a hero); the rest auto-balance into columns.">
-                {blocks.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>No categories yet — add some below.</div>}
+                {blocks.length === 0 && (
+                  <div style={{ fontSize: 12, color: catsErr ? 'var(--red)' : 'var(--t4)', lineHeight: 1.5 }}>
+                    {catsErr
+                      ? `This venue’s menu could not be read (${catsErr}). Check you are on the right venue, or refresh and sign in again.`
+                      : cats.length === 0
+                        ? 'This venue has no menu categories, so there is nothing to put on the board yet. Build them in Menu first, then come back.'
+                        : 'No categories on this screen yet — add some below.'}
+                  </div>
+                )}
                 {blocks.map((blk, i) => (
                   <div key={blk.categoryId} draggable
                     onDragStart={() => setDragI(i)}
