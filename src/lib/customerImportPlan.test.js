@@ -800,8 +800,32 @@ test('nothing is written when the stamp card is missing or somebody elses', () =
   assert.ok(FN.includes("programmeCheck({ rows: ready, programId, program, companyId })"), 'the card is checked against this company');
 });
 
-test('the importer never deletes anything', () => {
-  assert.ok(!FN.includes('.delete('), 'no import ever deletes a customer, a consent or a stamp');
+test('the importer never deletes anything a customer owns', () => {
+  // This used to read "no .delete( anywhere", which was the right rule while
+  // the importer only ever added. v5.9.37 brought in points and gift cards, and
+  // both need to be able to TAKE BACK SOMETHING THIS SAME CALL JUST WROTE:
+  //
+  //   * a points claim whose balance update then lost a race. Leaving the claim
+  //     would lock those points out for ever, because the guard would see them
+  //     as already imported.
+  //   * a gift card whose opening entry failed. A card with no history is money
+  //     with no record of where it came from; gift-issue takes it back the same
+  //     way.
+  //
+  // So the rule is now the thing it always meant: nothing a customer owns is
+  // ever deleted, and every delete that does exist is a rollback of this call's
+  // own row, named here.
+  const forbidden = ['customers', 'customer_consents', 'stamp_transactions', 'customer_stamp_cards', 'customer_loyalty'];
+  for (const table of forbidden) {
+    const pattern = new RegExp("from\\('" + table + "'\\)[\\s\\S]{0,120}?\\.delete\\(");
+    assert.ok(!pattern.test(FN), 'no import ever deletes from ' + table);
+  }
+  const deletes = FN.match(/\.delete\(/g) || [];
+  assert.equal(deletes.length, 2, 'exactly the two rollbacks below, and nothing else');
+  assert.ok(/from\('loyalty_transactions'\)\.delete\(\)\.eq\('id', \(claimed as \{ id: string \}\)\.id\)/.test(FN),
+    'the points claim is taken back when the balance did not move');
+  assert.ok(/from\('gift_cards'\)\.delete\(\)\.eq\('id', cardId\)/.test(FN),
+    'a gift card with no opening entry is taken back');
 });
 
 test('a bulk patch that is refused is SAID, never quietly swallowed', () => {

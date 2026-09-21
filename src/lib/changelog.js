@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.37',
+    date: '21 Sep 2026',
+    items: [
+      'THE IMPORTER NOW BRINGS IN POINTS AND GIFT CARD BALANCES, not just stamps. Put a points column, or a gift card code and balance, in the file and they come across with the customer. Points were deliberately thrown away before, because a points balance landing in the stamps column hands out free coffee; they have their own column now, with their own limit.',
+      'GIFT CARD MONEY IS TREATED AS MONEY. The screen tells you the total on the cards before you press the button, and again afterwards, because that money can be spent at the till the moment the import finishes. A card code we already hold is never topped up: we cannot tell a re-uploaded file from a card that has been spent since, and adding to it would invent money. The same code twice in one file keeps the person on both rows and the card on the first, and says so.',
+      'A FILE CANNOT DOUBLE A BALANCE. Points follow the same rule stamps already did: anybody an import has credited before is left alone, whatever batch the second file came under, and the screen says how many that was.',
+      'Money is read the way other systems write it: 12.50, 12,50, $5 and 1,250.00 all land as the right number of pence, and anything that looks like a date or a spend figure in the money column stops the row instead of going in.',
+    ],
+  },
+  {
     v: '5.9.36',
     date: '21 Sep 2026',
     items: [

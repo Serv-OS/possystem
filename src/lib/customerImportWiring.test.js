@@ -311,7 +311,10 @@ test('the Coffee Boy file off 5Loyalty imports cleanly, end to end', () => {
   assert.equal(parsed.hasPhone, true);
   assert.equal(parsed.rows.length, 5);
   assert.deepEqual(parsed.unknown, [], 'we know every column in their export');
-  assert.deepEqual(parsed.missing, [], 'and their export has every column we ask for');
+  // A file is not required to carry every column we offer. 5Loyalty has no
+  // points and no gift cards, so those three are simply absent, and `missing`
+  // is a note to the operator rather than a refusal.
+  assert.deepEqual(parsed.missing, ['points', 'gift_card_code', 'gift_card_balance']);
 
   // The edge function strips the posted rows first, exactly as it does live.
   const checked = validateRows(rawRowsOnly(parsed.rows), OPTS);

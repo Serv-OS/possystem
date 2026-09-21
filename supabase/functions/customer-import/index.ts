@@ -48,8 +48,10 @@
 // Boy's file going into another brand because somebody picked the wrong venue.
 //
 // Where things land:
-//   Ops       customers, customer_consents, stamp_transactions, import_batches
-//   Platform  customer_loyalty, customer_stamp_cards
+//   Ops       customers, customer_consents, stamp_transactions, import_batches,
+//             loyalty_transactions (the points ledger)
+//   Platform  customer_loyalty (the points balance), customer_stamp_cards,
+//             gift_cards, gift_card_transactions
 //
 // THE RULES, all of them somebody's account:
 //   1. Match on PHONE first, then email, under every shape that phone could
@@ -68,6 +70,12 @@
 //      raw template cells before validateRows sees it.
 //   7. Two rows, one customer: the first row wins and the second is named.
 //      Postgres refuses a bulk upsert that touches one row twice (21000).
+//   9. Never double a points balance. Same guard as stamps, on the Ops points
+//      ledger, whose idempotency_key is unique across the table.
+//  10. Never top up a gift card we already have. The guard is the card CODE
+//      itself. We cannot tell a re-upload from a card that has been spent
+//      since, and adding money to a spent card invents it, so an existing code
+//      is left exactly as it is and named.
 //
 // The decisions live in _shared/customerImportPlan.ts and the file reading in
 // _shared/customerImport.ts, both pure and both under test. This file only
@@ -84,10 +92,16 @@ import {
   consentDecision, stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine,
   emptyProgress, skipRow, failRow, runNote, chunkAnswer, staffVerdict, isBatchId, batchRecord, sameAsReason,
   withheldLines, deletedLine, emailIlikeFilter, EMAIL_READ_CHUNK, parseStaffEmails, STAFF_EMAILS_ENV, IMPORT_SWITCHED_OFF, batchTableGate, patchChanges,
+  pointsKey, pointsOwed, pointsSkipped, alreadyPointedLine,
+  giftKey, giftRowsOf, giftSplit, alreadyCardedLine,
 } from '../_shared/customerImportPlan.ts';
 import type { Decision, ExistingCustomer, Progress } from '../_shared/customerImportPlan.ts';
 import { generateMemberCode, generateReferralCode, getOrCreateConfig } from '../_shared/loyalty-utils.ts';
+import { normalizeCode, codeLast4, hmacLookup, hashValue, generateHmacSecret } from '../_shared/gift-card-utils.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+
+/** Every points row an import has ever written, from any batch. */
+const POINTS_KEY_LIKE = 'import:%';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -297,6 +311,9 @@ Deno.serve(async (req) => {
       country: country.country,
       country_source: country.source,
       country_label: country.label,
+      // The venue's own currency, so the screen can say a gift card total in the
+      // money the customer will actually spend.
+      currency: platformLoc?.currency ?? null,
       programmes: Array.isArray(progs) ? progs : [],
       // False until 20260918_OPS_customer_import_batches.sql has been run. The
       // screen shows one blocking line and the import action refuses.
@@ -732,7 +749,187 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── 6. the batch totals, so this run can be found again ───────────────────
+  // ── 6. points ─────────────────────────────────────────────────────────────
+  // Same shape as stamps, and for the same reasons. The ledger row is the claim
+  // (loyalty_transactions.idempotency_key is UNIQUE across the table), and the
+  // guard looks for ANY import row for that customer from ANY batch, because a
+  // corrected second export is the normal human move.
+  //
+  // The balance moves with a compare and swap on the value we just read, the
+  // same way loyalty-earn does it. If somebody spent points between our read and
+  // our write, the swap fails, and we say the row is short rather than writing a
+  // balance computed from a number that is no longer true.
+  {
+    const owedAll = pointsOwed(decisions, new Set<string>());
+    if (owedAll.length) {
+      const credited = new Set<string>();
+      const ids = owedAll.map((d) => String(d.customerId));
+      for (const slice of chunk(ids, READ_CHUNK)) {
+        const { data } = await opsAdmin.from('loyalty_transactions')
+          .select('customer_id')
+          .eq('company_id', companyId)
+          .like('idempotency_key', POINTS_KEY_LIKE)
+          .in('customer_id', slice);
+        for (const r of (Array.isArray(data) ? data : []) as Array<{ customer_id: string }>) credited.add(String(r.customer_id));
+      }
+      const owed = pointsOwed(decisions, credited);
+      progress.alreadyPointed += pointsSkipped(decisions, credited).length;
+      const skippedLine = alreadyPointedLine(progress.alreadyPointed);
+      if (skippedLine) runNote(progress, skippedLine);
+
+      // What each of them holds now. A member row was made in section 4, so a
+      // missing row here means the enrolment failed and the points wait.
+      const balances = new Map<string, { id: string; points_balance: number; points_earned_total: number }>();
+      for (const slice of chunk(owed.map((d) => String(d.customerId)), READ_CHUNK)) {
+        const { data } = await platformAdmin.from('customer_loyalty')
+          .select('id, customer_id, points_balance, points_earned_total')
+          .eq('company_id', companyId).in('customer_id', slice);
+        for (const m of (Array.isArray(data) ? data : []) as Array<{ id: string; customer_id: string; points_balance: number; points_earned_total: number }>) {
+          balances.set(String(m.customer_id), { id: String(m.id), points_balance: Number(m.points_balance) || 0, points_earned_total: Number(m.points_earned_total) || 0 });
+        }
+      }
+
+      for (const d of owed) {
+        const id = String(d.customerId);
+        const points = Number(d.row.points) || 0;
+        const member = balances.get(id);
+        if (!member) { failRow(progress, d.rowNumber, 'We could not find their loyalty card to put the points on.'); continue; }
+        const before = member.points_balance;
+        const after = before + points;
+
+        const claim = {
+          customer_id: id,
+          company_id: companyId,
+          location_id: opsLocationId,
+          type: 'adjust',
+          points,
+          balance_after: after,
+          source: 'manual',
+          channel: 'backoffice',
+          note: 'Imported from another system',
+          idempotency_key: pointsKey(batchId, id),
+          created_at: now,
+        };
+        const { data: claimed, error: claimErr } = await opsAdmin.from('loyalty_transactions')
+          .insert(claim).select('id').single();
+        if (claimErr) {
+          // A duplicate means another run already claimed these points. That is
+          // the guard doing its job, not a failure.
+          if (!isDuplicate(claimErr)) failRow(progress, d.rowNumber, 'We could not record the points. ' + claimErr.message);
+          continue;
+        }
+
+        const { data: moved, error: moveErr } = await platformAdmin.from('customer_loyalty')
+          .update({ points_balance: after, points_earned_total: member.points_earned_total + points, updated_at: now })
+          .eq('id', member.id).eq('points_balance', before).select('id');
+        if (moveErr || !Array.isArray(moved) || moved.length === 0) {
+          // Put the claim back so the next run can try again. Leaving it would
+          // lock these points out for ever.
+          await opsAdmin.from('loyalty_transactions').delete().eq('id', (claimed as { id: string }).id);
+          failRow(progress, d.rowNumber, 'Their points balance changed while we were writing. Import this row again.');
+          continue;
+        }
+        progress.pointed++;
+      }
+    }
+  }
+
+  // ── 7. gift cards ─────────────────────────────────────────────────────────
+  // This is the only part of an import that creates SPENDABLE MONEY, so it is
+  // the most careful.
+  //
+  // The guard is the card code itself, hashed the same way the till hashes it
+  // (code_lookup, the one unique thing about a card). If a card with that code
+  // already exists we leave it EXACTLY as it is: we cannot tell a re-upload from
+  // a card that has been spent since, and topping it up would invent money.
+  //
+  // A card is linked to its customer by recipient_phone, because that is the
+  // only link gift cards have (see _shared/giftCardMatch.ts: matching on name or
+  // email were both live holes, fixed 18 Sep 2026).
+  {
+    const cardRows = giftRowsOf(decisions);
+    if (cardRows.length) {
+      const secret = await giftSecretFor(companyId);
+      if (!secret) {
+        runNote(progress, 'We could not set up gift cards for this company, so ' + cardRows.length + ' card balances were not imported.');
+      } else {
+        const lookups = new Map<number, { lookup: string; code: string }>();
+        for (const d of cardRows) {
+          const code = normalizeCode(String(d.row.giftCardCode ?? ''));
+          lookups.set(d.rowNumber, { lookup: await hmacLookup(code, secret), code });
+        }
+        const lookupOf = (d: Decision) => lookups.get(d.rowNumber)?.lookup ?? '';
+
+        const have = new Set<string>();
+        const allLookups = cardRows.map((d) => lookupOf(d)).filter(Boolean);
+        for (const slice of chunk(allLookups, READ_CHUNK)) {
+          const { data } = await platformAdmin.from('gift_cards')
+            .select('code_lookup').in('code_lookup', slice);
+          for (const c of (Array.isArray(data) ? data : []) as Array<{ code_lookup: string }>) have.add(String(c.code_lookup));
+        }
+
+        const split = giftSplit(cardRows, have, lookupOf);
+        progress.alreadyCarded += split.already.length;
+        const cardLine = alreadyCardedLine(progress.alreadyCarded);
+        if (cardLine) runNote(progress, cardLine);
+
+        for (const d of split.create) {
+          const found = lookups.get(d.rowNumber);
+          if (!found || !found.lookup) { failRow(progress, d.rowNumber, 'We could not read that gift card code.'); continue; }
+          const minor = Number(d.row.giftCardMinor) || 0;
+          const hash = await hashValue(found.code);
+          const { data: card, error: cardErr } = await platformAdmin.from('gift_cards').insert({
+            company_id: companyId,
+            code_hash: hash,
+            code_lookup: found.lookup,
+            code_last4: codeLast4(found.code),
+            code_plain: found.code,
+            initial_amount_minor: minor,
+            balance_minor: minor,
+            status: 'active',
+            source: 'import',
+            batch_id: batchId,
+            batch_name: 'Customer import',
+            recipient_name: d.row.name ?? null,
+            recipient_phone: d.row.phone ?? null,
+            recipient_email: d.row.email ?? null,
+            note: 'Imported from another system',
+            issued_at: now,
+          }).select('id').single();
+          if (cardErr) {
+            // Another slice of this same file may have just made it.
+            if (isDuplicate(cardErr)) { progress.alreadyCarded++; continue; }
+            failRow(progress, d.rowNumber, 'We could not create their gift card. ' + cardErr.message);
+            continue;
+          }
+
+          const cardId = (card as { id: string }).id;
+          const { error: txErr } = await platformAdmin.from('gift_card_transactions').insert({
+            card_id: cardId,
+            company_id: companyId,
+            type: 'issue',
+            amount_minor: minor,
+            balance_after_minor: minor,
+            channel: 'backoffice',
+            idempotency_key: giftKey(batchId, d.customerId),
+            note: 'Imported from another system',
+            created_at: now,
+          });
+          if (txErr) {
+            // A card with no opening entry is money with no history. Take it
+            // back off rather than leave that behind (same as gift-issue).
+            await platformAdmin.from('gift_cards').delete().eq('id', cardId);
+            failRow(progress, d.rowNumber, 'We could not record how their gift card was created, so we did not make it. ' + txErr.message);
+            continue;
+          }
+          progress.cardsMade++;
+          progress.cardsMinor += minor;
+        }
+      }
+    }
+  }
+
+  // ── 8. the batch totals, so this run can be found again ───────────────────
   let batchTable = true;
   let totals = {
     row_count: progress.rows,
@@ -773,3 +970,23 @@ Deno.serve(async (req) => {
     counts,
   });
 });
+
+/**
+ * The company's gift card secret, made if it has never issued a card before.
+ * Same shape as gift-issue: without it we cannot write a code_lookup, and
+ * without a code_lookup the till can never find the card.
+ */
+async function giftSecretFor(companyId: string): Promise<string> {
+  const { data } = await platformAdmin.from('gift_brand_config')
+    .select('hmac_secret').eq('company_id', companyId).maybeSingle();
+  const existing = String((data as { hmac_secret?: string } | null)?.hmac_secret ?? '');
+  if (existing) return existing;
+  const fresh = generateHmacSecret();
+  const { error } = await platformAdmin.from('gift_brand_config')
+    .insert({ company_id: companyId, hmac_secret: fresh });
+  if (!error) return fresh;
+  // Another call may have made it a moment ago.
+  const { data: again } = await platformAdmin.from('gift_brand_config')
+    .select('hmac_secret').eq('company_id', companyId).maybeSingle();
+  return String((again as { hmac_secret?: string } | null)?.hmac_secret ?? '');
+}

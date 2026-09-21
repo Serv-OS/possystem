@@ -39,6 +39,23 @@ export const CHUNK_SIZE = 200;
 /** How many rows go to the server in one preview request (it writes nothing). */
 export const PREVIEW_CHUNK_SIZE = 500;
 
+/**
+ * Smaller slices when the file carries gift cards.
+ *
+ * Every card is hashed with argon2id, the same way the till hashes a code, and
+ * that is deliberately expensive: tens of milliseconds each. 200 of them in one
+ * request is a minute of work and a request that may never come back, so a file
+ * with cards goes in smaller pieces. It is the same total work, in portions the
+ * server can finish.
+ */
+export const GIFT_CHUNK_SIZE = 50;
+
+/** How big a slice this file should go in. */
+export function chunkSizeFor(summary) {
+  const cards = summary && Number(summary.withGiftCards);
+  return Number.isFinite(cards) && cards > 0 ? GIFT_CHUNK_SIZE : CHUNK_SIZE;
+}
+
 /** How many rows the preview table shows. */
 export const PREVIEW_ROWS = 20;
 
@@ -157,8 +174,26 @@ export function confirmLines(summary) {
   const stamps = Number(s.stampsTotal) || 0;
   const rewards = Number(s.rewardsTotal) || 0;
   if (stamps > 0 || rewards > 0) lines.push('Stamps going on: ' + count(stamps, 'stamp') + ' and ' + count(rewards, 'free item') + '.');
+  const points = Number(s.pointsTotal) || 0;
+  if (points > 0) lines.push('Points going on: ' + count(points, 'point') + ' across ' + count(Number(s.withPoints) || 0, 'person', 'people') + '.');
+  // The money line is last and says the total out loud, because this is the one
+  // thing here that becomes spendable at the till the moment the button is
+  // pressed. Nobody should press it without having read the figure.
+  const cards = Number(s.withGiftCards) || 0;
+  if (cards > 0) {
+    lines.push('Gift cards: ' + count(cards, 'card') + ' carrying ' + moneyLine(Number(s.giftMinorTotal) || 0, s.currency) + ' in total, spendable at the till straight away.');
+  }
   lines.push('It cannot be undone from this screen.');
   return lines;
+}
+
+/** Pence or cents as money, in the venue's currency. */
+export function moneyLine(minor, currency) {
+  const n = Number(minor);
+  const safe = Number.isFinite(n) ? n : 0;
+  const code = String(currency || 'GBP').toUpperCase();
+  const symbol = code === 'USD' ? '$' : code === 'EUR' ? '€' : '£';
+  return symbol + (safe / 100).toFixed(2);
 }
 
 /** The confirm as one block of text, with the company named first. */
@@ -520,6 +555,11 @@ export function mergeResult(sofar, next) {
     stamped: num(a.stamped) + num(c.stamped),
     enrolled: num(a.enrolled) + num(c.enrolled),
     alreadyStamped: num(a.alreadyStamped) + num(c.already_stamped) + num(c.alreadyStamped),
+    pointed: num(a.pointed) + num(c.pointed),
+    alreadyPointed: num(a.alreadyPointed) + num(c.already_pointed) + num(c.alreadyPointed),
+    cardsMade: num(a.cardsMade) + num(c.cards_made) + num(c.cardsMade),
+    cardsMinor: num(a.cardsMinor) + num(c.cards_minor) + num(c.cardsMinor),
+    alreadyCarded: num(a.alreadyCarded) + num(c.already_carded) + num(c.alreadyCarded),
     upToDate: num(a.upToDate) + num(c.up_to_date) + num(c.upToDate),
     deleted: num(a.deleted) + num(c.deleted),
     consentWithheld: num(a.consentWithheld) + num(c.consent_withheld) + num(c.consentWithheld),

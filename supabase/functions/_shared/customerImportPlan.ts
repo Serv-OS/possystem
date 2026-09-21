@@ -1099,6 +1099,120 @@ export function stampsSkipped(decisions: unknown, alreadyStamped: unknown): Deci
   return out;
 }
 
+// ── points and gift cards (v5.9.37) ─────────────────────────────────────────
+//
+// Both follow the stamp rules, because the stamp rules were written after the
+// mistakes had already been made:
+//   * the guard looks for ANY import row for that customer, from ANY batch,
+//     because re-uploading a corrected file is the normal human move and the
+//     naive guard doubles the balance;
+//   * what we SKIP is handed back and said out loud, because the first version
+//     of the stamp guard dropped balances silently and reported success.
+//
+// Points and money are not the same risk. Points are a number in our own system
+// and can be put right. A gift card is money a customer is holding a plastic
+// card for, so the card guard is the CODE itself, which is the only thing about
+// a card that is unique, and an existing code is never topped up: we leave it
+// exactly as it is and name it.
+
+/** The key that claims one customer's points for one import. */
+export function pointsKey(batchId: unknown, customerId: unknown): string {
+  return 'import:' + String(batchId ?? '') + ':' + String(customerId ?? '') + ':points';
+}
+
+/** The key that claims the first movement on an imported gift card. */
+export function giftKey(batchId: unknown, customerId: unknown): string {
+  return 'import:' + String(batchId ?? '') + ':' + String(customerId ?? '') + ':gift';
+}
+
+/** The people whose points we should credit: a balance in the file, and no
+ *  import has ever credited them before. */
+export function pointsOwed(decisions: unknown, alreadyCredited: unknown): Decision[] {
+  const list: Decision[] = Array.isArray(decisions) ? (decisions as Decision[]) : [];
+  const done: Set<string> = alreadyCredited instanceof Set
+    ? (alreadyCredited as Set<string>)
+    : new Set((Array.isArray(alreadyCredited) ? alreadyCredited : []).map((v) => String(v)));
+  const out: Decision[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    if (!d || !d.row || d.verdict === 'blocked' || !d.customerId) continue;
+    if ((Number(d.row.points) || 0) <= 0) continue;
+    if (done.has(String(d.customerId))) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+/** The other half: people we left alone because an import already credited them. */
+export function pointsSkipped(decisions: unknown, alreadyCredited: unknown): Decision[] {
+  const list: Decision[] = Array.isArray(decisions) ? (decisions as Decision[]) : [];
+  const done: Set<string> = alreadyCredited instanceof Set
+    ? (alreadyCredited as Set<string>)
+    : new Set((Array.isArray(alreadyCredited) ? alreadyCredited : []).map((v) => String(v)));
+  const out: Decision[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    if (!d || !d.row || d.verdict === 'blocked' || !d.customerId) continue;
+    if ((Number(d.row.points) || 0) <= 0) continue;
+    if (!done.has(String(d.customerId))) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+/** The line the operator reads when we left points alone. Empty when none. */
+export function alreadyPointedLine(count: unknown): string {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n < 1) return '';
+  const people = n === 1 ? '1 of these people' : n + ' of these people';
+  return 'We already imported points for ' + people + ', so we left their balance alone.';
+}
+
+/** Every row that carries a gift card, whatever we later decide about it. */
+export function giftRowsOf(decisions: unknown): Decision[] {
+  const list: Decision[] = Array.isArray(decisions) ? (decisions as Decision[]) : [];
+  const out: Decision[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    if (!d || !d.row || d.verdict === 'blocked' || !d.customerId) continue;
+    if (!d.row.giftCardCode) continue;
+    if ((Number(d.row.giftCardMinor) || 0) <= 0) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Split the gift cards into the ones to create and the ones already on the
+ * system, by their code. `existing` is the set of code lookups we found.
+ *
+ * An existing code is NEVER topped up. We cannot tell a re-upload from a card
+ * that has been spent since, and adding money to a spent card invents it.
+ */
+export function giftSplit(rows: unknown, existing: unknown, lookupOf: (d: Decision) => string): { create: Decision[]; already: Decision[] } {
+  const list: Decision[] = Array.isArray(rows) ? (rows as Decision[]) : [];
+  const have: Set<string> = existing instanceof Set
+    ? (existing as Set<string>)
+    : new Set((Array.isArray(existing) ? existing : []).map((v) => String(v)));
+  const create: Decision[] = [];
+  const already: Decision[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    const key = String(lookupOf(d) || '');
+    if (key && have.has(key)) already.push(d);
+    else create.push(d);
+  }
+  return { create, already };
+}
+
+/** The line the operator reads when cards were already on the system. */
+export function alreadyCardedLine(count: unknown): string {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n < 1) return '';
+  const cards = n === 1 ? '1 gift card' : n + ' gift cards';
+  return 'We already had ' + cards + ' with that code, so we left the balance exactly as it is.';
+}
+
 /** The line the operator reads when we left cards alone. Empty when none. */
 export function alreadyStampedLine(count: unknown): string {
   const n = Math.max(0, Math.floor(Number(count) || 0));
@@ -1119,6 +1233,16 @@ export interface Progress {
   skipped: number;
   stamped: number;
   enrolled: number;
+  /** People whose points balance we credited from the file. */
+  pointed: number;
+  /** People we left alone because an import already credited them. */
+  alreadyPointed: number;
+  /** Gift cards created from the file. */
+  cardsMade: number;
+  /** The money those cards carry, in pence or cents. */
+  cardsMinor: number;
+  /** Cards we left alone because that code is already on the system. */
+  alreadyCarded: number;
   /** People whose cards we left alone because an import already stamped them. */
   alreadyStamped: number;
   /** People we already had, with nothing in the file to fill in. Never counted as updated. */
@@ -1138,6 +1262,7 @@ export interface Progress {
 export function emptyProgress(): Progress {
   return {
     rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, upToDate: 0, deleted: 0, consentWithheld: 0,
+    pointed: 0, alreadyPointed: 0, cardsMade: 0, cardsMinor: 0, alreadyCarded: 0,
     skippedRows: [], failed: [], notes: [],
   };
 }
@@ -1174,6 +1299,11 @@ export function chunkAnswer(progress: Progress): Record<string, unknown> {
     stamped: progress.stamped,
     enrolled: progress.enrolled,
     already_stamped: progress.alreadyStamped,
+    pointed: progress.pointed,
+    already_pointed: progress.alreadyPointed,
+    cards_made: progress.cardsMade,
+    cards_minor: progress.cardsMinor,
+    already_carded: progress.alreadyCarded,
     up_to_date: progress.upToDate,
     deleted: progress.deleted,
     consent_withheld: progress.consentWithheld,

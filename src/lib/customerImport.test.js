@@ -113,7 +113,8 @@ test('parseCsv keeps empty cells in a row that has any content', () => {
 test('the template columns are the agreed list, in order', () => {
   assert.deepEqual(TEMPLATE_COLUMNS, [
     'name', 'first_name', 'last_name', 'phone', 'email',
-    'stamps', 'rewards_unused', 'marketing_opt_in', 'opt_in_date',
+    'stamps', 'rewards_unused', 'points', 'gift_card_code', 'gift_card_balance',
+    'marketing_opt_in', 'opt_in_date',
     'opt_in_source', 'signed_up_date', 'birthday', 'external_id', 'notes',
   ]);
 });
@@ -164,7 +165,7 @@ test('csvEscape neutralises a formula and quotes what needs quoting', () => {
 });
 
 test('a file we write can be read straight back', () => {
-  const text = toCsv([TEMPLATE_COLUMNS, ['Smith, Jane', 'Jane', 'Smith', '07700 900123', 'j@x.com', '2', '0', 'yes', '', '', '', '', '', 'said "no sugar"']]);
+  const text = toCsv([TEMPLATE_COLUMNS, ['Smith, Jane', 'Jane', 'Smith', '07700 900123', 'j@x.com', '2', '0', '', '', '', 'yes', '', '', '', '', '', 'said "no sugar"']]);
   const read = readCsv(text);
   assert.equal(read.rows.length, 1);
   assert.equal(read.rows[0].name, 'Smith, Jane');
@@ -187,15 +188,29 @@ test('headers are matched by name whatever the punctuation or case', () => {
   assert.equal(canonicalHeader(null), '');
 });
 
-test('points are recognised and then ignored, never read as stamps', () => {
-  assert.equal(canonicalHeader('Points'), '');
-  assert.equal(isIgnoredHeader('Points'), true);
-  assert.equal(isIgnoredHeader('Loyalty Points'), true);
+test('points are read as POINTS and never as stamps', () => {
+  // Until 21 Sep 2026 points were deliberately thrown away, because a points
+  // balance landing in the stamps column hands out free coffee. They are read
+  // now, into their own column, and the stamps column is still untouched.
+  assert.equal(canonicalHeader('Points'), 'points');
+  assert.equal(canonicalHeader('Loyalty Points'), 'points');
+  assert.equal(isIgnoredHeader('Points'), false);
   assert.equal(isIgnoredHeader('Stamps'), false);
   const head = mapHeaders(['Mobile', 'Points', 'Shoe size']);
-  assert.deepEqual(head.ignored, ['Points']);
+  assert.deepEqual(head.ignored, []);
   assert.deepEqual(head.unknown, ['Shoe size']);
-  assert.equal(head.index.stamps, undefined);
+  assert.equal(head.index.points, 1);
+  assert.equal(head.index.stamps, undefined, 'points must never map to the stamps column');
+});
+
+test('a bare "balance" column is still refused, because it could be either', () => {
+  // One export means points by it, the next means money on a gift card. Guessing
+  // either hands out free coffee or invents cash, so it stays ignored and the
+  // operator renames it.
+  assert.equal(canonicalHeader('Balance'), '');
+  assert.equal(isIgnoredHeader('Balance'), true);
+  assert.equal(canonicalHeader('Points Balance'), 'points');
+  assert.equal(canonicalHeader('Gift Card Balance'), 'gift_card_balance');
 });
 
 test('column order does not matter and a repeated column is reported', () => {
@@ -669,7 +684,7 @@ const MESSY = [
 test('the messy file is read the way an operator would expect', () => {
   const read = readCsv(MESSY);
   assert.equal(read.found, true);
-  assert.deepEqual(read.ignored, ['Points']);
+  assert.deepEqual(read.ignored, [], 'Points is a real column since v5.9.37');
   assert.deepEqual(read.unknown, ['Shoe size']);
   assert.ok(read.missing.includes('birthday'));
   assert.equal(read.rows.length, 12, 'the blank line is not a person');
