@@ -73,6 +73,45 @@ export function validateProfile(profile) {
 }
 
 /**
+ * An ADDED-ON rate line: a percentage charged on top of the price (not an
+ * inclusive extraction, not a flat per-unit amount). v5.9.12: the only kind of
+ * line the check-level basis (discounts, service charge, delivery fee) touches.
+ */
+export function isAddedOnRateLine(profileLine) {
+  return !!profileLine && profileLine.lineType !== 'per_unit' && profileLine.mode !== 'inclusive';
+}
+
+/**
+ * v5.9.12: WHAT a tax line is charged on, with the US defaults applied ONCE here
+ * (the row normaliser, the legacy adapter, the mirror check and the Back Office
+ * builder all read this, never their own copy of the defaults).
+ *
+ *   taxBasis          'post_discount' (default for added-on rate lines): item
+ *                     discounts, check discounts, auto discounts, promo codes and
+ *                     loyalty rewards reduce the taxed amount, as store discounts do
+ *                     in most US states. 'pre_discount' taxes the menu price.
+ *   taxServiceCharge  default ON for added-on rate lines: the line also taxes its
+ *                     share of a mandatory service charge (New York, California and
+ *                     most states tax a mandatory service charge; a voluntary tip is
+ *                     never taxed and never reaches the engine).
+ *   taxDeliveryFee    default OFF: the line also taxes its share of the delivery
+ *                     fee. State rules differ, so the operator switches it on.
+ *
+ * An explicit value always wins. INCLUSIVE and PER-UNIT lines never use any of
+ * this: inclusive VAT is extracted from the shelf price exactly as before (the
+ * UK lock), and a per-unit levy is a flat amount per item.
+ */
+export function lineBasisSettings(profileLine) {
+  const addedOn = isAddedOnRateLine(profileLine);
+  const b = profileLine?.taxBasis;
+  return {
+    taxBasis: (b === 'pre_discount' || b === 'post_discount') ? b : (addedOn ? 'post_discount' : 'pre_discount'),
+    taxServiceCharge: typeof profileLine?.taxServiceCharge === 'boolean' ? profileLine.taxServiceCharge : addedOn,
+    taxDeliveryFee: typeof profileLine?.taxDeliveryFee === 'boolean' ? profileLine.taxDeliveryFee : false,
+  };
+}
+
+/**
  * Build the BINDING resolution cascade as a resolveProfileId function.
  * Order (first hit wins):
  *   1. item tax_profile_id
@@ -153,7 +192,14 @@ export function makeCascadeResolver({
  * @param {Object}   args
  * @param {Array}    args.lines  order lines:
  *   { price, qty, discountedPrice?, itemId, categoryId?, voided?,
+ *     netValue?, serviceShare?, deliveryShare?,
  *     legacy: { taxRateId, taxOverrides } }
+ *   v5.9.12 check-level basis (taxBasis.js allocateCheckBasis fills these):
+ *     netValue      the line's value after item AND check discounts (whole line,
+ *                   not per unit) - taxed by post_discount added-on rate lines
+ *     serviceShare  the line's share of the service charge
+ *     deliveryShare the line's share of the delivery fee
+ *   Absent = exactly the pre-v5.9.12 basis (price x qty).
  * @param {Object}   args.profilesById  profileId -> profile:
  *   { id, name, rounding: {mode,level}, lines: [profileLine] } where profileLine =
  *   { id, name, jurisdiction?, lineType: 'rate'|'per_unit', rate, flatAmount,
@@ -168,6 +214,9 @@ export function makeCascadeResolver({
  *   inclusiveExtractedTotal,  // rounded - VAT etc. already inside prices (display/records)
  *   lines: [{ lineId, name, jurisdiction, mode, rate, amount }],  // rounded per line
  *   legacyBreakdown: { totalTax, breakdown: [{ rate, tax }] }     // RAW, mirrors calculateOrderTax
+ *   lineTaxes: [{ exclusive, inclusive }],  // RAW per input order line (same order as
+ *                                           // `lines`, voided/untaxed = 0) - refunds use it
+ *   checkBasisUsed,           // true when the check-level basis changed any added-on amount
  * }
  */
 export function computeTax({
@@ -185,8 +234,15 @@ export function computeTax({
 
   // Accumulator per profile line id: raw order-level total + per-order-line-rounded total.
   const acc = new Map();
+  // v5.9.12: raw tax per INPUT order line (refunds return the tax the refunded
+  // line actually carried), and whether the check-level basis moved anything.
+  // service / delivery = the part of `exclusive` charged on the line's share of
+  // the service charge / delivery fee (a part refund returns those separately).
+  const lineTaxes = lines.map(() => ({ exclusive: 0, inclusive: 0, service: 0, delivery: 0 }));
+  let checkBasisUsed = false;
 
-  for (const ol of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const ol = lines[li];
     if (!ol || ol.voided) continue;
     const profileId = resolveProfileId ? resolveProfileId(ol, orderType) : null;
     if (!profileId) continue;
@@ -214,7 +270,27 @@ export function computeTax({
       const unit = (pl.taxBasis === 'post_discount' && ol.discountedPrice != null)
         ? ol.discountedPrice
         : ol.price;
-      const basis = (Number(unit) || 0) * qty;
+      let basis = (Number(unit) || 0) * qty;
+
+      // v5.9.12 CHECK-LEVEL BASIS, added-on rate lines ONLY. Until now every
+      // surface taxed price x qty before any discount and never taxed the service
+      // charge or delivery fee: US checks over-collected whenever a discount
+      // applied and under-collected wherever a mandatory service charge is
+      // taxable. Inclusive lines are deliberately untouched (UK VAT stays
+      // byte-identical) and per-unit lines are a flat amount per item.
+      let svcTaxed = 0;
+      let delTaxed = 0;
+      if (isAddedOnRateLine(pl)) {
+        const s = lineBasisSettings(pl);
+        const before = basis;
+        if (s.taxBasis === 'post_discount' && ol.netValue != null) basis = Number(ol.netValue) || 0;
+        if (s.taxServiceCharge) { svcTaxed = Number(ol.serviceShare) || 0; basis += svcTaxed; }
+        if (s.taxDeliveryFee) { delTaxed = Number(ol.deliveryShare) || 0; basis += delTaxed; }
+        // Only a change in the AMOUNT counts: a 0% added-on line (an exempt rate
+        // typed exclusive) moving its basis changes nothing and must not knock a
+        // venue off the byte-identical parity path.
+        if (Math.abs((basis - before) * (Number(pl.rate) || 0)) > 1e-12) checkBasisUsed = true;
+      }
       const base = basis + (pl.compound ? taxableAccum : 0);
 
       let amount;
@@ -235,6 +311,18 @@ export function computeTax({
       // stays invisible to the sugar levy; Omaha occupation taxable=true feeds
       // the sales line).
       if (pl.taxable) taxableAccum += amount;
+
+      if (pl.lineType !== 'per_unit' && pl.mode === 'inclusive') lineTaxes[li].inclusive += amount;
+      else {
+        lineTaxes[li].exclusive += amount;
+        // The service / delivery share of this amount, in proportion to the basis
+        // (exact for a plain line; for a compound line the prior taxable lines are
+        // taken to share the same mix, which they do when they share the basis).
+        if (basis > 0 && (svcTaxed || delTaxed)) {
+          lineTaxes[li].service += amount * svcTaxed / basis;
+          lineTaxes[li].delivery += amount * delTaxed / basis;
+        }
+      }
 
       const accKey = `${profileId}:${pl.id}`;   // two profiles may reuse a line id (review ADV4)
       let a = acc.get(accKey);
@@ -320,5 +408,7 @@ export function computeTax({
     inclusiveExtractedTotal: roundMinor(inclusiveExtractedTotal),
     lines: outLines,
     legacyBreakdown: { totalTax: legacyTotalTax, breakdown },
+    lineTaxes,
+    checkBasisUsed,
   };
 }

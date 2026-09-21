@@ -6,7 +6,8 @@ import { useStore } from '../../store';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 // v5.7.33: the REAL engine powers the builder's live preview. This is UI-only
 // maths on a sample item; no till or customer page computes with the engine yet.
-import { computeTax, validateProfile } from '../../lib/taxEngine';
+import { computeTax, validateProfile, lineBasisSettings, isAddedOnRateLine } from '../../lib/taxEngine';
+import { isMissingColumnError } from '../../lib/kds/kdsSettings';
 
 const ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive-thru'];
 // Profile lines know about every channel, including collection (scope of the
@@ -60,15 +61,21 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
   };
   const otAll = !Array.isArray(line.orderTypes) || !line.orderTypes.length || line.orderTypes.includes('all');
 
-  const chk = (k, label, helper) => (
+  // v5.9.12: `checked` can be given, for settings whose unset value is a default
+  // (lineBasisSettings) rather than false.
+  const chk = (k, label, helper, checked = line[k] === true) => (
     <div style={{ flex:1, minWidth:180 }}>
       <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:12, fontWeight:600, color:'var(--t2)' }}>
-        <input type="checkbox" checked={line[k] === true} onChange={e => set(k, e.target.checked)}/>
+        <input type="checkbox" checked={checked} onChange={e => set(k, e.target.checked)}/>
         {label}
       </label>
       <div style={{ ...S.helper, marginLeft:22 }}>{helper}</div>
     </div>
   );
+  // v5.9.12: what this line is charged on, with the US defaults applied (the
+  // same function the engine uses, so the screen shows what the till will do).
+  const basis = lineBasisSettings(line);
+  const addedOn = isAddedOnRateLine(line);
 
   return (
     <div style={{ border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:10, background:'var(--bg)' }}>
@@ -136,10 +143,11 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
         </div>
         <div>
           <label style={S.label}>Tax basis</label>
-          <select style={S.select} value={line.taxBasis || 'pre_discount'} onChange={e => set('taxBasis', e.target.value)}>
+          <select style={S.select} value={basis.taxBasis} onChange={e => set('taxBasis', e.target.value)}>
             <option value="pre_discount">Full price, before discounts</option>
             <option value="post_discount">Discounted price the customer actually pays</option>
           </select>
+          {addedOn && <div style={S.helper}>Most US states: discounted price. Item, check, auto, promo and loyalty discounts all count.</div>}
         </div>
       </div>
 
@@ -147,6 +155,15 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
         {chk('compound', 'Compound', 'Also taxes the tax added by earlier lines, not just the item price.')}
         {chk('taxable', 'Taxable', 'Lets later compounding lines charge their tax on this line\'s amount too.')}
       </div>
+
+      {/* v5.9.12: only an added-on percentage line can tax the service charge or
+          delivery fee (inclusive VAT and per-unit levies never do). */}
+      {addedOn && (
+        <div style={{ display:'flex', gap:16, flexWrap:'wrap', marginBottom:14 }}>
+          {chk('taxServiceCharge', 'Tax the service charge', 'Charges this tax on the items\' share of a mandatory service charge (taxable in New York, California and most states). Tips are never taxed.', basis.taxServiceCharge)}
+          {chk('taxDeliveryFee', 'Tax the delivery fee', 'Charges this tax on the items\' share of the delivery fee. Rules differ by state: check yours.', basis.taxDeliveryFee)}
+        </div>
+      )}
 
       <div style={{ marginBottom:10 }}>
         <label style={S.label}>Applies to order types</label>
@@ -192,7 +209,8 @@ function draftToProfile(draft) {
       mode: l.mode === 'inclusive' ? 'inclusive' : 'exclusive',
       compound: l.compound === true,
       taxable: l.taxable === true,
-      taxBasis: l.taxBasis || 'pre_discount',
+      // v5.9.12: explicit, with the US defaults resolved once (lineBasisSettings).
+      ...lineBasisSettings({ ...l, mode: l.mode === 'inclusive' ? 'inclusive' : 'exclusive', lineType: l.lineType || 'rate' }),
       orderTypes: Array.isArray(l.orderTypes) && l.orderTypes.length ? l.orderTypes : ['all'],
       sortOrder: i,
       active: true,
@@ -313,7 +331,10 @@ function ProfileEditor({ profile, onSave, onCancel }) {
   });
   const addLine = () => setDraft(p => ({ ...p, lines: [...p.lines, {
     id: genId(), name:'', jurisdiction:'', lineType:'rate', rate:'', flatAmount:0,
-    mode:'exclusive', compound:false, taxable:false, taxBasis:'pre_discount',
+    // v5.9.12: a new line starts on the US defaults (it is added on top):
+    // after discounts, taxes the service charge, not the delivery fee.
+    mode:'exclusive', compound:false, taxable:false, taxBasis:'post_discount',
+    taxServiceCharge:true, taxDeliveryFee:false,
     orderTypes:['all'], active:true,
   }] }));
 
@@ -411,6 +432,9 @@ function TaxProfilesSection() {
   const [deleting, setDeleting] = useState(null);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+  // v5.9.12: a line saved before migration 20260919t could not store its
+  // service / delivery switches (the till uses the defaults until it is run).
+  const [needsBasisMigration, setNeedsBasisMigration] = useState(false);
 
   const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 3000); };
 
@@ -498,12 +522,24 @@ function TaxProfilesSection() {
         mode: l.mode === 'inclusive' ? 'inclusive' : 'exclusive',
         compound: l.compound === true,
         taxable: l.taxable === true,
-        tax_basis: l.taxBasis === 'post_discount' ? 'post_discount' : 'pre_discount',
+        // v5.9.12: basis + service / delivery written EXPLICITLY (the defaults are
+        // resolved here once, so a saved line never depends on a default).
+        ...(() => {
+          const b = lineBasisSettings({ ...l, mode: l.mode === 'inclusive' ? 'inclusive' : 'exclusive', lineType: l.lineType === 'per_unit' ? 'per_unit' : 'rate' });
+          return { tax_basis: b.taxBasis, tax_service_charge: b.taxServiceCharge, tax_delivery_fee: b.taxDeliveryFee };
+        })(),
         order_types: Array.isArray(l.orderTypes) && l.orderTypes.length ? l.orderTypes : ['all'],
         sort_order: i,
         active: l.active !== false,
       };
-      const { data, error: err } = await supabase.from('tax_profile_lines').upsert(row).select('id');
+      let { data, error: err } = await supabase.from('tax_profile_lines').upsert(row).select('id');
+      // Before migration 20260919t the two new columns do not exist: save the
+      // rest of the line (the till then uses the defaults) and say so.
+      if (err && (isMissingColumnError(err, 'tax_service_charge') || isMissingColumnError(err, 'tax_delivery_fee'))) {
+        const { tax_service_charge: _s, tax_delivery_fee: _d, ...legacyRow } = row;
+        ({ data, error: err } = await supabase.from('tax_profile_lines').upsert(legacyRow).select('id'));
+        if (!err) setNeedsBasisMigration(true);
+      }
       const failure = err || (!data || data.length === 0 ? new Error('Line upsert returned no row. RLS blocked it') : null);
       reportSave('tax profile line', failure);
       if (failure) {
@@ -612,6 +648,7 @@ function TaxProfilesSection() {
 
       {msg   && <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)', fontSize:13, marginBottom:12 }}>{msg}</div>}
       {error && <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:13, marginBottom:12 }}>{error}</div>}
+      {needsBasisMigration && <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:13, marginBottom:12 }}>Saved, but the service charge and delivery fee switches need database update 20260919t before they are stored. Until then tills use the defaults: service charge taxed, delivery fee not.</div>}
 
       {loading ? (
         <div style={{ color:'var(--t4)', fontSize:13, padding:'20px 0' }}>Loading…</div>

@@ -56,6 +56,11 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
   } = engine;
   const customerId = verifiedLoyalty?.customer?.id || null;
   const open = (screen === 'start' || screen === 'menu' || screen === 'review') && !submitting;
+  // v5.9.12: the bill the gift card may cover is `total` less the sales tax the
+  // loyalty / promo credits took off (engine.taxRelief, 0 for UK and whenever no
+  // credit lowers added-on tax). Sizing on `total` alone debited the card for tax
+  // the customer no longer owed.
+  const giftTotal = engine.taxRelief > 0 ? +(total - engine.taxRelief).toFixed(2) : total;
 
   const [notices, dispatchNotice] = useReducer(noticesReducer, []);
 
@@ -147,14 +152,14 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
   // ── Gift card restaging (a card with nothing to cover comes off, F9) ──
   useEffect(() => {
     if (!open || !giftCardPayment) return;
-    const plan = kioskGiftRestage({ staged: giftCardPayment, total, loyaltyCredit: rewardCredit, promoAmount: promoApplied?.amount || 0 });
+    const plan = kioskGiftRestage({ staged: giftCardPayment, total: giftTotal, loyaltyCredit: rewardCredit, promoAmount: promoApplied?.amount || 0 });
     if (plan.action === 'remove') {
       setGiftCardPayment(null);
       if (cart.length) dispatchNotice({ type: 'push', key: 'k2.code.giftNotNeeded', at: Date.now() });
     } else if (plan.action === 'restage') {
       setGiftCardPayment(plan.staged);
     }
-  }, [open, giftCardPayment, total, rewardCredit, promoApplied, cart.length, setGiftCardPayment]);
+  }, [open, giftCardPayment, giftTotal, rewardCredit, promoApplied, cart.length, setGiftCardPayment]);
 
   // ── Promo re-check after the basket changes (Pay waits while it is checking) ──
   const promoKey = promoKeyFor(promoApplied, subtotal, customerId);
@@ -198,7 +203,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
     return () => { if (codeVisitRef.current === visit) codeVisitRef.current = null; };
   }, [reviewOpen]);
   const [applying, setApplying] = useState(0);
-  const giftDue = giftDueMinor({ total, loyaltyCredit: rewardCredit, promoAmount: promoApplied?.amount || 0 });
+  const giftDue = giftDueMinor({ total: giftTotal, loyaltyCredit: rewardCredit, promoAmount: promoApplied?.amount || 0 });
   const applyCode = async (input) => {
     const visit = codeVisitRef.current;
     setApplying(n => n + 1);
@@ -234,7 +239,10 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
   const payBlock = kioskPayBlock({ cartCount: cartItemCount, allergenAckRequired, allergenAck, grandTotal, checking, applying: applying > 0 });
   const totalsRows = kioskTotalsRows({
     subtotal, autoDiscounts: engine.autoDiscounts, autoDiscountTotal: engine.autoDiscountTotal,
-    exclusiveTax: engine.exclusiveTax, tip, loyaltyCredit, promoCredit, giftCardCredit, grandTotal,
+    // v5.9.12: the tax row shows the tax CHARGED (after any loyalty / promo
+    // relief), so the rows still add up to the total. UK: taxRelief is 0.
+    exclusiveTax: engine.taxRelief > 0 ? +(engine.exclusiveTax - engine.taxRelief).toFixed(2) : engine.exclusiveTax,
+    tip, loyaltyCredit, promoCredit, giftCardCredit, grandTotal,
   });
   const submitArgs = kioskSubmitArgs({ smsEnabled, orderType, tableNumber, smsOn, phoneE164: phoneE164 || '' });
 

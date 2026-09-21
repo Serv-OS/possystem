@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
-import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
@@ -8,6 +8,7 @@ import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
+import { creditDiscountsFromPayment, chargedAddedOnTax } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
@@ -42,7 +43,7 @@ import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
   refundBreakdown, cardLegsOf, legRefundedMinor, allocateToLegs,
-  rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt,
+  rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt, addedOnTaxOf,
 } from '../lib/payments/refundMath';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
@@ -3290,7 +3291,10 @@ export const useStore = create((set, get) => ({
     return walkInOrder?.items || [];
   },
 
-  getPOSTotals: () => {
+  // v5.9.12: opts.creditDiscounts = the checkout's promo / loyalty credits
+  // (taxBasis.creditDiscounts shape). They lower only the TAXED amount here; the
+  // checkout still subtracts the credits themselves. Omitted = the plain bill.
+  getPOSTotals: (opts = {}) => {
     const { activeTableId, tables, walkInOrder, orderType, deviceConfig } = get();
     let items, checkDiscounts, covers, serviceChargeWaived;
     if (activeTableId) {
@@ -3323,6 +3327,7 @@ export const useStore = create((set, get) => ({
       // v5.7.34: the unified seam context — profile venues charge the cascade;
       // legacy-equivalent venues route byte-identical calculateOrderTax.
       taxCtx: get().getTaxContext(),
+      creditDiscounts: opts?.creditDiscounts || [],
     });
   },
 
@@ -5533,9 +5538,29 @@ export const useStore = create((set, get) => ({
     // orderType field is hardcoded 'dine-in' three lines down, and computing
     // tax under any other type while recording dine-in would let per-order-type
     // taxOverrides (e.g. zero-rated takeaway) split the record from its tax.
-    let taxBreakdown = null;
-    if (taxRates?.length || taxCtxHasConfig(get().getTaxContext())) {
-      try { taxBreakdown = computeOrderTaxUnified(session.items.filter(i=>!i.voided), get().getTaxContext(), 'dine-in'); } catch {}
+    // v5.9.12: through computeCheckTotals, so the tax BOOKED is the tax the
+    // bill CHARGED - same discounts (incl. the checkout's promo / loyalty
+    // credits), same service charge, same basis. UK inclusive: the same
+    // calculateOrderTax object as before, byte for byte.
+    // A device that charged its own added-on tax (MPOS) hands it over as
+    // paymentInfo.chargedTaxBreakdown: that exact tax is booked.
+    let taxBreakdown = chargedAddedOnTax(paymentInfo);
+    if (!taxBreakdown && (taxRates?.length || taxCtxHasConfig(get().getTaxContext()))) {
+      try {
+        taxBreakdown = computeCheckTotals({
+          items: session.items.filter(i => !i.voided),
+          checkDiscounts: session.discounts || [],
+          covers: session.covers || 1,
+          serviceChargeWaived: session.serviceChargeWaived || false,
+          orderType: 'dine-in',
+          deviceConfig: get().deviceConfig,
+          discountRules: get().discountRules,
+          timezone: get().locationConfig?.timezone,
+          taxRates,
+          taxCtx: get().getTaxContext(),
+          creditDiscounts: creditDiscountsFromPayment(paymentInfo),
+        }).tax;
+      } catch {}
     }
 
     const ref = getNextOrderRefLocal();
@@ -5769,6 +5794,10 @@ export const useStore = create((set, get) => ({
 
     const termPay = {
       tenders: jobTenders,
+      // v5.9.12 — promo / loyalty credits that lowered the added-on tax on the
+      // charged amount (CheckoutModal froze them into the draft); buildCloseRecord
+      // books the tax with them so the record matches the charge.
+      ...(Array.isArray(d.taxCredits) && d.taxCredits.length ? { taxCredits: d.taxCredits } : {}),
       // v5.6.68 — reader splits: the final leg books the WHOLE occupation as one
       // 'split' check (full items, every card leg a payment intent), mirroring
       // the POS SplitModal's single-check model so reports/refunds treat both
@@ -6218,9 +6247,28 @@ export const useStore = create((set, get) => ({
     // v4.6.19 — compute tax at close so tax_amount can be stored with the row
     // v5.7.34 — through the unified seam (legacy parity or profiles cascade);
     // taxBreakdown now also carries the taxV2 named-lines record.
-    let taxBreakdown = null;
-    if (taxRates?.length || taxCtxHasConfig(get().getTaxContext())) {
-      try { taxBreakdown = computeOrderTaxUnified(walkInOrder.items.filter(i=>!i.voided), get().getTaxContext(), orderType); } catch {}
+    // v5.9.12: through computeCheckTotals (the bill's own discounts, service,
+    // delivery fee and the checkout's promo / loyalty credits) so the tax booked
+    // is the tax charged. UK inclusive: identical object, byte for byte.
+    // MPOS hands over the added-on tax it charged (chargedTaxBreakdown): booked as is.
+    let taxBreakdown = chargedAddedOnTax(paymentInfo);
+    if (!taxBreakdown && (taxRates?.length || taxCtxHasConfig(get().getTaxContext()))) {
+      try {
+        taxBreakdown = computeCheckTotals({
+          items: walkInOrder.items.filter(i => !i.voided),
+          checkDiscounts: walkInOrder.discounts || [],
+          covers: 1,
+          serviceChargeWaived: walkInOrder.serviceChargeWaived || false,
+          orderType,
+          deviceConfig: get().deviceConfig,
+          discountRules: get().discountRules,
+          timezone: get().locationConfig?.timezone,
+          deliveryQuote: get().deliveryQuote,
+          taxRates,
+          taxCtx: get().getTaxContext(),
+          creditDiscounts: creditDiscountsFromPayment(paymentInfo),
+        }).tax;
+      } catch {}
     }
     // If the walk-in was reopened from orderQueue (OrdersHub openOrder) it already
     // has a ref (e.g. '#6720'). Reuse it so the closed check matches what the user
@@ -6529,7 +6577,13 @@ export const useStore = create((set, get) => ({
     // tax. Recorded so VAT reporting CAN net a refund off (today it cannot — a
     // refund entry carried no tax portion at all, which is why `tax_amount` stayed
     // overstated after every refund).
-    const taxRefunded = (chkBefore.taxAmount != null && Number(chkBefore.total) > 0)
+    // v5.9.12: on a check whose tax is ALL added on (US sales tax), the tax that
+    // came back is exactly the breakdown's figure for these items. Anything with
+    // inclusive VAT in it keeps the pro-rata rule unchanged.
+    const addedOnly = bd.tax > 0 && chkBefore.taxAmount != null
+      && Math.abs(Number(chkBefore.taxAmount) - addedOnTaxOf(chkBefore)) < 0.01;
+    const taxRefunded = addedOnly ? bd.tax
+      : (chkBefore.taxAmount != null && Number(chkBefore.total) > 0)
       ? r2(Number(chkBefore.taxAmount) * (amount / Number(chkBefore.total)))
       : null;
 
@@ -6554,6 +6608,9 @@ export const useStore = create((set, get) => ({
           tipAmount: bd.tip,
           serviceAmount: bd.service,
           taxAmount: taxRefunded,
+          // v5.9.12: the added-on sales tax part of `amount` (only when there is one,
+          // so inclusive-VAT refund entries keep exactly their old shape).
+          ...(bd.tax > 0 ? { addedTaxAmount: bd.tax } : {}),
           // Filled in below once the processor has actually answered.
           cardStatus: 'pending',
           legs: [],

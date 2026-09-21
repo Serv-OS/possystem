@@ -9,6 +9,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { LINES_ONLY_BASIS } from '../../lib/taxBasis';
 import { Sx, money } from './MShellStyles';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 import { findPaxTerminal, getPosDeviceId } from '../../lib/payments/terminalJobs';
@@ -43,8 +44,11 @@ export default function MTender({ onBack, onConfirm }) {
   // v5.7.34: unified seam — same read shape (totalTax / exclusiveTax /
   // hasExclusiveTax); legacy-equivalent venues byte-identical.
   const taxCtx = useStore(s => s.getTaxContext());
+  // v5.9.12: taxed on what this screen charges: each line after its item
+  // discount (LINES_ONLY_BASIS), not the menu price. The result rides to the
+  // close as chargedTaxBreakdown so the record books this exact tax.
   const taxResult = useMemo(() => {
-    try { return computeOrderTaxUnified(order.items, taxCtx, orderType); }
+    try { return computeOrderTaxUnified(order.items, taxCtx, orderType, LINES_ONLY_BASIS); }
     catch { return { totalTax: 0 }; }
   }, [order.items, taxCtx, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
@@ -183,7 +187,7 @@ export default function MTender({ onBack, onConfirm }) {
 
       {/* Big customer Confirm — auto-triggers card flow */}
       <div style={Sx.bottom}>
-        <button onClick={() => onConfirm?.({ method:'card', tip: tipAmount, grand, subtotal, tax })} style={{ ...Sx.btnPrim, fontSize:17, padding:'18px 16px', minHeight:60 }}>
+        <button onClick={() => onConfirm?.({ method:'card', tip: tipAmount, grand, subtotal, tax, chargedTaxBreakdown: taxResult })} style={{ ...Sx.btnPrim, fontSize:17, padding:'18px 16px', minHeight:60 }}>
           Confirm · {money(grand)}
         </button>
         <button onClick={onBack} style={{ ...Sx.btnGhost, marginTop:8 }}>

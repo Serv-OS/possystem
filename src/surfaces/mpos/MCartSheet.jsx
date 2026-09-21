@@ -13,6 +13,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { LINES_ONLY_BASIS } from '../../lib/taxBasis';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
@@ -71,7 +72,8 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
         }, 0);
         // v5.5.342: compute VAT so the printed bill shows the tax breakdown.
-        const billTax = (() => { try { return computeOrderTaxUnified(liveItems, useStore.getState().getTaxContext(), orderType); } catch { return null; } })();
+        // v5.9.12: on what MTender charges (lines after item discounts).
+        const billTax = (() => { try { return computeOrderTaxUnified(liveItems, useStore.getState().getTaxContext(), orderType, LINES_ONLY_BASIS); } catch { return null; } })();
         const checkShape = {
           id: `bill-${Date.now()}`,
           ref: activeTableId
@@ -149,7 +151,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   // from the price (shown "incl. VAT"); exclusive is added.
   // v5.7.34: unified seam — same reads (totalTax / exclusiveTax / hasExclusiveTax).
   const taxCtx = useStore(s => s.getTaxContext());
-  const taxResult = useMemo(() => { try { return computeOrderTaxUnified(items, taxCtx, orderType); } catch { return null; } }, [items, taxCtx, orderType]);
+  const taxResult = useMemo(() => { try { return computeOrderTaxUnified(items, taxCtx, orderType, LINES_ONLY_BASIS); } catch { return null; } }, [items, taxCtx, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
   // v5.7.31: the ADDED figure is the exclusive share only — on a mixed
   // inclusive+exclusive check, adding totalTax re-added the inclusive VAT.

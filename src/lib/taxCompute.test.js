@@ -29,6 +29,8 @@ const UK_RATES = [
 ];
 
 // Generated mirror profiles exactly as backfill 20260825c + assembleTaxProfiles produce.
+// v5.9.12: an EXCLUSIVE mirror carries post_discount once migration 20260919t has
+// run (the adapter's US default); inclusive mirrors stay pre_discount, untouched.
 const mirror = (pid, r, jurisdiction = null) => ({
   id: pid,
   name: r.name,
@@ -41,7 +43,7 @@ const mirror = (pid, r, jurisdiction = null) => ({
     id: `l-${pid}`, name: r.name, jurisdiction,
     lineType: 'rate', rate: r.rate, flatAmount: 0,
     mode: r.type === 'inclusive' ? 'inclusive' : 'exclusive',
-    compound: false, taxable: false, taxBasis: 'pre_discount',
+    compound: false, taxable: false, taxBasis: r.type === 'inclusive' ? 'pre_discount' : 'post_discount',
     orderTypes: ['all'], sortOrder: 0, active: true,
   }],
 });

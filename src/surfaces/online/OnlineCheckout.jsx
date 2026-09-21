@@ -42,7 +42,8 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/qu
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { computeOrderTaxUnified, chargesAddedOnRate } from '../../lib/taxCompute';
+import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
 import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
@@ -267,20 +268,24 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.154: UK VAT breakdown — required on customer-facing receipts/totals.
   // v5.7.34: through the unified seam — profiles cascade when assigned,
   // byte-identical calculateOrderTax otherwise.
+  // v5.9.12: uid = the same key evaluateAutoDiscounts saw, so an offer's saving
+  // can be taken off the exact lines it applied to in the tax basis below.
+  const onlineTaxLines = useMemo(() => cart.map((l, i) => ({
+    uid: l.uid || l.key || l.id || `l${i}`,
+    price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+    qty: l.qty || 1,
+    itemId: l.itemId ?? null,
+    cat: l.cat ?? null,
+    cats: Array.isArray(l.cats) ? l.cats : null,
+    taxProfileId: l.taxProfileId ?? null,
+    taxRateId: l.taxRateId || l.tax_rate_id || null,
+    taxOverrides: l.taxOverrides || l.tax_overrides || {},
+  })), [cart]);
   const taxBreakdown = useMemo(() => computeOrderTaxUnified(
-    cart.map(l => ({
-      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
-      qty: l.qty || 1,
-      itemId: l.itemId ?? null,
-      cat: l.cat ?? null,
-      cats: Array.isArray(l.cats) ? l.cats : null,
-      taxProfileId: l.taxProfileId ?? null,
-      taxRateId: l.taxRateId || l.tax_rate_id || null,
-      taxOverrides: l.taxOverrides || l.tax_overrides || {},
-    })),
+    onlineTaxLines,
     taxCtx || { taxRates },
     orderType || 'collection',
-  ), [cart, taxCtx, taxRates, orderType]);
+  ), [onlineTaxLines, taxCtx, taxRates, orderType]);
 
   // v5.5.243: Combined deduction calculation (auto-discount → gift card → loyalty reward)
   const giftAppliedMinor = giftApplied?.applied || 0;
@@ -326,12 +331,32 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderType, _delivAddrKey, discountedSubtotalMinor, opsLocationId]);
   const deliveryFeeMinor = (orderType === 'delivery' && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : 0;
+  // v5.9.12: ADDED-ON tax on the bill's own basis: offers (on the lines they
+  // hit), the promo code and the loyalty reward come off the taxed amount, and
+  // the delivery fee is taxed where the line's profile says so. When that
+  // changes nothing added-on (every UK inclusive order, a plain US order) the
+  // v5.5.787 pro-rata breakdown above stands exactly as before; otherwise this
+  // exact per-line result is the one charged, shown, recorded and emailed.
+  const basisTaxBreakdown = useMemo(() => {
+    try {
+      return computeOrderTaxUnified(onlineTaxLines, taxCtx || { taxRates }, orderType || 'collection', {
+        discounts: [...autoDiscounts, ...creditDiscounts({ promo: promoAppliedMinor / 100, loyalty: rewardDiscountMinor / 100 })],
+        deliveryFee: deliveryFeeMinor / 100,
+      });
+    } catch { return null; }
+  }, [onlineTaxLines, taxCtx, taxRates, orderType, autoDiscounts, promoAppliedMinor, rewardDiscountMinor, deliveryFeeMinor]);
+  // Any order that charges an added-on percentage tax takes the exact result
+  // (even when the basis moved nothing taxed: pro rata scaling would then take an
+  // offer on an exempt line off the taxed ones). Inclusive-only orders keep the
+  // v5.5.787 breakdown exactly (UK unchanged).
+  const chargedTaxBreakdown = (basisTaxBreakdown && (basisTaxBreakdown.checkBasisApplied || chargesAddedOnRate(basisTaxBreakdown)))
+    ? basisTaxBreakdown : discountedTaxBreakdown;
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is part of what the customer
   // pays — the tax lines were rendered but never charged. Scaled by the goods
   // discount like the rest of the breakdown; UK inclusive VAT contributes 0 so
   // UK totals are unchanged. Inside the credits max: a gift card may cover tax,
   // exactly as it does at the POS till.
-  const exclusiveTaxMinor = Math.round((discountedTaxBreakdown?.exclusiveTax || 0) * 100);
+  const exclusiveTaxMinor = Math.round((chargedTaxBreakdown?.exclusiveTax || 0) * 100);
   // Tip is on the DISCOUNTED subtotal, never VAT-rated, and never reduced by a
   // gift card or reward, so it is added after the max(0, ...) with delivery.
   const tipMinor = tipRule.on ? Math.round(calcTip(discountedSubtotalMinor / 100, tipKey, customTip) * 100) : 0;
@@ -1020,7 +1045,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           check: {
             id: closedCheck.id, ref, items, customer, closedAt: Date.now(), total,
             discountAmount: autoDiscountMinor / 100,
-            service: 0, tip: tipMinor / 100, taxAmount: discountedTaxBreakdown?.totalTax || 0, taxBreakdown: discountedTaxBreakdown,
+            service: 0, tip: tipMinor / 100, taxAmount: chargedTaxBreakdown?.totalTax || 0, taxBreakdown: chargedTaxBreakdown,
             method: closedCheck.method || 'card', server: 'Online',
           },
         }).catch(() => {});
@@ -1159,7 +1184,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: tipMinor / 100,
-          tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
+          tax_amount: chargedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
+          // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
+          ...(chargedTaxBreakdown?.hasExclusiveTax && exclusiveTaxMinor > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           // v5.9.11: what paid the order, per tender: the gift card as DEBITED and the loyalty
@@ -1366,7 +1393,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: tipMinor / 100,
-          tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
+          tax_amount: chargedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
+          // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
+          ...(chargedTaxBreakdown?.hasExclusiveTax && exclusiveTaxMinor > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
           // v5.9.11: what paid the order, per tender. `total` above is the CARD amount (tip
@@ -2043,10 +2072,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
               </div>
             ))}
-            {discountedTaxBreakdown.totalTax > 0 && discountedTaxBreakdown.breakdown.map((b, i) => (
+            {chargedTaxBreakdown.totalTax > 0 && chargedTaxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
                 {/* v5.7.31: exclusive (added-on) rates show "+" — they are charged on top and included in the Total below */}
-                <span>{breakdownIsExclusive(b) ? '+ ' : 'incl. '}{b.rate?.name || b.name || (b.rate ? `${taxTermFor(discountedTaxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}</span>
+                <span>{breakdownIsExclusive(b) ? '+ ' : 'incl. '}{b.rate?.name || b.name || (b.rate ? `${taxTermFor(chargedTaxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}</span>
                 <span>{money(b.tax)}</span>
               </div>
             ))}

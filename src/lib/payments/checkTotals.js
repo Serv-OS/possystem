@@ -18,8 +18,7 @@
 import { resolveServiceCharge } from '../serviceCharge.js';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
-import { calculateOrderTax } from '../tax.js';
-import { computeOrderTaxUnified } from '../taxCompute.js';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../taxCompute.js';
 
 /**
  * @param {object} ctx
@@ -42,11 +41,20 @@ import { computeOrderTaxUnified } from '../taxCompute.js';
  *                                           when present the exclusive term comes
  *                                           from the unified seam (profiles OR
  *                                           legacy parity) instead of raw taxRates.
+ * @param {Array}  [ctx.creditDiscounts]     v5.9.12: store-funded credits the
+ *                                           checkout takes off AFTER the bill (promo
+ *                                           code, loyalty reward) in the discount
+ *                                           shape ({type:'amount', value}). They are
+ *                                           NOT subtracted here (the checkout still
+ *                                           does that); they only lower the taxed
+ *                                           amount, so `total` = bill with the tax
+ *                                           those credits leave owing.
  */
 export function computeCheckTotals(ctx) {
   const {
     items = [], checkDiscounts = [], covers = 1, serviceChargeWaived = false,
     orderType, deviceConfig, discountRules, timezone, deliveryQuote, taxRates,
+    creditDiscounts = [],
   } = ctx || {};
 
   // Subtotal — voided items excluded, item discounts applied
@@ -80,20 +88,35 @@ export function computeCheckTotals(ctx) {
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates). The POS has always
   // RENDERED "+ Sales Tax" lines it never charged — the exclusive share now
-  // rides the total so the bill equals the receipt. The BASIS is deliberately
-  // the engine's existing one: item price × qty, pre item-discount, ignoring
-  // check-level discounts, service and delivery — identical to what the tax
-  // lines on screen and closed_checks.tax_amount already book. Inclusive (UK)
-  // VAT contributes exactly 0, so UK totals are byte-identical to v5.7.30.
+  // rides the total so the bill equals the receipt. Inclusive (UK) VAT
+  // contributes exactly 0, so UK totals are byte-identical to v5.7.30.
+  //
+  // v5.9.12: the BASIS is now the bill's own figures. Until this release it was
+  // item price × qty BEFORE any discount, ignoring the service charge and the
+  // delivery fee, so a discounted US check over-collected and a taxable service
+  // charge was never taxed. The seam now gets `checkBasis` (every discount on
+  // this bill plus the checkout's promo / loyalty credits, the service charge,
+  // the delivery fee) and each line's tax profile decides what it taxes
+  // (post-discount by default, service ON, delivery OFF). `tax` is the whole
+  // seam result, so a close path can BOOK exactly the tax this bill charged.
+  const checkBasis = {
+    discounts: [...allCheckDiscounts, ...(Array.isArray(creditDiscounts) ? creditDiscounts : [])],
+    service,
+    deliveryFee,
+  };
+  const liveItems = items.filter(i => !i.voided);
+  const taxSource = ctx?.taxCtx
+    ? ctx.taxCtx                                   // v5.7.34 unified context
+    : (Array.isArray(taxRates) && taxRates.length ? { taxRates } : null);   // v5.7.31 rates-only callers
+  let tax = null;
   let exclusiveTax = 0;
-  if (ctx?.taxCtx) {
-    // v5.7.34: the unified seam (profiles cascade OR legacy parity). On a
-    // legacy-equivalent venue this IS calculateOrderTax byte-for-byte.
-    try { exclusiveTax = computeOrderTaxUnified(items, ctx.taxCtx, orderType || 'dine-in').exclusiveTax || 0; }
-    catch { exclusiveTax = 0; }   // fail toward the old behaviour, never a guessed charge
-  } else if (Array.isArray(taxRates) && taxRates.length) {
-    try { exclusiveTax = calculateOrderTax(items, taxRates, orderType || 'dine-in').exclusiveTax || 0; }
-    catch { exclusiveTax = 0; }   // fail toward the old behaviour, never a guessed charge
+  if (taxSource && (ctx?.taxCtx ? taxCtxHasConfig(taxSource) : true)) {
+    // On a legacy-equivalent venue with nothing added-on moving this IS
+    // calculateOrderTax byte-for-byte (every UK check).
+    try {
+      tax = computeOrderTaxUnified(liveItems, taxSource, orderType || 'dine-in', checkBasis);
+      exclusiveTax = tax.exclusiveTax || 0;
+    } catch { tax = null; exclusiveTax = 0; }   // fail toward no added charge, never a guessed one
   }
 
   return {
@@ -105,6 +128,8 @@ export function computeCheckTotals(ctx) {
     deliveryFee,                        // customer-facing delivery surcharge (£)
     deliveryQuote: orderType === 'delivery' ? (deliveryQuote || null) : null,
     exclusiveTax,                       // added-on sales tax charged on top (0 for UK inclusive VAT)
+    tax,                                // v5.9.12: full seam result for THIS bill (null = no tax config)
+    checkBasis,                         // v5.9.12: what the tax was charged on (close paths reuse it)
     total: discountedSub + service + deliveryFee + exclusiveTax,
     itemCount: items.filter(i => !i.voided).reduce((s, i) => s + i.qty, 0),
   };

@@ -26,6 +26,7 @@ import { logOrderActivity } from '../lib/activity';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../lib/prepTime';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { computeOrderTaxUnified, buildLocalTaxCtx, taxCtxHasConfig } from '../lib/taxCompute';
+import { creditDiscounts } from '../lib/taxBasis';
 import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
@@ -642,25 +643,27 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // yields exclusiveTax 0 exactly — UK kiosks unchanged.
   // v5.7.34: through the unified seam — the kiosk now passes its delivered
   // profiles (itemId + cat feed the cascade); legacy venues byte-identical.
+  // v5.9.12: the basis is the bill's own. Auto discounts come off the taxed
+  // amount (targeted by line key, the same uid evaluateAutoDiscounts saw);
+  // loyalty and promo credits follow below (creditedTaxBreakdown) once they are
+  // known. UK inclusive VAT never uses the basis: identical to before.
+  const kioskTaxLines = useMemo(() => cart.map((l, i) => ({
+    uid: l.key || `l${i}`,
+    price: l.linePrice,
+    qty: l.qty || 1,
+    itemId: l.item?.id ?? null,
+    cat: l.item?.cat ?? null,
+    cats: Array.isArray(l.item?.cats) ? l.item.cats : null,
+    taxProfileId: l.item?.tax_profile_id ?? null,
+    taxRateId: l.item?.tax_rate_id || null,
+    taxOverrides: l.item?.tax_overrides || {},
+  })), [cart]);
+  const kioskTaxType = orderType === 'dineIn' ? 'dine-in' : 'takeaway';
   const taxBreakdown = useMemo(() => {
-    if (!taxCtxHasConfig(kioskTaxCtx) || !cart.length) return null;
-    try {
-      return computeOrderTaxUnified(
-        cart.map(l => ({
-          price: l.linePrice,
-          qty: l.qty || 1,
-          itemId: l.item?.id ?? null,
-          cat: l.item?.cat ?? null,
-          cats: Array.isArray(l.item?.cats) ? l.item.cats : null,
-          taxProfileId: l.item?.tax_profile_id ?? null,
-          taxRateId: l.item?.tax_rate_id || null,
-          taxOverrides: l.item?.tax_overrides || {},
-        })),
-        kioskTaxCtx,
-        orderType === 'dineIn' ? 'dine-in' : 'takeaway',
-      );
-    } catch { return null; }
-  }, [cart, kioskTaxCtx, orderType]);
+    if (!taxCtxHasConfig(kioskTaxCtx) || !kioskTaxLines.length) return null;
+    try { return computeOrderTaxUnified(kioskTaxLines, kioskTaxCtx, kioskTaxType, { discounts: autoDiscounts }); }
+    catch { return null; }
+  }, [kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts]);
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
   const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
@@ -856,7 +859,22 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const promoCredit = promoApplied
     ? Math.min(promoApplied.amount || 0, Math.max(0, total - loyaltyCredit - giftCardCredit))
     : 0;
-  const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit);
+  // v5.9.12: loyalty rewards and promo codes are store discounts, so they lower
+  // the added-on tax too. The credits are sized off `total` above (unchanged);
+  // the tax is then recomputed with them in the basis and the difference comes
+  // off. Inclusive-only (UK): exclusive tax is 0 both ways, taxRelief is 0.
+  const creditedTaxBreakdown = useMemo(() => {
+    if (!(exclusiveTax > 0) || !(loyaltyCredit > 0 || promoCredit > 0)) return null;
+    try {
+      return computeOrderTaxUnified(kioskTaxLines, kioskTaxCtx, kioskTaxType, {
+        discounts: [...autoDiscounts, ...creditDiscounts({ promo: promoCredit, loyalty: loyaltyCredit })],
+      });
+    } catch { return null; }
+  }, [exclusiveTax, loyaltyCredit, promoCredit, kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts]);
+  const taxRelief = creditedTaxBreakdown
+    ? Math.max(0, +(exclusiveTax - (Number(creditedTaxBreakdown.exclusiveTax) || 0)).toFixed(2)) : 0;
+  const chargedTaxBreakdown = taxRelief > 0 ? creditedTaxBreakdown : taxBreakdown;
+  const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit - taxRelief);
 
   // On 'simulate paid' → write closed_checks + kds_tickets row, set orderNumber, advance.
   const submitOrder = useCallback(async (nameOverride, phoneOverride) => {
@@ -934,8 +952,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
         // tax_amount is what reports (Tax summary, Daily Trading VAT) read; the
         // legacy `tax` column gets the same figure. Full engine basis — matches
         // what the POS books for the identical order.
-        tax: taxBreakdown?.totalTax || 0,
-        tax_amount: taxBreakdown?.totalTax ?? null,
+        tax: chargedTaxBreakdown?.totalTax || 0,
+        tax_amount: chargedTaxBreakdown?.totalTax ?? null,
+        // v5.9.12: the named tax lines, ONLY when added-on tax was charged (so
+        // UK kiosk rows are unchanged). Reports and reprints read this rather
+        // than recompute from the items.
+        ...(chargedTaxBreakdown?.hasExclusiveTax && Number(chargedTaxBreakdown.exclusiveTax) > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
         total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
@@ -1149,7 +1171,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, chargedTaxBreakdown, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -1181,7 +1203,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
       allergenFilter, setAllergenFilter,
       cart, setCart, addToCart, updateCartQty, cartItemCount, cartItemUsage,
-      subtotal, autoDiscounts, autoDiscountTotal, discountedSubtotal, taxBreakdown, exclusiveTax,
+      subtotal, autoDiscounts, autoDiscountTotal, discountedSubtotal, taxBreakdown, exclusiveTax, taxRelief,
       total, tip, setTip,
       loyaltyRedemption, setLoyaltyRedemption, verifiedLoyalty, setVerifiedLoyalty,
       giftCardPayment, setGiftCardPayment, promoApplied, setPromoApplied,

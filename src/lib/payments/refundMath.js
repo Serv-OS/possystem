@@ -44,18 +44,68 @@ const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
  */
 export function refundedSoFar(check) {
   const list = Array.isArray(check?.refunds) ? check.refunds : [];
-  let items = 0, tip = 0, service = 0, total = 0;
+  let items = 0, tip = 0, service = 0, total = 0, addedTax = 0;
   for (const r of list) {
     const amount = num(r?.amount);
     const t = num(r?.tipAmount);
     const s = num(r?.serviceAmount);
+    // v5.9.12: the added-on sales tax that went back. Entries before v5.9.12
+    // (and every inclusive-VAT entry) have none, read as 0.
+    const x = num(r?.addedTaxAmount);
     total += amount;
     tip += t;
     service += s;
-    // The items portion is whatever the entry was NOT tip or service.
-    items += amount - t - s;
+    addedTax += x;
+    // The items portion is whatever the entry was NOT tip, service or added tax.
+    items += amount - t - s - x;
   }
-  return { items: r2(items), tip: r2(tip), service: r2(service), total: r2(total) };
+  return { items: r2(items), tip: r2(tip), service: r2(service), addedTax: r2(addedTax), total: r2(total) };
+}
+
+/**
+ * v5.9.12: the ADDED-ON sales tax this check charged (US exclusive tax, rounded
+ * as it was charged). 0 for an inclusive-only check (every UK check: VAT is
+ * inside the prices, so a refund of the items already returns it) and for a
+ * check with no stored breakdown.
+ */
+export function addedOnTaxOf(check) {
+  const t = check?.taxBreakdown;
+  if (!t || !t.hasExclusiveTax) return 0;
+  return r2(Math.max(0, num(t.exclusiveTax)));
+}
+
+/**
+ * v5.9.12: the added-on tax a PART refund gives back. Each selected line returns
+ * the tax its goods carried (taxBreakdown.lineTaxes, raw, one per live check
+ * item, written at close) times the share of its quantity returned; the tax on
+ * the service charge goes back in proportion to the service refunded (the
+ * operator may keep the service, and then its tax stays too); delivery is not
+ * refunded on a part refund, so neither is its tax. A check without per-line
+ * figures falls back to pro rata by value (the same rule as the tip and the
+ * service), over the goods part when the service tax is known. Unrounded: the
+ * caller rounds once.
+ */
+export function selectedAddedOnTax(check, items, share, serviceRefunded = 0) {
+  const total = addedOnTaxOf(check);
+  if (!(total > 0)) return 0;
+  const tb = check?.taxBreakdown || {};
+  const svcTax = num(tb.serviceTax);
+  const svcTotal = num(check?.service);
+  const svcPart = svcTax > 0 && svcTotal > 0 ? svcTax * Math.min(1, num(serviceRefunded) / svcTotal) : 0;
+  const goodsTotal = Math.max(0, total - svcTax - num(tb.deliveryTax));
+  const lineTaxes = tb.lineTaxes;
+  const live = (Array.isArray(check?.items) ? check.items : []).filter((i) => !i?.voided);
+  if (Array.isArray(lineTaxes) && lineTaxes.length === live.length) {
+    let sum = 0;
+    for (const i of (Array.isArray(items) ? items : [])) {
+      const idx = live.findIndex((c) => c === i || (c?.uid != null && c.uid === i?.uid));
+      if (idx < 0) return goodsTotal * share + svcPart;   // cannot place a line: pro rata instead
+      const qty = num(live[idx]?.qty) || 1;
+      sum += num(lineTaxes[idx]) * Math.min(1, (num(i?.refundQty) || 0) / qty);
+    }
+    return sum + svcPart;
+  }
+  return svcTax > 0 ? goodsTotal * share + svcPart : total * share;
 }
 
 /**
@@ -110,18 +160,21 @@ export function refundBreakdown(check, {
   const maxRefund = r2(Math.max(0, total - done.total));
   const tipRemaining = r2(Math.max(0, num(check?.tip) - done.tip));
   const serviceRemaining = r2(Math.max(0, num(check?.service) - done.service));
+  // v5.9.12: added-on sales tax still held (0 on every inclusive-VAT check).
+  const taxRemaining = r2(Math.max(0, addedOnTaxOf(check) - done.addedTax));
 
   if (isFullRefund) {
-    // Everything left, apportioned so the ledger keeps a truthful three-way split.
+    // Everything left, apportioned so the ledger keeps a truthful split.
     // Items take the remainder rather than being computed independently, so the
-    // three parts always re-sum to `amount` exactly (no penny drifting loose).
+    // parts always re-sum to `amount` exactly (no penny drifting loose).
     const tip = r2(Math.min(tipRemaining, maxRefund));
     const service = r2(Math.min(serviceRemaining, Math.max(0, maxRefund - tip)));
-    const itemsAmount = r2(Math.max(0, maxRefund - tip - service));
+    const tax = r2(Math.min(taxRemaining, Math.max(0, maxRefund - tip - service)));
+    const itemsAmount = r2(Math.max(0, maxRefund - tip - service - tax));
     return {
-      itemsAmount, tip, service, amount: maxRefund,
+      itemsAmount, tip, service, tax, amount: maxRefund,
       proRataTip: tip, proRataService: service,
-      tipRemaining, serviceRemaining, maxRefund, share: 1, isFullRefund: true,
+      tipRemaining, serviceRemaining, taxRemaining, maxRefund, share: 1, isFullRefund: true,
     };
   }
 
@@ -137,21 +190,25 @@ export function refundBreakdown(check, {
 
   const tip = clamp(r2(tipOverride == null ? proRataTip : num(tipOverride)), 0, tipRemaining);
   const service = clamp(r2(serviceOverride == null ? proRataService : num(serviceOverride)), 0, serviceRemaining);
+  // v5.9.12: the added-on sales tax those items carried goes back with them
+  // (before, a partial refund returned the goods but kept their tax). Not an
+  // operator choice: it is what the customer was charged on those lines.
+  const tax = taxRemaining > 0 ? clamp(r2(selectedAddedOnTax(check, items, share, service)), 0, taxRemaining) : 0;
 
   // Clamp the whole refund to what is left on the check, trimming the items
   // portion first — the tip and service figures are the ones the operator just
   // looked at and agreed to, so they are the last thing we quietly change.
   let itemsAmount = selected;
-  let amount = r2(itemsAmount + tip + service);
+  let amount = r2(itemsAmount + tip + service + tax);
   if (amount > maxRefund) {
-    itemsAmount = r2(Math.max(0, maxRefund - tip - service));
-    amount = r2(itemsAmount + tip + service);
+    itemsAmount = r2(Math.max(0, maxRefund - tip - service - tax));
+    amount = r2(itemsAmount + tip + service + tax);
   }
 
   return {
-    itemsAmount: r2(itemsAmount), tip, service, amount,
+    itemsAmount: r2(itemsAmount), tip, service, tax, amount,
     proRataTip, proRataService,
-    tipRemaining, serviceRemaining, maxRefund, share, isFullRefund: false,
+    tipRemaining, serviceRemaining, taxRemaining, maxRefund, share, isFullRefund: false,
   };
 }
 

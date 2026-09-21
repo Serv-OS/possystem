@@ -10,7 +10,7 @@ import { money } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
-export function ReceiptModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
+export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: billTaxBreakdown, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
   // On screen the walk in header shows the raw key ('takeaway'); drive thru (16 Sep 2026)
   // is the one key with a hyphen, so only it is mapped. The check object handed to the
   // printer keeps the raw key, as every type does.
@@ -22,8 +22,12 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
 
   // Calculate tax breakdown for receipt — v5.7.34: through the unified seam
   // (byte-identical on legacy-equivalent venues; profiles cascade otherwise).
+  // v5.9.12: a caller holding the bill's own tax (POSSurface: getPOSTotals, with
+  // discounts / service / delivery in the basis) passes it, so the printed bill
+  // matches the total. Omitted = the old items-only computation.
   const taxCtx = useStore.getState().getTaxContext();
   const taxBreakdown = (() => {
+    if (billTaxBreakdown !== undefined) return billTaxBreakdown;
     if (!taxCtxHasConfig(taxCtx)) return null;
     try { return computeOrderTaxUnified(nonVoided, taxCtx, orderType || 'dine-in'); }
     catch { return null; }

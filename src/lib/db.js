@@ -917,6 +917,10 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
       taxAmount: c.tax_amount,
+      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
+      // (US) tax: refunds give back each line's own tax and reprints show what was
+      // charged. Inclusive-VAT rows load exactly as before (no key at all).
+      ...(c.tax_breakdown?.hasExclusiveTax ? { taxBreakdown: c.tax_breakdown } : {}),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
@@ -960,6 +964,10 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
       taxAmount: c.tax_amount,
+      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
+      // (US) tax: refunds give back each line's own tax and reprints show what was
+      // charged. Inclusive-VAT rows load exactly as before (no key at all).
+      ...(c.tax_breakdown?.hasExclusiveTax ? { taxBreakdown: c.tax_breakdown } : {}),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader

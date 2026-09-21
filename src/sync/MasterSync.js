@@ -233,6 +233,9 @@ export async function forceSyncFromSupabase() {
         orderType: c.order_type,
         tableLabel: c.table_label,
         tableId: c.table_id,
+        // v5.9.12: tax as booked (refunds and reprints of a US check read it).
+        // Inclusive rows get no new keys, as before.
+        ...(c.tax_breakdown?.hasExclusiveTax ? { taxAmount: c.tax_amount ?? null, taxBreakdown: c.tax_breakdown } : {}),
       }));
       const supabaseIds = new Set(supabaseChecks.map(c => c.id));
       const localOnly = (store.closedChecks || []).filter(c => !supabaseIds.has(c.id));

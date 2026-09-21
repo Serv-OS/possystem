@@ -37,6 +37,7 @@ export function buildLegacyProfiles(taxRates = []) {
     if (!r || r.active === false) continue;   // inactive = unresolvable, like resolveTaxRate
     const pid = legacyProfileId(r.id);
     const mode = r.type === 'inclusive' ? 'inclusive' : 'exclusive';
+    const added = mode === 'exclusive';
     profilesById[pid] = {
       id: pid,
       name: r.name || 'Tax',
@@ -52,7 +53,15 @@ export function buildLegacyProfiles(taxRates = []) {
         mode,
         compound: false,
         taxable: false,
-        taxBasis: 'pre_discount',   // legacy engine never saw discounts
+        // v5.9.12: a legacy rate row carries no basis settings, so it takes the
+        // US defaults (taxEngine.lineBasisSettings): an EXCLUSIVE rate is charged
+        // after discounts and on its share of a mandatory service charge; the
+        // delivery fee stays untaxed until an operator profile says otherwise.
+        // An INCLUSIVE rate keeps the pre-discount shelf-price extraction, so UK
+        // VAT is byte-identical (the engine ignores the check basis for it anyway).
+        taxBasis: added ? 'post_discount' : 'pre_discount',
+        taxServiceCharge: added,
+        taxDeliveryFee: false,
         orderTypes: ['all'],        // order-type routing is done by taxOverrides in the cascade
         sortOrder: 0,
         active: true,
