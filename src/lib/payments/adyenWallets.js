@@ -356,3 +356,61 @@ export const NO_NATIVE_3DS_TYPES = Object.freeze(['applepay']);
 export function wantsNativeThreeDS(paymentMethod) {
   return !NO_NATIVE_3DS_TYPES.includes(String(paymentMethod?.type ?? '').toLowerCase());
 }
+
+/* ── The store a /paymentMethods lookup may carry (20 Sep 2026) ──────────────
+ *
+ * Peter, live on Provo: "apple pay still not loading on the checkout", on an
+ * iPhone as well as a Mac. The lookup was answering:
+ *
+ *     { ok: false, cardOnly: true, error: 'Invalid Store', errorCode: '910' }
+ *
+ * so the form fell back to CARD_ONLY_PAYMENT_METHODS on every device, and no
+ * amount of Apple Pay configuration could have changed that.
+ *
+ * Adyen has TWO names for a store and they are not interchangeable:
+ *   - the Management API id, 'ST32DDL22322BQ5PXJVN95JSM' (what terminal
+ *     provisioning wrote into merchant_adyen_accounts.store_id), and
+ *   - the merchant's own reference, 'SV-1007' (our venue code, which is what
+ *     Adyen echoes back on every payment webhook for this venue).
+ * POST /paymentMethods documents `store` as "your reference ... for the
+ * ecommerce or point-of-sale store", maxLength 16, and answers error 910
+ * ("The specified store does not match any of the store references or store
+ * IDs for the merchant account") to a 25-character id.
+ *   https://docs.adyen.com/api-explorer/Checkout/71/post/paymentMethods
+ *   https://docs.adyen.com/development-resources/error-codes  (910)
+ *
+ * /payments is NOT touched by this: it has taken the id happily for a month of
+ * live authorisations, and the money path does not get changed to tidy up a
+ * lookup. Only the lookup learns to send the reference.
+ */
+export const STORE_REFERENCE_MAX = 16;
+
+/** 'ST32DDL22322BQ5PXJVN95JSM' — a Management API store id, not a reference. */
+export function isStoreId(value) {
+  return /^ST[0-9A-Z]{10,}$/i.test(String(value ?? '').trim());
+}
+
+/**
+ * The value to send as `store` on /paymentMethods, or null to send none.
+ *
+ * A stored value that is ALREADY a reference (short, not an ST id) is used as
+ * it stands, so a venue whose row holds the reference keeps working. Otherwise
+ * the venue code is used, because that is the field adyen-onboard puts in the
+ * store's `reference` when the store is created (list_stores matches on it).
+ * Null means "ask without a store" — a method list for the account rather than
+ * no method list at all.
+ */
+export function storeForPaymentMethods({ store, venueCode } = {}) {
+  const s = String(store ?? '').trim();
+  if (s && !isStoreId(s) && s.length <= STORE_REFERENCE_MAX) return s;
+  const code = String(venueCode ?? '').trim();
+  if (code && code.length <= STORE_REFERENCE_MAX) return code;
+  return null;
+}
+
+/**
+ * Adyen's "Invalid Store". The lookup retries ONCE without the store when it
+ * sees this, so a venue whose reference we guessed wrong loses its routing
+ * hint and keeps its wallets, instead of losing both.
+ */
+export const STORE_REJECTED_ERROR_CODE = '910';

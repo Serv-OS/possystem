@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.19',
+    date: '20 Sep 2026',
+    items: [
+      'APPLE PAY AND GOOGLE PAY ARE BACK ON THE ONLINE CHECKOUT. They were never reaching the page: Adyen was refusing our payment-methods lookup with error 910 "Invalid Store", so the form fell back to a card-only list on every device, iPhone and Safari included. We were sending the venue\'s Management API store id (ST32DDL2...); that call only accepts the store\'s REFERENCE, which is the venue code (SV-1007) Adyen puts on every one of this venue\'s payments. The lookup now sends the reference, and if Adyen still refuses a store it asks again without one, so a mis-named store costs card routing and never the wallets. Payments and sessions are untouched: they keep sending the store id that has authorised live for a month.',
+    ],
+  },
+  {
     v: '5.9.18',
     date: '20 Sep 2026',
     items: [
