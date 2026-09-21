@@ -31,6 +31,16 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
   const [confirmPass, setConfirmPass] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Why they are looking at this screen, when the Back Office signed itself out
+  // after sitting untouched (21 Sep 2026). Read ONCE and cleared, so it never
+  // greets somebody who simply signed out.
+  const [idleNote] = useState(() => {
+    try {
+      const n = sessionStorage.getItem('rpos-bo-idle-note');
+      if (n) sessionStorage.removeItem('rpos-bo-idle-note');
+      return n || '';
+    } catch { return ''; }
+  });
   const [info, setInfo] = useState('');
   const [showPass, setShowPass] = useState(false);
   // PASSKEY SIGN IN (20 Sep 2026). The screen asks the device what it can do, then offers the
@@ -177,6 +187,7 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
           <TextInput tone={tone} label="Password" type={showPass ? 'text' : 'password'} value={password} onChange={setPassword}
             placeholder="Your password" autoComplete="current-password" testId="bo-password" />
           {showToggle}
+          {idleNote && !error && <Note tone={tone} kind="info" testId="bo-login-idle">{idleNote}</Note>}
           <Note tone={tone} kind="error" testId="bo-login-error">{error}</Note>
           <PrimaryButton tone={tone} type="submit" busy={loading} disabled={!email || !password} testId="bo-sign-in">Sign in</PrimaryButton>
           <div style={{ textAlign: 'center' }}>

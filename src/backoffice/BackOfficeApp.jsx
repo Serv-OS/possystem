@@ -95,6 +95,7 @@ import PackageBuilder from './sections/PackageBuilder';
 import TableBookings from './sections/TableBookings';
 import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
+import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -326,6 +327,10 @@ export default function BackOfficeApp() {
   const [secondStepOk, setSecondStepOk] = useState(isMock);
   const [recoveryStepOk, setRecoveryStepOk] = useState(false);
   const bootedPasswordOnly = useRef(false);
+  // The sign in that has already passed the gate in THIS tab. Memory only: a
+  // reload asks again, and nothing a browser could be told to lie about decides
+  // it (the fence is the database, this is only the screen).
+  const passedSessionId = useRef(null);
   const [section, setSection] = useState('overview');
   const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
@@ -373,10 +378,15 @@ export default function BackOfficeApp() {
         clearResolvedLocationId();
         setSecondStepOk(false);
       }
-      // Second step: a real login whose token is back to password only (aal1) must pass the
-      // gate again. Never re-opened here: only SecondStepGate calls setSecondStepOk(true).
-      // A passkey sign in is aal1 and is DONE (docs/SECOND_STEP.md): never re-gate it.
-      if (session && isRealLogin(session) && !sessionProvesSecondStep(session)) setSecondStepOk(false);
+      // Second step: a sign in that went BACKWARDS must pass the gate again.
+      // NOT simply "this token is a password one" (21 Sep 2026, live): supabase-js
+      // raises an auth event when the tab comes back to the front and on every
+      // token refresh, and a password sign in keeps a password token for its whole
+      // life, so that test was true every single time. Peter: "the back office is
+      // logging out every time you click off the page". It was the gate reopening.
+      // shouldRegate compares the auth server's own session_id with the one that
+      // already passed in this tab, so a refresh of the SAME sign in is left alone.
+      if (shouldRegate({ session, passedId: passedSessionId.current })) setSecondStepOk(false);
       // Ignore anonymous sessions entirely (and don't re-sign-out on the
       // SIGNED_IN(anon) event — ensureAuthToken no longer creates them in
       // office mode, so this only guards legacy/edge cases).
@@ -386,6 +396,38 @@ export default function BackOfficeApp() {
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  // ── SIGNED OUT AFTER 30 MINUTES ALONE (Peter, 21 Sep 2026) ────────────────
+  // "we should have it so if there is not activity for a while it logs out".
+  // A Back Office left open on a counter is a way in for anybody who walks past,
+  // and it used to stay open indefinitely. Mouse, key, wheel or touch counts as
+  // somebody being here; a tab in the background does NOT, which is the whole
+  // point. Checked once a minute rather than on a long timer, so a laptop that
+  // slept through the window is signed out when it wakes, not half an hour later.
+  useEffect(() => {
+    if (isMock || !authUser) return;
+    let last = Date.now();
+    const touch = () => { last = Date.now(); };
+    for (const ev of ACTIVITY_EVENTS) window.addEventListener(ev, touch, { passive: true });
+    const onVisible = () => { if (!document.hidden) check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const check = () => {
+      if (!idleTooLong(last)) return;
+      clearInterval(timer);
+      for (const ev of ACTIVITY_EVENTS) window.removeEventListener(ev, touch);
+      document.removeEventListener('visibilitychange', onVisible);
+      try { sessionStorage.setItem('rpos-bo-idle-note', idleSignOutMessage()); } catch { /* the message is a nicety */ }
+      localStorage.removeItem('rpos-bo-location');
+      clearResolvedLocationId();
+      supabase.auth.signOut({ scope: 'local' }).finally(() => window.location.reload());
+    };
+    const timer = setInterval(check, 60_000);
+    return () => {
+      clearInterval(timer);
+      for (const ev of ACTIVITY_EVENTS) window.removeEventListener(ev, touch);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [authUser]);
 
   // Load org/location context once user is known AND has passed the second step
   // (before that the database refuses a password only sign in once enforcement is on).
@@ -659,6 +701,12 @@ export default function BackOfficeApp() {
       } catch { /* the reload below, or the next refresh, puts it right */ }
       // Only a real upgrade is worth a reload; stepping aside must never reload, or a password
       // only session with the break glass off loops for ever (20 Sep 2026).
+      // Remember WHICH sign in passed, so a token refresh or a tab coming back to
+      // the front is not mistaken for a sign in that went backwards.
+      try {
+        const { data } = await supabase.auth.getSession();
+        passedSessionId.current = sessionIdOf(data?.session);
+      } catch { /* the gate still passes; the worst case is being asked again */ }
       if (result?.upgraded && bootedPasswordOnly.current) window.location.reload();
       else setSecondStepOk(true);
     };
