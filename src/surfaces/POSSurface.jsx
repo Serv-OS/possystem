@@ -1612,8 +1612,11 @@ export default function POSSurface() {
               ? quickItems.length
               : (directCountByCat.get(c.id) || 0) + subIds.reduce((s, id) => s + (directCountByCat.get(id) || 0), 0);
             const hasSubcats = subIds.length > 0;
+            // Picking a category means "I want to serve somebody", so it comes back from
+            // History, Deliveries or whatever else is on the panel (Peter, 21 Sep 2026).
+            // Nothing happens when the menu is already showing.
             return (
-              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); }} className="cat-btn" style={{
+              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); setRightTab('menu'); }} className="cat-btn" style={{
                 marginBottom:3, gap:10,
                 background:isActive?`${color}1f`:'transparent',
                 borderColor:isActive?`${color}66`:'transparent',
@@ -1774,10 +1777,10 @@ export default function POSSurface() {
             {/* Subcategory pills */}
             {!search && cat !== 'quick' && subCategories.length > 0 && (
               <div style={{ display:'flex', gap:4, padding:'6px 0 10px', flexWrap:'wrap' }}>
-                <button onClick={() => setSubCat(null)} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
+                <button onClick={() => { setSubCat(null); setRightTab('menu'); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
                 {subCategories.map(sc => {
                   const a = subCat === sc.id, cl = sc.color||'var(--acc)';
-                  return (<button key={sc.id} onClick={() => setSubCat(sc.id)} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && (emojiToIcon(sc.icon) ? <Icon name={emojiToIcon(sc.icon)} size={13}/> : <span>{sc.icon}</span>)}{sc.label}</button>);
+                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && (emojiToIcon(sc.icon) ? <Icon name={emojiToIcon(sc.icon)} size={13}/> : <span>{sc.icon}</span>)}{sc.label}</button>);
                 })}
               </div>
             )}
