@@ -693,6 +693,21 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [warningCountdown, setWarningCountdown] = useState(10);
   const resetIdle = useCallback(() => { lastActivityRef.current = Date.now(); setIdleWarning(false); setWarningCountdown(10); }, []);
 
+  // THE ORDER NUMBER GETS ITS OWN TIME ON SCREEN (Peter, 21 Sep 2026, live: "the
+  // notification didn't stay on the screen for very long", both times).
+  //
+  // The idle clock runs from the customer's last TOUCH, and their last touch is before
+  // they pay. Taking the card, writing the order and printing can take most of a minute,
+  // and every second of it came off the done screen: the SLOWER the payment, the less
+  // time the customer had to read the number they have to remember. Arriving at the done
+  // screen is the event, so the clock starts here.
+  //
+  // Deliberately an effect on `screen`, NOT a line inside submitOrder: that function is
+  // fingerprinted by the card path guard (kioskCardPathGuard.test.js) and must not change.
+  useEffect(() => {
+    if (screen === 'done') resetIdle();
+  }, [screen, resetIdle]);
+
   useEffect(() => {
     const tick = setInterval(() => {
       const idle = (Date.now() - lastActivityRef.current) / 1000;

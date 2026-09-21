@@ -61,6 +61,17 @@ const CLAIM_TTL_MS      = 30_000;        // claim expires after 30s — then rec
 // whatever the poll is set to.
 const MASTER_POLL_MS    = 20_000;        // master backstop scan
 const CHILD_POLL_MS     = 30_000;        // child backstop scan (failover only)
+// A KITCHEN TICKET WAITED 12 SECONDS (21 Sep 2026, Provo kiosk, live). The realtime
+// INSERT is what normally picks a job up in ~50-150ms; the backstop above is 20s and is
+// deliberately slow, because the table is empty most of the day. The gap between those
+// two numbers is the whole problem: every moment the socket is down (a reload, a wifi
+// blip, a deploy) an INSERT lands with nobody listening, and the ticket then waits for
+// the slow scan. So: sweep the moment the subscription comes UP (that is exactly when
+// something was missed), and once work is found, keep sweeping every 2s until there is
+// none left. Both are bursts around real events, so the steady cost of an idle venue is
+// unchanged.
+const RESUBSCRIBE_SWEEP_MS = 1_500;      // catch-up sweep after the socket (re)connects
+const BUSY_POLL_MS         = 2_000;      // while there is work, look again this soon
 const RECLAIM_MS        = 60_000;        // stuck-claim sweep + exhausted-job sweep
 const CHILD_DELAY_MS    = 10_000;        // child only claims jobs older than 10s
                                           // (gives master first shot, avoids thrash)
@@ -68,6 +79,7 @@ const BATCH_SIZE        = 10;            // max jobs to claim per scan
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let _pollTimer      = null;
+let _busyTimer      = null;   // one-shot fast follow-up while jobs keep appearing
 let _reclaimTimer   = null;
 let _idempotencyCleanupTimer = null;
 let _channel        = null;
@@ -145,7 +157,15 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
       const delay = _isMaster ? 0 : CHILD_DELAY_MS;
       setTimeout(() => claimAndDispatch(job.id), delay);
     })
-    .subscribe();
+    .subscribe((status) => {
+      // SUBSCRIBED fires on the first connect AND on every reconnect, which is
+      // precisely when an INSERT may have been missed: nothing was listening
+      // while the socket was down. Sweep now rather than at the 20s backstop.
+      if (status === 'SUBSCRIBED') {
+        tick();
+        setTimeout(() => { if (_running) tick(); }, RESUBSCRIBE_SWEEP_MS);
+      }
+    });
 
   // FAST PATH — Supabase Realtime BROADCAST channel. MPOS sends a broadcast
   // with the bytes when it submits a print, and master prints immediately on
@@ -371,11 +391,12 @@ export function stopPrintOrchestrator() {
   if (!_running) return;
   _running = false;
   clearInterval(_pollTimer);
+  clearTimeout(_busyTimer);
   clearInterval(_reclaimTimer);
   clearInterval(_idempotencyCleanupTimer);
   if (_channel && supabase) supabase.removeChannel(_channel);
   if (_fastChannel && supabase) supabase.removeChannel(_fastChannel);
-  _pollTimer = _reclaimTimer = _idempotencyCleanupTimer = _channel = _fastChannel = null;
+  _pollTimer = _busyTimer = _reclaimTimer = _idempotencyCleanupTimer = _channel = _fastChannel = null;
   for (const t of _retryTimers) clearTimeout(t);
   _retryTimers.clear();
   _inflight.clear();
@@ -403,6 +424,15 @@ export function getOrchestratorStatus() {
 }
 
 // ─── Core poll tick ──────────────────────────────────────────────────────────
+/** One fast follow-up sweep. Re-armed by each tick that found work, never stacked. */
+function armBusySweep() {
+  if (!_running || _busyTimer) return;
+  _busyTimer = setTimeout(() => {
+    _busyTimer = null;
+    if (_running) tick();
+  }, BUSY_POLL_MS);
+}
+
 async function tick() {
   if (!_running || !supabase) return;
 
@@ -435,6 +465,11 @@ async function tick() {
 
     if (error) { console.warn('[PrintOrchestrator] poll rejected:', error.message || error); return; }
     if (!data) return;
+    // Work found: look again in 2s rather than waiting out the 20s backstop. A burst
+    // (a kiosk order that prints to kitchen AND bar, or a queue that built up while the
+    // socket was down) drains at the speed of the kitchen, not of the scan. It stops by
+    // itself the first time a sweep comes back empty.
+    if (data.length) armBusySweep();
 
     for (const job of data) {
       if (_inflight.has(job.id)) continue;
