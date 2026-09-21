@@ -115,17 +115,48 @@ async function teamIds(locationId: string | null): Promise<string[]> {
  * on that alone: we also ask the admin passkey route to remove each credential we know about,
  * and if neither route took them we say so, loudly, instead of reporting a clean reset.
  */
-async function removePasskeys(targetId: string, webauthnFactorsDeleted: number): Promise<{
-  known: number; removed: number; left: number;
-}> {
-  const { data, error } = await admin
+/**
+ * WHICH PASSKEYS THIS LOGIN REALLY HAS (21 Sep 2026).
+ *
+ * Our own table is written by the BROWSER after a passkey is made, so anything
+ * that interrupts that one call leaves a passkey Supabase knows about and we do
+ * not. Live proof on this project: three logins hold a passkey, our table had
+ * two. A reset that only swept our list reported a clean sweep and left the
+ * third alive, and a passkey signs in on its own, with no password.
+ *
+ * So ASK SUPABASE (second_step_user_passkeys, service role only, added by
+ * 20260921s) and use our table as the fallback while that file has not been
+ * run. The union is what gets deleted: neither list may be trusted alone.
+ */
+async function knownPasskeyIds(targetId: string): Promise<{ ids: string[]; fromSupabase: boolean }> {
+  const ids = new Set<string>();
+  let fromSupabase = false;
+  const rpc = await admin.rpc('second_step_user_passkeys', { p_user: targetId });
+  if (!rpc.error) {
+    fromSupabase = true;
+    for (const row of (rpc.data ?? []) as any[]) {
+      const id = String(row?.credential_id ?? '').trim();
+      if (id) ids.add(id);
+    }
+  }
+  const ours = await admin
     .from('second_step_passkeys')
     .select('credential_id')
     .eq('user_id', targetId)
     .is('removed_at', null);
-  // No table yet (the passkey update has not been run): nothing of ours to clear.
-  if (error) return { known: 0, removed: 0, left: 0 };
-  const ids = (data ?? []).map((r: any) => String(r.credential_id)).filter(Boolean);
+  if (!ours.error) {
+    for (const row of (ours.data ?? []) as any[]) {
+      const id = String(row?.credential_id ?? '').trim();
+      if (id) ids.add(id);
+    }
+  }
+  return { ids: [...ids], fromSupabase };
+}
+
+async function removePasskeys(targetId: string, webauthnFactorsDeleted: number): Promise<{
+  known: number; removed: number; left: number;
+}> {
+  const { ids, fromSupabase } = await knownPasskeyIds(targetId);
   if (ids.length === 0) return { known: 0, removed: 0, left: 0 };
 
   let removed = 0;
@@ -143,8 +174,18 @@ async function removePasskeys(targetId: string, webauthnFactorsDeleted: number):
   }
   // The factor loop counts too: a webauthn credential removed there IS a passkey removed.
   const takenByFactors = Math.max(0, webauthnFactorsDeleted);
-  const reallyGone = Math.max(removed, Math.min(ids.length, takenByFactors));
-  const left = Math.max(0, ids.length - reallyGone);
+  let reallyGone = Math.max(removed, Math.min(ids.length, takenByFactors));
+  let left = Math.max(0, ids.length - reallyGone);
+
+  // When Supabase answered, ASK IT AGAIN rather than inferring: what is still
+  // there is the only honest answer to "did the reset take the passkeys".
+  if (fromSupabase) {
+    const after = await admin.rpc('second_step_user_passkeys', { p_user: targetId });
+    if (!after.error) {
+      left = ((after.data ?? []) as any[]).length;
+      reallyGone = Math.max(0, ids.length - left);
+    }
+  }
 
   // Our own record follows what actually happened, so the team list never shows a ghost.
   const clear = reallyGone >= ids.length ? ids : ids.slice(0, reallyGone);
@@ -222,16 +263,27 @@ Deno.serve(async (req) => {
     const ids = await teamIds(locationId);
     // One read for everybody's passkeys: a passkey counts as set up, and for most people from
     // 20 Sep 2026 it is the only second step they have.
+    // SUPABASE'S COUNT FIRST (21 Sep 2026): our own table missed one of three
+    // live passkeys, and a list that under reports "set up" is how somebody
+    // gets locked out for a second step they already have.
     const passkeyCount = new Map<string, number>();
     if (ids.length) {
-      const { data: keys } = await admin
-        .from('second_step_passkeys')
-        .select('user_id')
-        .in('user_id', ids)
-        .is('removed_at', null);
-      for (const k of (keys ?? []) as any[]) {
-        const u = String(k.user_id);
-        passkeyCount.set(u, (passkeyCount.get(u) ?? 0) + 1);
+      const counts = await admin.rpc('second_step_passkey_counts', { p_users: ids });
+      if (!counts.error) {
+        for (const row of (counts.data ?? []) as any[]) {
+          passkeyCount.set(String(row.user_id), Number(row.passkeys) || 0);
+        }
+      } else {
+        // 20260921s has not been run: our own record, exactly as before.
+        const { data: keys } = await admin
+          .from('second_step_passkeys')
+          .select('user_id')
+          .in('user_id', ids)
+          .is('removed_at', null);
+        for (const k of (keys ?? []) as any[]) {
+          const u = String(k.user_id);
+          passkeyCount.set(u, (passkeyCount.get(u) ?? 0) + 1);
+        }
       }
     }
     const rows = (await mapLimit(ids, 5, async (id) => {

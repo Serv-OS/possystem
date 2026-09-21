@@ -661,10 +661,15 @@ reset lock_timeout;
 -- Every Back Office login with no verified factor is banned until an owner or ServOS invites
 -- it. That is what stops a thief claiming a dormant login's second step with its password.
 -- Run V6b first so you know who they are. The staff app is not touched.
+-- A PASSKEY COUNTS (21 Sep 2026). This block was written before passkeys, and
+-- a passkey is NOT an mfa_factor on this project: as first written it would
+-- have banned every person who had done exactly what they were asked, Peter
+-- included (he had a passkey and no factor). Both halves, always:
 --   update auth.users u set banned_until = 'infinity'
 --    where not u.is_anonymous
 --      and public.second_step_reach(u.id) = 'back_office'
---      and not exists (select 1 from auth.mfa_factors f where f.user_id = u.id and f.status = 'verified');
+--      and not exists (select 1 from auth.mfa_factors f where f.user_id = u.id and f.status = 'verified')
+--      and not exists (select 1 from auth.webauthn_credentials w where w.user_id = u.id);
 --
 -- To let one back in (they are with you, or they asked): clear the ban, then have them set up.
 --   update auth.users set banned_until = null where email = 'them@example.com';
