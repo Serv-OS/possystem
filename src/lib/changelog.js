@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.31',
+    date: '21 Sep 2026',
+    items: [
+      'THE BACK OFFICE NO LONGER ASKS YOU TO SIGN IN AGAIN EVERY TIME YOU CLICK OFF THE PAGE. It was never signing you out: the second step screen was reopening. The app treated "this sign in used a password" as "this sign in has gone backwards", and a password sign in carries a password token for its whole life, so every time a tab came back to the front, or the token quietly refreshed, the screen came up again. It now compares the sign in itself, so the same one coming back to the front is left alone, while a different person signing in still has to prove who they are.',
+      'AND IT SIGNS ITSELF OUT AFTER 30 MINUTES ALONE, which is the behaviour that was wanted. A Back Office left open on a counter is a way in for anybody walking past. Mouse, key, scroll or touch counts as somebody being there; a tab sitting in the background does not. It says why on the sign in screen so nobody thinks something broke.',
+    ],
+  },
+  {
     v: '5.9.30',
     date: '21 Sep 2026',
     items: [
