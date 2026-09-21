@@ -252,9 +252,11 @@ function SaveHealthBanner() {
     }}>
       {health.offline
         ? '⚠ NO CONNECTION TO THE SERVER — the last change did not reach us and was not saved. Check this device\u2019s internet; we keep trying, and this bar clears the moment a save gets through.'
-        : health.authy
-          ? '⚠ YOUR CHANGES ARE NOT SAVING — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
-          : `⚠ YOUR CHANGES ARE NOT SAVING — ${health.message || 'database write failed'}. Redo the change once this clears.`}
+        : health.denied
+          ? '⚠ YOU ARE NOT SET UP FOR THIS VENUE — nothing you change here can save. This is not a fault: your login has not been given this venue. Switch back to your own venue, or ask the owner to add you to this one.'
+          : health.authy
+            ? '⚠ YOUR CHANGES ARE NOT SAVING — your sign-in has expired. Refresh this page and sign in again, then REDO the change you just made.'
+            : `⚠ YOUR CHANGES ARE NOT SAVING — ${health.message || 'database write failed'}. Redo the change once this clears.`}
       <span style={{ fontWeight:500, opacity:.9 }}> Anything edited while this bar is showing will be lost.</span>
     </div>
   );

@@ -22,16 +22,18 @@ const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: 
 
 const CAMPAIGN_FIELDS = ['name', 'description', 'type', 'channel', 'segment_id', 'exclusion_segment_id', 'trigger', 'schedule', 'subject', 'email_html', 'email_blocks', 'sms_body', 'from_name', 'offer_id', 'status', 'variants'];
 
+import { isVenueWriter } from '../_shared/venueWriter.js';
+
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return false;
   if (token === SERVICE_ROLE) return true;
   const { data: { user } } = await sb.auth.getUser(token);
   if (!user) return false;
-  const { data: ul } = await sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', opsLocationId).maybeSingle();
-  if (ul) return true;
-  const { data: prof } = await sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
-  return prof?.role === 'super_admin';
+  // One rule, shared with the database (migration 20260921u): a link row, a super
+  // admin, or an owner acting inside their own organisation. Never stricter than
+  // the database, or a venue is writable in the app and refused here.
+  return await isVenueWriter(sb, user, opsLocationId);
 }
 async function orgFor(opsLocationId: string): Promise<string | null> {
   const { data } = await sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();

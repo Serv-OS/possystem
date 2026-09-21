@@ -28,16 +28,17 @@ const REDIRECT_URI = `${SUPABASE_URL}/functions/v1/review-google`;
 const opsAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
+import { isVenueWriter } from '../_shared/venueWriter.js';
+
 async function authed(req: Request, ops: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return false;
   if (token === SERVICE_ROLE) return true;
   const { data: { user } } = await opsAdmin.auth.getUser(token);
   if (!user) return false;
-  const { data: ul } = await opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', ops).maybeSingle();
-  if (ul) return true;
-  const { data: p } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
-  return p?.role === 'super_admin';
+  // One rule, shared with the database (migration 20260921u): a link row, a super
+  // admin, or an owner acting inside their own organisation.
+  return await isVenueWriter(opsAdmin, user, ops);
 }
 async function companyFor(ops: string) {
   const { data } = await platformAdmin.from('locations').select('company_id').or(`ops_location_id.eq.${ops},id.eq.${ops}`).maybeSingle();

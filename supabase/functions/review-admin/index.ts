@@ -22,16 +22,17 @@ const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', 
 // Fields the Settings screen may write to review_settings (whitelist).
 const SETTINGS_FIELDS = ['enabled', 'threshold', 'page_title', 'intro_copy', 'thanks_public_copy', 'thanks_private_copy', 'hero_image_url', 'card_button_style', 'ai_auto_draft', 'ai_auto_send_hours', 'brand_voice', 'custom_copy', 'ask_enabled', 'ask_channel', 'ask_delay_minutes', 'ask_delay_collection_minutes', 'ask_window_start', 'ask_window_end', 'ask_frequency_days', 'ask_message'];
 
+import { isVenueWriter } from '../_shared/venueWriter.js';
+
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return false;
   if (token === SERVICE_ROLE) return true;
   const { data: { user } } = await opsAdmin.auth.getUser(token);
   if (!user) return false;
-  const { data: ul } = await opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', opsLocationId).maybeSingle();
-  if (ul) return true;
-  const { data: prof } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
-  return prof?.role === 'super_admin';
+  // One rule, shared with the database (migration 20260921u): a link row, a super
+  // admin, or an owner acting inside their own organisation.
+  return await isVenueWriter(opsAdmin, user, opsLocationId);
 }
 
 async function companyFor(opsLocationId: string): Promise<string | null> {
