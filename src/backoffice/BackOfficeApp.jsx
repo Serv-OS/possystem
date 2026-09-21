@@ -1165,12 +1165,23 @@ function PushToPOSButton() {
     } catch {}
 
     // Write to Supabase so physical devices on other machines receive it
-    import('../lib/db.js').then(async ({ insertConfigPush, upsertMenuItem, upsertMenuCategory }) => {
+    import('../lib/db.js').then(async ({ insertConfigPush, upsertMenuItem, upsertMenuCategory, upsertMenu }) => {
       const { getLocationId } = await import('../lib/supabase.js');
       const locationId = await getLocationId();
 
       // Write config push (for realtime notification to POS devices)
       insertConfigPush({ pushed_by: staff?.name || 'Manager', snapshot, change_count: pendingBOChanges }, locationId);
+
+      // MENUS FIRST, and AWAITED (v5.9.22). menu_categories.menu_id references
+      // menus(id), so a category whose menu row is missing is refused outright
+      // (23503). This push wrote items and categories and never the menus, so
+      // at Huddersfield every category write failed from April until today and
+      // only the console knew: the tills read the snapshot, so they looked
+      // right, while menu boards, online ordering and the kiosk had nothing.
+      // Awaited so the categories below find their parent already there.
+      if (locationId && menus?.length) {
+        await Promise.allSettled(menus.map(m => upsertMenu(m, locationId)));
+      }
 
       // Also write ALL menu items and categories to Supabase so they're queryable
       // This makes Supabase the source of truth, not just the snapshot
