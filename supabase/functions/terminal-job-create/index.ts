@@ -43,7 +43,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { readTipOnReceipt } from '../_shared/tip_capture.ts';
-import { shouldServerKick, clientOwnsCreateKick } from '../_shared/terminalKick.js';
+import { shouldServerKick, clientOwnsCreateKick, LOST_CAS_ASK_AFTER_MS } from '../_shared/terminalKick.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
@@ -115,6 +115,42 @@ const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging', 'u
 // ═══════════════════════════════════════════════════════════════════════════════
 const SERVER_KICK_GRACE_MS = 1500;
 
+/**
+ * The client got to the CAS first, so we stood down. Ask the reader what
+ * happened 25 seconds later, because a cloud 'start' holds one HTTP request
+ * open for the whole cardholder interaction and an unattended browser (a kiosk
+ * WebView that sleeps or reloads) can take that request away with it. Nothing
+ * else watches a job in 'charging': the unsent sweep only covers
+ * charging_unsent. Live on 21 Sep 2026 that left a Provo kiosk customer with a
+ * reader that never lit up, and the job sat until a human found it nine
+ * minutes later.
+ *
+ * This is an ASK, never another kick: 'result' settles from the reader's own
+ * answer, leaves a live tender alone inside 120s, and resets a job the reader
+ * never saw back to charging_unsent for the sweep to re-kick safely.
+ */
+function scheduleReaderAsk(jobId: string, why: string) {
+  const run = async () => {
+    await new Promise((r) => setTimeout(r, LOST_CAS_ASK_AFTER_MS));
+    try {
+      const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ action: 'result', job_id: jobId, asked_by: 'terminal-job-create' }),
+      });
+      const out = await res.text();
+      console.log(`[terminal-job-create] reader ask for job ${jobId} (${why}): ${res.status} ${out.slice(0, 200)}`);
+    } catch (e) {
+      console.error(`[terminal-job-create] reader ask for job ${jobId} failed to send: ${(e as Error)?.message || e}`);
+    }
+  };
+  // deno-lint-ignore no-explicit-any
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(run());
+  else run();
+  console.log(`[terminal-job-create] reader ask scheduled for job ${jobId} in ${LOST_CAS_ASK_AFTER_MS}ms (${why})`);
+}
+
 function scheduleServerKick(jobId: string, why: string) {
   const run = async () => {
     await new Promise((r) => setTimeout(r, SERVER_KICK_GRACE_MS));
@@ -126,6 +162,9 @@ function scheduleServerKick(jobId: string, why: string) {
       });
       const out = await res.text();
       console.log(`[terminal-job-create] server kick for job ${jobId} (${why}): ${res.status} ${out.slice(0, 200)}`);
+      // A client beat us to the CAS. It owns the tender now, and if its call
+      // goes away nothing else is watching, so make sure somebody asks.
+      if (res.status === 409 && /IN_FLIGHT|in_flight/.test(out)) scheduleReaderAsk(jobId, 'client won the CAS');
     } catch (e) {
       console.error(`[terminal-job-create] server kick for job ${jobId} failed to send: ${(e as Error)?.message || e}`);
     }

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.25',
+    date: '21 Sep 2026',
+    items: [
+      'A KIOSK CARD PAYMENT THAT NEVER REACHES THE READER IS NOW FOUND IN SECONDS, NOT BY A HUMAN. Live at Provo: a kiosk sale was sent to the card machine and the reader never lit up, while pay at table on the same reader worked a minute later. The kiosk and the server both tried to wake the reader at the same moment, the kiosk won by half a second, and the server stood down as it is designed to. Then the kiosk browser took its own request away with it, and nothing was left watching: a payment that has been sent has no minder, only one that was never sent does. The customer stood at a dead reader and the sale sat there until somebody happened to open pay at table nine minutes later. Now, whenever the server stands down for a till or a kiosk, it asks the reader itself 25 seconds later what happened, and the sweeper asks before it ever parks a payment for a manager. Asking is not retrying: it settles only from what the reader reports, leaves a customer mid payment alone, and a payment the reader never saw is sent again properly instead of being written off.',
+    ],
+  },
+  {
     v: '5.9.24',
     date: '21 Sep 2026',
     items: [

@@ -11,9 +11,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readFileSync } from 'node:fs';
+
 import {
   isLocalBridgeJob, shouldServerKick, selectUnsentSweepCandidates, clientOwnsCreateKick,
   UNSENT_SWEEP_MIN_AGE_MS, UNSENT_SWEEP_MAX_AGE_MS, UNSENT_SWEEP_LIMIT,
+  shouldAskReaderAfterLostCas, selectReaderAskCandidates, LOST_CAS_ASK_AFTER_MS,
 } from '../../../supabase/functions/_shared/terminalKick.js';
 
 const NOW = Date.parse('2026-09-09T22:34:00Z');
@@ -219,4 +222,62 @@ test('sweep: tolerates junk input', () => {
   // plain-object maps work too
   const r = selectUnsentSweepCandidates([job()], { terminalsById: { 'term-cloud': cloudTerm }, devicesById: { 'dev-till': { device_uid: 'uid-till' } }, now: NOW });
   assert.deepEqual(r.kick, ['job-1']);
+});
+
+// ── nobody was driving the tender (21 Sep 2026, live, Provo kiosk) ──────────────────────────
+// "card payments not getting to the reader from the kiosk", while pay at table on the SAME
+// reader worked a minute later. The kiosk's own cloud 'start' won the CAS at 18:28:59.090,
+// the server kick was refused IN_FLIGHT 654ms later and stood down, and then the kiosk's call
+// went away with its browser. A cloud 'start' holds one HTTP request open for the whole
+// cardholder interaction, and nothing watches a job that has reached 'charging': the unsent
+// sweep covers charging_unsent only. The job sat until a human opened pay at table.
+
+test('the server asks the reader after it stands down for a client', () => {
+  // Not another kick: a second start is how a card gets charged twice.
+  assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen' }), true);
+  assert.equal(shouldAskReaderAfterLostCas({ processor: 'ryft' }), false, 'a PAX cannot be asked anything');
+  assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen', simulated: true }), false);
+  assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen', training: true }), false);
+  assert.equal(shouldAskReaderAfterLostCas(null), false);
+  // Long enough to be mid tender (the 120s abort rule is measured from dispatch, so this can
+  // never cut a live tender short), short enough to catch a dropped browser while the customer
+  // is still standing at the reader.
+  assert.ok(LOST_CAS_ASK_AFTER_MS >= 15_000 && LOST_CAS_ASK_AFTER_MS <= 60_000);
+});
+
+test('the reconciler asks about the jobs it can, and only those', () => {
+  const rows = [
+    { id: 'newer', status: 'unknown', processor: 'adyen', nexo_service_id: 's2', created_at: '2026-09-21T18:30:00Z' },
+    { id: 'older', status: 'unknown', processor: 'adyen', nexo_service_id: 's1', created_at: '2026-09-21T18:28:56Z' },
+    { id: 'pax', status: 'unknown', processor: 'ryft', nexo_service_id: 's3', created_at: '2026-09-21T18:00:00Z' },
+    { id: 'never-sent', status: 'unknown', processor: 'adyen', nexo_service_id: null, created_at: '2026-09-21T18:00:00Z' },
+    { id: 'live', status: 'charging', processor: 'adyen', nexo_service_id: 's4', created_at: '2026-09-21T18:31:00Z' },
+    { id: 'demo', status: 'unknown', processor: 'adyen', simulated: true, nexo_service_id: 's5', created_at: '2026-09-21T17:00:00Z' },
+  ];
+  // oldest first, because the customer who has waited longest is asked about first
+  assert.deepEqual(selectReaderAskCandidates(rows), ['older', 'newer']);
+  // a job with no service id never reached the reader: the unsent sweep owns it, and asking
+  // about a tender that does not exist can only confuse the answer
+  assert.ok(!selectReaderAskCandidates(rows).includes('never-sent'));
+  // and a job still charging is not this pass's business
+  assert.ok(!selectReaderAskCandidates(rows).includes('live'));
+  assert.deepEqual(selectReaderAskCandidates([]), []);
+  assert.deepEqual(selectReaderAskCandidates(null), []);
+});
+
+test('both servers ask, and neither of them kicks again', () => {
+  const create = readFileSync(new URL('../../../supabase/functions/terminal-job-create/index.ts', import.meta.url), 'utf8');
+  const recon = readFileSync(new URL('../../../supabase/functions/terminal-job-reconcile/index.ts', import.meta.url), 'utf8');
+  // the lost CAS schedules an ASK
+  assert.match(create, /if \(res\.status === 409 && \/IN_FLIGHT\|in_flight\/\.test\(out\)\) scheduleReaderAsk\(jobId, 'client won the CAS'\);/);
+  const ask = create.slice(create.indexOf('function scheduleReaderAsk'), create.indexOf('function scheduleServerKick'));
+  assert.match(ask, /action: 'result'/, "an ask, never a second 'start'");
+  assert.doesNotMatch(ask, /action: 'start'/);
+  assert.match(ask, /LOST_CAS_ASK_AFTER_MS/);
+  // the reconciler asks before it leaves anything for a human
+  const pass = recon.slice(recon.indexOf('const asked:'), recon.indexOf('BLOCKED ON RYFT'));
+  assert.match(pass, /selectReaderAskCandidates\(stuck \?\? \[\]\)/);
+  assert.match(pass, /action: 'result'/);
+  assert.doesNotMatch(pass, /action: 'start'/, 'the sweeper still never starts a charge');
+  assert.match(recon, /processor_lookup_available: \{ adyen: true, ryft: false \}/);
 });
