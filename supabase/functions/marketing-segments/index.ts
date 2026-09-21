@@ -22,16 +22,17 @@ const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, 
 // Prebuilt audience catalogue is shared with the campaign/workflow pickers (see _shared/segments-prebuilt.ts).
 const SEGMENT_FIELDS = ['name', 'description', 'kind', 'prebuilt_key', 'definition', 'active'];
 
+import { isVenueWriter } from '../_shared/venueWriter.js';
+
 async function authed(req: Request, opsLocationId: string): Promise<boolean> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return false;
   if (token === SERVICE_ROLE) return true;
   const { data: { user } } = await opsAdmin.auth.getUser(token);
   if (!user) return false;
-  const { data: ul } = await opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', opsLocationId).maybeSingle();
-  if (ul) return true;
-  const { data: prof } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
-  return prof?.role === 'super_admin';
+  // One rule, shared with the database (migration 20260921u): a link row, a super
+  // admin, or an owner acting inside their own organisation.
+  return await isVenueWriter(opsAdmin, user, opsLocationId);
 }
 async function orgFor(opsLocationId: string): Promise<string | null> {
   const { data } = await opsAdmin.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();

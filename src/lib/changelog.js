@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.35',
+    date: '21 Sep 2026',
+    items: [
+      'AN OWNER NOW HOLDS EVERY VENUE IN THEIR OWN COMPANY. A venue added today could not be set up by the person who owns it: access meant a link row written when their login was created, so anything they changed at a newer venue silently refused to save. Coffee Boy Barnsley Train Station was the one that showed it up. Owners now reach every venue in their organisation the moment it exists, and nobody has to remember to link them. Super admins are unchanged, and managers still hold only the venues they are given.',
+      'ONE RULE INSTEAD OF NINE COPIES. Venue settings, marketing and the review screens each carried their own private copy of "may this login write here?", so a venue could be writable in Back Office and refused by the screen next to it. They all ask the same rule now, and it is the same rule the database uses.',
+      'THE RED BAR SAYS WHICH PROBLEM IT IS. Being refused a venue is not a save fault, but it wore the same red bar and the same words, which sent us hunting a bug that was not there. It now says you are not set up for this venue, and what to do about it.',
+    ],
+  },
+  {
     v: '5.9.34',
     date: '21 Sep 2026',
     items: [

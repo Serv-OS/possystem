@@ -15,6 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
+import { isVenueWriter } from '../_shared/venueWriter.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -129,9 +130,9 @@ Deno.serve(async (req) => {
   if (!ok && token) {
     const { data: { user } } = await opsAdmin.auth.getUser(token);
     if (user) {
-      const { data: ul } = await opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', ops).maybeSingle();
-      ok = !!ul;
-      if (!ok) { const { data: p } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle(); ok = p?.role === 'super_admin'; }
+      // One rule, shared with the database (migration 20260921u): a link row, a
+      // super admin, or an owner acting inside their own organisation.
+      ok = await isVenueWriter(opsAdmin, user, ops);
     }
   }
   if (!ok) return json({ error: 'no access to this location' }, 403);
