@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.33',
+    date: '21 Sep 2026',
+    items: [
+      'A TABLE THAT SAYS "REMOVED TABLE" CAN BE CLOSED AGAIN. One at Provo tonight held 46 pounds and could not be closed by any route: the floor plan showed it as removed (its table was deleted while the order was open, which is what keeps the money visible), the till refused to take cash for it because it was a QR tab, and Orders Hub had nothing to close because the tab itself was long gone. The rule now asks whether there is actually a tab left to close: while there is, it still belongs to Orders Hub, which captures the card hold; once there is not, the till takes the money like any other check instead of leaving it stranded.',
+      'SIGNING INTO BACK OFFICE NO LONGER KNOCKS THE TILL BESIDE IT OFF. Every screen in the system shared one saved sign in per browser, so whoever signed in or out last owned it: open Back Office next to a till, a kiosk or a kitchen screen and they lose their identity and have to claim themselves back. One till did that 33 times in six hours this evening, and a kiosk that had no device secret to claim with simply fell off and asked to be paired again. Back Office, the admin portal, the owner app and the staff app now keep their sign in under their own name. Tills, kiosks, kitchen screens, menu boards and customer pages are untouched, and a Back Office you are already signed into is carried across, so nobody has to sign in again.',
+    ],
+  },
+  {
     v: '5.9.32',
     date: '21 Sep 2026',
     items: [

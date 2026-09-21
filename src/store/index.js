@@ -15,6 +15,7 @@ import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
+import { qrCloseDecision } from '../lib/qrTabStranded';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
@@ -1992,7 +1993,9 @@ export const useStore = create((set, get) => ({
     // it in the POS to take a fresh payment would DOUBLE-charge (new charge + uncaptured hold) and the
     // close would write a source-less, un-cleaned check. Redirect to Orders Hub instead.
     const t = get().tables.find(x => x.id === tableId);
-    if (t?.session?.source === 'qr') {
+    // Same rule as clearTable: a QR tab that is still in the queue belongs to
+    // Orders Hub, one whose row has gone belongs to whoever is standing at the till.
+    if (qrCloseDecision({ session: t?.session, tableId, orderQueue: get().orderQueue }).block) {
       get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
       return;
     }
@@ -2026,9 +2029,19 @@ export const useStore = create((set, get) => ({
     // floor-plan close path (recordClosedCheck) is QR-blind — it would lose the capture, write a
     // source-less check and orphan the queue/session. Block it and point the operator to Orders Hub.
     const qrTable = get().tables.find(t => t.id === tableId);
-    if (qrTable?.session?.source === 'qr') {
+    // ...UNLESS the tab itself is gone. 21 Sep 2026, live: table t1 at Provo held
+    // GBP 46 as a QR session whose order_queue row no longer existed, so this
+    // refusal sent staff to an Orders Hub with nothing in it, the floor plan
+    // called it "Removed table", and the money could not be closed by ANY route.
+    // With no tab in the queue there is no hold to capture and nothing to orphan,
+    // so the till closes it like any other check.
+    const qrClose = qrCloseDecision({ session: qrTable?.session, tableId, orderQueue: get().orderQueue });
+    if (qrClose.block) {
       get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
       return;
+    }
+    if (qrClose.reason === 'stranded') {
+      console.warn('[clearTable] QR session with no open tab in the queue — closing it here rather than stranding it:', tableId);
     }
     // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. If the check being paid still has
     // lines the kitchen never fired (never sent, or sent-but-held courses), fire them

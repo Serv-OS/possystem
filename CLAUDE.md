@@ -428,6 +428,16 @@ out, a POS tab then minted an anonymous session, and every BO write started fail
 MUST use a dedicated client with an isolated storageKey.** Never call auth sign-in/out on the
 shared client from a new surface.
 
+**v5.9.33 — a PERSON's sign in and a DEVICE's now use different keys.** `AUTH_STORAGE_KEY` is
+`storageKeyFor(getDeviceMode())` (`src/lib/authStorageKey.js`): the login surfaces (office,
+backoffice, admin, owner, staff) keep their session under `rpos-bo-auth`, everything else
+(pos, kiosk, kds, bar, tables, mpos, clock, orders, menuboard, orderscreen, customer pages)
+keeps `rpos-auth`. This is what stopped a Back Office sign in knocking the till beside it off
+its identity: Peter's device log showed one till re-claiming itself 33 times in six hours and a
+kiosk with no device secret falling to `awaiting_pairing`. An existing BO session is copied
+across once on first load (`adoptSharedSession`, never an anonymous one) so the change signs
+nobody out. If you add a surface where a person signs in, add its mode to `PERSON_MODES`.
+
 ### Tables MUST Never Be Lost
 Tables MUST never be lost between updates (config push, refresh, wake-from-sleep). Multiple safeguards exist: SessionSync flush debounce, SessionReconciler 10s poll, activeTableId skip, seatedAt timestamp guards on Realtime DELETE handlers, 3-second grace period before Supabase row deletion.
 
