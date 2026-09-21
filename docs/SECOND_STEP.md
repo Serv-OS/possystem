@@ -54,7 +54,10 @@ Still to do, in this order:
 5. **Make a second super admin** and have them set up their own passkey the same day.
 6. **Tell your people.**
 7. **Watch who has set up** (V6 and V6b in `20260919s`; a passkey now counts).
-8. **Lock out anyone who never did, then switch enforcement on.**
+8. **Lock out anyone who never did, then switch enforcement on.** The lock out
+   query must count **passkeys as well as authenticator apps** (a passkey is not
+   an `mfa_factor` on this project). The corrected one is in `20260919s`; the
+   version written before passkeys would have banned everyone who set one up.
 
 ## Setting your own up
 

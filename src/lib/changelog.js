@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.23',
+    date: '21 Sep 2026',
+    items: [
+      'A STAFF RESET NOW TAKES EVERY PASSKEY, NOT JUST THE ONES WE WROTE DOWN. The row that records a passkey is written by the browser in a separate call after the passkey is made, and on this system one of the three live passkeys never got its row. A reset sweeps what it finds, so for that person it would have reported a clean reset and left the passkey alive on the device, and a passkey signs in on its own with no password. The reset now asks Supabase which passkeys a login really has, sweeps both lists, and then asks again to see what is left rather than assuming. The team list counts the same way, so nobody reads as "not set up" when they are.',
+      'AND THE LOCK OUT COMMAND NO LONGER BANS THE PEOPLE WHO DID AS THEY WERE ASKED. It was written before passkeys and counted authenticator apps only, so it would have banned every person holding a passkey, Peter included. Both now count.',
+    ],
+  },
+  {
     v: '5.9.22',
     date: '21 Sep 2026',
     items: [
