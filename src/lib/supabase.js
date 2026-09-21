@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { resolveAuthToken, lastAuthOutcome, AUTH_OUTCOMES, DEFAULT_STORAGE_KEY } from './authSession';
+import { storageKeyFor, adoptSharedSession } from './authStorageKey';
 import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
 import { VERSION } from './version';
 import { makeRetryingFetch } from './netRetry';
@@ -31,7 +32,24 @@ export const staffSupabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE
   global: { fetch: retryingFetch },
 });
 
-export const AUTH_STORAGE_KEY = DEFAULT_STORAGE_KEY;
+// A PERSON'S SIGN IN LIVES APART FROM A DEVICE'S (21 Sep 2026). Every surface
+// used to share one stored session, so a Back Office sign in or sign out knocked
+// the till, the kiosk and the KDS in the same browser off their identity: 33
+// re-claims by one till in six hours, and a kiosk with no device secret simply
+// fell off and sat at awaiting_pairing. Back Office, the admin portal, the owner
+// app and the staff app now keep their session under their own name; tills,
+// kiosks, KDS screens and customer pages are untouched. See lib/authStorageKey.js.
+//
+// getDeviceMode() is a hoisted function declaration below, so it is safe to call
+// here: the mode comes from ?mode= or the saved rpos-device-mode, neither of
+// which needs anything in this file to be initialised first.
+export const AUTH_STORAGE_KEY = storageKeyFor(getDeviceMode());
+// One time move, so this change does not sign anybody out of a Back Office they
+// are already using. A device's anonymous session is never adopted.
+if (typeof localStorage !== 'undefined') {
+  const moved = adoptSharedSession(localStorage, AUTH_STORAGE_KEY);
+  if (moved === 'adopted') console.log('[auth] this sign in now has its own store, away from the devices on this browser');
+}
 
 export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON, {
   auth: {
