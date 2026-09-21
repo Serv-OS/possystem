@@ -17,7 +17,10 @@ import {
   readMoney, readCsv, validateRows, summarise, canonicalHeader,
   MAX_POINTS, MAX_GIFT_BALANCE,
 } from './customerImport.js';
-import { confirmLines, moneyLine, chunkSizeFor, CHUNK_SIZE, GIFT_CHUNK_SIZE, mergeResult } from './customerImportScreen.js';
+import {
+  confirmLines, moneyLine, chunkSizeFor, CHUNK_SIZE, GIFT_CHUNK_SIZE, mergeResult,
+  balanceDestinationLines, needsStampCard, importBlockReason,
+} from './customerImportScreen.js';
 import {
   pointsKey, pointsOwed, pointsSkipped, alreadyPointedLine,
   giftKey, giftRowsOf, giftSplit, alreadyCardedLine,
@@ -217,4 +220,33 @@ test('the running totals add up across slices, in either spelling', () => {
   assert.equal(acc.cardsMade, 3);
   assert.equal(acc.cardsMinor, 2475);
   assert.equal(acc.alreadyCarded, 1);
+});
+
+// ── the screen does not ask a question that does not apply ──────────────────
+
+test('a file with no stamps is never asked which stamp card', () => {
+  // Peter, 21 Sep 2026: "we have where do stamps go still but that makes no
+  // sense for points and also for gift cards so that will block the upload."
+  assert.equal(needsStampCard({ withStamps: 0, withPoints: 40, withGiftCards: 3 }), false);
+  assert.equal(needsStampCard({ withStamps: 2 }), true);
+  assert.equal(needsStampCard(null), false);
+
+  const lines = balanceDestinationLines({ withStamps: 0, withPoints: 40, withGiftCards: 3 }).join(' ');
+  assert.match(lines, /Points go straight onto/);
+  assert.match(lines, /Gift cards keep the code/);
+  assert.match(lines, /No stamps in this file/);
+});
+
+test('and a points only file is not blocked by a missing stamp card', () => {
+  const blocked = importBlockReason({
+    company: true, fileRead: true, previewed: true, ready: 12,
+    withStamps: 0, programmes: [], programId: '', consentGiven: true, busy: false,
+  });
+  assert.equal(blocked, null, 'nothing about stamps can stop a file with no stamps in it');
+});
+
+test('a file carrying nothing but people says so', () => {
+  const lines = balanceDestinationLines({ withStamps: 0, withPoints: 0, withGiftCards: 0 });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /Nothing in this file carries a balance/);
 });

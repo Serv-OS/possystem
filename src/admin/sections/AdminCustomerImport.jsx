@@ -58,6 +58,8 @@ import {
   noProgrammeLine,
   countryLine,
   moneyLine,
+  balanceDestinationLines,
+  needsStampCard,
   confirmLines,
   previewRows,
   problemsByRow,
@@ -616,12 +618,17 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
         ) : null}
       </div>
 
-      {/* 4. stamps */}
+      {/* 4. where the balances go. Only stamps have a question to answer, and
+          only when the file carries stamps. Points and gift cards say where
+          they are going instead of asking. */}
       <div style={S.card}>
-        <div style={S.step}>4. Where the stamps go</div>
+        <div style={S.step}>4. Where the balances go</div>
+        {balanceDestinationLines(summary).map((line, i) => (
+          <div key={i} style={{ ...S.body, marginBottom: 6 }}>{line}</div>
+        ))}
         {!ctx ? (
           <div style={S.body}>Pick the company first.</div>
-        ) : programmes.length === 0 ? (
+        ) : !needsStampCard(summary) ? null : programmes.length === 0 ? (
           <div style={{ ...S.body, color: 'var(--acc)' }}>
             {noProgrammeLine(summary ? summary.withStamps : 0)} Make it in that company&apos;s Back Office, under Loyalty.
           </div>

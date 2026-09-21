@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.38',
+    date: '21 Sep 2026',
+    items: [
+      'THE IMPORT SCREEN STOPS ASKING WHERE STAMPS GO WHEN THERE ARE NONE. Step 4 asked every time, even for a file of points or gift cards, which read like a wall in front of the button. It only ever blocked a file that really had stamps, but you should not have to know that. It now says where each balance in YOUR file is going: stamps need a card picked, points go straight onto the customer balance they already have across the whole company, and a gift card keeps the code printed on it. Nothing to pick for either.',
+    ],
+  },
+  {
     v: '5.9.37',
     date: '21 Sep 2026',
     items: [
