@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.29',
+    date: '21 Sep 2026',
+    items: [
+      'STARTING ONBOARDING NO LONGER EMAILS THE NEW STARTER. It used to send them the staff app invite the moment you pressed Start, which reached them before their offer, their contract or anything else existed, and it fired only that once. The manager sends it from the Staff app row on their card when the paperwork is ready, which is also the row that shows whether it went and sends it again.',
+    ],
+  },
+  {
     v: '5.9.28',
     date: '21 Sep 2026',
     items: [
