@@ -27,6 +27,9 @@ import { dietaryBadges } from '../lib/dietary';
 import { resolveBoardPrice } from '../lib/menuPricing';
 import { boardFollowsMenus, resolveBoardMenu, applyMenuToSections } from '../lib/menuBoardMenus';
 import { generatePairingCode } from '../lib/pairingCode';
+// The SAME rule the order screens use for a portrait TV. One implementation, so a
+// menu board and an order screen on two identical TVs cannot disagree (21 Sep 2026).
+import { stageSize } from '../lib/orderScreen/orderScreenLayout';
 import { fetchVenueTimezone } from '../lib/venueTimezone';
 import { withTimeout } from '../lib/withTimeout';
 import OrderStatusScreen from './orderScreen/OrderStatusScreen';
@@ -356,6 +359,20 @@ function Board({ data }) {
   const orientation = data.board?.orientation || 'landscape';
   const textScale = Math.max(0.6, Math.min(1.6, Number(disp.textScale) || 1));
 
+  // ── A PORTRAIT TV (21 Sep 2026) ───────────────────────────────────────────
+  // Peter: the order screens turn correctly on a TV hung portrait, the menu
+  // boards do not and have no setting for it. Same cause, same fix: the Serv OS
+  // Menu TV app always runs landscape, so a portrait design has to be DRAWN
+  // sideways. layout.rotate is 0, 90 (turn right) or 270 (turn left), and it
+  // rides in the layout jsonb the board already has, so there is no schema
+  // change and an old board (no rotate) behaves exactly as it does today.
+  const rotate = Number(data.board?.layout?.rotate) || 0;
+  const [viewport, setViewport] = useState(() => ({
+    vw: typeof window !== 'undefined' ? window.innerWidth || 0 : 0,
+    vh: typeof window !== 'undefined' ? window.innerHeight || 0 : 0,
+  }));
+  const stage = stageSize({ vw: viewport.vw, vh: viewport.vh, orientation, rotate });
+
   // Follow timed menus (layout.followMenus). The live menu is resolved on the
   // VENUE clock (data.tz, never the device clock) by the shared resolver, and
   // re-evaluated every minute so the TV flips at a schedule boundary without a
@@ -408,10 +425,15 @@ function Board({ data }) {
       if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
     root.style.fontSize = best + 'px';
-  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId]);
+  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId, stage.w, stage.h]);
 
   useEffect(() => {
-    const refit = () => setFitTick((t) => t + 1);
+    const refit = () => {
+      // The stage is sized in px from the viewport, so a resize must move it
+      // before the fit loop measures, or the menu is fitted to the old screen.
+      setViewport({ vw: window.innerWidth || 0, vh: window.innerHeight || 0 });
+      setFitTick((t) => t + 1);
+    };
     window.addEventListener('resize', refit);
     window.addEventListener('mb-refit', refit);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', refit);
@@ -436,6 +458,17 @@ function Board({ data }) {
     fontFamily: theme.font || "'Plus Jakarta Sans', system-ui, sans-serif",
     fontSize: FIT.base + 'px',
   };
+  // The drawing area. Un-turned this is simply the screen; turned it is the
+  // screen with its sides swapped, spun about the centre, so the menu reads the
+  // right way up on a TV hung portrait. The background above always covers the
+  // whole TV, so a turned board never shows bare corners.
+  const stageStyle = stage.rotate
+    ? {
+      position: 'absolute', left: '50%', top: '50%',
+      width: stage.w, height: stage.h,
+      transform: stage.transform, transformOrigin: 'center center',
+    }
+    : { position: 'absolute', inset: 0 };
   const bgLayer = theme.bgImageUrl ? {
     position: 'absolute', inset: 0, backgroundImage: `url(${theme.bgImageUrl})`,
     backgroundSize: 'cover', backgroundPosition: 'center', opacity: 1,
@@ -447,6 +480,7 @@ function Board({ data }) {
     const m = data.board?.marketing || {};
     return (
       <div ref={boardRef} style={rootStyle}>
+        <div style={stageStyle}>
         {m.mediaUrl && m.mediaType === 'video' && (
           <video src={m.mediaUrl} autoPlay muted loop playsInline
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: m.fit || 'cover' }} />
@@ -455,12 +489,13 @@ function Board({ data }) {
           <div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${m.mediaUrl})`, backgroundSize: m.fit || 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }} />
         )}
         {!m.mediaUrl && <Splash text="Marketing screen" sub="Upload an image or video in Back Office." inline />}
+        </div>
       </div>
     );
   }
 
   if (!sections.length) {
-    return <div style={rootStyle}><Splash text="Menu coming soon" inline /></div>;
+    return <div ref={boardRef} style={rootStyle}><div style={stageStyle}><Splash text="Menu coming soon" inline /></div></div>;
   }
 
   const pad = orientation === 'portrait' ? '6vmin 5.5vmin' : '5.5vmin 6vmin';   // safe edge margin (also covers TV overscan)
@@ -468,6 +503,7 @@ function Board({ data }) {
     <div ref={boardRef} style={rootStyle}>
       {bgLayer && <div style={bgLayer} />}
       {scrim && <div style={scrim} />}
+      <div style={stageStyle}>
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', padding: pad, boxSizing: 'border-box' }}>
         {/* header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `0.09em solid ${theme.accent}`, paddingBottom: '0.35em', marginBottom: '0.6em', flex: '0 0 auto' }}>
@@ -493,6 +529,7 @@ function Board({ data }) {
         <div style={{ flex: '0 0 auto', borderTop: `0.04em solid ${theme.mutedColor}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', fontSize: '0.32em', color: theme.mutedColor }}>
           <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}</span>
         </div>
+      </div>
       </div>
     </div>
   );

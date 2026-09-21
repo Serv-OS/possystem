@@ -69,8 +69,18 @@ test('the second step is a passkey, and the emailed code comes before the FIRST 
   assert.equal(secondStepPlan({ canUsePasskey: true, needsEmail: false, emailProved: false }), 'register_passkey');
   // A device with no fingerprint or face still has a way through: the authenticator app.
   assert.equal(secondStepPlan({ canUsePasskey: false }), 'app_code');
-  // Already done, either way round.
-  assert.equal(secondStepPlan({ passkeys: [{ id: 'k1' }], canUsePasskey: true, needsEmail: true }), 'ok');
+  // OWNING A PASSKEY IS NOT PROVING ONE (21 Sep 2026, live). This used to answer
+  // 'ok', and 'ok' means "let them in": Peter signed in to peter+coffeeboy with
+  // nothing but the password, was asked for neither a code nor his fingerprint,
+  // and walked into Back Office, because the ACCOUNT had a passkey. The session
+  // had signed in with a password and proved nothing, which is exactly what the
+  // database would have refused. Now they are asked to use the passkey.
+  assert.equal(secondStepPlan({ passkeys: [{ id: 'k1' }], canUsePasskey: true, needsEmail: true }), 'use_passkey');
+  // ...unless this device cannot use one at all, and then the authenticator app
+  // is still the way through, exactly as for somebody with no passkey.
+  assert.equal(secondStepPlan({ passkeys: [{ id: 'k1' }], canUsePasskey: false }), 'app_code');
+  // A verified authenticator app IS proof, because gateStep asked for its code
+  // before it ever reached this plan.
   assert.equal(secondStepPlan({ factors: [{ factor_type: 'totp', status: 'verified' }], canUsePasskey: true }), 'ok');
   // An app that is started but not finished is not a second step.
   assert.equal(secondStepPlan({ factors: [{ factor_type: 'totp', status: 'unverified' }], canUsePasskey: false }), 'app_code');

@@ -58,7 +58,15 @@ export function secondStepPlan({
 } = {}) {
   const hasPasskey = (passkeys || []).length > 0;
   const hasApp = (factors || []).some((f) => f?.factor_type === 'totp' && f?.status === 'verified');
-  if (hasPasskey || hasApp) return 'ok';
+  // OWNING A PASSKEY IS NOT PROVING ONE (21 Sep 2026, live). This said 'ok' the
+  // moment the account had a passkey, and 'ok' means "let them in". So Peter
+  // signed in to peter+coffeeboy with nothing but the password, was asked for
+  // neither a code nor his fingerprint, and walked straight into Back Office:
+  // the account had a passkey, and the gate took that as the second step being
+  // done. The session had signed in with a password and proved nothing.
+  // A person who has a passkey is asked to USE it, here, now.
+  if (hasPasskey && canUsePasskey) return 'use_passkey';
+  if (hasApp) return 'ok';
   if (!canUsePasskey) return 'app_code';
   if (needsEmail && !emailProved) return 'prove_email';
   return 'register_passkey';

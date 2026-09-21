@@ -222,3 +222,21 @@ test('no em or en dashes in the new second step files', () => {
     assert.doesNotMatch(src, /[–—]/, `${f} has an em or en dash`);
   }
 });
+
+test('a password sign in on an account that HAS a passkey is asked to use it', () => {
+  // Peter, 21 Sep 2026, live: "2fa is not working I just logged in
+  // peter+coffeeboy@serv-os.app without logging in with passkey and didnt ask
+  // for a code from my email". secondStepPlan answered 'ok' the moment the
+  // ACCOUNT had a passkey, and 'ok' means let them in. The session had signed
+  // in with a password and proved nothing, which is exactly what the database
+  // refuses once enforcement is on.
+  const gate = read('src/components/secondStep/SecondStepGate.jsx');
+  assert.match(gate, /if \(next === 'use_passkey'\) \{ setPhase\('use_passkey'\); return; \}/);
+  // and the screen actually signs them in with it, so the TOKEN carries the proof
+  const handler = gate.slice(gate.indexOf('const usePasskey = async'), gate.indexOf('const addFace = async'));
+  assert.match(handler, /await client\.signInWithPasskey\(\);/);
+  assert.match(handler, /if \(sessionProvesSecondStep\(await client\.getSession\(\)\)\) pass\(\{ upgraded: true \}\);/,
+    'only a session that really proves it may pass, and a real upgrade reloads');
+  assert.match(gate, /phase === 'use_passkey'/, 'the screen exists');
+  assert.match(gate, /Continue with my passkey/);
+});

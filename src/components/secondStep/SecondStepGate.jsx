@@ -120,6 +120,10 @@ export default function SecondStepGate({
         if (next === 'ok') { pass({ upgraded: justSetUp }); return; }
         if (next === 'prove_email') { setPhase('prove'); return; }
         if (next === 'register_passkey') { setPhase('passkey'); return; }
+        // They already have a passkey and this device can use one: prove it now.
+        // The session says "password" until they do, and that is what the
+        // database reads (21 Sep 2026).
+        if (next === 'use_passkey') { setPhase('use_passkey'); return; }
         setPhase('setup');   // app_code: no passkey maker here
         return;
       }
@@ -184,6 +188,20 @@ export default function SecondStepGate({
         if (!sessionProvesSecondStep(await client.getSession())) await client.signInWithPasskey();
       } catch { /* set up either way: the next sign in is the passkey one */ }
       await evaluate({ justSetUp: true });
+    } catch (e) { setErr(explainPasskeyError(e)); }
+    finally { setBusy(false); }
+  };
+
+  // Sign in AGAIN with the passkey they already have, without leaving the page.
+  // GoTrue hands back a fresh session whose token carries the proof, which is
+  // the only thing the database looks at.
+  const usePasskey = async () => {
+    if (busy) return;
+    setErr(''); setBusy(true);
+    try {
+      await client.signInWithPasskey();
+      if (sessionProvesSecondStep(await client.getSession())) pass({ upgraded: true });
+      else await evaluate({ justSetUp: true });
     } catch (e) { setErr(explainPasskeyError(e)); }
     finally { setBusy(false); }
   };
@@ -323,6 +341,27 @@ export default function SecondStepGate({
         {optional
           ? <SecondaryButton tone={tone} onClick={pass} testId="second-step-not-now">Not now</SecondaryButton>
           : signOutButton}
+      </Stack>
+    );
+  } else if (phase === 'use_passkey') {
+    const prompt = passkeyPrompt(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+    body = (
+      <Stack>
+        <Heading
+          tone={tone}
+          step="One touch to finish signing in"
+          title="Use your passkey"
+          sub={`You signed in with your password, which on its own is not enough to open ${area}. Use ${prompt} to prove it is you.`}
+        />
+        <PrimaryButton tone={tone} busy={busy} onClick={usePasskey} testId="second-step-use-passkey" icon={<FaceIdIcon />}>
+          Continue with my passkey
+        </PrimaryButton>
+        <Note tone={tone} kind="error" testId="second-step-error">{err}</Note>
+        <div style={{ fontSize: 13.5, color: tokens(tone).sub, lineHeight: 1.6 }}>
+          Your passkey may be on your phone. Your browser will offer it, or show a code to scan.
+          Lost the device? Ask your owner, or ServOS, to reset your sign in.
+        </div>
+        {signOutButton}
       </Stack>
     );
   } else if (phase === 'setup' || phase === 'backup') {
