@@ -174,6 +174,9 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
   // same lane as real tickets, so it can never open a socket while one is out.
   _keepAwake = startKeepAwake({
     deviceId,
+    // OFF unless the venue asks for it (localStorage 'rpos-printer-keepawake' = '1').
+    // Switched off within the hour it shipped: see lib/print/keepAwake.js.
+    enabled: () => { try { return localStorage.getItem('rpos-printer-keepawake') === '1'; } catch { return false; } },
     printers: () => printService.knownPrinters?.() || [],
     lastContact: (p) => _lastContact.get(laneKeyOf({ printer_id: p.id, printer_ip: p.ip, printer_port: p.port })) ?? null,
     send: (p) => _lanes.run(laneKeyOf({ printer_id: p.id, printer_ip: p.ip, printer_port: p.port }), async () => {
