@@ -38,34 +38,103 @@ export function itemsCarrying(items, groupId) {
   return (Array.isArray(items) ? items : []).filter((i) => itemHasGroup(i, groupId));
 }
 
+/** Is this item one of the option-only records, which are never a product? */
+function isSubItem(item) {
+  const type = String(item?.type ?? '');
+  return type === 'sub' || type === 'subitem' || type === 'sub_item';
+}
+
+/** The sizes (variant children) of a product. */
+export function sizesOf(items, parentId) {
+  const pid = String(parentId ?? '');
+  if (!pid) return [];
+  return (Array.isArray(items) ? items : [])
+    .filter((i) => i && !i.archived && String(i.parentId ?? '') === pid);
+}
+
+/**
+ * The name to show, which for a size MUST carry its product.
+ *
+ * Peter, 22 Sep 2026: the list read "Small, Small, Small, Medium, Large" with no
+ * hint of what they were sizes OF. A size's own name is just "Small".
+ */
+export function displayNameOf(item, items) {
+  const own = String(item?.name ?? '').trim() || 'Unnamed';
+  const pid = String(item?.parentId ?? '');
+  if (!pid) return own;
+  const parent = (Array.isArray(items) ? items : []).find((i) => String(i?.id) === pid);
+  const parentName = String(parent?.name ?? '').trim();
+  return parentName ? parentName + ' — ' + own : own;
+}
+
 /**
  * The products a person can sensibly attach a group to.
  *
- * Excludes: archived items, sub items (they ARE the options, attaching a group
- * to one makes an option that opens another option), and size children, whose
- * modifiers come from the parent.
+ * Sub items are excluded: a sub item IS an option, and attaching a group to one
+ * makes an option that opens another option.
+ *
+ * SIZES ARE INCLUDED, and that is the important part. A product with sizes never
+ * shows its own modifiers at the till: POSSurface opens the variants modal and
+ * configures the CHILD (`_childItem`), so a group attached to the parent alone is
+ * never seen by anybody. Ticking the parent therefore means "all of its sizes"
+ * (see expandPicks), and each size can also be picked on its own.
  */
 export function attachableItems(items) {
-  return (Array.isArray(items) ? items : []).filter((i) => {
+  const list = Array.isArray(items) ? items : [];
+  return list.filter((i) => {
     if (!i || i.archived) return false;
-    const type = String(i.type ?? '');
-    if (type === 'sub' || type === 'subitem' || type === 'sub_item') return false;
-    if (i.parentId) return false;
-    return true;
+    if (isSubItem(i)) return false;
+    const pid = String(i.parentId ?? '');
+    if (!pid) return true;
+    // a size, but only while its product is still real
+    const parent = list.find((p) => String(p?.id) === pid);
+    return !!parent && !parent.archived && !isSubItem(parent);
   });
 }
 
+/**
+ * Turn what was ticked into what is actually written.
+ * A product WITH sizes resolves to its sizes, because that is where every
+ * surface reads modifiers from. Anything else stands for itself.
+ */
+export function expandPicks(items, pickedIds) {
+  const list = Array.isArray(items) ? items : [];
+  const out = new Set();
+  for (const id of Array.isArray(pickedIds) ? pickedIds : []) {
+    const item = list.find((i) => String(i?.id) === String(id));
+    if (!item) continue;
+    const sizes = sizesOf(list, item.id);
+    if (sizes.length && !item.parentId) {
+      for (const s of sizes) out.add(String(s.id));
+    } else {
+      out.add(String(item.id));
+    }
+  }
+  return [...out];
+}
+
+/** How many products a tick list will really change, once sizes are expanded. */
+export function pickedRealCount(items, pickedIds) {
+  return expandPicks(items, pickedIds).length;
+}
+
 /** Narrow a list by a typed search and an optional category. */
-export function matchItems(items, { search = '', categoryId = '' } = {}) {
+export function matchItems(items, { search = '', categoryId = '', all = null } = {}) {
   const q = String(search || '').trim().toLowerCase();
   const cat = String(categoryId || '').trim();
-  return (Array.isArray(items) ? items : []).filter((i) => {
+  const list = Array.isArray(items) ? items : [];
+  // Names are matched on what the person SEES, so typing "americano" finds
+  // "Americano — Large" even though that row's own name is only "Large".
+  const universe = Array.isArray(all) ? all : list;
+  return list.filter((i) => {
     if (cat) {
-      const cats = [i?.cat, ...(Array.isArray(i?.cats) ? i.cats : [])].filter(Boolean).map(String);
+      const parent = i?.parentId ? universe.find((p) => String(p?.id) === String(i.parentId)) : null;
+      const from = parent || i;   // a size belongs to its product's categories
+      const cats = [from?.cat, ...(Array.isArray(from?.cats) ? from.cats : [])].filter(Boolean).map(String);
       if (!cats.includes(cat)) return false;
     }
     if (!q) return true;
-    return String(i?.name ?? '').toLowerCase().includes(q);
+    return displayNameOf(i, universe).toLowerCase().includes(q);
   });
 }
 

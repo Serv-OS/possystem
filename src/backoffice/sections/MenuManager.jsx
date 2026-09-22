@@ -24,7 +24,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches, detachPatches,
-         attachButtonLabel, attachResultLine } from '../../lib/menu/modifierAttach';
+         attachButtonLabel, attachResultLine, displayNameOf, expandPicks, sizesOf } from '../../lib/menu/modifierAttach';
 // PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
@@ -3388,17 +3388,20 @@ function ModifiersTab() {
   const shownGroups = matchGroups(groups||[], groupSearch);
   const searching   = groupSearch.trim().length > 0;
   const carrying    = sel ? itemsCarrying(menuItems||[], sel.id) : [];
-  const offerable   = sel ? matchItems(attachableItems(menuItems||[]), { search:attachSearch, categoryId:attachCat }) : [];
+  const offerable   = sel ? matchItems(attachableItems(menuItems||[]), { search:attachSearch, categoryId:attachCat, all:menuItems||[] }) : [];
+  // A product with sizes never shows its OWN modifiers at the till: the variants
+  // modal configures the size. So ticking the product means all of its sizes.
+  const realTargets = sel ? expandPicks(menuItems||[], [...picked]) : [];
   const pickedIds   = [...picked];
   const togglePick  = id => setPicked(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const clearPicked = () => setPicked(new Set());
 
   const applyAttach = () => {
-    if (!sel || !pickedIds.length) return;
-    const patches = attachPatches(menuItems||[], sel.id, pickedIds);
+    if (!sel || !realTargets.length) return;
+    const patches = attachPatches(menuItems||[], sel.id, realTargets);
     for (const { id, patch } of patches) updateMenuItem(id, patch);
     if (patches.length) markBOChange();
-    showToast?.(attachResultLine(patches.length, pickedIds.length - patches.length));
+    showToast?.(attachResultLine(patches.length, realTargets.length - patches.length));
     clearPicked();
   };
 
@@ -3708,7 +3711,7 @@ function ModifiersTab() {
                 <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginBottom:10 }}>
                   {carrying.map(it => (
                     <span key={it.id} style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'4px 8px', borderRadius:7, background:'var(--acc-d)', border:'1px solid var(--acc-b)', fontSize:11, color:'var(--t1)' }}>
-                      {it.name || 'Unnamed'}
+                      {displayNameOf(it, menuItems||[])}
                       <button onClick={()=>detachOne(it.id)} title="Take it off this product"
                         style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, lineHeight:1, padding:0 }}>×</button>
                     </span>
@@ -3745,25 +3748,35 @@ function ModifiersTab() {
                   </div>
                   <div style={{ maxHeight:240, overflowY:'auto', display:'flex', flexDirection:'column', gap:2, marginBottom:10 }}>
                     {offerable.map(it => {
-                      const has = carrying.some(c => c.id === it.id);
+                      const sizes = it.parentId ? [] : sizesOf(menuItems||[], it.id);
+                      // A product with sizes stands for its sizes, so it counts as
+                      // "already on" only when EVERY size has the group.
+                      const has = sizes.length
+                        ? sizes.every(sz => carrying.some(c => c.id === sz.id))
+                        : carrying.some(c => c.id === it.id);
                       const on  = picked.has(it.id);
                       return (
                         <label key={it.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 9px', borderRadius:7, cursor:has?'default':'pointer',
-                          background: on ? 'var(--acc-d)' : 'transparent', border:`1px solid ${on ? 'var(--acc-b)' : 'transparent'}`, opacity: has ? .55 : 1 }}>
+                          background: on ? 'var(--acc-d)' : 'transparent', border:`1px solid ${on ? 'var(--acc-b)' : 'transparent'}`, opacity: has ? .55 : 1,
+                          marginLeft: it.parentId ? 14 : 0 }}>
                           <input type="checkbox" checked={has || on} disabled={has} onChange={()=>togglePick(it.id)} style={{ width:14, height:14 }}/>
-                          <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{it.name || 'Unnamed'}</span>
+                          <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {displayNameOf(it, menuItems||[])}
+                          </span>
+                          {sizes.length > 0 && !has && <span style={{ fontSize:9, color:'var(--t3)' }}>all {sizes.length} sizes</span>}
                           {has && <span style={{ fontSize:9, color:'var(--t4)' }}>already on</span>}
                         </label>
                       );
                     })}
                   </div>
-                  <button onClick={applyAttach} disabled={!pickedIds.length}
-                    style={{ width:'100%', padding:'9px 14px', borderRadius:9, cursor:pickedIds.length?'pointer':'default', fontFamily:'inherit',
-                      background: pickedIds.length ? 'var(--acc)' : 'var(--bg3)', border:'none', color: pickedIds.length ? '#0b0c10' : 'var(--t4)', fontSize:12.5, fontWeight:800 }}>
-                    {attachButtonLabel(pickedIds.length)}
+                  <button onClick={applyAttach} disabled={!realTargets.length}
+                    style={{ width:'100%', padding:'9px 14px', borderRadius:9, cursor:realTargets.length?'pointer':'default', fontFamily:'inherit',
+                      background: realTargets.length ? 'var(--acc)' : 'var(--bg3)', border:'none', color: realTargets.length ? '#0b0c10' : 'var(--t4)', fontSize:12.5, fontWeight:800 }}>
+                    {attachButtonLabel(realTargets.length)}
                   </button>
                   <div style={{ fontSize:10, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
                     Each product keeps its own settings for this group, and anything that already has it is left alone.
+                    A product with sizes goes on <strong style={{ color:'var(--t3)' }}>every size</strong>, because that is where the till reads options from. Tick a single size to do just one.
                   </div>
                 </>
               )}

@@ -311,6 +311,29 @@ class PrintService {
     this._printers = this._loadPrinters();
   }
 
+  /**
+   * The network printers this device knows about, for the keep-awake.
+   *
+   * Only ones with an address: a printer we cannot dial cannot be kept awake,
+   * and a bluetooth or built-in printer has no socket to keep open.
+   * Deduplicated by address, so two roles on one machine are knocked on once.
+   */
+  knownPrinters() {
+    this._refreshPrinters();
+    const seen = new Set();
+    const out = [];
+    for (const p of this._printers || []) {
+      const ip = p?.address || p?.ip;
+      if (!ip) continue;
+      const port = p?.port || 9100;
+      const key = ip + ':' + port;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: p.id, ip, port, name: p.name });
+    }
+    return out;
+  }
+
   // Find which printer to use for a given role ('receipt' | 'kitchen' | 'bar')
   // v5.5.835: dropped the blind `|| this._printers[0]` tail. Falling back to
   // "whatever printer happens to be first" is never a correct answer — if no

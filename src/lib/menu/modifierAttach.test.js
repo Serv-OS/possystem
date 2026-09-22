@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import {
   groupIdsOf, itemHasGroup, itemsCarrying, attachableItems, matchItems, matchGroups,
   attachPatches, detachPatches, attachButtonLabel, attachResultLine,
+  displayNameOf, expandPicks, pickedRealCount, sizesOf,
 } from './modifierAttach.js';
 
 const item = (over) => ({ id: 'i1', name: 'Latte', type: 'product', cat: 'c-hot', ...over });
@@ -35,10 +36,55 @@ test('reading what an item carries', () => {
   assert.deepEqual(itemsCarrying(ITEMS, 'g-milk').map((i) => i.id), ['i2']);
 });
 
-test('a sub item, a size and an archived item are never offered', () => {
-  // A sub item IS an option. Attaching a group to one makes an option that opens
-  // another option. A size takes its modifiers from the parent.
-  assert.deepEqual(attachableItems(ITEMS).map((i) => i.id), ['i1', 'i2', 'i3']);
+test('sizes ARE offered; sub items and archived items are not', () => {
+  // Changed 22 Sep 2026 after Peter: "on varients you cant add to the main
+  // product only the varients". A product with sizes never shows its own
+  // modifiers at the till (POSSurface opens the variants modal and configures
+  // the CHILD), so the sizes must be reachable or the group lands nowhere.
+  // A sub item stays out: a sub item IS an option.
+  assert.deepEqual(attachableItems(ITEMS).map((i) => i.id), ['i1', 'i2', 'i3', 'i5']);
+});
+
+test('a size whose product is archived is not offered either', () => {
+  const orphaned = [
+    item({ id: 'p', name: 'Old Mocha', archived: true }),
+    item({ id: 'c', name: 'Large', parentId: 'p' }),
+  ];
+  assert.deepEqual(attachableItems(orphaned).map((i) => i.id), []);
+});
+
+test('a size is named with the product it belongs to', () => {
+  // The list read "Small, Small, Small, Medium, Large" with no hint of what they
+  // were sizes of.
+  assert.equal(displayNameOf(ITEMS[4], ITEMS), 'Latte — Latte Large');
+  assert.equal(displayNameOf(ITEMS[0], ITEMS), 'Latte');
+  assert.equal(displayNameOf({ id: 'x', name: 'Small', parentId: 'nope' }, ITEMS), 'Small', 'an orphan keeps its own name');
+});
+
+test('ticking a product means ALL of its sizes, because that is where the till looks', () => {
+  const withSizes = [
+    item({ id: 'am', name: 'Americano' }),
+    item({ id: 'am-s', name: 'Small', parentId: 'am' }),
+    item({ id: 'am-m', name: 'Medium', parentId: 'am' }),
+    item({ id: 'am-l', name: 'Large', parentId: 'am' }),
+    item({ id: 'cake', name: 'Brownie' }),
+  ];
+  assert.deepEqual(expandPicks(withSizes, ['am']).sort(), ['am-l', 'am-m', 'am-s']);
+  // a product with no sizes stands for itself
+  assert.deepEqual(expandPicks(withSizes, ['cake']), ['cake']);
+  // and one size on its own is still just that size
+  assert.deepEqual(expandPicks(withSizes, ['am-l']), ['am-l']);
+  // no duplicates when both the product and one of its sizes are ticked
+  assert.deepEqual(expandPicks(withSizes, ['am', 'am-l']).sort(), ['am-l', 'am-m', 'am-s']);
+  assert.equal(pickedRealCount(withSizes, ['am', 'cake']), 4);
+});
+
+test('searching finds a size by its product name', () => {
+  const withSizes = [
+    item({ id: 'am', name: 'Americano' }),
+    item({ id: 'am-l', name: 'Large', parentId: 'am' }),
+  ];
+  assert.deepEqual(matchItems(withSizes, { search: 'americano', all: withSizes }).map((i) => i.id), ['am', 'am-l']);
 });
 
 test('search finds products by name, and the category narrows it', () => {
@@ -51,10 +97,10 @@ test('search finds products by name, and the category narrows it', () => {
 });
 
 test('the screen composes the two: attachable first, then narrowed', () => {
-  // This is the exact expression the panel uses. Apart is deliberate: one rule
-  // decides what may EVER be attached to, the other is what the person typed.
-  const shown = matchItems(attachableItems(ITEMS), { categoryId: 'c-hot' });
-  assert.deepEqual(shown.map((i) => i.id), ['i1', 'i2'], 'no sub item, no size, no archived');
+  // The exact expression the panel uses. A size inherits its product's
+  // categories, so filtering by Hot Drinks keeps the sizes of a hot drink.
+  const shown = matchItems(attachableItems(ITEMS), { categoryId: 'c-hot', all: ITEMS });
+  assert.deepEqual(shown.map((i) => i.id), ['i1', 'i2', 'i5'], 'no sub item, no archived, sizes kept');
 });
 
 test('an item in several categories is found by any of them', () => {
