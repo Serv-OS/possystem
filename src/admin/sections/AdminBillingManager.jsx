@@ -53,7 +53,7 @@ import { supabase, platformSupabase } from '../../lib/supabase';
 import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import RateCardRows from '../components/RateCardRows';
-import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
+import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch, kycRecheckLine } from '../../lib/payments/adyenAdminRows';
 import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate, rowView, serverKnowsDebit } from '../../lib/payments/rateCard';
 import { rateCardProblems } from '../../lib/payments/adyenLink';
 import { selectOnFocus } from '../../lib/selectOnFocus';
@@ -956,6 +956,30 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
   const callTerminalAdmin = useMemo(() => terminalAdminFor(location), [location.id, location.ops_location_id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const envChanged = () => { setEnvRev((n) => n + 1); setFlowRev((n) => n + 1); onRowChanged?.(); };
   const linkChanged = () => { setEnvRev((n) => n + 1); setLinkRev((n) => n + 1); onRowChanged?.(); };
+
+  // ── Recheck KYC with Adyen ────────────────────────────────────────────────
+  // Peter, 22 Sep 2026, on Coffee Boy Preston: "KYC invalid I have fixed and it
+  // hasnt rechecked". He was right twice over. Nothing rechecks: the portal
+  // stopped calling this action on 10 Sep, and Adyen's balance platform webhook
+  // has never delivered for any of the six new Coffee Boy accounts
+  // (last_webhook_at null on every one). The panel was showing a snapshot taken
+  // when the onboarding link was opened, and it would have shown it for ever.
+  //
+  // This respects OWNER RULE 0: 'status' READS Adyen and re-stamps our copy. It
+  // creates nothing, links nothing and enables nothing, so it is not one of the
+  // onboarding actions that rule keeps off this screen.
+  const [kyc, setKyc] = useState({ busy: false, line: null });
+  const recheckKyc = async () => {
+    setKyc({ busy: true, line: null });
+    try {
+      const answer = await callAdyenOnboard('status', { location_id: location.id });
+      setKyc({ busy: false, line: kycRecheckLine(answer) });
+      onRowChanged?.();          // the KYC chip on the row re-reads
+      setEnvRev((n) => n + 1);   // and so does this panel
+    } catch (e) {
+      setKyc({ busy: false, line: 'Could not reach Adyen: ' + (e?.message || e) });
+    }
+  };
   const currency = String(location.currency || 'GBP').toUpperCase();
   useEffect(() => {
     let live = true;
@@ -1072,6 +1096,24 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
           button each. It owns the pull by reference, the store create, the
           merchant picker, going live, the card rates on Adyen, the payouts
           and the web addresses. */}
+      {/* (0) Ask Adyen what it thinks RIGHT NOW. Everything else on this screen
+          reads our stored copy, which only changes when somebody opens an
+          onboarding link or a webhook arrives, and for the newest venues no
+          webhook ever has. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '0 0 12px' }}>
+        <button onClick={recheckKyc} disabled={kyc.busy}
+          style={{ ...S.btn, ...S.btnGhost, ...(kyc.busy ? { opacity: 0.6, cursor: 'default' } : {}) }}>
+          {kyc.busy ? 'Asking Adyen…' : '↻ Recheck KYC with Adyen'}
+        </button>
+        {kyc.line ? (
+          <span style={{ fontSize: 12, color: 'var(--t2)', lineHeight: 1.5, flex: 1, minWidth: 240 }}>{kyc.line}</span>
+        ) : (
+          <span style={{ fontSize: 11, color: 'var(--t4)' }}>
+            Reads Adyen and updates what this screen shows. It changes nothing at Adyen.
+          </span>
+        )}
+      </div>
+
       <AdyenGoLiveFlow
         location={location}
         venueCode={venueCode}
