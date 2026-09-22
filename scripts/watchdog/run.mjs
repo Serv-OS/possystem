@@ -14,11 +14,16 @@
 // "the database is not answering" — which is the single most important thing it
 // can ever say.
 //
+// IT HOLDS NO KEYS. It asks ONE function, `watchdog-status`, which can count
+// four things and name the venue, and can do nothing else: no order contents,
+// no customer, no money, no writes. GitHub therefore stores a random token
+// instead of a service-role key that could read and rewrite every venue.
+//
 // WHAT IT NEEDS
-//   SUPABASE_SERVICE_KEY   already a repo secret (the APK workflow publishes with it)
-//   GITHUB_TOKEN           given to the workflow automatically
-//   TWILIO_* + ALERT_TO    optional. Without them you still get the GitHub issue
-//                          and the email GitHub sends you for it.
+//   WATCHDOG_TOKEN   repo secret, the same random string as the edge function's
+//   GITHUB_TOKEN     given to the workflow automatically
+//   TWILIO_* + ALERT_TO   optional. Without them you still get the GitHub issue
+//                         and the email GitHub sends you for it.
 //
 // HOW IT SPEAKS
 //   One GitHub issue per problem per venue, labelled `watchdog`. Opening the
@@ -29,10 +34,10 @@
 //
 // It never writes to the database. Reading is all it does.
 
-import { evaluate, pages, alertDecision, resolved, smsText, runSummary, REMINDER_HOURS } from './checks.mjs';
+import { evaluate, pages, alertDecision, resolved, smsText, runSummary, WINDOWS, REMINDER_HOURS } from './checks.mjs';
 
 const OPS_URL = process.env.SUPABASE_URL || 'https://tbetcegmszzotrwdtqhi.supabase.co';
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+const TOKEN = process.env.WATCHDOG_TOKEN || '';
 const REPO = process.env.GITHUB_REPOSITORY || 'Serv-OS/possystem';
 const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const LABEL = 'watchdog';
@@ -40,16 +45,30 @@ const DRY = process.argv.includes('--dry-run');
 
 const TIMEOUT_MS = 20_000;
 
-class WatchdogBug extends Error {}     // our fault: a wrong query, a wrong key
+class WatchdogBug extends Error {}     // our fault: no token, a wrong request
 class Unreachable extends Error {}     // their fault: the system did not answer
 
-async function rest(path) {
+/**
+ * Ask the one question, and be very careful about what the answer means.
+ *
+ * A MISCONFIGURED WATCHDOG MUST NEVER ANNOUNCE AN OUTAGE. On its first live run
+ * this script had no key at all, got a 401, and opened an issue saying the
+ * venues could not take card payments. That is the exact class of mistake it
+ * exists to catch, so it had better not make it: 4xx is ours, 5xx and silence
+ * are theirs.
+ */
+async function measure() {
+  if (!TOKEN) {
+    throw new WatchdogBug('no WATCHDOG_TOKEN. Set the repo secret to the same string as the edge function.');
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   let res;
   try {
-    res = await fetch(`${OPS_URL}/rest/v1/${path}`, {
-      headers: { apikey: SERVICE_KEY, authorization: `Bearer ${SERVICE_KEY}`, accept: 'application/json' },
+    res = await fetch(`${OPS_URL}/functions/v1/watchdog-status`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-watchdog-token': TOKEN },
+      body: JSON.stringify({ windows: WINDOWS }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -57,54 +76,25 @@ async function rest(path) {
     throw new Unreachable(e.name === 'AbortError' ? `no answer in ${TIMEOUT_MS / 1000}s` : e.message);
   } finally { clearTimeout(t); }
 
-  if (res.ok) return res.json();
   const text = await res.text().catch(() => '');
-  // A BAD QUERY IS NOT AN OUTAGE. Caught on this very script's first live run:
-  // it asked for order_queue.id, a column that does not exist, and reported
-  // "the database is not answering". That is the exact mistake this watchdog
-  // exists to catch, so it had better not make it itself. 4xx (other than the
-  // ones that mean we cannot get in) is our own bug; 5xx and 408 are theirs.
-  const ours = res.status >= 400 && res.status < 500 && ![401, 403, 408, 429].includes(res.status);
-  const Err = ours ? WatchdogBug : Unreachable;
-  throw new Err(`${res.status} ${text}`.slice(0, 200));
-}
+  let body = null;
+  try { body = JSON.parse(text); } catch { /* not json */ }
 
-const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
-
-/** Group rows by venue name, counting them. */
-function byVenue(rows, venues) {
-  const counts = new Map();
-  for (const r of rows || []) {
-    const name = venues.get(String(r.location_id)) || 'an unnamed venue';
-    counts.set(name, (counts.get(name) || 0) + 1);
+  if (res.ok && body?.ok) {
+    return {
+      reachable: true,
+      cardStranded: body.cardStranded || [],
+      ticketsLost: body.ticketsLost || [],
+      printStuck: body.printStuck || [],
+      ordersOpen: body.ordersOpen || [],
+    };
   }
-  return [...counts.entries()].map(([venue, count]) => ({ venue, count }));
-}
 
-async function measure() {
-  // Venue names first: every alert must be able to say WHERE.
-  const venues = new Map();
-  for (const l of await rest('locations?select=id,name&limit=200')) venues.set(String(l.id), l.name);
-
-  const [stranded, lost, stuck, open] = await Promise.all([
-    rest(`terminal_jobs?select=id,location_id&status=in.(charging,charging_unsent)&created_at=lt.${ago(10)}&limit=200`),
-    // Only the last hour: an old permanent failure is history, not news.
-    rest(`print_jobs?select=id,location_id&status=eq.failed_permanent&created_at=gt.${ago(60)}&limit=200`),
-    rest(`print_jobs?select=id,location_id&status=in.(pending,claimed)&created_at=lt.${ago(10)}&limit=200`),
-    // TODAY's orders only. The first live run reported six venues, all of them
-    // orders abandoned weeks ago: permanent wallpaper, which is how an alert
-    // list gets ignored. An order nobody closed in August is not a thing to do
-    // anything about tonight.
-    rest(`order_queue?select=ref,location_id&status=not.in.(collected,cancelled)&created_at=lt.${ago(45)}&created_at=gt.${ago(24 * 60)}&limit=200`),
-  ]);
-
-  return {
-    reachable: true,
-    cardStranded: byVenue(stranded, venues),
-    ticketsLost: byVenue(lost, venues),
-    printStuck: byVenue(stuck, venues),
-    ordersOpen: byVenue(open, venues),
-  };
+  // 401 bad/absent token, 400 bad request, 404 never deployed: all ours.
+  const ours = res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status);
+  const detail = (body?.error || body?.detail || text || res.statusText || '').slice(0, 200);
+  if (ours) throw new WatchdogBug(`${res.status} ${detail}`);
+  throw new Unreachable(`${res.status} ${detail}`);
 }
 
 // ── GitHub: the issue list IS the state, so nothing else has to be ──────────
@@ -175,16 +165,16 @@ async function main() {
     measured = await measure();
   } catch (e) {
     if (e instanceof WatchdogBug) {
-      // Our own query is wrong. Say so loudly and STOP: claiming the venues are
-      // down because we asked for the wrong column would be worse than silence.
+      // OUR OWN FAULT. Say that nothing is being watched — never that the
+      // venues are down, which we have no idea about.
       console.error('[watchdog] THE WATCHDOG ITSELF IS BROKEN:', e.message);
-      process.exitCode = 1;
-      return;
+      measured = { watchdogBroken: e.message };
+    } else {
+      // THE CASE THIS EXISTS FOR. Nothing answered, so say exactly that rather
+      // than reporting a clean bill of health from no data.
+      console.error('[watchdog] could not reach the system:', e.message);
+      measured = { reachable: false };
     }
-    // THE CASE THIS EXISTS FOR. Nothing answered, so say exactly that rather
-    // than reporting a clean bill of health from no data.
-    console.error('[watchdog] could not reach the system:', e.message);
-    measured = { reachable: false };
   }
 
   const findings = evaluate(measured);
@@ -208,8 +198,11 @@ async function main() {
     if (decision.alert && await sms(smsText(f))) sent++;
   }
 
-  // Close what has cleared, so the list is only ever what is wrong NOW.
-  if (!DRY && GH_TOKEN && measured.reachable !== false) {
+  // Close what has cleared, so the list is only ever what is wrong NOW. Only
+  // ever from a run that actually measured: a failed run knows nothing, and
+  // closing a real fault's issue because we could not look would be the worst
+  // thing this script could do.
+  if (!DRY && GH_TOKEN && measured.reachable === true) {
     for (const key of resolved(findings, [...open.keys()])) {
       const issue = open.get(key);
       const lasted = Math.round((Date.now() - new Date(issue.openedAt).getTime()) / 60_000);
@@ -222,7 +215,7 @@ async function main() {
   const summary = runSummary(findings, sent);
   console.log('[watchdog]', summary);
   // A red tick in the Actions list is itself a signal, and GitHub emails it.
-  if (pages(findings).length) process.exitCode = 1;
+  if (pages(findings).length || measured.watchdogBroken) process.exitCode = 1;
 }
 
 main().catch((e) => { console.error('[watchdog] crashed:', e); process.exitCode = 1; });

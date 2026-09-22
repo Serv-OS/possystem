@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.46',
+    date: '22 Sep 2026',
+    items: [
+      'THE WATCHDOG CRIED WOLF ON ITS FIRST NIGHT, AND THAT IS NOW IMPOSSIBLE. It had no key of its own, was refused, and opened an alert saying the venues could not take card payments. They were fine. A watchdog that cannot run knows nothing about the venues, so it now says exactly that instead: "the watchdog itself is not working", with the reason, and it no longer wakes anybody for it. A run that measured nothing can also no longer close an alert about a fault that is still happening.',
+      'IT NOW HOLDS NO KEYS. The watching runs on GitHub, outside the database, so it can still speak when the database cannot, and it used to want the master key to do that: a key that can read and rewrite every venue, sitting in a settings page for ever, for a job that needs four numbers. It now asks one purpose-built question instead, which can count four things and name the venue and do nothing else. No order, no customer, no money, no writes.',
+      'What it watches, every five minutes, all night: the database answering at all, card payments stranded mid-flight, tickets that gave up printing, tickets queuing unprinted, and orders left open. The first four wake somebody; the last waits for the morning.',
+    ],
+  },
+  {
     v: '5.9.45',
     date: '22 Sep 2026',
     items: [

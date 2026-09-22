@@ -56,6 +56,20 @@ export const SIGNALS = Object.freeze({
     say: () => 'Tills cannot take card payments, and Back Office will not load. Cash still works and tickets still print at the venue.',
     fix: 'Check status.supabase.com, then the project dashboard. If the database is up but REST is not, restart the project from Settings, Infrastructure.',
   },
+  watchdog_broken: {
+    // NOT a page. If the watchdog is broken, Peter cannot fix it at 3am and
+    // nobody should be woken for it — but it must be VISIBLE, because while it
+    // lasts nothing is watching the venues at all. An issue (and the red run
+    // GitHub emails) is the right volume.
+    //
+    // It exists because on its first live run this thing had no key, got a 401,
+    // and announced that the venues could not take card payments. A broken
+    // watchdog knows NOTHING about the venues, and must say only that.
+    severity: WARN,
+    title: 'The watchdog itself is not working',
+    say: (f) => `The watchdog could not run: ${f.detail || 'unknown reason'}. This says nothing about whether the venues are up — while it lasts, nobody is watching them.`,
+    fix: 'Look at the last Watchdog run in GitHub Actions. Usually a missing WATCHDOG_TOKEN secret or the watchdog-status function not deployed.',
+  },
   card_stranded: {
     severity: PAGE,
     minutes: 10,
@@ -87,6 +101,31 @@ export const SIGNALS = Object.freeze({
   },
 });
 
+/**
+ * The time windows the QUERIES use, in minutes.
+ *
+ * They live here, beside the words, because the wording and the query must
+ * never drift apart: a message saying "over 10 minutes" above a query asking
+ * for 45 is a lie told by a machine, and a test below pins them together.
+ *
+ *   olderThan — how long the thing has been in trouble before it counts
+ *   within    — how far back we are willing to look at all
+ */
+export const WINDOWS = Object.freeze({
+  card_stranded: { olderThan: 10 },
+  // Only the last hour. A permanent print failure from last week is history,
+  // and history does not need waking anybody.
+  ticket_lost: { within: 60 },
+  print_stuck: { olderThan: 10 },
+  // TODAY's orders only. The first live run reported six venues, every one of
+  // them an order abandoned weeks ago: permanent wallpaper, which is exactly
+  // how an alert list gets ignored.
+  orders_open: { olderThan: 45, within: 24 * 60 },
+});
+
+/** Signals that are about the system as a whole, not about one venue's count. */
+const ALWAYS = Object.freeze({ db_unreachable: true, watchdog_broken: true });
+
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 /**
@@ -103,11 +142,11 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
  */
 export function evaluate(measured = {}) {
   const out = [];
-  const add = (signal, venue, count) => {
+  const add = (signal, venue, count, detail) => {
     const def = SIGNALS[signal];
     if (!def) return;
-    const f = { venue: venue || 'a venue', count: num(count), minutes: def.minutes };
-    if (signal !== 'db_unreachable' && f.count < 1) return;
+    const f = { venue: venue || (ALWAYS[signal] ? 'all venues' : 'a venue'), count: num(count), minutes: def.minutes, detail };
+    if (!ALWAYS[signal] && f.count < 1) return;
     out.push({
       // The key is what makes an alert ONE alert: the same trouble at the same
       // venue is the same issue until it clears, however many times we look.
@@ -116,13 +155,21 @@ export function evaluate(measured = {}) {
       severity: def.severity,
       venue: f.venue,
       count: f.count,
-      title: def.title + (signal === 'db_unreachable' ? '' : ' — ' + f.venue),
+      title: def.title + (ALWAYS[signal] ? '' : ' — ' + f.venue),
       body: def.say(f),
       fix: def.fix,
     });
   };
 
-  // The database first: if it is unreachable nothing else could be measured,
+  // OURSELVES first. A watchdog that could not run knows nothing about the
+  // venues, so it says that and stops. Anything else would be a guess dressed
+  // up as a measurement.
+  if (measured.watchdogBroken) {
+    add('watchdog_broken', null, 1, String(measured.watchdogBroken));
+    return out;
+  }
+
+  // The database next: if it is unreachable nothing else could be measured,
   // and reporting "0 stranded payments" then would be a lie.
   if (measured.reachable === false) {
     add('db_unreachable', null, 1);
