@@ -1,0 +1,58 @@
+name: Watchdog
+# Something watches the venues, so a customer does not have to.
+#
+# Peter is 8 hours behind the UK, so venues trade while he sleeps. Until now
+# every fault was found by a person standing at a counter: Apple Pay dead on the
+# checkout, menu saves failing for five months, a kiosk card payment stranded,
+# 72 tickets that never reached paper.
+#
+# IT RUNS HERE, ON GITHUB, ON PURPOSE. The 22 Sep outage took the database down
+# for 45 minutes AND took its own scheduled jobs with it (the two sweeps that
+# rescue stranded card payments are database jobs; both died at 01:35). Anything
+# watching from inside would have been just as dead. From here it can still say
+# "the database is not answering", which is the most important thing it can say.
+#
+# HOW IT REACHES A HUMAN
+#   1. It opens a GitHub issue labelled `watchdog`, which emails whoever watches
+#      this repo. That works today with no extra setup.
+#   2. A failing run shows red in Actions, which GitHub also emails.
+#   3. SMS, IF these repo secrets exist: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+#      TWILIO_FROM, ALERT_TO. Without them everything else still works.
+#
+# The issue closes itself when the fault clears, so the open list is always what
+# is wrong right now.
+on:
+  schedule:
+    # Every 5 minutes. GitHub's shortest honest interval; it can run late under
+    # load, which is fine for this and is why nothing here is second-sensitive.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# One at a time: a slow run must never overlap the next and double-report.
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+permissions:
+  issues: write        # open, comment on and close its own issues
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Look at the venues
+        env:
+          SUPABASE_URL: https://tbetcegmszzotrwdtqhi.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: node scripts/watchdog/run.mjs
