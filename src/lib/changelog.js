@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.42',
+    date: '22 Sep 2026',
+    items: [
+      'THE PRINTER STOPS GOING TO SLEEP. It was not disconnecting and nothing was wrong with the wifi: the printer was dozing off when nothing had spoken to it for a while, which is why pressing print woke it up every time, and why a ping sometimes answered while printing still failed. The till now sends it a silent hello every couple of minutes. It prints nothing, uses no paper, and keeps the printer listening so an order never has to wake it first.',
+      'TWO TICKETS CAN NO LONGER FIGHT OVER ONE PRINTER. A printer accepts one connection at a time, and one kiosk order sends a kitchen ticket, a receipt and a drawer kick at once. All three were dialling together: one printed and the others failed with a connection timeout, and after enough of those a receipt was marked as permanently failed while the printer was perfectly healthy. Jobs for the same printer now go one after another, and jobs for different printers still go at the same time.',
+      'A BUSY PRINTER NO LONGER KILLS A TICKET. A connection timeout is now told apart from a real fault like no paper, and gets far more patience before anything is given up on.',
+    ],
+  },
+  {
     v: '5.9.41',
     date: '22 Sep 2026',
     items: [
