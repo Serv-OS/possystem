@@ -23,6 +23,8 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
+import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches, detachPatches,
+         attachButtonLabel, attachResultLine } from '../../lib/menu/modifierAttach';
 // PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
@@ -3366,7 +3368,14 @@ function ModifiersTab() {
   const [newName, setNewName] = useState('');
   const [newOpt, setNewOpt]   = useState({ name:'', price:'' });
   const [itemSearch, setItemSearch] = useState('');
-  const { menuItems } = useStore();
+  const { menuItems, menuCategories, updateMenuItem } = useStore();
+  // v5.9.41 — Peter, 22 Sep 2026: "no way to search modifiers", and "within the
+  // modifier group you can attach them to products multiple products at once...
+  // normally you would connect 1 modifier groups to multiple products".
+  const [groupSearch, setGroupSearch] = useState('');
+  const [attachSearch, setAttachSearch] = useState('');
+  const [attachCat, setAttachCat] = useState('');
+  const [picked, setPicked] = useState(() => new Set());
   const [dragGIdx, setDragGIdx] = useState(null);
   const [overGIdx, setOverGIdx] = useState(null);
   const [dragOIdx, setDragOIdx] = useState(null);
@@ -3374,6 +3383,34 @@ function ModifiersTab() {
 
   const sel = groups?.find(g=>g.id===selId);
   const upd = patch => { updateModifierGroupDef(selId,patch); markBOChange(); };
+
+  // ── one group → many products (lib/menu/modifierAttach.js holds the rules) ──
+  const shownGroups = matchGroups(groups||[], groupSearch);
+  const searching   = groupSearch.trim().length > 0;
+  const carrying    = sel ? itemsCarrying(menuItems||[], sel.id) : [];
+  const offerable   = sel ? matchItems(attachableItems(menuItems||[]), { search:attachSearch, categoryId:attachCat }) : [];
+  const pickedIds   = [...picked];
+  const togglePick  = id => setPicked(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const clearPicked = () => setPicked(new Set());
+
+  const applyAttach = () => {
+    if (!sel || !pickedIds.length) return;
+    const patches = attachPatches(menuItems||[], sel.id, pickedIds);
+    for (const { id, patch } of patches) updateMenuItem(id, patch);
+    if (patches.length) markBOChange();
+    showToast?.(attachResultLine(patches.length, pickedIds.length - patches.length));
+    clearPicked();
+  };
+
+  const detachOne = itemId => {
+    if (!sel) return;
+    const patches = detachPatches(menuItems||[], sel.id, [itemId]);
+    for (const { id, patch } of patches) updateMenuItem(id, patch);
+    if (patches.length) { markBOChange(); showToast?.('Taken off that product.'); }
+  };
+
+  // A different group means a different question: never carry a selection across.
+  useEffect(() => { setPicked(new Set()); setAttachSearch(''); setAttachCat(''); }, [selId]);
 
   const addGroup = () => {
     if (!newName.trim()) return;
@@ -3415,11 +3452,30 @@ function ModifiersTab() {
             <input style={{ ...inp, flex:1, fontSize:12, padding:'6px 10px' }} value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addGroup()} placeholder="Group name e.g. Sides"/>
             <button onClick={addGroup} disabled={!newName.trim()} style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700, opacity:newName.trim()?1:.4 }}>+</button>
           </div>
+          {/* Search, by group name OR by an option inside it: somebody looking for
+              oat milk is looking for the Milk group. */}
+          <div style={{ position:'relative', marginTop:6 }}>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)' }}>🔍</span>
+            <input style={{ ...inp, paddingLeft:26, fontSize:12, padding:'6px 10px 6px 26px' }} value={groupSearch}
+              onChange={e=>setGroupSearch(e.target.value)} placeholder="Search groups or options…" autoComplete="off"/>
+            {searching && (
+              <button onClick={()=>setGroupSearch('')} style={{ position:'absolute', right:6, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:13 }}>×</button>
+            )}
+          </div>
+          {searching && (
+            <div style={{ fontSize:9, color:'var(--t4)', marginTop:5 }}>
+              {shownGroups.length} of {(groups||[]).length}. Clear the search to drag and reorder.
+            </div>
+          )}
         </div>
         <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
-          {(groups||[]).map((g,gi)=>(
-            <div key={g.id} draggable
-              onDragStart={e=>{setDragGIdx(gi);beginDrag(e,gi);}} onDragOver={e=>dragOver(e,gi,overGIdx,setOverGIdx)}
+          {shownGroups.map((g)=>{
+            // The reorder indexes the REAL list, never the filtered one, or a
+            // drag while searching would move the wrong group.
+            const gi = (groups||[]).indexOf(g);
+            return (
+            <div key={g.id} draggable={!searching}
+              onDragStart={e=>{ if(searching) return; setDragGIdx(gi);beginDrag(e,gi);}} onDragOver={e=>{ if(!searching) dragOver(e,gi,overGIdx,setOverGIdx); }}
               onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi){reorderModifierGroupDefs(dragGIdx,gi);markBOChange();/* v5.5.834: was the only modifier-group mutation missing this — add/edit/delete all mark, so a reorder alone never lit the "Push to POS" badge */}setDragGIdx(null);setOverGIdx(null);}}
               onDragEnd={()=>{setDragGIdx(null);setOverGIdx(null);}}
               onClick={()=>setSelId(g.id===selId?null:g.id)}
@@ -3434,7 +3490,8 @@ function ModifiersTab() {
               </div>
               <button onClick={e=>{e.stopPropagation();if(confirm(`Remove "${g.name}"?`)){removeModifierGroupDef(g.id);if(selId===g.id)setSelId(null);markBOChange();}}} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
             </div>
-          ))}
+          );})}
+          {searching && shownGroups.length===0 && <div style={{ textAlign:'center', padding:'24px 8px', color:'var(--t4)', fontSize:11 }}>Nothing matches “{groupSearch}”</div>}
           {(!groups||groups.length===0)&&<div style={{ textAlign:'center', padding:'32px 8px', color:'var(--t4)', fontSize:11 }}>No modifier groups yet</div>}
         </div>
       </div>
@@ -3631,6 +3688,84 @@ function ModifiersTab() {
                 <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center', padding:'4px 0' }}>
                   No sub-items yet — create them in the <strong>Items tab</strong> with type Sub item
                 </div>
+              )}
+            </div>
+
+            {/* ── ON THESE PRODUCTS ─────────────────────────────────────────
+                Peter, 22 Sep 2026: "normally you would connect 1 modifier group
+                to multiple products". Until now the only route was the other way
+                round, one product at a time: for a 223 item menu that is an
+                afternoon. The rules live in lib/menu/modifierAttach.js. */}
+            <div style={{ marginTop:14, padding:'12px 14px', background:'var(--bg2)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+              <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:8 }}>
+                <div style={{ fontSize:12, fontWeight:800, color:'var(--t1)' }}>On these products</div>
+                <div style={{ fontSize:10, color:'var(--t3)' }}>
+                  {carrying.length === 0 ? 'Not on any product yet' : carrying.length === 1 ? 'On 1 product' : `On ${carrying.length} products`}
+                </div>
+              </div>
+
+              {carrying.length > 0 && (
+                <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginBottom:10 }}>
+                  {carrying.map(it => (
+                    <span key={it.id} style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'4px 8px', borderRadius:7, background:'var(--acc-d)', border:'1px solid var(--acc-b)', fontSize:11, color:'var(--t1)' }}>
+                      {it.name || 'Unnamed'}
+                      <button onClick={()=>detachOne(it.id)} title="Take it off this product"
+                        style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, lineHeight:1, padding:0 }}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display:'flex', gap:6, marginBottom:8 }}>
+                <div style={{ position:'relative', flex:1 }}>
+                  <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)' }}>🔍</span>
+                  <input style={{ ...inp, paddingLeft:26, fontSize:12 }} value={attachSearch}
+                    onChange={e=>setAttachSearch(e.target.value)} placeholder="Search products by name…" autoComplete="off"/>
+                </div>
+                <select style={{ ...inp, fontSize:12, maxWidth:170 }} value={attachCat} onChange={e=>setAttachCat(e.target.value)}>
+                  <option value="">Every category</option>
+                  {(menuCategories||[]).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+
+              {offerable.length === 0 ? (
+                <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center', padding:'10px 0' }}>
+                  No products match. Sub items and sizes are never listed: a sub item IS an option, and a size takes its options from its parent.
+                </div>
+              ) : (
+                <>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                    <button onClick={()=>setPicked(new Set(offerable.filter(it=>!carrying.some(c=>c.id===it.id)).map(it=>it.id)))}
+                      style={{ background:'none', border:'none', color:'var(--acc)', cursor:'pointer', fontSize:11, fontWeight:700, padding:0 }}>
+                      Select all {offerable.length} shown
+                    </button>
+                    {pickedIds.length > 0 && (
+                      <button onClick={clearPicked} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:11, padding:0 }}>Clear</button>
+                    )}
+                  </div>
+                  <div style={{ maxHeight:240, overflowY:'auto', display:'flex', flexDirection:'column', gap:2, marginBottom:10 }}>
+                    {offerable.map(it => {
+                      const has = carrying.some(c => c.id === it.id);
+                      const on  = picked.has(it.id);
+                      return (
+                        <label key={it.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 9px', borderRadius:7, cursor:has?'default':'pointer',
+                          background: on ? 'var(--acc-d)' : 'transparent', border:`1px solid ${on ? 'var(--acc-b)' : 'transparent'}`, opacity: has ? .55 : 1 }}>
+                          <input type="checkbox" checked={has || on} disabled={has} onChange={()=>togglePick(it.id)} style={{ width:14, height:14 }}/>
+                          <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{it.name || 'Unnamed'}</span>
+                          {has && <span style={{ fontSize:9, color:'var(--t4)' }}>already on</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button onClick={applyAttach} disabled={!pickedIds.length}
+                    style={{ width:'100%', padding:'9px 14px', borderRadius:9, cursor:pickedIds.length?'pointer':'default', fontFamily:'inherit',
+                      background: pickedIds.length ? 'var(--acc)' : 'var(--bg3)', border:'none', color: pickedIds.length ? '#0b0c10' : 'var(--t4)', fontSize:12.5, fontWeight:800 }}>
+                    {attachButtonLabel(pickedIds.length)}
+                  </button>
+                  <div style={{ fontSize:10, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
+                    Each product keeps its own settings for this group, and anything that already has it is left alone.
+                  </div>
+                </>
               )}
             </div>
           </div>

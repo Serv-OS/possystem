@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.41',
+    date: '22 Sep 2026',
+    items: [
+      'YOU CAN SEARCH MODIFIER GROUPS, AND BY WHAT IS INSIDE THEM. Type oat and you get the Milk group, because that is how you look for a modifier you remember by its option rather than by the group name. Searching pauses drag to reorder, so a drag while filtered can never move the wrong group.',
+      'ONE MODIFIER GROUP GOES ONTO MANY PRODUCTS AT ONCE, FROM THE GROUP. Open a group and there is now an On these products panel: it shows every product carrying it, and lets you search or filter by category, tick as many products as you like, and add them in one press. Milk onto every hot drink is one action instead of eighteen. Anything that already has the group is shown as already on and left alone, each product keeps its own settings, and a product can be taken back off from the same place.',
+    ],
+  },
+  {
     v: '5.9.40',
     date: '22 Sep 2026',
     items: [
