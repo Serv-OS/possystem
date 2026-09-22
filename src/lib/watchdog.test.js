@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   evaluate, pages, alertDecision, resolved, smsText, runSummary,
-  SIGNALS, PAGE, WARN, REMINDER_HOURS,
+  SIGNALS, WINDOWS, PAGE, WARN, REMINDER_HOURS,
 } from '../../scripts/watchdog/checks.mjs';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -168,23 +168,75 @@ test('the watchdog runs on GitHub, not inside the database', () => {
   assert.doesNotMatch(run, /\.(insert|update|upsert|delete)\(/, 'it reads, it never writes to the venue database');
 });
 
-test('a wrong query is OUR bug, never reported as an outage', () => {
-  // Caught on this script's first live run: it asked for order_queue.id, a
-  // column that does not exist, and announced "the database is not answering".
-  // That is the exact class of bug the watchdog exists to catch, so it must not
-  // commit it itself.
+test('a broken watchdog says it is broken, NEVER that the venues are down', () => {
+  // The whole reason this signal exists. On its first live run the watchdog had
+  // no key, got a 401, and opened an issue saying the venues could not take
+  // card payments. It knew nothing of the sort.
+  const findings = evaluate({ watchdogBroken: 'no WATCHDOG_TOKEN' });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].signal, 'watchdog_broken');
+  assert.doesNotMatch(findings[0].body, /card payment/i, 'it must not claim anything about the venues');
+  assert.match(findings[0].body, /nobody is watching/i, 'but it must say nothing is being watched');
+  assert.match(findings[0].body, /no WATCHDOG_TOKEN/, 'and say why, so it can be fixed');
+});
+
+test('a broken watchdog does not wake anybody, because nobody can fix it at 3am', () => {
+  const f = evaluate({ watchdogBroken: 'whatever' })[0];
+  assert.equal(f.severity, WARN);
+  assert.equal(alertDecision({ finding: f, openIssue: null }).alert, false);
+});
+
+test('a run that measured NOTHING never closes anybody else\'s issue', () => {
+  // A failed run knows nothing. Closing a real fault's issue because we could
+  // not look would be the worst thing this script could do.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /measured\.reachable === true/, 'closing is gated on having actually measured');
+});
+
+test('our own bad request is OUR bug, an outage is theirs', () => {
   const run = read('../../scripts/watchdog/run.mjs');
   assert.match(run, /class WatchdogBug extends Error/);
   assert.match(run, /class Unreachable extends Error/);
-  assert.match(run, /!\[401, 403, 408, 429\]\.includes\(res\.status\)/, '4xx is ours, 5xx and timeouts are theirs');
+  assert.match(run, /res\.status >= 400 && res\.status < 500 && !\[408, 429\]\.includes\(res\.status\)/,
+    '4xx is ours (bad token, never deployed), 5xx and silence are theirs');
   assert.match(run, /THE WATCHDOG ITSELF IS BROKEN/);
+});
+
+test('the words and the queries use the SAME thresholds', () => {
+  // A message saying "over 10 minutes" above a query asking for 45 is a lie
+  // told by a machine.
+  assert.equal(WINDOWS.card_stranded.olderThan, SIGNALS.card_stranded.minutes);
+  assert.equal(WINDOWS.print_stuck.olderThan, SIGNALS.print_stuck.minutes);
+  assert.equal(WINDOWS.orders_open.olderThan, SIGNALS.orders_open.minutes);
 });
 
 test('a long-open order only counts if it is from TODAY', () => {
   // The first live run flagged six venues, every one of them orders abandoned
   // weeks ago. Permanent wallpaper is how an alert list gets ignored.
+  assert.equal(WINDOWS.orders_open.within, 24 * 60);
+  // And a permanent print failure from last week is history, not news.
+  assert.equal(WINDOWS.ticket_lost.within, 60);
+});
+
+test('GitHub holds a narrow token, NEVER a service-role key', () => {
+  // A service-role key in a repo secret can read and rewrite every venue's
+  // data, and would sit there forever for a job that needs four counts.
+  const wf = read('../../.github/workflows/watchdog.yml');
+  assert.match(wf, /WATCHDOG_TOKEN: \$\{\{ secrets\.WATCHDOG_TOKEN \}\}/);
+  assert.doesNotMatch(wf, /SERVICE_KEY|SERVICE_ROLE/, 'no service-role key goes to GitHub');
   const run = read('../../scripts/watchdog/run.mjs');
-  assert.match(run, /created_at=gt\.\$\{ago\(24 \* 60\)\}/);
+  assert.doesNotMatch(run, /SERVICE_KEY|SERVICE_ROLE/);
+  assert.match(run, /x-watchdog-token/);
+});
+
+test('the one function it may ask is gated, read-only and says which failure is whose', () => {
+  const fn = read('../../supabase/functions/watchdog-status/index.ts');
+  assert.match(fn, /sameSecret\(req\.headers\.get\('x-watchdog-token'\)/, 'every call proves the token');
+  assert.match(fn, /'bad token'/);
+  assert.doesNotMatch(fn, /\.(insert|update|upsert|delete)\(/, 'it reads, it never writes');
+  assert.doesNotMatch(fn, /select\('\*'\)/, 'it never hands back whole rows');
+  // 401 means WE are wrong; only a database that did not answer gets a 503.
+  assert.match(fn, /reason: 'db'[\s\S]*?503/);
 });
 
 test('it works with no Twilio configured, because it has to', () => {

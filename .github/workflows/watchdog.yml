@@ -21,6 +21,10 @@ name: Watchdog
 #
 # The issue closes itself when the fault clears, so the open list is always what
 # is wrong right now.
+#
+# IT HOLDS NO KEYS. GitHub stores WATCHDOG_TOKEN, a random string that can only
+# ask `watchdog-status` for four counts, never a service-role key that could
+# read and rewrite every venue.
 on:
   schedule:
     # Every 5 minutes. GitHub's shortest honest interval; it can run late under
@@ -49,7 +53,10 @@ jobs:
       - name: Look at the venues
         env:
           SUPABASE_URL: https://tbetcegmszzotrwdtqhi.supabase.co
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # NOT a service-role key. This token can do exactly one thing: ask the
+          # `watchdog-status` edge function for four counts. It cannot read an
+          # order, a customer or a penny, and it cannot write anything at all.
+          WATCHDOG_TOKEN: ${{ secrets.WATCHDOG_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
