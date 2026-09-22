@@ -73,9 +73,14 @@ const POLL_INTERVAL_MS = 20_000;
 const SWEEP_EVERY_TICKS = 3;
 const FIRST_TICK_DELAY = 3_000;
 const CLAIM_TIMEOUT_MS = 60_000;
-const MAX_ATTEMPTS     = 5;
-// Backoff per *completed* attempt — attempts 1..5 map to indexes 0..4
-const BACKOFF_MS = [0, 2_000, 10_000, 30_000, 120_000];
+// THE SAME LADDER AS THE ORCHESTRATOR, and it has to stay the same: two
+// different budgets means one of them gives up while the other is still trying,
+// and the ticket's fate depends on which code path happened to pick it up.
+// Widened 22 Sep 2026 from 5 attempts / ~3 minutes to ~30 minutes, after the
+// measurement that found 39 kitchen tickets that never reached paper because the
+// printer was away for longer than three minutes. See PrintOrchestrator.js.
+const MAX_ATTEMPTS     = 11;
+const BACKOFF_MS = [0, 2_000, 10_000, 30_000, 60_000, 120_000, 240_000, 420_000, 600_000, 600_000, 600_000];
 
 let _pollTimer = null;
 let _running   = false;

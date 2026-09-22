@@ -47,10 +47,34 @@ function hasNativeBridge() {
 }
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
-// Backoff schedule: delay before attempting retry N (ms since last attempt)
-// Attempt 1: immediate (0), Attempt 2: 2s, Attempt 3: 10s, Attempt 4: 30s, Attempt 5: 120s
-const RETRY_SCHEDULE_MS = [0, 2_000, 10_000, 30_000, 120_000];
-const MAX_ATTEMPTS      = RETRY_SCHEDULE_MS.length;      // 5
+// HOW LONG A TICKET IS WORTH TRYING FOR.
+//
+// This ladder used to be [0, 2s, 10s, 30s, 120s]: five attempts, about three
+// minutes, and then failed_permanent for ever with nothing anywhere reprinting
+// it. Measured against the whole life of the system (22 Sep 2026): 102 of 954
+// jobs never reached paper, 72 of them real service tickets, including 39
+// KITCHEN TICKETS. The venue's printer leaves the network for longer than three
+// minutes and the kitchen simply never learns about that order.
+//
+// A ticket is now worth about half an hour. That is not optimism: the same
+// measurement shows the printer comes back on its own, and the cost of trying is
+// one connect attempt every few minutes against the cost of a table waiting for
+// food nobody is cooking. Anything still failing after that is a human problem
+// and belongs on the Action Required list, which is where it then goes.
+const RETRY_SCHEDULE_MS = [
+  0,          // straight away
+  2_000,      // 2s   — a busy socket has usually cleared by now
+  10_000,     // 10s
+  30_000,     // 30s
+  60_000,     // 1m   — a printer waking from sleep is back by about here
+  120_000,    // 2m
+  240_000,    // 4m
+  420_000,    // 7m
+  600_000,    // 10m
+  600_000,    // 20m total
+  600_000,    // 30m total, then we stop and ask a person
+];
+const MAX_ATTEMPTS      = RETRY_SCHEDULE_MS.length;      // 11 over ~30 minutes
 
 const CLAIM_TTL_MS      = 30_000;        // claim expires after 30s — then reclaimable
 // v5.6.83 — POLL RATES. These were 2s (master) / 15s (child), which on an idle till is

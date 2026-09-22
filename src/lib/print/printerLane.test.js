@@ -102,18 +102,29 @@ test('a logger that throws never breaks printing', async () => {
 
 // ── telling a collision from a dead printer ─────────────────────────────────
 
-test('the real error from the venue is recognised as a collision', () => {
-  assert.equal(looksLikeCollision('failed to connect to /10.0.0.104 (port 9100) from /10.0.0.125 (port 45284) after 5000ms: isConnected'), true);
-  assert.equal(looksLikeCollision(new Error('ECONNREFUSED 10.0.0.104:9100')), true);
-  assert.equal(looksLikeCollision('socket closed'), true);
-  assert.equal(looksLikeCollision('connect ETIMEDOUT'), true);
+test('THE TAIL OF THE ERROR IS WHAT MATTERS: unreachable is not a collision', () => {
+  // The full message Android writes, which the first version of this test (and
+  // of the code) got wrong by matching only its opening words:
+  const real = 'failed to connect to /10.0.0.104 (port 9100) from /10.0.0.125 (port 46886) after 5000ms: isConnected failed: EHOSTUNREACH (No route to host)';
+  assert.equal(looksLikeCollision(real), false,
+    'the printer is genuinely off the network — extra patience here only delays the alarm');
+  assert.equal(looksLikeCollision('isConnected failed: EHOSTDOWN (Host is down)'), false);
+  assert.equal(looksLikeCollision('ECONNREFUSED 10.0.0.104:9100'), false,
+    'something answers at that address but nothing listens on the print port: not a busy socket');
 });
 
-test('a printer that genuinely needs a human is NOT a collision', () => {
-  // These must keep their short attempt budget: retrying does not add paper.
+test('a plain timeout with no reason IS treated as a busy socket', () => {
+  // 15 Provo failures look like this: the connect ran out of time with no OS
+  // reason attached, which is what a printer already talking to someone looks like.
+  assert.equal(looksLikeCollision('failed to connect to /10.0.0.104 (port 9100) after 5000ms'), true);
+  assert.equal(looksLikeCollision('connect ETIMEDOUT'), true);
+  assert.equal(looksLikeCollision('connection reset by peer'), true, 'the printer dropped the line mid job');
+});
+
+test('a printer that needs a human is never given extra patience', () => {
   assert.equal(looksLikeCollision('cover open'), false);
   assert.equal(looksLikeCollision('out of paper'), false);
-  assert.equal(looksLikeCollision('printer offline: no paper'), false);
+  assert.equal(looksLikeCollision('local network permission denied'), false);
   assert.equal(looksLikeCollision(''), false);
   assert.equal(looksLikeCollision(null), false);
 });

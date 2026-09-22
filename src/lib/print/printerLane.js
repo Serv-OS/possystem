@@ -34,6 +34,8 @@
 // bar printer are two machines and waiting on one for the other is how a kitchen
 // ticket ends up behind a receipt.
 
+import { printerErrorKind } from '../printerErrorWords.js';
+
 /** A printer's identity for queueing: its id, else its ip:port, else the venue's one printer. */
 export function laneKeyOf(job) {
   const id = String(job?.printer_id ?? '').trim();
@@ -86,21 +88,28 @@ export function createLanes({ onError = null } = {}) {
 }
 
 /**
- * Is this failure the collision above, rather than a printer that is really off?
+ * Is this failure a BUSY SOCKET, rather than a printer that is genuinely away?
  *
- * It matters because the two need opposite answers: a collision should be tried
- * again in a moment and will then work, while a printer that is off needs a
- * human. Burning a ticket's last attempt on a collision is how a kitchen loses
- * an order.
+ * The two need opposite answers: a busy socket clears in seconds, while a
+ * printer that is off the network needs a human and should reach the Action
+ * Required list quickly rather than after a quarter of an hour of hope.
+ *
+ * THE FIRST VERSION OF THIS WAS WRONG, and the investigation caught it before it
+ * shipped. Android's real message is:
+ *
+ *   failed to connect to /10.0.0.104 (port 9100) from /10.0.0.125 (port 46886)
+ *   after 5000ms: isConnected failed: EHOSTUNREACH (No route to host)
+ *
+ * It contains BOTH "failed to connect" and "isConnected", so matching on those
+ * called 50 of the 53 genuinely-unreachable failures a collision. The tail is
+ * what matters, and printerErrorWords.js already reads it correctly: it checks
+ * "unreachable" BEFORE "timeout", precisely so this cannot happen. Use it.
  */
 export function looksLikeCollision(error) {
-  const text = String(error?.message ?? error ?? '').toLowerCase();
+  const text = String(error?.message ?? error ?? '').trim();
   if (!text) return false;
-  return text.includes('isconnected')
-    || text.includes('failed to connect')
-    || text.includes('connection refused')
-    || text.includes('econnrefused')
-    || text.includes('etimedout')
-    || text.includes('socket')
-    || (text.includes('timeout') && text.includes('connect'));
+  const kind = printerErrorKind(text);
+  // A printer that is off, unreachable, blocked or has no network is NOT busy.
+  // Only a timeout with no OS reason, or a line the printer dropped mid job, is.
+  return kind === 'timeout' || kind === 'dropped';
 }
