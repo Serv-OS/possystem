@@ -83,6 +83,7 @@ import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.
 // promote door shared with booking-widget.
 import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
 import { promotePaidBooking, markPaymentNeedsRefund, loadBookingDue } from '../_shared/bookingPromote.ts';
+import { looksLikeBackendDown } from '../_shared/backendDown.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -285,23 +286,45 @@ async function unRefundOnFailure(merchantReference: string, reason: string | nul
 
 // merchantReference `tj-<job id>` is stamped by adyen-terminal-charge at
 // dispatch; payment_session_id carries the pspReference after settle.
+/**
+ * The job this notification belongs to.
+ *
+ * THROWS when the LOOKUP ITSELF FAILED, and that is the point. Until 22 Sep 2026
+ * every read here was wrapped in a try/catch that returned null, so a lookup
+ * that TIMED OUT was indistinguishable from "no such job". The caller then
+ * acknowledged the notification to Adyen, and an acknowledged notification is
+ * never resent. In a brownout (the real profile of the 22 Sep stall, where
+ * writes succeeded while reads timed out) that is: customer charged, job never
+ * settled, no retry, and the sweep that would have caught it running on the same
+ * starving database. Money lost quietly, which is the worst kind.
+ *
+ * Not found is still null. Only a failure to find out throws, and the caller
+ * answers 500 so Adyen sends it again.
+ */
 async function matchTerminalJob(merchantReference: string, paymentPsp: string):
   Promise<{ id: string; closed_check_id: string | null; location_id: string | null; capture_mode?: string | null } | null> {
-  try {
-    if (merchantReference.startsWith('tj-')) {
-      const jobId = merchantReference.slice(3);
-      if (UUID_RE.test(jobId)) {
-        const { data } = await admin.from('terminal_jobs')
-          .select('id, closed_check_id, location_id, capture_mode').eq('id', jobId).maybeSingle();
-        if (data?.id) return data;
-      }
-    }
-    if (paymentPsp) {
-      const { data } = await admin.from('terminal_jobs')
-        .select('id, closed_check_id, location_id, capture_mode').eq('payment_session_id', paymentPsp).maybeSingle();
+  const lookupFailed = (error: unknown, where: string) => {
+    if (!error) return;
+    console.error('[adyen-webhook] terminal_jobs match ' + where + ':', (error as Error)?.message ?? error);
+    const thrown: any = new Error('terminal_jobs lookup failed (' + where + '): ' + ((error as Error)?.message ?? 'unknown'));
+    thrown.backendDown = true;
+    throw thrown;
+  };
+  if (merchantReference.startsWith('tj-')) {
+    const jobId = merchantReference.slice(3);
+    if (UUID_RE.test(jobId)) {
+      const { data, error } = await admin.from('terminal_jobs')
+        .select('id, closed_check_id, location_id, capture_mode').eq('id', jobId).maybeSingle();
+      lookupFailed(error, 'by id');
       if (data?.id) return data;
     }
-  } catch (e) { console.error('[adyen-webhook] terminal_jobs match:', (e as Error).message); }
+  }
+  if (paymentPsp) {
+    const { data, error } = await admin.from('terminal_jobs')
+      .select('id, closed_check_id, location_id, capture_mode').eq('payment_session_id', paymentPsp).maybeSingle();
+    lookupFailed(error, 'by psp');
+    if (data?.id) return data;
+  }
   return null;
 }
 
@@ -635,7 +658,7 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
 // and picks the config every outbound modification uses. `region` is the
 // region whose HMAC key verified the notification (null on a replay or an
 // unsigned test item); with none, the venue's own row decides, else UK.
-async function applyMoneyEvent(item: any, live: boolean | null = null, region: AdyenRegion | null = null): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
+async function applyMoneyEvent(item: any, live: boolean | null = null, region: AdyenRegion | null = null): Promise<'applied' | 'duplicate' | 'skipped' | 'failed' | 'unavailable'> {
   try {
     const code = String(item?.eventCode || '');
     if (!LEDGER_EVENTS.has(code)) return 'skipped';
@@ -658,7 +681,12 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
       ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
         .select(LEDGER_READ_COLS).eq('psp_reference', rowKey).maybeSingle());
     }
-    if (readErr) { console.error('[adyen-webhook] ledger read failed:', readErr.message); return 'failed'; }
+    if (readErr) {
+      console.error('[adyen-webhook] ledger read failed:', readErr.message);
+      // Could not READ is not the same as could not apply: if we ack this, Adyen
+      // never sends it again (22 Sep 2026).
+      return looksLikeBackendDown(readErr) ? 'unavailable' : 'failed';
+    }
 
     const raw: Record<string, any> = (existing?.raw && typeof existing.raw === 'object') ? { ...existing.raw } : {};
     const applied: string[] = Array.isArray(raw.applied_modifications) ? [...raw.applied_modifications] : [];
@@ -885,7 +913,10 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
       delete row.live;
       ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
     }
-    if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }
+    if (upErr) {
+      console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey);
+      return looksLikeBackendDown(upErr) ? 'unavailable' : 'failed';
+    }
 
     // ── v5.7.5 tip-on-receipt capture window (best-effort, never blocks) ─────
     // Runs only on NON-duplicate events (the modKey guard above already
@@ -937,7 +968,11 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
     return 'applied';
   } catch (e) {
     console.error('[adyen-webhook] applyMoneyEvent failed:', (e as Error).message);
-    return 'failed';
+    // A code bug is 'failed' and gets acknowledged, because Adyen would
+    // otherwise retry it for ever. A backend that did not answer is
+    // 'unavailable' and must NOT be acknowledged: that is money we have not
+    // recorded, and the notification is our only copy.
+    return ((e as any)?.backendDown === true || looksLikeBackendDown(e)) ? 'unavailable' : 'failed';
   }
 }
 
@@ -1030,6 +1065,7 @@ async function runBackfill(dry: boolean): Promise<Response> {
           .update({ processed_at: new Date().toISOString() }).eq('id', row.id);
         if (pErr) console.error('[adyen-webhook] backfill processed_at stamp failed:', pErr.message);
       } else if (res === 'duplicate') counts.duplicates++;
+      else if (res === 'unavailable') { counts.failed++; console.error('[adyen-webhook] backfill stopping: backend unavailable'); break; }
       else if (res === 'failed') counts.failed++;
     }
     if (rows.length < BATCH) break;
@@ -1145,6 +1181,15 @@ Deno.serve(async (req) => {
     // stored raw row: parse failures log and NEVER block the ack.
     if (LEDGER_EVENTS.has(String(item.eventCode || ''))) {
       const res = await applyMoneyEvent(item, live, live ? matchedRegion : null);
+      if (res === 'unavailable') {
+        // DO NOT ACKNOWLEDGE. An acknowledged notification is never resent, and
+        // this one carries a payment we have not managed to record. 503 tells
+        // Adyen to send it again in a few minutes, by which time the database
+        // is usually back. (22 Sep 2026: the read path timed out while writes
+        // still worked, which is exactly when this is lost silently.)
+        console.error('[adyen-webhook] NOT acknowledging: the money event could not be recorded', String(item?.pspReference ?? ''));
+        return new Response('backend unavailable, please retry', { status: 503 });
+      }
       if ((res === 'applied' || res === 'duplicate') && stored?.id) {
         const { error: pErr } = await admin.from('adyen_events')
           .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);

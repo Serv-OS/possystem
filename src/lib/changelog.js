@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.40',
+    date: '22 Sep 2026',
+    items: [
+      'WHEN THE SYSTEM IS STRUGGLING IT NOW SAYS SO, INSTEAD OF BLAMING YOU. During the outage in the early hours the database ran out of power and stopped answering in time. Staff were told their login was invalid 291 times and that they had no access to their own venue 70 times. Neither was true. Anything that cannot get an answer now says the system is not answering and to try again in a moment, and the till simply retries.',
+      'A CARD PAYMENT CAN NO LONGER GO UNRECORDED IN AN OUTAGE. Adyen tells us about every payment, and we used to tell Adyen we had filed it even when the lookup had failed. An acknowledged message is never sent again, so a customer could be charged with nothing on our side to match it. We now refuse to acknowledge anything we could not record, and Adyen sends it again a few minutes later.',
+    ],
+  },
+  {
     v: '5.9.39',
     date: '21 Sep 2026',
     items: [

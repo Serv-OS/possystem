@@ -22,10 +22,16 @@
 //     public.second_step_settings.enforce is true. Peter flips it with one line of
 //     SQL; no deploy. Default OFF, so this code can go live before anyone has set up.
 //   * The switch is read with the service role and cached for 30 seconds. If it
-//     cannot be read and we have never read it, a password only login is refused
-//     (fail closed), because the service role writes that follow the check are not
-//     protected by the database fence. A missing table means the SQL has not run
-//     yet: that is OFF.
+//     cannot be read and we have never read it, the answer is OFF, i.e. FAIL
+//     OPEN (see failClosed / neverRead below, and the reasoning at the top of
+//     readEnforced). A missing table means the SQL has not run yet: also OFF.
+//
+//     THIS PARAGRAPH USED TO SAY "FAIL CLOSED", and it was wrong from the
+//     20 Sep 2026 fix onwards: the code changed and the header did not. On
+//     22 Sep, mid outage, that stale sentence sent an investigation looking for
+//     a sign in lockout that could not happen, while the real fault was a
+//     starving database. A comment that contradicts its own code costs an hour
+//     in the exact hour you do not have one.
 //
 // Plain TypeScript with no Deno and no URL imports, so node:test can import it
 // (src/lib/secondStep/secondStepServer.test.js).
