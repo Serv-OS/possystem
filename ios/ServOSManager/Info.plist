@@ -24,8 +24,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>ServOS Manager uses the camera to photograph checklist sign-offs, deliveries and maintenance jobs.</string>
 	<key>RPOSAllowsCamera</key>
-	<false/>
+	<true/>
 	<key>RPOSAppURL</key>
 	<string>https://app.serv-os.app/?mode=manager</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

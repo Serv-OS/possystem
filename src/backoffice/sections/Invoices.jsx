@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { photoInputProps } from '../../lib/cameraCapture';
 import { useStore } from '../../store';
 import { supabase, getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
@@ -196,7 +197,7 @@ export default function Invoices() {
       {!review && (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '11px 18px', borderRadius: 12, background: 'var(--acc)', color: '#0b0c10', fontSize: 13.5, fontWeight: 700, cursor: scanning ? 'default' : 'pointer', opacity: scanning ? 0.6 : 1 }}>
           {scanning ? 'Scanning…' : '📷 Scan / upload invoice'}
-          <input type="file" accept="image/*,application/pdf" capture="environment" onChange={onFile} disabled={scanning} style={{ display: 'none' }} />
+          <input {...photoInputProps(undefined, 'image/*,application/pdf')} onChange={onFile} disabled={scanning} style={{ display: 'none' }} />
         </label>
       )}
 
