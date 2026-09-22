@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
-import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFromClaim, pairingCodeHint } from '../lib/deviceFence';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFromClaim, pairingCodeHint, claimDeviceWithRetry } from '../lib/deviceFence';
 import { getPendingCount, reconcilePendingChecks } from '../sync/DataSafe';
 import { getQueueSize, replayQueue } from '../sync/OfflineQueue';
 import { VERSION } from '../lib/version';
@@ -79,7 +79,12 @@ export default function PairingScreen({ onPaired }) {
     try { await ensureAuthToken(); } catch (e) { console.warn('[pair] no auth session:', e?.message); }
     let claim = null;
     let legacyCode = null;
-    const { data: res, error: rpcErr } = await supabase.rpc('claim_device_v2', { p_code: clean });
+    // A dropped connection used to end the pairing with the browser's own words
+    // ("TypeError: Load failed"). Repeating the claim is safe, so it is tried again.
+    const { data: res, error: rpcErr } = await claimDeviceWithRetry({
+      rpc: (p_code) => supabase.rpc('claim_device_v2', { p_code }),
+      code: clean,
+    });
     if (rpcErr && isMissingRpc(rpcErr)) {
       const old = await legacyPair(typed);
       if (old.error) { setLoading(false); return setError(old.error); }

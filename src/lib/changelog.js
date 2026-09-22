@@ -7,11 +7,18 @@
 
 export const CHANGELOG = [
   {
-    v: '5.9.44',
+    v: '5.9.45',
     date: '22 Sep 2026',
     items: [
       'A RECHECK KYC WITH ADYEN BUTTON, BECAUSE NOTHING WAS RECHECKING. A venue whose paperwork you have just fixed kept showing the old answer, for ever: the portal has not asked Adyen since 10 Sep, and Adyen has never sent us a status message for any of the six newest venues. The button asks Adyen there and then, updates the chip on the venue row, and tells you in a sentence what is outstanding rather than making you read a status code. It only reads: it changes nothing at Adyen.',
       'Coffee Boy Preston, as an example, was one line: PCI forms are not signed, remediating action Sign PCI. Everything else was valid, and the venue could take payments the whole time.',
+    ],
+  },
+  {
+    v: '5.9.44',
+    date: '22 Sep 2026',
+    items: [
+      'Pairing a till, kitchen screen or kiosk now tries again on its own when the connection drops for a moment, and says "Could not reach ServOS" instead of showing a browser error. A blip while typing the code no longer ends the pairing.',
     ],
   },
   {
