@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.39',
+    date: '21 Sep 2026',
+    items: [
+      'THE MANAGER APP NO LONGER DIES WHEN YOU TAP THE PHOTO BUTTON. Signing a checklist off with a photo closed the app instantly on iPhone and iPad. The photo button opens the camera directly, and an app that has not asked Apple for camera permission is shut down by iOS on the spot, with no message: the Manager app had never asked, because it was built as a read only app before the Ops checklists arrived.',
+      'Two fixes, so it cannot happen again on any of our apps. The photo button now asks the app whether it has a camera at all, and where it does not it opens your photo library instead of ending the app. That is live now, with no app update needed. And the Manager app itself is now built asking for the camera properly, so the next build takes photos straight from the checklist.',
+    ],
+  },
+  {
     v: '5.9.38',
     date: '21 Sep 2026',
     items: [

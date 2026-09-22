@@ -9,6 +9,7 @@
 // Thresholds/units/schedules are READ from admin config; this surface never defines them.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { photoInputProps } from '../lib/cameraCapture';
 import { useStore } from '../store';
 import {
   opsHeartbeat, opsRegisterDevice, opsPinLogin,
@@ -779,7 +780,10 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
           );
         })}
       </div>
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPicked} style={{ display: 'none' }} />
+      {/* capture="environment" ONLY where the shell can survive it: it opens the
+          camera picker itself, and an iOS target with no NSCameraUsageDescription
+          is killed outright (Manager app, 21 Sep 2026). See lib/cameraCapture.js. */}
+      <input ref={fileRef} {...photoInputProps()} onChange={onPhotoPicked} style={{ display: 'none' }} />
       {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{err}</div>}
       <button onClick={sign} disabled={busy || completed < total} className="btn btn-acc" style={{ width: '100%', padding: 15, marginTop: 16, fontSize: 15, fontWeight: 800, borderRadius: 14, opacity: completed < total ? 0.5 : 1 }}>
         {busy ? 'Signing…' : `Sign off${operator?.name ? ` — ${operator.name.split(' ')[0]}` : ''}`}

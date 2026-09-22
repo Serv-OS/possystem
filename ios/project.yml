@@ -330,8 +330,14 @@ targets:
         # ?mode=manager is a native URL mode (ManagerSurface: Home, Reports,
         # Team, Ops, Kitchen, gated by pairing then a staff PIN).
         RPOSAppURL: "https://app.serv-os.app/?mode=manager"
-        # Manager reads, it never scans: camera denied, no permission declared.
-        RPOSAllowsCamera: false
+        # 21 Sep 2026: Manager is NOT read only. Its Ops tab signs opening,
+        # closing and cleaning checklists off WITH A PHOTO, and that photo
+        # button is a file input carrying capture="environment", which opens the
+        # camera picker directly and never goes near the getUserMedia handler.
+        # With no NSCameraUsageDescription iOS killed the app the moment a
+        # manager tapped it. Declared properly now.
+        RPOSAllowsCamera: true
+        NSCameraUsageDescription: "ServOS Manager uses the camera to photograph checklist sign-offs, deliveries and maintenance jobs."
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIRequiresFullScreen: false

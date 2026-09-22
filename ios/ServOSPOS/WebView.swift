@@ -26,9 +26,17 @@ struct POSWebView: UIViewRepresentable {
     // MARK: Injected user scripts
 
     /// Lets the web app detect the iOS shell (window.RposIOS marker).
+    ///
+    /// hasCamera is load bearing, not decoration (21 Sep 2026). A file input
+    /// with capture="environment" opens the camera picker WITHOUT going through
+    /// requestMediaCapturePermissionFor below, so the shell cannot refuse it,
+    /// and a target with no NSCameraUsageDescription is killed by iOS on the
+    /// spot. The web app reads this flag and leaves the attribute off when it is
+    /// false, so the button opens the photo library instead of ending the app.
     private static let shellMarkerScript = WKUserScript(
         source: "window.RposIOS = { platform: 'ios', version: '\(Config.marketingVersion)'"
-              + ", hasLocation: \(Config.allowsLocation) };",
+              + ", hasLocation: \(Config.allowsLocation)"
+              + ", hasCamera: \(Config.allowsCamera) };",
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
     )
