@@ -43,6 +43,13 @@ const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const LABEL = 'watchdog';
 const DRY = process.argv.includes('--dry-run');
 const TEST_SMS = process.argv.includes('--test-sms');
+// GitHub fires a */5 schedule when it feels like it: on 22 Sep it ran ONCE in
+// the first three hours. So one trigger does not mean one look. A triggered run
+// stays alive and keeps looking, and the schedule becomes a way of restarting
+// the watcher rather than the only thing that makes it look.
+const WATCH = process.argv.includes('--watch');
+const WATCH_MINUTES = Number((process.argv.find((a) => a.startsWith('--watch-minutes=')) || '').split('=')[1]) || 50;
+const BEAT_MS = 5 * 60_000;
 
 const TIMEOUT_MS = 20_000;
 
@@ -203,10 +210,10 @@ async function testText() {
   return false;
 }
 
-async function main() {
+async function oneCycle() {
   // A test text proves the alarm reaches a phone. It looks at nothing and
   // changes nothing, so it is safe to press at any time.
-  if (TEST_SMS) { process.exitCode = (await testText()) ? 0 : 1; return; }
+  if (TEST_SMS) { return { broken: !(await testText()) }; }
 
   let measured;
   try {
@@ -262,8 +269,48 @@ async function main() {
 
   const summary = runSummary(findings, sent);
   console.log('[watchdog]', summary);
-  // A red tick in the Actions list is itself a signal, and GitHub emails it.
-  if (pages(findings).length || measured.watchdogBroken) process.exitCode = 1;
+  return { broken: Boolean(measured.watchdogBroken) };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  if (TEST_SMS) { const r = await oneCycle(); process.exitCode = r.broken ? 1 : 0; return; }
+
+  // One look, then stop. This is what a schedule that fired reliably would need.
+  if (!WATCH) {
+    const { broken } = await oneCycle();
+    if (broken) process.exitCode = 1;
+    return;
+  }
+
+  // KEEP WATCHING. GitHub drops most */5 schedules under load, so a run that
+  // only looked once would leave hours unwatched. This looks every 5 minutes
+  // for the best part of an hour, and the next trigger (scheduled or manual)
+  // simply replaces it, because the workflow cancels the run in progress.
+  const until = Date.now() + WATCH_MINUTES * 60_000;
+  let cycle = 0;
+  let brokenEver = false;
+  while (true) {
+    cycle++;
+    console.log(`[watchdog] --- look ${cycle} at ${new Date().toISOString()}`);
+    try {
+      // One bad cycle must never end the watch: an hour of silence because of
+      // a transient GitHub API hiccup is the failure this whole file exists to
+      // prevent.
+      const { broken } = await oneCycle();
+      brokenEver = brokenEver || broken;
+    } catch (e) {
+      console.error('[watchdog] a look failed, carrying on:', e.message);
+    }
+    if (Date.now() + BEAT_MS >= until) break;
+    await sleep(BEAT_MS);
+  }
+  console.log(`[watchdog] watched for ${WATCH_MINUTES} minutes, ${cycle} looks. Handing over to the next run.`);
+  // Only a broken watchdog turns the run red. Real faults have already spoken
+  // through their own issue and text; a red tick 50 minutes later would be a
+  // stale, confusing second alarm.
+  if (brokenEver) process.exitCode = 1;
 }
 
 main().catch((e) => { console.error('[watchdog] crashed:', e); process.exitCode = 1; });
