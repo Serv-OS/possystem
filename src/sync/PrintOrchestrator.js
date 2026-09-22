@@ -36,6 +36,8 @@
  */
 
 import { supabase } from '../lib/supabase';
+import { createLanes, laneKeyOf, looksLikeCollision } from '../lib/print/printerLane';
+import { startKeepAwake, STATUS_QUERY_BYTES, jitterFor } from '../lib/print/keepAwake';
 import { printService } from '../lib/printer';
 import { mustChangeRow } from '../lib/rowWrites';
 
@@ -45,10 +47,34 @@ function hasNativeBridge() {
 }
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
-// Backoff schedule: delay before attempting retry N (ms since last attempt)
-// Attempt 1: immediate (0), Attempt 2: 2s, Attempt 3: 10s, Attempt 4: 30s, Attempt 5: 120s
-const RETRY_SCHEDULE_MS = [0, 2_000, 10_000, 30_000, 120_000];
-const MAX_ATTEMPTS      = RETRY_SCHEDULE_MS.length;      // 5
+// HOW LONG A TICKET IS WORTH TRYING FOR.
+//
+// This ladder used to be [0, 2s, 10s, 30s, 120s]: five attempts, about three
+// minutes, and then failed_permanent for ever with nothing anywhere reprinting
+// it. Measured against the whole life of the system (22 Sep 2026): 102 of 954
+// jobs never reached paper, 72 of them real service tickets, including 39
+// KITCHEN TICKETS. The venue's printer leaves the network for longer than three
+// minutes and the kitchen simply never learns about that order.
+//
+// A ticket is now worth about half an hour. That is not optimism: the same
+// measurement shows the printer comes back on its own, and the cost of trying is
+// one connect attempt every few minutes against the cost of a table waiting for
+// food nobody is cooking. Anything still failing after that is a human problem
+// and belongs on the Action Required list, which is where it then goes.
+const RETRY_SCHEDULE_MS = [
+  0,          // straight away
+  2_000,      // 2s   — a busy socket has usually cleared by now
+  10_000,     // 10s
+  30_000,     // 30s
+  60_000,     // 1m   — a printer waking from sleep is back by about here
+  120_000,    // 2m
+  240_000,    // 4m
+  420_000,    // 7m
+  600_000,    // 10m
+  600_000,    // 20m total
+  600_000,    // 30m total, then we stop and ask a person
+];
+const MAX_ATTEMPTS      = RETRY_SCHEDULE_MS.length;      // 11 over ~30 minutes
 
 const CLAIM_TTL_MS      = 30_000;        // claim expires after 30s — then reclaimable
 // v5.6.83 — POLL RATES. These were 2s (master) / 15s (child), which on an idle till is
@@ -70,6 +96,10 @@ const CHILD_POLL_MS     = 30_000;        // child backstop scan (failover only)
 // something was missed), and once work is found, keep sweeping every 2s until there is
 // none left. Both are bursts around real events, so the steady cost of an idle venue is
 // unchanged.
+// How many EXTRA tries a job gets when the failure was a busy socket rather than
+// a printer that is off. Cheap: each one is another 5s connect at most, and the
+// alternative is a kitchen ticket that never prints.
+const COLLISION_EXTRA_ATTEMPTS = 6;
 const RESUBSCRIBE_SWEEP_MS = 1_500;      // catch-up sweep after the socket (re)connects
 const BUSY_POLL_MS         = 2_000;      // while there is work, look again this soon
 const RECLAIM_MS        = 60_000;        // stuck-claim sweep + exhausted-job sweep
@@ -89,6 +119,10 @@ let _locationId     = null;
 let _isMaster       = false;
 let _running        = false;
 let _inflight       = new Set();       // jobIds currently being dispatched on THIS device
+// One queue per printer. Same printer = one at a time; different printers overlap.
+const _lanes        = createLanes({ onError: (e, key) => console.warn('[PrintOrchestrator] lane ' + key + ':', e?.message || e) });
+let _keepAwake      = null;           // the thing that stops a printer going to sleep
+const _lastContact  = new Map();      // printer key → when we last spoke to it
 // One-shot timers armed by recordFailure so a scheduled retry fires at its backoff
 // deadline instead of waiting for the next backstop poll. Tracked so stop() clears them.
 const _retryTimers  = new Set();
@@ -130,6 +164,30 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
   _locationId = locationId;
   _isMaster   = !!isMaster;
   _running    = true;
+
+  // KEEP THE PRINTER AWAKE (22 Sep 2026). Peter, repeatedly through one evening:
+  // "its just gone offline again!", "clicking print wakes it back up". Ping
+  // answered while port 9100 refused, then later ping failed too, and a print
+  // always brought it back: that is a print server asleep, not a broken one.
+  // A status query every couple of minutes keeps it listening. It prints
+  // NOTHING (DLE EOT is the ESC/POS "are you there"), and it goes through the
+  // same lane as real tickets, so it can never open a socket while one is out.
+  _keepAwake = startKeepAwake({
+    deviceId,
+    printers: () => printService.knownPrinters?.() || [],
+    lastContact: (p) => _lastContact.get(laneKeyOf({ printer_id: p.id, printer_ip: p.ip, printer_port: p.port })) ?? null,
+    send: (p) => _lanes.run(laneKeyOf({ printer_id: p.id, printer_ip: p.ip, printer_port: p.port }), async () => {
+      const key = laneKeyOf({ printer_id: p.id, printer_ip: p.ip, printer_port: p.port });
+      _lastContact.set(key, Date.now());
+      return printService._dispatchBytesDirect(STATUS_QUERY_BYTES, p.ip, p.port || 9100);
+    }),
+    onContact: (p, ok, err) => {
+      if (!ok) console.warn('[PrintOrchestrator] keep-awake knock failed for', p?.ip, err?.message || err);
+    },
+  });
+  // Knock once now, jittered, so a printer that is already asleep is awake
+  // before the first order rather than after a failed one.
+  setTimeout(() => { if (_running) _keepAwake?.knockNow(); }, jitterFor(deviceId));
 
   console.log(`[PrintOrchestrator] Starting — role=${_isMaster ? 'MASTER' : 'child'} device=${_deviceId.slice(0,8)} bridge=native`);
 
@@ -231,6 +289,7 @@ async function handleFastBroadcast(payload) {
     const ip = printer.address || payload.printer_ip;
     if (!ip) throw new Error('No printer IP');
 
+    _lastContact.set(laneKeyOf({ printer_id: payload.printer_id, printer_ip: ip, printer_port: payload.printer_port }), Date.now());
     const result = await printService._dispatchBytesDirect(
       bytes, ip, printer.port || payload.printer_port || 9100
     );
@@ -394,6 +453,7 @@ export function stopPrintOrchestrator() {
   clearTimeout(_busyTimer);
   clearInterval(_reclaimTimer);
   clearInterval(_idempotencyCleanupTimer);
+  _keepAwake?.stop(); _keepAwake = null; _lastContact.clear();
   if (_channel && supabase) supabase.removeChannel(_channel);
   if (_fastChannel && supabase) supabase.removeChannel(_fastChannel);
   _pollTimer = _busyTimer = _reclaimTimer = _idempotencyCleanupTimer = _channel = _fastChannel = null;
@@ -420,6 +480,7 @@ export function getOrchestratorStatus() {
     deviceId:   _deviceId,
     locationId: _locationId,
     inflight:   [..._inflight],
+    printerLanes: _lanes.busy(),
   };
 }
 
@@ -471,9 +532,21 @@ async function tick() {
     // itself the first time a sweep comes back empty.
     if (data.length) armBusySweep();
 
+    // ONE PRINTER, ONE JOB AT A TIME (22 Sep 2026). This loop used to fire every
+    // job in the batch at once. A thermal printer on port 9100 accepts ONE TCP
+    // connection, so a kiosk order (kitchen ticket + receipt + drawer kick) opened
+    // three sockets to the same machine: one printed and the others died on
+    // "failed to connect ... after 5000ms", burning an attempt each until the
+    // receipt was failed_permanent. Jobs for DIFFERENT printers still overlap,
+    // because a bar printer must never wait behind the kitchen.
     for (const job of data) {
       if (_inflight.has(job.id)) continue;
-      claimAndDispatch(job.id);
+      const key = laneKeyOf(job);
+      _inflight.add(job.id);
+      _lanes.run(key, async () => {
+        try { await claimAndDispatch(job.id, { alreadyInflight: true }); }
+        finally { _inflight.delete(job.id); }
+      });
     }
   } catch (e) {
     console.warn('[PrintOrchestrator] poll error:', e.message);
@@ -481,8 +554,9 @@ async function tick() {
 }
 
 // ─── Claim + dispatch one job ────────────────────────────────────────────────
-async function claimAndDispatch(jobId) {
-  if (!_running || _inflight.has(jobId)) return;
+async function claimAndDispatch(jobId, { alreadyInflight = false } = {}) {
+  if (!_running) return;
+  if (!alreadyInflight && _inflight.has(jobId)) return;
   // Already on paper from this device, with the bookkeeping refused — see
   // markPrintedDurable. The poll retries this every couple of seconds, so say so
   // once a minute rather than on every pass.
@@ -494,7 +568,7 @@ async function claimAndDispatch(jobId) {
     }
     return;
   }
-  _inflight.add(jobId);
+  if (!alreadyInflight) _inflight.add(jobId);
 
   try {
     // Atomic claim: update WHERE claimed_by IS NULL — returns row only if WE won
@@ -532,12 +606,16 @@ async function claimAndDispatch(jobId) {
   } catch (e) {
     console.warn(`[PrintOrchestrator] dispatch error for ${jobId}:`, e.message);
   } finally {
-    _inflight.delete(jobId);
+    // The lane owns the flag when it put the job in flight.
+    if (!alreadyInflight) _inflight.delete(jobId);
   }
 }
 
 // ─── Dispatch the bytes ──────────────────────────────────────────────────────
 async function dispatchJob(job) {
+  // Remember we just spoke to this printer, so the keep-awake never knocks on a
+  // machine that is busy printing.
+  _lastContact.set(laneKeyOf(job), Date.now());
   // SPEED: skip the pre-dispatch `status: 'sending'` update — `claimed` already
   // protects the row from re-pickup (the poll filter is status IN
   // ('pending','failed'), and claim_expires_at acts as a TTL safety net via
@@ -596,7 +674,14 @@ async function dispatchJob(job) {
 // ─── Record failure + schedule retry or mark permanent ───────────────────────
 async function recordFailure(job, errMsg) {
   const nextAttempt = (job.attempts || 0) + 1;
-  const max = job.max_attempts || MAX_ATTEMPTS;
+  // A COLLISION IS NOT A BROKEN PRINTER (22 Sep 2026). "failed to connect ...
+  // after 5000ms" means the socket was busy, which on a one-connection-at-a-time
+  // thermal printer usually means WE were already talking to it. Counting that
+  // towards a ticket's last attempt is how a receipt reached failed_permanent
+  // while the machine was perfectly healthy and printing test pages seconds
+  // later. Lanes now stop most of these; this makes the rest survivable.
+  const collision = looksLikeCollision(errMsg);
+  const max = (job.max_attempts || MAX_ATTEMPTS) + (collision ? COLLISION_EXTRA_ATTEMPTS : 0);
 
   if (nextAttempt >= max) {
     // Exhausted — goes to Action Required queue. This write is the ONLY thing that
