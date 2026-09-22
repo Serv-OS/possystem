@@ -42,6 +42,7 @@ const REPO = process.env.GITHUB_REPOSITORY || 'Serv-OS/possystem';
 const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const LABEL = 'watchdog';
 const DRY = process.argv.includes('--dry-run');
+const TEST_SMS = process.argv.includes('--test-sms');
 
 const TIMEOUT_MS = 20_000;
 
@@ -141,25 +142,72 @@ function issueBody(finding) {
   ].join('\n');
 }
 
+/**
+ * Send one text.
+ *
+ * `TWILIO_FROM_NUMBER` is what the rest of ServOS calls it (the send-sms
+ * function has used that name since May); `TWILIO_FROM` is what this script
+ * asked for originally. Accept both, because a secret typed under the other
+ * spelling would silently mean no alarm at all, and "the alarm was named wrong"
+ * is a terrible thing to discover the morning after.
+ *
+ * @returns {Promise<{ sent: boolean, detail: string }>}
+ */
 async function sms(text) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_FROM;
+  const from = process.env.TWILIO_FROM || process.env.TWILIO_FROM_NUMBER;
   const to = process.env.ALERT_TO;
-  if (!sid || !token || !from || !to) return false;
+  const missing = [
+    !sid && 'TWILIO_ACCOUNT_SID', !token && 'TWILIO_AUTH_TOKEN',
+    !from && 'TWILIO_FROM_NUMBER', !to && 'ALERT_TO',
+  ].filter(Boolean);
+  // No credentials is NOT an error: the GitHub issue still opens and still
+  // emails. Texting is the extra mile, not the only road.
+  if (missing.length) return { sent: false, detail: 'not configured: ' + missing.join(', ') };
+
   const body = new URLSearchParams({ To: to, From: from, Body: text });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: 'POST',
-    headers: {
-      authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'),
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body,
-  });
-  return res.ok;
+  let res;
+  try {
+    res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'),
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+  } catch (e) {
+    return { sent: false, detail: 'Twilio unreachable: ' + e.message };
+  }
+  if (res.ok) return { sent: true, detail: `accepted by Twilio for ${to}` };
+  const t = await res.text().catch(() => '');
+  return { sent: false, detail: `Twilio refused it: ${res.status} ${t}`.slice(0, 300) };
+}
+
+/**
+ * Prove the alarm can reach a phone, without waiting for a real fault.
+ *
+ * An alert path nobody has ever tested is not an alert path. This sends one
+ * text, says exactly what Twilio said back, and touches nothing else: no
+ * issues, no database, no state.
+ */
+async function testText() {
+  const { sent, detail } = await sms('ServOS: test message. The overnight watchdog can reach this phone. Nothing is wrong.');
+  if (sent) {
+    console.log('[watchdog] test text', detail);
+    console.log('[watchdog] If it does not arrive within a minute, the number was accepted but the carrier dropped it.');
+    return true;
+  }
+  console.error('[watchdog] test text NOT sent:', detail);
+  return false;
 }
 
 async function main() {
+  // A test text proves the alarm reaches a phone. It looks at nothing and
+  // changes nothing, so it is safe to press at any time.
+  if (TEST_SMS) { process.exitCode = (await testText()) ? 0 : 1; return; }
+
   let measured;
   try {
     measured = await measure();
@@ -195,7 +243,7 @@ async function main() {
         body: JSON.stringify({ body: `Still happening, ${REMINDER_HOURS} hours on. ${f.body}` }),
       });
     }
-    if (decision.alert && await sms(smsText(f))) sent++;
+    if (decision.alert && (await sms(smsText(f))).sent) sent++;
   }
 
   // Close what has cleared, so the list is only ever what is wrong NOW. Only

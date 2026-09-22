@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.47',
+    date: '22 Sep 2026',
+    items: [
+      'A TEST BUTTON FOR THE OVERNIGHT ALARM. An alert path nobody has ever tested is not an alert path, so the watchdog can now send one test text on demand and tell you exactly what the phone network said back, rather than leaving you to find out during a real fault at 3am.',
+      'It also accepts the phone number under either name. The rest of ServOS has called it TWILIO_FROM_NUMBER since May, and a number typed under the wrong name would have meant no alarm at all.',
+    ],
+  },
+  {
     v: '5.9.46',
     date: '22 Sep 2026',
     items: [

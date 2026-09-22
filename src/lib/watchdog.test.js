@@ -241,8 +241,31 @@ test('the one function it may ask is gated, read-only and says which failure is 
 
 test('it works with no Twilio configured, because it has to', () => {
   const run = read('../../scripts/watchdog/run.mjs');
-  assert.match(run, /if \(!sid \|\| !token \|\| !from \|\| !to\) return false;/,
+  assert.match(run, /if \(missing\.length\) return \{ sent: false, detail: 'not configured: '/,
     'no SMS credentials is not an error: the GitHub issue still opens');
+  assert.match(run, /Texting is the extra mile, not the only road/);
+});
+
+test('a phone number under either name still works', () => {
+  // The rest of ServOS has called it TWILIO_FROM_NUMBER since May; this script
+  // first asked for TWILIO_FROM. A secret typed under the other spelling would
+  // mean no alarm at all, discovered the morning after.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /process\.env\.TWILIO_FROM \|\| process\.env\.TWILIO_FROM_NUMBER/);
+  const wf = read('../../.github/workflows/watchdog.yml');
+  assert.match(wf, /TWILIO_FROM: /);
+  assert.match(wf, /TWILIO_FROM_NUMBER: /);
+});
+
+test('the alarm can be tested without waiting for a real fault', () => {
+  // An alert path nobody has ever tested is not an alert path.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /if \(TEST_SMS\) \{ process\.exitCode = \(await testText\(\)\) \? 0 : 1; return; \}/,
+    'the test sends and stops: it must never open, comment on or close an issue');
+  assert.match(run, /Twilio refused it: /, 'and it repeats what Twilio actually said');
+  const wf = read('../../.github/workflows/watchdog.yml');
+  assert.match(wf, /test_sms:/);
+  assert.match(wf, /--test-sms/);
 });
 
 test('the thresholds are the measured ones, and they are written down', () => {
