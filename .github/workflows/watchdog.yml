@@ -17,7 +17,10 @@ name: Watchdog
 #      this repo. That works today with no extra setup.
 #   2. A failing run shows red in Actions, which GitHub also emails.
 #   3. SMS, IF these repo secrets exist: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-#      TWILIO_FROM, ALERT_TO. Without them everything else still works.
+#      TWILIO_FROM_NUMBER (or TWILIO_FROM) and ALERT_TO, the phone to text in
+#      +44.../+1... form. Without them everything else still works. Run this
+#      workflow by hand with "Send one test text" ticked to prove the path
+#      before trusting it overnight.
 #
 # The issue closes itself when the fault clears, so the open list is always what
 # is wrong right now.
@@ -31,6 +34,11 @@ on:
     # load, which is fine for this and is why nothing here is second-sensitive.
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      test_sms:
+        description: 'Send one test text to ALERT_TO and stop. Proves the alarm reaches a phone.'
+        type: boolean
+        default: false
 
 # One at a time: a slow run must never overlap the next and double-report.
 concurrency:
@@ -61,5 +69,6 @@ jobs:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
-        run: node scripts/watchdog/run.mjs
+        run: node scripts/watchdog/run.mjs ${{ github.event.inputs.test_sms == 'true' && '--test-sms' || '' }}
