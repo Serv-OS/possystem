@@ -20,14 +20,15 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { looksLikeBackendDown, backendDownBody, backendDownHeaders, accessFrom } from '../_shared/backendDown.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
-const json = (b: unknown, s = 200) =>
-  new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+const json = (b: unknown, s = 200, extra: Record<string, string> = {}) =>
+  new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json', ...extra } });
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, {
@@ -43,16 +44,25 @@ const COLS = 'id, check_key, location_id, target_terminal_id, pos_device_id, tra
   + ' acknowledged_total_minor,'
   + ' created_at, dispatched_at, charged_at, settled_at, updated_at';
 
-/** Can this caller see jobs at this location? Same fence as terminal-job-create. */
-async function canRead(callerId: string, locationId: string): Promise<boolean> {
-  const [{ data: ul }, { data: prof }, { data: dev }] = await Promise.all([
+/**
+ * Can this caller see jobs at this location? Same fence as terminal-job-create.
+ *
+ * Returns three answers, not two. On 22 Sep 2026 this returned a BOOLEAN, all
+ * three reads came back null because PostgREST was answering 503 while the
+ * database starved, and 70 requests were told "no access to this location" when
+ * the truth was "we could not find out". A venue's staff read that as being
+ * locked out of their own venue. See _shared/backendDown.js.
+ */
+async function canRead(callerId: string, locationId: string): Promise<'yes' | 'no' | 'unknown'> {
+  const results = await Promise.all([
     opsAdmin.from('user_locations').select('location_id')
       .eq('user_id', callerId).eq('location_id', locationId).maybeSingle(),
     opsAdmin.from('user_profiles').select('role').eq('id', callerId).maybeSingle(),
     opsAdmin.from('devices').select('id')
       .eq('device_uid', callerId).eq('location_id', locationId).limit(1).maybeSingle(),
   ]);
-  return !!ul || prof?.role === 'super_admin' || !!dev;
+  return accessFrom(results, ([ul, prof, dev]) =>
+    !!ul?.data || (prof?.data as { role?: string } | null)?.role === 'super_admin' || !!dev?.data);
 }
 
 Deno.serve(async (req) => {
@@ -66,10 +76,19 @@ Deno.serve(async (req) => {
   let callerId: string | null = null;
   const isServiceRole = token === SERVICE_ROLE;
   if (!isServiceRole) {
+    // getUser() does NOT throw when the auth service times out: it answers
+    // { data: { user: null }, error }. Reading the null and discarding the error
+    // is what told 291 tills their login was invalid during the 22 Sep stall,
+    // while auth was logging 504 "context deadline exceeded".
+    let authError: unknown = null;
     try {
-      const { data } = await opsAdmin.auth.getUser(token);
+      const { data, error } = await opsAdmin.auth.getUser(token);
       callerId = data?.user?.id ?? null;
-    } catch { callerId = null; }
+      authError = error ?? null;
+    } catch (e) { authError = e; }
+    if (!callerId && looksLikeBackendDown(authError)) {
+      return json(backendDownBody('sign in'), 503, backendDownHeaders());
+    }
     if (!callerId) return json({ error: 'unauthorized' }, 401);
   }
 
@@ -92,7 +111,13 @@ Deno.serve(async (req) => {
       // venue the caller has no access to.
       const locs = [...new Set(rows.map((r: any) => r.location_id))];
       const allowed = new Set<string>();
-      for (const loc of locs) if (await canRead(callerId, loc)) allowed.add(loc);
+      for (const loc of locs) {
+        const verdict = await canRead(callerId, loc);
+        // We could not find out: say so and let the till ask again. Treating it
+        // as "no" hides a venue's own jobs from it (22 Sep 2026).
+        if (verdict === 'unknown') return json(backendDownBody('access check'), 503, backendDownHeaders());
+        if (verdict === 'yes') allowed.add(loc);
+      }
       const visible = rows.filter((r: any) => allowed.has(r.location_id));
       if (!visible.length) return json({ error: 'no access to these jobs' }, 403);
       return json({ jobs: visible });
@@ -103,8 +128,10 @@ Deno.serve(async (req) => {
   // ── the human queue for a venue ────────────────────────────────────────────
   const locationId: string | undefined = body?.location_id;
   if (!locationId) return json({ error: 'job_id, job_ids or location_id required' }, 400);
-  if (!isServiceRole && callerId && !(await canRead(callerId, locationId))) {
-    return json({ error: 'no access to this location' }, 403);
+  if (!isServiceRole && callerId) {
+    const verdict = await canRead(callerId, locationId);
+    if (verdict === 'unknown') return json(backendDownBody('access check'), 503, backendDownHeaders());
+    if (verdict === 'no') return json({ error: 'no access to this location' }, 403);
   }
 
   let q = opsAdmin.from('terminal_jobs').select(COLS).eq('location_id', locationId);
