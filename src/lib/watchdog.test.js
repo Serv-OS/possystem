@@ -257,11 +257,44 @@ test('a phone number under either name still works', () => {
   assert.match(wf, /TWILIO_FROM_NUMBER: /);
 });
 
+test('one trigger keeps watching, because GitHub drops most schedules', () => {
+  // Measured 22 Sep 2026: GitHub honoured ONE of the */5 schedules in the first
+  // three hours. A run that looked once and exited would leave the night
+  // unwatched, which is the entire thing this was built to prevent.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /const BEAT_MS = 5 \* 60_000;/);
+  assert.match(run, /WATCH_MINUTES.*\|\| 50/, 'a triggered run covers most of an hour');
+  assert.match(run, /while \(true\)/);
+  assert.match(run, /if \(Date\.now\(\) \+ BEAT_MS >= until\) break;/, 'it stops before the job timeout, not after');
+
+  const wf = read('../../.github/workflows/watchdog.yml');
+  assert.match(wf, /--watch/, 'the scheduled run watches; only the test-text run does not');
+  assert.match(wf, /timeout-minutes: 55/, 'the job must outlive the watch window');
+  assert.match(wf, /cancel-in-progress: true/, 'a new trigger replaces the watcher instead of queueing behind it');
+});
+
+test('one failed look never ends the watch', () => {
+  // An hour of silence caused by a transient GitHub API hiccup would be exactly
+  // the failure this file exists to prevent.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /a look failed, carrying on/);
+  assert.match(run, /catch \(e\) \{\s*console\.error\('\[watchdog\] a look failed/);
+});
+
+test('a long watch does not turn the run red hours after the fact', () => {
+  // Real faults already speak through their own issue and text. A red tick 50
+  // minutes later is a stale second alarm; a broken watchdog is not.
+  const run = read('../../scripts/watchdog/run.mjs');
+  assert.match(run, /if \(brokenEver\) process\.exitCode = 1;/);
+});
+
 test('the alarm can be tested without waiting for a real fault', () => {
   // An alert path nobody has ever tested is not an alert path.
   const run = read('../../scripts/watchdog/run.mjs');
-  assert.match(run, /if \(TEST_SMS\) \{ process\.exitCode = \(await testText\(\)\) \? 0 : 1; return; \}/,
+  assert.match(run, /if \(TEST_SMS\) \{ return \{ broken: !\(await testText\(\)\) \}; \}/,
     'the test sends and stops: it must never open, comment on or close an issue');
+  assert.match(run, /if \(TEST_SMS\) \{ const r = await oneCycle\(\); process\.exitCode = r\.broken \? 1 : 0; return; \}/,
+    'and a test text never starts the hour-long watch');
   assert.match(run, /Twilio refused it: /, 'and it repeats what Twilio actually said');
   const wf = read('../../.github/workflows/watchdog.yml');
   assert.match(wf, /test_sms:/);

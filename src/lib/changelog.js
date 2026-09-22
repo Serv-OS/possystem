@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.48',
+    date: '22 Sep 2026',
+    items: [
+      'THE OVERNIGHT WATCH NOW ACTUALLY WATCHES. It was set to look every five minutes, and GitHub ran it once in three hours, which would have left most of the night uncovered without anybody knowing. A run now stays alive and looks every five minutes for the best part of an hour, and the schedule just restarts the watcher. One look failing no longer ends the watch.',
+      'Postgres upgraded to 17.6.1.166 tonight, which is the fix for the sign in failures that locked people out of Back Office. Seven minutes, no data touched. The upgrade moved the database to a new machine and a safety fence we built stopped every scheduled job that calls out, including the one that rescues card payments left mid flight; found and fixed within seven minutes, and the fence now reads its setting properly instead of matching a machine.',
+    ],
+  },
+  {
     v: '5.9.47',
     date: '22 Sep 2026',
     items: [
