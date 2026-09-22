@@ -11,14 +11,16 @@ iPad-first WebView wrappers around the PROD web app, mirroring the Android wrapp
 | ServOS Time Clock | `co.posup.rpos.clock` | `https://app.serv-os.app/?mode=clock` | no |
 | ServOS Waitlist | `co.posup.rpos.waitlist` | `https://app.serv-os.app/?mode=waitlist` | no |
 | ServOS Bookings | `co.posup.rpos.bookings` | `https://app.serv-os.app/?mode=bookings` | no |
-| ServOS Manager | `co.posup.rpos.manager` | `https://app.serv-os.app/?mode=manager` | no |
+| ServOS Manager | `co.posup.rpos.manager` | `https://app.serv-os.app/?mode=manager` | yes (checklist photo sign-off, v5.9.39) |
 | ServOS Owner | `co.posup.rpos.owner` | `https://app.serv-os.app/?mode=owner` | no |
 | ServOS Staff | `co.posup.rpos.staff` | `https://app.serv-os.app/?mode=staff` | no (location yes) |
 
 **Live host (since 11 Sep 2026 builds):** every target opens `app.serv-os.app`, the live web app on git main. `possystem-liard.vercel.app` and `dev.serv-os.app` serve git develop (test cards only) and must not ship in an App Store build. The host a target opens is always treated as internal by `Config.isInternalHost`, so repointing `RPOSAppURL` can never bounce the app's own start page to Safari.
 
 - **No .xcodeproj in git.** `xcodegen generate` builds it from `project.yml` (XcodeGen 2.46.0 installed).
-- **Printing (POS build 5, v5.8.83).** The POS target sets `RPOSAllowsPrinting: true`, so `ServOSPOS/PrinterBridge.swift` injects `window.RposPrinter` and the iPad prints straight to receipt printers over the venue Wi-Fi (TCP 9100), exactly like the Android till. `NSLocalNetworkUsageDescription` is required with it: iOS asks the user once for local network access. Every other target leaves `window.RposPrinter` undefined, so its prints fall back to the Supabase `print_jobs` queue and the LAN print agent. Before build 5 the POS did that too, and a venue with no agent printed nothing (UK test, 16 Sep 2026). The shell injects `window.RposIOS = { platform: 'ios', version: '<marketing version>' }` so the web app can detect it.
+- **Printing (POS build 5, v5.8.83).** The POS target sets `RPOSAllowsPrinting: true`, so `ServOSPOS/PrinterBridge.swift` injects `window.RposPrinter` and the iPad prints straight to receipt printers over the venue Wi-Fi (TCP 9100), exactly like the Android till. `NSLocalNetworkUsageDescription` is required with it: iOS asks the user once for local network access. Every other target leaves `window.RposPrinter` undefined, so its prints fall back to the Supabase `print_jobs` queue and the LAN print agent. Before build 5 the POS did that too, and a venue with no agent printed nothing (UK test, 16 Sep 2026). The shell injects `window.RposIOS = { platform: 'ios', version: '<marketing version>', hasLocation: <bool>, hasCamera: <bool> }` so the web app can detect it.
+
+- **A FILE INPUT IS NOT getUserMedia (21 Sep 2026).** `<input type="file" capture="environment">` opens the camera picker itself and never reaches `requestMediaCapturePermissionFor`, so `RPOSAllowsCamera: false` cannot refuse it. A target with no `NSCameraUsageDescription` is TERMINATED by iOS the instant it is tapped, with no error: that is how the Manager app died on a checklist photo sign-off. The web app now reads `hasCamera` and leaves the attribute off when it is false (`src/lib/cameraCapture.js`), so an old build falls back to the photo library instead of dying. Any target that can reach a photo button needs the permission string.
 
 ## Per-app Info.plist keys (the contract)
 
