@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, ensureAuthToken, linkDevice, sendDeviceHeartbeat, KIOSK_SECRET_KEY } from '../lib/supabase';
-import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDeviceRead, pairingCodeHint } from '../lib/deviceFence';
+import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDeviceRead, pairingCodeHint, claimDeviceWithRetry } from '../lib/deviceFence';
 import { checkDeviceLink } from '../lib/deviceLink';
 import DeviceLinkBanner from '../components/DeviceLinkBanner';
 import KioskApp from './KioskApp';
@@ -125,7 +125,11 @@ function KioskSurfaceInner() {
       try { await ensureAuthToken(); } catch (e) { console.warn('[KioskSurface] no auth session:', e?.message); }
       let row = null;
       let clearCode = false;
-      const { data: res, error: rpcErr } = await supabase.rpc('claim_device_v2', { p_code: normalizePairingCode(codeNorm) });
+      // Same as the till: a request that never completed is tried again (safe to repeat).
+      const { data: res, error: rpcErr } = await claimDeviceWithRetry({
+        rpc: (p_code) => supabase.rpc('claim_device_v2', { p_code }),
+        code: normalizePairingCode(codeNorm),
+      });
       if (rpcErr && isMissingRpc(rpcErr)) {
         const old = await legacyKioskPair(codeNorm);
         if (old.error) { setError(old.error); return; }

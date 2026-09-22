@@ -19,6 +19,7 @@ import {
   pairingCodeHint, isServerPairingCode, SERVER_CODE_ALPHABET, shouldReleaseParkedOnLink,
   heartbeatArgs, legacyHeartbeatPatch, PARKED_LINK_STATUS, heartbeatNextStep, cardLinkDecision,
   cardLinkRefusalMessage, cardLinkCheckNeeded, CARD_LINK_STALE_MS, CARD_UNSUPPORTED_TRUST_MS,
+  claimDeviceWithRetry, CLAIM_RETRY_DELAYS_MS,
 } from './deviceFence.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -314,7 +315,7 @@ test('supabase.js boot claim goes through runDeviceLink, and no longer reads pai
 
 test('the pairing screen never pairs locally when the claim was refused', () => {
   const src = read('../surfaces/PairingScreen.jsx');
-  assert.ok(src.includes("await supabase.rpc('claim_device_v2', { p_code: clean })"));
+  assert.ok(src.includes('await claimDeviceWithRetry({') && src.includes("supabase.rpc('claim_device_v2', { p_code })"));
   const refused = src.indexOf('} else if (rpcErr || !res?.ok) {');
   const stored = src.indexOf("localStorage.setItem('rpos-device'");
   assert.ok(refused > 0 && stored > refused);
@@ -396,7 +397,7 @@ test('pairing screen: a mistyped server code is caught before the server calls i
 test('pairing screens use the hint and take a 14 character code (old code stopped at 12)', () => {
   const ps = read('../surfaces/PairingScreen.jsx');
   const hint = ps.indexOf('const hint = pairingCodeHint(code);');
-  assert.ok(hint > 0 && hint < ps.indexOf("await supabase.rpc('claim_device_v2'"), 'the hint runs before the claim');
+  assert.ok(hint > 0 && hint < ps.indexOf('await claimDeviceWithRetry({'), 'the hint runs before the claim');
   const ks = read('../surfaces/KioskSurface.jsx');
   assert.ok(ks.includes('const hint = pairingCodeHint(codeNorm);') && ks.includes('maxLength={20}'));
 });
@@ -468,7 +469,7 @@ test('refused writes never lose work: Pair again to the same venue wipes nothing
   assert.ok(sb.includes("'rpos-device',") && sb.includes("'rpos-kiosk-secret',"), 'the pairing record and kiosk secret survive any wipe');
   const ps = read('../surfaces/PairingScreen.jsx');
   const send = ps.indexOf('try { await reconcilePendingChecks(); }');
-  const claim = ps.indexOf("await supabase.rpc('claim_device_v2'");
+  const claim = ps.indexOf('await claimDeviceWithRetry({');
   assert.ok(send > 0 && claim > send, 'unsent sales and queued writes are sent BEFORE the claim');
   const ask = ps.indexOf('if (prevLoc && data.location_id && prevLoc !== data.location_id) {');
   const fence = ps.indexOf('enforceTenantFence(data.location_id);');
@@ -644,4 +645,44 @@ test('fix round 2 (MEDIUM): every surface reports its build on the heartbeat, an
   assert.ok(read('./db.js').includes("update({ status: 'online', last_seen: new Date().toISOString(), app_version: VERSION })"), 'KDS');
   assert.ok(read('../surfaces/PairingScreen.jsx').includes('app_version: VERSION,'), 'the old pairing write');
   assert.ok(read('../surfaces/KioskSurface.jsx').includes('app_version: VERSION,'), 'the kiosk pairing write');
+});
+
+
+// 22 Sep 2026: Apple rejected the KDS under 2.1(a) after pairing died with the browser's
+// own words, "TypeError: Load failed" (a request that never left the iPad). The server was
+// healthy the whole time.
+test('a dropped pairing request says so in plain words, and is tried again', async () => {
+  assert.equal(
+    claimRefusalMessage(null, new TypeError('Load failed')),
+    'Could not reach ServOS. Check the internet connection, then tap Pair this device again.');
+  assert.equal(
+    claimRefusalMessage(null, { message: 'NetworkError when attempting to fetch resource' }),
+    'Could not reach ServOS. Check the internet connection, then tap Pair this device again.');
+
+  // Two dropped requests, then the server answers: the till still pairs.
+  let calls = 0;
+  const slept = [];
+  const flaky = async () => {
+    calls += 1;
+    if (calls < 3) return { data: null, error: new TypeError('Load failed') };
+    return { data: { ok: true, device_id: 'd1' }, error: null };
+  };
+  const ok = await claimDeviceWithRetry({ rpc: flaky, code: 'ABCD2345EFGH', sleep: async (ms) => { slept.push(ms); } });
+  assert.equal(calls, 3);
+  assert.deepEqual(slept, [...CLAIM_RETRY_DELAYS_MS]);
+  assert.equal(ok.data.ok, true);
+
+  // A refusal the server actually sent is NOT retried, and neither is an answered error.
+  let refusals = 0;
+  const refused = async () => { refusals += 1; return { data: { ok: false, reason: 'expired' }, error: null }; };
+  await claimDeviceWithRetry({ rpc: refused, code: 'ABCD2345EFGH', sleep: async () => {} });
+  assert.equal(refusals, 1);
+  let answered = 0;
+  const denied = async () => { answered += 1; return { data: null, error: { message: 'permission denied for function claim_device_v2' } }; };
+  await claimDeviceWithRetry({ rpc: denied, code: 'ABCD2345EFGH', sleep: async () => {} });
+  assert.equal(answered, 1);
+
+  // Both pairing screens go through the retry.
+  assert.ok(read('../surfaces/PairingScreen.jsx').includes('await claimDeviceWithRetry({'), 'till');
+  assert.ok(read('../surfaces/KioskSurface.jsx').includes('await claimDeviceWithRetry({'), 'kiosk');
 });
