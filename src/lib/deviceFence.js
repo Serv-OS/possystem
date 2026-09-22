@@ -14,6 +14,8 @@
 // "FENCE STAGE 1 FALLBACK" here and in their callers (grep that tag). After file 2 codes are
 // single use and devices are unreadable to strangers, so the legacy code path is dead.
 
+import { isTransportFailure } from './netRetry.js';
+
 /** What this build can do. File 2 waits until every active device reports fence_v1. */
 export const FENCE_CAPS = Object.freeze(['fence_v1', 'device_secret']);
 
@@ -89,8 +91,38 @@ export function claimRefusalMessage(data, error) {
   if (reason === 'expired') return 'This pairing code has expired. Issue a new one in Back Office.';
   if (reason === 'already_paired') return 'This device is already paired to another till. Issue a new code in Back Office to move it.';
   if (reason === 'locked') return 'Too many pairing attempts. Wait 15 minutes and try again.';
+  // A request that never completed is the network, not the code. Apple's reviewer saw the
+  // raw "TypeError: Load failed" (22 Sep 2026) and read it as a broken app.
+  if (isTransportFailure(error)) {
+    return 'Could not reach ServOS. Check the internet connection, then tap Pair this device again.';
+  }
   if (error && error.message) return 'Pairing failed, try again (' + error.message + ')';
   return 'Pairing failed, try again';
+}
+
+/** Waits between pairing attempts when the request never left the device. */
+export const CLAIM_RETRY_DELAYS_MS = Object.freeze([600, 1500]);
+
+const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/**
+ * Claim a device, trying again when the request never completed.
+ *
+ * WHY THIS IS SAFE TO REPEAT. claim_device_v2 binds the device to THIS session's uid.
+ * If the first try never arrived, the second one pairs. If it did arrive and only the
+ * reply was lost, the code is already spent, but _device_claim_core sees this session
+ * holding that device and answers ok with already_bound (dry run against Ops, 22 Sep
+ * 2026), so the till pairs either way. A refusal (ok:false) or any answered error is
+ * returned at once: only a transport failure is retried.
+ */
+export async function claimDeviceWithRetry({ rpc, code, delays = CLAIM_RETRY_DELAYS_MS, sleep = defaultSleep } = {}) {
+  let result = { data: null, error: null };
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    result = await rpc(code);
+    if (!result || !isTransportFailure(result.error)) return result;
+    if (attempt < delays.length) await sleep(delays[attempt]);
+  }
+  return result;
 }
 
 /**

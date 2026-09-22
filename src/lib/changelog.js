@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.44',
+    date: '22 Sep 2026',
+    items: [
+      'Pairing a till, kitchen screen or kiosk now tries again on its own when the connection drops for a moment, and says "Could not reach ServOS" instead of showing a browser error. A blip while typing the code no longer ends the pairing.',
+    ],
+  },
+  {
     v: '5.9.43',
     date: '22 Sep 2026',
     items: [
