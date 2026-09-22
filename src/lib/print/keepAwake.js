@@ -27,6 +27,24 @@
 // WHAT THIS IS NOT: a fix for a printer that is off, out of paper, or on another
 // network. It only keeps a sleeping one awake.
 
+// OFF BY DEFAULT SINCE THE HOUR IT SHIPPED (22 Sep 2026).
+//
+// Peter, minutes after v5.9.42 reached the till: "the printer just came online
+// and went straight back off... this is not my network its something we have
+// done". The Sunmi till was confirmed on 5.9.42 and seen seconds earlier, so
+// this knock WAS running against that printer every two minutes.
+//
+// I cannot prove it is the cause and I am not going to argue the point while a
+// venue's printer is flapping. The NT311 is a CLOUD printer: its blue light is
+// its SERVER connection, not a LAN link, and Sunmi's own support notes say its
+// network behaviour has "no ultimate solution at present". A device like that
+// may well drop its uplink when an unexpected LAN socket arrives.
+//
+// So it is off unless a venue switches it on, and the fixes that do NOT touch
+// the printer unprompted (one job at a time, thirty minutes of patience, an
+// honest health badge) stay on. Those are the ones that stop tickets being lost.
+export const KEEP_AWAKE_DEFAULT_ON = false;
+
 /** ESC/POS real time status request. Prints nothing; the printer answers on the socket. */
 export const STATUS_QUERY_BYTES = Object.freeze([0x10, 0x04, 0x01]);
 
@@ -56,7 +74,7 @@ export function statusQueryBase64() {
  *
  * @param {{ lastContactAt?: number|null, now?: number, everyMs?: number, enabled?: boolean }} o
  */
-export function shouldKnock({ lastContactAt = null, now = Date.now(), everyMs = KEEP_AWAKE_MS, enabled = true } = {}) {
+export function shouldKnock({ lastContactAt = null, now = Date.now(), everyMs = KEEP_AWAKE_MS, enabled = KEEP_AWAKE_DEFAULT_ON } = {}) {
   if (!enabled) return false;
   if (!lastContactAt) return true;
   return (now - lastContactAt) >= everyMs;
@@ -98,13 +116,16 @@ export function startKeepAwake(o) {
 
   const round = async () => {
     if (stopped) return;
-    if (o.enabled && !o.enabled()) return;
+    // No opinion from the caller means OFF. See KEEP_AWAKE_DEFAULT_ON above.
+    const on = o.enabled ? o.enabled() : KEEP_AWAKE_DEFAULT_ON;
+    if (!on) return;
     let list = [];
     try { list = o.printers() || []; } catch { return; }
     for (const p of list) {
       if (!p || !p.ip) continue;
       const last = (() => { try { return o.lastContact ? o.lastContact(p) : null; } catch { return null; } })();
-      if (!shouldKnock({ lastContactAt: last, now: now(), everyMs })) continue;
+      // `on` was decided above; here we only ask whether this printer is due.
+      if (!shouldKnock({ lastContactAt: last, now: now(), everyMs, enabled: true })) continue;
       try {
         await o.send(p, b64);
         o.onContact?.(p, true);

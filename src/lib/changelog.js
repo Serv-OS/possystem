@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.43',
+    date: '22 Sep 2026',
+    items: [
+      'THE KEEP AWAKE IS SWITCHED OFF. It went out an hour ago to stop the printer dozing, and within the hour the printer came online and went straight back off with the till confirmed on that release. It is not proven to be the cause, and it is not worth arguing about while a venue\u2019s printer is flapping, so it is off unless a venue turns it on. Everything else from that release stays: jobs no longer fight over one printer, a ticket is still worth half an hour instead of three minutes, and the printer offline warning still tells the truth.',
+    ],
+  },
+  {
     v: '5.9.42',
     date: '22 Sep 2026',
     items: [

@@ -18,7 +18,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  STATUS_QUERY_BYTES, KEEP_AWAKE_MS, statusQueryBase64, shouldKnock, jitterFor, startKeepAwake,
+  STATUS_QUERY_BYTES, KEEP_AWAKE_MS, KEEP_AWAKE_DEFAULT_ON,
+  statusQueryBase64, shouldKnock, jitterFor, startKeepAwake,
 } from './keepAwake.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -33,12 +34,22 @@ test('what we send is the ESC/POS status query, which prints nothing', () => {
   assert.equal(STATUS_QUERY_BYTES.includes(0x1d), false, 'no GS (cut)');
 });
 
-test('we knock only when the printer has been left alone', () => {
+test('OFF unless a venue switches it on', () => {
+  // Switched off within the hour it shipped: Peter, live, "the printer just came
+  // online and went straight back off... this is not my network its something we
+  // have done", with his till confirmed on the release that carried this. Not
+  // proven to be the cause, and not worth arguing about while a venue flaps.
+  assert.equal(KEEP_AWAKE_DEFAULT_ON, false);
+  assert.equal(shouldKnock({ lastContactAt: null }), false, 'no opinion means off');
+  assert.equal(shouldKnock({ lastContactAt: null, enabled: false }), false);
+});
+
+test('when it IS switched on, it knocks only on a printer left alone', () => {
   const now = 1_000_000;
-  assert.equal(shouldKnock({ lastContactAt: null, now }), true, 'never spoken to: knock');
-  assert.equal(shouldKnock({ lastContactAt: now - 10_000, now }), false, 'just printed: leave it');
-  assert.equal(shouldKnock({ lastContactAt: now - KEEP_AWAKE_MS - 1, now }), true);
-  assert.equal(shouldKnock({ lastContactAt: null, now, enabled: false }), false, 'switched off means off');
+  const on = { enabled: true, now };
+  assert.equal(shouldKnock({ ...on, lastContactAt: null }), true, 'never spoken to: knock');
+  assert.equal(shouldKnock({ ...on, lastContactAt: now - 10_000 }), false, 'just printed: leave it');
+  assert.equal(shouldKnock({ ...on, lastContactAt: now - KEEP_AWAKE_MS - 1 }), true);
 });
 
 test('two tills in one venue do not knock at the same moment', () => {
@@ -62,6 +73,7 @@ function harness(over = {}) {
     printers: () => [{ id: 'p1', ip: '10.0.0.104', port: 9100 }],
     lastContact: () => null,
     send: async (p, b64) => { sent.push({ ip: p.ip, b64 }); },
+    enabled: () => true,
     setTimer: (fn) => { timerFn = fn; return 1; },
     clearTimer: () => { timerFn = null; },
     ...over,
@@ -121,6 +133,11 @@ test('a broken printer list is survived, never thrown', async () => {
 });
 
 // ── it must go through the lane ─────────────────────────────────────────────
+
+test('the orchestrator does not knock unless the venue asked for it', () => {
+  const src = read('../../sync/PrintOrchestrator.js');
+  assert.match(src, /rpos-printer-keepawake/, 'off unless a venue switches it on');
+});
 
 test('the orchestrator sends every knock through the printer lane', () => {
   // This is what makes a scheduled knock safe: it queues behind a real ticket
