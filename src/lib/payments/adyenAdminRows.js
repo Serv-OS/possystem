@@ -891,3 +891,61 @@ export function relinkStoreConfirmView(data) {
   }
   return { lines, ids };
 }
+
+// ── what a KYC recheck found, in words a person can act on ──────────────────
+//
+// Peter, 22 Sep 2026, on Coffee Boy Preston: "KYC invalid I have fixed and it
+// hasnt rechecked". Two things were true. His fix was real, and NOTHING
+// rechecks: the portal stopped calling the status action on 10 Sep (no buttons
+// under owner rule 0), and Adyen's balance platform webhook has never delivered
+// for the six new Coffee Boy accounts (last_webhook_at null on every one). So
+// the panel was showing a snapshot frozen at the moment the onboarding link was
+// opened.
+//
+// Preston's snapshot, in full, was one line of real information wrapped in
+// twenty lines of JSON:
+//     2_901  "PCI forms are not signed."   remediating action: "Sign PCI"
+// Everything else was valid, and receive payments was allowed AND enabled, so
+// the venue could take money the whole time.
+
+/**
+ * The problems inside a verification_status snapshot, flattened and de-duplicated.
+ * @returns {Array<{ code: string, message: string, action: string, capability: string }>}
+ */
+export function kycProblems(verificationStatus) {
+  const vs = isObj(verificationStatus) ? verificationStatus : null;
+  if (!vs || !isObj(vs.capabilities)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const [name, cap] of Object.entries(vs.capabilities)) {
+    if (!isObj(cap) || !Array.isArray(cap.problems)) continue;
+    for (const p of cap.problems) {
+      for (const e of (isObj(p) && Array.isArray(p.verificationErrors) ? p.verificationErrors : [])) {
+        if (!isObj(e)) continue;
+        const code = String(e.code ?? '').trim();
+        const message = String(e.message ?? '').trim();
+        const action = (Array.isArray(e.remediatingActions) ? e.remediatingActions : [])
+          .map((a) => (isObj(a) ? String(a.message ?? '').trim() : '')).filter(Boolean).join(', ');
+        const key = code + '|' + message;
+        if (!message || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ code, message, action, capability: String(name) });
+      }
+    }
+  }
+  return out;
+}
+
+/** One line for the recheck result: what it is now, and when we last heard. */
+export function kycRecheckLine(answer) {
+  const a = isObj(answer) ? answer : {};
+  if (a.error) return 'Could not reach Adyen: ' + String(a.error);
+  const vs = isObj(a.verification_status) ? a.verification_status : null;
+  const status = vs ? (lower(vs.verificationStatus) || 'unknown') : 'unknown';
+  const problems = kycProblems(vs);
+  if (status === 'valid') return 'Adyen says this venue is VALID. Nothing outstanding.';
+  if (!problems.length && status === 'unknown') return 'Adyen answered, but said nothing about verification yet.';
+  if (!problems.length) return 'Adyen says ' + status.toUpperCase() + ', with nothing listed as outstanding. It may still be processing.';
+  const head = 'Adyen says ' + status.toUpperCase() + ', ' + (problems.length === 1 ? '1 thing outstanding:' : problems.length + ' things outstanding:');
+  return head + ' ' + problems.map((p) => p.message + (p.action ? ' (' + p.action + ')' : '')).join(' ');
+}
