@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.53',
+    date: '23 Sep 2026',
+    items: [
+      'PAIRING NO LONGER LOCKS YOU OUT, AND CODES NO LONGER DIE AFTER AN HOUR. "Too many pairing attempts" caught the person setting up the venue, not an attacker: a pairing code is twelve symbols, about sixty bits, single use, and cleared the moment it is claimed, so nobody guesses one in a year, let alone an hour. Attempts are still counted for the record; they never lock anyone out. A new code now lasts a year, and the codes that were live when this shipped were extended too.',
+      'Needs migration 20260923a on the database. Until it runs, the old hour and the old lock still apply.',
+    ],
+  },
+  {
     v: '5.9.52',
     date: '23 Sep 2026',
     items: [

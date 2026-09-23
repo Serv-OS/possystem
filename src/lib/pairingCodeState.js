@@ -15,9 +15,9 @@
  */
 export function pairingCodeState({ code, expiresAt, now = Date.now() } = {}) {
   if (!code) return { state: 'none', label: '' };
-  if (!expiresAt) return { state: 'live', label: 'valid for 60 minutes' };   // legacy code, no clock
+  if (!expiresAt) return { state: 'live', label: '' };   // legacy code with no clock: say nothing rather than guess
   const t = new Date(expiresAt).getTime();
-  if (!Number.isFinite(t)) return { state: 'live', label: 'valid for 60 minutes' };
+  if (!Number.isFinite(t)) return { state: 'live', label: '' };
   if (t <= now) return { state: 'expired', label: 'expired. Issue a new one.' };
   const mins = Math.max(1, Math.round((t - now) / 60_000));
   return { state: 'live', label: mins >= 120 ? `valid until ${new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : `valid for ${mins} more minute${mins === 1 ? '' : 's'}` };

@@ -62,7 +62,9 @@ test('pairing codes ignore spaces, dashes and case; server codes show as XXXX-XX
 test('claim refusals always give plain words', () => {
   assert.equal(claimRefusalMessage({ ok: false, reason: 'expired', message: 'Server words' }), 'Server words');
   assert.match(claimRefusalMessage({ ok: false, reason: 'expired' }), /expired/);
-  assert.match(claimRefusalMessage({ ok: false, reason: 'locked' }), /Wait 15 minutes/);
+  // 23 Sep 2026: the server no longer locks pairing (migration 20260923a); the words
+  // stay for an old database and must not promise a wait that no longer exists.
+  assert.match(claimRefusalMessage({ ok: false, reason: 'locked' }), /Try again shortly/);
   assert.match(claimRefusalMessage(null, { message: 'offline' }), /try again \(offline\)/);
   assert.equal(claimRefusalMessage(null, null), 'Pairing failed, try again');
 });
