@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.52',
+    date: '23 Sep 2026',
+    items: [
+      'AN EXPIRED PAIRING CODE IS NO LONGER A DEAD END. An unpaired terminal kept showing its old code with "valid for 60 minutes" for ever, and the New pairing code button only appeared when there was no code at all, so once a code expired there was no way to get another. The code now shows how long it has left, turns to "expired" on its own, and New pairing code is always there for an unpaired terminal.',
+    ],
+  },
+  {
     v: '5.9.51',
     date: '23 Sep 2026',
     items: [
