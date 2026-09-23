@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.49',
+    date: '23 Sep 2026',
+    items: [
+      'AN EZCATER CONNECTION NOW BELONGS TO ONE COMPANY. Connecting ezCater at one venue made every venue on the platform, other companies included, show Connected. Worse, Disconnect at any of them would have deleted the real connection, and ezCater cannot reissue that token; and Map caterer could have moved one company\'s caterer, and its orders, to another. A connection is now owned by the organisation that made it and is never shown to, or touched from, anyone else.',
+      'Nothing about order routing changed: orders always followed the caterer mapping, which was never shared. Existing connections need their owner stamped once; Peter has the one line.',
+    ],
+  },
+  {
     v: '5.9.48',
     date: '22 Sep 2026',
     items: [
