@@ -42,6 +42,7 @@ import {
   createSubscription, deleteSubscriptions, EZ_EVENTS, EzcaterError, isSchemaError,
   isSandboxApi, resolveEzcaterApi, ez,
 } from '../_shared/ezcater.ts';
+import { chooseConnection, canAdoptCaterer, visibleUnmapped } from '../_shared/ezcaterScope.js';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import {
@@ -117,16 +118,37 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
  * falling back to the single connected row when nothing is mapped yet (which is
  * the state every operator starts in).
  */
+/** The organisation a venue belongs to. A connection is owned by exactly one. */
+async function orgForLocation(opsLocationId: string): Promise<string | null> {
+  const { data } = await sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();
+  return data?.org_id ? String(data.org_id) : null;
+}
+
+/** Every connection this organisation owns, any status. */
+async function orgConnections(orgId: string | null): Promise<any[]> {
+  if (!orgId) return [];
+  const { data } = await sb.from('ezcater_connections').select('*').eq('company_id', orgId).order('connected_at', { ascending: true });
+  return data || [];
+}
+
+// 23 Sep 2026: this used to fall back to "the single connected row" for any
+// venue with nothing mapped, so Provo's connection showed as Connected at every
+// Coffee Boy venue, where Disconnect would have deleted it. Now: the mapped
+// caterer's connection, or the venue's OWN organisation's connected row, and
+// never anybody else's. The choice lives in _shared/ezcaterScope.js, tested.
 async function connectionForLocation(opsLocationId: string): Promise<any | null> {
+  const orgId = await orgForLocation(opsLocationId);
+  if (!orgId) return null;
+  let mappedConnection: any = null;
   const { data: cat } = await sb.from('ezcater_caterers')
     .select('connection_id').eq('location_id', opsLocationId).not('connection_id', 'is', null).limit(1).maybeSingle();
   if (cat?.connection_id) {
     const { data } = await sb.from('ezcater_connections').select('*').eq('id', cat.connection_id).maybeSingle();
-    if (data) return data;
+    mappedConnection = data || null;
   }
-  const { data } = await sb.from('ezcater_connections')
-    .select('*').eq('status', 'connected').order('connected_at', { ascending: true }).limit(1).maybeSingle();
-  return data || null;
+  const mine = await orgConnections(orgId);
+  const orgConnection = mine.find((c) => c.status === 'connected') || null;
+  return chooseConnection({ orgId, mappedConnection, orgConnection });
 }
 
 /** SCRUBBED projection. api_token and signing_secret must never appear here. */
@@ -326,8 +348,10 @@ Deno.serve(async (req) => {
     switch (action) {
       case 'status': {
         const conn = await connectionForLocation(opsLocationId);
-        // Caterers already on this venue, plus anything the webhook has seen but
-        // nobody has mapped yet, so the operator can adopt it.
+        // Caterers already on this venue, plus anything on THIS organisation's
+        // connections that nobody has mapped yet. Another organisation's are not
+        // offered: adopting one would route their orders here.
+        const orgIds = (await orgConnections(await orgForLocation(opsLocationId))).map((c) => c.id);
         const [{ data: mine }, { data: unmapped }] = await Promise.all([
           sb.from('ezcater_caterers').select('*').eq('location_id', opsLocationId),
           sb.from('ezcater_caterers').select('*').is('location_id', null),
@@ -336,7 +360,7 @@ Deno.serve(async (req) => {
           ok: true,
           status: publicStatus(conn),
           caterers: (mine || []).map(catererRow),
-          unmapped: (unmapped || []).map(catererRow),
+          unmapped: visibleUnmapped(unmapped || [], orgIds).map(catererRow),
         });
       }
 
@@ -356,11 +380,18 @@ Deno.serve(async (req) => {
           catch { return json({ error: 'The API address has to start with https://, because your ezCater token travels with every call. Leave it empty to use the live ezCater API.' }, 400); }
         }
 
+        const orgId = await orgForLocation(opsLocationId);
+        if (!orgId) return json({ error: 'this venue has no organisation, so a connection cannot be owned' }, 400);
+        if ((await orgConnections(orgId)).some((c) => c.status === 'connected')) {
+          return json({ error: 'this organisation is already connected to ezCater. Disconnect it first.' }, 409);
+        }
+
         const row: Record<string, unknown> = {
           api_token: apiToken,
           label,
           webhook_url: WEBHOOK_URL,
           status: 'connected',
+          company_id: orgId,                 // the OWNER. Never served to another organisation.
           connected_by: access.userId === 'service' ? null : access.userId,
         };
         if (apiUrl) row.api_url = apiUrl;
@@ -452,19 +483,26 @@ Deno.serve(async (req) => {
         // write to opsLocationId, and that is the ONLY location this can point
         // a caterer at. A caterer id from the request body can never be used to
         // route another tenant's orders here.
+        // That fence only proved the caller may write to opsLocationId. The
+        // upsert keyed on caterer id alone, so a venue in another organisation
+        // could adopt this one's caterer and receive its orders. The caterer
+        // must belong to one of THIS organisation's connections, and must not
+        // already be mapped somewhere else.
         const catererUuid = String(body?.caterer_uuid || '').trim();
         if (!catererUuid) return json({ error: 'caterer_uuid required' }, 400);
-        const conn = await connectionForLocation(opsLocationId);
-        const { error } = await sb.from('ezcater_caterers').upsert({
-          caterer_uuid: catererUuid,
-          connection_id: conn?.id || null,
+        const orgIds = (await orgConnections(await orgForLocation(opsLocationId))).map((c) => c.id);
+        const { data: caterer } = await sb.from('ezcater_caterers').select('caterer_uuid, connection_id, location_id, caterer_name')
+          .eq('caterer_uuid', catererUuid).maybeSingle();
+        const verdict = canAdoptCaterer({ caterer, orgConnectionIds: orgIds, opsLocationId });
+        if (!verdict.ok) return json({ error: verdict.reason }, 403);
+        const { error } = await sb.from('ezcater_caterers').update({
           location_id: opsLocationId,
-          caterer_name: body?.caterer_name || null,
+          caterer_name: body?.caterer_name || caterer.caterer_name || null,
           active: true,
           mapped_at: new Date().toISOString(),
           mapped_by: access.userId === 'service' ? null : access.userId,
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'caterer_uuid' });
+        }).eq('caterer_uuid', catererUuid);
         if (error) return json({ error: error.message }, 500);
         return json({ ok: true });
       }
