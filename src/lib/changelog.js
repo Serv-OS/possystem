@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.51',
+    date: '23 Sep 2026',
+    items: [
+      'THE BASE PRICE IS NOW ON THE DETAILS TAB, beside the POS button name, because it is the first thing anyone setting up a product reaches for. The Pricing tab keeps the channel prices and per menu tiers, which are exceptions to that number, and shows the base as the reference they fall back to, with a one click link to edit it. It is the same field underneath, so nothing has to be kept in step.',
+      'An item with sizes shows the Sizes note instead, since each size carries its own price.',
+    ],
+  },
+  {
     v: '5.9.50',
     date: '23 Sep 2026',
     items: [
