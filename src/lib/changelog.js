@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.50',
+    date: '23 Sep 2026',
+    items: [
+      'EZCATER IS HIDDEN FOR UK VENUES. It is a US marketplace, and a UK venue being offered Connect ezCater was clutter at best. A venue now sees it only if it trades in dollars, or if its company is already connected, so nobody who is using it loses it.',
+      'Worth knowing: Provo, San Mateo 1 and Location 2 are stored as GBP, London time. They are US venues. That is why the gate also honours an existing connection, and it is worth correcting those three, because currency reaches receipts, the kiosk keypad and tax.',
+    ],
+  },
+  {
     v: '5.9.49',
     date: '23 Sep 2026',
     items: [

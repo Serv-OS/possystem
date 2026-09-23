@@ -14,6 +14,8 @@ import {
 } from '../../lib/hubrise';
 import EzcaterSettings from './EzcaterSettings';
 import EzcaterItemMatching from './EzcaterItemMatching';
+import { ezcaterStatus } from '../../lib/ezcater';
+import { ezcaterVisible } from '../../lib/ezcaterVisibility';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -57,6 +59,9 @@ export default function HubRise() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null); // {kind, text}
+  // ezCater is a US marketplace: shown for USD venues, or wherever the company
+  // is already connected. UK venues never see it (lib/ezcaterVisibility).
+  const [ezShow, setEzShow] = useState(false);
 
   const refresh = useCallback(async (id) => {
     try {
@@ -105,6 +110,17 @@ export default function HubRise() {
         const { data: ms } = await supabase.from('menus').select('id, name, is_active').eq('location_id', id).order('sort_order', { ascending: true });
         setMenus(ms || []);
       } catch { /* menus optional */ }
+      // Decide whether this venue sees ezCater at all. Both reads are best
+      // effort: an unknown currency reads as GBP (the platform default) and an
+      // unreachable status reads as not connected, so a failure hides rather
+      // than shows.
+      try {
+        const [{ data: loc }, ez] = await Promise.all([
+          supabase.from('locations').select('currency').eq('id', id).maybeSingle(),
+          ezcaterStatus(id).catch(() => null),
+        ]);
+        setEzShow(ezcaterVisible({ currency: loc?.currency, connected: !!ez?.status?.connected }));
+      } catch { setEzShow(false); }
       // Surface the OAuth redirect result, then clean the URL.
       try {
         const q = new URLSearchParams(window.location.search);
@@ -285,15 +301,19 @@ export default function HubRise() {
           cards, in the order an operator meets them: connect the account and
           say which ezCater location this venue is, then match their item names
           to ours. Both hide themselves cleanly until the tables are there. */}
-      <div style={{ marginTop: 8 }}>
-        <h1 style={S.h1}>🍽 ezCater</h1>
-        <div style={S.sub}>
-          Connect your ezCater account to take their catering orders here. ezCater sends us orders
-          but not their menu, so you also match their items to yours once.
-        </div>
-      </div>
-      <EzcaterSettings locationId={locId} />
-      <EzcaterItemMatching locationId={locId} />
+      {ezShow && (
+        <>
+          <div style={{ marginTop: 8 }}>
+            <h1 style={S.h1}>🍽 ezCater</h1>
+            <div style={S.sub}>
+              Connect your ezCater account to take their catering orders here. ezCater sends us orders
+              but not their menu, so you also match their items to yours once.
+            </div>
+          </div>
+          <EzcaterSettings locationId={locId} />
+          <EzcaterItemMatching locationId={locId} />
+        </>
+      )}
     </div>
   );
 }
