@@ -2548,20 +2548,46 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         {sec==='details' && (
           <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
 
-            <div>
-              <span style={lbl}>POS button name</span>
-              <input style={{ ...inp, ...(nameDup ? { border:'1.5px solid var(--red-b)' } : {}) }}
-                value={nameDraft ?? (item.menuName||'')}
-                onChange={e=>setNameDraft(e.target.value)}
-                onBlur={commitName}
-                onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
-                placeholder="Name shown on POS button"/>
-              {nameDup && (
-                <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>
-                  A product called “{nameDup.menuName || nameDup.name}” already exists
+            {/* Peter, 23 Sep 2026: the base price lives HERE, beside the name, because
+                it is the first thing anyone setting up a product reaches for. The
+                Pricing tab keeps the channel prices and the per-menu tiers, which are
+                exceptions to this number. Same field (pricing.base, via fp), so there
+                is one source of truth and nothing to keep in step. */}
+            <div style={{ display:'grid', gridTemplateColumns: isParent ? '1fr' : '1fr 150px', gap:10 }}>
+              <div>
+                <span style={lbl}>POS button name</span>
+                <input style={{ ...inp, ...(nameDup ? { border:'1.5px solid var(--red-b)' } : {}) }}
+                  value={nameDraft ?? (item.menuName||'')}
+                  onChange={e=>setNameDraft(e.target.value)}
+                  onBlur={commitName}
+                  onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
+                  placeholder="Name shown on POS button"/>
+                {nameDup && (
+                  <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>
+                    A product called “{nameDup.menuName || nameDup.name}” already exists
+                  </div>
+                )}
+              </div>
+              {!isParent && (
+                <div>
+                  <span style={lbl}>Base price</span>
+                  <div style={{ position:'relative' }}>
+                    <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>£</span>
+                    {/* Shows EMPTY once cleared, same rule as the Pricing tab used to have:
+                        forcing a 0 back in put the next digit beside it (05). */}
+                    <input type="number" step="0.01" min="0" {...selectOnFocus} aria-label="Base price"
+                      style={{ ...inp, paddingLeft:26, fontSize:16, fontWeight:800, color:'var(--acc)' }}
+                      value={(p.base||p.base===0)?p.base:''} placeholder="0.00"
+                      onChange={e=>fp('base',e.target.value)}/>
+                  </div>
                 </div>
               )}
             </div>
+            {isParent && (
+              <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)', marginTop:-6 }}>
+                This item has size variants. Each size carries its own price, set in the Sizes tab.
+              </div>
+            )}
 
             {!isSub && (
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
@@ -3121,27 +3147,32 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         {sec==='pricing' && (
           <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
             {isParent && <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)' }}>This item has size variants — set prices on each size in the Sizes tab.</div>}
-            {/* Base price shows EMPTY once it has been cleared (it used to force a 0 back in,
-                so the next digit landed beside it: 05). What an empty box saves is unchanged:
-                fp stores base null and price 0. A real 0 still shows as 0. */}
+            {/* The base price is edited on the Details tab, beside the name (23 Sep 2026).
+                It is shown here as the reference every row below falls back to, so the
+                placeholders make sense, but there is one place to change it. */}
+            {!isParent && (
+              <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', padding:'8px 10px', background:'var(--bg3)', borderRadius:8 }}>
+                <span style={{ fontSize:11, color:'var(--t3) ' }}>Base price <span style={{ fontSize:9, color:'var(--t4)' }}>· every price below falls back to it</span></span>
+                <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)' }}>{money(p.base||0)} <button onClick={()=>setSec('details')} style={{ marginLeft:8, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:10, fontFamily:'inherit', textDecoration:'underline' }}>edit on Details</button></span>
+              </div>
+            )}
             {[
-              { k:'base',         label:'Base price',     hint:'Used when no channel override is set', accent:true },
               { k:'dineIn',       label:'Dine-in',        hint:'Leave blank to use base price' },
               { k:'takeaway',     label:'Takeaway',       hint:'' },
               { k:'collection',   label:'Collection',     hint:'' },
               { k:'delivery',     label:'Delivery',       hint:'' },
               // Drive thru (16 Sep 2026): the resolver reads driveThru, then takeaway, then base.
               { k:'driveThru',    label:'Drive thru',     hint:'Leave blank to use the takeaway price' },
-            ].map(({k,label,hint,accent}) => (
+            ].map(({k,label,hint}) => (
               <div key={k}>
                 <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
                   <span style={lbl}>{label}</span>
                   {hint && <span style={{ fontSize:9, color:'var(--t4)', fontWeight:400 }}>{hint}</span>}
                 </div>
                 <div style={{ position:'relative' }}>
-                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:accent?16:13, color:accent?'var(--acc)':'var(--t4)', fontWeight:700 }}>£</span>
-                  <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:26, fontSize:accent?16:13, fontWeight:accent?800:400, color:accent?'var(--acc)':'var(--t1)' }} value={k==='base'?((p.base||p.base===0)?p.base:''):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'0.00':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
-                  {k!=='base'&&p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
+                  <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:13, color:'var(--t4)', fontWeight:700 }}>£</span>
+                  <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:26, fontSize:13, fontWeight:400, color:'var(--t1)' }} value={p[k]!==null&&p[k]!==undefined?p[k]:''} placeholder={(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
+                  {p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
               </div>
             ))}
