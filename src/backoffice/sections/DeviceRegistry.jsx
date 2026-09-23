@@ -22,7 +22,7 @@ function getProductionCentres() {
 }
 
 // Database fence stage 1 (contract A6): pairing codes come from the SERVER
-// (issue_pairing_code: 12 symbols, about 60 bits, 60 minutes). This browser made code
+// (issue_pairing_code: 12 symbols, about 60 bits, a year since 23 Sep 2026). This browser made code
 // (Math.random, 90,000 values) is the FENCE STAGE 1 FALLBACK only, used while 20260919a1
 // is not run. Delete ADJECTIVES and genCode once 20260919b has run.
 const ADJECTIVES = ['APPLE','BAKER','CEDAR','DONUT','EMBER','FROST','GROVE','HONEY','IVORY','JAZZY'];
@@ -244,7 +244,7 @@ export default function DeviceRegistry() {
       return;
     }
     setIssued(prev => ({ ...prev, [deviceId]: { code: res.code, expiresAt: res.expires_at } }));
-    if (res.expires_at) showToast('New pairing code issued. It is valid for 60 minutes.', 'success');
+    if (res.expires_at) showToast('New pairing code issued. It works until it is used.', 'success');
     setShowCodeFor(deviceId);
     if (locationId) await loadDevices(locationId);
   };

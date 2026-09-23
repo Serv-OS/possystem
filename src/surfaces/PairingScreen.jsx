@@ -245,7 +245,7 @@ export default function PairingScreen({ onPaired }) {
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>
           Generate a pairing code in your back office:<br />
           <strong>Back Office → Hardware → Terminals</strong><br />
-          Type it with or without the dashes. A code works once, for 60 minutes.
+          Type it with or without the dashes. A code works once, and does not expire while you set up.
         </div>
 
         {/* Admin bypass link */}

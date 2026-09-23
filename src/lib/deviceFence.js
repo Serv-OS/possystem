@@ -90,7 +90,7 @@ export function claimRefusalMessage(data, error) {
   if (reason === 'not_found') return 'Pairing code not found. Check the code in Back Office.';
   if (reason === 'expired') return 'This pairing code has expired. Issue a new one in Back Office.';
   if (reason === 'already_paired') return 'This device is already paired to another till. Issue a new code in Back Office to move it.';
-  if (reason === 'locked') return 'Too many pairing attempts. Wait 15 minutes and try again.';
+  if (reason === 'locked') return 'Pairing is paused for a moment. Try again shortly.';   // the server stopped locking on 23 Sep 2026; kept for an old database
   // A request that never completed is the network, not the code. Apple's reviewer saw the
   // raw "TypeError: Load failed" (22 Sep 2026) and read it as a broken app.
   if (isTransportFailure(error)) {
