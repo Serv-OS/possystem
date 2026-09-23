@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
+import { pairingCodeState, canIssueNewCode } from '../../lib/pairingCodeState';
 
 const DEFAULT_PRODUCTION_CENTRES = [
   { id:'pc1', name:'Hot kitchen',  icon:'🔥' },
@@ -137,6 +138,9 @@ export default function DeviceRegistry() {
   const [pairStep, setPairStep] = useState(1);
   const [newDevice, setNewDevice] = useState({ name:'', type:'pos', profileId:'', centreId:'', receiptPrinterId:'' });
   const [pairingCode, setPairingCode] = useState('');
+  // Ticks once a minute so a code's countdown and its expiry show without a reload.
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setClock(Date.now()), 60_000); return () => clearInterval(t); }, []);
   // Codes this screen just issued (the server hands the code back once; the list read may lag).
   const [issued, setIssued] = useState({});
   const [pairedDeviceId, setPairedDeviceId] = useState(null);
@@ -472,23 +476,32 @@ export default function DeviceRegistry() {
                       {d.last_seen && <span> · Last seen {new Date(d.last_seen).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>}
                     </div>
 
-                    {/* Show pairing code inline */}
-                    {(d.status==='unpaired'||showCode) && (issued[d.id]?.code || d.pairing_code) && (
-                      <div style={{ marginTop:8, display:'inline-flex', alignItems:'center', gap:10, background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'6px 12px' }}>
-                        <span style={{ fontSize:11, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em' }}>Pairing code:</span>
-                        <span style={{ fontFamily:'monospace', fontSize:18, fontWeight:800, color:'var(--acc)', letterSpacing:'.1em' }}>{formatPairingCode(issued[d.id]?.code || d.pairing_code)}</span>
-                        {(issued[d.id]?.expiresAt || d.pairing_expires_at) && (
-                          <span style={{ fontSize:11, color:'var(--t3)' }}>valid for 60 minutes</span>
-                        )}
-                      </div>
-                    )}
-                    {d.status==='unpaired' && !(issued[d.id]?.code || d.pairing_code) && (
-                      <div style={{ marginTop:8 }}>
-                        <button onClick={()=>regenerateCode(d.id)} style={{ ...S.btn, ...S.btnGhost, padding:'6px 12px', fontSize:12 }}>
-                          New pairing code
-                        </button>
-                      </div>
-                    )}
+                    {/* Show pairing code inline. 23 Sep 2026: an expired code is drawn as
+                        expired, and an unpaired terminal can ALWAYS be given a new one. It
+                        used to show "valid for 60 minutes" for ever and hide the button
+                        once any code existed, so an expired code was a dead end. */}
+                    {(() => {
+                      const codeState = pairingCodeState({ code: issued[d.id]?.code || d.pairing_code, expiresAt: issued[d.id]?.expiresAt || d.pairing_expires_at, now: clock });
+                      const expired = codeState.state === 'expired';
+                      return (
+                        <>
+                          {(d.status==='unpaired'||showCode) && codeState.state !== 'none' && (
+                            <div style={{ marginTop:8, display:'inline-flex', alignItems:'center', gap:10, background: expired ? 'var(--bg3)' : 'var(--acc-d)', border:`1px solid ${expired ? 'var(--bdr)' : 'var(--acc-b)'}`, borderRadius:8, padding:'6px 12px' }}>
+                              <span style={{ fontSize:11, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em' }}>Pairing code:</span>
+                              <span style={{ fontFamily:'monospace', fontSize:18, fontWeight:800, color: expired ? 'var(--t4)' : 'var(--acc)', letterSpacing:'.1em', textDecoration: expired ? 'line-through' : 'none' }}>{formatPairingCode(issued[d.id]?.code || d.pairing_code)}</span>
+                              {codeState.label && <span style={{ fontSize:11, color: expired ? 'var(--red)' : 'var(--t3)', fontWeight: expired ? 700 : 400 }}>{codeState.label}</span>}
+                            </div>
+                          )}
+                          {canIssueNewCode(d) && (
+                            <div style={{ marginTop:8 }}>
+                              <button onClick={()=>regenerateCode(d.id)} style={{ ...S.btn, ...(expired || codeState.state === 'none' ? S.btnPrimary : S.btnGhost), padding:'6px 12px', fontSize:12 }}>
+                                New pairing code
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <span style={{ padding:'4px 10px', borderRadius:20, fontSize:11, fontWeight:700, background:sb.bg, color:sb.color }}>
