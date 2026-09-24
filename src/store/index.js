@@ -3628,6 +3628,25 @@ export const useStore = create((set, get) => ({
         if (searchErr) console.warn('[searchCustomersLive] query failed:', searchErr.message);
         enriched = data || [];
       }
+      // v5.9.62: a DEVICE that is not a till (the bookings host stand is a
+      // waitlist_devices row) is refused by the customers rule, silently: no
+      // error, no rows. Off Back Office, an empty answer is asked again through
+      // customer-search, which checks the device itself and searches for it.
+      if (!enriched.length && !isBackOfficeMode()) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/customer-search`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+              body: JSON.stringify({ location_id: locId, q: term }),
+            });
+            const j = await resp.json().catch(() => ({}));
+            if (resp.ok && Array.isArray(j.rows)) enriched = j.rows;
+            else if (!resp.ok) console.warn('[searchCustomersLive] customer-search:', j?.error || resp.status);
+          }
+        } catch (e) { console.warn('[searchCustomersLive] customer-search threw:', e?.message || e); }
+      }
       // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
       // try a direct phone match using normalised phone. Ensures POS devices
       // with anonymous auth can still find customers by phone number.
