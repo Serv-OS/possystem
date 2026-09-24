@@ -1905,6 +1905,11 @@ function ItemsLibrary() {
             once would race on the same category. */}
         {(() => {
           const targets = bulkScope ? bulkScopeTargets(parents, bulkScope, { includeSame: bulkResend }) : [];
+          // v5.9.60: say the whole picture. Peter, 24 Sep: Hot drinks had 6 products, the
+          // strip said "3" for Global and "5" for Shared, because it only counted what
+          // would CHANGE. True, but it read as a bug.
+          const inView = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem').length : 0;
+          const already = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem' && (i.scope || 'local') === bulkScope).length : 0;
           const running = !!bulkScopeRun;
           const go = async () => {
             if (!bulkScope || !targets.length || running) return;
@@ -1937,7 +1942,7 @@ function ItemsLibrary() {
               ) : (
                 <button disabled={!bulkScope || !targets.length} onClick={go}
                   style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkScope&&targets.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkScope&&targets.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkScope&&targets.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
-                  {bulkScope ? `Apply to ${targets.length} in view` : 'Apply'}
+                  {bulkScope ? `Apply to ${targets.length} of ${inView} in view` : 'Apply'}
                 </button>
               )}
               {bulkScope && bulkScope !== 'local' && !running && (
@@ -1947,7 +1952,9 @@ function ItemsLibrary() {
               )}
               {bulkScope && !running && (
                 <span style={{ fontSize:10, color:'var(--t4)' }}>
-                  {targets.length === 0 ? `Everything in view is already ${bulkScope}.` : 'Top-level products in the current view. Sizes and sub-items follow their product.'}
+                  {targets.length === 0
+                    ? `All ${inView} in view ${inView === 1 ? 'is' : 'are'} already ${bulkScope}${bulkScope !== 'local' ? ' (tick include to re-send them)' : ''}.`
+                    : `${already ? `${already} already ${bulkScope}${bulkResend ? ', included' : ', tick include to re-send them'}. ` : ''}Sizes and sub-items follow their product.`}
                 </span>
               )}
             </div>

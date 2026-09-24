@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.60',
+    date: '24 Sep 2026',
+    items: [
+      'THE SHARING STRIP SAYS THE WHOLE PICTURE. It counted only products that would change, so a category of 6 with 3 already Global read "Apply to 3", which looked wrong. It now reads "Apply to 3 of 6 in view, 3 already global, tick include to re send them".',
+    ],
+  },
+  {
     v: '5.9.59',
     date: '24 Sep 2026',
     items: [
