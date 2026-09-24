@@ -32,7 +32,7 @@ import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } fro
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
-import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords } from '../../lib/bulkScope';
+import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from '../../lib/bulkScope';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
@@ -1674,6 +1674,7 @@ function ItemsLibrary() {
   const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
   const [bulkScope, setBulkScope] = useState('');           // v5.9.54 — bulk sharing (local/shared/global)
   const [bulkScopeRun, setBulkScopeRun] = useState(null);   // { done, total } while it runs
+  const [bulkResend, setBulkResend] = useState(false);       // v5.9.57 — re-send products already at that level
   const bulkScopeStop = useRef(false);
 
   // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
@@ -1865,11 +1866,11 @@ function ItemsLibrary() {
             product to every peer venue and auto-promotes its category first; two at
             once would race on the same category. */}
         {(() => {
-          const targets = bulkScope ? bulkScopeTargets(parents, bulkScope) : [];
+          const targets = bulkScope ? bulkScopeTargets(parents, bulkScope, { includeSame: bulkResend }) : [];
           const running = !!bulkScopeRun;
           const go = async () => {
             if (!bulkScope || !targets.length || running) return;
-            if (!window.confirm(bulkScopeConfirmWords(targets.length, bulkScope))) return;
+            if (!window.confirm(bulkResend && bulkScope !== 'local' ? bulkScopeResendWords(targets.length, bulkScope) : bulkScopeConfirmWords(targets.length, bulkScope))) return;
             bulkScopeStop.current = false;
             setBulkScopeRun({ done: 0, total: targets.length });
             const result = await runBulkScope({ targets, scope: bulkScope, setScope: setMenuItemScope,
@@ -1900,6 +1901,11 @@ function ItemsLibrary() {
                   style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkScope&&targets.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkScope&&targets.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkScope&&targets.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
                   {bulkScope ? `Apply to ${targets.length} in view` : 'Apply'}
                 </button>
+              )}
+              {bulkScope && bulkScope !== 'local' && !running && (
+                <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:10, color:'var(--t3)', cursor:'pointer' }}>
+                  <input type="checkbox" checked={bulkResend} onChange={e=>setBulkResend(e.target.checked)} /> include products already {bulkScope} (re-send to every venue)
+                </label>
               )}
               {bulkScope && !running && (
                 <span style={{ fontSize:10, color:'var(--t4)' }}>

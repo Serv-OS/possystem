@@ -18,9 +18,19 @@
  * child or a sub-item, which inherit), never archived, and only those that are
  * not already at the target scope.
  */
-export function bulkScopeTargets(items, scope) {
+export function bulkScopeTargets(items, scope, { includeSame = false } = {}) {
   return (items || []).filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem'
-    && (i.scope || 'local') !== scope);
+    && (includeSame ? scope !== 'local' : (i.scope || 'local') !== scope));
+}
+
+/**
+ * Re-sending: a product already Shared or Global is pushed to every venue
+ * again. 23 Sep 2026: Location 2 held 7 copies pointing at a category that no
+ * longer existed there, and one archived since July. Since the share now
+ * upserts the whole product at every peer, re-applying the level repairs them.
+ */
+export function bulkScopeResendWords(count, scope) {
+  return `Re-send ${count} product${count === 1 ? '' : 's'} already ${scope} to every venue in your organisation, refreshing every copy (name, price rules, modifiers, tax, category). Continue?`;
 }
 
 /**

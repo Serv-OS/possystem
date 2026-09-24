@@ -59,7 +59,9 @@ test('store and push writers retry without the photo when the image column is mi
 test('sharing again never overwrites a peer venue\'s own photo', () => {
   const scope = slice(db, 'export const setMenuCategoryScope = async', '// v4.7.4');
   const loop = slice(scope, 'for (const peerLocId of otherLocationIds)', 'createdCount++');
-  assert.ok(loop.includes("select('id,image').eq('id', peerId)"));
+  // 23 Sep 2026: the same read now also carries menu_id, parent_id and sort_order so a
+  // re-send keeps the peer's own menu, parent and order as well as its photo.
+  assert.ok(loop.includes("select('id,image,menu_id,parent_id,sort_order').eq('id', peerId)"));
   assert.ok(loop.includes('categoryPhotoUrl(existingPeer)'));
   assert.ok(loop.includes('delete peerRow.image'));
   assert.ok(loop.indexOf('delete peerRow.image') < loop.indexOf('.upsert(peerRow)'));
