@@ -17,7 +17,7 @@ import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
-import { propagateScopedEdit, propagateModifierGroupEdit, upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
 import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSections, resolveSections, normaliseSections, sectionsSignature } from '../lib/sectionPlan';
@@ -646,7 +646,8 @@ function scheduleScopedPropagation(getRow, id, patchKeys) {
   const scope = row.scope || 'local';
   if (scope === 'local') return;
   if (!isMasterRow(row)) return;   // a copy never propagates; the master does (its master_id is its own id after a share)
-  const follows = new Set(propagatedFields(scope, { lockPricing: !!(row.lockPricing ?? row.lock_pricing) }));
+  const owner = row.parentId ? (getRow(row.parentId) || row) : row;   // a size takes Lock pricing from its product
+  const follows = new Set(propagatedFields(scope, { lockPricing: !!(owner.lockPricing ?? owner.lock_pricing) }));
   if (patchKeys && patchKeys.length && !patchKeys.some((k) => follows.has(_snake(k)) || follows.has(k))) return;
   // Remember which keys changed across the debounce, so a name-only edit does
   // not re-copy every modifier group to every venue.
@@ -1745,6 +1746,14 @@ export const useStore = create((set, get) => ({
     }
     set(s => ({ menuItems: [...s.menuItems, newItem] }));
     upsertMenuItem(newItem);
+    // 23 Sep 2026: a new size under a Shared/Global product reaches every venue by
+    // re-sending the product, which copies the size and re-points its groups.
+    if (newItem.parentId) {
+      const parent = useStore.getState().menuItems.find(i => i.id === newItem.parentId);
+      if (parent && ['shared', 'global'].includes(parent.scope || 'local') && isMasterRow(parent)) {
+        setTimeout(() => setMenuItemScope(parent, parent.scope).then((r) => { if (r && r.ok === false) reportSave('shared product size', r.error); }).catch((e) => reportSave('shared product size', e)), 800);
+      }
+    }
     return newItem;
   },
 
@@ -1792,12 +1801,6 @@ export const useStore = create((set, get) => ({
   // set() — the archive looked done and came straight back on the next refresh. Now
   // awaited, reported to saveHealth, and REVERTED locally when the DB refuses.
   archiveMenuItem: async id => {
-    // 23 Sep 2026: retiring a GLOBAL product retires it everywhere (propagatedFields('global')
-    // includes archived); the row is read again after the set() below.
-    const _archTarget = useStore.getState().menuItems.find(i => i.id === id);
-    if (_archTarget && (_archTarget.scope || 'local') === 'global') {
-      setTimeout(() => scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), id, ['archived']), 0);
-    }
     // v5.5.261: CASCADE — archiving a parent also archives all its variants.
     // Orphaned variants with no parent would break the menu display and create
     // ghost items that appear in reports but not on the POS.
@@ -1846,6 +1849,14 @@ export const useStore = create((set, get) => ({
       unarchive([id, ...flippedChildIds]);
       useStore.getState().showToast?.(`"${itemName}" was NOT archived — it will come back on refresh. Check you're signed in, then try again`, 'error');
       return false;
+    }
+    // 23 Sep 2026: retiring a GLOBAL product retires it everywhere, sizes included,
+    // and only once the database has accepted the archive here.
+    const _archTarget = useStore.getState().menuItems.find(i => i.id === id);
+    if (_archTarget && (_archTarget.scope || 'local') === 'global') {
+      const getRow = (iid) => useStore.getState().menuItems.find(i => i.id === iid);
+      scheduleScopedPropagation(getRow, id, ['archived']);
+      for (const cid of flippedChildIds) scheduleScopedPropagation(getRow, cid, ['archived']);
     }
     // Archive children in DB too
     const children = useStore.getState().menuItems.filter(i => i.parentId === id);

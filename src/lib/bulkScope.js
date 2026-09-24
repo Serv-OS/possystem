@@ -52,6 +52,8 @@ export async function runBulkScope({ targets, scope, setScope, onProgress, shoul
     out.done++;
     if (r && r.ok) {
       out.ok.push(item);
+      if (r.skippedPeers) out.notReached = (out.notReached || 0) + Number(r.skippedPeers);
+      if (Array.isArray(r.unmapped)) out.unmapped = [...(out.unmapped || []), ...r.unmapped.map((u) => `${item.menuName || item.name}: ${String(u).replace('|', ': ')}`)];
       if (r.action === 'promoted') { out.promoted++; out.copies += Number(r.createdCount) || 0; }
       else if (r.action === 'rescoped') out.rescoped++;
       else if (r.action === 'demoted') out.demoted++;
@@ -73,6 +75,8 @@ export function bulkScopeWords(result, scope) {
   if (result.demoted) bits.push(`${n(result.demoted, 'product', 'products')} set to local here`);
   let s = bits.length ? bits.join(', ') : 'nothing changed';
   if (result.failed.length) s += `. ${n(result.failed.length, 'product', 'products')} failed: ${result.failed.slice(0, 3).map((f) => `${f.item.menuName || f.item.name} (${f.error})`).join('; ')}${result.failed.length > 3 ? '…' : ''}`;
+  if (result.notReached) s += `. NOT reached at ${result.notReached} venue(s), run it again`;
+  if (result.unmapped && result.unmapped.length) s += `. No equivalent at: ${result.unmapped.slice(0, 3).join('; ')}${result.unmapped.length > 3 ? '…' : ''}`;
   if (result.stopped) s += '. Stopped early.';
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }

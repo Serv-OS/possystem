@@ -32,6 +32,11 @@ test('carryVerbatim reads store (camel) or db (snake) rows and skips what is abs
   assert.equal(fieldOf({ kitchenName: 'K' }, 'kitchen_name'), 'K');
 });
 
+test('carryVerbatim can only ever hand back verbatim columns, whatever it is asked for', () => {
+  // Round 3: the owner's raw cat ids reached a Global peer through this door.
+  assert.deepEqual(carryVerbatim({ cat: 'x', cats: ['x'], name: 'n', tax_rate_id: 't' }, [...VERBATIM_FIELDS, ...REMAPPED_FIELDS]), { name: 'n' });
+});
+
 test('camel wins over snake when both are present: the edited value, never the loaded one', () => {
   // A Back Office store item spreads the raw db row and then edits camelCase keys.
   // Reading snake first pushed pre-edit values to every venue (review, 23 Sep).
@@ -158,6 +163,10 @@ test('db.js and the store use these rules, and global edits actually propagate n
   assert.match(db, /if \(masterRow\?\.archived\) return \{ ok: false/, 'sharing from a copy of a retired product is refused');
   assert.match(db, /if \(failed\) throw new Error\(`could not read the venue's tax/, 'a failed venue lookup is never memoised as empty');
   assert.match(db, /\.update\(patch\)\.eq\('id', sib\.id\)\.select\('id'\)[\s\S]{0,900}if \(error \|\| !wrote\?\.length\)/, 'a refused peer update (no rows) counts as a failure');
+  assert.match(db, /if \(scope !== 'global' && fieldOf\(fullItem, 'archived'\)\) return/, 'an archived Shared source never propagates (it would detach peer sizes)');
+  assert.match(db, /else \{ delete peerOpt\.itemId;/, 'a group option never carries the source venue\'s sub-item id');
+  assert.match(db, /const bareOf = \(id\)/, 'groups and sub-items held as copies address the owner by the bare id');
+  assert.ok(db.indexOf('const unmappedAll = [];') < db.indexOf('// 23 Sep 2026: re-sharing (shared <-> global, or Global pressed again) used to'), 'declared before the block that the return reads them from (round-3 ReferenceError)');
   assert.match(store, /patchKeys\.some\(\(k\) => follows\.has/, 'and only when a field that follows changed');
   assert.match(store, /scheduleGroupPropagation\(group\)/, 'every group edit reaches its peer copies, coalesced');
 });

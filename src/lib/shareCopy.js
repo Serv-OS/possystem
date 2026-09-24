@@ -108,6 +108,9 @@ export function fieldOf(row, field) {
 export function carryVerbatim(row, fields = VERBATIM_FIELDS) {
   const out = {};
   for (const f of fields) {
+    // Only ever verbatim columns: a per-venue id can never leave here unmapped
+    // (round-3 review: the owner's raw cat ids reached a Global peer).
+    if (!VERBATIM_FIELDS.includes(f)) continue;
     const v = fieldOf(row, f);
     if (v !== undefined) out[f] = v;
   }

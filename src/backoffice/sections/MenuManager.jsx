@@ -2766,9 +2766,14 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                           onUpdate({ scope: prev }); // revert
                           return;
                         }
-                        if (result.action === 'promoted')   showToast(`"${item.name}" promoted to ${s.id} — copied to ${result.createdCount} other location(s)`, 'success');
+                        const notReached = result.skippedPeers ? ` — NOT reached at ${result.skippedPeers} venue(s), try again` : '';
+                        if (result.action === 'promoted')   showToast(`"${item.name}" promoted to ${s.id} — copied to ${result.createdCount} other location(s)${notReached}`, result.skippedPeers ? 'error' : 'success');
                         else if (result.action === 'demoted')  showToast(`"${item.name}" set to local at this site only — siblings unchanged`, 'info');
-                        else if (result.action === 'rescoped') showToast(`"${item.name}" rescoped to ${s.id} across ${result.updatedSiblings + 1} location(s)`, 'success');
+                        else if (result.action === 'rescoped') showToast(`"${item.name}" rescoped to ${s.id} across ${result.updatedSiblings + 1} location(s)${notReached}`, result.skippedPeers ? 'error' : 'success');
+                        if (Array.isArray(result.unmapped) && result.unmapped.length) {
+                          // Words, not uuids: "Location 2: tax rate 'VAT 20%'".
+                          showToast(`No equivalent at ${result.unmapped.slice(0, 4).map((u) => u.replace('|', ': ')).join('; ')}${result.unmapped.length > 4 ? '…' : ''}`, 'info');
+                        }
                         markBOChange();
                       } catch (e) {
                         reportSave('item scope', e);
