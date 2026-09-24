@@ -36,7 +36,8 @@ test('every customer-facing surface asks productImage, not item.image', () => {
 
 test('the choice is made in Appearance and mirrored to the ops venue row', () => {
   const app = read('../backoffice/sections/MenuAppearance.jsx');
-  assert.match(app, /default_product_image_from_logo/);
+  assert.doesNotMatch(app, /default_product_image_from_logo/, 'never a new branding key: the server allowlists them (23 Sep unknown_field)');
+  assert.match(app, /useLogoAsDefault/);
   assert.match(app, /pos_settings/);
   const bridge = read('../sync/SyncBridge.jsx');
   assert.match(bridge, /setDefaultProductImage\(resolveDefaultProductImage\(locData\?\.pos_settings\)\)/);
