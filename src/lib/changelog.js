@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.58',
+    date: '23 Sep 2026',
+    items: [
+      'A NEW VENUE GETS EVERY SHARED AND GLOBAL PRODUCT. Creating a venue in Company admin now re sends every Shared and Global product in the organisation to it, categories and modifier groups included, so it opens with the same menu as its siblings. Any venue whose Items list is missing shared products from its other venues is told so at the top of the list, with one button to pull them in.',
+    ],
+  },
+  {
     v: '5.9.57',
     date: '23 Sep 2026',
     items: [

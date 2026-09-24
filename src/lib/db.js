@@ -10,6 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
+import { missingMasters, runBulkScope } from './bulkScope';
 import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
@@ -2092,6 +2093,43 @@ export const propagateScopedEdit = async (fullItem, changedKeys = null) => {
     propagated++;
   }
   return { ok: failed.length === 0, propagated, failed, unmapped, error: failed[0]?.error };
+};
+
+/**
+ * A NEW VENUE GETS EVERY SHARED AND GLOBAL PRODUCT (23 Sep 2026).
+ *
+ * Peter: "if we add a new location these products hit that location also".
+ * A venue is a peer the moment it exists, so every master in the organisation
+ * that has no copy here yet is re-sent by its owner. Categories and modifier
+ * groups come with it, exactly as a share does. Sequential, like the bulk strip.
+ */
+export const listSharedMastersMissingAt = async (locationId) => {
+  if (isMock || !supabase || !locationId) return [];
+  const { data: here } = await supabase.from('locations').select('org_id').eq('id', locationId).maybeSingle();
+  if (!here?.org_id) return [];
+  const { data: peers } = await supabase.from('locations').select('id').eq('org_id', here.org_id).neq('id', locationId);
+  const peerIds = (peers || []).map((l) => l.id);
+  if (!peerIds.length) return [];
+  const { data: masters, error } = await supabase.from('menu_items').select('*')
+    .in('location_id', peerIds).in('scope', ['shared', 'global']).is('parent_id', null).eq('archived', false).limit(2000);
+  if (error) { console.warn('[listSharedMastersMissingAt]', error); return []; }
+  const suffix = peerSuffixOf(locationId);
+  const wantIds = (masters || []).map((m) => `${m.master_id || m.id}_${suffix}`);
+  const present = [];
+  for (let i = 0; i < wantIds.length; i += 200) {
+    const { data } = await supabase.from('menu_items').select('id').in('id', wantIds.slice(i, i + 200));
+    for (const r of data || []) present.push(r.id);
+  }
+  return missingMasters(masters, present, locationId);
+};
+
+export const pullSharedProductsTo = async (locationId, { onProgress, shouldStop } = {}) => {
+  const targets = await listSharedMastersMissingAt(locationId);
+  if (!targets.length) return { total: 0, done: 0, ok: [], failed: [], promoted: 0, rescoped: 0, demoted: 0, copies: 0, stopped: false };
+  clearShareMemos();
+  // Each master is re-sent by its OWNER (setMenuItemScope runs from the master row),
+  // which copies it to every peer including this one.
+  return runBulkScope({ targets, scope: null, setScope: (m) => setMenuItemScope(m, m.scope), onProgress, shouldStop });
 };
 
 /**

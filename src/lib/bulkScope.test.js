@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from './bulkScope.js';
+import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords, missingMasters } from './bulkScope.js';
 
 test('re-send words say what will be refreshed', () => { assert.match(bulkScopeResendWords(7, 'global'), /Re-send 7 products already global.*modifiers, tax, category/); });
 
@@ -79,4 +79,28 @@ test('the Items list has the strip and runs it through runBulkScope', () => {
   assert.match(src, /Sharing quick apply/);
   assert.match(src, /window\.confirm\((bulkResend && bulkScope !== 'local' \? bulkScopeResendWords|bulkScopeConfirmWords)\(/, 'nothing moves without a confirm');
   assert.match(src, /runBulkScope\(\{ targets, scope: bulkScope, setScope: setMenuItemScope/);
+});
+
+test('a new venue is missing every organisation master that has no copy there yet', () => {
+  // Peter, 23 Sep: "if we add a new location these products hit that location also".
+  const venue = '11111111-2222-3333-4444-aaaaaaaa9999';
+  const masters = [
+    { id: 'm-1', location_id: 'provo', scope: 'global' },
+    { id: 'm-2', location_id: 'provo', scope: 'shared' },
+    { id: 'm-3', location_id: 'provo', scope: 'local' },                 // never shared
+    { id: 'm-4', location_id: 'provo', scope: 'global', archived: true }, // retired
+    { id: 'm-5_0000loc2', location_id: 'loc2', scope: 'global', master_id: 'm-5' }, // a copy, not a master
+    { id: 'm-6', location_id: venue, scope: 'global' },                  // the venue's own
+  ];
+  assert.deepEqual(missingMasters(masters, ['m-2_aaaa9999'], venue).map((m) => m.id), ['m-1'], 'm-2 already has its copy (the suffix is the LAST 8 characters of the venue id)');
+  assert.deepEqual(missingMasters(masters, [], venue).map((m) => m.id), ['m-1', 'm-2']);
+  assert.deepEqual(missingMasters([], [], venue), []);
+});
+
+test('the Items list offers to pull missing shared products, and creating a venue pulls them', () => {
+  const src = read('../backoffice/sections/MenuManager.jsx');
+  assert.match(src, /listSharedMastersMissingAt\(/, 'the Items list asks what is missing here');
+  assert.match(src, /not here yet/, 'and says so in words');
+  const admin = read('../backoffice/sections/CompanyAdmin.jsx');
+  assert.match(admin, /pullSharedProductsTo\(loc\.id\)/, 'a new venue gets every shared product at once');
 });

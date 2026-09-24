@@ -90,3 +90,19 @@ export function bulkScopeConfirmWords(count, scope, venues) {
       : `make ${count} product${count === 1 ? '' : 's'} Global: managed centrally, no overrides at any venue${venues ? ` (${venues} other venue${venues === 1 ? '' : 's'})` : ''}`;
   return `This will ${what}. It runs one product at a time and cannot be undone in one click. Continue?`;
 }
+
+
+/**
+ * Which organisation masters have no copy at a venue yet (23 Sep 2026, Peter:
+ * "if we add a new location these products hit that location also").
+ * A copy at a venue is `<master id>_<last 8 of the venue id>`.
+ */
+export function missingMasters(masters, presentIds, venueId) {
+  const suffix = String(venueId || '').slice(-8);
+  const present = new Set(presentIds || []);
+  return (masters || []).filter((m) => m && !m.archived && !m.parent_id && (m.type || 'simple') !== 'subitem'
+    && ['shared', 'global'].includes(m.scope || 'local')
+    && (!m.master_id || m.master_id === m.id)
+    && String(m.location_id) !== String(venueId)
+    && !present.has(`${m.id}_${suffix}`));
+}

@@ -30,7 +30,7 @@ import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches,
 // swaps the WHOLE app (POS shell included) for the red error page.
 import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
-import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
+import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from '../../lib/bulkScope';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
@@ -1675,6 +1675,16 @@ function ItemsLibrary() {
   const [bulkScope, setBulkScope] = useState('');           // v5.9.54 — bulk sharing (local/shared/global)
   const [bulkScopeRun, setBulkScopeRun] = useState(null);   // { done, total } while it runs
   const [bulkResend, setBulkResend] = useState(false);       // v5.9.57 — re-send products already at that level
+  // v5.9.58: shared products from the organisation's OTHER venues that have no copy here yet.
+  const [missingShared, setMissingShared] = useState(null);   // null = not asked yet
+  const [pullRun, setPullRun] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const loc = getActiveLocationSync();
+    if (!loc) { setMissingShared([]); return undefined; }
+    listSharedMastersMissingAt(loc).then((m) => { if (alive) setMissingShared(m); }).catch(() => { if (alive) setMissingShared([]); });
+    return () => { alive = false; };
+  }, [menuItems.length]);
   const bulkScopeStop = useRef(false);
 
   // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
@@ -1858,6 +1868,34 @@ function ItemsLibrary() {
             </div>
           );
         })()}
+
+        {/* v5.9.58: a venue that is missing shared products from its organisation can pull
+            them. A NEW venue is offered every Shared/Global product at once; an older one
+            is offered whatever it never received. Each master is re-sent by its owner. */}
+        {Array.isArray(missingShared) && missingShared.length > 0 && (
+          <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+            <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>
+              {missingShared.length} shared product{missingShared.length===1?'':'s'} from your other venues {missingShared.length===1?'is':'are'} not here yet
+            </span>
+            {pullRun ? (
+              <span style={{ fontSize:11, color:'var(--t3)' }}>Pulling… {pullRun.done} of {pullRun.total}</span>
+            ) : (
+              <button onClick={async ()=>{
+                const loc = getActiveLocationSync();
+                if (!loc || !window.confirm(`Copy ${missingShared.length} shared product${missingShared.length===1?'':'s'} into this venue, with their categories and modifier groups? Runs one product at a time.`)) return;
+                setPullRun({ done: 0, total: missingShared.length });
+                const result = await pullSharedProductsTo(loc, { onProgress: (p) => setPullRun({ done: p.done, total: p.total }) });
+                setPullRun(null);
+                useStore.getState().markBOChange?.();
+                useStore.getState().showToast?.(bulkScopeWords(result, 'shared'), result.failed.length ? 'error' : 'success');
+                setMissingShared([]);
+              }} style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:800 }}>
+                Pull them into this venue
+              </button>
+            )}
+            <span style={{ fontSize:10, color:'var(--t4) ' }}>{missingShared.slice(0,4).map(m=>m.menu_name||m.name).join(', ')}{missingShared.length>4?'…':''}</span>
+          </div>
+        )}
 
         {/* v5.9.54: bulk SHARING. Peter, 23 Sep 2026: "we need a way to bulk set the
             sharing status's of products". Targets are the top-level products in the
