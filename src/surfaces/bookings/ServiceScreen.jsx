@@ -62,6 +62,11 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
         <div style={{ padding: '10px 12px 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
+            {/* v5.9.62: tap the date to pick one; Today brings you back. */}
+            <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+              aria-label="Service date"
+              style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '3px 8px', fontFamily: 'inherit', ...mono }} />
+            {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
             <span style={{ flex: 1, textAlign: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--t2)', ...mono }}>
               {bookingsDate || todayISO()}{isToday ? ' · today' : ''}
             </span>

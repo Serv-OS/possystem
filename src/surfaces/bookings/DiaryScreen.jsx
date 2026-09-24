@@ -172,7 +172,13 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
         {/* day switcher + view toggle */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', ...mono }}>{bookingsDate || todayISO()}{isToday ? ' · today' : ''}</span>
+          {/* v5.9.62: the date is a real picker (tap it), and Today brings you back. Peter,
+              24 Sep, on the iPad: "you need to be able to click on the date and set a date in
+              the future then have a button that says today and it skips back". */}
+          <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+            aria-label="Diary date"
+            style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '3px 8px', fontFamily: 'inherit', ...mono }} />
+          {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ ...mono }}>›</button>
           <div style={{ display: 'flex', gap: 6, marginLeft: 8 }}>
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.62',
+    date: '24 Sep 2026',
+    items: [
+      'BOOKINGS ON THE IPAD: THE GUEST SEARCH WORKS. It was being refused silently: the customer list only trusted a signed in Back Office user or a paired till, and the bookings host stand is neither. Off Back Office an empty search now asks the server, which checks the device and searches on its behalf.',
+      'BOOKINGS: TAP THE DATE TO PICK ANY DAY, and a Today button brings you straight back. On the diary, on service, and inside New booking, where a wrong date can now be corrected before confirming.',
+    ],
+  },
+  {
     v: '5.9.61',
     date: '24 Sep 2026',
     items: [

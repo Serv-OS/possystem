@@ -17,6 +17,8 @@ import {
 const COVERS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
 
 export default function BookScreen({ onBooked }) {
+  const bookingsDate = useStore((st) => st.bookingsDate);
+  const setBookingsDate = useStore((st) => st.setBookingsDate);
   const bookings = useStore((s) => s.bookings) || [];
   const tables = useStore((s) => s.tables) || [];
   const bookingRules = useStore((s) => s.bookingRules);
@@ -85,6 +87,7 @@ export default function BookScreen({ onBooked }) {
     const createBooking = useStore.getState().createBooking;
     const res = createBooking ? await createBooking({
       covers: party,
+      date: bookingsDate || todayISO(),
       time,
       tables: cand.set,
       primaryTableId: cand.set[0],
@@ -118,6 +121,16 @@ export default function BookScreen({ onBooked }) {
       {/* ── column 1: party & time ── */}
       <div style={{ ...col, width: 300, flexShrink: 0 }}>
         <SectionTitle n={1}>Party &amp; time</SectionTitle>
+        {/* v5.9.62: the booking's DATE, editable here. Peter, 24 Sep: "in new booking there is
+            no way to choose a date if you inputted the wrong date". It is the diary's date, so
+            changing it here moves the diary too and the tables offered are that day's. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Date</span>
+          <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+            aria-label="Booking date"
+            style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 9, padding: '6px 10px', fontFamily: 'inherit' }} />
+          {bookingsDate && bookingsDate !== todayISO() && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())}>Today</button>}
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
           {COVERS.map((c) => <Chip key={c} active={party === c} onClick={() => setParty(c)}>{c}</Chip>)}
         </div>
