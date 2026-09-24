@@ -1,3 +1,10 @@
+# Session, 24 Sep 2026, v5.9.68, menu board design pass (branch feat/menu-board-design)
+
+- From Peter's photo of Coffee Boy's real board: page title + note, logo size, per element sizes (title, headings, items) and colours (title, headings, prices, small print), prices pill or plain, lines under headings/header, price grid by cup size (sizeRuns: one header per run of equal size names), add-ons per block (block.addOnIds, option only sub items), text panels (blocks of type 'text': title, body lines, footer, boxed). All in the existing jsonb (theme, display_options.sizeGrid, layout.blocks). No migration.
+- "Font size override not showing on the preview": the preview kept its own column rule and fit with different caps. Now lib/menuBoardSections.js boardColumns / fitFont / scaledFont is the one rule, run on the preview's whole frame (rootRef) like the TV root. 100% = fill; <100% shrinks from the fill; >100% opens columns.
+- One renderer: src/surfaces/menuboard/BoardParts.jsx (BoardHeader, BoardSection, BoardFooter) used by MenuBoardSurface and the builder preview. The TV's private Section is gone.
+- Tests: menuBoardSections.test.js (rules, runs, size rule, sizes/colours, source pins).
+
 # Session, 24 Sep 2026, v5.9.67, menu boards: subcategories + sold alone rule (branch fix/menu-board-subcategories)
 
 - Peter: only main categories could be added to a board, and adding one listed every option sub item ("all the modifiers"). Now a subcategory block stands on its own (parent not needed), each block can carry a heading, and a sub item is listed only when sold alone.

@@ -72,6 +72,6 @@ test('every drag in the menu manager and the board builder is wired the same way
   const starts = (MM.match(/onDragStart=/g) || []).length;
   const helped = (MM.match(/beginDrag\(/g) || []).length;
   assert.equal(helped, starts, `all ${starts} drags carry a payload`);
-  assert.match(MB, /onDragStart=\{e => \{ setDragI\(i\); beginDrag\(e, blk\.categoryId\); \}\}/);
-  assert.match(MB, /onDragOver=\{e => dragOver\(e, i, overI, setOverI\)\}/);
+  // v5.9.68: the board builder's rows spread one dragProps object (category and text panel rows alike);\n  // the payload still goes through beginDrag, and dragOver through the helper.\n  assert.match(MB, /onDragStart: e => \{ setDragI\(i\); beginDrag\(e, blk\.categoryId \|\| blk\.id \|\| String\(i\)\); \}/);
+  assert.match(MB, /onDragOver: e => dragOver\(e, i, overI, setOverI\)/);
 });

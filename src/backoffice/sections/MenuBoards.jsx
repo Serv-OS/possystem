@@ -18,12 +18,17 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
-import { boardItemsByCategory, boardCategoryChoices, boardSectionTitle } from '../../lib/menuBoardSections';
+import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, newTextBlock, isTextBlock, SIZE_OPTS } from '../../lib/menuBoardSections';
+import { BoardHeader, BoardSection, BoardFooter } from '../../surfaces/menuboard/BoardParts';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
-const DEF_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '' };
-const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
+const DEF_THEME = {
+  bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '',
+  // v5.9.68 design (lib/menuBoardSections.js boardSizes / boardColors; the TV's DEFAULT_THEME agrees)
+  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'l', headingColor: '', headingSize: 'm', headingRule: true, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
+};
+const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true };
 // followMenus defaults false here so the Edit merge (`{ ...newBoard(1).layout, ...b.layout }`)
 // gives every board saved before the flag existed the exact behaviour it has today.
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [], followMenus: false }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
@@ -141,6 +146,7 @@ export default function MenuBoards() {
   // The TV's grouping exactly (lib/menuBoardSections.js): sizes nest under their parent and an
   // option only sub item is never a line, so the count and the preview here match the screen.
   const itemsByCat = useMemo(() => boardItemsByCategory(items), [items]);
+  const addOnsByCat = useMemo(() => boardAddOnsByCategory(items), [items]);
 
   const save = async (publish) => {
     if (!editing || !locId) return;
@@ -201,7 +207,7 @@ export default function MenuBoards() {
   if (!locId) return <div style={S.empty}>Pick a location to manage its menu boards.</div>;
 
   if (editing) return (
-    <Editor board={editing} setBoard={setEditing} cats={cats} catsErr={catsErr} itemsByCat={itemsByCat} six={six}
+    <Editor board={editing} setBoard={setEditing} cats={cats} catsErr={catsErr} itemsByCat={itemsByCat} addOnsByCat={addOnsByCat} six={six}
       allCats={allCats} menus={menus} links={links} tz={tz} menusOk={menusOk}
       onSave={() => save(false)} onPublish={() => save(true)} onCancel={() => setEditing(null)}
       onUpload={upload} busy={busy} err={err} />
@@ -284,7 +290,7 @@ export default function MenuBoards() {
   );
 }
 
-function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
+function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat = {}, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
   const set = (patch) => setBoard(b => ({ ...b, ...patch }));
   const setLayout = (patch) => setBoard(b => ({ ...b, layout: { ...b.layout, ...patch } }));
   const setDisp = (patch) => setBoard(b => ({ ...b, display_options: { ...b.display_options, ...patch } }));
@@ -296,6 +302,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
   const offCats = cats.filter(c => !selIds.includes(c.id));
   const [dragI, setDragI] = useState(null);
   const [overI, setOverI] = useState(null);
+  const [addOnsOpen, setAddOnsOpen] = useState(null);   // index of the block whose add-on list is open
 
   // Follow timed menus: the preview mirrors the TV. Same shared resolver on the
   // venue clock (tz from the platform locations row), re-evaluated every minute
@@ -312,7 +319,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
   // Which arranged blocks the TV is showing right now (after the never-blank fallback),
   // so the list can flag the ones that are hidden by the live menu.
   const shownNow = new Set(applyMenuToSections(
-    blocks.map(b => ({ id: b.categoryId, items: itemsByCat[b.categoryId] || [] })),
+    blocks.filter(b => !isTextBlock(b)).map(b => ({ id: b.categoryId, items: itemsByCat[b.categoryId] || [] })),
     { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id },
   ).map(s => s.id));
   const hiddenNow = (catId) => followMenus && !!activeMenuId && !shownNow.has(catId);
@@ -329,6 +336,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
   const toggleSpan = (i) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, span: b.span === 'all' ? 1 : 'all' } : b) });
   // v5.9.67: a block may carry its own heading (two "Iced" subcategories can read differently on the TV).
   const setBlockTitle = (i, title) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, title } : b) });
+  const setBlockField = (i, patch) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, ...patch } : b) });
   const catOf = (id) => cats.find(c => c.id === id);
   const catLabel = (id) => catOf(id)?.path || catOf(id)?.label || '—';
 
@@ -374,7 +382,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
 
           {board.mode === 'menu' ? (
             <>
-              <Section title="Categories on this screen" desc="Drag to reorder. Add a subcategory on its own (it does not need its parent). Type a heading to change what the TV shows above it. “Full width” makes a category span the whole board (a hero); the rest auto-balance into columns. Sub items only appear when they are sold alone.">
+              <Section title="Categories on this screen" desc="Drag to reorder. Add a subcategory on its own (it does not need its parent). Type a heading to change what the TV shows above it. Add-ons lets you tick the option only sub items (whipped cream, marshmallows) to list under a category; everything else stays off. A text panel is a boxed heading with lines (the Syrups box). “Full width” spans the whole board.">
                 {blocks.length === 0 && (
                   <div style={{ fontSize: 12, color: catsErr ? 'var(--red)' : 'var(--t4)', lineHeight: 1.5 }}>
                     {catsErr
@@ -384,30 +392,70 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
                         : 'No categories on this screen yet — add some below.'}
                   </div>
                 )}
-                {blocks.map((blk, i) => (
-                  <div key={blk.categoryId} draggable
-                    onDragStart={e => { setDragI(i); beginDrag(e, blk.categoryId); }}
-                    onDragOver={e => dragOver(e, i, overI, setOverI)}
-                    onDrop={() => { reorder(dragI, i); setDragI(null); setOverI(null); }}
-                    onDragEnd={() => { setDragI(null); setOverI(null); }}
-                    style={{ ...S.row, cursor: 'grab', borderRadius: 6, background: dragI === i ? 'var(--bg3)' : 'transparent' }}>
-                    <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
-                    <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span>
-                      {hiddenNow(blk.categoryId) && <span title="Not on the menu that is on right now" style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--t4)', border: '1px solid var(--bdr2)', borderRadius: 6, padding: '1px 6px' }}>hidden now</span>}
-                    </span>
-                    <input
-                      style={{ ...S.inp, width: 150, padding: '4px 8px', fontSize: 12 }}
-                      value={blk.title || ''}
-                      placeholder={catOf(blk.categoryId)?.label || 'Heading'}
-                      title="The heading the TV shows above this category. Leave empty to use the category's name."
-                      draggable={false}
-                      onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
-                      onChange={e => setBlockTitle(i, e.target.value)}
-                    />
-                    <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board (hero)">Full width</button>
-                    <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
-                  </div>
-                ))}
+                {blocks.map((blk, i) => {
+                  const rowStyle = { ...S.row, cursor: 'grab', borderRadius: 6, background: dragI === i ? 'var(--bg3)' : 'transparent', alignItems: 'flex-start', flexWrap: 'wrap' };
+                  const dragProps = {
+                    draggable: true,
+                    onDragStart: e => { setDragI(i); beginDrag(e, blk.categoryId || blk.id || String(i)); },
+                    onDragOver: e => dragOver(e, i, overI, setOverI),
+                    onDrop: () => { reorder(dragI, i); setDragI(null); setOverI(null); },
+                    onDragEnd: () => { setDragI(null); setOverI(null); },
+                  };
+                  // Typing in a field must never start a drag of the row.
+                  const stopDrag = { draggable: false, onDragStart: e => { e.preventDefault(); e.stopPropagation(); } };
+                  if (isTextBlock(blk)) {
+                    return (
+                      <div key={blk.id || `text-${i}`} {...dragProps} style={rowStyle}>
+                        <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
+                        <div style={{ flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Text panel</div>
+                          <input {...stopDrag} style={{ ...S.inp, fontSize: 12 }} value={blk.title || ''} placeholder="Heading, e.g. SYRUPS" onChange={e => setBlockField(i, { title: e.target.value })} />
+                          <textarea {...stopDrag} style={{ ...S.inp, fontSize: 12, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }} value={blk.body || ''} placeholder={'One line per row, e.g.\n#Peanut butter\n#Caramel'} onChange={e => setBlockField(i, { body: e.target.value })} />
+                          <input {...stopDrag} style={{ ...S.inp, fontSize: 12 }} value={blk.footer || ''} placeholder="Last line, e.g. #EACH 0.70" onChange={e => setBlockField(i, { footer: e.target.value })} />
+                          <div><Toggle on={blk.boxed !== false} label="Boxed" set={v => setBlockField(i, { boxed: v })} /></div>
+                        </div>
+                        <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board">Full width</button>
+                        <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
+                      </div>
+                    );
+                  }
+                  const addOns = addOnsByCat[blk.categoryId] || [];
+                  const chosen = new Set(Array.isArray(blk.addOnIds) ? blk.addOnIds : []);
+                  const open = addOnsOpen === i;
+                  return (
+                    <div key={blk.categoryId} {...dragProps} style={rowStyle}>
+                      <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
+                      <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)', minWidth: 160 }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items{chosen.size ? ` · ${chosen.size} add-on${chosen.size === 1 ? '' : 's'}` : ''}</span>
+                        {hiddenNow(blk.categoryId) && <span title="Not on the menu that is on right now" style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--t4)', border: '1px solid var(--bdr2)', borderRadius: 10, padding: '1px 7px' }}>hidden now</span>}
+                      </span>
+                      <input {...stopDrag} style={{ ...S.inp, width: 150, padding: '4px 8px', fontSize: 12 }} value={blk.title || ''} placeholder={catOf(blk.categoryId)?.label || 'Heading'} title="The heading the TV shows above this category. Leave empty to use the category's name." onChange={e => setBlockTitle(i, e.target.value)} />
+                      {addOns.length > 0 && (
+                        <button style={open ? S.spanOn : S.spanOff} onClick={() => setAddOnsOpen(open ? null : i)} title="Tick the option only sub items (milks, syrups, toppings) to list under this category">
+                          Add-ons{chosen.size ? ` (${chosen.size})` : ''}
+                        </button>
+                      )}
+                      <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board (hero)">Full width</button>
+                      <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
+                      {open && (
+                        <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 6, padding: '6px 0 2px 26px' }}>
+                          {addOns.map(a => {
+                            const on = chosen.has(a.id);
+                            const ap = resolveBoardPrice(a, activeMenuId);
+                            return (
+                              <button key={a.id} style={on ? S.pillOn : S.pill} onClick={() => setBlockField(i, { addOnIds: on ? [...chosen].filter(x => x !== a.id) : [...chosen, a.id] })}>
+                                {on ? '✓ ' : ''}{a.menu_name || a.name}{ap > 0 ? ` · ${money(ap)}` : ''}
+                              </button>
+                            );
+                          })}
+                          <div style={{ flexBasis: '100%', fontSize: 11, color: 'var(--t4)', lineHeight: 1.5 }}>Ticked add-ons appear as small lines in their menu order (put them right after the product in Menu to sit under it). Unticked ones never show.</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                  <button style={S.btnGhost} onClick={() => setLayout({ blocks: [...blocks, newTextBlock()] })}>+ Text panel</button>
+                </div>
                 {offCats.length > 0 && (
                   <div style={{ marginTop: 8 }}>
                     <div style={S.lbl}>Add category</div>
@@ -437,14 +485,41 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
                   <Toggle on={board.display_options.hidePriceless} label="Hide items with no price" set={v => setDisp({ hidePriceless: v })} />
                 </div>
                 <Field label="When an item is sold out"><Pills opts={[['grey', 'Grey “sold out”'], ['hide', 'Hide it']]} val={board.display_options.soldOut} on={v => setDisp({ soldOut: v })} /></Field>
-                <Field label="Text size"><Pills opts={[['0.85', 'Smaller'], ['1', 'Default'], ['1.15', 'Larger'], ['1.3', 'Extra large']]} val={String(board.display_options.textScale ?? 1)} on={v => setDisp({ textScale: Number(v) })} /></Field>
+                <Field label="Text size"><Pills opts={[['0.7', '70%'], ['0.85', '85%'], ['1', '100% · fill'], ['1.15', '115%'], ['1.3', '130%'], ['1.5', '150%']]} val={String(board.display_options.textScale ?? 1)} on={v => setDisp({ textScale: Number(v) })} /></Field>
+                <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: -4, lineHeight: 1.5, maxWidth: 560 }}>
+                  100% is the largest text that fills the screen. Smaller sizes leave room around the menu. Larger sizes open more columns to make room, then take the biggest size that still fits. The preview uses the same rule as the TV.
+                </div>
+                <Toggle on={board.display_options.sizeGrid !== false} label="Price grid by size (Small · Big · XL across the top)" set={v => setDisp({ sizeGrid: v })} />
               </Section>
 
-              <Section title="Branding">
+              <Section title="Design" desc="What the screen looks like. The preview on the right is drawn by the same code as the TV, so it is what the screen shows.">
+                <Field label="Page title"><input style={S.inp} value={board.theme.title || ''} onChange={e => setTheme({ title: e.target.value })} placeholder="e.g. HOT DRINKS" /></Field>
+                <Field label="Note under the title">
+                  <textarea style={{ ...S.inp, minHeight: 48, resize: 'vertical', fontFamily: 'inherit' }} value={board.theme.subtitle || ''} onChange={e => setTheme({ subtitle: e.target.value })}
+                    placeholder={'e.g. Alternative milk options available, additional 50p charge\nOat | Coconut | Almond, Soya is free'} />
+                </Field>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                  <Field label="Title size"><Pills opts={SIZE_OPTS} val={board.theme.titleSize || 'm'} on={v => setTheme({ titleSize: v })} /></Field>
+                  <Field label="Logo size"><Pills opts={SIZE_OPTS} val={board.theme.logoSize || 'm'} on={v => setTheme({ logoSize: v })} /></Field>
+                </div>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                  <Field label="Category headings"><Pills opts={SIZE_OPTS} val={board.theme.headingSize || 'm'} on={v => setTheme({ headingSize: v })} /></Field>
+                  <Field label="Item text"><Pills opts={SIZE_OPTS} val={board.theme.itemSize || 'm'} on={v => setTheme({ itemSize: v })} /></Field>
+                  <Field label="Prices"><Pills opts={[['pill', 'Pill'], ['plain', 'Plain text']]} val={board.theme.priceStyle || 'pill'} on={v => setTheme({ priceStyle: v })} /></Field>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <Toggle on={board.theme.headingRule !== false} label="Line under headings" set={v => setTheme({ headingRule: v })} />
+                  <Toggle on={board.theme.headerRule !== false} label="Line under the header" set={v => setTheme({ headerRule: v })} />
+                  <Toggle on={board.theme.headingCase !== 'as-typed'} label="Headings in capitals" set={v => setTheme({ headingCase: v ? 'upper' : 'as-typed' })} />
+                </div>
                 <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                   <ColorRow label="Background" val={board.theme.bgColor} on={v => setTheme({ bgColor: v })} />
                   <ColorRow label="Text" val={board.theme.textColor} on={v => setTheme({ textColor: v })} />
-                  <ColorRow label="Accent" val={board.theme.accent} on={v => setTheme({ accent: v })} />
+                  <ColorRow label="Title" val={board.theme.titleColor || board.theme.textColor} on={v => setTheme({ titleColor: v })} />
+                  <ColorRow label="Headings" val={board.theme.headingColor || board.theme.accent} on={v => setTheme({ headingColor: v })} />
+                  <ColorRow label="Prices" val={board.theme.priceColor || (board.theme.priceStyle === 'plain' ? board.theme.textColor : board.theme.accent)} on={v => setTheme({ priceColor: v })} />
+                  <ColorRow label="Small print" val={board.theme.mutedColor || '#B8AE9E'} on={v => setTheme({ mutedColor: v })} />
+                  <ColorRow label="Accent (size lines)" val={board.theme.accent} on={v => setTheme({ accent: v })} />
                 </div>
                 <Field label="Font"><select style={S.inp} value={board.theme.font} onChange={e => setTheme({ font: e.target.value })}>{FONTS.map(f => <option key={f} value={f}>{f || 'Default (Jakarta)'}</option>)}</select></Field>
                 <Field label="Footer note"><input style={S.inp} value={board.theme.footerNote} onChange={e => setTheme({ footerNote: e.target.value })} placeholder="e.g. Please ask staff about the 14 allergens." /></Field>
@@ -475,7 +550,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
         {/* ── live preview ── */}
         <div style={{ position: 'sticky', top: 12 }}>
           <div style={S.lbl}>Live preview</div>
-          <Preview board={board} cats={cats} itemsByCat={itemsByCat} six={six} allCats={allCats} links={links} activeMenuId={activeMenuId} />
+          <Preview board={board} itemsByCat={itemsByCat} addOnsByCat={addOnsByCat} six={six} allCats={allCats} links={links} activeMenuId={activeMenuId} />
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>The real display auto-scales type to fill the screen. Publish to push to paired displays.</div>
         </div>
       </div>
@@ -486,15 +561,15 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
 // activeMenuId: the menu the board follows right now (Follow timed menus), or null.
 // It narrows the arranged blocks exactly as the TV does (same shared helper, same
 // never-blank fallback) and picks the price tier. Null = arranged blocks, no tier.
-function Preview({ board, cats, itemsByCat, six, allCats = [], links = [], activeMenuId = null }) {
+function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links = [], activeMenuId = null }) {
   const t = { ...DEF_THEME, ...board.theme };
   const disp = { ...DEF_DISP, ...board.display_options };
   const ar = board.orientation === 'portrait' ? '9 / 16' : '16 / 9';
-  const areaRef = useRef(null), flowRef = useRef(null);
+  const rootRef = useRef(null), areaRef = useRef(null), flowRef = useRef(null);
 
   const blocks = board.layout?.blocks || [];
-  const arranged = blocks.map(b => ({ id: b.categoryId, label: boardSectionTitle(b, cats.find(c => c.id === b.categoryId)), items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
-  const secs = applyMenuToSections(arranged, { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id });
+  // The TV's sections exactly (lib/menuBoardSections.js): subcategories, headings, add-ons, text panels.
+  const secs = boardSectionsForMenu(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat }), { categories: allCats, links, activeMenuId });
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
   const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
@@ -505,22 +580,14 @@ function Preview({ board, cats, itemsByCat, six, allCats = [], links = [], activ
   useLayoutEffect(() => {
     const area = areaRef.current, flow = flowRef.current;
     if (!area || !flow) return;
-    const ts = Math.max(0.6, Math.min(1.6, Number(board.display_options?.textScale) || 1));
-    const portrait = board.orientation === 'portrait';
-    const maxN = portrait ? 3 : 6;
-    const tier = ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3;
-    let cols = fixedCols || (portrait ? [1, 1, 2, 2] : [2, 3, 4, 5])[tier];
-    cols = Math.max(1, Math.min(cols, maxN, Math.ceil((totalItems || 1) / 3)));
+    const root = rootRef.current;
+    if (!root) return;
+    // The TV's rule, on the preview's own frame (v5.9.68): header, sections and footer all scale.
+    const cols = boardColumns({ textScale: board.display_options?.textScale, orientation: board.orientation, fixedCols, totalItems });
     flow.style.columnWidth = 'auto';
     flow.style.columnCount = String(cols);
-    const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
-    let lo = 4, hi = 44, best = 4;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      flow.style.fontSize = mid + 'px';
-      if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    flow.style.fontSize = best + 'px';
+    const fits = (px) => { root.style.fontSize = px + 'px'; return flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1; };
+    root.style.fontSize = scaledFont(fitFont(fits, { min: 4, max: 44 }), board.display_options?.textScale, 4) + 'px';
   });
 
   if (board.mode === 'marketing') {
@@ -532,52 +599,18 @@ function Preview({ board, cats, itemsByCat, six, allCats = [], links = [], activ
     </div>;
   }
   return (
-    <div style={{ aspectRatio: ar, background: t.bgColor, color: t.textColor, borderRadius: 10, border: '4px solid #060504', padding: '10px 12px', overflow: 'hidden', fontFamily: t.font || 'inherit', position: 'relative' }}>
+    <div ref={rootRef} style={{ aspectRatio: ar, background: t.bgColor, color: t.textColor, borderRadius: 10, border: '4px solid #060504', padding: '10px 12px', overflow: 'hidden', fontFamily: t.font || 'inherit', position: 'relative' }}>
       {t.bgImageUrl && <><div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${t.bgImageUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }} /><div style={{ position: 'absolute', inset: 0, background: t.bgColor, opacity: 0.72 }} /></>}
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${t.accent}`, paddingBottom: 4, marginBottom: 7, flex: '0 0 auto' }}>
-          {t.logoUrl ? <img src={t.logoUrl} alt="" style={{ height: 16, objectFit: 'contain' }} /> : <span style={{ fontSize: 11, fontWeight: 700 }}>{board.name || 'Menu'}</span>}
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3BD16F' }} />
-        </div>
+        <BoardHeader theme={t} name={board.name} />
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
           : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <div ref={flowRef} style={{ height: '100%', columnGap: 12, columnFill: 'auto', fontSize: 13 }}>
-                {secs.map(sec => (
-                  <div key={sec.id} style={{ marginBottom: '1.2em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
-                    <div style={{ fontSize: '0.82em', letterSpacing: '.08em', color: t.accent, marginBottom: '0.4em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
-                    {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it, activeMenuId) <= 0 && !(it._variants || []).length)).map(it => {
-                      const variants = it._variants || [];
-                      const hasVar = variants.length > 0;
-                      const sold = six.has(it.id), price = boardPrice(it, activeMenuId), diet = dietaryBadges(it);
-                      const muted = t.mutedColor || '#8a8276';
-                      return <div key={it.id} style={{ marginBottom: '0.3em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 5 }}>
-                          {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '1.8em', height: '1.8em', objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: '0.6em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.menu_name || it.name}
-                              {diet.map(d => <span key={d} style={{ color: '#7fd99a', marginLeft: 3, fontWeight: 700 }}>{d}</span>)}
-                            </div>
-                            {disp.showDescription && it.description && <div style={{ fontSize: '0.46em', color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.description}</div>}
-                            {disp.showAllergens && it.allergens?.length > 0 && <div style={{ fontSize: '0.4em', color: muted, textTransform: 'capitalize', marginTop: 1 }}>Allergens: {it.allergens.join(', ')}</div>}
-                          </div>
-                          {sold ? <span style={{ fontSize: '0.5em', color: '#f3b0b0', flexShrink: 0 }}>SOLD OUT</span>
-                            : !hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}
-                        </div>
-                        {hasVar && <div style={{ marginTop: 1, marginLeft: 1, paddingLeft: (disp.showImages && it.image) ? '2.3em' : 8, borderLeft: `2px solid ${t.accent}55` }}>
-                          {variants.map(v => { const vs = six.has(v.id), vp = boardPrice(v, activeMenuId);
-                            return <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4, marginBottom: '0.2em', opacity: vs ? 0.45 : 1 }}>
-                              <span style={{ fontSize: '0.5em', color: muted }}>{v.menu_name || v.name}</span>
-                              {vs ? <span style={{ fontSize: '0.45em', color: '#f3b0b0' }}>SOLD OUT</span> : disp.showPrices && vp > 0 && <span style={{ fontSize: '0.5em', background: t.accent, color: '#1c1206', borderRadius: 5, padding: '0 4px' }}>{money(vp)}</span>}
-                            </div>;
-                          })}
-                        </div>}
-                      </div>;
-                    })}
-                  </div>
-                ))}
+              <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'balance' }}>
+                {secs.map(sec => <BoardSection key={sec.id} sec={sec} theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />)}
               </div>
             </div>}
+        <BoardFooter theme={t} />
       </div>
     </div>
   );
