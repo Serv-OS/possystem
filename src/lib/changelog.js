@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.65',
+    date: '24 Sep 2026',
+    items: [
+      'FIX: the bookings Service screen showed the date twice after 5.9.62 (the new picker plus the old text), which pushed into the Floor heading. The old text is gone.',
+    ],
+  },
+  {
     v: '5.9.64',
     date: '24 Sep 2026',
     items: [

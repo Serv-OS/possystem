@@ -67,9 +67,6 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
               aria-label="Service date"
               style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '3px 8px', fontFamily: 'inherit', ...mono }} />
             {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
-            <span style={{ flex: 1, textAlign: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--t2)', ...mono }}>
-              {bookingsDate || todayISO()}{isToday ? ' · today' : ''}
-            </span>
             <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ ...mono }}>›</button>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
