@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.54',
+    date: '23 Sep 2026',
+    items: [
+      'SET THE SHARING OF MANY PRODUCTS AT ONCE. Items list, a new Sharing quick apply strip: pick Local, Shared or Global and apply it to every top level product in the current view, so a category or a search result can be shared out in one go. Sizes and sub items follow their product. It asks first, runs one product at a time so nothing races, shows progress, can be stopped, and tells you exactly what it did and anything that failed.',
+    ],
+  },
+  {
     v: '5.9.53',
     date: '23 Sep 2026',
     items: [
