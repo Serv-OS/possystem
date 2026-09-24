@@ -3,7 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords } from './bulkScope.js';
+import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from './bulkScope.js';
+
+test('re-send words say what will be refreshed', () => { assert.match(bulkScopeResendWords(7, 'global'), /Re-send 7 products already global.*modifiers, tax, category/); });
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -19,6 +21,14 @@ test('targets are top-level, live products not already at that scope', () => {
   assert.deepEqual(bulkScopeTargets(items, 'shared').map((i) => i.id), ['a']);
   assert.deepEqual(bulkScopeTargets(items, 'local').map((i) => i.id), ['b']);
   assert.deepEqual(bulkScopeTargets(items, 'global').map((i) => i.id), ['a', 'b']);
+});
+
+test('re-send includes products already at that level, so broken copies can be repaired', () => {
+  assert.deepEqual(bulkScopeTargets(items, 'global', { includeSame: true }).map((i) => i.id), ['a', 'b']);
+  const already = [{ id: 'g', name: 'Latte', scope: 'global' }];
+  assert.deepEqual(bulkScopeTargets(already, 'global').map((i) => i.id), [], 'normally skipped');
+  assert.deepEqual(bulkScopeTargets(already, 'global', { includeSame: true }).map((i) => i.id), ['g'], 're-send takes it');
+  assert.deepEqual(bulkScopeTargets(already, 'local', { includeSame: true }).map((i) => i.id), [], 'local is never a re-send');
 });
 
 test('it runs ONE product at a time, in order', async () => {
@@ -65,8 +75,8 @@ test('the words say what happened, in plain English', () => {
 
 test('the Items list has the strip and runs it through runBulkScope', () => {
   const src = read('../backoffice/sections/MenuManager.jsx');
-  assert.match(src, /import \{ bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords \} from '\.\.\/\.\.\/lib\/bulkScope'/);
+  assert.match(src, /import \{ bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords(, bulkScopeResendWords)? \} from '\.\.\/\.\.\/lib\/bulkScope'/);
   assert.match(src, /Sharing quick apply/);
-  assert.match(src, /window\.confirm\(bulkScopeConfirmWords\(/, 'nothing moves without a confirm');
+  assert.match(src, /window\.confirm\((bulkResend && bulkScope !== 'local' \? bulkScopeResendWords|bulkScopeConfirmWords)\(/, 'nothing moves without a confirm');
   assert.match(src, /runBulkScope\(\{ targets, scope: bulkScope, setScope: setMenuItemScope/);
 });

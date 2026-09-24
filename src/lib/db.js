@@ -9,6 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
+import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
@@ -1369,20 +1370,115 @@ const ensurePeerMenu = async (peerLocId, sourceMenuId, orgId) => {
  * Returns Map(sourceGroupId -> peerGroupId) so the caller can repoint each peer
  * item's assigned_modifier_groups.
  */
-const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, orgId, scope) => {
+/**
+ * Per-venue ids translated by NAME for one peer venue (23 Sep 2026).
+ *
+ * A tax rate, a tax profile and a print centre are rows of the venue that owns
+ * them; their ids mean nothing at another venue. The old copy either dropped
+ * them (the product arrived with no tax) or carried the raw id (a sub-item
+ * pointed at a rate the peer did not have). A peer's equivalent is found by
+ * name (and rate, for a tax rate); when there is none the field is null and
+ * the caller is told, rather than a foreign id being written.
+ */
+const _peerIdMapsMemo = new Map();   // `${source}|${peer}` → { at, maps }; 60 s, a bulk run reuses it
+// Throws when any lookup fails: a failed answer is NEVER memoised and the
+// caller skips that venue for this product rather than writing null tax.
+const peerIdMapsFor = async (sourceLocId, peerLocId) => {
+  const memoKey = `${sourceLocId}|${peerLocId}`;
+  const hit = _peerIdMapsMemo.get(memoKey);
+  if (hit && Date.now() - hit.at < 60_000) return hit.maps;
+  const maps = await _peerIdMapsUncached(sourceLocId, peerLocId);
+  _peerIdMapsMemo.set(memoKey, { at: Date.now(), maps });
+  return maps;
+};
+const _peerIdMapsUncached = async (sourceLocId, peerLocId) => {
+  const byName = (rows, key) => { const m = new Map(); for (const r of rows || []) { const k = key(r); if (k && !m.has(k)) m.set(k, r.id); } return m; };
+  const results = await Promise.all([
+    supabase.from('tax_rates').select('id,name,rate').eq('location_id', sourceLocId),
+    supabase.from('tax_rates').select('id,name,rate').eq('location_id', peerLocId),
+    supabase.from('tax_profiles').select('id,name').eq('location_id', sourceLocId),
+    supabase.from('tax_profiles').select('id,name').eq('location_id', peerLocId),
+    supabase.from('print_routing').select('centres').eq('location_id', sourceLocId).maybeSingle(),
+    supabase.from('print_routing').select('centres').eq('location_id', peerLocId).maybeSingle(),
+    supabase.from('menus').select('id,name').eq('location_id', sourceLocId),
+    supabase.from('menus').select('id,name').eq('location_id', peerLocId),
+  ]);
+  const failed = results.find((r) => r && r.error);
+  if (failed) throw new Error(`could not read the venue's tax, print or menu setup: ${failed.error.message || failed.error}`);
+  const [srcRates, peerRates, srcProfiles, peerProfiles, srcRouting, peerRouting, srcMenus, peerMenus] = results;
+  const rateKey = (r) => `${String(r.name || '').trim().toLowerCase()}|${Number(r.rate)}`;
+  const nameKey = (r) => String(r.name || '').trim().toLowerCase();
+  const srcRateById = new Map((srcRates.data || []).map((r) => [r.id, rateKey(r)]));
+  const peerRateByKey = byName(peerRates.data, rateKey);
+  const srcProfileById = new Map((srcProfiles.data || []).map((r) => [r.id, nameKey(r)]));
+  const peerProfileByKey = byName(peerProfiles.data, nameKey);
+  const centres = (row) => (Array.isArray(row?.data?.centres) ? row.data.centres : []);
+  const srcCentreById = new Map(centres(srcRouting).map((c) => [c.id, nameKey(c)]));
+  const peerCentreByKey = byName(centres(peerRouting), nameKey);
+  const srcMenuById = new Map((srcMenus.data || []).map((r) => [r.id, nameKey(r)]));
+  const peerMenuByKey = byName(peerMenus.data, nameKey);
+  const srcNames = new Map([
+    ...(srcRates.data || []).map((r) => [`tax_rate_id:${r.id}`, r.name]),
+    ...(srcProfiles.data || []).map((r) => [`tax_profile_id:${r.id}`, r.name]),
+    ...centres(srcRouting).map((c) => [`centre_id:${c.id}`, c.name]),
+    ...(srcMenus.data || []).map((r) => [`pricing.menus:${r.id}`, r.name]),
+  ]);
+  return {
+    taxRateIdFor: (id) => peerRateByKey.get(srcRateById.get(id)) || null,
+    taxProfileIdFor: (id) => peerProfileByKey.get(srcProfileById.get(id)) || null,
+    centreIdFor: (id) => peerCentreByKey.get(srcCentreById.get(id)) || null,
+    menuIdFor: (id) => peerMenuByKey.get(srcMenuById.get(id)) || null,
+    /** "tax_rate_id:<uuid>" → "tax rate 'VAT 20%'", for the operator. */
+    nameOf: (u) => {
+      const [field, id] = String(u).split(':');
+      const label = { tax_rate_id: 'tax rate', tax_profile_id: 'tax profile', centre_id: 'print centre', 'pricing.menus': 'menu', 'tax_overrides.takeaway': 'takeaway tax rate', 'tax_overrides.delivery': 'delivery tax rate', 'tax_overrides.collection': 'collection tax rate', 'tax_overrides.dineIn': 'dine-in tax rate', 'tax_overrides.drive-thru': 'drive thru tax rate' }[field] || field;
+      const n = srcNames.get(`${field}:${id}`) || srcNames.get(`tax_rate_id:${id}`);
+      return n ? `${label} '${n}'` : `${label} ${id}`;
+    },
+  };
+};
+
+/** Short memos so a bulk re-send does not repeat the same work per product. */
+const _memo60 = new Map();
+const memo60 = async (key, fn) => {
+  const hit = _memo60.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  const value = await fn();
+  _memo60.set(key, { at: Date.now(), value });
+  return value;
+};
+export const clearShareMemos = () => { _memo60.clear(); _peerIdMapsMemo.clear(); };
+
+/**
+ * Where a category's copy lives at a venue: the bare master id at the venue
+ * that OWNS it, `<master>_<suffix>` everywhere else. Addressing the owner with a
+ * suffixed id created a duplicate category there (round-2 review, 23 Sep).
+ */
+const peerCatIdAt = (catMasterId, catMasterLocId, peerLocId) =>
+  (catMasterLocId && peerLocId === catMasterLocId) ? catMasterId : `${catMasterId}_${peerSuffixOf(peerLocId)}`;
+
+/** The master category row for any category row (itself when it is the master). */
+const masterCategoryOf = async (catRow) => {
+  if (!catRow) return null;
+  if (!catRow.master_id || catRow.master_id === catRow.id) return catRow;
+  const { data } = await supabase.from('menu_categories').select('*').eq('id', catRow.master_id).maybeSingle();
+  return data || catRow;
+};
+
+const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, orgId, scope, mode = 'resend') => {
   const idMap = new Map();
   if (isMock || !supabase) return idMap;
   if (!Array.isArray(groupIds) || groupIds.length === 0 || !peerLocId || !sourceLocId) return idMap;
   const peerSuffix = peerLocId.slice(-8);
   const seenGroups = new Set();
   const seenItems = new Set();
+  const unmappedSub = [];
+  idMap.unmapped = unmappedSub;
 
-  const rewriteAssigned = (assigned) => (Array.isArray(assigned) ? assigned : []).map(ag => {
-    const gid = typeof ag === 'string' ? ag : ag?.groupId;
-    if (!gid) return ag;
-    const peerGid = idMap.get(gid) || `${gid}_${peerSuffix}`;
-    return typeof ag === 'string' ? peerGid : { ...ag, groupId: peerGid };
-  });
+  const srcSuffix = peerSuffixOf(sourceLocId);
+  // A group or sub-item id that already ends with THIS venue's suffix is a copy;
+  // its bare id is the master, held by the owning venue (round-3 review).
+  const bareOf = (id) => (String(id).endsWith(`_${srcSuffix}`) ? String(id).slice(0, -(srcSuffix.length + 1)) : String(id));
 
   // Copy a sold-alone sub-item (menu_items row) to the peer. Returns peer item id.
   const copySubItem = async (itemId) => {
@@ -1391,7 +1487,12 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       .eq('id', itemId).eq('location_id', sourceLocId).maybeSingle();
     if (siErr || !si) { if (siErr) console.warn('[shareModifierGroups] subitem fetch failed', itemId, siErr); return null; }
     const subMasterId = si.master_id || si.id;
-    const peerItemId = `${subMasterId}_${peerSuffix}`;
+    let peerItemId = `${subMasterId}_${peerSuffix}`;
+    if (si.master_id && si.master_id !== si.id) {
+      // We hold a copy: at the owning venue the row is the bare master id.
+      const { data: subMaster } = await supabase.from('menu_items').select('id, location_id').eq('id', subMasterId).maybeSingle();
+      if (subMaster && subMaster.location_id === peerLocId) peerItemId = subMasterId;
+    }
     if (seenItems.has(peerItemId)) return peerItemId; // already copied this run
     seenItems.add(peerItemId);
     // A sub-item may itself carry modifier groups — copy those first so its
@@ -1400,34 +1501,48 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
     for (const ag of (Array.isArray(si.assigned_modifier_groups) ? si.assigned_modifier_groups : [])) {
       await copyGroup(typeof ag === 'string' ? ag : ag?.groupId);
     }
+    // 23 Sep 2026: the whole sub-item, translated for this venue, instead of a
+    // hand-built subset carrying the SOURCE venue's tax rate id. An existing copy
+    // of a Shared product keeps its own price and image (resendFields).
+    let subIds;
+    try { subIds = await peerIdMapsFor(sourceLocId, peerLocId); }
+    catch (e) { console.warn('[shareModifierGroups] venue setup unreadable, sub-item skipped', peerItemId, e?.message || e); return null; }
+    const { data: existingSub, error: probeErr } = await supabase.from('menu_items').select('id').eq('id', peerItemId).maybeSingle();
+    if (probeErr) { console.warn('[shareModifierGroups] could not check the peer sub-item, skipped', peerItemId, probeErr); return null; }
+    const subScope = scope || 'shared';
+    // An EDIT refreshes what follows an edit; a share/re-send writes what a
+    // (re-)send may. Neither writes archived/scope/category onto an existing copy
+    // from the edit path (round-2 review, 23 Sep).
+    const allowed = new Set(mode === 'edit' && existingSub
+      ? propagatedFields(subScope, { lockPricing: !!si.lock_pricing })
+      : resendFields(subScope, { exists: !!existingSub, lockPricing: !!si.lock_pricing }));
+    const pick = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => allowed.has(k)));
+    const subPricing = remapPricingMenus(fieldOf(si, 'pricing'), subIds.menuIdFor).pricing;
     const peerSub = {
+      ...pick({ ...carryVerbatim(si), ...nameColumnsFor(si), ...(subPricing !== undefined ? { pricing: subPricing } : {}) }),
+      ...pick(remapForPeer(si, {
+        catIdFor: () => null, parentIdFor: () => null,
+        groupIdFor: (g) => idMap.get(g) || `${bareOf(g)}_${peerSuffix}`,
+        taxRateIdFor: subIds.taxRateIdFor, taxProfileIdFor: subIds.taxProfileIdFor, centreIdFor: subIds.centreIdFor,
+      }, ['assigned_modifier_groups', 'option_group_order', 'tax_rate_id', 'tax_profile_id', 'centre_id', 'tax_overrides']).fields),
+      ...(mode === 'edit' && existingSub ? {} : pick(carryResendOnly(si))),
       id: peerItemId,
       location_id: peerLocId,
-      name: si.name,
-      menu_name: si.menu_name ?? null,
-      receipt_name: si.receipt_name ?? null,
-      kitchen_name: si.kitchen_name ?? null,
-      description: si.description ?? null,
       type: si.type ?? 'subitem',
-      cat: null,           // sub-items never render in a grid — keep them out of categories
-      cats: [],
-      parent_id: null,
-      pricing: si.pricing ?? { base: 0 },
-      allergens: si.allergens ?? [],
-      assigned_modifier_groups: rewriteAssigned(si.assigned_modifier_groups),
-      sort_order: si.sort_order ?? 999,
-      image: si.image ?? null,
+      ...(existingSub ? {} : { cat: null, cats: [], parent_id: null }),   // sub-items never render in a grid
       // The copy keeps the source's choice. With none, a sub item is not sold alone (rule 6).
       sold_alone: resolveSoldAlone({ sold_alone: si.sold_alone, type: si.type ?? 'subitem' }),
-      visibility: si.visibility ?? { pos: true, kiosk: true, online: true },
-      tax_rate_id: si.tax_rate_id ?? null,
-      scope: scope || 'shared',
-      org_id: orgId,
+      ...(existingSub ? {} : { scope: subScope, org_id: orgId }),
       master_id: subMasterId,
       updated_at: new Date().toISOString(),
     };
-    const { error: upErr } = await supabase.from('menu_items').upsert(peerSub, { onConflict: 'id' });
-    if (upErr) console.warn('[shareModifierGroups] peer subitem upsert failed', peerItemId, upErr);
+    let { error: upErr } = await supabase.from('menu_items').upsert(peerSub, { onConflict: 'id' });
+    if (upErr && peerSub.item_code && (isDuplicateItemCodeError(upErr) || isMissingItemCodeColumn(upErr))) {
+      unmappedSub.push(`item code '${peerSub.item_code}' on ${si.name} (already used there)`);
+      delete peerSub.item_code;
+      ({ error: upErr } = await supabase.from('menu_items').upsert(peerSub, { onConflict: 'id' }));
+    }
+    if (upErr) { console.warn('[shareModifierGroups] peer subitem upsert failed', peerItemId, upErr); seenItems.delete(peerItemId); return null; }
     return peerItemId;
   };
 
@@ -1438,7 +1553,13 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
     const { data: g, error: gErr } = await supabase.from('modifier_groups').select('*')
       .eq('id', gid).eq('location_id', sourceLocId).maybeSingle();
     if (gErr || !g) { if (gErr) console.warn('[shareModifierGroups] group fetch failed', gid, gErr); return; }
-    const peerGid = `${gid}_${peerSuffix}`;
+    const bareGid = bareOf(gid);
+    let peerGid = `${bareGid}_${peerSuffix}`;
+    if (bareGid !== gid) {
+      // We hold a copy: the peer may be the owner, whose row is the bare id.
+      const { data: ownerRow } = await supabase.from('modifier_groups').select('id').eq('id', bareGid).eq('location_id', peerLocId).maybeSingle();
+      if (ownerRow) peerGid = bareGid;
+    }
     idMap.set(gid, peerGid);
     const peerOptions = [];
     for (const opt of (Array.isArray(g.options) ? g.options : [])) {
@@ -1449,7 +1570,9 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       }
       if (opt?.itemId) {
         const peerItemId = await copySubItem(opt.itemId);
-        if (peerItemId) peerOpt.itemId = peerItemId;
+        // Never the SOURCE venue's id at the peer: with no copy, the option stands
+        // on its own (name and price still travel) and the miss is reported.
+        if (peerItemId) peerOpt.itemId = peerItemId; else { delete peerOpt.itemId; unmappedSub.push(`sub-item ${opt.name || opt.itemId}`); }
       }
       peerOptions.push(peerOpt);
     }
@@ -1508,6 +1631,18 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     // Parent missing (orphaned child) — fall through and treat as a standalone item.
   }
 
+  // ── A COPY REDIRECTS TO ITS MASTER (23 Sep 2026) ──
+  // Every peer id is <master>_<venue suffix>. Sharing from a copy would address
+  // the owning venue with a suffixed id that does not exist there and create a
+  // second product, second sizes, second groups. The master does the sharing.
+  if (newScope !== 'local' && !isMasterRow(item) && _depth < 4) {
+    const { data: masterRow, error: mErr } = await supabase.from('menu_items').select('*')
+      .eq('id', item.master_id || item.masterId).maybeSingle();
+    if (mErr) return { ok: false, error: mErr };
+    if (masterRow?.archived) return { ok: false, error: 'the owning venue has retired this product; make your copy Local to keep it' };
+    if (masterRow) return setMenuItemScope(masterRow, newScope, _depth + 1);
+  }
+
   // ── DEMOTE → local ──
   if (newScope === 'local') {
     const { error } = await supabase.from('menu_items')
@@ -1548,19 +1683,28 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
   // Map source-side category id → its master_id, so we know the deterministic
   // peer cat id is `<catMasterId>_<peerLocSuffix>`.
   const catMasterIdByCatId = new Map();
+  const catMasterLocByMasterId = new Map();   // where each category master lives (owner-aware ids)
   if (newScope !== 'local' && item.cat) {
     try {
       const { data: catRow } = await supabase.from('menu_categories').select('*').eq('id', item.cat).maybeSingle();
       if (catRow) {
-        if ((catRow.scope || 'local') === 'local') {
-          const catResult = await setMenuCategoryScope(catRow, newScope);
-          if (catResult.ok) categoryAction = catResult.action;
-          else console.warn('[setMenuItemScope] cat auto-promote failed:', catResult.error);
-        }
+        // 23 Sep 2026: ALWAYS, not only while local. A category that is already
+        // shared can be missing at a peer (Location 2 had none of Provo's Coffee);
+        // setMenuCategoryScope now upserts every peer copy, so this recreates it.
+        const wasLocal = (catRow.scope || 'local') === 'local';
+        const catResult = wasLocal
+          ? await setMenuCategoryScope(catRow, newScope)
+          : await memo60(`cat:${catRow.id}|${catRow.scope}`, () => setMenuCategoryScope(catRow, catRow.scope));
+        if (catResult.ok) { if (wasLocal) categoryAction = catResult.action; }
+        else console.warn('[setMenuItemScope] cat auto-promote failed:', catResult.error);
         // Re-fetch to get fresh master_id (setMenuCategoryScope just wrote it)
         const { data: catFresh } = await supabase.from('menu_categories').select('master_id, id').eq('id', item.cat).maybeSingle();
         const catMasterId = catFresh?.master_id || catFresh?.id || catRow.id;
         catMasterIdByCatId.set(catRow.id, catMasterId);
+        if (!catMasterLocByMasterId.has(catMasterId)) {
+          const { data: cm } = await supabase.from('menu_categories').select('location_id').eq('id', catMasterId).maybeSingle();
+          catMasterLocByMasterId.set(catMasterId, cm?.location_id || null);
+        }
       }
     } catch (e) {
       console.warn('[setMenuItemScope] cat auto-promote threw:', e?.message || e);
@@ -1574,31 +1718,52 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       try {
         const { data: catRow } = await supabase.from('menu_categories').select('*').eq('id', catId).maybeSingle();
         if (!catRow) continue;
-        if ((catRow.scope || 'local') === 'local') {
-          await setMenuCategoryScope(catRow, newScope);
-        }
+        // 23 Sep 2026: always, not only when local. A category that is already
+        // shared may be missing at a peer (Location 2 had none of Provo's Coffee).
+        if ((catRow.scope || 'local') === 'local') await setMenuCategoryScope(catRow, newScope);
+        else await memo60(`cat:${catRow.id}|${catRow.scope}`, () => setMenuCategoryScope(catRow, catRow.scope));
         const { data: catFresh } = await supabase.from('menu_categories').select('master_id, id').eq('id', catId).maybeSingle();
         const catMasterId = catFresh?.master_id || catFresh?.id || catRow.id;
         catMasterIdByCatId.set(catRow.id, catMasterId);
+        if (!catMasterLocByMasterId.has(catMasterId)) {
+          const { data: cm } = await supabase.from('menu_categories').select('location_id').eq('id', catMasterId).maybeSingle();
+          catMasterLocByMasterId.set(catMasterId, cm?.location_id || null);
+        }
       } catch (e) {
         console.warn('[setMenuItemScope] cats[] auto-promote threw for', catId, ':', e?.message || e);
       }
     }
   }
   // Helper: peer cat id from a master-id given the peer location's suffix.
-  const peerCatIdFor = (catMasterId, peerLocSuffix) => `${catMasterId}_${peerLocSuffix}`;
-  // Translate a source-side cat id to the peer-side cat id at a given peer location.
-  const peerCatForSourceCat = (sourceCatId, peerLocSuffix) => {
+  // Translate a source-side cat id to the cat id at a given peer venue. The
+  // venue that OWNS the category holds the bare master id (round-2 review).
+  const peerCatForSourceCatAt = (sourceCatId, peerLocId) => {
     if (!sourceCatId) return null;
     const cmid = catMasterIdByCatId.get(sourceCatId);
-    return cmid ? peerCatIdFor(cmid, peerLocSuffix) : null;
+    return cmid ? peerCatIdAt(cmid, catMasterLocByMasterId.get(cmid), peerLocId) : null;
   };
+  const peerCatForSourceCat = (sourceCatId, peerLocSuffix) => peerCatForSourceCatAt(sourceCatId, otherLocationIds.find((l) => peerSuffixOf(l) === peerLocSuffix) || peerLocSuffix);
 
   let createdCount = 0;
   let createdVariants = 0;
   let updatedSiblings = 0;
+  const unmappedAll = [];
+  let skippedPeers = 0;
 
-  if (isFirstPromotion) {
+  // 23 Sep 2026: re-sharing (shared <-> global, or Global pressed again) used to
+  // flip `scope` on the siblings and nothing else. Provo's Latte was Global while
+  // Location 2's copy sat archived, pointing at a category that no longer existed
+  // there, untouched since July. Every share now walks every peer and upserts the
+  // WHOLE product: the copy is created when missing and refreshed when present.
+  if (!isFirstPromotion) {
+    const { error, count } = await supabase.from('menu_items')
+      .update({ scope: newScope, updated_at: new Date().toISOString() }, { count: 'exact' })
+      .eq('master_id', masterId)
+      .neq('id', item.id);
+    if (error) console.warn('[setMenuItemScope] sibling rescope error:', error);
+    else updatedSiblings = count || 0;
+  }
+  {
     // v5.5.877 (Bug 1a): fetch variant children by parent_id ALWAYS — not only
     // when type==='variants'. Real Supabase data uses several parent types
     // (combo/pizza, or a parent whose type flip never persisted), and every read
@@ -1635,31 +1800,23 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     // 2) First-time promotion: copy this item to every peer location.
     //    Build a deterministic id per peer so re-promoting later is idempotent.
     const baseRow = {
-      // Take the relevant editable fields from the source item
-      name: item.name,
-      menu_name: item.menu_name ?? item.menuName ?? null,
-      receipt_name: item.receipt_name ?? item.receiptName ?? null,
-      kitchen_name: item.kitchen_name ?? item.kitchenName ?? null,
-      description: item.description ?? null,
-      type: item.type ?? 'simple',
-      pricing: item.pricing ?? { base: item.price ?? 0 },
-      // v4.7.1 fix: 'price' column does NOT exist on menu_items — only 'pricing' jsonb.
-      // Including it caused PGRST204 "column not found" error which silently failed every promote.
-      allergens: item.allergens ?? [],
+      // 23 Sep 2026: EVERYTHING the product is, not a hand-picked subset.
+      // lib/shareCopy.js classifies every column; carryVerbatim reads the
+      // EDITED value (camel wins) and nameColumnsFor derives the four name
+      // columns exactly as upsertMenuItem does. No hand-written duplicates:
+      // they re-imposed snake-first reads and sent stale names (round-2 review).
+      ...carryVerbatim(item),
+      ...nameColumnsFor(item),
+      type: fieldOf(item, 'type') ?? 'simple',
+      pricing: fieldOf(item, 'pricing') ?? { base: item.price ?? 0 },
+      allergens: fieldOf(item, 'allergens') ?? [],
       // v5.8.95: carry Sold alone to the peer. Without it a first share inserted the peer row at
       // the column default false, which hides a normal product from online ordering and HubRise.
       sold_alone: resolveSoldAlone(item),
-      // assigned_modifier_groups is rewritten per-peer below (Bug 3) — not here.
-      sort_order: item.sortOrder ?? item.sort_order ?? 999,
-      image: item.image ?? null,
       // The shared metadata
       scope: newScope,
       org_id,
       master_id: masterId,
-      lock_pricing: item.lockPricing ?? item.lock_pricing ?? false,
-      locked_fields: item.lockedFields ?? item.locked_fields ?? [],
-      // Parent items have no parent
-      parent_id: null,
       updated_at: new Date().toISOString(),
     };
     for (const peerLocId of otherLocationIds) {
@@ -1674,24 +1831,63 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       // v5.5.877 (Bug 3): copy the modifier groups to THIS peer and get a
       // source→peer group-id map, then repoint assigned_modifier_groups so the
       // peer item references groups that actually exist at the peer location.
-      const modIdMap = await shareModifierGroupsToLocation(allGroupIds, sourceLocId, peerLocId, org_id, newScope);
+      const modIdMap = await memo60(`groups:${allGroupIds.join(',')}|${peerLocId}|${newScope}|resend`, () => shareModifierGroupsToLocation(allGroupIds, sourceLocId, peerLocId, org_id, newScope, 'resend'));
       const rewriteAssigned = (assigned) => (Array.isArray(assigned) ? assigned : []).map(ag => {
         const gid = typeof ag === 'string' ? ag : ag?.groupId;
         if (!gid) return ag;
         const peerGid = modIdMap.get(gid) || `${gid}_${peerLocSuffix}`;
         return typeof ag === 'string' ? peerGid : { ...ag, groupId: peerGid };
       });
+      let ids;
+      try { ids = await peerIdMapsFor(sourceLocId, peerLocId); }
+      catch (e) { console.warn('[setMenuItemScope] venue setup unreadable, peer skipped', peerLocId, e?.message || e); skippedPeers++; continue; }
+      // 23 Sep 2026: an EXISTING copy of a Shared product keeps its own price,
+      // category and image (that is what Shared promises); a Global copy and a
+      // new row take everything. archived (restore only) and sort_order are
+      // written here, on a deliberate share, never on an edit. A probe that
+      // FAILS skips the peer: treating it as "new" clobbered overrides.
+      const { data: existingPeer, error: probeErr } = await supabase.from('menu_items').select('id').eq('id', peerId).maybeSingle();
+      if (probeErr) { console.warn('[setMenuItemScope] could not check the peer row, skipped', peerLocId, probeErr); skippedPeers++; continue; }
+      const allowed = new Set(resendFields(newScope, { exists: !!existingPeer, lockPricing: !!(item.lockPricing ?? item.lock_pricing) }));
+      // The category must resolve AND exist at the peer, or an existing copy keeps
+      // the category it has (round-3 review: the repair path could strip it).
+      if (existingPeer && item.cat) {
+        let catOk = false;
+        if (peerCat) { const { data: pc, error: pcErr } = await supabase.from('menu_categories').select('id').eq('id', peerCat).maybeSingle(); catOk = !pcErr && !!pc; }
+        if (!catOk) { allowed.delete('cat'); allowed.delete('cats'); unmappedAll.push(`${peerLocId}|category (left as that venue has it)`); }
+      }
+      const pick = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => allowed.has(k)));
+      const remapped = remapForPeer(item, {
+        catIdFor: (c) => peerCatForSourceCatAt(c, peerLocId),
+        groupIdFor: (g) => modIdMap.get(g) || `${g}_${peerLocSuffix}`,
+        parentIdFor: () => null,
+        taxRateIdFor: ids.taxRateIdFor, taxProfileIdFor: ids.taxProfileIdFor, centreIdFor: ids.centreIdFor,
+      }, ['option_group_order', 'tax_rate_id', 'tax_profile_id', 'centre_id', 'tax_overrides']);
+      const pm = remapPricingMenus(baseRow.pricing, ids.menuIdFor);
       const peerRow = {
-        ...baseRow,
+        ...pick({ ...baseRow, pricing: pm.pricing }),
+        ...pick({ cat: peerCat, cats: peerCats, assigned_modifier_groups: rewriteAssigned(parentAssigned) }),
+        ...pick(remapped.fields),
+        ...pick(carryResendOnly(item)),
         id: peerId,
         location_id: peerLocId,
-        cat: peerCat,
-        cats: peerCats,
-        assigned_modifier_groups: rewriteAssigned(parentAssigned),
+        scope: newScope,
+        org_id,
+        master_id: masterId,
+        updated_at: new Date().toISOString(),
       };
-      const { error } = await supabase.from('menu_items').upsert(peerRow);
+      for (const u of [...remapped.unmapped, ...pm.unmapped]) unmappedAll.push(`${peerLocId}|${ids.nameOf(u)}`);
+      for (const u of (modIdMap.unmapped || [])) unmappedAll.push(`${peerLocId}|${u}`);
+      let { error } = await supabase.from('menu_items').upsert(peerRow);
+      if (error && peerRow.item_code && (isDuplicateItemCodeError(error) || isMissingItemCodeColumn(error))) {
+        // The peer already uses this code on another product: everything else still travels.
+        unmappedAll.push(`${peerLocId}|item code '${peerRow.item_code}' (already used there)`);
+        delete peerRow.item_code;
+        ({ error } = await supabase.from('menu_items').upsert(peerRow));
+      }
       if (error) {
         console.warn('[setMenuItemScope] peer upsert failed for', peerLocId, error);
+        skippedPeers++;
         continue; // skip variants for this peer if parent failed
       }
       createdCount++;
@@ -1708,33 +1904,42 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
         const variantPeerCat = v.cat
           ? (peerCatForSourceCat(v.cat, peerLocSuffix) || peerCat || null)
           : null;
+        const { data: existingVariant, error: vProbeErr } = await supabase.from('menu_items').select('id').eq('id', peerVariantId).maybeSingle();
+        if (vProbeErr) { console.warn('[setMenuItemScope] could not check the peer size, skipped', peerVariantId, vProbeErr); continue; }
+        // A size inherits its product's Lock pricing: the product's toggle, not the size's.
+        const vAllowed = new Set(resendFields(newScope, { exists: !!existingVariant, lockPricing: !!(item.lockPricing ?? item.lock_pricing) }));
+        const vPick = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => vAllowed.has(k)));
+        const vRemapped = remapForPeer(v, {
+          catIdFor: (c) => peerCatForSourceCatAt(c, peerLocId),
+          groupIdFor: (g) => modIdMap.get(g) || `${g}_${peerLocSuffix}`,
+          parentIdFor: () => null,
+          taxRateIdFor: ids.taxRateIdFor, taxProfileIdFor: ids.taxProfileIdFor, centreIdFor: ids.centreIdFor,
+        }, ['option_group_order', 'tax_rate_id', 'tax_profile_id', 'centre_id', 'tax_overrides']);
+        const vpm = remapPricingMenus(fieldOf(v, 'pricing'), ids.menuIdFor);
+        for (const u of [...vRemapped.unmapped, ...vpm.unmapped]) unmappedAll.push(`${peerLocId}|${ids.nameOf(u)} (size ${v.name})`);
         const peerVariantRow = {
+          ...vPick({ ...carryVerbatim(v), ...nameColumnsFor(v), ...(vpm.pricing !== undefined ? { pricing: vpm.pricing } : {}) }),
+          ...vPick(vRemapped.fields),
+          ...vPick(carryResendOnly(v)),
+          org_id,
           id: peerVariantId,
           location_id: peerLocId,
-          name: v.name,
-          menu_name: v.menu_name ?? null,
-          receipt_name: v.receipt_name ?? null,
-          kitchen_name: v.kitchen_name ?? null,
-          description: v.description ?? null,
           type: v.type ?? 'simple',
-          cat: variantPeerCat,
-          cats: [],
-          pricing: v.pricing ?? { base: 0 },
-          allergens: v.allergens ?? [],
-          sold_alone: resolveSoldAlone(v),
+          ...vPick({ cat: variantPeerCat, cats: [] }),
+          sold_alone: resolveSoldAlone(v),   // never a per-venue override, so always written
           // v5.5.877 (Bug 3): variants can carry their own modifier groups — repoint them too.
-          assigned_modifier_groups: rewriteAssigned(v.assigned_modifier_groups),
-          sort_order: v.sort_order ?? 999,
-          image: v.image ?? null,
+          ...vPick({ assigned_modifier_groups: rewriteAssigned(v.assigned_modifier_groups) }),
           scope: newScope,
-          org_id,
           master_id: vMasterId,
           parent_id: peerId,
-          lock_pricing: v.lock_pricing ?? false,
-          locked_fields: v.locked_fields ?? [],
           updated_at: new Date().toISOString(),
         };
-        const { error: vErr2 } = await supabase.from('menu_items').upsert(peerVariantRow);
+        let { error: vErr2 } = await supabase.from('menu_items').upsert(peerVariantRow);
+        if (vErr2 && peerVariantRow.item_code && (isDuplicateItemCodeError(vErr2) || isMissingItemCodeColumn(vErr2))) {
+          unmappedAll.push(`${peerLocId}|item code '${peerVariantRow.item_code}' (already used there, size ${v.name})`);
+          delete peerVariantRow.item_code;
+          ({ error: vErr2 } = await supabase.from('menu_items').upsert(peerVariantRow));
+        }
         if (vErr2) {
           console.warn('[setMenuItemScope] peer variant upsert failed for', peerLocId, v.id, vErr2);
         } else {
@@ -1754,53 +1959,178 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
         .eq('id', v.id);
       if (vsErr) console.warn('[setMenuItemScope] source variant scope update error for', v.id, vsErr);
     }
-  } else {
-    // 3) Re-scoping (shared ↔ global): just update scope on all sibling rows.
-    const { error, count } = await supabase.from('menu_items')
-      .update({ scope: newScope, updated_at: new Date().toISOString() }, { count: 'exact' })
-      .eq('master_id', masterId)
-      .neq('id', item.id);
-    if (error) console.warn('[setMenuItemScope] sibling rescope error:', error);
-    else updatedSiblings = count || 0;
   }
 
-  return { ok: true, action: isFirstPromotion ? 'promoted' : 'rescoped', createdCount, createdVariants, updatedSiblings, categoryAction };
+  return { ok: true, partial: skippedPeers > 0, action: isFirstPromotion ? 'promoted' : 'rescoped', createdCount, createdVariants, updatedSiblings, categoryAction, unmapped: unmappedAll, skippedPeers };
 };
 
 /**
- * When upsertMenuItem runs and the item has scope='global', call this to
- * propagate the same payload to every sibling row in the org. Excludes id
- * and location_id so each row stays bound to its own location.
+ * AN EDIT TO A SHARED OR GLOBAL PRODUCT FOLLOWS TO EVERY VENUE (23 Sep 2026).
+ *
+ * The previous propagateGlobalEdit existed and nothing called it, so "Global"
+ * was a label on a one-time copy: Cappucino was Global at Provo and Location 2
+ * and a price change at one never reached the other.
+ *
+ * Global: every field follows. Shared: everything except what a venue may
+ * override (pricing, category, image). Per-venue ids are translated for each
+ * sibling's venue; a modifier group the sibling does not have yet is copied
+ * there first. Never scope, org or master. Returns what happened.
  */
-export const propagateGlobalEdit = async (item, payload) => {
-  if (isMock || !supabase) return { ok: true, propagated: 0 };
-  if ((item.scope || 'local') !== 'global') return { ok: true, propagated: 0 };
-  const masterId = item.master_id || item.id;
-  if (!masterId) return { ok: true, propagated: 0 };
-
-  // Strip identity / location-specific fields from the payload before propagating.
-  const safe = { ...payload };
-  delete safe.id;
-  delete safe.location_id;
-  delete safe.created_at;
-  // Don't overwrite scope/org_id/master_id during propagate — those are
-  // managed by setMenuItemScope.
-  delete safe.scope;
-  delete safe.org_id;
-  delete safe.master_id;
-  safe.updated_at = new Date().toISOString();
-
-  const { error, count } = await supabase.from('menu_items')
-    .update(safe, { count: 'exact' })
-    .eq('master_id', masterId)
-    .neq('id', item.id);
-
-  if (error) {
-    console.warn('[propagateGlobalEdit] update error:', error);
-    return { ok: false, error };
+export const propagateScopedEdit = async (fullItem, changedKeys = null) => {
+  if (isMock || !supabase || !fullItem?.id) return { ok: true, propagated: 0 };
+  const scope = fullItem.scope || 'local';
+  // OWNER ONLY. A copy's ids are the master's with a suffix; propagating from a
+  // copy would build every id backwards and corrupt the master. Edits made at a
+  // peer stay at that peer.
+  if (!isMasterRow(fullItem)) return { ok: true, propagated: 0, skipped: 'not-master' };
+  const sourceLocId = fullItem.location_id || fullItem.locationId || (await getLocationId());
+  if (!sourceLocId) return { ok: true, propagated: 0 };
+  // 12/17. A size takes Lock pricing from its PRODUCT; the size's own flag is never set.
+  const parentSrc = fullItem.parentId || fullItem.parent_id || null;
+  let parentRow = null;
+  if (parentSrc) {
+    const { data: pr, error: pErr } = await supabase.from('menu_items').select('id, master_id, lock_pricing, archived').eq('id', parentSrc).maybeSingle();
+    if (pErr) return { ok: false, propagated: 0, error: pErr };
+    parentRow = pr || null;
   }
-  return { ok: true, propagated: count || 0 };
+  const lockPricing = !!(parentRow ? parentRow.lock_pricing : (fullItem.lockPricing ?? fullItem.lock_pricing));
+  const fields = propagatedFields(scope, { lockPricing });
+  if (!fields.length) return { ok: true, propagated: 0 };
+  // 8. Archiving a Shared product is the venue's own decision; propagating from an
+  // archived Shared source would detach every peer's sizes into live standalone rows.
+  if (scope !== 'global' && fieldOf(fullItem, 'archived')) return { ok: true, propagated: 0, skipped: 'archived-source' };
+  const masterId = fullItem.id;
+
+  const { data: siblings, error: sErr } = await supabase.from('menu_items')
+    .select('id, location_id').eq('master_id', masterId).neq('id', fullItem.id);
+  if (sErr) { console.warn('[propagateScopedEdit] siblings:', sErr); return { ok: false, error: sErr }; }
+  if (!siblings?.length) return { ok: true, propagated: 0 };
+
+  const editFields = fields.filter((f) => f !== 'sort_order');   // archived follows for Global (propagatedFields), sort_order never
+  const verbatim = { ...carryVerbatim(fullItem, editFields), ...nameColumnsFor(fullItem) };
+  if (editFields.includes('archived')) { const ar = fieldOf(fullItem, 'archived'); if (ar !== undefined) verbatim.archived = !!ar; }
+  for (const k of Object.keys(verbatim)) if (!editFields.includes(k)) delete verbatim[k];
+  const rawGroups = fullItem.assignedModifierGroups ?? fullItem.assigned_modifier_groups;
+  const groupIds = (Array.isArray(rawGroups) ? rawGroups : []).map((a) => (typeof a === 'string' ? a : a?.groupId)).filter(Boolean);
+  const changed = new Set((changedKeys || []).map((k) => String(k).replace(/[A-Z]/g, (c) => '_' + c.toLowerCase())));
+  const groupsTouched = !changedKeys || changed.has('assigned_modifier_groups') || changed.has('option_group_order');
+  const { org_id, otherLocationIds } = await memo60(`org:${sourceLocId}`, () => getOrgPeerLocations(sourceLocId));
+  const venueNames = new Map();
+  try { const { data: ls } = await supabase.from('locations').select('id,name').in('id', otherLocationIds); for (const l of ls || []) venueNames.set(String(l.id), l.name); } catch { /* names are a courtesy */ }
+
+  // Categories: the peer copy must EXIST before its id is written. A shared
+  // category missing at the peer is recreated (the Location 2 case); a LOCAL
+  // category is promoted the way a share does; if that fails the category is
+  // left as the peer has it rather than nulled.
+  const catCache = new Map();
+  const peerCatId = async (catId, peerLocId) => {
+    if (!catId) return null;
+    const key = `${catId}|${peerLocId}`;
+    if (catCache.has(key)) return catCache.get(key);
+    let answer = null;
+    try {
+      const { data: c } = await supabase.from('menu_categories').select('*').eq('id', catId).maybeSingle();
+      if (c) {
+        if ((c.scope || 'local') === 'local') await setMenuCategoryScope(c, scope);
+        const master = await masterCategoryOf(c);
+        const want = peerCatIdAt(master.id, master.location_id, peerLocId);
+        const { data: there } = await supabase.from('menu_categories').select('id').eq('id', want).maybeSingle();
+        if (!there) await memo60(`cat:${master.id}|${master.scope || scope}`, () => setMenuCategoryScope(master, master.scope || scope));
+        const { data: again } = await supabase.from('menu_categories').select('id').eq('id', want).maybeSingle();
+        answer = again ? want : null;
+      }
+    } catch (e) { console.warn('[propagateScopedEdit] category at peer:', e?.message || e); answer = null; }
+    catCache.set(key, answer);
+    return answer;
+  };
+
+  let propagated = 0; const unmapped = []; const failed = [];
+  for (const sib of siblings) {
+    if (!sib.location_id || sib.location_id === sourceLocId) continue;
+    const venue = venueNames.get(String(sib.location_id)) || sib.location_id;
+    const suffix = peerSuffixOf(sib.location_id);
+    let ids;
+    try { ids = await peerIdMapsFor(sourceLocId, sib.location_id); }
+    catch (e) { failed.push({ id: sib.id, venue, error: e?.message || String(e) }); continue; }
+    // Groups: only when the assignment changed, or a peer copy is missing.
+    let modIdMap = new Map();
+    if (groupIds.length && editFields.includes('assigned_modifier_groups')) {
+      let missing = groupsTouched;
+      if (!missing) {
+        const { data: have } = await supabase.from('modifier_groups').select('id').in('id', groupIds.map((g) => `${g}_${suffix}`));
+        missing = (have || []).length < groupIds.length;
+      }
+      if (missing) modIdMap = await shareModifierGroupsToLocation(groupIds, sourceLocId, sib.location_id, org_id, scope, 'edit');
+    }
+    const catIds = new Map(); let catUnknown = false;
+    for (const c of [fullItem.cat, ...(Array.isArray(fullItem.cats) ? fullItem.cats : [])].filter(Boolean)) {
+      if (!catIds.has(c)) { const v = await peerCatId(c, sib.location_id); catIds.set(c, v); if (!v) catUnknown = true; }
+    }
+    // 9/15. A size whose parent cannot be resolved keeps the parent the peer has.
+    const parentPeer = parentRow ? `${parentRow.master_id || parentRow.id}_${suffix}` : null;
+    const peerFields = editFields.filter((f) => f !== 'archived' && !(parentSrc && !parentRow && f === 'parent_id'));
+    if (parentSrc && !parentRow) unmapped.push(`${venue}|parent (left as that venue has it)`);
+    const remapped = remapForPeer(fullItem, {
+      catIdFor: (c) => catIds.get(c) || null,
+      groupIdFor: (g) => modIdMap.get(g) || (groupIds.includes(g) ? `${g}_${suffix}` : null),
+      parentIdFor: () => parentPeer,
+      taxRateIdFor: ids.taxRateIdFor, taxProfileIdFor: ids.taxProfileIdFor, centreIdFor: ids.centreIdFor,
+    }, peerFields);
+    if (catUnknown) { delete remapped.fields.cat; delete remapped.fields.cats; unmapped.push(`${venue}|category (left as that venue has it)`); }
+    for (const u of (modIdMap.unmapped || [])) unmapped.push(`${venue}|${u}`);
+    const pm = remapPricingMenus(verbatim.pricing, ids.menuIdFor);
+    const patch = { ...verbatim, ...(verbatim.pricing !== undefined ? { pricing: pm.pricing } : {}), ...remapped.fields, updated_at: new Date().toISOString() };
+    for (const u of [...remapped.unmapped, ...pm.unmapped]) unmapped.push(`${venue}|${ids.nameOf(u)}`);
+    let { data: wrote, error } = await supabase.from('menu_items').update(patch).eq('id', sib.id).select('id');
+    if (error && patch.item_code && (isDuplicateItemCodeError(error) || isMissingItemCodeColumn(error))) {
+      unmapped.push(`${venue}|item code '${patch.item_code}' (already used there)`);
+      delete patch.item_code;
+      ({ data: wrote, error } = await supabase.from('menu_items').update(patch).eq('id', sib.id).select('id'));
+    }
+    // A refusal (RLS) answers with no error and no rows: that is a failure too.
+    if (error || !wrote?.length) { failed.push({ id: sib.id, venue, error: error?.message || (error ? String(error) : 'the venue did not accept the change') }); continue; }
+    propagated++;
+  }
+  return { ok: failed.length === 0, propagated, failed, unmapped, error: failed[0]?.error };
 };
+
+/**
+ * AN EDIT TO A MODIFIER GROUP FOLLOWS TO ITS COPIES AT OTHER VENUES (23 Sep 2026).
+ *
+ * A group copied by sharing lives at the peer as `<id>_<venue suffix>`. Its
+ * name, min, max, selection type, order and every option (with nested groups
+ * and sold-alone sub-items pointed at the peer's copies) are refreshed. A group
+ * that was never shared has no copies and nothing happens. Runs from the
+ * OWNING venue only: a copy's id already carries a suffix.
+ */
+export const propagateModifierGroupEdit = async (group) => {
+  if (isMock || !supabase || !group?.id) return { ok: true, propagated: 0 };
+  const sourceLocId = group.location_id || group.locationId || getActiveLocationSync() || (await getLocationId());
+  if (!sourceLocId) return { ok: true, propagated: 0 };
+  const { org_id, otherLocationIds } = await getOrgPeerLocations(sourceLocId);
+  if (!org_id || !otherLocationIds.length) return { ok: true, propagated: 0 };
+  // A copy of a group is `<id>_<suffix of THIS venue>`; only the owner propagates.
+  if (new RegExp(`_${peerSuffixOf(sourceLocId)}$`).test(String(group.id))) return { ok: true, propagated: 0, skipped: 'not-master' };
+  const peerIds = otherLocationIds.map((l) => `${group.id}_${peerSuffixOf(l)}`);
+  const { data: copies, error } = await supabase.from('modifier_groups').select('id, location_id').in('id', peerIds);
+  if (error) { console.warn('[propagateModifierGroupEdit] copies:', error); return { ok: false, error }; }
+  // The sub-items copied with the group take a scope. Use the widest scope of any
+  // source product carrying this group, so a Global product's sub-items stay Global.
+  const { data: carriers } = await supabase.from('menu_items').select('scope, assigned_modifier_groups')
+    .eq('location_id', sourceLocId).in('scope', ['shared', 'global']).limit(500);
+  const usesGroup = (row) => (Array.isArray(row?.assigned_modifier_groups) ? row.assigned_modifier_groups : [])
+    .some((a) => (typeof a === 'string' ? a : a?.groupId) === group.id);
+  const scope = (carriers || []).some((r) => r.scope === 'global' && usesGroup(r)) ? 'global' : 'shared';
+  let propagated = 0;
+  for (const copy of copies || []) {
+    // shareModifierGroupsToLocation upserts the group AND its nested groups and
+    // sub-items at that venue with every option rule intact, which is exactly a refresh.
+    const idMap = await shareModifierGroupsToLocation([group.id], sourceLocId, copy.location_id, org_id, scope, 'edit');
+    if (idMap.has(group.id)) propagated++;
+  }
+  return { ok: true, propagated };
+};
+
 
 
 // ──────────────────────────────────────────────────────────────────
@@ -1814,6 +2144,13 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
   if (!['local', 'shared', 'global'].includes(newScope)) return { ok: false, error: 'invalid scope' };
 
   const currentScope = cat.scope || 'local';
+  // A COPY redirects to its master (round-2 review, 23 Sep): every peer id is
+  // <master>_<suffix>, and the owner's own row is the bare master id. Sharing
+  // from a copy addressed the owner with a suffixed id and created a duplicate.
+  if (newScope !== 'local' && !isMasterRow(cat)) {
+    const master = await masterCategoryOf(cat);
+    if (master && master.id !== cat.id) return setMenuCategoryScope(master, newScope, _visited);
+  }
   const sourceLocId = cat.location_id || (await getLocationId());
   if (!sourceLocId) return { ok: false, error: 'no location id' };
 
@@ -1838,25 +2175,40 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
   let createdCount = 0;
   let updatedSiblings = 0;
 
-  if (isFirstPromotion) {
+  // 23 Sep 2026: re-sharing used to flip scope on sibling categories and stop.
+  // Location 2 had 7 shared products pointing at a category that did not exist
+  // there. The peer loop below now runs every time: upsert creates what is
+  // missing and refreshes what is there (a peer's own photo is still kept).
+  if (!isFirstPromotion) {
+    const { error, count } = await supabase.from('menu_categories')
+      .update({ scope: newScope, updated_at: new Date().toISOString() }, { count: 'exact' })
+      .eq('master_id', masterId)
+      .neq('id', cat.id);
+    if (error) console.warn('[setMenuCategoryScope] sibling rescope error:', error);
+    else updatedSiblings = count || 0;
+  }
+  {
     _visited.add(cat.id);
     // v5.5.877 (Bug 2, hierarchy): if this is a SUB-category, promote its parent
     // first so the peer sub-category can nest under the peer parent instead of
     // being flattened to a root. Bounded by _visited — category trees are acyclic,
     // and this also guards against corrupt self-referential data.
     let parentMasterId = null;
+    let parentMasterLocId = null;
     const srcParentId = cat.parent_id ?? cat.parentId ?? null;
     if (srcParentId && !_visited.has(srcParentId)) {
       try {
         const { data: parentCat } = await supabase.from('menu_categories').select('*')
           .eq('id', srcParentId).eq('location_id', sourceLocId).maybeSingle();
         if (parentCat) {
-          if ((parentCat.scope || 'local') === 'local') {
-            await setMenuCategoryScope(parentCat, newScope, _visited);
-          }
+          // 23 Sep 2026: always, so a missing peer PARENT is recreated before the
+          // sub category is written pointing at it.
+          await setMenuCategoryScope(parentCat, (parentCat.scope || 'local') === 'local' ? newScope : parentCat.scope, _visited);
           const { data: pFresh } = await supabase.from('menu_categories')
             .select('master_id, id').eq('id', srcParentId).maybeSingle();
           parentMasterId = pFresh?.master_id || pFresh?.id || parentCat.id;
+          const pm = await masterCategoryOf({ id: srcParentId, master_id: parentMasterId });
+          parentMasterLocId = pm?.location_id || null;
         }
       } catch (e) { console.warn('[setMenuCategoryScope] parent promote threw:', e?.message || e); }
     }
@@ -1890,6 +2242,7 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       updated_at: new Date().toISOString(),
     };
     for (const peerLocId of otherLocationIds) {
+      if (peerLocId === sourceLocId) continue;   // the owner's own row is the master; never a suffixed copy
       const peerSuffix = peerLocId.slice(-8);
       const peerId = `${masterId}_${peerSuffix}`;
       // v5.5.877 (Bug 2): give the peer category real MENU MEMBERSHIP. The old
@@ -1903,31 +2256,31 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       // sub-categories stay nested rather than flattening to roots.
       // v5.8.73: a venue with no menu gets one (ensurePeerMenu), never a category on no menu.
       const peerMenuId = await ensurePeerMenu(peerLocId, sourceMenuId, org_id);
-      const peerParentId = parentMasterId ? `${parentMasterId}_${peerSuffix}` : null;
+      const peerParentId = parentMasterId ? peerCatIdAt(parentMasterId, parentMasterLocId, peerLocId) : null;
       const peerRow = { ...baseRow, id: peerId, location_id: peerLocId, menu_id: peerMenuId, parent_id: peerParentId };
       // v5.8.65: sharing again (local, then shared) reuses the same peer ids. A peer venue
       // that added its OWN photo meanwhile keeps it: the photo is only sent to a peer row
       // that has none (same rule as peerPhotoTargets). If the check fails, leave it alone.
-      if (peerRow.image) {
-        const { data: existingPeer, error: exErr } = await supabase
-          .from('menu_categories').select('id,image').eq('id', peerId).maybeSingle();
-        if (exErr || categoryPhotoUrl(existingPeer)) delete peerRow.image;
+      // 23 Sep 2026: a peer category that already exists keeps its own photo,
+      // its menu, its parent when the source has none, and (Shared) its order.
+      // Only a missing one is created and linked to a menu.
+      const { data: existingPeer, error: exErr } = await supabase
+        .from('menu_categories').select('id,image,menu_id,parent_id,sort_order').eq('id', peerId).maybeSingle();
+      if (exErr) { console.warn('[setMenuCategoryScope] could not check the peer category, skipped', peerLocId, exErr); continue; }
+      if (existingPeer) {
+        if (categoryPhotoUrl(existingPeer)) delete peerRow.image;
+        if (existingPeer.menu_id) peerRow.menu_id = existingPeer.menu_id;
+        if (!peerParentId && existingPeer.parent_id) peerRow.parent_id = existingPeer.parent_id;
+        if (newScope !== 'global' && existingPeer.sort_order != null) peerRow.sort_order = existingPeer.sort_order;
       }
       const { error } = await supabase.from('menu_categories').upsert(peerRow);
       if (error) { console.warn('[setMenuCategoryScope] peer upsert failed for', peerLocId, error); continue; }
       createdCount++;
-      if (peerMenuId) {
+      if (peerMenuId && !(existingPeer && existingPeer.menu_id)) {
         const linkRes = await linkCategoryToMenu(peerMenuId, peerId, baseRow.sort_order ?? 0);
         if (!linkRes?.ok) console.warn('[setMenuCategoryScope] peer menu link failed for', peerLocId, linkRes?.error);
       }
     }
-  } else {
-    const { error, count } = await supabase.from('menu_categories')
-      .update({ scope: newScope, updated_at: new Date().toISOString() }, { count: 'exact' })
-      .eq('master_id', masterId)
-      .neq('id', cat.id);
-    if (error) console.warn('[setMenuCategoryScope] sibling rescope error:', error);
-    else updatedSiblings = count || 0;
   }
 
   return { ok: true, action: isFirstPromotion ? 'promoted' : 'rescoped', createdCount, updatedSiblings };

@@ -18,9 +18,19 @@
  * child or a sub-item, which inherit), never archived, and only those that are
  * not already at the target scope.
  */
-export function bulkScopeTargets(items, scope) {
+export function bulkScopeTargets(items, scope, { includeSame = false } = {}) {
   return (items || []).filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem'
-    && (i.scope || 'local') !== scope);
+    && (includeSame ? scope !== 'local' : (i.scope || 'local') !== scope));
+}
+
+/**
+ * Re-sending: a product already Shared or Global is pushed to every venue
+ * again. 23 Sep 2026: Location 2 held 7 copies pointing at a category that no
+ * longer existed there, and one archived since July. Since the share now
+ * upserts the whole product at every peer, re-applying the level repairs them.
+ */
+export function bulkScopeResendWords(count, scope) {
+  return `Re-send ${count} product${count === 1 ? '' : 's'} already ${scope} to every venue in your organisation, refreshing every copy (name, price rules, modifiers, tax, category). Continue?`;
 }
 
 /**
@@ -42,6 +52,8 @@ export async function runBulkScope({ targets, scope, setScope, onProgress, shoul
     out.done++;
     if (r && r.ok) {
       out.ok.push(item);
+      if (r.skippedPeers) out.notReached = (out.notReached || 0) + Number(r.skippedPeers);
+      if (Array.isArray(r.unmapped)) out.unmapped = [...(out.unmapped || []), ...r.unmapped.map((u) => `${item.menuName || item.name}: ${String(u).replace('|', ': ')}`)];
       if (r.action === 'promoted') { out.promoted++; out.copies += Number(r.createdCount) || 0; }
       else if (r.action === 'rescoped') out.rescoped++;
       else if (r.action === 'demoted') out.demoted++;
@@ -63,6 +75,8 @@ export function bulkScopeWords(result, scope) {
   if (result.demoted) bits.push(`${n(result.demoted, 'product', 'products')} set to local here`);
   let s = bits.length ? bits.join(', ') : 'nothing changed';
   if (result.failed.length) s += `. ${n(result.failed.length, 'product', 'products')} failed: ${result.failed.slice(0, 3).map((f) => `${f.item.menuName || f.item.name} (${f.error})`).join('; ')}${result.failed.length > 3 ? '…' : ''}`;
+  if (result.notReached) s += `. NOT reached at ${result.notReached} venue(s), run it again`;
+  if (result.unmapped && result.unmapped.length) s += `. No equivalent at: ${result.unmapped.slice(0, 3).join('; ')}${result.unmapped.length > 3 ? '…' : ''}`;
   if (result.stopped) s += '. Stopped early.';
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }

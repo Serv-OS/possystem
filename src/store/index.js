@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { propagatedFields, isMasterRow } from '../lib/shareCopy';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
@@ -16,7 +17,7 @@ import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
-import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
 import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSections, resolveSections, normaliseSections, sectionsSignature } from '../lib/sectionPlan';
@@ -627,6 +628,90 @@ function _buildTaxContext(s) {
   };
   _taxCtxCache = { taxProfiles, menuItems, menuCategories, venueDefaultTaxProfileId, taxRates, ctx };
   return ctx;
+}
+
+// 23 Sep 2026: SHARED / GLOBAL EDITS FOLLOW TO EVERY VENUE, without a storm.
+// updateMenuItem fires on every keystroke and drag. Propagation is (1) skipped
+// unless a field that actually follows changed, (2) coalesced per product with a
+// trailing 750 ms wait, (3) single-flight: one run per product at a time, and a
+// dirty flag re-runs once with the LATEST row when it ends, so an older value
+// can never land last. Same for modifier groups.
+const _propTimers = new Map();   // itemId → timeout
+const _propBusy = new Map();     // itemId → { dirty, keys }
+const _propKeys = new Map();     // itemId → Set of changed keys waiting to be sent
+const _snake = (k) => k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
+function scheduleScopedPropagation(getRow, id, patchKeys) {
+  const row = getRow(id);
+  if (!row) return;
+  const scope = row.scope || 'local';
+  if (scope === 'local') return;
+  if (!isMasterRow(row)) return;   // a copy never propagates; the master does (its master_id is its own id after a share)
+  const owner = row.parentId ? (getRow(row.parentId) || row) : row;   // a size takes Lock pricing from its product
+  const follows = new Set(propagatedFields(scope, { lockPricing: !!(owner.lockPricing ?? owner.lock_pricing) }));
+  if (patchKeys && patchKeys.length && !patchKeys.some((k) => follows.has(_snake(k)) || follows.has(k))) return;
+  // Remember which keys changed across the debounce, so a name-only edit does
+  // not re-copy every modifier group to every venue.
+  const pending = _propKeys.get(id) || new Set();
+  for (const k of patchKeys || []) pending.add(k);
+  _propKeys.set(id, pending);
+  clearTimeout(_propTimers.get(id));
+  _propTimers.set(id, setTimeout(async () => {
+    _propTimers.delete(id);
+    const busy = _propBusy.get(id);
+    if (busy) { busy.dirty = true; for (const k of _propKeys.get(id) || []) busy.keys.add(k); _propKeys.delete(id); return; }
+    const state = { dirty: false, keys: _propKeys.get(id) || new Set() };
+    _propKeys.delete(id);
+    _propBusy.set(id, state);
+    try {
+      do {
+        state.dirty = false;
+        const latest = getRow(id);
+        if (!latest) break;
+        const keys = state.keys; state.keys = new Set();
+        const r = await propagateScopedEdit(latest, keys.size ? [...keys] : null);
+        if (r && Array.isArray(r.failed) && r.failed.length) {
+          reportSave('shared product edit', new Error(`${latest.menuName || latest.name}: not updated at ${r.failed.map((f) => f.venue).join(', ')} (${r.failed[0].error})`));
+        } else if (r && r.ok === false) reportSave('shared product edit', r.error);
+        if (r && Array.isArray(r.unmapped) && r.unmapped.length) {
+          // Words, not uuids: "Location 2: tax rate 'VAT 20%'" so the operator knows what to create there.
+          const words = r.unmapped.slice(0, 4).map((u) => u.replace('|', ': ')).join('; ');
+          useStore.getState().showToast?.(`${latest.menuName || latest.name}: no equivalent at ${words}${r.unmapped.length > 4 ? '…' : ''}`, 'info');
+        }
+      } while (state.dirty);
+    } catch (e) { reportSave('shared product edit', e); }
+    finally { _propBusy.delete(id); }
+  }, 750));
+}
+const _groupTimers = new Map();
+const _groupBusy = new Map();    // groupId → { dirty, latest }
+function scheduleGroupPropagation(group) {
+  if (!group?.id) return;
+  clearTimeout(_groupTimers.get(group.id));
+  _groupTimers.set(group.id, setTimeout(async () => {
+    _groupTimers.delete(group.id);
+    const busy = _groupBusy.get(group.id);
+    if (busy) { busy.dirty = true; busy.latest = group; return; }
+    const state = { dirty: false, latest: group };
+    _groupBusy.set(group.id, state);
+    try {
+      do {
+        state.dirty = false;
+        const r = await propagateModifierGroupEdit(state.latest);
+        if (r && r.ok === false) reportSave('shared modifier group', r.error);
+      } while (state.dirty);
+    } catch (e) { reportSave('shared modifier group', e); }
+    finally { _groupBusy.delete(group.id); }
+  }, 750));
+}
+// Leaving the page inside the 750 ms window must not lose the edit: fire now.
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    for (const [, t] of _propTimers) clearTimeout(t);
+    for (const [id] of _propTimers) { const row = useStore.getState().menuItems.find((i) => i.id === id); if (row) propagateScopedEdit(row, [..._propKeys.get(id) || []]).catch(() => {}); }
+    _propTimers.clear();
+    for (const [, t] of _groupTimers) clearTimeout(t);
+    _groupTimers.clear();
+  });
 }
 
 export const useStore = create((set, get) => ({
@@ -1276,6 +1361,8 @@ export const useStore = create((set, get) => ({
       const { error } = await upsertModifierGroup(group);
       reportSave('modifier group', error);   // v5.5.971 — toast alone; now raises the banner too
       if (error) { console.warn('modifier group save failed:', error.message); return false; }
+      // 23 Sep 2026: the group's copies at other venues follow this edit (coalesced).
+      scheduleGroupPropagation(group);
       return true;
     } catch (e) {
       reportSave('modifier group', e);
@@ -1513,6 +1600,9 @@ export const useStore = create((set, get) => ({
       const fullItem = items.find(i => i.id === id);
       if (fullItem) {
         upsertMenuItem(fullItem);
+        // 23 Sep 2026: a Shared or Global product's edit follows to its copies at
+        // every other venue (gated, coalesced, single-flight: scheduleScopedPropagation).
+        scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), id, Object.keys(patch || {}));
       }
 
       // v5.5.261: VARIANT INHERITANCE CASCADE — when certain parent fields
@@ -1544,7 +1634,7 @@ export const useStore = create((set, get) => ({
         if (childIds.length > 0) {
           childIds.forEach(cid => {
             const child = items.find(i => i.id === cid);
-            if (child) upsertMenuItem(child);
+            if (child) { upsertMenuItem(child); scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), cid, Object.keys(cascadePatch || {})); }
           });
         }
       }
@@ -1656,6 +1746,14 @@ export const useStore = create((set, get) => ({
     }
     set(s => ({ menuItems: [...s.menuItems, newItem] }));
     upsertMenuItem(newItem);
+    // 23 Sep 2026: a new size under a Shared/Global product reaches every venue by
+    // re-sending the product, which copies the size and re-points its groups.
+    if (newItem.parentId) {
+      const parent = useStore.getState().menuItems.find(i => i.id === newItem.parentId);
+      if (parent && ['shared', 'global'].includes(parent.scope || 'local') && isMasterRow(parent)) {
+        setTimeout(() => setMenuItemScope(parent, parent.scope).then((r) => { if (r && r.ok === false) reportSave('shared product size', r.error); }).catch((e) => reportSave('shared product size', e)), 800);
+      }
+    }
     return newItem;
   },
 
@@ -1751,6 +1849,14 @@ export const useStore = create((set, get) => ({
       unarchive([id, ...flippedChildIds]);
       useStore.getState().showToast?.(`"${itemName}" was NOT archived — it will come back on refresh. Check you're signed in, then try again`, 'error');
       return false;
+    }
+    // 23 Sep 2026: retiring a GLOBAL product retires it everywhere, sizes included,
+    // and only once the database has accepted the archive here.
+    const _archTarget = useStore.getState().menuItems.find(i => i.id === id);
+    if (_archTarget && (_archTarget.scope || 'local') === 'global') {
+      const getRow = (iid) => useStore.getState().menuItems.find(i => i.id === iid);
+      scheduleScopedPropagation(getRow, id, ['archived']);
+      for (const cid of flippedChildIds) scheduleScopedPropagation(getRow, cid, ['archived']);
     }
     // Archive children in DB too
     const children = useStore.getState().menuItems.filter(i => i.parentId === id);

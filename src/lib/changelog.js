@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.57',
+    date: '23 Sep 2026',
+    items: [
+      'GLOBAL IS NOW GLOBAL. An edit to a Global product follows to every venue in your organisation the moment you make it: name, prices, modifier groups and their rules, tax, visibility, tags, item code, everything. A Shared product does the same except for price, category and image, which each venue may override. Before this, the copy was made once and never touched again: Cappucino was Global at Provo and Location 2 and a price change at one never reached the other.',
+      'SHARING COPIES THE WHOLE PRODUCT. The copy used to leave behind visibility, tags, tax rate, tax profile, tax overrides, item code, print centre, instruction groups and the order of option groups, and a sub item pointed at a tax rate the other venue did not have. Tax rates, tax profiles and print centres are now matched by name at each venue, and anything a venue has no equivalent for is reported rather than written as a broken reference.',
+      'EDITING A MODIFIER GROUP UPDATES ITS COPIES at every venue that received it through sharing, options and nested groups included.',
+      'RE-SENDING. Sharing a product again, or ticking "include products already shared" in the bulk strip, refreshes every copy and recreates any that went missing, category included. This is how Location 2 gets its seven broken copies back.',
+    ],
+  },
+  {
     v: '5.9.56',
     date: '23 Sep 2026',
     items: [
