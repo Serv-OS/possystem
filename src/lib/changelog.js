@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.59',
+    date: '24 Sep 2026',
+    items: [
+      'SHARED PRODUCTS FIND THE RIGHT TAX RATE EVEN WHEN IT IS NAMED DIFFERENTLY. Provo calls its 20% rate VAT and Location 2 calls it Standard Rate, so copies arrived with no rate. A rate is now matched by name and percentage first, then by percentage alone when the venue has exactly one active rate at that percentage. Two rates at the same percentage are still reported rather than guessed. Re send the products once to pick it up.',
+    ],
+  },
+  {
     v: '5.9.58',
     date: '23 Sep 2026',
     items: [

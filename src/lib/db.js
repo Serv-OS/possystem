@@ -1424,8 +1424,22 @@ const _peerIdMapsUncached = async (sourceLocId, peerLocId) => {
     ...centres(srcRouting).map((c) => [`centre_id:${c.id}`, c.name]),
     ...(srcMenus.data || []).map((r) => [`pricing.menus:${r.id}`, r.name]),
   ]);
+  // A rate is matched by name AND percentage first. When only the NAME differs
+  // (Provo calls 20% "VAT", Location 2 calls it "Standard Rate") and the venue
+  // has exactly one active rate at that percentage, that is the rate. Two rates
+  // at the same percentage stay ambiguous and are reported, never guessed.
+  const peerRatesByPct = new Map();
+  for (const r of peerRates.data || []) { if (r.active === false) continue; const k = String(Number(r.rate)); peerRatesByPct.set(k, [...(peerRatesByPct.get(k) || []), r.id]); }
+  const srcRateRowById = new Map((srcRates.data || []).map((r) => [r.id, r]));
+  const taxRateIdFor = (id) => {
+    const byName = peerRateByKey.get(srcRateById.get(id));
+    if (byName) return byName;
+    const src = srcRateRowById.get(id);
+    const same = src ? (peerRatesByPct.get(String(Number(src.rate))) || []) : [];
+    return same.length === 1 ? same[0] : null;
+  };
   return {
-    taxRateIdFor: (id) => peerRateByKey.get(srcRateById.get(id)) || null,
+    taxRateIdFor,
     taxProfileIdFor: (id) => peerProfileByKey.get(srcProfileById.get(id)) || null,
     centreIdFor: (id) => peerCentreByKey.get(srcCentreById.get(id)) || null,
     menuIdFor: (id) => peerMenuByKey.get(srcMenuById.get(id)) || null,

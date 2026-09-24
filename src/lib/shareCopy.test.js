@@ -166,6 +166,7 @@ test('db.js and the store use these rules, and global edits actually propagate n
   assert.match(db, /if \(scope !== 'global' && fieldOf\(fullItem, 'archived'\)\) return/, 'an archived Shared source never propagates (it would detach peer sizes)');
   assert.match(db, /else \{ delete peerOpt\.itemId;/, 'a group option never carries the source venue\'s sub-item id');
   assert.match(db, /const bareOf = \(id\)/, 'groups and sub-items held as copies address the owner by the bare id');
+  assert.match(db, /same\.length === 1 \? same\[0\] : null/, 'a tax rate that differs only by name matches by percentage when unambiguous (Provo VAT vs Location 2 Standard Rate)');
   assert.ok(db.indexOf('const unmappedAll = [];') < db.indexOf('// 23 Sep 2026: re-sharing (shared <-> global, or Global pressed again) used to'), 'declared before the block that the return reads them from (round-3 ReferenceError)');
   assert.match(store, /patchKeys\.some\(\(k\) => follows\.has/, 'and only when a field that follows changed');
   assert.match(store, /scheduleGroupPropagation\(group\)/, 'every group edit reaches its peer copies, coalesced');
