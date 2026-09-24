@@ -104,3 +104,11 @@ test('the Items list offers to pull missing shared products, and creating a venu
   const admin = read('../backoffice/sections/CompanyAdmin.jsx');
   assert.match(admin, /pullSharedProductsTo\(loc\.id\)/, 'a new venue gets every shared product at once');
 });
+
+test('the Items list shows each product\'s sharing in its own column, before Type', () => {
+  const src = read('../backoffice/sections/MenuManager.jsx');
+  const hdr = src.slice(src.indexOf("<div style={hdrSt}>Item</div>"), src.indexOf("<div style={hdrSt}>Type</div>"));
+  assert.match(hdr, />Sharing</, 'Sharing sits between Item and Type');
+  assert.match(src, /SCOPE_PILL\[item\.scope \|\| 'local'\]/);
+  assert.match(src, /'26px minmax\(200px,1fr\) 84px 100px/, 'the grid has the extra column');
+});
