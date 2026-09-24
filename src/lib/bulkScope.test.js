@@ -128,3 +128,18 @@ test('the bookings iPad can pick a date, get back to today, and fix the date on 
   assert.match(fn, /from\('waitlist_devices'\)/); assert.match(fn, /from\('devices'\)/);
   assert.doesNotMatch(fn, /\.(insert|update|upsert|delete)\(/, 'read-only');
 });
+
+test('the Archived view loads archived products from the database, not just this session\'s', () => {
+  // 24 Sep: Barnsley Train Station had 153 archived products; the view showed the one archived
+  // since the page opened, because the boot load fetches archived=false only.
+  const db = read('./db.js');
+  assert.match(db, /export const fetchArchivedMenuItems = async/);
+  assert.match(db, /\.eq\('archived', true\)/);
+  const store = read('../store/index.js');
+  assert.match(store, /loadArchivedMenuItems: async \(\) => \{/);
+  assert.match(store, /const fresh = rows\.filter\(\(r\) => !have\.has\(r\.id\)\);/, 'rows already in memory win');
+  const mm = read('../backoffice/sections/MenuManager.jsx');
+  assert.match(mm, /loadArchivedMenuItems\?\.\(\)/);
+  assert.match(mm, /\}, \[showArchived\]\);/, 'loaded when the view opens');
+  assert.match(read('./realtime.js'), /export function mapMenuItemRow/);
+});

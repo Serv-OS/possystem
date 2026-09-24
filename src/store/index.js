@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { mapMenuItemRow } from '../lib/realtime';
 import { propagatedFields, isMasterRow } from '../lib/shareCopy';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
 import { taxCtxHasConfig } from '../lib/taxCompute';
@@ -17,7 +18,7 @@ import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
-import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, fetchArchivedMenuItems, upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
 import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSections, resolveSections, normaliseSections, sectionsSignature } from '../lib/sectionPlan';
@@ -1800,6 +1801,25 @@ export const useStore = create((set, get) => ({
   // v5.5.971: was two fire-and-forget .then(console.error) writes behind an optimistic
   // set() — the archive looked done and came straight back on the next refresh. Now
   // awaited, reported to saveHealth, and REVERTED locally when the DB refuses.
+  // 24 Sep 2026: the Archived view asks the database. Rows already in memory win
+  // (they may carry unsaved edits); everything else is merged in, mapped exactly
+  // as a live row is.
+  loadArchivedMenuItems: async () => {
+    if (isMock) return { ok: true, added: 0 };
+    try {
+      const { data, error } = await fetchArchivedMenuItems();
+      if (error) { reportSave('archived items', error); return { ok: false, error }; }
+      const rows = (data || []).map(mapMenuItemRow);
+      let added = 0;
+      set((s) => {
+        const have = new Set(s.menuItems.map((i) => i.id));
+        const fresh = rows.filter((r) => !have.has(r.id));
+        added = fresh.length;
+        return fresh.length ? { menuItems: [...s.menuItems, ...fresh] } : {};
+      });
+      return { ok: true, added };
+    } catch (e) { reportSave('archived items', e); return { ok: false, error: e }; }
+  },
   archiveMenuItem: async id => {
     // v5.5.261: CASCADE — archiving a parent also archives all its variants.
     // Orphaned variants with no parent would break the menu display and create

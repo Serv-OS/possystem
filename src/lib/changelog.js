@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.64',
+    date: '24 Sep 2026',
+    items: [
+      'THE ARCHIVED VIEW SHOWS EVERYTHING YOU HAVE ARCHIVED. It only showed products archived since the page opened, because the menu loads without archived rows. Opening Archived now fetches them from the database; nothing you have archived was ever lost.',
+    ],
+  },
+  {
     v: '5.9.63',
     date: '24 Sep 2026',
     items: [

@@ -732,7 +732,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 // Mirrors SyncBridge's snake→camel mapping for a single menu_items row.
 // Single-source-of-truth would be cleaner long-term; this stays in lockstep
 // with useSupabaseInit + SyncBridge for now.
-function mapMenuItemRow(item) {
+export function mapMenuItemRow(item) {
   return {
     ...item,
     price:        item.pricing?.base ?? item.price ?? 0,
