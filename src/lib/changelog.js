@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.63',
+    date: '24 Sep 2026',
+    items: [
+      'FIX: the New booking screen in 5.9.62 could fail to open (a missing import in the new Date field). Caught and fixed within minutes; lint now blocks a release with an undefined name.',
+    ],
+  },
+  {
     v: '5.9.62',
     date: '24 Sep 2026',
     items: [

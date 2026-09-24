@@ -11,8 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM, turnFor } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle,
-} from './bits.jsx';
+  mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle, todayISO } from './bits.jsx';
 
 const COVERS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
 

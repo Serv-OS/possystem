@@ -112,3 +112,19 @@ test('the Items list shows each product\'s sharing in its own column, before Typ
   assert.match(src, /SCOPE_PILL\[item\.scope \|\| 'local'\]/);
   assert.match(src, /'26px minmax\(200px,1fr\) 84px 100px/, 'the grid has the extra column');
 });
+
+test('the bookings iPad can pick a date, get back to today, and fix the date on a new booking', () => {
+  for (const f of ['../surfaces/bookings/DiaryScreen.jsx', '../surfaces/bookings/ServiceScreen.jsx']) {
+    const src = read(f);
+    assert.match(src, /<input type="date" value=\{bookingsDate \|\| todayISO\(\)\}/, f + ' has a real date picker');
+    assert.match(src, /\{!isToday && <button[\s\S]*?>Today<\/button>\}/, f + ' offers Today when away from it');
+  }
+  const book = read('../surfaces/bookings/BookScreen.jsx');
+  assert.match(book, /aria-label="Booking date"/);
+  assert.match(book, /import \{[^}]*\btodayISO\b[^}]*\} from '\.\/bits/, 'todayISO is IMPORTED (24 Sep: it shipped undefined once)');
+  const store = read('../store/index.js');
+  assert.match(store, /functions\/v1\/customer-search/);
+  const fn = read('../../supabase/functions/customer-search/index.ts');
+  assert.match(fn, /from\('waitlist_devices'\)/); assert.match(fn, /from\('devices'\)/);
+  assert.doesNotMatch(fn, /\.(insert|update|upsert|delete)\(/, 'read-only');
+});
