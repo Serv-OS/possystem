@@ -20,7 +20,7 @@
  *  Instruction groups tab
  *  └── Same — options are plain strings
  */
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches, detachPatches,
@@ -32,6 +32,7 @@ import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } fro
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
+import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords } from '../../lib/bulkScope';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
@@ -1671,6 +1672,9 @@ function ItemsLibrary() {
   const [hovRow, setHovRow] = useState(null);
   const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
   const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
+  const [bulkScope, setBulkScope] = useState('');           // v5.9.54 — bulk sharing (local/shared/global)
+  const [bulkScopeRun, setBulkScopeRun] = useState(null);   // { done, total } while it runs
+  const bulkScopeStop = useRef(false);
 
   // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
   // uses, so GP% can never disagree between the two screens.
@@ -1850,6 +1854,58 @@ function ItemsLibrary() {
                 Apply to all {missingTax.length}
               </button>
               <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
+            </div>
+          );
+        })()}
+
+        {/* v5.9.54: bulk SHARING. Peter, 23 Sep 2026: "we need a way to bulk set the
+            sharing status's of products". Targets are the top-level products in the
+            current view (category and search filters apply), never sizes or sub-items.
+            It runs ONE product at a time (lib/bulkScope) because promoting copies a
+            product to every peer venue and auto-promotes its category first; two at
+            once would race on the same category. */}
+        {(() => {
+          const targets = bulkScope ? bulkScopeTargets(parents, bulkScope) : [];
+          const running = !!bulkScopeRun;
+          const go = async () => {
+            if (!bulkScope || !targets.length || running) return;
+            if (!window.confirm(bulkScopeConfirmWords(targets.length, bulkScope))) return;
+            bulkScopeStop.current = false;
+            setBulkScopeRun({ done: 0, total: targets.length });
+            const result = await runBulkScope({ targets, scope: bulkScope, setScope: setMenuItemScope,
+              onProgress: (p) => setBulkScopeRun({ done: p.done, total: p.total }),
+              shouldStop: () => bulkScopeStop.current });
+            for (const it of result.ok) updateMenuItem(it.id, { scope: bulkScope });
+            for (const f of result.failed) reportSave('bulk item scope', new Error(`${f.item.menuName || f.item.name}: ${f.error}`));
+            setBulkScopeRun(null);
+            useStore.getState().markBOChange?.();
+            useStore.getState().showToast?.(bulkScopeWords(result, bulkScope), result.failed.length ? 'error' : 'success');
+          };
+          return (
+            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--acc) 6%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--t2)' }}>Sharing quick apply</span>
+              <select value={bulkScope} disabled={running} onChange={e=>setBulkScope(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                <option value="">— pick a sharing level —</option>
+                <option value="local">Local · this venue only</option>
+                <option value="shared">Shared · every venue in the org, each can override</option>
+                <option value="global">Global · managed centrally, no overrides</option>
+              </select>
+              {running ? (
+                <>
+                  <span style={{ fontSize:11, color:'var(--t3)' }}>Applying… {bulkScopeRun.done} of {bulkScopeRun.total}</span>
+                  <button onClick={()=>{ bulkScopeStop.current = true; }} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700 }}>Stop after this one</button>
+                </>
+              ) : (
+                <button disabled={!bulkScope || !targets.length} onClick={go}
+                  style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkScope&&targets.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkScope&&targets.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkScope&&targets.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                  {bulkScope ? `Apply to ${targets.length} in view` : 'Apply'}
+                </button>
+              )}
+              {bulkScope && !running && (
+                <span style={{ fontSize:10, color:'var(--t4)' }}>
+                  {targets.length === 0 ? `Everything in view is already ${bulkScope}.` : 'Top-level products in the current view. Sizes and sub-items follow their product.'}
+                </span>
+              )}
             </div>
           );
         })()}
