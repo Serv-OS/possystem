@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { resolveDefaultProductImage } from '../lib/productImage';
 import { useStore, capClosedChecks } from '../store';
 import { recoverInFlightJobs } from '../lib/payments/terminalJobs';
 import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
@@ -772,6 +773,8 @@ export default function SyncBridge({ onSyncPulse }) {
             // server re-reads the setting on every job create, so this cached
             // value can never open a capture window on its own.
             useStore.getState().setTipOnReceipt(locData?.pos_settings?.tip_on_receipt);
+            // v5.9.55: the Appearance logo stands in for a missing product photo.
+            useStore.getState().setDefaultProductImage(resolveDefaultProductImage(locData?.pos_settings));
           }
         } catch (e) { console.warn('[SyncBridge] settings load failed:', e.message); }
       })();

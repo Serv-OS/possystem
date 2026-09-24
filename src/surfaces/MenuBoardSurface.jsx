@@ -20,6 +20,7 @@
 // board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
 
 import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
+import { productImage, resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
 import { money } from '../lib/currency';
@@ -256,10 +257,13 @@ export default function MenuBoardSurface() {
       // arranged board and no tier (never blank); a failed timezone read keeps
       // the last good value rather than silently jumping to London.
       if (boardFollowsMenus(board)) {
-        const [mRes, lRes, tzRes] = await Promise.allSettled([fetchMenus(id), fetchMenuCategoryLinks(id), fetchVenueTimezone(id)]);
+        const [mRes, lRes, tzRes, psRes] = await Promise.allSettled([fetchMenus(id), fetchMenuCategoryLinks(id), fetchVenueTimezone(id),
+          supabase.from('locations').select('pos_settings').eq('id', id).maybeSingle()]);
         next.menus = (mRes.status === 'fulfilled' && Array.isArray(mRes.value?.data)) ? mRes.value.data : [];
         next.links = (lRes.status === 'fulfilled' && Array.isArray(lRes.value?.data)) ? lRes.value.data : [];
         next.tz = (tzRes.status === 'fulfilled' && tzRes.value) || dataRef.current?.tz || null;
+        // v5.9.55: the venue logo stands in for a missing product photo.
+        next.defaultImage = resolveDefaultProductImage(psRes.status === 'fulfilled' ? psRes.value?.data?.pos_settings : null) || dataRef.current?.defaultImage || null;
         if (mRes.status === 'fulfilled' && mRes.value?.error) console.warn('[menuboard] menus read failed, showing every category:', mRes.value.error.message);
         if (!next.tz && !warnedNoTz) { warnedNoTz = true; console.warn('[menuboard] venue timezone unknown, timed menus evaluate on Europe/London'); }
       }
@@ -278,7 +282,7 @@ export default function MenuBoardSurface() {
       const c = JSON.parse(localStorage.getItem(cacheKey(locId, effectiveBoardId)) || 'null');
       if (c) {
         // A cache written before "Follow timed menus" simply lacks the fields.
-        const d = { ...c, six: new Set(c.six || []), menus: Array.isArray(c.menus) ? c.menus : [], links: Array.isArray(c.links) ? c.links : [], tz: c.tz || null };
+        const d = { ...c, six: new Set(c.six || []), menus: Array.isArray(c.menus) ? c.menus : [], links: Array.isArray(c.links) ? c.links : [], tz: c.tz || null, defaultImage: c.defaultImage || null };
         dataRef.current = d;
         setData(d);
       }
@@ -520,7 +524,7 @@ function Board({ data }) {
         <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
             {sections.map((sec) => (
-              <Section key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
+              <Section defaultImage={data.defaultImage} key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
             ))}
           </div>
         </div>
@@ -535,7 +539,7 @@ function Board({ data }) {
   );
 }
 
-function Section({ sec, theme, disp, six, activeMenuId = null }) {
+function Section({ sec, theme, disp, six, activeMenuId = null, defaultImage = null }) {
   const { cat, items } = sec;
   return (
     <div style={{ marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
@@ -550,7 +554,7 @@ function Section({ sec, theme, disp, six, activeMenuId = null }) {
           <div key={it.id} style={{ marginBottom: '0.65em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
             {/* product line */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em' }}>
-              {disp.showImages && it.image && <img src={it.image} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
+              {disp.showImages && productImage(it, defaultImage) && <img src={productImage(it, defaultImage)} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: '0.56em', fontWeight: 600, lineHeight: 1.15 }}>
                   {it.menu_name || it.name}
@@ -575,7 +579,7 @@ function Section({ sec, theme, disp, six, activeMenuId = null }) {
             </div>
             {/* indented variant sizes */}
             {hasVar && (
-              <div style={{ marginTop: '.18em', marginLeft: '.2em', paddingLeft: (disp.showImages && it.image) ? '3em' : '0.9em', borderLeft: `0.14em solid ${theme.accent}40` }}>
+              <div style={{ marginTop: '.18em', marginLeft: '.2em', paddingLeft: (disp.showImages && productImage(it, defaultImage)) ? '3em' : '0.9em', borderLeft: `0.14em solid ${theme.accent}40` }}>
                 {variants.map((v) => {
                   const vsold = six.has(v.id);
                   const vp = boardPrice(v, activeMenuId);

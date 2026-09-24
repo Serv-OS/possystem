@@ -32,6 +32,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
+import { productImage } from '../lib/productImage';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { t, tf, useKioskLang } from '../lib/i18n';
@@ -82,7 +83,8 @@ const NO_DEFS = [];
 //                     so the new design's allergen check can count them on the basket line
 //   fetchGroups : optional (ids) => Promise<{ data, error }> for the modifier_groups read;
 //                 unset reads Supabase exactly as before (the DEV preview passes sample data)
-export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null, look, avoidAllergens = null, ackRequired = false, onPickAllergens, fetchGroups }) {
+export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null, look, avoidAllergens = null, ackRequired = false, onPickAllergens, fetchGroups, defaultImage = null }) {
+  const heroImage = productImage(item, defaultImage);
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
@@ -676,11 +678,11 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         position: 'relative',
         width: '100%',
         height: 'clamp(240px, 36vh, 460px)',
-        background: item?.image ? '#000' : ('linear-gradient(135deg, ' + brandColor + ', ' + (brandAccent || brandColor) + ')'),
+        background: heroImage ? '#000' : ('linear-gradient(135deg, ' + brandColor + ', ' + (brandAccent || brandColor) + ')'),
         flexShrink: 0,
         overflow: 'hidden',
       }}>
-        {item?.image && (
+        {heroImage && (
           <img src={item.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
         )}
         <button

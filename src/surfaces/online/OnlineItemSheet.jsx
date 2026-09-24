@@ -4,6 +4,7 @@
 // with clear required/optional labels, qty stepper, sticky bottom CTA.
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { productImage } from '../../lib/productImage';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
@@ -36,7 +37,7 @@ const extraLabel = (n, prefix = '+') => {
 //   extraPrices     priceFor returns what is EXTRA on top of a package, so
 //                   sizes, options and the button read "+£x" or "Included"
 // All of these default to the storefront's behaviour.
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -469,7 +470,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
   const inputBg  = theme.isLight ? '#f5f5f7' : '#1f1f24';
   const display  = effectiveItem.menu_name || effectiveItem.name;
-  const heroImg  = item.image || effectiveItem.image;
+  const heroImg  = productImage(item, null) || productImage(effectiveItem, defaultImage);
   // GF/V/VG/DF from menu_items.tags — variant's own tags, else the base item's.
   const ownDiet    = dietaryBadges(effectiveItem);
   const dietBadges = ownDiet.length ? ownDiet : dietaryBadges(item);

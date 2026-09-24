@@ -4043,6 +4043,11 @@ export const useStore = create((set, get) => ({
   // The POS uses it for the merchant-slip print decision and the History
   // countdown fallback; the SERVER re-reads the setting itself on every job
   // create, so a stale client value can never open or widen a capture window.
+  // v5.9.55 - DEFAULT PRODUCT IMAGE. A product with no photo shows the venue's
+  // Appearance logo instead. Read from ops locations.pos_settings.default_product_image
+  // at boot (SyncBridge); only an https URL is kept (lib/productImage).
+  defaultProductImage: null,
+  setDefaultProductImage: (url) => set({ defaultProductImage: (typeof url === 'string' && /^https:\/\/\S+$/i.test(url.trim())) ? url.trim() : null }),
   tipOnReceipt: { enabled: false, captureHours: 24 },
   setTipOnReceipt: (val) => {
     const hours = Number(val?.capture_hours ?? val?.captureHours);

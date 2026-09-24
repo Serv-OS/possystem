@@ -13,6 +13,7 @@
 // in BO → Online ordering) with fallback to ops receipt_branding.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { productImage, resolveDefaultProductImage } from '../../lib/productImage';
 import { supabase } from '../../lib/supabase';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
@@ -97,6 +98,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [joined, setJoined] = useState(false);
   const [justOpenedCode, setJustOpenedCode] = useState(null); // show the opener their code after opening
   const [branding, setBranding]     = useState(null);
+  const [defaultImage, setDefaultImage] = useState(null);   // v5.9.55: venue logo for products without a photo
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
@@ -308,7 +310,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             .eq('location_id', opsLocationId).order('sort_order'),
           // v5.7.34: default_tax_profile_id rides the branding read — the venue
           // default the reviewer flagged missing (cascade step 4 on this surface).
-          supabase.from('locations').select('receipt_branding, default_tax_profile_id')
+          supabase.from('locations').select('receipt_branding, default_tax_profile_id, pos_settings')
             .eq('id', opsLocationId).maybeSingle(),
           onlineMenuId
             ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
@@ -340,6 +342,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         const categoriesData = cRes.value?.data || [];
         const linksData      = mRes.value?.data || null;
         const brandingData   = lRes.value?.data?.receipt_branding || null;
+        setDefaultImage(resolveDefaultProductImage(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
         const snap           = pRes.value?.data || null; // v5.5.891: row IS { instructionGroupDefs } now
 
         let cats = categoriesData;
@@ -1011,7 +1014,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                   const is86 = itemSoldOut || variantsAllSoldOut;
                   const stock = stockLevels[item.id] || null;
                   return (
-                    <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor}
+                    <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor} defaultImage={defaultImage}
                       cardBg={cardBg} cardBdr={cardBdr} muted={muted}
                       variantInfo={vinfo}
                       is86={is86}
@@ -1051,6 +1054,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
       {openItem && (
         <OnlineItemSheet
+          defaultImage={defaultImage}
           item={openItem} theme={theme} allItems={items} priceFor={priceFor}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
@@ -1701,7 +1705,8 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null, priceFor = null }) {
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null, priceFor = null, defaultImage = null }) {
+  const cardImage = productImage(item, defaultImage);
   // priceFor = the surface's price rule (the till's resolver for this channel and menu); the inline base read is only a last resort.
   const ownPrice = priceFor ? priceFor(item) : Number(item.pricing?.base ?? item.price ?? 0);
   const isVariantParent = !!variantInfo?.kids?.length;
@@ -1751,8 +1756,8 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
       )}
       {/* v5.5.891: real <img> with native lazy-loading — the background-image divs loaded
           EVERY menu photo eagerly at full upload resolution on first paint */}
-      {item.image && (
-        <img src={item.image} loading="lazy" decoding="async" alt=""
+      {cardImage && (
+        <img src={cardImage} loading="lazy" decoding="async" alt=""
           style={{ width: '100%', height: 160, flexShrink: 0, objectFit: 'cover', display: 'block' }} />
       )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
