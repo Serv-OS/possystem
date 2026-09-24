@@ -1792,9 +1792,16 @@ function ItemsLibrary() {
   // panel is closed — the list stays readable instead of scrolling sideways.
   const hdrSt = { fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' };
   const showMoney = !selItem;
+  // v5.9.61: a Sharing column (Local / Shared / Global) sits before Type. Peter, 24 Sep:
+  // "add the status in the main list in a new column in front of type".
   const COL   = showMoney
-    ? '26px minmax(200px,1fr) 100px 92px 84px 72px 88px 46px'
-    : '26px minmax(150px,1fr) 96px 88px 84px 44px';
+    ? '26px minmax(200px,1fr) 84px 100px 92px 84px 72px 88px 46px'
+    : '26px minmax(150px,1fr) 84px 96px 88px 84px 44px';
+  const SCOPE_PILL = {
+    local:  { label: 'Local',  color: 'var(--t4)',  bg: 'transparent',                                   border: 'var(--bdr)' },
+    shared: { label: 'Shared', color: 'var(--amber, #F5A623)', bg: 'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', border: 'color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)' },
+    global: { label: 'Global', color: 'var(--grn, #2f8f4e)',   bg: 'var(--grn-d, rgba(47,143,78,.12))',  border: 'color-mix(in srgb, var(--grn, #2f8f4e) 45%, transparent)' },
+  };
   const numSt = { fontVariantNumeric:'tabular-nums' };
 
   return (
@@ -2003,6 +2010,7 @@ function ItemsLibrary() {
         <div style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'7px 12px', borderBottom:'2px solid var(--bdr)', background:'var(--bg2)', flexShrink:0, alignItems:'center' }}>
           <div/>
           <div style={hdrSt}>Item</div>
+          <div style={hdrSt} title="Local: this venue only. Shared: every venue in the organisation, each can override price, category and image. Global: managed centrally, identical everywhere.">Sharing</div>
           <div style={hdrSt}>Type</div>
           <div style={{ ...hdrSt, textAlign:'right' }}>Price</div>
           {showMoney && <div style={{ ...hdrSt, textAlign:'right' }}>Cost</div>}
@@ -2143,6 +2151,14 @@ function ItemsLibrary() {
                       <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, fontStyle:'italic' }}>No category</div>
                     )}
                   </div>
+                  {/* v5.9.61: SHARING pill, same colours as the editor's Sharing cards */}
+                  <span>
+                    {(() => { const sp = SCOPE_PILL[item.scope || 'local'] || SCOPE_PILL.local; return (
+                      <span title={item.masterId && item.masterId !== item.id ? 'A copy: managed at the venue that owns it' : sp.label} style={{ display:'inline-flex', alignItems:'center', background:sp.bg, border:`1px solid ${sp.border}`, color:sp.color, borderRadius:6, padding:'2px 8px', fontSize:11, fontWeight:700 }}>
+                        {sp.label}{item.masterId && item.masterId !== item.id ? ' ↙' : ''}
+                      </span>
+                    ); })()}
+                  </span>
                   {/* B4: TYPE as a quiet neutral pill */}
                   <span>
                     <span style={{ display:'inline-flex', alignItems:'center', gap:4, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', borderRadius:6, padding:'2px 8px', fontSize:11, fontWeight:600 }}>
@@ -2221,6 +2237,7 @@ function ItemsLibrary() {
                             <span style={{ fontSize:10, color:'var(--t4)', flexShrink:0, lineHeight:1 }}>└</span>
                             <span title={v.menuName||v.name} style={{ fontSize:12.5, fontWeight:600, color:vSel?'var(--acc)':'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.menuName||v.name}</span>
                           </div>
+                          <span style={{ fontSize:10, color:'var(--t4)' }} title="A size follows its product's sharing">↳ follows</span>
                           <span>
                             <span style={{ display:'inline-flex', alignItems:'center', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)', borderRadius:6, padding:'1px 7px', fontSize:10, fontWeight:600 }}>size</span>
                           </span>

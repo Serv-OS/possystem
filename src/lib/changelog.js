@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.61',
+    date: '24 Sep 2026',
+    items: [
+      'A SHARING COLUMN IN THE ITEMS LIST, before Type: Local, Shared or Global on every product, in the same colours as the editor\'s Sharing cards, so you can see at a glance which products are managed centrally. A copy managed at another venue shows a small arrow.',
+    ],
+  },
+  {
     v: '5.9.60',
     date: '24 Sep 2026',
     items: [
