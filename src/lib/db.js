@@ -296,6 +296,19 @@ export const fetchMenuItems = async (locationId = null) => {
     .order('sort_order');
 };
 
+/**
+ * The ARCHIVED rows for a venue (24 Sep 2026). Back Office loads menu_items with
+ * archived=false (fetchMenuItems), so the Archived view only ever showed what
+ * had been archived since the page opened. Peter: "I have defo archived
+ * products but there is only one there". Barnsley had 153 in the database.
+ */
+export const fetchArchivedMenuItems = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId) return { data: [], error: null };
+  return supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', true).order('updated_at', { ascending: false });
+};
+
 export const upsertMenuItem = async (item, locationId = null) => {
   if (isMock) return { data: null, error: null };
   // Always resolve real location — 'loc-demo' is the mock fallback, not a real location

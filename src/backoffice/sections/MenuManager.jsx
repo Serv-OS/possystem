@@ -1706,6 +1706,15 @@ function ItemsLibrary() {
   const [catFilter,  setCatFilter]  = useState('all');
   const [selItemId,  setSelItemId]  = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  // v5.9.64: archived rows live in the database, not in the boot load. Load them when
+  // the view opens (and once for the badge), merging without touching live rows.
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setArchivedLoading(true);
+    Promise.resolve(useStore.getState().loadArchivedMenuItems?.()).finally(() => { if (alive) setArchivedLoading(false); });
+    return () => { alive = false; };
+  }, [showArchived]);
 
   const allCats = useMemo(() => menuCategories.filter(c=>!c.isSpecial), [menuCategories]);
 
@@ -1828,7 +1837,7 @@ function ItemsLibrary() {
             {allCats.map(c=><option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
           </select>
           <button onClick={()=>{setShowArchived(v=>!v);setSelItemId(null);}} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:showArchived?'var(--red-d)':'var(--bg3)', border:`1px solid ${showArchived?'var(--red-b)':'var(--bdr)'}`, color:showArchived?'var(--red)':'var(--t3)', fontSize:12, fontWeight:showArchived?700:400, flexShrink:0 }}>
-            {showArchived ? '← Back to active' : `Archived${archivedCount>0?` (${archivedCount})`:''}`}
+            {showArchived ? '← Back to active' : `Archived${archivedCount>0?` (${archivedCount})`:''}${archivedLoading ? '…' : ''}`}
           </button>
           {!showArchived && <button onClick={addNewItem} style={{ padding:'7px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700, flexShrink:0 }}>+ Item</button>}
         </div>
