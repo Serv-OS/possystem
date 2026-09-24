@@ -1,4 +1,5 @@
 import { useCompact } from '../lib/useCompact';
+import { productImage } from '../lib/productImage';
 import { createPortal } from 'react-dom';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import DrawerCashModal from '../components/DrawerCashModal';
@@ -91,6 +92,7 @@ export default function POSSurface() {
     quickScreenAuto,
     menus,
     showItemImages,
+    defaultProductImage,
     takeawayCustomerDetails,
     location,
   } = useStore();
@@ -1829,7 +1831,8 @@ export default function POSSurface() {
                     clearTimeout(longPressTimer.current);
                   };
 
-                  const hasImg = showItemImages && item.image && !is86;
+                  const tileImage = productImage(item, defaultProductImage);
+                  const hasImg = showItemImages && tileImage && !is86;
 
                   return(
                     <button key={item.id}
@@ -1843,7 +1846,7 @@ export default function POSSurface() {
                       style={{
                         minHeight:108,
                         ...(hasImg ? {
-                          backgroundImage: `url(${item.image})`,
+                          backgroundImage: `url(${tileImage})`,
                           backgroundSize: 'cover',
                           backgroundPosition: 'center',
                         } : (is86 ? {} : {

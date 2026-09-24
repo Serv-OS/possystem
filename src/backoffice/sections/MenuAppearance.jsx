@@ -221,6 +221,22 @@ export default function MenuAppearance() {
       if (error) throw error;
       if (!data) throw new Error('Save returned no branding — reload the page and try again.');
       setRow((r) => ({ ...r, online_branding: data }));
+      // v5.9.55: mirror the "logo as default product image" choice onto the OPS
+      // venue row, which is what every customer-facing surface reads. Merged
+      // into pos_settings so no other key on it is touched.
+      try {
+        const wantUrl = data?.default_product_image_from_logo && data?.logo_url ? String(data.logo_url) : null;
+        const { data: cur } = await supabase.from('locations').select('pos_settings').eq('id', opsLocId).maybeSingle();
+        const curUrl = cur?.pos_settings?.default_product_image || null;
+        if (curUrl !== wantUrl) {
+          const { error: psErr } = await supabase.from('locations')
+            .update({ pos_settings: { ...(cur?.pos_settings || {}), default_product_image: wantUrl } }).eq('id', opsLocId);
+          if (psErr) throw psErr;
+        }
+      } catch (e) {
+        setSave({ err: `Saved, but the default product image could not be applied to the venue: ${e.message || e}. Press Save again.` });
+        return;
+      }
       // Gift card art is company wide: copy it to the company's gift settings too.
       try {
         await syncCompanyGiftArt(opsLocId, data?.gift?.card_art_url || null);
@@ -312,6 +328,12 @@ export default function MenuAppearance() {
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--t2)', cursor: 'pointer' }}>
                   <input type="checkbox" checked={mt.showOpenStatus} onChange={(e) => set({ show_open_status: e.target.checked })} /> Show “Open now” / prep-time pills (online ordering)
                 </label>
+              </div>
+              <div style={S.field}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--t2)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!branding.default_product_image_from_logo} disabled={!branding.logo_url} onChange={(e) => set({ default_product_image_from_logo: e.target.checked })} /> Use the logo as the picture for products that have no photo
+                </label>
+                <div style={S.hint}>{branding.logo_url ? 'POS tiles, kiosk, online ordering and menu boards. The item editor still shows which products have no photo of their own.' : 'Upload a logo first.'}</div>
               </div>
             </>)}
 

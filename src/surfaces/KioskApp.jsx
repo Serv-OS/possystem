@@ -19,6 +19,7 @@
 */
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { productImage, resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
 import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../lib/db';
@@ -259,7 +260,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     if (!locationId || !platformSupabase) return;
     platformSupabase
       .from('locations')
-      .select('company_id, timezone, online_collection_lead_min, online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+      .select('company_id, timezone, online_collection_lead_min, online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes, pos_settings')
       .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
       .limit(1)
       .maybeSingle()
@@ -1239,6 +1240,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
+          defaultImage={resolveDefaultProductImage(venueRow?.pos_settings)}
           item={selectedItem}
           allItems={items}
           brandColor={brandColor}
@@ -2165,6 +2167,7 @@ function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPh
                 <MenuItemCard
                   key={it.id}
                   item={it}
+                  defaultImage={resolveDefaultProductImage(venueRow?.pos_settings)}
                   price={resolvePrice(it, orderType, activeMenuId)}
                   fromPrice={variantFromPrice(it, kidsOf[it.id] || [], orderType, activeMenuId)}
                   brandColor={brandColor}
@@ -2247,7 +2250,8 @@ function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPh
 // ----- MenuItemCard (extracted so the grid map stays readable) -----
 // fromPrice: null for a plain item; for a variant parent the cheapest size's
 // resolved price (channel + active menu tier), 0 when every size is unpriced.
-function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilter, onSelect, is86 = false, stock = null }) {
+function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilter, onSelect, is86 = false, stock = null, defaultImage = null }) {
+  const cardImage = productImage(item, defaultImage);
   const itemAllergens = Array.isArray(item.allergens) ? item.allergens.map(a => String(a).toLowerCase()) : [];
   const flagged = allergenFilter && Array.from(allergenFilter).some(a => itemAllergens.includes(String(a).toLowerCase()));
   return (
@@ -2275,7 +2279,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
       {/* v5.5.144: OUT OF STOCK is now positioned over the IMAGE only. When
           the item has no image, it renders inline above the title (in the
           body block below) instead of floating over the product name. */}
-      {is86 && item.image && (
+      {is86 && cardImage && (
         <div style={{
           position: 'absolute', top: 12, left: 12, zIndex: 2,
           background: '#1a1a1a', color: '#fff',
@@ -2305,7 +2309,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
       )}
 
       {/* Image (only render when available — no emoji placeholder) */}
-      {item.image && (
+      {cardImage && (
         <div style={{
           width: '100%',
           aspectRatio: '4/3',
@@ -2313,7 +2317,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
           background: 'var(--kImageBg)',
           overflow: 'hidden',
         }}>
-          <img src={item.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+          <img src={cardImage} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
         </div>
       )}
 
@@ -2329,7 +2333,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             sits above the title so it can never overlap the product name.
             For items WITH an image the badge floats over the image instead
             (see absolute-positioned variant above). */}
-        {is86 && !item.image && (
+        {is86 && !cardImage && (
           <div style={{
             display: 'inline-block', alignSelf: 'flex-start',
             background: '#1a1a1a', color: '#fff',

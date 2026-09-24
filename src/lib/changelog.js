@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.55',
+    date: '23 Sep 2026',
+    items: [
+      'THE LOGO CAN STAND IN FOR A MISSING PRODUCT PHOTO. Appearance, Brand basics: tick "Use the logo as the picture for products that have no photo" and every product without its own image shows the venue logo on POS tiles, the kiosk, online ordering and menu boards. The item editor still shows which products have no photo of their own, so the gap is visible to you and invisible to customers.',
+    ],
+  },
+  {
     v: '5.9.54',
     date: '23 Sep 2026',
     items: [
