@@ -219,9 +219,9 @@ export function BoardSection({ sec, theme = {}, disp = {}, six, activeMenuId = n
       <div style={{
         fontSize: `${sz.heading}em`, fontWeight: 700, letterSpacing: '.12em', color: c.heading, marginBottom: '0.55em',
         textTransform: upper(theme.headingCase), breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid',
-        ...(theme.headingRule ? { borderBottom: `0.06em solid ${c.heading}`, paddingBottom: '0.25em' } : {}),
+        ...(theme.headingRule !== false ? { borderBottom: `0.06em solid ${c.heading}`, paddingBottom: '0.25em' } : {}),   // on unless switched off (the photo's rule under each heading)
       }}>{sec.title}</div>
-      {disp.sizeGrid ? <SizeGrid lines={lines} ctx={ctx} /> : lines.map((it) => <Line key={it.id} it={it} ctx={ctx} />)}
+      {disp.sizeGrid !== false ? <SizeGrid lines={lines} ctx={ctx} /> : lines.map((it) => <Line key={it.id} it={it} ctx={ctx} />)}
     </div>
   );
 }

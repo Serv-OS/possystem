@@ -26,9 +26,9 @@ const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Os
 const DEF_THEME = {
   bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '',
   // v5.9.68 design (lib/menuBoardSections.js boardSizes / boardColors; the TV's DEFAULT_THEME agrees)
-  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'm', headingColor: '', headingSize: 'm', headingRule: false, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
+  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'l', headingColor: '', headingSize: 'm', headingRule: true, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
 };
-const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: false };
+const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true };
 // followMenus defaults false here so the Edit merge (`{ ...newBoard(1).layout, ...b.layout }`)
 // gives every board saved before the flag existed the exact behaviour it has today.
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [], followMenus: false }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
@@ -489,7 +489,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                 <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: -4, lineHeight: 1.5, maxWidth: 560 }}>
                   100% is the largest text that fills the screen. Smaller sizes leave room around the menu. Larger sizes open more columns to make room, then take the biggest size that still fits. The preview uses the same rule as the TV.
                 </div>
-                <Toggle on={board.display_options.sizeGrid} label="Price grid by size (Small · Big · XL across the top)" set={v => setDisp({ sizeGrid: v })} />
+                <Toggle on={board.display_options.sizeGrid !== false} label="Price grid by size (Small · Big · XL across the top)" set={v => setDisp({ sizeGrid: v })} />
               </Section>
 
               <Section title="Design" desc="What the screen looks like. The preview on the right is drawn by the same code as the TV, so it is what the screen shows.">
@@ -508,7 +508,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   <Field label="Prices"><Pills opts={[['pill', 'Pill'], ['plain', 'Plain text']]} val={board.theme.priceStyle || 'pill'} on={v => setTheme({ priceStyle: v })} /></Field>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Toggle on={board.theme.headingRule === true} label="Line under headings" set={v => setTheme({ headingRule: v })} />
+                  <Toggle on={board.theme.headingRule !== false} label="Line under headings" set={v => setTheme({ headingRule: v })} />
                   <Toggle on={board.theme.headerRule !== false} label="Line under the header" set={v => setTheme({ headerRule: v })} />
                   <Toggle on={board.theme.headingCase !== 'as-typed'} label="Headings in capitals" set={v => setTheme({ headingCase: v ? 'upper' : 'as-typed' })} />
                 </div>
@@ -606,7 +606,7 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
           : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
+              <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'balance' }}>
                 {secs.map(sec => <BoardSection key={sec.id} sec={sec} theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />)}
               </div>
             </div>}

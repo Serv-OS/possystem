@@ -15,6 +15,7 @@ export const CHANGELOG = [
       'Menu boards: price grid by size. Cup sizes across the top (Small Boy | Big Boy | XL Boy), a price per size on each line, and a new header when the sizes change (Single | Double for espresso).',
       'Menu boards: add-ons per category. Tick which option only sub items (whipped cream, marshmallows) to list under a category; milks and syrups stay off unless ticked.',
       'Menu boards: text panels. A boxed heading, lines and a last line (the Syrups box), placed anywhere among the categories, full width if you like. Text panels stay on screen when the board follows timed menus.',
+      'Menu boards: the defaults are now the designed look. Price grid by size on, columns end level (no blank bottom corner), a larger logo, a line under each heading. Switch any of them off in Design.',
     ],
   },
   {

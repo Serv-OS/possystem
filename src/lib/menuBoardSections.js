@@ -239,13 +239,16 @@ export const TITLE_EM = { s: 0.9, m: 1.2, l: 1.6, xl: 2.1 };
 export const HEADING_EM = { s: 0.7, m: 0.82, l: 1.0, xl: 1.2 };
 export const ITEM_EM = { s: 0.48, m: 0.56, l: 0.66, xl: 0.78 };
 
+// Defaults are the photo's look (Peter, 24 Sep: "the design is not peak like I asked for"): a
+// large logo; medium everything else. A venue picks its own in Design.
+export const SIZE_DEFAULTS = { logo: 'l', title: 'm', heading: 'm', item: 'm' };
 export function boardSizes(theme = {}) {
-  const pick = (map, v) => (map[v] !== undefined ? map[v] : map.m);
+  const pick = (map, v, d) => (map[v] !== undefined ? map[v] : map[d]);
   return {
-    logo: pick(LOGO_EM, theme.logoSize),
-    title: pick(TITLE_EM, theme.titleSize),
-    heading: pick(HEADING_EM, theme.headingSize),
-    item: pick(ITEM_EM, theme.itemSize),
+    logo: pick(LOGO_EM, theme.logoSize, SIZE_DEFAULTS.logo),
+    title: pick(TITLE_EM, theme.titleSize, SIZE_DEFAULTS.title),
+    heading: pick(HEADING_EM, theme.headingSize, SIZE_DEFAULTS.heading),
+    item: pick(ITEM_EM, theme.itemSize, SIZE_DEFAULTS.item),
   };
 }
 

@@ -40,9 +40,9 @@ const MISS_SPACING_MS = 10000;   // a missing row counts as a miss at most once 
 const DEFAULT_THEME = {
   bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null,
   // v5.9.68 design: title + note, per element sizes and colours (lib/menuBoardSections.js boardSizes / boardColors)
-  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'm', headingColor: '', headingSize: 'm', headingRule: false, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
+  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'l', headingColor: '', headingSize: 'm', headingRule: true, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
 };
-const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: false };
+const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true };
 const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands somewhere in here (max high enough for 4K TVs)
 // Text size → columns → fit: lib/menuBoardSections.js boardColumns / fitFont / scaledFont,
 // the SAME rule the Back Office preview runs (v5.9.68), so the preview is the TV in miniature.
@@ -505,7 +505,9 @@ function Board({ data }) {
         {/* dynamic newspaper flow — EVERY item; categories flow & balance across
             columns; the fit-loop scales the whole thing to fill one screen. */}
         <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
-          <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
+          {/* column-fill: balance (v5.9.68) so the columns end level instead of leaving a blank
+              bottom corner; overflow still spills into extra columns, which scrollWidth reports. */}
+          <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'balance' }}>
             {sections.map((sec) => (
               <BoardSection defaultImage={data.defaultImage} key={sec.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
             ))}

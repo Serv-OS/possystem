@@ -176,7 +176,7 @@ test('one text size rule: columns by size and content, fit by probe, scale below
 });
 
 test('sizes and colours: today\'s look by default, each element its own choice', () => {
-  assert.deepEqual(boardSizes({}), { logo: 1.4, title: 1.2, heading: 0.82, item: 0.56 });
+  assert.deepEqual(boardSizes({}), { logo: 2.2, title: 1.2, heading: 0.82, item: 0.56 });   // large logo by default (the photo)
   assert.deepEqual(boardSizes({ logoSize: 'xl', headingSize: 'l', itemSize: 's', titleSize: 'nope' }), { logo: 3.2, title: 1.2, heading: 1.0, item: 0.48 });
   const d = boardColors({});
   assert.equal(d.heading, '#E8A23C', 'headings take the accent unless set');
@@ -192,6 +192,8 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   assert.match(tv, /<BoardHeader theme=\{theme\}/);
   assert.match(tv, /<BoardSection defaultImage=\{data\.defaultImage\} key=\{sec\.id\}/);
   assert.match(tv, /<BoardFooter theme=\{theme\} live \/>/);
+  assert.match(tv, /columnFill: 'balance'/, 'columns end level');
+  assert.match(tv, /sizeGrid: true \}/, 'the price grid is the default');
   assert.match(tv, /boardColumns\(\{ textScale, orientation, fixedCols, totalItems \}\)/);
   assert.match(tv, /scaledFont\(fitFont\(fits, \{ min: FIT\.min, max: FIT\.max \}\), textScale, FIT\.min\)/);
   assert.doesNotMatch(tv, /^function Section\(/m, 'no private section renderer on the TV');
@@ -200,6 +202,8 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   assert.match(bo, /<BoardHeader theme=\{t\}/);
   assert.match(bo, /<BoardSection key=\{sec\.id\} sec=\{sec\} theme=\{t\}/);
   assert.match(bo, /<BoardFooter theme=\{t\} \/>/);
+  assert.match(bo, /columnFill: 'balance'/, 'the preview balances like the TV');
+  assert.match(bo, /sizeGrid: true \}/, 'the builder default agrees with the TV');
   assert.match(bo, /boardColumns\(\{ textScale: board\.display_options\?\.textScale, orientation: board\.orientation, fixedCols, totalItems \}\)/);
   assert.match(bo, /scaledFont\(fitFont\(fits, \{ min: 4, max: 44 \}\), board\.display_options\?\.textScale, 4\)/);
   assert.match(bo, /rootRef\.current/, 'the preview fits its whole frame, header and footer included, like the TV root');
