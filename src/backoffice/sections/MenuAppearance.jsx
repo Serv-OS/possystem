@@ -197,6 +197,16 @@ export default function MenuAppearance() {
   }, []);
 
   const set = (patch) => setBranding((b) => ({ ...b, ...patch }));
+  // v5.9.56: "logo as the default product image" is NOT a branding key. The
+  // branding save goes through an edge function that allowlists fields, and
+  // 23 Sep it refused the whole save with unknown_field. The choice is stored
+  // only where it is read from: ops locations.pos_settings.default_product_image.
+  const [useLogoAsDefault, setUseLogoAsDefault] = useState(false);
+  useEffect(() => {
+    if (!supabase || !opsLocId) return;
+    supabase.from('locations').select('pos_settings').eq('id', opsLocId).maybeSingle()
+      .then(({ data }) => setUseLogoAsDefault(!!data?.pos_settings?.default_product_image), () => {});
+  }, [opsLocId]);
   const setPortal = (patch) => setBranding((b) => ({ ...b, portal: { ...(b.portal || {}), ...patch } }));
   const setGift = (patch) => setBranding((b) => ({ ...b, gift: { ...(b.gift || {}), ...patch } }));
   const mt = readTheme(branding);
@@ -225,7 +235,7 @@ export default function MenuAppearance() {
       // venue row, which is what every customer-facing surface reads. Merged
       // into pos_settings so no other key on it is touched.
       try {
-        const wantUrl = data?.default_product_image_from_logo && data?.logo_url ? String(data.logo_url) : null;
+        const wantUrl = useLogoAsDefault && data?.logo_url ? String(data.logo_url) : null;
         const { data: cur } = await supabase.from('locations').select('pos_settings').eq('id', opsLocId).maybeSingle();
         const curUrl = cur?.pos_settings?.default_product_image || null;
         if (curUrl !== wantUrl) {
@@ -331,7 +341,7 @@ export default function MenuAppearance() {
               </div>
               <div style={S.field}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--t2)', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={!!branding.default_product_image_from_logo} disabled={!branding.logo_url} onChange={(e) => set({ default_product_image_from_logo: e.target.checked })} /> Use the logo as the picture for products that have no photo
+                  <input type="checkbox" checked={useLogoAsDefault} disabled={!branding.logo_url} onChange={(e) => setUseLogoAsDefault(e.target.checked)} /> Use the logo as the picture for products that have no photo
                 </label>
                 <div style={S.hint}>{branding.logo_url ? 'POS tiles, kiosk, online ordering and menu boards. The item editor still shows which products have no photo of their own.' : 'Upload a logo first.'}</div>
               </div>

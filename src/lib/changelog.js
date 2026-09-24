@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.56',
+    date: '23 Sep 2026',
+    items: [
+      'FIX: Appearance would not save after 5.9.55 ("unknown_field default_product_image_from_logo"). The new tick box had been stored as a branding field, and the server keeps an allowlist of those. The choice now lives only where it is read from, the venue row, so Appearance saves again and the logo default still works.',
+    ],
+  },
+  {
     v: '5.9.55',
     date: '23 Sep 2026',
     items: [
