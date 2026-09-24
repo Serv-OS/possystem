@@ -58,6 +58,13 @@
 //       dependency list gains chargedTaxBreakdown. The gift commit order, the idempotency
 //       key, the PGRST204 retry, both stock paths, the order_queue insert and the 30 second
 //       reset are unchanged.
+//   v5.9.66 (24 Sep 2026, loyalty rewards by CATEGORY. Shipped overnight for the morning; Peter's
+//   sign off and one kiosk card payment on a real reader are OWED, flagged in the release note).
+//   ScreenPay, the totals, updateCartQty and submitOrder are byte for byte v5.9.12.
+//     credits 1718 -> 1768 chars, ONE line: the loyalty credit context gains `categories,` (the
+//       kiosk's own menu_categories rows) so lib/kioskLoyaltyReward.js can size a free item
+//       reward that names a category. A reward that names no category is sized exactly as
+//       before (the category rule is skipped). Gift, promo, tax relief and grandTotal unchanged.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -85,8 +92,8 @@ const BLOCKS = [
     name: 'credits',
     start: 'const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {',
     end: 'const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit - taxRelief);',
-    length: 1718,
-    sha256: '54704e2f785c4e7931054cb101d7822bdb66fe75da19a921719cc96db72e2a26',
+    length: 1768,
+    sha256: 'cad906c1405d546e4c338219f74921489b3d36158acb74d9ab05e684d30aadbd',
   },
   {
     name: 'totals',

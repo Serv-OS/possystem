@@ -204,3 +204,104 @@ test('the picker groups sizes as "<product> - <size>" across sites', () => {
   const menu = [{ id: 'pres-cap', name: 'Cappuccino' }, { id: 'pres-cap-l', name: 'Large', parentId: 'pres-cap' }];
   assert.equal(eligibleOrderLines({ eligible_items: saved }, [line], menu).length, 1);
 });
+
+// ── categories (v5.9.66: a reward can name CATEGORIES as well as products) ────────────────
+import { stageKioskReward as stageKioskRewardCats } from './kioskCheckout.js';
+import { eligibleCategoryNames } from './loyaltyMenuMatch.js';
+
+// Barnsley's categories as the online store and kiosk load them (DB rows) ...
+const BARN_CATS = [
+  { id: 'barn-drinks', label: 'Drinks', parent_id: null, location_id: 'barn' },
+  { id: 'barn-coffee', label: 'Coffee', parent_id: 'barn-drinks', location_id: 'barn' },
+  { id: 'barn-food', label: 'Food', parent_id: null, location_id: 'barn' },
+];
+// ... and as the till's store holds them (camelCase, from a config push).
+const BARN_STORE_CATS = BARN_CATS.map(({ parent_id, ...c }) => ({ ...c, parentId: parent_id }));
+// Saved in the Back Office at LEEDS: the "Drinks / Coffee" path with Leeds' id (Barnsley did not exist).
+const FREE_COFFEE = { eligible_categories: [{ id: 'leeds-coffee', name: 'Coffee', path: ['drinks', 'coffee'] }] };
+// Saved with Barnsley's own PARENT id only (an older save, no path).
+const FREE_DRINKS_ID = { eligible_categories: [{ id: 'barn-drinks', name: 'Drinks' }] };
+
+test('till: a category saved at Leeds by PATH makes the Barnsley coffee free, not the toast', async () => {
+  const items = [tillLine('barn-toast', 'Toast', 2.0, { cat: 'barn-food' }), tillLine('barn-latte', 'Latte', 3.2, { cat: 'barn-coffee' })];
+  const r = await redeemLoyaltyReward(tillReward(FREE_COFFEE), { customerId: 'c1', items, total: 5.2, menuItems: BARNSLEY_MENU, categories: BARN_CATS });
+  assert.equal(r.discount_value, 320);
+});
+
+test('till: a saved parent id covers the subcategory through store-shaped rows (ancestor rule)', async () => {
+  const items = [tillLine('barn-latte', 'Latte', 3.2, { cat: 'barn-coffee' })];
+  const r = await redeemLoyaltyReward(tillReward(FREE_DRINKS_ID), { customerId: 'c1', items, total: 3.2, categories: BARN_STORE_CATS });
+  assert.equal(r.discount_value, 320);
+});
+
+test('till: nothing from the category on the order refuses and names the category', async () => {
+  await assert.rejects(
+    redeemLoyaltyReward(tillReward(FREE_COFFEE), { customerId: 'c1', items: [tillLine('barn-toast', 'Toast', 2.0, { cat: 'barn-food' })], total: 2, categories: BARN_CATS }),
+    (e) => { assert.match(e.message, /^Add anything from Coffee to the order first/); return true; },
+  );
+});
+
+test('till: a size with no category on the line takes its parent\'s category from the menu', async () => {
+  const menu = [
+    { id: 'barn-cap', name: 'Cappuccino', parentId: null, cat: 'barn-coffee' },
+    { id: 'barn-cap-l', name: 'Large', parentId: 'barn-cap' },
+  ];
+  const items = [tillLine('barn-cap-l', 'Cappuccino — Large', 3.8, { parentId: 'barn-cap' })];
+  const r = await redeemLoyaltyReward(tillReward(FREE_COFFEE), { customerId: 'c1', items, total: 3.8, menuItems: menu, categories: BARN_CATS });
+  assert.equal(r.discount_value, 380);
+});
+
+test('till: without category rows a saved category still matches its own id, and only that', async () => {
+  const own = { eligible_categories: [{ id: 'barn-coffee', name: 'Coffee' }] };
+  const hit = await redeemLoyaltyReward(tillReward(own), { customerId: 'c1', items: [tillLine('barn-latte', 'Latte', 3.2, { cat: 'barn-coffee' })], total: 3.2 });
+  assert.equal(hit.discount_value, 320);
+  await assert.rejects(redeemLoyaltyReward(tillReward(FREE_COFFEE), { customerId: 'c1', items: [tillLine('barn-latte', 'Latte', 3.2, { cat: 'barn-coffee' })], total: 3.2 }));
+});
+
+test('kiosk: the tap check and the live credit honour an eligible category', () => {
+  const cart = [
+    { item: { id: 'barn-toast', name: 'Toast', cat: 'barn-food' }, qty: 1, linePrice: 2.0 },
+    { item: { id: 'barn-latte', name: 'Latte', cat: 'barn-coffee' }, qty: 1, linePrice: 3.2 },
+  ];
+  const ctx = { cart, goodsMinor: 520, dueMinor: 520, giftMinor: 0, categories: BARN_CATS };
+  assert.deepEqual(kioskRewardTapCheck('free_item', FREE_COFFEE, ctx), { discountMinor: 320, error: null });
+  assert.equal(kioskLoyaltyCreditMinor({ reward_type: 'free_item', reward_value: FREE_COFFEE }, ctx), 320);
+  const foodOnly = { ...ctx, cart: cart.slice(0, 1) };
+  assert.match(kioskRewardTapCheck('free_item', FREE_COFFEE, foodOnly).error, /anything from Coffee/);
+  assert.equal(kioskRewardMissingItems('free_item', FREE_COFFEE, cart, BARN_CATS), null);
+});
+
+test('kiosk: stageKioskReward hands the categories through (new design)', () => {
+  const cart = [{ item: { id: 'barn-latte', name: 'Latte', cats: ['barn-coffee'] }, qty: 1, linePrice: 3.2, lineTotal: 3.2 }];
+  const ok = stageKioskRewardCats({ id: 'r1', label: 'Free coffee', type: 'free_item', value: FREE_COFFEE }, { cart, discountedSubtotal: 3.2, total: 3.2, categories: BARN_CATS });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.staged.discount_value, 320);
+  const no = stageKioskRewardCats({ id: 'r1', label: 'Free coffee', type: 'free_item', value: FREE_COFFEE }, { cart, discountedSubtotal: 3.2, total: 3.2 });
+  assert.equal(no.ok, false);
+  assert.equal(no.reason, 'needsItem');
+  assert.deepEqual(no.items, ['anything from Coffee']);
+});
+
+test('online: a cart line\'s cats array is enough', () => {
+  const lines = [{ itemId: 'barn-latte', name: 'Latte', price: 3.2, cats: ['barn-coffee'] }, { itemId: 'barn-toast', name: 'Toast', price: 2, cat: 'barn-food' }];
+  assert.deepEqual(eligibleOrderLines(FREE_COFFEE, lines, [], BARN_CATS).map(l => l.itemId), ['barn-latte']);
+});
+
+test('categories: configured with categories only; items and categories both count', () => {
+  assert.equal(eligibleMatcher(FREE_COFFEE).configured, true);
+  assert.equal(eligibleMatcher({ eligible_categories: [] }).configured, false);
+  const both = { eligible_items: [{ id: 'x', name: 'Mocha' }], eligible_categories: FREE_COFFEE.eligible_categories };
+  const m = eligibleMatcher(both, BARN_CATS);
+  assert.equal(m.matches({ ids: [], labels: ['mocha'], catIds: [] }), true);
+  assert.equal(m.matches({ ids: [], labels: ['toast'], catIds: ['barn-coffee'] }), true);
+  assert.equal(m.matches({ ids: [], labels: ['toast'], catIds: ['barn-food'] }), false);
+});
+
+test('categories: names read once each, after the items', () => {
+  const v = {
+    eligible_items: [{ id: 'a', name: 'Latte' }, { id: 'b', name: 'Latte' }],
+    eligible_categories: [{ id: '1', name: 'Coffee', path: ['drinks', 'coffee'] }, { id: '2', name: 'Coffee', path: ['drinks', 'coffee'] }],
+  };
+  assert.deepEqual(eligibleCategoryNames(v), ['Coffee']);
+  assert.deepEqual(eligibleItemNames(v), ['Latte', 'anything from Coffee']);
+});

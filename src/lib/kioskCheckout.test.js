@@ -153,10 +153,12 @@ test('reward staging uses the v5.8.67 tap check: a staged gift card that would c
 test('KioskApp builds the live reward context the way kioskRewardContext does', () => {
   const src = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
   const block = src.slice(src.indexOf('const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {'));
-  for (const line of ['cart,', 'goodsMinor: Math.round(discountedSubtotal * 100),', 'dueMinor: Math.round(total * 100),', 'giftMinor: giftCardPayment?.applied || 0,']) {
-    assert.ok(block.slice(0, 300).includes(line), line);
+  // v5.9.66: plus the kiosk's category rows (a reward can name categories).
+  for (const line of ['cart,', 'categories,', 'goodsMinor: Math.round(discountedSubtotal * 100),', 'dueMinor: Math.round(total * 100),', 'giftMinor: giftCardPayment?.applied || 0,']) {
+    assert.ok(block.slice(0, 340).includes(line), line);
   }
-  assert.deepEqual(kioskRewardContext({ cart: [1], discountedSubtotal: 12.345, total: 13.5, giftMinor: 250 }), { cart: [1], goodsMinor: 1235, dueMinor: 1350, giftMinor: 250 });
+  assert.deepEqual(kioskRewardContext({ cart: [1], discountedSubtotal: 12.345, total: 13.5, giftMinor: 250 }), { cart: [1], categories: [], goodsMinor: 1235, dueMinor: 1350, giftMinor: 250 });
+  assert.deepEqual(kioskRewardContext({ categories: [{ id: 'c' }] }).categories, [{ id: 'c' }]);
 });
 
 test('code classification', () => {

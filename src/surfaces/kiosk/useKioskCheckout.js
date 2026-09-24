@@ -47,7 +47,7 @@ const promoKeyFor = (promo, subtotal, customerId) => (
 
 export default function useKioskCheckout({ engine, api, screen, tipping, alcoholIds, currency }) {
   const {
-    cart, items, railCategories, orderType, profile, locationId, submitting,
+    cart, items, categories, railCategories, orderType, profile, locationId, submitting,
     subtotal, discountedSubtotal, total, tip, setTip,
     loyaltyRedemption, setLoyaltyRedemption, verifiedLoyalty, setVerifiedLoyalty,
     giftCardPayment, setGiftCardPayment, promoApplied, setPromoApplied,
@@ -231,7 +231,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
 
   // ── Rewards ──
   // The tap check's figures, exactly as KioskApp passes them to kioskLoyaltyCreditMinor.
-  const rewardCtx = { cart, discountedSubtotal, total, giftMinor: giftCardPayment?.applied || 0, customerId };
+  const rewardCtx = { cart, categories, discountedSubtotal, total, giftMinor: giftCardPayment?.applied || 0, customerId };
   const applyReward = (staged) => { if (staged) setLoyaltyRedemption(staged); };
   const removeReward = () => setLoyaltyRedemption(null);
 

@@ -129,6 +129,7 @@ export default function KioskV2Preview() {
   // The same credit formulas as KioskApp (the loyalty credit is live, lib/kioskLoyaltyReward.js).
   const loyaltyCredit = kioskLoyaltyCreditMinor(loyaltyRedemption, {
     cart,
+    categories,
     goodsMinor: Math.round(discountedSubtotal * 100),
     dueMinor: Math.round(total * 100),
     giftMinor: giftCardPayment?.applied || 0,
@@ -210,7 +211,7 @@ export default function KioskV2Preview() {
 
   const engine = {
     kioskId: 'preview-kiosk', deviceName: 'Preview kiosk', profile, locationId: FIXTURE_LOCATION_ID, companyId: FIXTURE_COMPANY_ID, kioskTz: 'Europe/London',
-    items, visibleCategories: categories, railCategories: categories, activeMenuId, eightySixIds, dailyCounts,
+    items, categories, visibleCategories: categories, railCategories: categories, activeMenuId, eightySixIds, dailyCounts,
     screen, setScreen, orderType, setOrderType, tableNumber, setTableNumber,
     selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
     allergenFilter, setAllergenFilter,

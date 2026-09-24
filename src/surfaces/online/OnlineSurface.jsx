@@ -1088,6 +1088,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           orderType={orderType} loyalty={loyalty}
           menuId={effectiveMenuId} /* fence stage 1: the menu these prices came from, so the server prices from the same one */
           menuItems={items} /* free item rewards match by name across sites (loyaltyMenuMatch.js) */
+          categories={categories} /* v5.9.66: and by CATEGORY, through this site's own rows */
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
           orderAheadOnly={!!closedInfo}

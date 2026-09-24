@@ -196,7 +196,9 @@ test('KioskApp commits and records the loyalty reward only when the live credit 
   assert.match(src, /discount_value: loyaltyDiscountMinor,/);
   // The tap uses the same gift cap as the live credit.
   assert.match(src, /dueMinor=\{Math\.round\(total \* 100\)\} giftMinor=\{giftCardPayment\?\.applied \|\| 0\}/);
-  assert.match(src, /kioskRewardTapCheck\(reward\.type, rv, \{ cart, goodsMinor, dueMinor, giftMinor \}\)/);
+  // v5.9.66: plus the kiosk's category rows, so a reward that names a CATEGORY matches.
+  assert.match(src, /kioskRewardTapCheck\(reward\.type, rv, \{ cart, goodsMinor, dueMinor, giftMinor, categories \}\)/);
+  assert.match(src, /const loyaltyDiscountMinor = kioskLoyaltyCreditMinor\(loyaltyRedemption, \{\n\s+cart,\n\s+categories,/);
   // The frozen tap-time figure is no longer what the order is charged on.
   assert.doesNotMatch(src, /loyaltyCredit = loyaltyRedemption\?\.discount_value/);
 });

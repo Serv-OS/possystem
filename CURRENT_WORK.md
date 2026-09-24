@@ -1,3 +1,12 @@
+# Session, 24 Sep 2026, v5.9.66, loyalty rewards by category or product (branch feat/loyalty-categories)
+
+- Peter: eligible free items and what earns a stamp must be CATEGORIES or PRODUCTS; the old pill grid was clunky with many categories.
+- Saved shapes: reward_config (stamp) and reward_value (points) gain eligible_categories [{ id, name, path }], one entry per site id of a category PATH (the picker saves every site's id, the path covers sites added later). Stamp cards also save qualifying_item_ids, the column loyalty-earn already reads (id, then name across the company). No DDL. No edge deploy: the live loyalty-earn (deployed after 18 Sep) already resolves qualifying items by name.
+- Matching: lib/loyaltyMenuMatch.js eligibleMatcher(value, categories) adds catIds candidates (line cat / cats, else its menu row's or its parent's), decided by lib/stampCategoryGroups.js categoryQualifies (saved id, ancestor id, saved path; rows in DB or store shape). Till (CheckoutModal), kiosk (KioskApp both designs, stageKioskReward) and online (OnlineCheckout via OnlineSurface) pass the site's own category rows. Messages read "Add anything from Coffee to your order first".
+- Back Office: ScopePicker (Products | Categories tabs, chips above, collapsed searchable category tree) replaces the three pickers: points reward eligible items, stamp reward eligible items, and "What earns a stamp". Pure rules in lib/loyaltyCategoryPicker.js (+ tests). Categories now load once in LoyaltyManager for both panels.
+- Kiosk card path guard re-pinned (kioskCardPathGuard.test.js history): credits 1718 -> 1768 chars, ONE line, `categories,` in the loyalty credit context. OWED: Peter's sign off + one kiosk card payment on a real reader.
+- Tests 3557/3557 (11 new matcher tests, 6 picker tests); eslint no new no-undef; vite build clean.
+
 # Session, 19 Sep 2026, v5.9.12, US sales tax basis (branch fix/us-tax-basis)
 
 - Fixed: US added-on tax was charged on price x qty before discounts and never on service or delivery. Now every surface passes its own check basis to the one seam (computeOrderTaxUnified) and each tax line decides (post discount, service ON, delivery OFF by default). ADR-025, INVARIANTS (Reporting / Tax).

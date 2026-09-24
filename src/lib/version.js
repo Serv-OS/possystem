@@ -1,4 +1,4 @@
-export const VERSION = '5.9.65';
+export const VERSION = '5.9.66';
 
 // Expose for on-screen diagnostics inside the Sunmi APK.
 if (typeof window !== 'undefined') {
