@@ -17,12 +17,12 @@ import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from './loyalt
 
 /**
  * @param {{id:string,label?:string,value?:object,type?:string,pointsCost?:number,stamp?:boolean,stampProgramId?:string}} reward
- * @param {{ customerId:string, items?:Array, total?:number, menuItems?:Array }} ctx  menuItems = the till's menu
+ * @param {{ customerId:string, items?:Array, total?:number, menuItems?:Array, categories?:Array }} ctx  menuItems / categories = the till's menu
  * @returns staged result { reward_id|stampProgramId, customer_id, reward_name, points_deducted,
  *          discount_type, discount_value, pending_commit:true }
  * @throws when a free-item reward has no eligible item in the basket (apply refused).
  */
-export async function redeemLoyaltyReward(reward, { customerId, items = [], total = 0, menuItems = [] }) {
+export async function redeemLoyaltyReward(reward, { customerId, items = [], total = 0, menuItems = [], categories = [] }) {
   const rv = reward.value || {};
   const type = reward.type;
   let discountMinor = 0;
@@ -33,9 +33,10 @@ export async function redeemLoyaltyReward(reward, { customerId, items = [], tota
   } else if (type === 'free_item') {
     // Saved id first, then the item's name across every site of the company (18 Sep 2026:
     // loyalty is per company, menus are per site). lib/loyaltyMenuMatch.js, same rule as the
-    // kiosk and online. menuItems (this site's menu) resolves a size's "<parent> - <size>".
-    const configured = eligibleMatcher(rv).configured;
-    const matching = eligibleOrderLines(rv, items || [], menuItems);
+    // kiosk and online. menuItems (this site's menu) resolves a size's "<parent> - <size>";
+    // categories (this site's rows) decide an eligible CATEGORY (v5.9.66).
+    const configured = eligibleMatcher(rv, categories).configured;
+    const matching = eligibleOrderLines(rv, items || [], menuItems, categories);
     if (configured && matching.length === 0) {
       const names = eligibleItemNames(rv).join(', ');
       throw new Error(names

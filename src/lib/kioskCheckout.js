@@ -118,9 +118,10 @@ export function kioskRewardsFromVerify(data) {
  * KioskApp builds it for the live credit (goods after auto discounts, before tax and tip;
  * what is due; the staged gift card's applied amount, minor units).
  */
-export function kioskRewardContext({ cart = [], discountedSubtotal = 0, total = 0, giftMinor = 0 } = {}) {
+export function kioskRewardContext({ cart = [], discountedSubtotal = 0, total = 0, giftMinor = 0, categories = [] } = {}) {
   return {
     cart: Array.isArray(cart) ? cart : [],
+    categories: Array.isArray(categories) ? categories : [],   // v5.9.66: eligible CATEGORIES need the kiosk's rows
     goodsMinor: Math.round(num(discountedSubtotal) * 100),
     dueMinor: Math.round(num(total) * 100),
     giftMinor: num(giftMinor),
@@ -131,7 +132,7 @@ export function kioskRewardContext({ cart = [], discountedSubtotal = 0, total = 
  * Stage a reward the way ScreenLoyalty.redeemReward does (apply only; submitOrder commits it),
  * through the same tap check (lib/kioskLoyaltyReward.js kioskRewardTapCheck) and in the same
  * shape, including reward_type and reward_value so KioskApp recomputes the credit live.
- *   ctx: { cart, discountedSubtotal, total, giftMinor, customerId } (KioskApp's figures)
+ *   ctx: { cart, discountedSubtotal, total, giftMinor, customerId, categories } (KioskApp's figures)
  *   { ok: true, staged }                         staged is the loyaltyRedemption object
  *   { ok: false, reason: 'needsItem', items }    a free item reward with nothing eligible
  *   { ok: false, reason: 'giftFirst' }           a staged gift card would cut it down (the
@@ -140,13 +141,13 @@ export function kioskRewardContext({ cart = [], discountedSubtotal = 0, total = 
  * A refused reward is never staged, so points or a stamp card are never spent for nothing or
  * for part of a reward (there is no member of staff to honour it).
  */
-export function stageKioskReward(reward, { cart = [], discountedSubtotal = 0, total = 0, giftMinor = 0, customerId = null } = {}) {
+export function stageKioskReward(reward, { cart = [], discountedSubtotal = 0, total = 0, giftMinor = 0, customerId = null, categories = [] } = {}) {
   if (!isObj(reward)) return { ok: false, reason: 'zero' };
   const rv = isObj(reward.value) ? reward.value : {};
-  const ctx = kioskRewardContext({ cart, discountedSubtotal, total, giftMinor });
+  const ctx = kioskRewardContext({ cart, discountedSubtotal, total, giftMinor, categories });
   const check = kioskRewardTapCheck(reward.type, rv, ctx);
   if (check.error) {
-    if (kioskRewardMissingItems(reward.type, rv, ctx.cart) !== null) {
+    if (kioskRewardMissingItems(reward.type, rv, ctx.cart, ctx.categories) !== null) {
       // One name per item even when the reward was saved for every site (four Lattes read
       // "Latte"); lib/loyaltyMenuMatch.js, the same rule the tap check matched with.
       return { ok: false, reason: 'needsItem', items: eligibleItemNames(rv) };

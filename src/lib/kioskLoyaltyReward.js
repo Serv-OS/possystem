@@ -15,7 +15,10 @@
 //      and submitOrder only redeems when the live credit is above zero.
 //
 // Eligibility (which lines a free item reward covers) is lib/loyaltyMenuMatch.js, the same
-// rule as the till and online: saved id first, then the item's name across the company.
+// rule as the till and online: saved id first, then the item's name across the company, then
+// (v5.9.66) the line's category against the reward's eligible categories. Every ctx takes the
+// kiosk's own category rows as `categories` for that last rule; without them a category still
+// matches by its saved id.
 //
 // Units: the basket (cart lines) is in MAJOR units like the rest of KioskApp; everything this
 // module returns is an integer in MINOR units (pence / cents).
@@ -37,9 +40,9 @@ function lineMatches(line, matcher) {
  * For a free_item reward with eligible items configured and none of them in the basket, the
  * names to tell the guest to add ('' when the items have no names). null when nothing is missing.
  */
-export function kioskRewardMissingItems(type, value, cart = []) {
+export function kioskRewardMissingItems(type, value, cart = [], categories = []) {
   if (type !== 'free_item') return null;
-  const matcher = eligibleMatcher(value);
+  const matcher = eligibleMatcher(value, categories);
   if (!matcher.configured) return null;
   if ((cart || []).some(l => lineMatches(l, matcher))) return null;
   return eligibleItemNames(value).join(', ');
@@ -53,9 +56,9 @@ export function kioskRewardMissingItems(type, value, cart = []) {
  *   anything else    → 0 (free_delivery / custom have no automatic money off)
  * @param {string} type    reward_type
  * @param {object} value   reward_value (points) or reward_config (stamp card)
- * @param {{cart?:Array, goodsMinor?:number}} ctx  goodsMinor = basket after auto-discounts, before tax + tip
+ * @param {{cart?:Array, goodsMinor?:number, categories?:Array}} ctx  goodsMinor = basket after auto-discounts, before tax + tip
  */
-export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 0 } = {}) {
+export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 0, categories = [] } = {}) {
   const goods = Math.max(0, Math.round(Number(goodsMinor) || 0));
   const rv = value || {};
   let off = 0;
@@ -65,7 +68,7 @@ export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 
     const pct = Math.min(100, Math.max(0, Number(rv.percent) || 0));
     off = Math.round(goods * pct / 100);
   } else if (type === 'free_item') {
-    const matcher = eligibleMatcher(rv);
+    const matcher = eligibleMatcher(rv, categories);
     const matching = matcher.configured ? (cart || []).filter(l => lineMatches(l, matcher) && (l.qty || 0) > 0) : [];
     if (matching.length) off = Math.min(...matching.map(l => toMinor(l.linePrice)));
   }
@@ -78,11 +81,11 @@ export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 
  * cannot push the gift-only path into debiting the card for money the reward also took off.
  * 0 means the reward is not used: nothing is shown off and nothing is committed.
  * @param {object|null} redemption  staged object from ScreenLoyalty (reward_type + reward_value)
- * @param {{cart?:Array, goodsMinor?:number, dueMinor?:number, giftMinor?:number}} ctx
+ * @param {{cart?:Array, goodsMinor?:number, dueMinor?:number, giftMinor?:number, categories?:Array}} ctx
  */
-export function kioskLoyaltyCreditMinor(redemption, { cart = [], goodsMinor = 0, dueMinor = 0, giftMinor = 0 } = {}) {
+export function kioskLoyaltyCreditMinor(redemption, { cart = [], goodsMinor = 0, dueMinor = 0, giftMinor = 0, categories = [] } = {}) {
   if (!redemption) return 0;
-  const off = kioskRewardDiscountMinor(redemption.reward_type, redemption.reward_value, { cart, goodsMinor });
+  const off = kioskRewardDiscountMinor(redemption.reward_type, redemption.reward_value, { cart, goodsMinor, categories });
   const room = Math.max(0, Math.round(Number(dueMinor) || 0) - Math.max(0, Math.round(Number(giftMinor) || 0)));
   return Math.min(off, room);
 }
@@ -100,10 +103,10 @@ export function kioskLoyaltyCreditMinor(redemption, { cart = [], goodsMinor = 0,
  *     for part of the reward while the gift card is debited for more than it needed to be.
  * @param {string} type
  * @param {object} value
- * @param {{cart?:Array, goodsMinor?:number, dueMinor?:number, giftMinor?:number}} ctx
+ * @param {{cart?:Array, goodsMinor?:number, dueMinor?:number, giftMinor?:number, categories?:Array}} ctx
  */
-export function kioskRewardTapCheck(type, value, { cart = [], goodsMinor = 0, dueMinor = 0, giftMinor = 0 } = {}) {
-  const missing = kioskRewardMissingItems(type, value, cart);
+export function kioskRewardTapCheck(type, value, { cart = [], goodsMinor = 0, dueMinor = 0, giftMinor = 0, categories = [] } = {}) {
+  const missing = kioskRewardMissingItems(type, value, cart, categories);
   if (missing !== null) {
     return {
       discountMinor: 0,
@@ -113,7 +116,7 @@ export function kioskRewardTapCheck(type, value, { cart = [], goodsMinor = 0, du
     };
   }
   const goods = Math.max(0, Math.round(Number(goodsMinor) || 0));
-  const full = kioskRewardDiscountMinor(type, value, { cart, goodsMinor: goods });
+  const full = kioskRewardDiscountMinor(type, value, { cart, goodsMinor: goods, categories });
   if (full <= 0) {
     return {
       discountMinor: 0,
@@ -124,7 +127,7 @@ export function kioskRewardTapCheck(type, value, { cart = [], goodsMinor = 0, du
   }
   const gift = Math.max(0, Math.round(Number(giftMinor) || 0));
   if (gift > 0) {
-    const live = kioskLoyaltyCreditMinor({ reward_type: type, reward_value: value }, { cart, goodsMinor: goods, dueMinor, giftMinor: gift });
+    const live = kioskLoyaltyCreditMinor({ reward_type: type, reward_value: value }, { cart, goodsMinor: goods, dueMinor, giftMinor: gift, categories });
     if (live < full) {
       return { discountMinor: 0, error: 'Remove the gift card first to use your reward.' };
     }

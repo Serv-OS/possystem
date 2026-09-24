@@ -42,8 +42,9 @@ export function pathCovers(savedKey, lineKey) {
  * (every site). True when the line's category or an ancestor is a saved id, or a saved
  * category's path covers the line's path. Used by the parity test.
  */
-export function categoryQualifies(lineCatId, savedIds, cats) {
+export function categoryQualifies(lineCatId, savedIds, cats, savedKeys = []) {
   const saved = new Set(Array.isArray(savedIds) ? savedIds : []);
+  const keys = Array.isArray(savedKeys) ? savedKeys.filter(Boolean) : [];
   if (!lineCatId) return false;
   if (saved.has(lineCatId)) return true;
   const byId = rowsById(cats);
@@ -52,12 +53,30 @@ export function categoryQualifies(lineCatId, savedIds, cats) {
   while (cur && !seen.has(cur) && seen.size < MAX_DEPTH) {
     seen.add(cur);
     if (saved.has(cur)) return true;
-    cur = byId.get(cur)?.parent_id || null;
+    cur = parentOf(byId.get(cur));
   }
   const lineKey = pathKeyFor(lineCatId, byId);
   if (!lineKey) return false;
   for (const id of saved) if (pathCovers(pathKeyFor(id, byId), lineKey)) return true;
+  // v5.9.66: paths saved WITH a reward (reward_config.eligible_categories[].path), so a category
+  // ticked at one site covers the same path at a site that did not exist when it was saved.
+  for (const k of keys) if (pathCovers(k, lineKey)) return true;
   return false;
+}
+
+/** The path key of one category id through the loaded rows (null when a level is missing). */
+export function categoryPathKey(id, cats) {
+  return pathKeyFor(id, rowsById(cats));
+}
+
+// Rows arrive as DB rows (parent_id, label) or store rows (parentId; label, or name on older
+// snapshots). Every reader below goes through these two.
+function parentOf(row) {
+  return row ? (row.parent_id ?? row.parentId ?? null) : null;
+}
+function labelOf(row) {
+  const l = row ? (row.label ?? row.name) : '';
+  return typeof l === 'string' ? l : '';
 }
 
 function rowsById(cats) {
@@ -75,8 +94,8 @@ function pathKeyFor(id, byId) {
     seen.add(cur);
     const row = byId.get(cur);
     if (!row) return null;
-    names.unshift(row.label);
-    cur = row.parent_id || null;
+    names.unshift(labelOf(row));
+    cur = parentOf(row);
   }
   return pathKeyOf(names);
 }
@@ -98,7 +117,7 @@ export function groupCategoriesByPath(cats) {
     let g = groups.get(key);
     if (!g) {
       g = {
-        groupId: key, key, label: String(c.label).trim().replace(/\s+/g, ' '), parentKey,
+        groupId: key, key, label: labelOf(c).trim().replace(/\s+/g, ' '), parentKey,
         depth: key.split(PATH_SEP).length - 1, ids: [], siteCount: 0,
       };
       groups.set(key, g);

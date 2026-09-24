@@ -368,8 +368,9 @@ test('a free item reward that names nothing is BOUNDED (fix round 7)', () => {
     'from the reward row or the stamp programme');
   // and the Back Office says so where the rows are made
   const bo = read('../backoffice/sections/LoyaltyManager.jsx');
-  assert.equal((bo.match(/No item picked yet\./g) || []).length, 2, 'both editors warn while nothing is named');
-  assert.ok(bo.includes('No items named: this gives away the cheapest line on the order'), 'and the saved rewards list warns too');
+  // (v5.9.66: "Nothing", because a reward can now name categories as well as products.)
+  assert.equal((bo.match(/Nothing picked yet\./g) || []).length, 2, 'both editors warn while nothing is named');
+  assert.ok(bo.includes('Nothing named: this gives away the cheapest line on the order'), 'and the saved rewards list warns too');
 });
 
 test('every fence file bounds its own locks, step 1b included', () => {

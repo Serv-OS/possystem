@@ -1022,8 +1022,10 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
       const applied = await redeemLoyaltyReward(reward, {
         customerId: loyaltyData.customerId || customer?.customerId,
         items, total,
-        // This site's menu, so a reward saved at another site matches by name (18 Sep 2026).
+        // This site's menu, so a reward saved at another site matches by name (18 Sep 2026),
+        // and its categories, so a reward that names a CATEGORY matches too (v5.9.66).
         menuItems: useStore.getState().menuItems || [],
+        categories: useStore.getState().menuCategories || [],
       });
       onApplied(applied);
     } catch (e) {

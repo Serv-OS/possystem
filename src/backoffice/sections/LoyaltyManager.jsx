@@ -12,6 +12,11 @@ import { customerUrl } from '../../lib/env';
 import { money } from '../../lib/currency';
 import { groupCategoriesByPath, isGroupSelected, isGroupCovered, toggleGroup, selectedGroupCount, missingCategoryState, PATH_SEP } from '../../lib/stampCategoryGroups';
 import { groupItemsForPicker, pickGroupSelected, togglePickGroup, selectedChips, removeChip } from '../../lib/loyaltyItemPicker';
+import { eligibleItemsOf, eligibleCategoriesOf } from '../../lib/loyaltyMenuMatch';
+import {
+  catEntrySelected, catEntryCovered, toggleCatEntry, categoryChips, removeCategoryChip,
+  categoryIdChips, removeCategoryIdChip, itemEntriesFromIds, itemIdsFromEntries,
+} from '../../lib/loyaltyCategoryPicker';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -154,6 +159,11 @@ export default function LoyaltyManager() {
   const [enableError, setEnableError] = useState('');
   const [slug, setSlug] = useState(null);
   const [menuItems, setMenuItems] = useState([]); // ops DB menu items for item picker
+  // v5.9.66: categories from every site too. A free item reward (points or stamp card) can name
+  // categories as well as products, and a stamp card can earn on products as well as categories.
+  const [categories, setCategories] = useState([]);
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  const categoryGroups = useMemo(() => groupCategoriesByPath(categories), [categories]);
 
   // Load config on mount
   const loadConfig = useCallback(async () => {
@@ -199,6 +209,15 @@ export default function LoyaltyManager() {
           .order('id'));
         if (itemsErr) console.error('[LoyaltyManager] menu items load:', itemsErr.message);
         setMenuItems((items || []).map(i => ({ ...i, price: i.pricing?.base ?? 0 })));
+        const { rows: cats, ok: catsOk, error: catsErr } = await loadAllPages(() => supabase
+          .from('menu_categories')
+          .select('id, label, parent_id, location_id')
+          .in('location_id', siteIds)
+          .order('sort_order')
+          .order('id'));
+        if (catsErr) console.error('[LoyaltyManager] categories load:', catsErr.message);
+        setCategories(cats || []);
+        setCategoriesLoaded(catsOk);
       }
     } catch (e) { console.error('[LoyaltyManager] menu items error:', e); }
   }, []);
@@ -329,8 +348,8 @@ export default function LoyaltyManager() {
         ))}
       </div>
 
-      {tab === 'rewards' && <RewardsPanel rewards={rewards} onReload={loadConfig} menuItems={menuItems} />}
-      {tab === 'stamp_cards' && <StampCardsPanel menuItems={menuItems} />}
+      {tab === 'rewards' && <RewardsPanel rewards={rewards} onReload={loadConfig} menuItems={menuItems} categoryGroups={categoryGroups} />}
+      {tab === 'stamp_cards' && <StampCardsPanel menuItems={menuItems} categories={categories} categoriesLoaded={categoriesLoaded} categoryGroups={categoryGroups} />}
       {tab === 'settings' && <SettingsPanel config={config} onUpdate={setConfig} />}
       {tab === 'members' && <MembersPanel config={config} />}
       {tab === 'tiers' && <TiersPanel tiers={tiers} onReload={loadConfig} />}
@@ -368,7 +387,7 @@ function LoyTypeToggle({ label, desc, on, disabled, onToggle }) {
 // Step 2: when a product has sizes, drill in to pick sizes (one row per "<product> - <size>").
 // Ticking saves every site's id under one name, so the free item works at every site
 // (Peter, 18 Sep 2026: loyalty is per company; lib/loyaltyMenuMatch.js matches by id, then name).
-function ItemMultiPicker({ items = [], selected = [], onChange }) {
+function ItemMultiPicker({ items = [], selected = [], onChange, showChips = true }) {
   const [search, setSearch] = useState('');
   const [drillKey, setDrillKey] = useState(null); // product key being drilled into
 
@@ -411,7 +430,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
     ];
     return (
       <div>
-        <SelectedChips selected={selected} onRemove={removeItem} />
+        {showChips && <SelectedChips selected={selected} onRemove={removeItem} />}
 
         <div
           onClick={() => setDrillKey(null)}
@@ -466,7 +485,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
   // Step 1: product list
   return (
     <div>
-      <SelectedChips selected={selected} onRemove={removeItem} />
+      {showChips && <SelectedChips selected={selected} onRemove={removeItem} />}
 
       <input
         value={search}
@@ -586,10 +605,164 @@ function SelectedChips({ selected, onRemove }) {
   );
 }
 
+// ── Products OR categories (Peter, 24 Sep 2026) ──────────────────────
+// One control for every loyalty picker: a Products tab (ItemMultiPicker) and a Categories tab
+// (CategoryTreePicker), with everything picked shown as chips above whichever tab is open. The
+// category list is a tree collapsed to top level until you open a branch or search, so a venue
+// with many categories is not a wall of pills. Pure rules: lib/loyaltyCategoryPicker.js.
+
+function Chip({ label, note, kind = 'item', onRemove }) {
+  const cat = kind === 'category';
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 600,
+      background: cat ? 'var(--bg3)' : 'var(--acc-d, rgba(232,116,60,0.15))',
+      color: cat ? 'var(--t2)' : 'var(--acc)',
+      border: `1px solid ${cat ? 'var(--bdr2)' : 'var(--acc)'}`,
+    }}>
+      {cat && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: 'var(--t4)' }}>Category</span>}
+      <span>{label}{note ? <span style={{ color: 'var(--t4)', fontWeight: 500 }}>{note}</span> : null}</span>
+      <span onClick={onRemove} style={{ cursor: 'pointer', fontWeight: 800, marginLeft: 2, fontSize: 13, lineHeight: 1 }}>{'×'}</span>
+    </span>
+  );
+}
+
+// The company's category PATHS as a tree. isSelected / isCovered / onToggle take a path group
+// (lib/stampCategoryGroups.js), so the same tree serves an id list and a saved entry list.
+function CategoryTreePicker({ groups = [], isSelected, isCovered, onToggle }) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(() => new Set());
+  const q = search.trim().toLowerCase();
+  const childrenOf = (g) => groups.filter(c => c.parentKey === g.key);
+  const descendantsOf = (g) => groups.filter(c => c.key.startsWith(g.key + PATH_SEP));
+  const matches = (g) => !q || g.label.toLowerCase().includes(q);
+  const shown = (g) => matches(g) || descendantsOf(g).some(matches);
+  const tops = groups.filter(g => !g.parentKey && shown(g));
+  const isOpen = (g) => (q ? true : open.has(g.key));
+  const toggleOpen = (g) => setOpen(prev => { const n = new Set(prev); if (n.has(g.key)) n.delete(g.key); else n.add(g.key); return n; });
+  const picked = groups.filter(g => isSelected(g)).length;
+
+  if (!groups.length) {
+    return (
+      <div style={{ padding: 12, background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t4)' }}>
+        No categories found. Add categories to your menu first.
+      </div>
+    );
+  }
+
+  const renderNode = (g, depth) => {
+    const kids = childrenOf(g).filter(shown);
+    const selected = isSelected(g);
+    const covered = !selected && isCovered(g);
+    const openNow = kids.length > 0 && isOpen(g);
+    const pickedBelow = selected ? 0 : descendantsOf(g).filter(isSelected).length;
+    return [
+      <div
+        key={g.groupId}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', paddingLeft: 8 + depth * 18,
+          borderBottom: '1px solid var(--bdr)', fontSize: 12, color: covered ? 'var(--t4)' : 'var(--t1)',
+          background: selected ? 'var(--acc-d, rgba(232,116,60,0.08))' : 'transparent', opacity: covered ? 0.8 : 1,
+        }}
+      >
+        <span
+          onClick={() => { if (kids.length) toggleOpen(g); }}
+          title={kids.length ? (openNow ? 'Hide subcategories' : 'Show subcategories') : undefined}
+          style={{ width: 16, textAlign: 'center', cursor: kids.length ? 'pointer' : 'default', color: 'var(--t4)', fontSize: 11, userSelect: 'none', flexShrink: 0 }}
+        >
+          {kids.length ? (openNow ? '▾' : '▸') : ''}
+        </span>
+        <div
+          onClick={() => { if (!covered) onToggle(g); }}
+          title={covered ? 'Included: a category above it is ticked' : undefined}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: covered ? 'default' : 'pointer' }}
+        >
+          <Checkbox checked={selected || covered} />
+          <div style={{ flex: 1, minWidth: 0, fontWeight: depth ? 500 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {g.label}
+            {covered ? <span style={{ fontWeight: 400, color: 'var(--t4)' }}> (included)</span> : null}
+          </div>
+          {pickedBelow > 0 && !openNow && (
+            <span style={{ padding: '1px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: 'var(--acc)', color: '#0b0c10', flexShrink: 0 }}>
+              {pickedBelow} inside
+            </span>
+          )}
+          {g.siteCount > 1 && <span style={{ fontSize: 11, color: 'var(--t4)', flexShrink: 0 }}>{g.siteCount} sites</span>}
+        </div>
+        {kids.length > 0 && (
+          <span onClick={() => toggleOpen(g)} style={{ fontSize: 11, color: 'var(--t4)', cursor: 'pointer', flexShrink: 0 }}>
+            {kids.length} sub
+          </span>
+        )}
+      </div>,
+      ...(openNow ? kids.flatMap(k => renderNode(k, depth + 1)) : []),
+    ];
+  };
+
+  return (
+    <div>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search categories..." style={{ ...S.input, marginBottom: 6 }} />
+      <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--bdr)', borderRadius: 8, background: 'var(--bg2)' }}>
+        {tops.length === 0 && (
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--t4)', textAlign: 'center' }}>No categories match "{search}"</div>
+        )}
+        {tops.flatMap(t => renderNode(t, 0))}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+        {picked} {picked === 1 ? 'category' : 'categories'} selected. A category counts at every site with the same name under the same parent, including sites added later, and ticking one also covers every subcategory inside it.
+      </div>
+    </div>
+  );
+}
+
+function ScopePicker({
+  items = [], groups = [], itemsSelected = [], onItemsChange,
+  catIsSelected, catIsCovered, onCatToggle, catChips = [], onCatChipRemove, defaultTab = 'products',
+}) {
+  const itemChips = selectedChips(itemsSelected);
+  // Open on whichever side already has something picked; the caller's default otherwise.
+  const [tab, setTab] = useState(() => {
+    if (itemChips.length && !catChips.length) return 'products';
+    if (catChips.length && !itemChips.length) return 'categories';
+    return defaultTab;
+  });
+  const tabStyle = (on) => ({
+    padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', borderRadius: 8,
+    border: `1px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`,
+    background: on ? 'var(--acc-d)' : 'var(--bg2)', color: on ? 'var(--acc)' : 'var(--t3)',
+  });
+  return (
+    <div>
+      {(itemChips.length > 0 || catChips.length > 0) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {itemChips.map(c => (
+            <Chip key={`i:${c.key}`} label={c.name} note={c.count > 1 ? ` · ${c.count} sites` : ''} onRemove={() => onItemsChange(removeChip(c.key, itemsSelected))} />
+          ))}
+          {catChips.map(c => (
+            <Chip key={`c:${c.key}`} kind="category" label={c.name} note={!c.missing && c.count > 1 ? ` · ${c.count} sites` : ''} onRemove={() => onCatChipRemove(c.key)} />
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+        <button type="button" onClick={() => setTab('products')} style={tabStyle(tab === 'products')}>
+          Products{itemChips.length ? ` (${itemChips.length})` : ''}
+        </button>
+        <button type="button" onClick={() => setTab('categories')} style={tabStyle(tab === 'categories')}>
+          Categories{catChips.length ? ` (${catChips.length})` : ''}
+        </button>
+      </div>
+      {tab === 'products'
+        ? <ItemMultiPicker items={items} selected={itemsSelected} onChange={onItemsChange} showChips={false} />
+        : <CategoryTreePicker groups={groups} isSelected={catIsSelected} isCovered={catIsCovered} onToggle={onCatToggle} />}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Rewards Panel — CRUD for the reward catalog
 // ═══════════════════════════════════════════════════════════════════════
-function RewardsPanel({ rewards, onReload, menuItems = [] }) {
+function RewardsPanel({ rewards, onReload, menuItems = [], categoryGroups = [] }) {
   const [creating, setCreating] = useState(false);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -758,18 +931,25 @@ function RewardsPanel({ rewards, onReload, menuItems = [] }) {
           {form.reward_type === 'free_item' && (
             <div style={{ marginBottom: 14 }}>
               <label style={S.label}>Eligible free items</label>
-              <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6 }}>
-                Select which items a customer can get for free. At checkout, the cheapest matching item in their order is made free.
+              <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6, lineHeight: 1.4 }}>
+                Pick the products, or whole categories, a customer can get for free. At checkout the
+                cheapest matching line on the order is made free.
               </div>
-              <ItemMultiPicker
+              <ScopePicker
                 items={menuItems}
-                selected={form.reward_value.eligible_items || []}
-                onChange={items => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_items: items } }))}
+                groups={categoryGroups}
+                itemsSelected={form.reward_value.eligible_items || []}
+                onItemsChange={items => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_items: items } }))}
+                catIsSelected={g => catEntrySelected(g, form.reward_value.eligible_categories || [])}
+                catIsCovered={g => catEntryCovered(g, form.reward_value.eligible_categories || [], categoryGroups)}
+                onCatToggle={g => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_categories: toggleCatEntry(g, f.reward_value.eligible_categories || [], categoryGroups) } }))}
+                catChips={categoryChips(form.reward_value.eligible_categories || [])}
+                onCatChipRemove={key => setForm(f => ({ ...f, reward_value: { ...f.reward_value, eligible_categories: removeCategoryChip(key, f.reward_value.eligible_categories || []) } }))}
               />
-              {!(form.reward_value.eligible_items || []).length && (
+              {!eligibleItemsOf(form.reward_value).length && !eligibleCategoriesOf(form.reward_value).length && (
                 <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
-                  No item picked yet. A free item reward with nothing named gives away the cheapest
-                  line on the order, capped at £15.00. Pick the items you mean.
+                  Nothing picked yet. A free item reward with nothing named gives away the cheapest
+                  line on the order, capped at £15.00. Pick the products or categories you mean.
                 </div>
               )}
             </div>
@@ -811,9 +991,9 @@ function RewardsPanel({ rewards, onReload, menuItems = [] }) {
             </div>
             {/* Fix round 7 (fence stage 1): a free item reward that names no item gives away the
                 cheapest line on the order, capped at £15.00. Say so where it can be seen. */}
-            {r.reward_type === 'free_item' && !(r.reward_value?.eligible_items || []).length && (
+            {r.reward_type === 'free_item' && !eligibleItemsOf(r.reward_value).length && !eligibleCategoriesOf(r.reward_value).length && (
               <div style={{ fontSize: 11, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 4 }}>
-                No items named: this gives away the cheapest line on the order (up to £15.00). Edit it and pick the items.
+                Nothing named: this gives away the cheapest line on the order (up to £15.00). Edit it and pick the products or categories.
               </div>
             )}
           </div>
@@ -1663,24 +1843,22 @@ function TiersPanel({ tiers, onReload }) {
 // ── Stamp Cards Panel ──────────────────────────────────────────────────
 const STAMP_ICONS = ['☕','🍕','🍔','🥗','🍺','🍷','🧁','🍩','🥪','🌮','🍣','🎂','⭐','❤️','🔥','🎯'];
 
-function StampCardsPanel({ menuItems = [] }) {
+// categories / categoriesLoaded / categoryGroups: every site's categories, loaded once by
+// LoyaltyManager (v5.9.66; categoriesLoaded gates the "no longer exist" warning).
+function StampCardsPanel({ menuItems = [], categories = [], categoriesLoaded = false, categoryGroups = [] }) {
   const [programs, setPrograms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);   // null = list view, 'new' = create, program object = edit
   const [companyId, setCompanyId] = useState(null);
-  const [categories, setCategories] = useState([]);
-  // true once the company's categories actually loaded; the "no longer exist" warning waits for it
-  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
-  const categoryGroups = useMemo(() => groupCategoriesByPath(categories), [categories]);
 
-  // Load programs + categories
+  // Load programs
   useEffect(() => {
     (async () => {
       try {
         const locId = getActiveLocationSync() || await getLocationId();
         // Stamp cards are per COMPANY, menus are per SITE (18 Sep 2026): list categories from
         // every site of the company so the picker is not limited to the site you are logged into.
-        const { companyId: cid, siteIds } = await loadCompanySites(locId);
+        const { companyId: cid } = await loadCompanySites(locId);
         if (cid) {
           setCompanyId(cid);
           // Fetch stamp card programs
@@ -1690,17 +1868,6 @@ function StampCardsPanel({ menuItems = [] }) {
             .eq('company_id', cid)
             .order('created_at', { ascending: false });
           setPrograms(progs || []);
-        }
-        // Fetch menu categories for qualifier picker (every site of the company)
-        if (supabase && siteIds.length) {
-          const { rows: cats, ok } = await loadAllPages(() => supabase
-            .from('menu_categories')
-            .select('id, label, parent_id, location_id')
-            .in('location_id', siteIds)
-            .order('sort_order')
-            .order('id'));
-          setCategories(cats || []);
-          setCategoriesLoaded(ok);
         }
       } catch (e) {
         console.error('[StampCards] load:', e);
@@ -1765,7 +1932,7 @@ function StampCardsPanel({ menuItems = [] }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {programs.map(p => (
-            <StampCardRow key={p.id} program={p} categoryGroups={categoryGroups} categories={categories} categoriesLoaded={categoriesLoaded} onEdit={() => setEditing(p)} onToggle={async () => {
+            <StampCardRow key={p.id} program={p} categoryGroups={categoryGroups} categories={categories} categoriesLoaded={categoriesLoaded} menuItems={menuItems} onEdit={() => setEditing(p)} onToggle={async () => {
               await platformSupabase.from('stamp_card_programs').update({ active: !p.active, updated_at: new Date().toISOString() }).eq('id', p.id);
               reload();
             }} />
@@ -1776,11 +1943,14 @@ function StampCardsPanel({ menuItems = [] }) {
   );
 }
 
-function StampCardRow({ program: p, categoryGroups = [], categories = [], categoriesLoaded = false, onEdit, onToggle }) {
+function StampCardRow({ program: p, categoryGroups = [], categories = [], categoriesLoaded = false, menuItems = [], onEdit, onToggle }) {
   // Counts category PATHS: one "Hot Coffee" saved for 4 sites is 1 category, not 4.
   const catCount = selectedGroupCount(p.qualifying_category_ids || [], categoryGroups);
+  // And qualifying PRODUCTS by name the same way (v5.9.66).
+  const itemCount = selectedChips(itemEntriesFromIds(p.qualifying_item_ids || [], menuItems)).length;
   // A card whose saved categories were all deleted or rebuilt earns nothing: say so plainly.
   const missing = missingCategoryState(p.qualifying_category_ids || [], categories, categoriesLoaded);
+  const liveCats = catCount - missing.missing;
   return (
     <div style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 14, padding: 16, marginBottom: 0 }}>
       <div style={{ width: 48, height: 48, borderRadius: 12, background: p.active ? 'var(--acc-d)' : 'var(--bg3)',
@@ -1793,14 +1963,17 @@ function StampCardRow({ program: p, categoryGroups = [], categories = [], catego
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
           Collect {p.stamps_required} stamps → {p.reward_description || 'Free item'}
         </div>
-        {missing.allMissing ? (
+        {missing.allMissing && itemCount === 0 ? (
           <div style={{ fontSize: 11, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 2 }}>
             These categories no longer exist, pick them again. Until you do, this card earns no stamps.
           </div>
-        ) : catCount > 0 && (
+        ) : (liveCats > 0 || itemCount > 0) && (
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
-            {catCount - missing.missing} qualifying {catCount - missing.missing === 1 ? 'category' : 'categories'}
-            {missing.missing > 0 ? ` (${missing.missing} no longer ${missing.missing === 1 ? 'exists' : 'exist'})` : ''}
+            Earns on {[
+              liveCats > 0 ? `${liveCats} ${liveCats === 1 ? 'category' : 'categories'}` : '',
+              itemCount > 0 ? `${itemCount} ${itemCount === 1 ? 'product' : 'products'}` : '',
+            ].filter(Boolean).join(' and ')}
+            {missing.missing > 0 ? ` (${missing.missing} ${missing.missing === 1 ? 'category no longer exists' : 'categories no longer exist'})` : ''}
           </div>
         )}
       </div>
@@ -1834,6 +2007,13 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
   const [rewardDescription, setRewardDescription] = useState(program?.reward_description || '');
   const [rewardConfig, setRewardConfig] = useState(program?.reward_config || {});
   const [selectedCatIds, setSelectedCatIds] = useState(program?.qualifying_category_ids || []);
+  // Qualifying PRODUCTS (v5.9.66): the card stores ids (loyalty-earn resolves their names and
+  // matches by name across the company); the picker works with { id, name } entries.
+  const [qualItems, setQualItems] = useState(() => itemEntriesFromIds(program?.qualifying_item_ids || [], menuItems));
+  useEffect(() => {
+    // Names arrive with the menu: keep the same ids, re-resolve their labels.
+    setQualItems(prev => (prev.length ? itemEntriesFromIds(prev.map(e => e.id), menuItems) : prev));
+  }, [menuItems]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showIconPicker, setShowIconPicker] = useState(false);
@@ -1858,8 +2038,11 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
         stamps_required: Number(stampsRequired),
         reward_type: rewardType,
         reward_description: rewardDescription.trim() || null,
-        reward_config: rewardType === 'free_item' ? { eligible_items: rewardConfig.eligible_items || [] } : {},
+        reward_config: rewardType === 'free_item'
+          ? { eligible_items: rewardConfig.eligible_items || [], eligible_categories: rewardConfig.eligible_categories || [] }
+          : {},
         qualifying_category_ids: selectedCatIds,
+        qualifying_item_ids: itemIdsFromEntries(qualItems),
         updated_at: new Date().toISOString(),
       };
       if (isNew) {
@@ -1893,13 +2076,6 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
     }
   };
 
-  // Separate top-level and subcategories (grouped by PATH across the company's sites, so
-  // "Drinks / Coffee" and "Retail / Coffee" stay apart)
-  const topCats = categoryGroups.filter(g => !g.parentKey);
-  const subCats = categoryGroups.filter(g => g.parentKey);
-  const siteNote = (g) => (g.siteCount > 1 ? ` \u00b7 ${g.siteCount} sites` : '');
-  // Every subcategory below a top-level one (any depth), shown under it
-  const descendantsOf = (top) => subCats.filter(sc => sc.key.startsWith(top.key + PATH_SEP));
   const missingCats = missingCategoryState(selectedCatIds, categories, categoriesLoaded);
 
   return (
@@ -1991,85 +2167,60 @@ function StampCardForm({ program, companyId, categoryGroups = [], categories = [
             style={S.input} />
         </div>
 
-        {/* Eligible free items (only for free_item reward type) */}
+        {/* Eligible free items (only for free_item reward type): products or categories (v5.9.66) */}
         {rewardType === 'free_item' && (
           <div style={{ marginBottom: 16 }}>
             <label style={S.label}>Eligible free items</label>
-            <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6 }}>
-              Select which items a customer can get for free when they complete this card. At checkout, the cheapest matching item in their order is made free.
+            <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 6, lineHeight: 1.4 }}>
+              Pick the products, or whole categories, a customer can get for free when they complete
+              this card. At checkout the cheapest matching line on the order is made free.
             </div>
-            <ItemMultiPicker
+            <ScopePicker
               items={menuItems}
-              selected={rewardConfig.eligible_items || []}
-              onChange={items => setRewardConfig(rc => ({ ...rc, eligible_items: items }))}
+              groups={categoryGroups}
+              itemsSelected={rewardConfig.eligible_items || []}
+              onItemsChange={items => setRewardConfig(rc => ({ ...rc, eligible_items: items }))}
+              catIsSelected={g => catEntrySelected(g, rewardConfig.eligible_categories || [])}
+              catIsCovered={g => catEntryCovered(g, rewardConfig.eligible_categories || [], categoryGroups)}
+              onCatToggle={g => setRewardConfig(rc => ({ ...rc, eligible_categories: toggleCatEntry(g, rc.eligible_categories || [], categoryGroups) }))}
+              catChips={categoryChips(rewardConfig.eligible_categories || [])}
+              onCatChipRemove={key => setRewardConfig(rc => ({ ...rc, eligible_categories: removeCategoryChip(key, rc.eligible_categories || []) }))}
             />
-            {!(rewardConfig.eligible_items || []).length && (
+            {!eligibleItemsOf(rewardConfig).length && !eligibleCategoriesOf(rewardConfig).length && (
               <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 8, lineHeight: 1.4 }}>
-                No item picked yet. A stamp card with nothing named gives away the cheapest line on
-                the order, capped at £15.00. Pick the items this card is for.
+                Nothing picked yet. A stamp card with nothing named gives away the cheapest line on
+                the order, capped at £15.00. Pick the products or categories this card is for.
               </div>
             )}
           </div>
         )}
 
-        {/* Qualifying categories */}
+        {/* What earns a stamp: products or categories (v5.9.66; loyalty-earn reads both lists) */}
         <div style={{ marginBottom: 16 }}>
-          <label style={S.label}>Qualifying categories</label>
+          <label style={S.label}>What earns a stamp</label>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 8, lineHeight: 1.4 }}>
-            Select which menu categories earn stamps. If none are selected, <b>all items</b> qualify.
-            A category counts at every site with the same name under the same parent, including
-            sites added later. Ticking a category also covers every subcategory inside it.
+            Pick the products or categories that earn a stamp. Nothing picked means <b>every item</b> earns one.
           </div>
-          {missingCats.allMissing && (
+          {missingCats.allMissing && !qualItems.length && (
             <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginBottom: 8 }}>
               These categories no longer exist, pick them again. Until you do, this card earns no stamps.
             </div>
           )}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {topCats.map(cat => {
-              const isSelected = isGroupSelected(cat, selectedCatIds, categoryGroups);
-              const children = descendantsOf(cat);
-              return (
-                <div key={cat.groupId} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <button
-                    onClick={() => toggleCat(cat)}
-                    style={{
-                      padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      border: `1px solid ${isSelected ? 'var(--acc)' : 'var(--bdr2)'}`,
-                      background: isSelected ? 'var(--acc-d)' : 'var(--bg2)',
-                      color: isSelected ? 'var(--acc)' : 'var(--t3)',
-                    }}
-                  >
-                    {cat.label}{siteNote(cat)}
-                  </button>
-                  {children.map(sc => {
-                    // Covered = a ticked parent already earns for it (the same rule as the till).
-                    const covered = !isGroupSelected(sc, selectedCatIds, categoryGroups) && isGroupCovered(sc, selectedCatIds, categoryGroups);
-                    const subSel = covered || isGroupSelected(sc, selectedCatIds, categoryGroups);
-                    return (
-                      <button key={sc.groupId}
-                        onClick={() => { if (!covered) toggleCat(sc); }}
-                        disabled={covered}
-                        title={covered ? 'Included: its parent category is ticked' : undefined}
-                        style={{
-                          padding: '3px 10px', borderRadius: 16, fontSize: 11, fontWeight: 600, cursor: covered ? 'default' : 'pointer',
-                          marginLeft: 12 * Math.max(1, sc.depth || 1), opacity: covered ? 0.75 : 1,
-                          border: `1px solid ${subSel ? 'var(--acc)' : 'var(--bdr)'}`,
-                          background: subSel ? 'var(--acc-d)' : 'transparent',
-                          color: subSel ? 'var(--acc)' : 'var(--t4)',
-                        }}
-                      >
-                        {sc.label}{siteNote(sc)}{covered ? ' (included)' : ''}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-          {selectedCatIds.length > 0 && (
-            <button onClick={() => setSelectedCatIds([])} style={{ ...S.btn, fontSize: 11, color: 'var(--t4)', background: 'transparent', padding: '4px 0', marginTop: 6 }}>
-              Clear selection (all items qualify)
+          <ScopePicker
+            items={menuItems}
+            groups={categoryGroups}
+            itemsSelected={qualItems}
+            onItemsChange={setQualItems}
+            catIsSelected={g => isGroupSelected(g, selectedCatIds, categoryGroups)}
+            catIsCovered={g => isGroupCovered(g, selectedCatIds, categoryGroups)}
+            onCatToggle={toggleCat}
+            catChips={categoryIdChips(selectedCatIds, categoryGroups)}
+            onCatChipRemove={key => setSelectedCatIds(prev => removeCategoryIdChip(key, prev, categoryGroups))}
+            defaultTab="categories"
+          />
+          {(selectedCatIds.length > 0 || qualItems.length > 0) && (
+            <button onClick={() => { setSelectedCatIds([]); setQualItems([]); }} style={{ ...S.btn, fontSize: 11, color: 'var(--t4)', background: 'transparent', padding: '4px 0', marginTop: 6 }}>
+              Clear selection (every item earns a stamp)
             </button>
           )}
         </div>

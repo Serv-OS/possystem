@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.66',
+    date: '24 Sep 2026',
+    items: [
+      'Loyalty: a free item reward (points rewards and stamp cards) can now name whole CATEGORIES as well as products. At checkout the cheapest line in a named category, or a named product, is made free, on the till, the kiosk and online. A category picked at one site covers the same category at every site, including sites added later.',
+      'Loyalty: a stamp card can now earn on PRODUCTS as well as categories ("What earns a stamp"). Nothing picked still means every item earns one.',
+      'Loyalty: one tidier picker for both. Products and Categories tabs, everything picked shown as chips, and the categories are a collapsed tree with search instead of a wall of pills.',
+    ],
+  },
+  {
     v: '5.9.65',
     date: '24 Sep 2026',
     items: [

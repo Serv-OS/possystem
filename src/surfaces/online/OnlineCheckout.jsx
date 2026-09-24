@@ -86,7 +86,7 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null, categories = [] }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -920,8 +920,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // anyway, for a £0 discount).
         // Saved id first, then the item's name across every site of the company (18 Sep 2026:
         // loyalty is per company, menus are per site). lib/loyaltyMenuMatch.js, the till's rule.
-        const configured = eligibleMatcher(rValue).configured;
-        const matching = eligibleOrderLines(rValue, cart, menuItems);
+        const configured = eligibleMatcher(rValue, categories).configured;
+        const matching = eligibleOrderLines(rValue, cart, menuItems, categories);
         if (configured && matching.length === 0) {
           const names = eligibleItemNames(rValue).join(', ');
           throw new Error(names

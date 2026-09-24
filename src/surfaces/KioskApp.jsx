@@ -850,6 +850,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // not used: nothing comes off and submitOrder does not commit it.
   const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {
     cart,
+    categories,   // v5.9.66: eligible CATEGORIES
     goodsMinor: Math.round(discountedSubtotal * 100),
     dueMinor: Math.round(total * 100),
     giftMinor: giftCardPayment?.applied || 0,
@@ -1199,7 +1200,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   if (newDesign) {
     const engine = {
       kioskId, deviceName: device?.name || '', profile, locationId, companyId, kioskTz,
-      items, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
+      items, categories, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
       screen, setScreen, orderType, setOrderType, tableNumber, setTableNumber,
       selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
       allergenFilter, setAllergenFilter,
@@ -1261,7 +1262,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={discountedSubtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} goodsTotal={discountedSubtotal} dueMinor={Math.round(total * 100)} giftMinor={giftCardPayment?.applied || 0} cart={cart} loyaltyRedemption={loyaltyRedemption} loyaltyCredit={loyaltyCredit} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} goodsTotal={discountedSubtotal} dueMinor={Math.round(total * 100)} giftMinor={giftCardPayment?.applied || 0} cart={cart} categories={categories} loyaltyRedemption={loyaltyRedemption} loyaltyCredit={loyaltyCredit} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
       {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
@@ -3565,7 +3566,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
 // and lists redeemable rewards. Customer taps a reward → the discount is staged
 // locally (apply-only); loyalty-redeem fires at submitOrder once the order exists.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, goodsTotal, dueMinor = 0, giftMinor = 0, cart, loyaltyRedemption, loyaltyCredit = 0, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, goodsTotal, dueMinor = 0, giftMinor = 0, cart, categories = [], loyaltyRedemption, loyaltyCredit = 0, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -3728,7 +3729,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
       // spend the points for 0p (loyalty-otp sent no reward_value; an early sign-in has an empty
       // basket; free_delivery / custom have no kiosk money off), or spend them for part of it.
       const goodsMinor = Math.round((goodsTotal || 0) * 100);
-      const { discountMinor, error } = kioskRewardTapCheck(reward.type, rv, { cart, goodsMinor, dueMinor, giftMinor });
+      const { discountMinor, error } = kioskRewardTapCheck(reward.type, rv, { cart, goodsMinor, dueMinor, giftMinor, categories });
       if (error) throw new Error(error);
 
       onLoyaltyRedeem({
