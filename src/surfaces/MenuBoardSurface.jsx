@@ -23,10 +23,8 @@ import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } fr
 import { productImage, resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
-import { boardItemsByCategory, boardSections } from '../lib/menuBoardSections';
-import { money } from '../lib/currency';
-import { dietaryBadges } from '../lib/dietary';
-import { resolveBoardPrice } from '../lib/menuPricing';
+import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont } from '../lib/menuBoardSections';
+import { BoardHeader, BoardSection, BoardFooter } from './menuboard/BoardParts';
 import { boardFollowsMenus, resolveBoardMenu, applyMenuToSections } from '../lib/menuBoardMenus';
 import { generatePairingCode } from '../lib/pairingCode';
 // The SAME rule the order screens use for a portrait TV. One implementation, so a
@@ -39,15 +37,15 @@ import OrderStatusScreen from './orderScreen/OrderStatusScreen';
 const TICK_TIMEOUT_MS = 10000;
 const MISS_SPACING_MS = 10000;   // a missing row counts as a miss at most once per 10s
 
-const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
-const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
+const DEFAULT_THEME = {
+  bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null,
+  // v5.9.68 design: title + note, per element sizes and colours (lib/menuBoardSections.js boardSizes / boardColors)
+  title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'm', headingColor: '', headingSize: 'm', headingRule: false, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
+};
+const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: false };
 const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands somewhere in here (max high enough for 4K TVs)
-// Text-size preference → how many columns to flow into. MORE columns = BIGGER text,
-// because the content is spread thinner per column and the auto-fit grows the font
-// to fill the screen height. Fewer columns = smaller text. Driven by an explicit
-// integer count (never column-width:auto, which lets Chromium clip overflow silently).
-const COLS_FOR_SCALE = { portrait: [1, 1, 2, 2], landscape: [2, 3, 4, 5] };  // Smaller / Default / Larger / Extra large
-const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
+// Text size → columns → fit: lib/menuBoardSections.js boardColumns / fitFont / scaledFont,
+// the SAME rule the Back Office preview runs (v5.9.68), so the preview is the TV in miniature.
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id}, kept across tenant-fence wipes
 // Human pairing code shown on an unassigned screen: generatePairingCode() in
@@ -57,7 +55,6 @@ const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_
 // board's own display chain: dineIn, then any-channel, then base, then legacy scalar.
 // Shared with the Back Office preview via src/lib/menuPricing.js. activeMenuId null
 // means "no active menu known", which is exactly the pre-tier behaviour.
-const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenuId);
 // GF/V/VG/DF badge resolution now shared (src/lib/dietary.js) with the print
 // menu + online storefront — imported above, do not re-fork the map here.
 // Which rows are products on a board, and how they group: lib/menuBoardSections.js (shared with
@@ -417,20 +414,12 @@ function Board({ data }) {
     if (mode !== 'menu') return;
     const root = boardRef.current, flow = flowRef.current;
     if (!root || !flow) return;
-    const maxN = orientation === 'portrait' ? 3 : 6;
-    let cols = fixedCols || COLS_FOR_SCALE[orientation === 'portrait' ? 'portrait' : 'landscape'][scaleTier(textScale)];
-    // don't open more columns than the content can reasonably fill (~3 items each)
-    cols = Math.max(1, Math.min(cols, maxN, Math.ceil((totalItems || 1) / 3)));
+    const cols = boardColumns({ textScale, orientation, fixedCols, totalItems });
     flow.style.columnWidth = 'auto';
     flow.style.columnCount = String(cols);
-    const fits = () => flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1;
-    let lo = FIT.min, hi = FIT.max, best = FIT.min;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      root.style.fontSize = mid + 'px';
-      if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    root.style.fontSize = best + 'px';
+    const fits = (px) => { root.style.fontSize = px + 'px'; return flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1; };
+    // The fill is the largest text that fits; the operator's text size shrinks from it (v5.9.68).
+    root.style.fontSize = scaledFont(fitFont(fits, { min: FIT.min, max: FIT.max }), textScale, FIT.min) + 'px';
   }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId, stage.w, stage.h]);
 
   useEffect(() => {
@@ -511,94 +500,21 @@ function Board({ data }) {
       {scrim && <div style={scrim} />}
       <div style={stageStyle}>
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', padding: pad, boxSizing: 'border-box' }}>
-        {/* header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `0.09em solid ${theme.accent}`, paddingBottom: '0.35em', marginBottom: '0.6em', flex: '0 0 auto' }}>
-          {theme.logoUrl
-            ? <img src={theme.logoUrl} alt="" style={{ height: '1.4em', objectFit: 'contain' }} />
-            : <div style={{ fontSize: '1em', fontWeight: 600, letterSpacing: '.06em' }}>{data.board?.name || 'Menu'}</div>}
-          <span style={{ fontSize: '0.34em', color: theme.mutedColor, display: 'flex', alignItems: 'center', gap: '.5em', opacity: .8 }}>
-            <span style={{ width: '.55em', height: '.55em', borderRadius: '50%', background: '#3BD16F', display: 'inline-block' }} />Live
-          </span>
-        </div>
+        <BoardHeader theme={theme} name={data.board?.name} />
 
         {/* dynamic newspaper flow — EVERY item; categories flow & balance across
             columns; the fit-loop scales the whole thing to fill one screen. */}
         <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
             {sections.map((sec) => (
-              <Section defaultImage={data.defaultImage} key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
+              <BoardSection defaultImage={data.defaultImage} key={sec.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
             ))}
           </div>
         </div>
 
-        {/* footer */}
-        <div style={{ flex: '0 0 auto', borderTop: `0.04em solid ${theme.mutedColor}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', fontSize: '0.32em', color: theme.mutedColor }}>
-          <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}</span>
-        </div>
+        <BoardFooter theme={theme} live />
       </div>
       </div>
-    </div>
-  );
-}
-
-function Section({ sec, theme, disp, six, activeMenuId = null, defaultImage = null }) {
-  const { cat, items } = sec;
-  return (
-    <div style={{ marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
-      <div style={{ fontSize: '0.82em', fontWeight: 700, letterSpacing: '.12em', color: theme.accent, marginBottom: '0.55em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.title || cat.label}</div>
-      {items.filter((it) => !(disp.hidePriceless && boardPrice(it, activeMenuId) <= 0 && !(it._variants || []).length)).map((it) => {
-        const variants = it._variants || [];
-        const hasVar = variants.length > 0;
-        const sold = six.has(it.id);
-        const diet = dietaryBadges(it);
-        const price = boardPrice(it, activeMenuId);
-        return (
-          <div key={it.id} style={{ marginBottom: '0.65em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
-            {/* product line */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em' }}>
-              {disp.showImages && productImage(it, defaultImage) && <img src={productImage(it, defaultImage)} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '0.3em', flexShrink: 0 }} />}
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: '0.56em', fontWeight: 600, lineHeight: 1.15 }}>
-                  {it.menu_name || it.name}
-                  {diet.map((d) => (
-                    <span key={d} style={{ fontSize: '0.6em', background: '#1f3a26', color: '#7fd99a', borderRadius: '1em', padding: '0 .55em', marginLeft: '.3em', whiteSpace: 'nowrap', fontWeight: 700 }}>{d}</span>
-                  ))}
-                </div>
-                {disp.showDescription && it.description && (
-                  <div style={{ fontSize: '0.42em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.15em' }}>{it.description}</div>
-                )}
-                {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
-                  <div style={{ fontSize: '0.34em', color: theme.mutedColor, lineHeight: 1.3, marginTop: '.25em', textTransform: 'capitalize', opacity: 0.9 }}>
-                    Allergens: {it.allergens.join(', ')}
-                  </div>
-                )}
-              </div>
-              <div style={{ flexShrink: 0, display: 'flex', alignItems: 'flex-start', lineHeight: 1 }}>
-                {sold
-                  ? <span style={{ fontSize: '0.38em', fontWeight: 600, letterSpacing: '.05em', background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .8em' }}>SOLD OUT</span>
-                  : (!hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.5em', fontWeight: 700, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.18em .7em' }}>{money(price)}</span>)}
-              </div>
-            </div>
-            {/* indented variant sizes */}
-            {hasVar && (
-              <div style={{ marginTop: '.18em', marginLeft: '.2em', paddingLeft: (disp.showImages && productImage(it, defaultImage)) ? '3em' : '0.9em', borderLeft: `0.14em solid ${theme.accent}40` }}>
-                {variants.map((v) => {
-                  const vsold = six.has(v.id);
-                  const vp = boardPrice(v, activeMenuId);
-                  return (
-                    <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.4em', opacity: vsold ? 0.42 : 1 }}>
-                      <span style={{ fontSize: '0.46em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
-                      {vsold
-                        ? <span style={{ fontSize: '0.34em', fontWeight: 600, background: '#5a1e1e', color: '#f3b0b0', borderRadius: '1.4em', padding: '.2em .7em' }}>SOLD OUT</span>
-                        : (disp.showPrices && vp > 0 && <span style={{ fontSize: '0.42em', fontWeight: 700, background: theme.accent, color: '#1c1206', borderRadius: '1.4em', padding: '.16em .65em' }}>{money(vp)}</span>)}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -613,8 +529,9 @@ function buildSections(data, activeMenuId = null) {
   // v5.9.67: one shared rule (lib/menuBoardSections.js). A block may be a subcategory on its
   // own, a block may carry its own heading, and an option only sub item is never a line.
   const itemsByCat = boardItemsByCategory(data.items);
-  const sections = boardSections({ blocks: data.board?.layout?.blocks, cats: data.cats, itemsByCat });
-  return applyMenuToSections(sections, { categories: data.cats, links: data.links, activeMenuId });
+  const addOnsByCat = boardAddOnsByCategory(data.items);
+  const sections = boardSections({ blocks: data.board?.layout?.blocks, cats: data.cats, itemsByCat, addOnsByCat });
+  return boardSectionsForMenu(sections, { categories: data.cats, links: data.links, activeMenuId });
 }
 
 function Splash({ text, sub, inline }) {

@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.68',
+    date: '24 Sep 2026',
+    items: [
+      'Menu boards: a Design section. Page title with a note under it, logo size, sizes for the title, category headings and item text, prices as pills or plain text, colours for the title, headings, prices and small print, optional lines under headings and the header. The preview is now drawn by the same code as the TV, so what you see is what the screen shows.',
+      'Menu boards: Text size is a real size and it shows in the preview. 100% is the largest text that fills the screen, smaller sizes leave room, larger sizes open more columns to make room.',
+      'Menu boards: price grid by size. Cup sizes across the top (Small Boy | Big Boy | XL Boy), a price per size on each line, and a new header when the sizes change (Single | Double for espresso).',
+      'Menu boards: add-ons per category. Tick which option only sub items (whipped cream, marshmallows) to list under a category; milks and syrups stay off unless ticked.',
+      'Menu boards: text panels. A boxed heading, lines and a last line (the Syrups box), placed anywhere among the categories, full width if you like. Text panels stay on screen when the board follows timed menus.',
+    ],
+  },
+  {
     v: '5.9.67',
     date: '24 Sep 2026',
     items: [

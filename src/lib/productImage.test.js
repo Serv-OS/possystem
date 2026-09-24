@@ -27,7 +27,7 @@ test('only an https URL is honoured as the default', () => {
 
 test('every customer-facing surface asks productImage, not item.image', () => {
   for (const f of ['../surfaces/POSSurface.jsx', '../surfaces/KioskApp.jsx', '../surfaces/KioskProductModal.jsx',
-    '../surfaces/online/OnlineSurface.jsx', '../surfaces/online/OnlineItemSheet.jsx', '../surfaces/MenuBoardSurface.jsx']) {
+    '../surfaces/online/OnlineSurface.jsx', '../surfaces/online/OnlineItemSheet.jsx', '../surfaces/menuboard/BoardParts.jsx'   /* v5.9.68: the board's lines are drawn here, for the TV and the preview */]) {
     const src = read(f);
     assert.match(src, /from '\.\.\/(\.\.\/)?lib\/productImage'/, f + ' imports the resolver');
     assert.match(src, /productImage\(/, f + ' uses it');
