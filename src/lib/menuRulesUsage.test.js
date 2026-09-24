@@ -39,7 +39,7 @@ test('nobody writes the "option only sub item" rule again: they call isOptionOnl
     for (const re of copies) if (re.test(src)) offenders.push(`${path.relative(root, file)} ${re}`);
   }
   assert.deepEqual(offenders, []);
-  for (const rel of ['surfaces/POSSurface.jsx', 'surfaces/BarSurface.jsx', 'components/PosWasteModal.jsx', 'backoffice/sections/MenuManager.jsx', 'lib/kioskMenu.js']) {
+  for (const rel of ['surfaces/POSSurface.jsx', 'surfaces/BarSurface.jsx', 'components/PosWasteModal.jsx', 'backoffice/sections/MenuManager.jsx', 'lib/kioskMenu.js', 'lib/menuBoardSections.js']) {
     assert.match(read(rel), /isOptionOnlyItem/, rel);
   }
 });

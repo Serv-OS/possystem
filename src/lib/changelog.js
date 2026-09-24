@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.67',
+    date: '24 Sep 2026',
+    items: [
+      'Menu boards: a subcategory can now go on a screen on its own, without its parent (offered as "Coffee › Iced" in the builder). Each block can carry its own heading for the TV.',
+      'Menu boards: sub items only appear when they are set as sold alone. Option only sub items (milks, syrups, no ice) are never listed as products, the same rule the till, kiosk and online use.',
+    ],
+  },
+  {
     v: '5.9.66',
     date: '24 Sep 2026',
     items: [

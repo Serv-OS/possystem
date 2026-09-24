@@ -23,6 +23,7 @@ import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } fr
 import { productImage, resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
+import { boardItemsByCategory, boardSections } from '../lib/menuBoardSections';
 import { money } from '../lib/currency';
 import { dietaryBadges } from '../lib/dietary';
 import { resolveBoardPrice } from '../lib/menuPricing';
@@ -59,7 +60,8 @@ const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_
 const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenuId);
 // GF/V/VG/DF badge resolution now shared (src/lib/dietary.js) with the print
 // menu + online storefront — imported above, do not re-fork the map here.
-const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
+// Which rows are products on a board, and how they group: lib/menuBoardSections.js (shared with
+// the Back Office builder). v5.9.67: subcategory blocks; option only sub items never listed.
 
 // Venue clock for "Follow timed menus": fetchVenueTimezone lives in
 // src/lib/venueTimezone.js (shared with the order screen). Never the device clock.
@@ -543,7 +545,7 @@ function Section({ sec, theme, disp, six, activeMenuId = null, defaultImage = nu
   const { cat, items } = sec;
   return (
     <div style={{ marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
-      <div style={{ fontSize: '0.82em', fontWeight: 700, letterSpacing: '.12em', color: theme.accent, marginBottom: '0.55em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
+      <div style={{ fontSize: '0.82em', fontWeight: 700, letterSpacing: '.12em', color: theme.accent, marginBottom: '0.55em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.title || cat.label}</div>
       {items.filter((it) => !(disp.hidePriceless && boardPrice(it, activeMenuId) <= 0 && !(it._variants || []).length)).map((it) => {
         const variants = it._variants || [];
         const hasVar = variants.length > 0;
@@ -608,30 +610,10 @@ function Section({ sec, theme, disp, six, activeMenuId = null, defaultImage = nu
 // menu, in the arranged order, falling back to the full board when nothing
 // with items would survive. Null = no narrowing.
 function buildSections(data, activeMenuId = null) {
-  const visible = data.items.filter(visibleItem);
-  const byId = Object.fromEntries(visible.map((i) => [i.id, i]));
-  const kids = {};
-  for (const it of visible) if (it.parent_id && byId[it.parent_id]) (kids[it.parent_id] ||= []).push(it);
-  for (const k in kids) kids[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-
-  const itemsByCat = {};
-  for (const it of visible) {
-    if (it.parent_id && byId[it.parent_id]) continue;   // variant child — shown under its parent
-    const ids = new Set([it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean));
-    for (const cid of ids) (itemsByCat[cid] ||= []).push(it);
-  }
-  for (const k in itemsByCat) itemsByCat[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-
-  let cats = data.cats.filter((c) => !c.parent_id && !c.is_special).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const spanById = {};
-  const blocks = data.board?.layout?.blocks;
-  if (Array.isArray(blocks) && blocks.length) {
-    const byCatId = Object.fromEntries(cats.map((c) => [c.id, c]));
-    cats = blocks.map((b) => { spanById[b.categoryId] = b.span; return byCatId[b.categoryId]; }).filter(Boolean);
-  }
-  const sections = cats
-    .map((cat) => ({ cat, span: spanById[cat.id], items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
-    .filter((s) => s.items.length > 0);
+  // v5.9.67: one shared rule (lib/menuBoardSections.js). A block may be a subcategory on its
+  // own, a block may carry its own heading, and an option only sub item is never a line.
+  const itemsByCat = boardItemsByCategory(data.items);
+  const sections = boardSections({ blocks: data.board?.layout?.blocks, cats: data.cats, itemsByCat });
   return applyMenuToSections(sections, { categories: data.cats, links: data.links, activeMenuId });
 }
 
