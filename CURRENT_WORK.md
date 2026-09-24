@@ -1,3 +1,9 @@
+# Session, 24 Sep 2026, v5.9.67, menu boards: subcategories + sold alone rule (branch fix/menu-board-subcategories)
+
+- Peter: only main categories could be added to a board, and adding one listed every option sub item ("all the modifiers"). Now a subcategory block stands on its own (parent not needed), each block can carry a heading, and a sub item is listed only when sold alone.
+- One shared rule: src/lib/menuBoardSections.js (boardVisibleItem uses menuRules isOptionOnlyItem; boardItemsByCategory; boardCategoryChoices tree with "Parent › Sub" paths; boardSections). TV (MenuBoardSurface buildSections) and builder + preview (MenuBoards.jsx) both read it. layout.blocks gain optional `title`. No migration.
+- Tests: menuBoardSections.test.js (rules + source pins); the module is in menuRulesUsage's must-import list.
+
 # Session, 24 Sep 2026, v5.9.66, loyalty rewards by category or product (branch feat/loyalty-categories)
 
 - Peter: eligible free items and what earns a stamp must be CATEGORIES or PRODUCTS; the old pill grid was clunky with many categories.

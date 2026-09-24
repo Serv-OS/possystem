@@ -18,6 +18,7 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
+import { boardItemsByCategory, boardCategoryChoices, boardSectionTitle } from '../../lib/menuBoardSections';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -91,7 +92,8 @@ export default function MenuBoards() {
       // had no way to tell an empty venue from a failed read).
       setCatsErr(c?.error ? (c.error.message || 'could not be read') : '');
       setAllCats(c?.data || []);
-      setCats((c?.data || []).filter(x => !x.parent_id && !x.is_special).sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
+      // v5.9.67: every category a board may show, subcategories included, in tree order.
+      setCats(boardCategoryChoices(c?.data || []));
       setItems(it?.data || []);
       setSix(new Set((s?.data || []).map(r => r.item_id)));
       setPaired(scr?.data || []);
@@ -136,20 +138,9 @@ export default function MenuBoards() {
     finally { setBusy(''); }
   };
 
-  const itemsByCat = useMemo(() => {
-    const vis = items.filter(it => !it.archived && !(it.visibility && it.visibility.kiosk === false));
-    const byId = Object.fromEntries(vis.map(i => [i.id, i]));
-    const kids = {};
-    for (const it of vis) if (it.parent_id && byId[it.parent_id]) (kids[it.parent_id] ||= []).push(it);
-    for (const k in kids) kids[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-    const m = {};
-    for (const it of vis) {
-      if (it.parent_id && byId[it.parent_id]) continue;   // variant child — nested under its parent
-      for (const cid of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean)) (m[cid] ||= []).push({ ...it, _variants: kids[it.id] || [] });
-    }
-    for (const k in m) m[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-    return m;
-  }, [items]);
+  // The TV's grouping exactly (lib/menuBoardSections.js): sizes nest under their parent and an
+  // option only sub item is never a line, so the count and the preview here match the screen.
+  const itemsByCat = useMemo(() => boardItemsByCategory(items), [items]);
 
   const save = async (publish) => {
     if (!editing || !locId) return;
@@ -336,7 +327,10 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
   const removeBlk = (i) => setLayout({ blocks: blocks.filter((_, j) => j !== i) });
   const reorder = (from, to) => { if (from == null || to == null || from === to) return; const a = [...blocks]; const [m] = a.splice(from, 1); a.splice(to, 0, m); setLayout({ blocks: a }); };
   const toggleSpan = (i) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, span: b.span === 'all' ? 1 : 'all' } : b) });
-  const catLabel = (id) => cats.find(c => c.id === id)?.label || '—';
+  // v5.9.67: a block may carry its own heading (two "Iced" subcategories can read differently on the TV).
+  const setBlockTitle = (i, title) => setLayout({ blocks: blocks.map((b, j) => j === i ? { ...b, title } : b) });
+  const catOf = (id) => cats.find(c => c.id === id);
+  const catLabel = (id) => catOf(id)?.path || catOf(id)?.label || '—';
 
   const pickFile = (kind, accept, cb) => {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept;
@@ -380,7 +374,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
 
           {board.mode === 'menu' ? (
             <>
-              <Section title="Categories on this screen" desc="Drag to reorder. “Full width” makes a category span the whole board (a hero); the rest auto-balance into columns.">
+              <Section title="Categories on this screen" desc="Drag to reorder. Add a subcategory on its own (it does not need its parent). Type a heading to change what the TV shows above it. “Full width” makes a category span the whole board (a hero); the rest auto-balance into columns. Sub items only appear when they are sold alone.">
                 {blocks.length === 0 && (
                   <div style={{ fontSize: 12, color: catsErr ? 'var(--red)' : 'var(--t4)', lineHeight: 1.5 }}>
                     {catsErr
@@ -401,6 +395,15 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
                     <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span>
                       {hiddenNow(blk.categoryId) && <span title="Not on the menu that is on right now" style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--t4)', border: '1px solid var(--bdr2)', borderRadius: 6, padding: '1px 6px' }}>hidden now</span>}
                     </span>
+                    <input
+                      style={{ ...S.inp, width: 150, padding: '4px 8px', fontSize: 12 }}
+                      value={blk.title || ''}
+                      placeholder={catOf(blk.categoryId)?.label || 'Heading'}
+                      title="The heading the TV shows above this category. Leave empty to use the category's name."
+                      draggable={false}
+                      onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
+                      onChange={e => setBlockTitle(i, e.target.value)}
+                    />
                     <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board (hero)">Full width</button>
                     <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
                   </div>
@@ -409,7 +412,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, six, allCats 
                   <div style={{ marginTop: 8 }}>
                     <div style={S.lbl}>Add category</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
-                      {offCats.map(c => <button key={c.id} style={S.chip} onClick={() => addCat(c.id)}>+ {c.label}</button>)}
+                      {offCats.map(c => <button key={c.id} style={S.chip} onClick={() => addCat(c.id)} title={c.depth ? 'Subcategory: shows on its own, without its parent' : undefined}>+ {c.path || c.label}</button>)}
                     </div>
                   </div>
                 )}
@@ -490,7 +493,7 @@ function Preview({ board, cats, itemsByCat, six, allCats = [], links = [], activ
   const areaRef = useRef(null), flowRef = useRef(null);
 
   const blocks = board.layout?.blocks || [];
-  const arranged = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
+  const arranged = blocks.map(b => ({ id: b.categoryId, label: boardSectionTitle(b, cats.find(c => c.id === b.categoryId)), items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
   const secs = applyMenuToSections(arranged, { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id });
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
   const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
