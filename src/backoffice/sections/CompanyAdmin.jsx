@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { pullSharedProductsTo } from '../../lib/db';
+import { reportSave } from '../../lib/saveHealth';
 import { supabase } from '../../lib/supabase';
 import { CURRENCIES } from '../../lib/currency';
 
@@ -144,6 +146,14 @@ export default function CompanyAdmin() {
     setSuccess(`✓ Location "${loc.name}" created`);
     setForm(f => ({ ...f, locName: '', locAddress: '' }));
     await loadLocations(selectedOrg.id);
+    // v5.9.58: the new venue is a peer from this moment, so every Shared and Global
+    // product in the organisation is re-sent to it now, categories and modifier
+    // groups included. Best effort in the background; the Items list at the new
+    // venue also offers to pull anything that did not arrive.
+    pullSharedProductsTo(loc.id).then((r) => {
+      if (r?.total) console.info(`[CompanyAdmin] ${r.ok.length}/${r.total} shared products copied to the new venue`);
+      if (r?.failed?.length) reportSave('shared products for the new venue', new Error(r.failed.slice(0, 3).map((f) => `${f.item.menuName || f.item.name}: ${f.error}`).join('; ')));
+    }).catch((e) => reportSave('shared products for the new venue', e));
     setTab('org-detail');
   };
 
