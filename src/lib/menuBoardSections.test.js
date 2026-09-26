@@ -177,8 +177,8 @@ test('one text size rule: columns by size and content, fit by probe, scale below
 });
 
 test('sizes and colours: today\'s look by default, each element its own choice', () => {
-  assert.deepEqual(boardSizes({}), { logo: 2.2, title: 1.2, note: 0.5, heading: 0.82, item: 0.56 });   // large logo by default (the photo); note larger than the old 0.36
-  assert.deepEqual(boardSizes({ logoSize: 'xl', headingSize: 'l', itemSize: 's', titleSize: 'nope', subtitleSize: 'xl' }), { logo: 3.2, title: 1.2, note: 0.85, heading: 1.0, item: 0.48 });
+  assert.deepEqual(boardSizes({}), { logo: 2.2, title: 1.2, note: 0.7, heading: 0.82, item: 0.56 });   // large logo by default (the photo); note readable from the counter (v5.9.74)
+  assert.deepEqual(boardSizes({ logoSize: 'xl', headingSize: 'l', itemSize: 's', titleSize: 'nope', subtitleSize: 'xl' }), { logo: 3.2, title: 1.2, note: 1.15, heading: 1.0, item: 0.48 });
   const d = boardColors({});
   assert.equal(d.heading, '#E8A23C', 'headings take the accent unless set');
   assert.equal(d.price, '#E8A23C');

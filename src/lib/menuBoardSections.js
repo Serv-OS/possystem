@@ -279,7 +279,9 @@ export const TITLE_EM = { s: 0.9, m: 1.2, l: 1.6, xl: 2.1 };
 export const HEADING_EM = { s: 0.7, m: 0.82, l: 1.0, xl: 1.2 };
 export const ITEM_EM = { s: 0.48, m: 0.56, l: 0.66, xl: 0.78 };
 // The note under the title (v5.9.71, Peter: "subtitle text far too small"): its own size, larger by default.
-export const NOTE_EM = { s: 0.36, m: 0.5, l: 0.66, xl: 0.85 };
+// v5.9.74 (Peter: "the subtitle is so small you cannot read it"): about 40% up at every size.
+// M is 0.7 of the base, which on a 1080p portrait TV reads at arm's length from the counter.
+export const NOTE_EM = { s: 0.5, m: 0.7, l: 0.9, xl: 1.15 };
 
 // Defaults are the photo's look (Peter, 24 Sep: "the design is not peak like I asked for"): a
 // large logo; medium everything else. A venue picks its own in Design.
