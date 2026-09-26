@@ -8,7 +8,7 @@ import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
-import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { getActiveLocationSync, ensureAuthToken, isMock } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -220,7 +220,10 @@ export default function BarSurface() {
   const roundFlashTimerRef = useRef(null);
   const [flashRoundUid, setFlashRoundUid] = useState(null);
 
-  useEffect(() => { if (tabs.length===0) seedTabs(); }, []);
+  // v5.9.72: the demo tabs are for MOCK mode only. On a real venue this seeded TAB-001 / TAB-002
+  // (ids t-demo1 / t-demo2, the same at every venue) and the queue sync published them as real
+  // tabs (Coffee Boy Leeds, 25 Sep 2026).
+  useEffect(() => { if (tabs.length===0 && isMock) seedTabs(); }, []);
 
   const activeTab = tabs.find(t=>t.id===activeTabId);
   const filteredTabs = tabs.filter(t=>showTabFilter==='active' ? t.status!=='closed' : true);

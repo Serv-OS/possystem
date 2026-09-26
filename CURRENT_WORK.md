@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.72, ghosts that came back (branch hotfix/session-venue-fence, second release)
+
+- After the fence: ORD-1003 kept returning at Coffee Boy Leeds (tagged Leeds, written 07:27 and 07:29 UTC). The Drinks KDS (created 07:24) booted on 5.9.71 with the leaked row still in Leeds' table, read it as Leeds' own, and its SessionReconciler self heal put it back each time POS 1 voided (voidCheck wrote NO tombstone; only a payment close writes a closed check that isSessionClosed honours).
+- Fixes: voidCheck writes a voided closed check (status 'void', voided true, £0) as the tombstone; closedCheckRow maps voided; BarSurface seeds the demo tabs (t-demo1 / t-demo2, TAB-001 / TAB-002) only in mock and seedTabs refuses outside mock (those two tabs at Leeds were the seed, opened 25 Sep 05:31 UTC when the Bar screen was first opened); a KDS never runs the session reconciler, never publishes sessions (flushSessions / reassertSession) and never publishes bar tabs (QueueSync).
+- Clean up SQL for Peter after devices reload: delete Leeds' ORD-1003 row and the two demo tabs.
+
 # Session, 26 Sep 2026, v5.9.71, VENUE FENCE for sessions + menu board slideshows (branch hotfix/session-venue-fence)
 
 - LEAK: Provo's demo sessions (T1 to T4, ORD-1003, Alex Carter/Jane Smith) were in active_sessions at Coffee Boy Leeds, Barnsley, Barnsley Train Station and Leeds (aa78). Carrier: device a0f11e11 (no devices row, refused_secret at 05:41/05:53/07:11 UTC) following the Back Office venue switch. Path: the tenant fence wipes on switch, a live POS tab re-writes rpos-session-backup from memory, the next boot at the new venue trusts it and flushes.
