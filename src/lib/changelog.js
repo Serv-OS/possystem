@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.73',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: a kitchen screen follows the centre it is bound to. Binding a screen to a centre in Print routing after pairing never reached the screen, so it showed every station\'s tickets (two Leeds screens both showing everything). The screen now reads its centre from its own device record on boot and follows changes live.',
+    ],
+  },
+  {
     v: '5.9.72',
     date: '26 Sep 2026',
     items: [
