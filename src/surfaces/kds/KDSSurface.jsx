@@ -100,8 +100,34 @@ export function KDSSurface() {
       centreName: cfg?.centreName || null,
     };
   });
-  const { locationId, centreId } = device;
+  const { locationId } = device;
   const live = !isMock && !!locationId;
+
+  // v5.9.73: the CENTRE comes from this screen's own devices row, not only from the pairing
+  // record. Back Office binds a screen to a centre in Print routing, usually AFTER pairing, and
+  // the pairing record never learned it: both Leeds screens (26 Sep 2026) showed every
+  // station's tickets. Read on boot, follow the row live, remember it for the next boot.
+  const [centreId, setCentreId] = useState(device.centreId);
+  useEffect(() => {
+    if (!live || !device.id || !supabase) return undefined;
+    let alive = true;
+    const apply = (row) => {
+      if (!alive || !row || !('centre_id' in row)) return;
+      const id = row.centre_id || null;
+      setCentreId(id);
+      try {
+        const cfg = readJson('rpos-device-config') || {};
+        localStorage.setItem('rpos-device-config', JSON.stringify({ ...cfg, centreId: id }));
+      } catch { /* the next boot reads the row again */ }
+    };
+    Promise.resolve(supabase.from('devices').select('centre_id').eq('id', device.id).maybeSingle())
+      .then(({ data, error }) => { if (!error && data) apply(data); })
+      .catch(() => { /* keep the paired value */ });
+    const ch = supabase.channel(`kds-device-${device.id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'devices', filter: `id=eq.${device.id}` }, (payload) => apply(payload.new))
+      .subscribe();
+    return () => { alive = false; supabase.removeChannel(ch); };
+  }, [live, device.id]);
 
   // ── settings (per screen) ───────────────────────────────────────────────────
   const storageKey = kdsSettingsStorageKey(device.id);
@@ -353,6 +379,7 @@ export function KDSSurface() {
 
   // ── filters ─────────────────────────────────────────────────────────────────
   const [stationFilter, setStationFilter] = useState(centreId || 'all');
+  useEffect(() => { setStationFilter(centreId || 'all'); }, [centreId]);   // v5.9.73: follow the centre
   const [typeFilter, setTypeFilter] = useState('all');
   // Station buttons only when this board really holds tickets from two or more stations.
   // (The old board also showed "All stations" plus the one station on a screen tied to it.)
