@@ -19,12 +19,12 @@
 // narrowing would leave nothing, or the menus read fails, the full arranged
 // board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
 
-import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
-import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, boardPages, pageSeconds } from '../lib/menuBoardSections';
-import { BoardHeader, BoardSection, BoardFooter, Slideshow } from './menuboard/BoardParts';
+import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, boardPages, pageSeconds, boardKeepsWhole } from '../lib/menuBoardSections';
+import { BoardHeader, BoardBody, BoardFooter, Slideshow } from './menuboard/BoardParts';
 import { marketingSlides } from '../lib/menuBoardSlides';
 import { boardFollowsMenus, resolveBoardMenu } from '../lib/menuBoardMenus';
 import { generatePairingCode } from '../lib/pairingCode';
@@ -43,10 +43,10 @@ const DEFAULT_THEME = {
   // v5.9.68 design: title + note, per element sizes and colours (lib/menuBoardSections.js boardSizes / boardColors)
   title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'l', headingColor: '', headingSize: 'm', headingRule: true, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
 };
-const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true };
+const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true, flow: 'fill' };
 const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands somewhere in here (max high enough for 4K TVs)
-// Text size → columns → fit: lib/menuBoardSections.js boardColumns / fitFont / scaledFont,
-// the SAME rule the Back Office preview runs (v5.9.68), so the preview is the TV in miniature.
+// Text size → columns: lib/menuBoardSections.js boardColumns. Measure, pack and fit: BoardParts
+// BoardBody (v5.9.76), the SAME body the Back Office preview draws, so the preview is the TV in miniature.
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
 const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id}, kept across tenant-fence wipes
 // Human pairing code shown on an unassigned screen: generatePairingCode() in
@@ -394,12 +394,10 @@ function Board({ data }) {
   const activeMenuId = resolveBoardMenu({ board: data.board, menus: data.menus, categories: data.cats, links: data.links, timezone: data.tz });
 
   const boardRef = useRef(null);
-  const contentRef = useRef(null);
-  const flowRef = useRef(null);
   const [fitTick, setFitTick] = useState(0);
 
-  // ordered sections; content flows column-by-column and fills the screen
-  const allSections = mode === 'menu' ? buildSections(data, activeMenuId) : [];
+  // ordered sections; the body packs them into columns and fills the screen (v5.9.76)
+  const allSections = useMemo(() => (mode === 'menu' ? buildSections(data, activeMenuId) : []), [data, mode, activeMenuId]);
   // v5.9.71: page breaks split the board into screens that rotate; each fits on its own.
   const pages = useMemo(() => boardPages(allSections), [allSections]);
   const [page, setPage] = useState(0);
@@ -413,25 +411,12 @@ function Board({ data }) {
   const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
   const totalItems = sections.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
-  // ── auto-fit: FILL the screen, never clip. Columns fill top-to-bottom
-  // (column-fill:auto) so a column only breaks when it is genuinely full. We use
-  // an EXPLICIT integer column count (operator override, else derived from the
-  // text-size preference) — never column-width:auto, because Chromium clips
-  // overflow from an auto count without reporting it, which let large fonts run
-  // off the bottom of the screen. With a fixed count, overflow creates a real
-  // extra column that scrollWidth reports, so the binary search always lands on
-  // the largest font that fits the whole menu on one screen. ──
-  useLayoutEffect(() => {
-    if (mode !== 'menu') return;
-    const root = boardRef.current, flow = flowRef.current;
-    if (!root || !flow) return;
-    const cols = boardColumns({ textScale, orientation, fixedCols, totalItems });
-    flow.style.columnWidth = 'auto';
-    flow.style.columnCount = String(cols);
-    const fits = (px) => { root.style.fontSize = px + 'px'; return flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1; };
-    // The fill is the largest text that fits; the operator's text size shrinks from it (v5.9.68).
-    root.style.fontSize = scaledFont(fitFont(fits, { min: FIT.min, max: FIT.max }), textScale, FIT.min) + 'px';
-  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId, stage.w, stage.h, page, pages.length]);
+  // How many columns (lib/menuBoardSections.js boardColumns). The body measures every row, packs
+  // the columns level and grows the type until the screen is full (v5.9.76, BoardParts BoardBody):
+  // a long category continues in the next column with its size header repeated, unless Layout &
+  // display keeps categories whole.
+  const cols = boardColumns({ textScale, orientation, fixedCols, totalItems });
+  const fitKey = [fitTick, stage.w, stage.h, orientation, page, pages.length].join('|');
 
   useEffect(() => {
     const refit = () => {
@@ -510,16 +495,9 @@ function Board({ data }) {
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', padding: pad, boxSizing: 'border-box' }}>
         <BoardHeader theme={theme} name={data.board?.name} />
 
-        {/* dynamic newspaper flow — EVERY item; categories flow & balance across
-            columns; the fit-loop scales the whole thing to fill one screen. */}
-        <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
-          {/* column-fill: balance (v5.9.68) so the columns end level instead of leaving a blank
-              bottom corner; overflow still spills into extra columns, which scrollWidth reports. */}
-          <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'balance' }}>
-            {sections.map((sec) => (
-              <BoardSection defaultImage={data.defaultImage} key={sec.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
-            ))}
-          </div>
+        <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
+          <BoardBody rootRef={boardRef} sections={sections} cols={cols} textScale={textScale} fontRange={FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={fitKey}
+            theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} defaultImage={data.defaultImage} />
         </div>
 
         <BoardFooter theme={theme} live pages={pages.length} page={page % pages.length} />

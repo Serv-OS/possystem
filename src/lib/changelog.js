@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.76',
+    date: '26 Sep 2026',
+    items: [
+      'Menu boards fill the screen. The board is now packed from measured row heights: a long category continues in the next column with its size header (Small · Big · XL) repeated, a heading never sits at the foot of a column, the columns end level, and the type grows until the screen is full (the Leeds photo had an empty bottom right corner). Layout & display → "Fill the columns" (on by default; off keeps every category in one column).',
+      'Menu boards: SOLD OUT is obvious again. An 86\'d item shows a red SOLD OUT pill in place of every price and its name struck through (it used to grey the name and leave the prices). One 86\'d size gets the pill in its own price cell.',
+      'Menu boards: the size labels no longer widen the price columns (SMALL BOY made a column half as wide again as its prices), so names stop wrapping onto two lines and the type gets bigger.',
+      'Menu boards: the Back Office preview draws with the same body as the TV, so what you see is what the screen shows.',
+    ],
+  },
+  {
     v: '5.9.75',
     date: '26 Sep 2026',
     items: [

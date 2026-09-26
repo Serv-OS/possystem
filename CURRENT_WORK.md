@@ -1,3 +1,11 @@
+# Session, 26 Sep 2026, v5.9.76, menu boards fill the screen + SOLD OUT pill (branch feat/board-flow)
+
+- Peter's photo of the Coffee Boy Leeds board (portrait, 2 columns): bottom right corner empty, names wrapping, SMALL BOY labels widening the price columns; and "when you 86 an item it greys the item name out not the price, it used to say sold out".
+- lib/menuBoardSections.js packBoard: rows packed from MEASURED heights into columns; a run may continue in the next column with its size header repeated; heading and size header never end a column; text/image panels whole; Full width = its own band; each band levelled at the lowest height (binary search) so the fit grows the type. whole=true = the old one-column-per-category look (display_options.flow 'whole').
+- BoardParts BoardBody: a hidden measure copy of every section at the column width; fitFont over layoutAt(px) (root font, read tracks via computed gridTemplateRows, pack); the packed columns are drawn as pieces (BoardPiece). The TV (MenuBoardSurface) and the preview (MenuBoards) both use it; no CSS multicol, no scrollHeight fit any more.
+- Sold out: red pill over every price (gridColumn 2 / -1), name struck; a 86'd size gets the pill in its cell; list mode hides the sizes of a sold out item.
+- Verify a board without login: <host>/?mode=menuboard&board=<id> (Leeds fa7adfec-afbb-4072-97bd-49759cd934a6).
+
 # Session, 26 Sep 2026, v5.9.75, sold-alone sub items share (branch fix/subitem-sharing)
 
 - Peter: donuts built at Barnsley Train Station as sub items (they sit in deals) showed at Coffee Boy Leeds but not Huddersfield, and a sub item had no Sharing control. Live data: Train Station masters type subitem, sold_alone true, scope local; Leeds copies had categories Peter made by hand on 24 Sep; Huddersfield's 13 sold-alone sub item copies had cat NULL (made through the deal's modifier group path, which nulled cat/cats and hid nothing on the grid).
