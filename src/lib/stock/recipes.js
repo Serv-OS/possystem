@@ -8,6 +8,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { componentUnitCost, computeRecipe } from './costing.js';
+import { firstReadError } from './menuWaste.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -115,23 +116,32 @@ export const unlinkMenuItem = async (menuItemId, locationId = null) => {
   return supabase.from('menu_item_recipes').delete().eq('location_id', locationId).eq('menu_item_id', String(menuItemId));
 };
 
+// 26 Sep 2026 (waste without stock review): supabase-js never throws on a failed read, it
+// resolves { data: null, error }, and the builders below coerce that to []. So an empty ctx
+// used to look the same whether the venue has no stock or the network blipped. The first
+// read error rides back on the ctx as `error` for callers that must tell the two apart (the
+// till Waste modal: "no stock here" must never be a guess). Every other reader ignores the key.
+// firstReadError is pure and tested in menuWaste.js.
+
 /**
- * Build the CostingCtx ({ itemsById, recipesByOutputItem }) the engine needs to
+ * Build the CostingCtx ({ itemsById, recipesByOutputItem, error }) the engine needs to
  * cost recipes and roll up MADE items. itemsById carries each item's base unit,
  * currentCost (for purchased) and conversions; recipesByOutputItem maps a MADE
- * item id → its PREP recipe so nested costing resolves.
+ * item id → its PREP recipe so nested costing resolves. `error` is the first failed
+ * read (null when every read succeeded).
  */
 export const buildCostingCtx = async (locationId = null) => {
-  if (isMock || !supabase) return { itemsById: {}, recipesByOutputItem: {} };
+  if (isMock || !supabase) return { itemsById: {}, recipesByOutputItem: {}, error: null };
   locationId = await ensureLoc(locationId);
-  if (!locationId) return { itemsById: {}, recipesByOutputItem: {} };
-  const [{ data: items }, { data: convs }, { data: recs }, { data: lines }, { data: packs }] = await Promise.all([
+  if (!locationId) return { itemsById: {}, recipesByOutputItem: {}, error: null };
+  const reads = await Promise.all([
     supabase.from('inventory_items').select('id, kind, base_unit, current_cost').eq('location_id', locationId),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
     supabase.from('recipes').select('id, output_item_id, yield_qty, yield_unit, wastage_pct, recipe_type').eq('location_id', locationId).is('archived_at', null),
     supabase.from('recipe_lines').select('*').eq('location_id', locationId).order('sort_order'),
     supabase.from('item_packaging_formats').select('id, inventory_item_id, name, qty_in_base').eq('location_id', locationId),
   ]);
+  const [{ data: items }, { data: convs }, { data: recs }, { data: lines }, { data: packs }] = reads;
   const convByItem = {};
   (convs || []).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
   const fmtByItem = {};
@@ -159,7 +169,7 @@ export const buildCostingCtx = async (locationId = null) => {
       wastagePct: Number(r.wastage_pct) || 0, lines: linesByRecipe[r.id] || [],
     };
   });
-  return { itemsById, recipesByOutputItem };
+  return { itemsById, recipesByOutputItem, error: firstReadError(reads) };
 };
 
 /**
@@ -198,11 +208,12 @@ export const buildDepletionCtx = async (locationId = null) => {
   const base = await buildCostingCtx(locationId);
   locationId = await ensureLoc(locationId);
   if (!locationId) return { ...base, menuRecipes: {} };
-  const [{ data: links }, { data: recs }, { data: lines }] = await Promise.all([
+  const reads = await Promise.all([
     supabase.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', locationId),
     supabase.from('recipes').select('id, wastage_pct').eq('location_id', locationId).is('archived_at', null),
     supabase.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct, order_types').eq('location_id', locationId).order('sort_order'),
   ]);
+  const [{ data: links }, { data: recs }, { data: lines }] = reads;
   const wastageByRecipe = {};
   (recs || []).forEach((r) => { wastageByRecipe[r.id] = Number(r.wastage_pct) || 0; });
   const linesByRecipe = {};
@@ -220,7 +231,8 @@ export const buildDepletionCtx = async (locationId = null) => {
       wastagePct: wastageByRecipe[k.recipe_id] || 0,
     };
   });
-  return { ...base, menuRecipes };
+  // 26 Sep 2026: a failed costing read counts too, an empty itemsById also explodes to nothing.
+  return { ...base, menuRecipes, error: base.error || firstReadError(reads) };
 };
 
 /**

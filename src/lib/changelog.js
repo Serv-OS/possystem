@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.82',
+    date: '26 Sep 2026',
+    items: [
+      'Waste works without stock. The till Waste tab and Back Office > Inventory > Wastage > Waste a menu item list every product at every venue. At a venue with no stock set up, a record keeps the product, quantity, reason, note and the lost sale at menu price (cost shows as a dash, there is no stock cost to know). It shows in the Wastage log and its lost sales total, not in Stock Reports or the Daily Trading waste line (those are valued from the stock ledger).',
+      'Venues with stock are unchanged: a product with a recipe still comes off stock at cost, and a product with no recipe is still refused with the "link it in Recipes" message. If the stock data fails to load, the Waste screen says so and Record is disabled, so a stock venue never records a waste that skips the deduction. Archived stock items no longer count as running stock. Training Mode tills record no waste ("Training mode: waste not recorded").',
+    ],
+  },
+  {
     v: '5.9.81',
     date: '26 Sep 2026',
     items: [

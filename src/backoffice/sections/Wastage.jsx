@@ -12,6 +12,7 @@ import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
 import { logWaste, fetchWaste, WASTE_REASONS } from '../../lib/stock/waste';
+import { countLiveStockItems } from '../../lib/stock/menuWaste';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -23,6 +24,8 @@ export default function Wastage() {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [items, setItems] = useState([]);
+  // 26 Sep 2026: a failed items read must not read as "no stock items are set up".
+  const [itemsError, setItemsError] = useState(false);
   const [showProductWaste, setShowProductWaste] = useState(false);
   const [log, setLog] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,8 +36,8 @@ export default function Wastage() {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: its }, { data: w }] = await Promise.all([fetchInventoryItems(loc), fetchWaste(isoDaysAgo(30), null, loc)]);
-    setItems(its || []); setLog(w || []); setLoading(false);
+    const [its, { data: w }] = await Promise.all([fetchInventoryItems(loc), fetchWaste(isoDaysAgo(30), null, loc)]);
+    setItems(its?.data || []); setItemsError(!!its?.error); setLog(w || []); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
@@ -51,10 +54,11 @@ export default function Wastage() {
     if (!row.item) { showToast?.('Pick an item', 'error'); return; }
     if (!(Number(row.qty) > 0)) { showToast?.('Enter a quantity', 'error'); return; }
     setBusy(true);
-    const { error } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: row.reason, note: row.note }, locId);
+    const { error, training } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: row.reason, note: row.note }, locId);
     setBusy(false);
     if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.('Waste logged', 'success');
+    // 26 Sep 2026: on a Training Mode device logWaste writes nothing; never say "Waste logged".
+    showToast?.(training ? 'Training mode: waste not recorded' : 'Waste logged', training ? 'info' : 'success');
     setRow({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });
     await reload();
   };
@@ -76,14 +80,22 @@ export default function Wastage() {
           </button>
         </div>
         {!row.item ? (
-          <div style={{ position: 'relative', maxWidth: 360 }}>
-            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search a stock item…" style={field} />
-            {matches.length > 0 && (
-              <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
-                {matches.map(i => <div key={i.id} onClick={() => pick(i)} style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>{i.name}</div>)}
-              </div>
-            )}
-          </div>
+          // 26 Sep 2026, Peter: "should be able to waste without stock". With no stock items
+          // the search box below could never match anything; point at the product path instead.
+          // Only when the read succeeded: a failed read keeps the search box, never this line.
+          // Archived items do not count: the search below never offers them either.
+          !loading && !itemsError && countLiveStockItems(items) === 0 ? (
+            <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.5 }}>No stock items are set up, so waste is recorded by menu item: tap <b>Waste a menu item…</b> above. Each record keeps the product, how many, the reason, a note and the lost sale. Add stock items to waste raw stock too.</div>
+          ) : (
+            <div style={{ position: 'relative', maxWidth: 360 }}>
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search a stock item…" style={field} />
+              {matches.length > 0 && (
+                <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
+                  {matches.map(i => <div key={i.id} onClick={() => pick(i)} style={{ padding: '9px 12px', cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>{i.name}</div>)}
+                </div>
+              )}
+            </div>
+          )
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
             <div style={{ minWidth: 160 }}><label style={lbl}>Item</label><div style={{ ...field, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>{row.item.name}<button onClick={() => setRow(r => ({ ...r, item: null }))} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer' }}>×</button></div></div>
