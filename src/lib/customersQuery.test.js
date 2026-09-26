@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption } from './customersQuery.js';
+import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption, idChunks } from './customersQuery.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -39,10 +39,14 @@ test('the caption says the list is a page once it is full', () => {
 
 test('pins: the page reads in key order, stats by venue, searches the database, and never calls a failed read "no customers"', () => {
   const src = read('../backoffice/sections/Customers.jsx');
-  assert.match(src, /\.eq\('org_id', orgId\)\.is\('deleted_at', null\)\n\s+\.order\('id'\)\n\s+\.limit\(CUSTOMER_PAGE_SIZE\);/, 'a key walk that stops after the page (the row security check runs per row)');
+  assert.match(src, /\.order\('updated_at', \{ ascending: false \}\)\n\s+\.limit\(CUSTOMER_PAGE_SIZE\);/, 'v5.9.80: newest first (the set form rule and index made it 16 ms)');
   assert.doesNotMatch(src, /\.in\('customer_id', ids\)/, 'no 1,000 id lists in the URL');
   assert.match(src, /\.in\('location_id', locIds\)/, 'stats by venue');
-  assert.match(src, /\.eq\('company_id', platLoc\.company_id\);\n\s+const scMap/, 'stamp cards by company only');
+  assert.doesNotMatch(src, /\.from\('customer_loyalty'\)[^;]*\.eq\('company_id', platLoc\.company_id\);/, 'v5.9.80: never the whole company in one read (1,000 row cap)');
+  assert.match(src, /const chunks = idChunks\(custIds\);/);
+  assert.match(src, /\.eq\('company_id', companyId\)\.in\('customer_id', slice\)\)\);\n\s+const loyaltyRows/, 'loyalty for the customers on screen, slice by slice');
+  assert.match(src, /\.eq\('company_id', companyId\)\.in\('customer_id', slice\)\)\);\n\s+const cards/, 'stamp cards the same way');
+  assert.match(src, /loadLoyaltyFor\(companyId, fresh\.map\(\(c\) => c\.id\), hasStampPrograms\)/, 'search finds get their points and stamps too');
   assert.match(src, /const orFilter = customerSearchOr\(search\);/);
   assert.match(src, /\.or\(orFilter\)\n\s+\.limit\(100\);/);
   assert.match(src, /if \(custErr\) \{ setLoadError\(/, 'a failed read is reported');
@@ -51,4 +55,14 @@ test('pins: the page reads in key order, stats by venue, searches the database, 
   const mig = read('../../supabase/migrations/20260926b_OPS_customers_visible_orgs.sql');
   assert.match(mig, /using \(org_id in \(select public\.visible_customer_orgs\(\)\)\)/, 'the policy is in set form (once per statement)');
   assert.match(mig, /create index if not exists customers_org_updated_idx on public\.customers \(org_id, updated_at desc\)/);
+});
+
+test('ids are read in URL sized slices, deduped, never empty slices', () => {
+  // v5.9.80: Coffee Boy has 8,028 loyalty records; a read by company stopped at the 1,000 row cap.
+  const ids = Array.from({ length: 401 }, (_, i) => `id-${i}`);
+  const ch = idChunks(ids);
+  assert.deepEqual(ch.map((c) => c.length), [150, 150, 101]);
+  assert.deepEqual(idChunks(['a', 'a', null, 'b'], 1), [['a'], ['b']]);
+  assert.deepEqual(idChunks([]), []);
+  assert.deepEqual(idChunks(undefined), []);
 });

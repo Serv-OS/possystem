@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.80',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: Back Office Customers shows everyone\'s points and stamps. Loyalty memberships and stamp cards were read for the whole company in one go, and the API stops at 1,000 rows, so at Coffee Boy (8,028 members, 4,511 stamp cards) most customers showed none. They are now read for the customers on screen, 150 at a time, and a search adds the points and stamps of the customers it finds.',
+      'Customers list is newest first again (the database rule change from 5.9.78 made it 16 ms).',
+    ],
+  },
+  {
     v: '5.9.79',
     date: '26 Sep 2026',
     items: [

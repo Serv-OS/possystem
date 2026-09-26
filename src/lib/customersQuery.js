@@ -54,3 +54,14 @@ export function customerListCaption(loadedCount, searching) {
   if (loadedCount < CUSTOMER_PAGE_SIZE) return '';
   return searching ? 'Searching every customer…' : `Showing the first ${CUSTOMER_PAGE_SIZE.toLocaleString('en-GB')} customers. Search finds the rest.`;
 }
+
+/** Ids in slices small enough for a URL (150 uuids is about 5.5 KB). v5.9.80: loyalty and stamp
+ * cards are read for the customers on screen, slice by slice, because a read by company stops at
+ * the API's 1,000 row cap (Coffee Boy: 8,028 loyalty records, 4,511 stamp cards). */
+export function idChunks(ids, size = 150) {
+  const list = [...new Set((ids || []).filter(Boolean))];
+  const n = Math.max(1, Math.floor(size) || 150);
+  const out = [];
+  for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n));
+  return out;
+}
