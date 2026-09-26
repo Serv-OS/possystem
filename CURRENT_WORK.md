@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.81, a void closes a QR floor order (branch fix/void-no-seated)
+
+- Leeds t1 (Provo demo QR session, source qr, openedAt 1782772603516, no seatedAt, not on the Leeds plan) came back 22 s after each void (13:07, 13:43 UTC): tombstones had seated_at null; SessionReconciler rebuildOrphans + self heal re-published it from POS 1 (heartbeat open_tables 1).
+- lib/rowWriteFence.js checkClosesOccupation / voidOccupationKey: seatedAt as before; a session with NO seatedAt is closed only by a VOID whose seated_at = its openedAt. voidCheck tomb stores seatedAt: voidOccupationKey(session). sessionClosure.isSessionClosed and MasterSync occClosed use the rule. Peter: void t1 once more on POS 1 once it reports 5.9.81.
+- Known edge: a voided QR floor session whose QR rounds stay open in order_queue will not re-show on the floor for new rounds of the SAME tab (same first round sent_at); OrdersHub QR tabs and KDS still show them.
+
 # Session, 26 Sep 2026, v5.9.80, Customers: points and stamps for everyone (branch fix/customers-loyalty-rows)
 
 - Platform PostgREST max_rows = 1000 (Ops too). customer_loyalty by company = 8,028 rows, customer_stamp_cards 4,511: the page got the first 1,000 of each. Now loadLoyaltyFor(companyId, ids) in 150 id slices (idChunks), merged into the maps; search finds included. First page back to updated_at desc (index + set form policy from 20260926b).

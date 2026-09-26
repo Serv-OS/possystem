@@ -20,6 +20,7 @@ import { stampLocalSessionsFor } from '../lib/localSessions';
 import { useStore } from '../store';
 import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
+import { checkClosesOccupation } from '../lib/rowWriteFence';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -186,7 +187,9 @@ export async function forceSyncFromSupabase() {
     });
     const occClosed = (tableId, sess) => {
       const s = sess?.seatedAt;
-      return !!(tableId && s && closedOcc.has(`${tableId}:${s}`));
+      if (tableId && s) return closedOcc.has(`${tableId}:${s}`);
+      // v5.9.81: a session with no seatedAt (QR floor) is closed only by a VOID keyed on openedAt.
+      return !!(tableId && sess?.openedAt && (checksRes.data || []).some((c) => checkClosesOccupation(tableId, sess, c)));
     };
 
     // Reconcile sessions: merge Supabase with local, preserving newer local data.

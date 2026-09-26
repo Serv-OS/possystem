@@ -28,18 +28,10 @@
  */
 
 import { useStore } from '../store';
+import { checkClosesOccupation } from '../lib/rowWriteFence';
 
-// closedChecks entries arrive in three shapes: local recordClosedCheck (camelCase,
-// seatedAt in epoch ms), realtime checksChannel, and the MasterSync boot load. Read
-// the occupation key defensively so a tombstone works no matter which loader wrote it.
-function checkTableId(c) {
-  return c?.tableId ?? c?.table_id ?? null;
-}
-function checkSeatedMs(c) {
-  const v = c?.seatedAt ?? c?.seated_at;
-  if (v == null) return 0;
-  return typeof v === 'number' ? v : new Date(v).getTime();
-}
+// closedChecks entries arrive in three shapes (local recordClosedCheck camelCase, realtime, the
+// MasterSync boot load); lib/rowWriteFence.js checkClosesOccupation reads both shapes.
 
 /**
  * True when THIS occupation has already been closed — i.e. any surviving in-memory
@@ -51,12 +43,12 @@ function checkSeatedMs(c) {
  */
 export function isSessionClosed(tableId, session) {
   if (!tableId || !session) return false;
-  const seatedAt = session.seatedAt || 0;
-  if (!seatedAt) return false;
+  // v5.9.81: one rule (lib/rowWriteFence.js checkClosesOccupation): seatedAt as always, and a
+  // VOID keyed on openedAt for a session that never had a seatedAt (a QR floor session).
+  if (!session.seatedAt && !session.openedAt) return false;
   const checks = useStore.getState().closedChecks || [];
   for (const c of checks) {
-    if (checkTableId(c) !== tableId) continue;
-    if (checkSeatedMs(c) === seatedAt) return true;
+    if (checkClosesOccupation(tableId, session, c)) return true;
   }
   return false;
 }

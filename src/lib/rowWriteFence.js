@@ -434,3 +434,36 @@ export function parkedAgain(item, { now = Date.now() } = {}) {
     zeroRows: true,
   };
 }
+
+// ── A VOID closes an occupation that never had a seatedAt (v5.9.81) ──────────────────────────
+// Leeds, 26 Sep 2026 (Peter: "it still reloads after voiding"): a QR floor session (session.source
+// 'qr') has no seatedAt, only openedAt, so the void's tombstone carried seated_at null and matched
+// nothing; the till's reconciler rebuilt the table every 15 s and put the order back. A void now
+// stores the occupation's openedAt as its seated_at when there is no seatedAt, and ONLY a VOID is
+// matched that way: a payment close of a QR table is never keyed on openedAt, because openedAt is
+// recomputed from the open QR rounds and a still open sub tab could share it.
+const isVoidCheck = (c) => !!c && (c.voided === true || c.status === 'void');
+const ms = (v) => (v == null || v === '' ? 0 : typeof v === 'number' ? v : new Date(v).getTime() || 0);
+
+/** The occupation key a VOID tombstone stores: seatedAt, else openedAt, else null. */
+export function voidOccupationKey(session) {
+  if (!isPlainObject(session)) return null;
+  return ms(session.seatedAt) || ms(session.openedAt) || null;
+}
+
+/**
+ * True when a close record ends THIS occupation. seatedAt sessions: any close with the same
+ * seated_at (unchanged rule). A session with no seatedAt: only a VOID whose seated_at is the
+ * session's openedAt.
+ *   check    a closed check in any shape (store camelCase, database snake_case)
+ */
+export function checkClosesOccupation(tableId, session, check) {
+  if (!tableId || !isPlainObject(session) || !check) return false;
+  if ((check.tableId ?? check.table_id ?? null) !== tableId) return false;
+  const key = ms(check.seatedAt ?? check.seated_at);
+  if (!key) return false;
+  const seated = ms(session.seatedAt);
+  if (seated) return key === seated;
+  const opened = ms(session.openedAt);
+  return !!opened && key === opened && isVoidCheck(check);
+}
