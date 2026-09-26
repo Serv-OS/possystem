@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.78, Customers page at 8,000 customers (branch fix/customer-and-display)
+
+- Peter: "customers not loading, beyond slow", then "says no customers but there is 8000" (the 5Loyalty import, 8,028 rows). Measured as a venue owner with EXPLAIN ANALYZE: the customers_venue policy calls customer_org_visible(org_id) PER ROW (pos_can_access per venue inside), 7.5 s for 8,028 rows, over the authenticated role's statement_timeout=8s; as super admin 1.1 s. The customer_locations read listed 1,000 ids in the URL (37 KB).
+- Code: order('id') key walk (1,000 checks), stats by venue, stamp cards by company, server search (customerSearchOr) merged into the list, loadError shown; lib/customersQuery.js + tests.
+- DB (Peter runs): 20260926b_OPS_customers_visible_orgs.sql: policy in set form (org_id in (select visible_customer_orgs())) + index (org_id, updated_at desc). SYSTEMIC: every venue table's policy is pos_can_access(location_id) per row (~0.9 ms/row for a Back Office user); tables with 10k+ rows per venue will hit the same wall. Audit and a set form migration are next.
+
 # Session, 26 Sep 2026, v5.9.77, menu board header sized by the screen (branch feat/board-flow)
 
 - Peter: two boards, same settings, logo / title / note at different sizes. Cause: every size was em against the FITTED base, which depends on how much menu is on the board.

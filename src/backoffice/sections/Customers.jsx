@@ -8,9 +8,10 @@
 //   - Click row → detail panel: profile + per-location stats grid + order history + gift cards
 //   - CSV export of current filter
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption } from '../../lib/customersQuery';
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
 
@@ -71,6 +72,9 @@ export default function Customers() {
   const [tierMap, setTierMap] = useState({});           // v5.5.223: tier_id → tier record
   const [stampDataMap, setStampDataMap] = useState({}); // v5.5.257: customer_id → { programs, cards }
   const [stampPrograms, setStampPrograms] = useState([]); // v5.5.257: all active stamp programs
+  const [loadError, setLoadError] = useState('');       // v5.9.78: a failed read is not "no customers"
+  const [searching, setSearching] = useState(false);     // v5.9.78: a server search is in flight
+  const orgRef = useRef({ orgId: null, locMap: {} });
 
   // Load all customers + their per-location stats (for the org)
   useEffect(() => {
@@ -91,23 +95,30 @@ export default function Customers() {
           .eq('org_id', orgId).eq('status', 'active').order('name');
         setAllLocations(locs || []);
         const locMap = Object.fromEntries((locs || []).map(l => [l.id, l.name]));
+        orgRef.current = { orgId, locMap };
 
-        // All customers in the org
-        const { data: customerRows } = await supabase
+        // The first page of customers (v5.9.78, Peter: "the back office says no customers but
+        // there is 8000"). In primary key order: the row security check on customers runs per
+        // row, so "newest first" had to check all 8,028 rows (7.5 s as a venue owner, over the
+        // API's 8 s limit) and the read failed. A key walk stops after the page. The list is
+        // sorted on screen; a search asks the database, so every customer is findable.
+        const { data: customerRows, error: custErr } = await supabase
           .from('customers')
           .select('id, name, phone, phone_raw, email, marketing_opt_in, marketing_opt_in_at, notes, allergens, created_at, updated_at')
           .eq('org_id', orgId).is('deleted_at', null)
-          .order('updated_at', { ascending: false })
-          .limit(1000);
-
-        // All customer_locations rows for those customers
+          .order('id')
+          .limit(CUSTOMER_PAGE_SIZE);
+        if (custErr) { setLoadError(custErr.message || 'The customer list could not be read.'); return; }
         const ids = (customerRows || []).map(c => c.id);
+
+        // Per venue stats, by VENUE: the old read listed 1,000 customer ids in the URL (37 KB).
+        const locIds = (locs || []).map(l => l.id);
         let clRows = [];
-        if (ids.length) {
+        if (locIds.length) {
           const { data } = await supabase
             .from('customer_locations')
             .select('*')
-            .in('customer_id', ids);
+            .in('location_id', locIds);
           clRows = data || [];
         }
         // Group customer_locations by customer_id
@@ -118,17 +129,7 @@ export default function Customers() {
         });
 
         // Roll up
-        const enriched = (customerRows || []).map(c => {
-          const stats = byCust[c.id] || [];
-          const totalSpend = stats.reduce((s, x) => s + (Number(x.lifetime_revenue) || 0), 0);
-          const totalVisits = stats.reduce((s, x) => s + (x.visit_count || 0), 0);
-          const lastVisit = stats.reduce((latest, x) => {
-            if (!x.last_visit_at) return latest;
-            return !latest || new Date(x.last_visit_at) > new Date(latest) ? x.last_visit_at : latest;
-          }, null);
-          const siteCount = stats.filter(s => (s.visit_count || 0) > 0).length;
-          return { ...c, stats, totalSpend, totalVisits, lastVisit, siteCount };
-        });
+        const enriched = (customerRows || []).map(c => enrichCustomer(c, byCust[c.id] || []));
         setCustomers(enriched);
 
         // v5.5.223: Fetch loyalty data from platform DB
@@ -174,11 +175,11 @@ export default function Customers() {
                 setStampPrograms(progs || []);
 
                 if (progs?.length && ids.length) {
+                  // v5.9.78: by company only; the customer id list made a 37 KB URL.
                   const { data: stampCards } = await platformSupabase
                     .from('customer_stamp_cards')
                     .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
-                    .eq('company_id', platLoc.company_id)
-                    .in('customer_id', ids);
+                    .eq('company_id', platLoc.company_id);
                   const scMap = {};
                   (stampCards || []).forEach(sc => {
                     if (!scMap[sc.customer_id]) scMap[sc.customer_id] = [];
@@ -194,11 +195,44 @@ export default function Customers() {
         }
       } catch (err) {
         console.warn('[Customers] load failed:', err?.message || err);
+        setLoadError(err?.message || 'The customer list could not be read.');
       } finally {
         setLoading(false);
       }
     })();
   }, []);
+
+  // v5.9.78: a search of two or more characters asks the database (the list holds one page).
+  // Debounced; a late answer for an older term is dropped; found rows join the list.
+  const searchSeq = useRef(0);
+  useEffect(() => {
+    const orFilter = customerSearchOr(search);
+    const { orgId, locMap } = orgRef.current;
+    if (!orFilter || !orgId || isMock || !supabase) { setSearching(false); return undefined; }
+    const seq = ++searchSeq.current;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const { data: found } = await supabase
+          .from('customers')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, marketing_opt_in_at, notes, allergens, created_at, updated_at')
+          .eq('org_id', orgId).is('deleted_at', null)
+          .or(orFilter)
+          .limit(100);
+        if (seq !== searchSeq.current) return;
+        const fresh = (found || []).filter((c) => !customers.some((k) => k.id === c.id));
+        if (fresh.length) {
+          let byCust = {};
+          const { data: cl } = await supabase.from('customer_locations').select('*').in('customer_id', fresh.map((c) => c.id));
+          (cl || []).forEach((row) => { (byCust[row.customer_id] = byCust[row.customer_id] || []).push({ ...row, locationName: locMap[row.location_id] || '—' }); });
+          if (seq !== searchSeq.current) return;
+          setCustomers((cs) => mergeCustomerRows(cs, fresh.map((c) => enrichCustomer(c, byCust[c.id] || []))));
+        }
+      } catch (e) { console.warn('[Customers] search failed:', e?.message || e); }
+      finally { if (seq === searchSeq.current) setSearching(false); }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [search]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -319,6 +353,9 @@ export default function Customers() {
           {/* Search */}
           <input type="text" placeholder="Search by name, phone, email…" value={search} onChange={e => setSearch(e.target.value)}
             style={{ width:'100%', marginTop:14, padding:'10px 14px', fontSize:14, borderRadius:8, border:'1.5px solid var(--bdr)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit' }}/>
+          {customerListCaption(customers.length, searching) && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>{customerListCaption(customers.length, searching)}</div>
+          )}
           {/* Filters */}
           <div style={{ display:'flex', gap:12, flexWrap:'wrap', marginTop:12 }}>
             <Filter label="Location" value={filterLoc} onChange={setFilterLoc} options={[['all','All locations'], ...allLocations.map(l => [l.id, l.name])]} />
@@ -332,11 +369,16 @@ export default function Customers() {
         <div style={{ flex:1, overflowY:'auto' }}>
           {loading ? (
             <div style={{ padding:'60px 20px', textAlign:'center', color:'var(--t4)' }}>Loading customers…</div>
+          ) : loadError && customers.length === 0 ? (
+            <div style={{ padding:'60px 20px', textAlign:'center', color:'var(--red)' }}>
+              <div style={{ fontSize:14, fontWeight:700 }}>The customer list could not be read</div>
+              <div style={{ fontSize:12, marginTop:4, color:'var(--t3)' }}>{loadError}. Reload the page; if it keeps happening, tell support.</div>
+            </div>
           ) : filtered.length === 0 ? (
             <div style={{ padding:'60px 20px', textAlign:'center', color:'var(--t4)' }}>
               <div style={{ fontSize:36, marginBottom:8, opacity:.35 }}>👥</div>
-              <div style={{ fontSize:14, fontWeight:700, color:'var(--t3)' }}>{customers.length === 0 ? 'No customers yet' : 'No matches'}</div>
-              <div style={{ fontSize:12, marginTop:4 }}>{customers.length === 0 ? 'Take a takeaway order with a phone number to start the database.' : 'Try a different search or clear the filters.'}</div>
+              <div style={{ fontSize:14, fontWeight:700, color:'var(--t3)' }}>{customers.length === 0 ? 'No customers yet' : searching ? 'Searching…' : 'No matches'}</div>
+              <div style={{ fontSize:12, marginTop:4 }}>{customers.length === 0 ? 'Take a takeaway order with a phone number to start the database.' : searching ? 'Asking the database for every customer.' : 'Try a different search or clear the filters.'}</div>
             </div>
           ) : (
             <div>
