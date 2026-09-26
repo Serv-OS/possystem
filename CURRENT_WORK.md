@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.71, VENUE FENCE for sessions + menu board slideshows (branch hotfix/session-venue-fence)
+
+- LEAK: Provo's demo sessions (T1 to T4, ORD-1003, Alex Carter/Jane Smith) were in active_sessions at Coffee Boy Leeds, Barnsley, Barnsley Train Station and Leeds (aa78). Carrier: device a0f11e11 (no devices row, refused_secret at 05:41/05:53/07:11 UTC) following the Back Office venue switch. Path: the tenant fence wipes on switch, a live POS tab re-writes rpos-session-backup from memory, the next boot at the new venue trusts it and flushes.
+- Fix: lib/localSessions.js (rpos-session-loc owner tag; session._loc tag at creation and on boot; boot venue latch store.bootLocationId; SessionSync refuses to publish for another venue and never publishes a session tagged elsewhere). Readers: SyncBridge boot, waitlistSlice. Writers stamp: SessionSync, SessionReconciler, MasterSync, SyncBridge snapshot. Migration 20260926a (trigger + the 19 row clean up) is PETER'S to run.
+- Menu boards v5.9.71 in the same release: slides (Marketing), image panels, page breaks with rotation, note size, wider top column tiers. lib/menuBoardSlides.js + Slideshow in BoardParts.
+
 # Session, 26 Sep 2026, v5.9.70, reader Pay at table override (branch fix/reader-pay-at-table-override)
 
 - Peter: Leeds reader onboarded, Pay at table switched off, button still on the reader. Live row terminal_devices 98be89ef (AMS1-000168253677488) had modes.table_pay=false since 25 Sep 19:07 UTC: the switch saved; only the till side read it. The button is Adyen's nexo.notification (SaleWakeUp) + payAtTable, sent ON to the STORE by sync_store_settings (05:44 UTC that morning).

@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.71',
+    date: '26 Sep 2026',
+    items: [
+      'FIX (data): a till can no longer carry one venue\'s table orders into another. Provo\'s demo orders had appeared at Coffee Boy Leeds, Barnsley and Barnsley Train Station through a browser following the Back Office venue switch. The device\'s local session stores now carry their owner venue and are ignored elsewhere, every table session is tagged with its venue when it is created, and a till publishes only for the venue it booted for. A database trigger (migration 20260926a) refuses any session written under the wrong venue.',
+      'Menu boards: slideshows. Marketing mode plays images and videos one after another (seconds per image, fade or cut); a board saved with one picture keeps playing it.',
+      'Menu boards: image panels. A picture, or a rotating set, placed among the categories (shape, fill or fit, full width), like the promo screen beside the menu.',
+      'Menu boards: page breaks. Split a long board into screens that rotate; each fits on its own, so the type is bigger. Seconds per page in Layout & display.',
+      'Menu boards: the note under the title has its own size (larger by default), and the top text sizes open one more column (portrait 3, landscape 6).',
+    ],
+  },
+  {
     v: '5.9.70',
     date: '26 Sep 2026',
     items: [

@@ -16,6 +16,7 @@
  */
 
 import { supabase, isMock, getLocationId } from '../lib/supabase';
+import { stampLocalSessionsFor } from '../lib/localSessions';
 import { useStore } from '../store';
 import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
@@ -248,7 +249,7 @@ export async function forceSyncFromSupabase() {
     if (patch.tables) {
       const backup = {};
       patch.tables.filter(t => t.session).forEach(t => { backup[t.id] = t.session; });
-      try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); } catch {}
+      try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); stampLocalSessionsFor(locationId); } catch {}
     }
 
     return { ok: true, sessionCount: sessionsRes.data?.length || 0, checkCount: checksRes.data?.length || 0 };

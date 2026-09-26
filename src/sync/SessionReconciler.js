@@ -8,6 +8,7 @@
  */
 
 import { supabase, getLocationId } from '../lib/supabase';
+import { stampLocalSessionsFor } from '../lib/localSessions';
 import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
 import { isSessionClosed } from './sessionClosure';
@@ -282,7 +283,7 @@ export async function startSessionReconciler() {
         // Sync session backup
         const backup = {};
         prunedTables.filter(t => t.session).forEach(t => { backup[t.id] = t.session; });
-        try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); } catch {}
+        try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); stampLocalSessionsFor(_locationId); } catch {}
       }
 
       // v5.5.639: re-publish any locally-occupied table whose DB row vanished. reassertSession drops
