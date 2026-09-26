@@ -67,14 +67,19 @@ test('a store from before the release (no owner) is trusted only for tables on T
   assert.deepEqual(none.snapshot, {});
 });
 
-test("the venue's own stores come back whole, minus anything tagged for another venue", () => {
+test("the venue's own stores come back only for tables on its plan (v5.9.72), minus anything tagged elsewhere", () => {
   const store = fakeStore({
     [LOC_KEY]: LEEDS,
-    [BACKUP_KEY]: JSON.stringify({ 'leeds-t7': demo('ORD-9'), 'x': tagSession(demo('ORD-1003'), PROVO) }),
+    [BACKUP_KEY]: JSON.stringify({ 'leeds-t7': demo('ORD-9'), 'x': tagSession(demo('ORD-1003'), PROVO), 't-1783614852190': tagSession(demo('ORD-1003'), LEEDS) }),
   });
-  const r = readLocalSessions(LEEDS, { knownTableIds: new Set(), store });
-  assert.deepEqual(Object.keys(r.backup), ['leeds-t7'], 'an untagged session with the right owner is kept even off the plan (a table just added)');
-  assert.equal(r.dropped, 1);
+  const r = readLocalSessions(LEEDS, { knownTableIds: new Set(['leeds-t7']), store });
+  assert.deepEqual(Object.keys(r.backup), ['leeds-t7']);
+  assert.equal(r.dropped, 2, 'the Provo tag and the Leeds-tagged ghost on a table Leeds does not have are both dropped');
+  // a venue with NO tables (Leeds that morning) rescues nothing from its local store
+  assert.deepEqual(readLocalSessions(LEEDS, { knownTableIds: new Set(), store: fakeStore({ [LOC_KEY]: LEEDS, [BACKUP_KEY]: JSON.stringify({ 't1': demo('QR') }) }) }).backup, {});
+  // the plan unknown (floor read failed) with a matching owner: kept, so an offline till never loses a real order
+  const off = readLocalSessions(LEEDS, { knownTableIds: null, store: fakeStore({ [LOC_KEY]: LEEDS, [BACKUP_KEY]: JSON.stringify({ 'leeds-t7': demo('ORD-9') }) }) });
+  assert.deepEqual(Object.keys(off.backup), ['leeds-t7']);
 });
 
 test('writers stamp the owner; clearing removes all three keys; no store or venue is harmless', () => {

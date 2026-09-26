@@ -31,6 +31,7 @@ export function closedCheckRow(check, locationId) {
     closed_at:    check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
     seated_at:    check.seatedAt ? new Date(check.seatedAt).toISOString() : null,   // Tables Ready: seat->close turn time feeds the waitlist estimator's learning loop
     status:       check.status || 'paid',
+    voided:       check.voided === true,   // v5.9.72: a void's tombstone (store voidCheck) is flagged, never counted as a sale
     refunds:      check.refunds || [],
     table_id:     check.tableId || null,
     table_label:  check.tableLabel || null,

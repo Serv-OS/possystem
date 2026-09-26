@@ -4540,7 +4540,7 @@ export const useStore = create((set, get) => ({
     }
   },
   voidTabRound: (tabId,roundId) => set(s=>({ tabs:s.tabs.map(t=>{ if(t.id!==tabId)return t; const rounds=t.rounds.filter(r=>r.id!==roundId); return{...t,rounds,total:rounds.reduce((s,r)=>s+r.subtotal,0)}; }) })),
-  seedTabs: () => set({ tabs:[
+  seedTabs: () => { if (!isMock) return; set({ tabs:[
     { id:'t-demo1', ref:'TAB-001', name:'Maria G.', seatId:'B1', tableId:null, openedBy:'Maria', openedAt:Date.now()-22*60000, status:'running', preAuth:false, preAuthAmount:0, note:'Birthday drinks', total:29.8,
       rounds:[
         { id:'r1', sentAt:Date.now()-20*60000, subtotal:17.4, note:'', items:[
@@ -4564,7 +4564,7 @@ export const useStore = create((set, get) => ({
           {uid:'ri9',name:'House white 250ml',price:8.5,qty:1,mods:[],notes:''},
         ]},
       ]},
-  ] }),
+  ] }); },
 
   // ── Cash drawers (v4.6.35) ──────────────────────────────────────
   // First-class drawer entities. Each drawer has a printer that ejects it
@@ -7186,6 +7186,25 @@ export const useStore = create((set, get) => ({
       }, ...s.voidLog],
       activeTableId: s.activeTableId === tableId ? null : s.activeTableId,
     }));
+    // v5.9.72 TOMBSTONE (Leeds, 26 Sep 2026: "this order is being voided but still coming back").
+    // A void left no trace, so any other device holding the same table (a KDS that booted with
+    // it) saw the row vanish and put it back (SessionReconciler self heal). A payment close
+    // writes a closed check that every device treats as the occupation's tombstone
+    // (sync/sessionClosure.js, matched on seatedAt); a void now writes the same, flagged voided
+    // with nothing on it, so the table stays closed everywhere and no report counts money.
+    try {
+      const record = get().buildCloseRecord(session, table, { method: 'void' }) || {};
+      const tomb = {
+        ...record,
+        id: `void-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        voided: true, status: 'void', method: 'void',
+        items: (session.items || []).map(i => ({ ...i, status: 'voided', voided: true })),
+        discounts: [], subtotal: 0, service: 0, tip: 0, total: 0, taxAmount: 0, tenders: [],
+        voidReason: reason || null, voidedBy: manager?.name || null,
+      };
+      set(s => ({ closedChecks: [tomb, ...(s.closedChecks || [])] }));
+      insertClosedCheck(tomb);
+    } catch (e) { console.warn('[voidCheck] tombstone not written:', e?.message || e); }
     showToast(`Check voided by ${manager.name} — ${reason}`, 'error');
   },
 

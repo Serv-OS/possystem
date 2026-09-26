@@ -9,7 +9,7 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode } from '../lib/supabase';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { fetchMenuCategoryLinks } from '../lib/db';
@@ -731,7 +731,8 @@ export default function SyncBridge({ onSyncPulse }) {
     // Session reconciler — polls active_sessions every 10s
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
-    if (!isMock) startSessionReconciler();
+    // v5.9.72: not on a kitchen screen, which only reads tables and must never put one back.
+    if (!isMock && getDeviceMode() !== 'kds') startSessionReconciler();
     // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
     if (!isMock) startTablePlanSync();
     if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX

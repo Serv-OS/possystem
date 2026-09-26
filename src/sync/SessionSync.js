@@ -8,7 +8,7 @@
  * - Supabase Realtime subscription → apply incoming changes from other devices instantly
  */
 
-import { supabase, getLocationId } from '../lib/supabase';
+import { supabase, getLocationId, getDeviceMode } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
@@ -35,6 +35,9 @@ export async function flushSessions() {
   // TRAINING MODE: a training till keeps its tables in-memory only — never publish
   // sessions to active_sessions (no cross-device leak, no stale rows left behind).
   if (isTrainingMode()) return;
+  // v5.9.72: a kitchen screen only READS tables. It never publishes a session (Leeds, 26 Sep: a
+  // KDS that booted with a leaked order kept putting it back after the till voided it).
+  if (getDeviceMode() === 'kds') return;
   // v4.5.0: log every entry + every short-circuit. Silent failures here cost us a real
   // order on 25 Apr 2026 (active_sessions writes were never firing for hours and we
   // had no visibility because the function returned silently).
@@ -279,6 +282,7 @@ export function scheduleFlush() {
 // session, so this never resurrects a legitimately-closed/empty table.
 export function reassertSession(tableId) {
   if (!tableId) return;
+  if (getDeviceMode() === 'kds') return;   // v5.9.72: a kitchen screen never resurrects a table
   // TOMBSTONE GUARD — the one place that stops a cashed-off table being resurrected.
   // Every "the shared row vanished, put ours back" path funnels through here: the
   // SessionReconciler self-heal and both realtime DELETE handlers. If this occupation

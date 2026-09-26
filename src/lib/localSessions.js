@@ -96,10 +96,18 @@ export function readLocalSessions(locationId, { knownTableIds = null, store = br
   let snapshot = {};
   try { backup = JSON.parse(store.getItem(BACKUP_KEY) || '{}') || {}; } catch { backup = {}; }
   try { const s = JSON.parse(store.getItem(SNAPSHOT_KEY) || '{}'); snapshot = (s && isObj(s.sessions)) ? s.sessions : {}; } catch { snapshot = {}; }
-  // With an owner, an untagged session is this venue's (the owner says so); without one, only
-  // a table on this venue's plan vouches for it.
-  const vouch = owner ? new Set(Object.keys({ ...backup, ...snapshot })) : knownTableIds;
-  const b = keepVenueSessions(backup, locationId, vouch);
-  const sn = keepVenueSessions(snapshot, locationId, vouch);
-  return { backup: b.kept, snapshot: sn.kept, foreign: false, owner: owner || null, dropped: b.dropped + sn.dropped };
+  // v5.9.72 (Leeds, 07:41 UTC, "all the orders have just returned"): a local store may rescue a
+  // session ONLY for a table this venue's plan knows. A tag or an owner is not enough: a device
+  // that booted while leaked rows sat in this venue's table tagged them as this venue's own,
+  // kept them in its backup, and put all seven back on its next reload. The venue's rows in
+  // active_sessions are the truth for anything else; the local store is a backup for unsynced
+  // work on real tables. With the plan unknown (the floor read failed) and an owner that
+  // matches, the store is kept as before, so an offline till never loses a real order.
+  const planKnown = knownTableIds instanceof Set;
+  const vouch = planKnown ? knownTableIds : (owner ? new Set(Object.keys({ ...backup, ...snapshot })) : null);
+  const onPlan = (map) => (planKnown ? Object.fromEntries(Object.entries(map).filter(([tid]) => knownTableIds.has(tid))) : map);
+  const b = keepVenueSessions(onPlan(backup), locationId, vouch);
+  const sn = keepVenueSessions(onPlan(snapshot), locationId, vouch);
+  const offPlan = planKnown ? (Object.keys(backup).length - Object.keys(onPlan(backup)).length) + (Object.keys(snapshot).length - Object.keys(onPlan(snapshot)).length) : 0;
+  return { backup: b.kept, snapshot: sn.kept, foreign: false, owner: owner || null, dropped: b.dropped + sn.dropped + offPlan };
 }
