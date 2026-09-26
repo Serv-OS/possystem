@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.74',
+    date: '26 Sep 2026',
+    items: [
+      'Menu boards: the note under the title is about 40% bigger at every size (it could not be read from the counter). Design → Note size still picks S to XL.',
+    ],
+  },
+  {
     v: '5.9.73',
     date: '26 Sep 2026',
     items: [
