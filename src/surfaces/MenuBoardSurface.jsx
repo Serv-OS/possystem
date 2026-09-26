@@ -20,12 +20,12 @@
 // board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
 
 import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
-import { productImage, resolveDefaultProductImage } from '../lib/productImage';
+import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
 import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont } from '../lib/menuBoardSections';
 import { BoardHeader, BoardSection, BoardFooter } from './menuboard/BoardParts';
-import { boardFollowsMenus, resolveBoardMenu, applyMenuToSections } from '../lib/menuBoardMenus';
+import { boardFollowsMenus, resolveBoardMenu } from '../lib/menuBoardMenus';
 import { generatePairingCode } from '../lib/pairingCode';
 // The SAME rule the order screens use for a portrait TV. One implementation, so a
 // menu board and an order screen on two identical TVs cannot disagree (21 Sep 2026).

@@ -33,15 +33,6 @@ const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true,
 // gives every board saved before the flag existed the exact behaviour it has today.
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [], followMenus: false }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
 
-// Same price rule as MenuBoardSurface (shared in src/lib/menuPricing.js): the active
-// menu's tier when one exists, else dineIn, any-channel, base, legacy scalar.
-const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenuId);
-const DIET = { gf: 'GF', glutenfree: 'GF', 'gluten-free': 'GF', 'gluten free': 'GF', v: 'V', veg: 'V', vegetarian: 'V', vg: 'VG', vegan: 'VG', df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF' };
-const dietaryBadges = (it) => {
-  const out = [], seen = new Set();
-  for (const t of (Array.isArray(it.tags) ? it.tags : [])) { const b = DIET[String(t).toLowerCase().trim()]; if (b && !seen.has(b)) { seen.add(b); out.push(b); } }
-  return out;
-};
 // "online" if the screen heartbeat is recent, else a relative last-seen label.
 const seenLabel = (ts) => {
   if (!ts) return { online: false, text: 'never seen' };

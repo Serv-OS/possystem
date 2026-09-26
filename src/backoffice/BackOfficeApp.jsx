@@ -97,6 +97,11 @@ import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 
+// Open-group height for the sidebar's collapse animation: rows are ~34px (8px padding, 12.8px
+// text, 1px gap) plus the list's own padding. Generous per row so nothing is ever clipped; the
+// transition only needs a ceiling. Pure, pinned by src/lib/boSidebar.test.js.
+export const navGroupMaxHeight = (rows) => Math.max(1, Number(rows) || 0) * 44 + 24;
+
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
@@ -808,7 +813,9 @@ export default function BackOfficeApp() {
                   <span style={{ flex:1, fontSize:13.5, fontWeight: hasActive?600:500 }}>{sec.label}</span>
                   <Icon name="chevron" size={13} style={{ color:'var(--t4)', transform: open?'rotate(90deg)':'none', transition:'transform .2s' }} />
                 </button>
-                <div style={{ maxHeight: open ? 460 : 0, overflow:'hidden', transition:'max-height .26s ease' }}>
+                {/* v5.9.69: the cap comes from the row count. A fixed 460px (June reskin) clipped the tail of any
+                    group past 13 rows: Channels reached 14 and "Print menu" vanished under Hardware (Peter, 26 Sep). */}
+                <div style={{ maxHeight: open ? navGroupMaxHeight(sec.children.length) : 0, overflow:'hidden', transition:'max-height .26s ease' }}>
                   <div style={{ marginLeft:21, borderLeft:'1px solid var(--hair, var(--bdr))', display:'flex', flexDirection:'column', gap:1, padding:'3px 0 6px 13px' }}>
                     {sec.children.map(([id, label]) => {
                       const active = section === id;
