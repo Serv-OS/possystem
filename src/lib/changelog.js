@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.78',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: Back Office Customers at 8,000 customers. The page read the newest 1,000 by date, which made the row security check run on every customer (7.5 s as a venue owner, over the 8 s API limit), so the read failed and the page said "No customers yet". It now reads the first page in key order, gets per venue stats by venue instead of listing 1,000 ids in the URL, and a search of two or more letters asks the database, so every customer is findable. A failed read now says so instead of "no customers".',
+      'Migration 20260926b (Peter runs it): the customers security rule in set form, so it runs once per statement, and an index for newest first. Same access, milliseconds instead of seconds.',
+    ],
+  },
+  {
     v: '5.9.77',
     date: '26 Sep 2026',
     items: [
