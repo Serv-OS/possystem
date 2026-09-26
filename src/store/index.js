@@ -103,6 +103,7 @@ import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
+import { voidOccupationKey } from '../lib/rowWriteFence';
 import {
   NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, mayTakeOrRefundMoney,
   isEzcaterOrder, ezcaterOrderNumber,
@@ -7198,6 +7199,9 @@ export const useStore = create((set, get) => ({
         ...record,
         id: `void-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         voided: true, status: 'void', method: 'void',
+        // v5.9.81: the occupation key; openedAt when there is no seatedAt (a QR floor session), so
+        // the void closes it on every device (lib/rowWriteFence.js checkClosesOccupation).
+        seatedAt: voidOccupationKey(session),
         items: (session.items || []).map(i => ({ ...i, status: 'voided', voided: true })),
         discounts: [], subtotal: 0, service: 0, tip: 0, total: 0, taxAmount: 0, tenders: [],
         voidReason: reason || null, voidedBy: manager?.name || null,

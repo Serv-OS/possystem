@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.81',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: a voided QR table order stays voided. The leaked demo QR order on table t1 at Coffee Boy Leeds came back about 20 seconds after every void: a QR order has an opened time but no seated time, the void\'s close record matched nothing, and the till rebuilt the table every 15 seconds. A void now records the opened time when there is no seated time, and every device treats that void as closing the order. Payments are unchanged (a QR payment is never matched on the opened time, so an open QR tab can never be hidden).',
+    ],
+  },
+  {
     v: '5.9.80',
     date: '26 Sep 2026',
     items: [
