@@ -313,3 +313,130 @@ export function boardColors(theme = {}) {
     priceText: '#1c1206',
   };
 }
+
+// ── Filling the columns (v5.9.76) ─────────────────────────────────────────────────────────
+// Peter's photo of the Leeds board (26 Sep 2026): two columns of whole categories left the
+// bottom right corner empty, because nothing could move into it, and the fit could not grow the
+// type past the tallest column. Now the board is packed from MEASURED row heights: a category may
+// continue in the next column, newspaper style, with its size header (Small · Big · XL) repeated
+// at the top of the continuation; a heading never ends a column; a size header never ends a
+// column; a text or image panel moves whole; a Full width block is its own band across every
+// column. The columns of a band are levelled at the lowest height that holds everything (a
+// binary search), so the fit loop can grow the type until the screen is full.
+//
+// measured: the page's sections in order, in px at the font being tried (null = nothing to show):
+//   { atomic: true, h, span }                          a panel or a Full width block (whole)
+//   { head, runs: [{ sizes, items: [h, ...] }], after } a category: heading height, each size run's
+//                                                       header row (0 = none) and row heights, the gap below
+// Returns { fits, height, bands }:
+//   bands  [{ wide: true, sec, height }] or [{ cols: [[piece, ...], ...], height }]
+//   piece  { sec, kind: 'head' | 'atomic' | 'run', run, from, to, last }   rows from..to (to exclusive)
+// whole = true keeps every category in one column (the look before v5.9.76, Layout & display).
+export function packBoard(measured, { cols = 1, height = 0, whole = false } = {}) {
+  const n = Math.max(1, Math.floor(Number(cols) || 1));
+  const H = Math.max(0, Number(height) || 0);
+  const bands = [];
+  let cur = [];
+  const flush = () => { if (cur.length) { bands.push({ units: cur }); cur = []; } };
+  (Array.isArray(measured) ? measured : []).forEach((sec, si) => {
+    if (!sec) return;
+    if (sec.atomic && sec.span === 'all') { flush(); bands.push({ wide: true, sec: si, h: Number(sec.h) || 0 }); return; }
+    cur.push(...sectionUnits(sec, si, whole));
+  });
+  flush();
+  let total = 0, fits = true;
+  const out = bands.map((b) => {
+    if (b.wide) { total += b.h; return { wide: true, sec: b.sec, height: b.h }; }
+    const packed = packBand(b.units, n, H);
+    if (!packed) { fits = false; return { cols: [], height: 0 }; }
+    total += packed.height;
+    return { cols: packed.cols.map(piecesOf), height: packed.height };
+  });
+  if (total > H + 0.5) fits = false;
+  return { fits, height: total, bands: out };
+}
+
+/** A section as the rows the packer moves, in order; the gap below rides on its last row. */
+function sectionUnits(sec, si, whole) {
+  const units = [];
+  if (sec.atomic) units.push({ sec: si, kind: 'atomic', h: Number(sec.h) || 0 });
+  else {
+    const runs = Array.isArray(sec.runs) ? sec.runs : [];
+    if ((Number(sec.head) || 0) > 0 || !runs.length) units.push({ sec: si, kind: 'head', h: Number(sec.head) || 0 });
+    runs.forEach((r, ri) => {
+      const sizes = Number(r?.sizes) || 0;
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (sizes > 0) units.push({ sec: si, kind: 'sizes', run: ri, at: 0, h: sizes });
+      items.forEach((h, i) => units.push({ sec: si, kind: 'item', run: ri, i, h: Number(h) || 0, sizes }));
+    });
+    if (units.length) units[units.length - 1].h += Number(sec.after) || 0;
+  }
+  if (units.length) units[units.length - 1].last = true;
+  if (whole) units.forEach((u) => { u.whole = true; });
+  return units;
+}
+
+/** How many rows from k must stay together: a heading with its first row (and size header), a size header with a row, a whole section when asked. */
+function groupLen(units, k) {
+  const u = units[k];
+  if (u.whole) { let g = 1; while (units[k + g] && units[k + g].sec === u.sec) g++; return k === firstOf(units, k) ? g : 1; }
+  if (u.kind === 'head') { let g = 1; if (units[k + g] && units[k + g].kind === 'sizes') g++; if (units[k + g] && units[k + g].kind === 'item') g++; return g; }
+  if (u.kind === 'sizes') return units[k + 1] && units[k + 1].kind === 'item' ? 2 : 1;
+  return 1;
+}
+const firstOf = (units, k) => { let j = k; while (j > 0 && units[j - 1].sec === units[k].sec) j--; return j; };
+
+/** The rows into at most n columns of height t, in order; null when they do not fit. */
+function packAt(units, n, t) {
+  const cols = [[]];
+  let y = 0;
+  for (let k = 0; k < units.length; k++) {
+    const u = units[k];
+    const g = groupLen(units, k);
+    let need = 0;
+    for (let j = 0; j < g; j++) need += units[k + j].h;
+    const cont = u.kind === 'item' && u.i > 0 && u.sizes > 0;   // a continuation repeats its size header
+    if (y + need > t + 0.01) {
+      if (y === 0 || cols.length >= n) return null;
+      cols.push([]); y = 0;
+      if (cont) { cols[cols.length - 1].push({ sec: u.sec, kind: 'sizes', run: u.run, at: u.i, h: u.sizes, repeat: true }); y = u.sizes; }
+      if (y + need > t + 0.01) return null;
+    }
+    cols[cols.length - 1].push(u); y += u.h;
+  }
+  return cols;
+}
+
+/** The lowest column height that holds a band's rows in n columns, and the columns at it. */
+function packBand(units, n, H) {
+  if (!units.length) return { cols: [], height: 0 };
+  if (!packAt(units, n, H)) return null;
+  let lo = 0, hi = Math.ceil(H), best = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const c = packAt(units, n, mid);
+    if (c) { best = c; hi = mid - 1; } else lo = mid + 1;
+  }
+  const cols = best || packAt(units, n, H);
+  const height = Math.max(0, ...cols.map((c) => c.reduce((s, u) => s + u.h, 0)));
+  return { cols, height };
+}
+
+/** One column's rows as pieces to draw: a heading, a panel, or a run's rows from..to (with its size header). */
+function piecesOf(col) {
+  const out = [];
+  for (const u of col) {
+    const last = out[out.length - 1];
+    if (u.kind === 'head' || u.kind === 'atomic') { out.push({ sec: u.sec, kind: u.kind, last: !!u.last }); continue; }
+    if (u.kind === 'sizes') {
+      if (!(last && last.kind === 'run' && last.sec === u.sec && last.run === u.run && last.to === u.at)) out.push({ sec: u.sec, kind: 'run', run: u.run, from: u.at, to: u.at, last: false });
+      continue;
+    }
+    if (last && last.kind === 'run' && last.sec === u.sec && last.run === u.run && last.to === u.i) { last.to = u.i + 1; last.last = !!u.last; }
+    else out.push({ sec: u.sec, kind: 'run', run: u.run, from: u.i, to: u.i + 1, last: !!u.last });
+  }
+  return out;
+}
+
+/** Layout & display → keep categories whole? Default: fill (a category may continue in the next column). */
+export const boardKeepsWhole = (disp) => (disp && disp.flow) === 'whole';

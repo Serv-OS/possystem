@@ -191,23 +191,26 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   const tv = read('surfaces/MenuBoardSurface.jsx');
   assert.match(tv, /from '\.\/menuboard\/BoardParts'/);
   assert.match(tv, /<BoardHeader theme=\{theme\}/);
-  assert.match(tv, /<BoardSection defaultImage=\{data\.defaultImage\} key=\{sec\.id\}/);
+  // v5.9.76: the body measures, packs and fits (BoardParts BoardBody); the surfaces only pick the column count.
+  assert.match(tv, /<BoardBody rootRef=\{boardRef\} sections=\{sections\} cols=\{cols\} textScale=\{textScale\} fontRange=\{FIT\} gapEm=\{1\.7\} whole=\{boardKeepsWhole\(disp\)\} fitKey=\{fitKey\}/);
+  assert.match(tv, /defaultImage=\{data\.defaultImage\}/);
   assert.match(tv, /<BoardFooter theme=\{theme\} live pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
-  assert.match(tv, /columnFill: 'balance'/, 'columns end level');
-  assert.match(tv, /sizeGrid: true \}/, 'the price grid is the default');
-  assert.match(tv, /boardColumns\(\{ textScale, orientation, fixedCols, totalItems \}\)/);
-  assert.match(tv, /scaledFont\(fitFont\(fits, \{ min: FIT\.min, max: FIT\.max \}\), textScale, FIT\.min\)/);
+  assert.doesNotMatch(tv, /columnFill|columnCount|fitFont|scaledFont\(/, 'no CSS columns and no fit loop of its own on the TV');
+  assert.match(tv, /sizeGrid: true, flow: 'fill' \}/, 'the price grid and the filled columns are the defaults');
+  assert.match(tv, /const cols = boardColumns\(\{ textScale, orientation, fixedCols, totalItems \}\)/);
+  assert.match(tv, /const allSections = useMemo\(/, 'sections are memoised, or the body would fit on every render');
   assert.doesNotMatch(tv, /^function Section\(/m, 'no private section renderer on the TV');
   const bo = read('backoffice/sections/MenuBoards.jsx');
   assert.match(bo, /from '\.\.\/\.\.\/surfaces\/menuboard\/BoardParts'/);
   assert.match(bo, /<BoardHeader theme=\{t\}/);
-  assert.match(bo, /<BoardSection key=\{sec\.id\} sec=\{sec\} theme=\{t\}/);
+  assert.match(bo, /<BoardBody rootRef=\{rootRef\} sections=\{secs\} cols=\{cols\} textScale=\{disp\.textScale\} fontRange=\{PREVIEW_FIT\} gapEm=\{1\.7\} whole=\{boardKeepsWhole\(disp\)\}/, 'the preview is the TV in miniature: same body, same rule');
   assert.match(bo, /<BoardFooter theme=\{t\} pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
-  assert.match(bo, /columnFill: 'balance'/, 'the preview balances like the TV');
-  assert.match(bo, /sizeGrid: true \}/, 'the builder default agrees with the TV');
-  assert.match(bo, /boardColumns\(\{ textScale: board\.display_options\?\.textScale, orientation: board\.orientation, fixedCols, totalItems \}\)/);
-  assert.match(bo, /scaledFont\(fitFont\(fits, \{ min: 4, max: 44 \}\), board\.display_options\?\.textScale, 4\)/);
-  assert.match(bo, /rootRef\.current/, 'the preview fits its whole frame, header and footer included, like the TV root');
+  assert.doesNotMatch(bo, /columnFill|columnCount|fitFont|scaledFont\(/, 'no CSS columns and no fit loop of its own in the preview');
+  assert.match(bo, /sizeGrid: true, flow: 'fill' \}/, 'the builder default agrees with the TV');
+  assert.match(bo, /const cols = boardColumns\(\{ textScale: board\.display_options\?\.textScale, orientation: board\.orientation, fixedCols, totalItems \}\)/);
+  assert.match(bo, /const allSecs = useMemo\(/, 'sections are memoised, or the body would fit on every render');
+  assert.match(bo, /label="Fill the columns: a long category continues in the next column/, 'Layout & display has the switch');
+  assert.match(bo, /set=\{v => setDisp\(\{ flow: v \? 'fill' : 'whole' \}\)\}/);
 });
 
 

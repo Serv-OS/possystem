@@ -53,7 +53,7 @@ test('the whole board turns, and the fit is measured on the turned stage', () =>
   assert.match(SURFACE, /position: 'fixed', inset: 0, overflow: 'hidden',/);
   // the auto-fit binary search must re-run when the stage changes shape, or the
   // menu is sized to the screen it is no longer drawn on
-  assert.match(SURFACE, /fitTick, activeMenuId, stage\.w, stage\.h, page, pages\.length\]\);/   /* v5.9.71: the fit re-runs per page too */);
+  assert.match(SURFACE, /const fitKey = \[fitTick, stage\.w, stage\.h, orientation, page, pages\.length\]\.join\('\|'\);/   /* v5.9.71: the fit re-runs per page too; v5.9.76: as the body's fitKey */);
   assert.match(SURFACE, /setViewport\(\{ vw: window\.innerWidth \|\| 0, vh: window\.innerHeight \|\| 0 \}\);/);
 });
 

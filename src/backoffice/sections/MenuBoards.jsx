@@ -9,7 +9,7 @@
 // the menu live on the venue clock; the preview mirrors the TV through the same
 // shared helpers (src/lib/menuBoardMenus.js).
 
-import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { reportSave } from '../../lib/saveHealth';
@@ -18,8 +18,8 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
-import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
-import { BoardHeader, BoardSection, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
+import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
+import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
 
 const ASSET_BUCKET = 'receipt-assets';
@@ -29,7 +29,7 @@ const DEF_THEME = {
   // v5.9.68 design (lib/menuBoardSections.js boardSizes / boardColors; the TV's DEFAULT_THEME agrees)
   title: '', subtitle: '', titleColor: '', titleSize: 'm', logoSize: 'l', headingColor: '', headingSize: 'm', headingRule: true, headerRule: true, itemSize: 'm', priceStyle: 'pill', priceColor: '',
 };
-const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true };
+const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false, sizeGrid: true, flow: 'fill' };
 // followMenus defaults false here so the Edit merge (`{ ...newBoard(1).layout, ...b.layout }`)
 // gives every board saved before the flag existed the exact behaviour it has today.
 const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [], followMenus: false }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
@@ -530,6 +530,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   100% is the largest text that fills the screen. Smaller sizes leave room around the menu. Larger sizes open more columns to make room, then take the biggest size that still fits. The preview uses the same rule as the TV.
                 </div>
                 <Toggle on={board.display_options.sizeGrid !== false} label="Price grid by size (Small · Big · XL across the top)" set={v => setDisp({ sizeGrid: v })} />
+                <Toggle on={board.display_options.flow !== 'whole'} label="Fill the columns: a long category continues in the next column, its size header repeated (off = every category stays in one column)" set={v => setDisp({ flow: v ? 'fill' : 'whole' })} />
                 {blocks.some(isPageBreak) && (
                   <Field label="Seconds per page">
                     <input type="number" min={5} max={600} style={{ ...S.inp, width: 90 }} value={board.layout?.pageSeconds ?? DEFAULT_PAGE_SECONDS}
@@ -616,17 +617,18 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
 // activeMenuId: the menu the board follows right now (Follow timed menus), or null.
 // It narrows the arranged blocks exactly as the TV does (same shared helper, same
 // never-blank fallback) and picks the price tier. Null = arranged blocks, no tier.
+const PREVIEW_FIT = { min: 4, max: 44 };
 function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links = [], activeMenuId = null }) {
   const t = { ...DEF_THEME, ...board.theme };
   const disp = { ...DEF_DISP, ...board.display_options };
   const ar = board.orientation === 'portrait' ? '9 / 16' : '16 / 9';
-  const rootRef = useRef(null), areaRef = useRef(null), flowRef = useRef(null);
+  const rootRef = useRef(null);
 
-  const blocks = board.layout?.blocks || [];
+  const blocks = board.layout?.blocks;
   // The TV's sections exactly (lib/menuBoardSections.js): subcategories, headings, add-ons, text
   // and image panels, and page breaks rotating on the same clock as the TV.
-  const allSecs = boardSectionsForMenu(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat }), { categories: allCats, links, activeMenuId });
-  const pages = boardPages(allSecs);
+  const allSecs = useMemo(() => boardSectionsForMenu(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat }), { categories: allCats, links, activeMenuId }), [blocks, allCats, itemsByCat, addOnsByCat, links, activeMenuId]);
+  const pages = useMemo(() => boardPages(allSecs), [allSecs]);
   const [page, setPage] = useState(0);
   const pageMs = pageSeconds(board.layout) * 1000;
   useEffect(() => {
@@ -638,22 +640,8 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
   const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
-  // mini auto-fit: mirror the live board exactly — explicit integer column count
-  // (text-size preference → more columns = bigger fill text), column-fill:auto so
-  // columns fill top-to-bottom, and the font grows until the content fills without
-  // clipping. Never column-width:auto (it would clip silently on the real board).
-  useLayoutEffect(() => {
-    const area = areaRef.current, flow = flowRef.current;
-    if (!area || !flow) return;
-    const root = rootRef.current;
-    if (!root) return;
-    // The TV's rule, on the preview's own frame (v5.9.68): header, sections and footer all scale.
-    const cols = boardColumns({ textScale: board.display_options?.textScale, orientation: board.orientation, fixedCols, totalItems });
-    flow.style.columnWidth = 'auto';
-    flow.style.columnCount = String(cols);
-    const fits = (px) => { root.style.fontSize = px + 'px'; return flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1; };
-    root.style.fontSize = scaledFont(fitFont(fits, { min: 4, max: 44 }), board.display_options?.textScale, 4) + 'px';
-  });
+  // The TV's rule, on the preview's own frame (v5.9.76): the body measures, packs and fits.
+  const cols = boardColumns({ textScale: board.display_options?.textScale, orientation: board.orientation, fixedCols, totalItems });
 
   if (board.mode === 'marketing') {
     const slides = marketingSlides(board.marketing);
@@ -670,10 +658,9 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
         <BoardHeader theme={t} name={board.name} />
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
-          : <div ref={areaRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'balance' }}>
-                {secs.map(sec => <BoardSection key={sec.id} sec={sec} theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />)}
-              </div>
+          : <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              <BoardBody rootRef={rootRef} sections={secs} cols={cols} textScale={disp.textScale} fontRange={PREVIEW_FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={String(page)}
+                theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />
             </div>}
         <BoardFooter theme={t} pages={pages.length} page={page % pages.length} />
       </div>
