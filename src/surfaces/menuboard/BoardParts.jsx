@@ -7,14 +7,65 @@
 // operator saw was not what the screen showed. Design choices (theme.*) resolve through
 // lib/menuBoardSections.js boardSizes / boardColors; the rules for what is listed live there too.
 
-import { Fragment } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { money } from '../../lib/currency';
 import { dietaryBadges } from '../../lib/dietary';
 import { productImage } from '../../lib/productImage';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { boardSizes, boardColors, sizeRuns, sizeName } from '../../lib/menuBoardSections';
+import { slideHoldMs, nextSlideIndex, ratioCss } from '../../lib/menuBoardSlides';
 
 const upper = (mode) => (mode === 'as-typed' ? 'none' : 'uppercase');
+
+// ── Slideshow (v5.9.71): images and videos one after another, for Marketing mode (full screen)
+// and the image panel inside a menu. An image stays slide.seconds; a video plays through
+// (advances on ended, lib/menuBoardSlides.js VIDEO_SAFETY_MS as the net). The slide before
+// fades out over the new one; the next image is fetched ahead. One slide, or a single video,
+// just sits (a lone video loops). Fills its parent: give the parent position and a size.
+const FADE_MS = 800;
+const layerStyle = (fit) => ({ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: fit === 'contain' ? 'contain' : 'cover', display: 'block' });
+
+export function Slideshow({ slides = [], fit = 'cover', transition = 'fade' }) {
+  const list = (Array.isArray(slides) ? slides : []).filter((s) => s && s.url);
+  const key = list.map((s) => s.url).join('|');
+  const [i, setI] = useState(0);
+  const [prev, setPrev] = useState(null);
+  useEffect(() => { setI(0); setPrev(null); }, [key]);
+  const n = list.length;
+  const cur = n ? list[i % n] : null;
+  const advance = () => {
+    if (n < 2) return;
+    setPrev(transition === 'none' ? null : i % n);
+    setI((x) => nextSlideIndex(x, n));
+  };
+  useEffect(() => {
+    if (!cur || n < 2) return undefined;
+    const t = setTimeout(advance, slideHoldMs(cur));
+    return () => clearTimeout(t);
+  }, [i, key, n]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (n < 2) return;
+    const next = list[nextSlideIndex(i, n)];
+    if (next && next.type !== 'video') { const img = new Image(); img.src = next.url; }
+  }, [i, key, n]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (prev == null) return undefined;
+    const t = setTimeout(() => setPrev(null), FADE_MS);
+    return () => clearTimeout(t);
+  }, [prev]);
+  if (!cur) return null;
+  const layer = (s, k, fading) => (s.type === 'video'
+    ? <video key={k} src={s.url} autoPlay muted playsInline loop={n < 2} onEnded={() => { if (n > 1) advance(); }}
+        style={{ ...layerStyle(fit), ...(fading ? { animation: `mbFadeOut ${FADE_MS}ms ease forwards`, pointerEvents: 'none' } : {}) }} />
+    : <img key={k} src={s.url} alt="" style={{ ...layerStyle(fit), ...(fading ? { animation: `mbFadeOut ${FADE_MS}ms ease forwards`, pointerEvents: 'none' } : {}) }} />);
+  return (
+    <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: '#000' }}>
+      <style>{'@keyframes mbFadeOut { from { opacity: 1 } to { opacity: 0 } }'}</style>
+      {layer(cur, `c-${i % n}`, false)}
+      {prev != null && prev !== i % n && list[prev] && layer(list[prev], `p-${prev}`, true)}
+    </div>
+  );
+}
 
 export function BoardHeader({ theme = {}, name = '' }) {
   const sz = boardSizes(theme), c = boardColors(theme);
@@ -33,18 +84,23 @@ export function BoardHeader({ theme = {}, name = '' }) {
       {(title || note) && (
         <div style={{ textAlign: 'right', minWidth: 0 }}>
           {title && <div style={{ fontSize: `${sz.title}em`, fontWeight: 800, letterSpacing: '.06em', textTransform: upper(theme.titleCase), color: c.title, lineHeight: 1.05 }}>{title}</div>}
-          {note && <div style={{ fontSize: '0.36em', color: c.muted, marginTop: '.4em', whiteSpace: 'pre-line', lineHeight: 1.3 }}>{note}</div>}
+          {note && <div style={{ fontSize: `${sz.note}em`, color: c.muted, marginTop: '.4em', whiteSpace: 'pre-line', lineHeight: 1.3 }}>{note}</div>}
         </div>
       )}
     </div>
   );
 }
 
-export function BoardFooter({ theme = {}, live = false }) {
+export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0 }) {
   const c = boardColors(theme);
   return (
     <div style={{ flex: '0 0 auto', borderTop: `0.04em solid ${c.muted}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.32em', color: c.muted }}>
       <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}</span>
+      {pages > 1 && (
+        <span style={{ display: 'flex', gap: '.5em', alignItems: 'center' }} aria-label={`Page ${page + 1} of ${pages}`}>
+          {Array.from({ length: pages }, (_, k) => <span key={k} style={{ width: '.6em', height: '.6em', borderRadius: '50%', background: k === page ? c.heading : `${c.muted}66`, display: 'inline-block' }} />)}
+        </span>
+      )}
       {live && (
         <span style={{ display: 'flex', alignItems: 'center', gap: '.5em', opacity: .8 }}>
           <span style={{ width: '.55em', height: '.55em', borderRadius: '50%', background: '#3BD16F', display: 'inline-block' }} />Live
@@ -208,6 +264,15 @@ export function BoardSection({ sec, theme = {}, disp = {}, six, activeMenuId = n
   const spanAll = sec.span === 'all';
   const wrap = { marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(spanAll ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : {}) };
   if (sec.type === 'text') return <TextPanel sec={sec} wrap={wrap} theme={theme} sz={sz} c={c} />;
+  if (sec.type === 'image') {
+    // v5.9.71: a picture, or a slideshow, among the categories. The shape sets the height from
+    // the column width, so the fit loop measures it like any other block.
+    return (
+      <div style={{ ...wrap, position: 'relative', aspectRatio: ratioCss(sec.ratio), borderRadius: '0.4em', overflow: 'hidden', background: '#000' }}>
+        <Slideshow slides={sec.slides} fit={sec.fit} />
+      </div>
+    );
+  }
   const sold = (id) => !!(six && typeof six.has === 'function' && six.has(id));
   const price = (it) => resolveBoardPrice(it, activeMenuId);
   const ctx = { theme, disp, sz, c, sold, price, defaultImage };
