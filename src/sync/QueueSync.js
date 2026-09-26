@@ -17,7 +17,7 @@
  * a restart never re-uploads rows the server already has (the old zombie path).
  */
 
-import { supabase, getLocationId } from '../lib/supabase';
+import { supabase, getLocationId, getDeviceMode } from '../lib/supabase';
 import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
@@ -399,7 +399,8 @@ export async function flushQueues() {
   primeQueueSync(_locationId);   // whichever path resolved the location, never flush against an empty latch
   const state = useStore.getState();
   const queue = state.orderQueue || [];
-  const tabs = state.tabs || [];
+  // v5.9.72: a kitchen screen never publishes bar tabs (it only reads them); see SessionSync.
+  const tabs = getDeviceMode() === 'kds' ? [] : (state.tabs || []);
 
   // Scale: collect changed rows and fire ONE batched write per table instead of one network
   // round-trip per row (a busy venue / catering wave could otherwise emit hundreds per flush).

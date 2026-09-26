@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.72',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: a voided table order stays voided on every device. A void left no record, so another device holding the same table (a kitchen screen that booted with it) put it back as soon as the till cleared it. A void now writes a closed check flagged voided with nothing on it, the same tombstone a payment leaves, so no device resurrects it and no report counts it.',
+      'FIX: the two demo bar tabs (TAB-001 Maria G., TAB-002 Table 4 bar) were seeded on any venue whose Bar screen opened with no tabs and published as real tabs. They are seeded in demo mode only now.',
+      'FIX: a kitchen screen only reads tables and tabs. It no longer runs the table self-heal or publishes sessions or bar tabs.',
+    ],
+  },
+  {
     v: '5.9.71',
     date: '26 Sep 2026',
     items: [
