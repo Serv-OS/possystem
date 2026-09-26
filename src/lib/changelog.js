@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.70',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: Card readers. "Pay at table on this reader" now also hides (or shows) the Pay at table button on the reader\'s own screen. Before, the switch only told the till, while the store settings sent the button ON to every reader, so a reader switched off kept showing it. Adding a reader and "Send reader settings to Adyen" keep the readers you switched off, off. The reader applies it on its next sync (Admin menu, Sync) or a restart.',
+    ],
+  },
+  {
     v: '5.9.69',
     date: '26 Sep 2026',
     items: [

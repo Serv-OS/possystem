@@ -235,16 +235,66 @@ export function buildEventUrls(supabaseUrl, pair) {
 
 // nexo.notification: the Pay at table button on the reader menu. Empty
 // details means the button fires the SaleWakeUp event straight away and the
-// responder answers with the open tables menu.
-export function buildNotification(title = PAY_AT_TABLE_TITLE) {
-  return { enabled: true, showButton: true, title: str(title).slice(0, 40) || PAY_AT_TABLE_TITLE, category: 'SaleWakeUp', details: '' };
+// responder answers with the open tables menu. `enabled` false (v5.9.70) is
+// the TERMINAL level override for a reader whose switch is off: the button
+// is hidden on that reader only, the store keeps its setting.
+export function buildNotification(title = PAY_AT_TABLE_TITLE, enabled = true) {
+  const on = enabled !== false;
+  return { enabled: on, showButton: on, title: str(title).slice(0, 40) || PAY_AT_TABLE_TITLE, category: 'SaleWakeUp', details: '' };
 }
 
-export function buildPayAtTable() {
-  return { enablePayAtTable: true, paymentInstrument: 'Card' };
+export function buildPayAtTable(enabled = true) {
+  return { enablePayAtTable: enabled !== false, paymentInstrument: 'Card' };
 }
 
 export const STORE_SETTING_KEYS = Object.freeze(['event_url', 'wakeup_button', 'pay_at_table', 'tips']);
+
+// The two groups a reader's own switch sends to /terminals/{id}/terminalSettings
+// (v5.9.70, Peter 26 Sep 2026: "pay at table still showing despite me turning
+// it off"). modes.table_pay only told the till side; the button on the reader's
+// screen is Adyen's, and the store sync sent it ON to every reader. A terminal
+// level setting outranks the store's, so this hides it on one reader and
+// leaves the rest alone. Same shape as the store patches so one reporter
+// (terminalTablePayOutcome) reads both.
+export const TERMINAL_SETTING_KEYS = Object.freeze(['wakeup_button', 'pay_at_table']);
+
+export function buildTerminalTablePayPatches(enabled) {
+  const on = enabled !== false;
+  const w = PATCH_WORDS;
+  return [
+    { key: 'wakeup_button', ...w.wakeup_button, body: { nexo: { notification: buildNotification(PAY_AT_TABLE_TITLE, on) } }, missing: null, skipped: null },
+    { key: 'pay_at_table', ...w.pay_at_table, body: { payAtTable: buildPayAtTable(on) }, missing: null, skipped: null },
+  ];
+}
+
+// The plain line for an applied terminal patch, on or off.
+export function terminalTablePayLine(key, enabled) {
+  const on = enabled !== false;
+  switch (key) {
+    case 'wakeup_button': return on ? 'The Pay at table button is back on this reader\'s menu.' : 'The Pay at table button is off this reader\'s menu.';
+    case 'pay_at_table': return on ? 'Pay at table is on for this reader.' : 'Pay at table is off for this reader.';
+    default: return `${key} applied.`;
+  }
+}
+
+// applied / errors for a reader's own patches: the same words as the store
+// sync, the lines from terminalTablePayLine.
+export function terminalTablePayOutcome(patches, results, enabled) {
+  const byKey = new Map((Array.isArray(results) ? results : []).filter(isObj).map((r) => [str(r.key), r]));
+  const applied = [];
+  const errors = [];
+  for (const p of Array.isArray(patches) ? patches : []) {
+    if (!isObj(p)) continue;
+    const key = str(p.key);
+    const words = PATCH_WORDS[key] || { noun: str(p.label) || key, notSent: `${str(p.label) || key} was not sent.` };
+    const r = byKey.get(key);
+    if (!r) { errors.push({ key, text: words.notSent, detail: null }); continue; }
+    if (r.ok) applied.push(terminalTablePayLine(key, enabled));
+    else if (r.status === 401 || r.status === 403) errors.push({ key, text: `Adyen refused ${words.noun} for this reader. Contact ServOS support.`, detail: `refused (${r.status}): the Adyen credential lacks the Management role for terminal settings` });
+    else errors.push({ key, text: `Adyen did not take ${words.noun} for this reader.`, detail: plainAdyenDetail(r.detail, `Adyen answered ${r.status || 'with an error'}`) });
+  }
+  return { ok: errors.length === 0, applied, errors };
+}
 
 // The words each group is named with in a sentence (10 Sep 2026): `label` is
 // the group's name, `noun` goes inside "Adyen did not take ...", and

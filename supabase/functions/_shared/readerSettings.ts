@@ -208,15 +208,56 @@ export function buildEventUrls(supabaseUrl: unknown, pair: AuthPair | null | und
   return { eventLocalUrls: [], eventPublicUrls: [{ url: eventUrlWithKey(endpoint, pass), username: user, password: pass }] };
 }
 
-export function buildNotification(title: unknown = PAY_AT_TABLE_TITLE): Dict {
-  return { enabled: true, showButton: true, title: str(title).slice(0, 40) || PAY_AT_TABLE_TITLE, category: 'SaleWakeUp', details: '' };
+export function buildNotification(title: unknown = PAY_AT_TABLE_TITLE, enabled: unknown = true): Dict {
+  const on = enabled !== false;
+  return { enabled: on, showButton: on, title: str(title).slice(0, 40) || PAY_AT_TABLE_TITLE, category: 'SaleWakeUp', details: '' };
 }
 
-export function buildPayAtTable(): Dict {
-  return { enablePayAtTable: true, paymentInstrument: 'Card' };
+export function buildPayAtTable(enabled: unknown = true): Dict {
+  return { enablePayAtTable: enabled !== false, paymentInstrument: 'Card' };
 }
 
 export const STORE_SETTING_KEYS: readonly string[] = Object.freeze(['event_url', 'wakeup_button', 'pay_at_table', 'tips']);
+
+// v5.9.70: the two groups a reader's own switch sends to /terminals/{id}/terminalSettings.
+// A terminal level setting outranks the store's, so a reader whose switch is off hides its
+// Pay at table button while the rest of the store keeps it. MIRROR of the JS copy.
+export const TERMINAL_SETTING_KEYS: readonly string[] = Object.freeze(['wakeup_button', 'pay_at_table']);
+
+export function buildTerminalTablePayPatches(enabled: unknown): StorePatch[] {
+  const on = enabled !== false;
+  const w = PATCH_WORDS;
+  return [
+    { key: 'wakeup_button', ...w.wakeup_button, body: { nexo: { notification: buildNotification(PAY_AT_TABLE_TITLE, on) } }, missing: null, skipped: null },
+    { key: 'pay_at_table', ...w.pay_at_table, body: { payAtTable: buildPayAtTable(on) }, missing: null, skipped: null },
+  ];
+}
+
+export function terminalTablePayLine(key: unknown, enabled: unknown): string {
+  const on = enabled !== false;
+  switch (str(key)) {
+    case 'wakeup_button': return on ? 'The Pay at table button is back on this reader\'s menu.' : 'The Pay at table button is off this reader\'s menu.';
+    case 'pay_at_table': return on ? 'Pay at table is on for this reader.' : 'Pay at table is off for this reader.';
+    default: return `${str(key)} applied.`;
+  }
+}
+
+export function terminalTablePayOutcome(patches: unknown, results: unknown, enabled: unknown): { ok: boolean; applied: string[]; errors: SettingsError[] } {
+  const byKey = new Map<string, Dict>((Array.isArray(results) ? results : []).filter(isObj).map((r) => [str(r.key), r]));
+  const applied: string[] = [];
+  const errors: SettingsError[] = [];
+  for (const p of Array.isArray(patches) ? patches : []) {
+    if (!isObj(p)) continue;
+    const key = str(p.key);
+    const words = PATCH_WORDS[key] || { noun: str(p.label) || key, notSent: `${str(p.label) || key} was not sent.` };
+    const r = byKey.get(key);
+    if (!r) { errors.push({ key, text: words.notSent, detail: null }); continue; }
+    if (r.ok) applied.push(terminalTablePayLine(key, enabled));
+    else if (r.status === 401 || r.status === 403) errors.push({ key, text: `Adyen refused ${words.noun} for this reader. Contact ServOS support.`, detail: `refused (${r.status}): the Adyen credential lacks the Management role for terminal settings` });
+    else errors.push({ key, text: `Adyen did not take ${words.noun} for this reader.`, detail: plainAdyenDetail(r.detail, `Adyen answered ${r.status || 'with an error'}`) });
+  }
+  return { ok: errors.length === 0, applied, errors };
+}
 
 const PATCH_WORDS: Readonly<Record<string, { label: string; noun: string; notSent: string }>> = Object.freeze({
   event_url: { label: 'Reader updates', noun: 'the address the readers send updates to', notSent: 'The address the readers send updates to was not sent.' },

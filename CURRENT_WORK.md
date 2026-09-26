@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.70, reader Pay at table override (branch fix/reader-pay-at-table-override)
+
+- Peter: Leeds reader onboarded, Pay at table switched off, button still on the reader. Live row terminal_devices 98be89ef (AMS1-000168253677488) had modes.table_pay=false since 25 Sep 19:07 UTC: the switch saved; only the till side read it. The button is Adyen's nexo.notification (SaleWakeUp) + payAtTable, sent ON to the STORE by sync_store_settings (05:44 UTC that morning).
+- Fix: terminal level override. readerSettings (JS + TS mirror): buildNotification(title, enabled), buildPayAtTable(enabled), buildTerminalTablePayPatches, terminalTablePayOutcome. adyen-terminal-admin: action terminal_table_pay_set (PATCH /terminals/{poiid}/terminalSettings, two groups) + the store sync re-sends the OFF override for every reader with table_pay false. Back Office switch calls it and reports Adyen's answer; the reader applies on its next sync or restart. Edge fn DEPLOYED with this release.
+- "Manual payments not gone through" = the standalone switch; it is written at terminal level already and read back from Adyen; the reader needs a sync/restart to show it.
+
 # Session, 26 Sep 2026, v5.9.69, sidebar clip + lint gate (branch fix/bo-sidebar-clip)
 
 - Sidebar: BackOfficeApp nav groups used maxHeight 460 (June reskin); Channels reached 14 rows and the tail clipped. navGroupMaxHeight(rows) = rows*44+24, pinned by src/lib/boSidebar.test.js.

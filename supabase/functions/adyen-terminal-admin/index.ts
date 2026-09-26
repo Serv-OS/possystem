@@ -223,6 +223,7 @@ import {
 import {
   readReaderTips, readerTipsPatch, normaliseTipPresets, buildGratuities, buildStoreSettingsPatches, storeSettingsOutcome,
   readSyncState, syncStatePatch, readerRows, nextReaderName, tipsFromTipConfig, tipsFromGratuities, tipConfigFromTips,
+  buildTerminalTablePayPatches, terminalTablePayOutcome,
   READER_TIPS_KEY,
   type PatchResult, type StoreSettingsOutcome, type ReaderTips, type TipsSkip,
 } from '../_shared/readerSettings.ts';
@@ -3859,6 +3860,28 @@ Deno.serve(async (req) => {
       return saved;
     };
 
+    // v5.9.70 (Peter, 26 Sep 2026: "pay at table still showing despite me turning it off"):
+    // a reader's own Pay at table switch, ON ADYEN. modes.table_pay only told the till side
+    // (the table payment RPCs refuse); the button on the reader's screen is Adyen's, and the
+    // store sync above sends it ON to every reader in the store. A TERMINAL level setting
+    // outranks the store's, so this hides (or shows) it on one reader and leaves the rest.
+    // The reader applies it on its next sync (Admin menu, Sync) or a restart.
+    const pushTerminalTablePay = async (poiid: string, on: boolean): Promise<{ ok: boolean; applied: string[]; errors: Array<{ key: string; text: string; detail: string | null }> }> => {
+      if (!poiid) return { ok: false, applied: [], errors: [{ key: 'pay_at_table', text: 'This reader has no Adyen id yet, so its own screen could not be updated.', detail: null }] };
+      const patches = buildTerminalTablePayPatches(on);
+      const results: PatchResult[] = [];
+      for (const patch of patches) {
+        if (!patch.body) continue;
+        try {
+          const r = await mgmt(cfg, 'PATCH', `/terminals/${encodeURIComponent(poiid)}/terminalSettings`, patch.body);
+          results.push({ key: patch.key, ok: r.ok, status: r.status, detail: r.data });
+        } catch (e) {
+          results.push({ key: patch.key, ok: false, status: 0, detail: (e as Error)?.message || 'no answer' });
+        }
+      }
+      return terminalTablePayOutcome(patches, results, on);
+    };
+
     const syncStoreSettings = async (): Promise<StoreSettingsOutcome> => {
       const at = new Date().toISOString();
       const current = await readOpsPosSettings();
@@ -3908,6 +3931,24 @@ Deno.serve(async (req) => {
         }
       }
       const outcome = storeSettingsOutcome(patches, results, { tips, at });
+      // v5.9.70: the store patches above put the Pay at table button back ON for the whole
+      // store, so every reader whose own switch is off gets its terminal level override
+      // (re)sent here. Adding a reader and "Send reader settings to Adyen" both come through.
+      try {
+        const { data: offRows, error: offErr } = await opsAdmin.from('terminal_devices').select('label, adyen_terminal_id, modes')
+          .eq('location_id', opsLocationId).eq('status', 'paired').not('adyen_terminal_id', 'is', null);
+        if (offErr) outcome.errors.push({ key: 'pay_at_table', text: 'The readers switched off for Pay at table could not be read, so their own screens were not updated.', detail: offErr.message });
+        for (const row of (offRows || []) as Dict[]) {
+          if ((row.modes as Dict | null)?.table_pay !== false) continue;
+          const name = String(row.label || '').trim() || 'A reader';
+          const o = await pushTerminalTablePay(String(row.adyen_terminal_id || ''), false);
+          for (const line of o.applied) outcome.applied.push(`${name}: ${line}`);
+          for (const err of o.errors) outcome.errors.push({ ...err, text: `${name}: ${err.text}` });
+        }
+      } catch (e) {
+        outcome.errors.push({ key: 'pay_at_table', text: 'The readers switched off for Pay at table could not be updated.', detail: (e as Error)?.message || 'no answer' });
+      }
+      outcome.ok = outcome.errors.length === 0;
       // RE-READ BEFORE THE WRITE (10 Sep 2026): the patches above can take up
       // to a minute, and a whole object write from the first read would wipe
       // anything saved meanwhile (tip on printed receipt, the receipt
@@ -3934,6 +3975,23 @@ Deno.serve(async (req) => {
     if (action === 'sync_store_settings') {
       const outcome = await syncStoreSettings();
       return json({ ok: outcome.ok, ...outcome });
+    }
+
+    // ── terminal_table_pay_set: one reader's own Pay at table, on Adyen (v5.9.70) ──
+    // The Back Office writes modes.table_pay through set_terminal_settings first (the till
+    // side), then calls this so the reader's own screen follows. Answer shape = the store
+    // sync's: { ok, applied, errors }.
+    if (action === 'terminal_table_pay_set') {
+      const tdId = String(body.terminal_device_id || '');
+      if (!tdId) return json({ error: 'terminal_device_id required' }, 400);
+      const on = body.enabled !== false;
+      const { data: row, error } = await opsAdmin.from('terminal_devices').select('id, label, adyen_terminal_id')
+        .eq('id', tdId).eq('location_id', opsLocationId).maybeSingle();
+      if (error) return json({ ok: false, error: `The reader row could not be read: ${error.message}` }, 500);
+      if (!row) return json({ ok: false, error: 'That reader is not at this venue.' }, 200);
+      const outcome = await pushTerminalTablePay(String(row.adyen_terminal_id || ''), on);
+      console.log(`[adyen-terminal-admin] ${caller.id} terminal_table_pay_set ${on ? 'on' : 'off'} for ${row.adyen_terminal_id} at ${opsLocationId}: ${outcome.applied.length} applied, ${outcome.errors.length} errors`);
+      return json({ ok: outcome.ok, enabled: on, ...outcome });
     }
 
     // ── list: the venue's own readers, joined to our links ───────────────────
