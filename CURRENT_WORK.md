@@ -1,3 +1,9 @@
+# Session, 26 Sep 2026, v5.9.75, sold-alone sub items share (branch fix/subitem-sharing)
+
+- Peter: donuts built at Barnsley Train Station as sub items (they sit in deals) showed at Coffee Boy Leeds but not Huddersfield, and a sub item had no Sharing control. Live data: Train Station masters type subitem, sold_alone true, scope local; Leeds copies had categories Peter made by hand on 24 Sep; Huddersfield's 13 sold-alone sub item copies had cat NULL (made through the deal's modifier group path, which nulled cat/cats and hid nothing on the grid).
+- Fix: db.js shareModifierGroupsToLocation gives a SOLD-ALONE sub item copy its category (source category's master addressed at the peer, only when it exists there; never over a peer's own category); setMenuItemScope re-send fills the category of an existing copy that has NONE; MenuManager shows Sharing on sold-alone sub items and bulk counts include them; bulkScope targets/missingMasters exclude only option-only sub items (menuRules isOptionOnlyItem).
+- Peter's step: at Train Station, Items, filter Sub items, select the donuts, Sharing quick apply, Shared (re-send). Huddersfield then gets Donuts / Vegetarian Donuts / Vegan Donuts under Doboy, if those categories are shared there first.
+
 # Session, 26 Sep 2026, v5.9.72, ghosts that came back (branch hotfix/session-venue-fence, second release)
 
 - After the fence: ORD-1003 kept returning at Coffee Boy Leeds (tagged Leeds, written 07:27 and 07:29 UTC). The Drinks KDS (created 07:24) booted on 5.9.71 with the leaked row still in Leeds' table, read it as Leeds' own, and its SessionReconciler self heal put it back each time POS 1 voided (voidCheck wrote NO tombstone; only a payment close writes a closed check that isSessionClosed honours).

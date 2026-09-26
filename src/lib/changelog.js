@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.75',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: a sub item that is sold alone (a donut that is also a deal option) now shares like any product. The Sharing control shows on it, bulk sharing includes it, and its copy at another venue keeps its category. Built at Train Station, the donuts reached Leeds but not Huddersfield: a copy made through a deal had no category. A re-send from the owning venue now gives such a copy the category too.',
+    ],
+  },
+  {
     v: '5.9.74',
     date: '26 Sep 2026',
     items: [
