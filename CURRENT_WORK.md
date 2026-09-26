@@ -1,3 +1,8 @@
+# Session, 26 Sep 2026, v5.9.77, menu board header sized by the screen (branch feat/board-flow)
+
+- Peter: two boards, same settings, logo / title / note at different sizes. Cause: every size was em against the FITTED base, which depends on how much menu is on the board.
+- lib/menuBoardSections.js headerBasePx(w, h) = 2.8% of the short side (HEADER_VMIN); BoardHeader / BoardFooter take basePx and set their own font-size; the TV passes headerBasePx(stage.w, stage.h), the preview measures its frame (ResizeObserver) and re-fits when it changes (fitKey). Old callers without basePx behave as before.
+
 # Session, 26 Sep 2026, v5.9.76, menu boards fill the screen + SOLD OUT pill (branch feat/board-flow)
 
 - Peter's photo of the Coffee Boy Leeds board (portrait, 2 columns): bottom right corner empty, names wrapping, SMALL BOY labels widening the price columns; and "when you 86 an item it greys the item name out not the price, it used to say sold out".

@@ -190,11 +190,12 @@ test('sizes and colours: today\'s look by default, each element its own choice',
 test('pins: the TV and the builder draw with the shared parts and size with the shared rule', () => {
   const tv = read('surfaces/MenuBoardSurface.jsx');
   assert.match(tv, /from '\.\/menuboard\/BoardParts'/);
-  assert.match(tv, /<BoardHeader theme=\{theme\}/);
+  assert.match(tv, /<BoardHeader theme=\{theme\} name=\{data\.board\?\.name\} basePx=\{headerPx\} \/>/, 'v5.9.77: the header is sized by the screen');
+  assert.match(tv, /const headerPx = headerBasePx\(stage\.w, stage\.h\);/);
   // v5.9.76: the body measures, packs and fits (BoardParts BoardBody); the surfaces only pick the column count.
   assert.match(tv, /<BoardBody rootRef=\{boardRef\} sections=\{sections\} cols=\{cols\} textScale=\{textScale\} fontRange=\{FIT\} gapEm=\{1\.7\} whole=\{boardKeepsWhole\(disp\)\} fitKey=\{fitKey\}/);
   assert.match(tv, /defaultImage=\{data\.defaultImage\}/);
-  assert.match(tv, /<BoardFooter theme=\{theme\} live pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
+  assert.match(tv, /<BoardFooter theme=\{theme\} live pages=\{pages\.length\} page=\{page % pages\.length\} basePx=\{headerPx\} \/>/);
   assert.doesNotMatch(tv, /columnFill|columnCount|fitFont|scaledFont\(/, 'no CSS columns and no fit loop of its own on the TV');
   assert.match(tv, /sizeGrid: true, flow: 'fill' \}/, 'the price grid and the filled columns are the defaults');
   assert.match(tv, /const cols = boardColumns\(\{ textScale, orientation, fixedCols, totalItems \}\)/);
@@ -202,9 +203,11 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   assert.doesNotMatch(tv, /^function Section\(/m, 'no private section renderer on the TV');
   const bo = read('backoffice/sections/MenuBoards.jsx');
   assert.match(bo, /from '\.\.\/\.\.\/surfaces\/menuboard\/BoardParts'/);
-  assert.match(bo, /<BoardHeader theme=\{t\}/);
+  assert.match(bo, /<BoardHeader theme=\{t\} name=\{board\.name\} basePx=\{headerPx\} \/>/, 'the preview sizes the header by its frame');
+  assert.match(bo, /const headerPx = headerBasePx\(frame\.w, frame\.h\);/);
+  assert.match(bo, /fitKey=\{`\$\{page\}\|\$\{headerPx\}`\}/, 'a header size change re-fits the body');
   assert.match(bo, /<BoardBody rootRef=\{rootRef\} sections=\{secs\} cols=\{cols\} textScale=\{disp\.textScale\} fontRange=\{PREVIEW_FIT\} gapEm=\{1\.7\} whole=\{boardKeepsWhole\(disp\)\}/, 'the preview is the TV in miniature: same body, same rule');
-  assert.match(bo, /<BoardFooter theme=\{t\} pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
+  assert.match(bo, /<BoardFooter theme=\{t\} pages=\{pages\.length\} page=\{page % pages\.length\} basePx=\{headerPx\} \/>/);
   assert.doesNotMatch(bo, /columnFill|columnCount|fitFont|scaledFont\(/, 'no CSS columns and no fit loop of its own in the preview');
   assert.match(bo, /sizeGrid: true, flow: 'fill' \}/, 'the builder default agrees with the TV');
   assert.match(bo, /const cols = boardColumns\(\{ textScale: board\.display_options\?\.textScale, orientation: board\.orientation, fixedCols, totalItems \}\)/);

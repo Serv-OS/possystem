@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { packBoard, boardKeepsWhole } from './menuBoardSections.js';
+import { packBoard, boardKeepsWhole, headerBasePx, HEADER_VMIN } from './menuBoardSections.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -89,4 +89,20 @@ test('pins: the body measures a hidden copy, packs it and draws the pieces; sold
   assert.match(src, /\{hasVar && !s && \(/, 'in list mode a sold out item shows the pill, not its sizes');
   // The size labels no longer set the price column width (the photo's wide, gappy grid).
   assert.match(src, /fontSize: `\$\{sz\.item \* 0\.5\}em`, fontWeight: 700, letterSpacing: '\.05em'[^\n]*maxWidth: '7\.5em'[^\n]*whiteSpace: 'normal'/);
+});
+
+test('the header is sized by the screen, so two boards with the same settings wear the same logo (v5.9.77)', () => {
+  // Peter, 26 Sep: same settings, different logo / title / note sizes. The base used to be the fit.
+  assert.equal(HEADER_VMIN, 2.8);
+  assert.equal(headerBasePx(1920, 1080), 30, 'a 1080p TV, either way up');
+  assert.equal(headerBasePx(1080, 1920), 30);
+  assert.equal(headerBasePx(3840, 2160), 60, '4K doubles');
+  assert.equal(headerBasePx(500, 281), 8, 'the preview frame scales the same way');
+  assert.equal(headerBasePx(0, 0), 0, 'unknown frame: the header follows the fit as before');
+  assert.equal(headerBasePx(100, 100), 6, 'never below 6px');
+  const src = read('../surfaces/menuboard/BoardParts.jsx');
+  assert.match(src, /export function BoardHeader\(\{ theme = \{\}, name = '', basePx = 0 \}\)/);
+  assert.match(src, /\.\.\.\(basePx > 0 \? \{ fontSize: `\$\{basePx\}px` \} : \{\}\),/, 'the header root takes the screen base');
+  assert.match(src, /export function BoardFooter\(\{ theme = \{\}, live = false, pages = 1, page = 0, basePx = 0 \}\)/);
+  assert.match(src, /fontSize: `\$\{basePx \* 0\.32\}px`/, 'the footer keeps its 0.32 ratio against the screen base');
 });

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.77',
+    date: '26 Sep 2026',
+    items: [
+      'Menu boards: the logo, title, note and footer are now the same size on every screen of the venue. They used to follow the menu fit, so a board with more items on it got a smaller logo and title than a board with the same settings and fewer items. They now size by the screen (2.8% of its short side, 30px base on a 1080p TV); only the menu itself still grows to fill the screen. The preview does the same on its frame.',
+    ],
+  },
+  {
     v: '5.9.76',
     date: '26 Sep 2026',
     items: [
