@@ -78,6 +78,8 @@ test('pins: the body measures a hidden copy, packs it and draws the pieces; sold
   assert.match(src, /\{!measure && <Slideshow slides=\{sec\.slides\}/, 'no second video playing in the measure copy');
   assert.match(src, /if \(sig !== sigRef\.current\) \{ sigRef\.current = sig; setLayout\(final\); \}/, 'an unchanged layout is not set again (no render loop)');
   assert.match(src, /gridTemplateRows/, 'row heights come from the grid tracks');
+  assert.match(src, /const rectH = \(el\) => \(el \? el\.offsetHeight : 0\);/, 'layout boxes, never client rects: a turned (portrait) stage turns the rects too');
+  assert.doesNotMatch(src.slice(src.indexOf('const rectH')), /getBoundingClientRect/, 'no client rect in the measuring code');
   assert.match(src, /new ResizeObserver\(/, 'the preview refits when its frame changes');
   // Sold out (Peter, 26 Sep): the whole item gets ONE pill across the price columns, the name is struck.
   assert.match(src, /if \(s\) cells = \[cell\('so', <SoldOut em=\{nameSize \* 0\.72\} \/>, \{ gridColumn: '2 \/ -1' \}\)\];/);

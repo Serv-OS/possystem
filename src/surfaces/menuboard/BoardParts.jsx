@@ -345,7 +345,10 @@ export function BoardPiece({ sec, piece, ...props }) {
 // The heights of every row in the hidden measure copy, at the font size the board has right now.
 // A grid's row tracks come from its computed grid-template-rows (Chromium reports the used sizes);
 // the cells are the fallback. A wide (Full width) section is measured whole.
-const rectH = (el) => (el ? el.getBoundingClientRect().height : 0);
+// LAYOUT boxes only (offsetHeight, computed styles), never getBoundingClientRect: a portrait TV
+// draws the whole stage turned 270 degrees, and a client rect comes back turned with it (every
+// heading measured 464px, the width of the column, and the type shrank to 19px on the Leeds board).
+const rectH = (el) => (el ? el.offsetHeight : 0);
 const marginBelow = (el) => (el ? parseFloat(getComputedStyle(el).marginBottom) || 0 : 0);
 function runMeasure(r) {
   const rows = Array.from(r.querySelectorAll('[data-mb-row]'));
