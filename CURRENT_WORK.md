@@ -1,3 +1,8 @@
+# Session, 26 Sep 2026, v5.9.69, sidebar clip + lint gate (branch fix/bo-sidebar-clip)
+
+- Sidebar: BackOfficeApp nav groups used maxHeight 460 (June reskin); Channels reached 14 rows and the tail clipped. navGroupMaxHeight(rows) = rows*44+24, pinned by src/lib/boSidebar.test.js.
+- GATE BUG: this ESLint has no `--format unix` (it prints that to stderr and nothing to stdout), so every `eslint --format unix ... | grep` gate in the 24 Sep session proved nothing. Gate now: default formatter, grep rule ids, AND eslint exit code must be 0 or 1 (2 = it did not run). Four unused bindings left by v5.9.68 removed (boardPrice/DIET/dietaryBadges in MenuBoards.jsx; productImage/applyMenuToSections imports in MenuBoardSurface.jsx).
+
 # Session, 24 Sep 2026, v5.9.68, menu board design pass (branch feat/menu-board-design)
 
 - From Peter's photo of Coffee Boy's real board: page title + note, logo size, per element sizes (title, headings, items) and colours (title, headings, prices, small print), prices pill or plain, lines under headings/header, price grid by cup size (sizeRuns: one header per run of equal size names), add-ons per block (block.addOnIds, option only sub items), text panels (blocks of type 'text': title, body lines, footer, boxed). All in the existing jsonb (theme, display_options.sizeGrid, layout.blocks). No migration.

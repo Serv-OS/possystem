@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.69',
+    date: '26 Sep 2026',
+    items: [
+      'FIX: Back Office sidebar. A group with more than 13 pages (Channels has 14) had its last pages cut off under the next group, so "Print menu" was hidden. The open height now comes from the number of pages.',
+      'Tidy: four leftover unused bindings from the menu board design pass removed.',
+    ],
+  },
+  {
     v: '5.9.68',
     date: '24 Sep 2026',
     items: [
