@@ -1,3 +1,8 @@
+# Session, 26 Sep 2026, v5.9.79, till: remove customer + customer display holds an open order (branch fix/till-customer)
+
+- Remove customer: POSSurface chip ✕ → removeCustomer(): setSessionCustomer(table, null) for dine-in, allergen filter cleared when the profile supplied it, clearCustomer(), toast. MPOS not touched (its capture sheet has no chip).
+- Customer display: lib/customerDisplayIdle.js displayHoldMs(state): active/paying 20 min safety net, approved/declined 6.5 s; the 45 s IDLE_AFTER_MS is gone. The till publishes on every cart change and sends idle when the basket empties (POSSurface ~488), so an open order holds.
+
 # Session, 26 Sep 2026, v5.9.78, Customers page at 8,000 customers (branch fix/customer-and-display)
 
 - Peter: "customers not loading, beyond slow", then "says no customers but there is 8000" (the 5Loyalty import, 8,028 rows). Measured as a venue owner with EXPLAIN ANALYZE: the customers_venue policy calls customer_org_visible(org_id) PER ROW (pos_can_access per venue inside), 7.5 s for 8,028 rows, over the authenticated role's statement_timeout=8s; as super admin 1.1 s. The customer_locations read listed 1,000 ids in the URL (37 KB).

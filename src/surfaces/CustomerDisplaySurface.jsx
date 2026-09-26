@@ -23,8 +23,10 @@ import { money, setActiveCurrency } from '../lib/currency';
 import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
+import { displayHoldMs } from '../lib/customerDisplayIdle';
 
-const IDLE_AFTER_MS = 45000;
+// v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
+// order never times out on its own; the 45 s timer sent customers back to the ads mid order.
 const SLIDE_MS = 7000;
 
 // Theme palette for the customer display (mirrors the ServOS POS light/dark).
@@ -103,10 +105,8 @@ export default function CustomerDisplaySurface() {
             if (st === 'idle') { setPhoneInput(''); setSubmitting(false); setLoyaltyResult(null); }
             setPayload(p);
             if (idleTimer.current) clearTimeout(idleTimer.current);
-            if (st !== 'idle') {
-              const ms = (st === 'approved' || st === 'declined') ? 6500 : IDLE_AFTER_MS;
-              idleTimer.current = setTimeout(() => setPayload({ state: 'idle', items: [], total: 0 }), ms);
-            }
+            const ms = displayHoldMs(st);
+            if (ms > 0) idleTimer.current = setTimeout(() => setPayload({ state: 'idle', items: [], total: 0 }), ms);
           },
           (r) => {  // loyalty lookup result
             setSubmitting(false);
