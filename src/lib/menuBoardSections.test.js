@@ -162,8 +162,9 @@ test('price grid runs: one size header per run, unsized lines join the run above
 test('one text size rule: columns by size and content, fit by probe, scale below the fill only', () => {
   assert.equal(boardColumns({ textScale: 1, orientation: 'landscape', totalItems: 30 }), 3);
   assert.equal(boardColumns({ textScale: 0.7, orientation: 'landscape', totalItems: 30 }), 3, 'smaller keeps its columns and shrinks instead');
-  assert.equal(boardColumns({ textScale: 1.15, orientation: 'landscape', totalItems: 30 }), 4);
-  assert.equal(boardColumns({ textScale: 1.3, orientation: 'landscape', totalItems: 30 }), 5);
+  assert.equal(boardColumns({ textScale: 1.15, orientation: 'landscape', totalItems: 30 }), 5);   // v5.9.71: the top tiers open one more column
+  assert.equal(boardColumns({ textScale: 1.3, orientation: 'landscape', totalItems: 30 }), 6);
+  assert.equal(boardColumns({ textScale: 1.3, orientation: 'portrait', totalItems: 30 }), 3);
   assert.equal(boardColumns({ textScale: 1.5, orientation: 'landscape', totalItems: 4 }), 2, 'never more columns than two items each');
   assert.equal(boardColumns({ textScale: 1, orientation: 'portrait', totalItems: 30 }), 1);
   assert.equal(boardColumns({ textScale: 1, orientation: 'landscape', fixedCols: 2, totalItems: 30 }), 2, 'the Columns setting wins');
@@ -176,8 +177,8 @@ test('one text size rule: columns by size and content, fit by probe, scale below
 });
 
 test('sizes and colours: today\'s look by default, each element its own choice', () => {
-  assert.deepEqual(boardSizes({}), { logo: 2.2, title: 1.2, heading: 0.82, item: 0.56 });   // large logo by default (the photo)
-  assert.deepEqual(boardSizes({ logoSize: 'xl', headingSize: 'l', itemSize: 's', titleSize: 'nope' }), { logo: 3.2, title: 1.2, heading: 1.0, item: 0.48 });
+  assert.deepEqual(boardSizes({}), { logo: 2.2, title: 1.2, note: 0.5, heading: 0.82, item: 0.56 });   // large logo by default (the photo); note larger than the old 0.36
+  assert.deepEqual(boardSizes({ logoSize: 'xl', headingSize: 'l', itemSize: 's', titleSize: 'nope', subtitleSize: 'xl' }), { logo: 3.2, title: 1.2, note: 0.85, heading: 1.0, item: 0.48 });
   const d = boardColors({});
   assert.equal(d.heading, '#E8A23C', 'headings take the accent unless set');
   assert.equal(d.price, '#E8A23C');
@@ -191,7 +192,7 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   assert.match(tv, /from '\.\/menuboard\/BoardParts'/);
   assert.match(tv, /<BoardHeader theme=\{theme\}/);
   assert.match(tv, /<BoardSection defaultImage=\{data\.defaultImage\} key=\{sec\.id\}/);
-  assert.match(tv, /<BoardFooter theme=\{theme\} live \/>/);
+  assert.match(tv, /<BoardFooter theme=\{theme\} live pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
   assert.match(tv, /columnFill: 'balance'/, 'columns end level');
   assert.match(tv, /sizeGrid: true \}/, 'the price grid is the default');
   assert.match(tv, /boardColumns\(\{ textScale, orientation, fixedCols, totalItems \}\)/);
@@ -201,10 +202,38 @@ test('pins: the TV and the builder draw with the shared parts and size with the 
   assert.match(bo, /from '\.\.\/\.\.\/surfaces\/menuboard\/BoardParts'/);
   assert.match(bo, /<BoardHeader theme=\{t\}/);
   assert.match(bo, /<BoardSection key=\{sec\.id\} sec=\{sec\} theme=\{t\}/);
-  assert.match(bo, /<BoardFooter theme=\{t\} \/>/);
+  assert.match(bo, /<BoardFooter theme=\{t\} pages=\{pages\.length\} page=\{page % pages\.length\} \/>/);
   assert.match(bo, /columnFill: 'balance'/, 'the preview balances like the TV');
   assert.match(bo, /sizeGrid: true \}/, 'the builder default agrees with the TV');
   assert.match(bo, /boardColumns\(\{ textScale: board\.display_options\?\.textScale, orientation: board\.orientation, fixedCols, totalItems \}\)/);
   assert.match(bo, /scaledFont\(fitFont\(fits, \{ min: 4, max: 44 \}\), board\.display_options\?\.textScale, 4\)/);
   assert.match(bo, /rootRef\.current/, 'the preview fits its whole frame, header and footer included, like the TV root');
+});
+
+
+// ── v5.9.71: image panels and page breaks ──
+import { boardPages, newPageBreak, isPageBreak, pageSeconds } from './menuBoardSections.js';
+
+test('an image panel is a section with its slides; without slides it vanishes; it survives the menu filter', () => {
+  const itemsByCat = boardItemsByCategory(ITEMS);
+  const img = { type: 'image', id: 'img1', slides: [{ url: 'https://x/a.jpg' }], fit: 'contain', ratio: '4:3', span: 'all' };
+  const s = boardSections({ blocks: [img, { categoryId: 'food' }, { type: 'image', id: 'empty', slides: [] }], cats: CATS, itemsByCat });
+  assert.deepEqual(s.map(x => [x.type, x.id]), [['image', 'img1'], ['category', 'food']]);
+  assert.deepEqual([s[0].fit, s[0].ratio, s[0].span, s[0].slides.length], ['contain', '4:3', 'all', 1]);
+  const cats = CATS.map(c => ({ ...c, menu_id: c.id === 'coffee' ? 'm1' : 'm2' }));
+  assert.deepEqual(ids(boardSectionsForMenu(boardSections({ blocks: [img, { categoryId: 'coffee' }, { categoryId: 'food' }], cats, itemsByCat }), { categories: cats, links: [], activeMenuId: 'm1' })), ['img1', 'coffee']);
+});
+
+test('page breaks split the sections into screens; empty screens vanish; seconds per page has a floor', () => {
+  const itemsByCat = boardItemsByCategory(ITEMS);
+  const pb = newPageBreak();
+  assert.equal(isPageBreak(pb), true);
+  const secs = boardSections({ blocks: [{ categoryId: 'coffee' }, pb, { categoryId: 'gone' }, pb, { categoryId: 'food' }, { type: 'text', id: 't', title: 'Syrups' }], cats: CATS, itemsByCat });
+  const pages = boardPages(secs);
+  assert.deepEqual(pages.map(pg => ids(pg)), [['coffee'], ['food', 't']]);
+  assert.deepEqual(boardPages([]), [[]]);
+  assert.deepEqual(boardPages(boardSections({ blocks: [{ categoryId: 'food' }], cats: CATS, itemsByCat })).map(pg => ids(pg)), [['food']]);
+  assert.equal(pageSeconds({}), 12);
+  assert.equal(pageSeconds({ pageSeconds: 2 }), 12, 'below five seconds is the default');
+  assert.equal(pageSeconds({ pageSeconds: 20 }), 20);
 });

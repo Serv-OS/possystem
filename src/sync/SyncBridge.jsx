@@ -10,6 +10,7 @@ import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, n
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
@@ -250,6 +251,8 @@ export default function SyncBridge({ onSyncPulse }) {
           // Released again in the catch below, so a boot that fell over (offline at
           // start of day) is retried by the next mount rather than latched out.
           _bootedFor = locationId;
+          // v5.9.71 VENUE FENCE rule 3: the venue this tab booted for. SessionSync publishes for it only.
+          useStore.setState({ bootLocationId: locationId });
 
           // v5.5.238: Location integrity guard — if the store has data from a
           // DIFFERENT location (e.g. browser was used for Location A then switched
@@ -414,33 +417,33 @@ export default function SyncBridge({ onSyncPulse }) {
           // rpos-session-snapshot).
           const bootSessions = {};
           (sessionsRes?.data || []).forEach(row => {
-            if (row.table_id && row.session) bootSessions[row.table_id] = row.session;
+            // This venue's own rows: tagged with it (lib/localSessions.js rule 2) so they can never be
+            // carried elsewhere by a local store later.
+            if (row.table_id && row.session) bootSessions[row.table_id] = tagSession(row.session, locationId);
           });
-          // Also check localStorage backup for any sessions not yet written to Supabase
-          try {
-            const lsBackup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-            Object.entries(lsBackup).forEach(([tid, sess]) => {
-              if (!bootSessions[tid] && sess) bootSessions[tid] = sess;
-            });
-          } catch {}
-          // v4.5.0: ALSO check the synchronous emergency snapshot (written from SyncBridge's
-          // subscribe handler on every meaningful change). This bypasses the SessionSync write path
-          // entirely and survives wake-from-sleep even if the active_sessions write was failing.
-          try {
-            const emergency = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
-            if (emergency?.sessions) {
-              Object.entries(emergency.sessions).forEach(([tid, sess]) => {
-                if (!bootSessions[tid] && sess) {
-                  bootSessions[tid] = sess;
-                  console.log('[SyncBridge] v4.5.0: rescued session for table', tid, 'from emergency snapshot');
-                }
-              });
-            }
-          } catch {}
+          // The device local stores (rpos-session-backup, then the emergency rpos-session-snapshot)
+          // are merged BELOW, once the floor plan is known: v5.9.71 VENUE FENCE, they are read
+          // through lib/localSessions.js and ignored when they belong to another venue.
           const floorRows = Array.isArray(floorRes.data?.tables)
             ? floorRes.data.tables.map(t => normaliseFloorRow(t, { locationId, readSeq: planReadSeq }))
             : null;
           const floorSrvReadAt = floorRes.data?.srvReadAt || 0;
+          {
+            const known = Array.isArray(floorRows) ? new Set(floorRows.map(t => t.id)) : null;
+            const local = readLocalSessions(locationId, { knownTableIds: known });
+            if (local.foreign) console.warn('[SyncBridge] VENUE FENCE: the local session stores belonged to', local.owner, 'not', locationId, '- cleared, nothing restored');
+            else if (local.dropped) console.warn('[SyncBridge] VENUE FENCE:', local.dropped, 'local session(s) not for this venue or not on its plan were dropped');
+            Object.entries(local.backup).forEach(([tid, sess]) => {
+              if (!bootSessions[tid] && sess) bootSessions[tid] = tagSession(sess, locationId);
+            });
+            Object.entries(local.snapshot).forEach(([tid, sess]) => {
+              if (!bootSessions[tid] && sess) {
+                bootSessions[tid] = tagSession(sess, locationId);
+                console.log('[SyncBridge] v4.5.0: rescued session for table', tid, 'from emergency snapshot');
+              }
+            });
+            stampLocalSessionsFor(locationId);
+          }
           const bootTombRows = tombsRes?.data || null;
           if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
             ...item,
@@ -1017,6 +1020,7 @@ export default function SyncBridge({ onSyncPulse }) {
             ts: Date.now(),
             sessions: snapshot,
           }));
+          stampLocalSessionsFor(state.bootLocationId);   // v5.9.71 VENUE FENCE rule 1
         } catch (e) {
           console.warn('[SyncBridge] v4.5.2 emergency snapshot failed:', e?.message || e);
         }

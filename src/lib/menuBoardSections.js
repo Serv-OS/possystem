@@ -36,6 +36,7 @@
 
 import { isOptionOnlyItem } from './menuRules.js';
 import { applyMenuToSections } from './menuBoardMenus.js';
+import { isImageBlock, normaliseSlides, DEFAULT_SLIDE_SECONDS } from './menuBoardSlides.js';
 
 const bySort = (a, b) => (a.sort_order || 0) - (b.sort_order || 0);
 const sortCats = (a, b) => bySort(a, b) || String(a.label || '').localeCompare(String(b.label || ''));
@@ -121,6 +122,31 @@ export function newTextBlock() {
 }
 export const isTextBlock = (b) => !!b && b.type === 'text';
 
+/** A page break block (v5.9.71, Peter: "the fonts need a way to force them to be bigger"): the
+ * blocks above it are one screen, the blocks below the next. Each page fits on its own, so the
+ * type grows; the TV rotates the pages every layout.pageSeconds. */
+export const isPageBreak = (b) => !!b && b.type === 'page';
+export function newPageBreak() {
+  return { type: 'page', id: `page-${Math.random().toString(36).slice(2, 8)}` };
+}
+export const DEFAULT_PAGE_SECONDS = 12;
+export function pageSeconds(layout) {
+  const n = Number(layout?.pageSeconds);
+  return Number.isFinite(n) && n >= 5 ? Math.min(600, n) : DEFAULT_PAGE_SECONDS;
+}
+
+/** Sections split into pages at the page markers; empty pages vanish; no marker = one page. */
+export function boardPages(sections) {
+  const pages = [[]];
+  for (const s of Array.isArray(sections) ? sections : []) {
+    if (!s) continue;
+    if (s.type === 'page') { pages.push([]); continue; }
+    pages[pages.length - 1].push(s);
+  }
+  const out = pages.filter(pg => pg.length > 0);
+  return out.length ? out : [[]];
+}
+
 /**
  * Ordered, non empty sections for a board.
  *   blocks       board.layout.blocks: category blocks { categoryId, span?, title?, addOnIds? }
@@ -137,10 +163,22 @@ export function boardSections({ blocks, cats, itemsByCat, addOnsByCat } = {}) {
   const all = (Array.isArray(cats) ? cats : []).filter(c => c && c.id && !c.is_special);
   const byId = Object.fromEntries(all.map(c => [c.id, c]));
   const list = Array.isArray(blocks) && blocks.length
-    ? blocks.map((b, i) => (isTextBlock(b) ? { text: b, i } : { block: b || {}, cat: byId[b?.categoryId] })).filter(x => x.text || x.cat)
+    ? blocks.map((b, i) => (isTextBlock(b) ? { text: b, i } : isImageBlock(b) ? { image: b, i } : isPageBreak(b) ? { page: b, i } : { block: b || {}, cat: byId[b?.categoryId] })).filter(x => x.text || x.image || x.page || x.cat)
     : all.filter(c => !c.parent_id).sort(sortCats).map(c => ({ block: { categoryId: c.id }, cat: c }));
   const out = [];
   for (const x of list) {
+    if (x.page) {
+      out.push({ type: 'page', id: x.page.id || `page-${x.i}`, items: [] });
+      continue;
+    }
+    if (x.image) {
+      // v5.9.71: an image panel (one picture or a slideshow) among the categories. No slides = nothing to draw.
+      const b = x.image;
+      const slides = normaliseSlides(b.slides, { seconds: Number(b.seconds) > 0 ? Number(b.seconds) : DEFAULT_SLIDE_SECONDS });
+      if (!slides.length) continue;
+      out.push({ type: 'image', id: b.id || `image-${x.i}`, slides, fit: b.fit === 'contain' ? 'contain' : 'cover', ratio: str(b.ratio) || '16:9', span: b.span, items: [] });
+      continue;
+    }
     if (x.text) {
       const t = x.text;
       const title = str(t.title), body = str(t.body), footer = str(t.footer);
@@ -159,13 +197,13 @@ export function boardSections({ blocks, cats, itemsByCat, addOnsByCat } = {}) {
   return out;
 }
 
-/** "Follow timed menus": category sections narrow to the menu that is on; text panels always stay. */
+/** "Follow timed menus": category sections narrow to the menu that is on; text and image panels always stay. */
 export function boardSectionsForMenu(sections, { categories, links, activeMenuId } = {}) {
   const list = Array.isArray(sections) ? sections : [];
   if (!activeMenuId) return list;
-  const catSecs = list.filter(s => s.type !== 'text');
+  const catSecs = list.filter(s => s.type === 'category');
   const kept = new Set(applyMenuToSections(catSecs, { categories, links, activeMenuId }).map(s => s.id));
-  return list.filter(s => s.type === 'text' || kept.has(s.id));
+  return list.filter(s => s.type !== 'category' || kept.has(s.id));
 }
 
 /** A size's name as the grid header shows it. */
@@ -194,7 +232,9 @@ export function sizeRuns(lines) {
 // More columns = bigger text, because the fit fills the height and the content is spread
 // thinner per column. An explicit integer count, never column-width:auto (Chromium clips
 // overflow from an auto count without reporting it).
-const COLS_FOR_TIER = { portrait: [1, 1, 2, 2], landscape: [2, 3, 4, 5] };
+// v5.9.71: the top tiers open one more column (portrait 3, landscape 6): the fit fills the
+// height, so a column more is the honest way to make the type bigger without clipping.
+const COLS_FOR_TIER = { portrait: [1, 1, 2, 3], landscape: [2, 3, 5, 6] };
 export const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
 
 /**
@@ -238,15 +278,18 @@ export const LOGO_EM = { s: 1.0, m: 1.4, l: 2.2, xl: 3.2 };
 export const TITLE_EM = { s: 0.9, m: 1.2, l: 1.6, xl: 2.1 };
 export const HEADING_EM = { s: 0.7, m: 0.82, l: 1.0, xl: 1.2 };
 export const ITEM_EM = { s: 0.48, m: 0.56, l: 0.66, xl: 0.78 };
+// The note under the title (v5.9.71, Peter: "subtitle text far too small"): its own size, larger by default.
+export const NOTE_EM = { s: 0.36, m: 0.5, l: 0.66, xl: 0.85 };
 
 // Defaults are the photo's look (Peter, 24 Sep: "the design is not peak like I asked for"): a
 // large logo; medium everything else. A venue picks its own in Design.
-export const SIZE_DEFAULTS = { logo: 'l', title: 'm', heading: 'm', item: 'm' };
+export const SIZE_DEFAULTS = { logo: 'l', title: 'm', note: 'm', heading: 'm', item: 'm' };
 export function boardSizes(theme = {}) {
   const pick = (map, v, d) => (map[v] !== undefined ? map[v] : map[d]);
   return {
     logo: pick(LOGO_EM, theme.logoSize, SIZE_DEFAULTS.logo),
     title: pick(TITLE_EM, theme.titleSize, SIZE_DEFAULTS.title),
+    note: pick(NOTE_EM, theme.subtitleSize, SIZE_DEFAULTS.note),
     heading: pick(HEADING_EM, theme.headingSize, SIZE_DEFAULTS.heading),
     item: pick(ITEM_EM, theme.itemSize, SIZE_DEFAULTS.item),
   };

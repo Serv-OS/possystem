@@ -18,8 +18,9 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
-import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, newTextBlock, isTextBlock, SIZE_OPTS } from '../../lib/menuBoardSections';
-import { BoardHeader, BoardSection, BoardFooter } from '../../surfaces/menuboard/BoardParts';
+import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
+import { BoardHeader, BoardSection, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
+import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -310,7 +311,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
   // Which arranged blocks the TV is showing right now (after the never-blank fallback),
   // so the list can flag the ones that are hidden by the live menu.
   const shownNow = new Set(applyMenuToSections(
-    blocks.filter(b => !isTextBlock(b)).map(b => ({ id: b.categoryId, items: itemsByCat[b.categoryId] || [] })),
+    blocks.filter(b => b.categoryId).map(b => ({ id: b.categoryId, items: itemsByCat[b.categoryId] || [] })),
     { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id },
   ).map(s => s.id));
   const hiddenNow = (catId) => followMenus && !!activeMenuId && !shownNow.has(catId);
@@ -336,6 +337,19 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
     inp.onchange = async () => { const f = inp.files?.[0]; if (f) { const url = await onUpload(f, kind); if (url) cb(url); } };
     inp.click();
   };
+  // v5.9.71: several files at once for a slideshow, uploaded one after another; cb gets
+  // [{ url, type }] for the ones that landed.
+  const pickFiles = (kind, accept, cb) => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept; inp.multiple = true;
+    inp.onchange = async () => {
+      const files = Array.from(inp.files || []).slice(0, MAX_SLIDES);
+      const added = [];
+      for (const f of files) { const url = await onUpload(f, kind); if (url) added.push({ url, type: slideTypeOfFile(f) }); }
+      if (added.length) cb(added);
+    };
+    inp.click();
+  };
+  const mktSlides = marketingSlides(board.marketing);
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -394,6 +408,39 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   };
                   // Typing in a field must never start a drag of the row.
                   const stopDrag = { draggable: false, onDragStart: e => { e.preventDefault(); e.stopPropagation(); } };
+                  if (isPageBreak(blk)) {
+                    return (
+                      <div key={blk.id || `page-${i}`} {...dragProps} style={{ ...rowStyle, alignItems: 'center', borderTop: '2px dashed var(--bdr2)', marginTop: 4, paddingTop: 8 }}>
+                        <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
+                        <span style={{ flex: 1, fontSize: 12, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                          Page break <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--t4)' }}>· the blocks above are one screen, the blocks below the next; the TV rotates them</span>
+                        </span>
+                        <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
+                      </div>
+                    );
+                  }
+                  if (isImageBlock(blk)) {
+                    const bslides = normaliseSlides(blk.slides, { seconds: blk.seconds || DEFAULT_SLIDE_SECONDS });
+                    return (
+                      <div key={blk.id || `image-${i}`} {...dragProps} style={rowStyle}>
+                        <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
+                        <div style={{ flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Image panel{bslides.length > 1 ? ' · slideshow' : ''}</div>
+                          <div {...stopDrag}>
+                            <SlideList slides={bslides} defaultSeconds={blk.seconds || DEFAULT_SLIDE_SECONDS} busy={busy === 'upload-mkt'}
+                              onChange={sl => setBlockField(i, { slides: sl })}
+                              onAdd={() => pickFiles('mkt', 'image/*,video/*', added => setBlockField(i, { slides: addSlides(bslides, added) }))} />
+                          </div>
+                          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                            <Field label="Shape"><Pills opts={IMAGE_RATIOS} val={blk.ratio || '16:9'} on={v => setBlockField(i, { ratio: v })} /></Field>
+                            <Field label="Fit"><Pills opts={[['cover', 'Fill'], ['contain', 'Fit']]} val={blk.fit || 'cover'} on={v => setBlockField(i, { fit: v })} /></Field>
+                          </div>
+                        </div>
+                        <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board">Full width</button>
+                        <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
+                      </div>
+                    );
+                  }
                   if (isTextBlock(blk)) {
                     return (
                       <div key={blk.id || `text-${i}`} {...dragProps} style={rowStyle}>
@@ -446,6 +493,8 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                 })}
                 <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
                   <button style={S.btnGhost} onClick={() => setLayout({ blocks: [...blocks, newTextBlock()] })}>+ Text panel</button>
+                  <button style={S.btnGhost} onClick={() => setLayout({ blocks: [...blocks, newImageBlock()] })}>+ Image panel</button>
+                  <button style={S.btnGhost} onClick={() => setLayout({ blocks: [...blocks, newPageBreak()] })} title="Split the board into screens that rotate. Each screen fits on its own, so the type gets bigger.">+ Page break</button>
                 </div>
                 {offCats.length > 0 && (
                   <div style={{ marginTop: 8 }}>
@@ -481,6 +530,13 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                   100% is the largest text that fills the screen. Smaller sizes leave room around the menu. Larger sizes open more columns to make room, then take the biggest size that still fits. The preview uses the same rule as the TV.
                 </div>
                 <Toggle on={board.display_options.sizeGrid !== false} label="Price grid by size (Small · Big · XL across the top)" set={v => setDisp({ sizeGrid: v })} />
+                {blocks.some(isPageBreak) && (
+                  <Field label="Seconds per page">
+                    <input type="number" min={5} max={600} style={{ ...S.inp, width: 90 }} value={board.layout?.pageSeconds ?? DEFAULT_PAGE_SECONDS}
+                      onChange={e => setLayout({ pageSeconds: Math.max(5, Math.min(600, Number(e.target.value) || DEFAULT_PAGE_SECONDS)) })} />
+                    <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 4 }}>The board has {boardPages(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat })).length} screens. Each one fits on its own, so the type is bigger than one long screen.</div>
+                  </Field>
+                )}
               </Section>
 
               <Section title="Design" desc="What the screen looks like. The preview on the right is drawn by the same code as the TV, so it is what the screen shows.">
@@ -491,6 +547,7 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                 </Field>
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
                   <Field label="Title size"><Pills opts={SIZE_OPTS} val={board.theme.titleSize || 'm'} on={v => setTheme({ titleSize: v })} /></Field>
+                  <Field label="Note size"><Pills opts={SIZE_OPTS} val={board.theme.subtitleSize || 'm'} on={v => setTheme({ subtitleSize: v })} /></Field>
                   <Field label="Logo size"><Pills opts={SIZE_OPTS} val={board.theme.logoSize || 'm'} on={v => setTheme({ logoSize: v })} /></Field>
                 </div>
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
@@ -523,11 +580,18 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
               </Section>
             </>
           ) : (
-            <Section title="Marketing media" desc="Shown full-screen instead of the menu.">
-              <Field label="Type"><Pills opts={[['image', 'Image'], ['video', 'Video']]} val={board.marketing.mediaType} on={v => setMkt({ mediaType: v })} /></Field>
-              <Field label="Fit"><Pills opts={[['cover', 'Fill screen'], ['contain', 'Fit (letterbox)']]} val={board.marketing.fit} on={v => setMkt({ fit: v })} /></Field>
-              <button style={S.btn} onClick={() => pickFile('mkt', board.marketing.mediaType === 'video' ? 'video/*' : 'image/*', url => setMkt({ mediaUrl: url }))}>{busy === 'upload-mkt' ? 'Uploading…' : board.marketing.mediaUrl ? 'Replace media' : 'Upload media'}</button>
-              {board.marketing.mediaUrl && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 6, wordBreak: 'break-all' }}>{board.marketing.mediaUrl.split('?')[0].split('/').pop()}</div>}
+            <Section title="Marketing slides" desc="Shown full screen instead of the menu, one after another. An image stays for the seconds you set; a video plays through.">
+              <SlideList slides={mktSlides} defaultSeconds={board.marketing.seconds || DEFAULT_SLIDE_SECONDS} busy={busy === 'upload-mkt'}
+                onChange={sl => setMkt({ slides: sl, mediaUrl: '' })}
+                onAdd={() => pickFiles('mkt', 'image/*,video/*', added => setMkt({ slides: addSlides(mktSlides, added), mediaUrl: '' }))} />
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <Field label="Fit"><Pills opts={[['cover', 'Fill screen'], ['contain', 'Fit (letterbox)']]} val={board.marketing.fit || 'cover'} on={v => setMkt({ fit: v })} /></Field>
+                <Field label="Change"><Pills opts={[['fade', 'Fade'], ['none', 'Cut']]} val={board.marketing.transition || 'fade'} on={v => setMkt({ transition: v })} /></Field>
+                <Field label="Seconds per image">
+                  <input type="number" min={2} max={600} style={{ ...S.inp, width: 90 }} value={board.marketing.seconds || DEFAULT_SLIDE_SECONDS}
+                    onChange={e => setMkt({ seconds: Math.max(2, Math.min(600, Number(e.target.value) || DEFAULT_SLIDE_SECONDS)) })} />
+                </Field>
+              </div>
             </Section>
           )}
 
@@ -559,8 +623,18 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
   const rootRef = useRef(null), areaRef = useRef(null), flowRef = useRef(null);
 
   const blocks = board.layout?.blocks || [];
-  // The TV's sections exactly (lib/menuBoardSections.js): subcategories, headings, add-ons, text panels.
-  const secs = boardSectionsForMenu(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat }), { categories: allCats, links, activeMenuId });
+  // The TV's sections exactly (lib/menuBoardSections.js): subcategories, headings, add-ons, text
+  // and image panels, and page breaks rotating on the same clock as the TV.
+  const allSecs = boardSectionsForMenu(boardSections({ blocks, cats: allCats, itemsByCat, addOnsByCat }), { categories: allCats, links, activeMenuId });
+  const pages = boardPages(allSecs);
+  const [page, setPage] = useState(0);
+  const pageMs = pageSeconds(board.layout) * 1000;
+  useEffect(() => {
+    if (pages.length < 2) { setPage(0); return undefined; }
+    const t = setInterval(() => setPage((x) => (x + 1) % pages.length), pageMs);
+    return () => clearInterval(t);
+  }, [pages.length, pageMs]);
+  const secs = pages[page % pages.length] || [];
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
   const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
@@ -582,12 +656,12 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
   });
 
   if (board.mode === 'marketing') {
-    return <div style={{ aspectRatio: ar, background: '#000', borderRadius: 10, border: '4px solid #060504', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontSize: 12, overflow: 'hidden' }}>
-      {board.marketing?.mediaUrl ? (board.marketing.mediaType === 'video'
-        ? <video src={board.marketing.mediaUrl} muted loop autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: board.marketing.fit || 'cover' }} />
-        : <img src={board.marketing.mediaUrl} alt="" style={{ width: '100%', height: '100%', objectFit: board.marketing.fit || 'cover' }} />)
-      : 'Marketing media'}
-    </div>;
+    const slides = marketingSlides(board.marketing);
+    return (
+      <div style={{ aspectRatio: ar, background: '#000', borderRadius: 10, border: '4px solid #060504', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontSize: 12 }}>
+        {slides.length ? <Slideshow slides={slides} fit={board.marketing?.fit || 'cover'} transition={board.marketing?.transition || 'fade'} /> : 'Add slides to preview'}
+      </div>
+    );
   }
   return (
     <div ref={rootRef} style={{ aspectRatio: ar, background: t.bgColor, color: t.textColor, borderRadius: 10, border: '4px solid #060504', padding: '10px 12px', overflow: 'hidden', fontFamily: t.font || 'inherit', position: 'relative' }}>
@@ -601,7 +675,41 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
                 {secs.map(sec => <BoardSection key={sec.id} sec={sec} theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />)}
               </div>
             </div>}
-        <BoardFooter theme={t} />
+        <BoardFooter theme={t} pages={pages.length} page={page % pages.length} />
+      </div>
+    </div>
+  );
+}
+
+// ── SlideList (v5.9.71): the slides of a Marketing screen or an image panel ──
+function SlideList({ slides = [], onChange, onAdd, busy = false, defaultSeconds = DEFAULT_SLIDE_SECONDS }) {
+  return (
+    <div>
+      {slides.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>No slides yet.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {slides.map((sl, i) => (
+          <div key={sl.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 6, border: '1px solid var(--bdr)', borderRadius: 8, background: 'var(--bg2)' }}>
+            {sl.type === 'video'
+              ? <video src={sl.url} muted style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4, background: '#000', flexShrink: 0 }} />
+              : <img src={sl.url} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4, background: '#000', flexShrink: 0 }} />}
+            <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {i + 1}. {sl.type === 'video' ? 'Video' : 'Image'} · {sl.url.split('?')[0].split('/').pop()}
+            </span>
+            {sl.type === 'video'
+              ? <span style={{ fontSize: 11, color: 'var(--t4)' }}>plays through</span>
+              : <label style={{ fontSize: 11, color: 'var(--t4)', display: 'flex', alignItems: 'center', gap: 4 }}>secs
+                  <input type="number" min={2} max={600} style={{ ...S.inp, width: 60, padding: '3px 6px', fontSize: 12 }} value={sl.seconds || defaultSeconds}
+                    onChange={e => onChange(setSlideSeconds(slides, sl.id, Number(e.target.value)))} />
+                </label>}
+            <button style={S.mini} disabled={i === 0} onClick={() => onChange(moveSlide(slides, i, -1))} title="Move up">▲</button>
+            <button style={S.mini} disabled={i === slides.length - 1} onClick={() => onChange(moveSlide(slides, i, 1))} title="Move down">▼</button>
+            <button style={S.miniX} onClick={() => onChange(removeSlide(slides, sl.id))} title="Remove">✕</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button style={S.btn} onClick={onAdd} disabled={busy}>{busy ? 'Uploading…' : '+ Add images or a video'}</button>
+        <span style={{ fontSize: 11, color: 'var(--t4)' }}>Up to {MAX_SLIDES}. Size images for the screen (1920 wide); keep to one video per board on a TV stick.</span>
       </div>
     </div>
   );

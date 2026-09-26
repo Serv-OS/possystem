@@ -30,6 +30,7 @@ import {
   tablesView,
 } from '../lib/waitlist/waitlist.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
+import { readLocalSessions } from '../lib/localSessions';
 
 import {
   computeTurnStats,
@@ -201,14 +202,12 @@ export function waitlistSlice(set, get) {
         // the POS exactly: same key (t.id), same fallback chain.
         const sessionMap = {};
         (sessions || []).forEach((r) => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
-        try {
-          const lsBackup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-          Object.entries(lsBackup).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
-        } catch { /* ignore */ }
-        try {
-          const snap = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
-          if (snap?.sessions) Object.entries(snap.sessions).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
-        } catch { /* ignore */ }
+        // v5.9.71 VENUE FENCE: the local stores only when they belong to this venue (lib/localSessions.js).
+        {
+          const local = readLocalSessions(locId, { knownTableIds: new Set(floor.map((t) => t.id)) });
+          Object.entries(local.backup).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
+          Object.entries(local.snapshot).forEach(([tid, sess]) => { if (sess && !sessionMap[tid]) sessionMap[tid] = sess; });
+        }
         // Preserve a session we just seated locally if the DB poll hasn't caught up yet — never
         // clobber a table seated in the last 3 min (its active_sessions flush may be in flight).
         const existingById = Object.fromEntries((get().tables || []).map((t) => [t.id, t]));

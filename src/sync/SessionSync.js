@@ -17,6 +17,7 @@ import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
 import { isSessionClosed } from './sessionClosure';
+import { sessionVenueOk, stampLocalSessionsFor } from '../lib/localSessions';
 
 let _locationId = null;
 let _debounceTimer = null;
@@ -46,6 +47,15 @@ export async function flushSessions() {
   }
   if (!_locationId) {
     console.warn('[SessionSync] flushSessions: no locationId resolved, skipping all writes');
+    return;
+  }
+  // v5.9.71 VENUE FENCE rule 3: this tab publishes for the venue it booted for, nothing else. A
+  // Back Office venue switch in the same browser changes what getLocationId() answers while the
+  // tables in memory still belong to the old venue; that is how Provo's demo orders reached
+  // Coffee Boy Leeds. Refuse until the tab reloads at the new venue.
+  const bootLoc = useStore.getState().bootLocationId;
+  if (bootLoc && _locationId !== bootLoc) {
+    console.error('[SessionSync] VENUE FENCE: booted for', bootLoc, 'but the venue now resolves to', _locationId, '- refusing every session write until reload');
     return;
   }
 
@@ -115,6 +125,11 @@ export async function flushSessions() {
     if (_lastSent[t.id] === payload && _lastTotals[t.id] === totalsKey) { skipped++; continue; } // no change
     _lastSent[t.id] = payload;
     _lastTotals[t.id] = totalsKey;
+    // v5.9.71 VENUE FENCE rule 2: a session tagged for another venue is never published here.
+    if (!sessionVenueOk(t.session, _locationId)) {
+      console.error('[SessionSync] VENUE FENCE: table', t.id, 'holds a session for', t.session?._loc, 'not', _locationId, '- not published');
+      continue;
+    }
     writesIssued++;
 
     _backup[t.id] = t.session; _backupDirty = true;   // batched backup (written once below)
@@ -206,7 +221,7 @@ export async function flushSessions() {
   }
 
   // ── one backup write + one batched upsert + one batched delete (was per-row) ──
-  if (_backupDirty) { try { localStorage.setItem('rpos-session-backup', JSON.stringify(_backup)); } catch {} }
+  if (_backupDirty) { try { localStorage.setItem('rpos-session-backup', JSON.stringify(_backup)); stampLocalSessionsFor(_locationId); } catch {} }
   // v5.5.892: the OfflineQueue is now strictly a FALLBACK — enqueue only when offline or when
   // the direct batch fails. Previously every row was ALSO queued up-front, so each write hit
   // Supabase twice (direct + replay) and a queued delete could replay stale minutes later.

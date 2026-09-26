@@ -23,8 +23,9 @@ import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } fr
 import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
-import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont } from '../lib/menuBoardSections';
-import { BoardHeader, BoardSection, BoardFooter } from './menuboard/BoardParts';
+import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, fitFont, scaledFont, boardPages, pageSeconds } from '../lib/menuBoardSections';
+import { BoardHeader, BoardSection, BoardFooter, Slideshow } from './menuboard/BoardParts';
+import { marketingSlides } from '../lib/menuBoardSlides';
 import { boardFollowsMenus, resolveBoardMenu } from '../lib/menuBoardMenus';
 import { generatePairingCode } from '../lib/pairingCode';
 // The SAME rule the order screens use for a portrait TV. One implementation, so a
@@ -398,7 +399,17 @@ function Board({ data }) {
   const [fitTick, setFitTick] = useState(0);
 
   // ordered sections; content flows column-by-column and fills the screen
-  const sections = mode === 'menu' ? buildSections(data, activeMenuId) : [];
+  const allSections = mode === 'menu' ? buildSections(data, activeMenuId) : [];
+  // v5.9.71: page breaks split the board into screens that rotate; each fits on its own.
+  const pages = useMemo(() => boardPages(allSections), [allSections]);
+  const [page, setPage] = useState(0);
+  const pageMs = pageSeconds(data.board?.layout) * 1000;
+  useEffect(() => {
+    if (mode !== 'menu' || pages.length < 2) { setPage(0); return undefined; }
+    const t = setInterval(() => setPage((x) => (x + 1) % pages.length), pageMs);
+    return () => clearInterval(t);
+  }, [mode, pages.length, pageMs]);
+  const sections = pages[page % pages.length] || [];
   const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
   const totalItems = sections.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
@@ -420,7 +431,7 @@ function Board({ data }) {
     const fits = (px) => { root.style.fontSize = px + 'px'; return flow.scrollWidth <= flow.clientWidth + 1 && flow.scrollHeight <= flow.clientHeight + 1; };
     // The fill is the largest text that fits; the operator's text size shrinks from it (v5.9.68).
     root.style.fontSize = scaledFont(fitFont(fits, { min: FIT.min, max: FIT.max }), textScale, FIT.min) + 'px';
-  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId, stage.w, stage.h]);
+  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId, stage.w, stage.h, page, pages.length]);
 
   useEffect(() => {
     const refit = () => {
@@ -470,20 +481,17 @@ function Board({ data }) {
   } : null;
   const scrim = theme.bgImageUrl ? { position: 'absolute', inset: 0, background: theme.bgColor, opacity: 0.72 } : null;
 
-  // ── marketing mode: fullscreen media, no menu ──
+  // ── marketing mode: fullscreen slides, no menu (v5.9.71: one after another; a board saved
+  // before this plays its single media as one slide) ──
   if (mode === 'marketing') {
     const m = data.board?.marketing || {};
+    const slides = marketingSlides(m);
     return (
       <div ref={boardRef} style={rootStyle}>
         <div style={stageStyle}>
-        {m.mediaUrl && m.mediaType === 'video' && (
-          <video src={m.mediaUrl} autoPlay muted loop playsInline
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: m.fit || 'cover' }} />
-        )}
-        {m.mediaUrl && m.mediaType !== 'video' && (
-          <div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${m.mediaUrl})`, backgroundSize: m.fit || 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }} />
-        )}
-        {!m.mediaUrl && <Splash text="Marketing screen" sub="Upload an image or video in Back Office." inline />}
+        {slides.length
+          ? <Slideshow slides={slides} fit={m.fit || 'cover'} transition={m.transition || 'fade'} />
+          : <Splash text="Marketing screen" sub="Upload images or a video in Back Office." inline />}
         </div>
       </div>
     );
@@ -514,7 +522,7 @@ function Board({ data }) {
           </div>
         </div>
 
-        <BoardFooter theme={theme} live />
+        <BoardFooter theme={theme} live pages={pages.length} page={page % pages.length} />
       </div>
       </div>
     </div>

@@ -715,6 +715,9 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// The venue a new session belongs to: the boot venue, else the active one (lib/localSessions.js rule 2).
+const venueTag = () => { try { return useStore.getState().bootLocationId || getActiveLocationSync() || null; } catch { return getActiveLocationSync() || null; } };
+
 export const useStore = create((set, get) => ({
   // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
   ...waitlistSlice(set, get),
@@ -1982,6 +1985,9 @@ export const useStore = create((set, get) => ({
   },
 
   // ── Tables (source of truth for all orders) ──────────
+  // v5.9.71 VENUE FENCE: the venue this tab BOOTED for (SyncBridge sets it). SessionSync publishes
+  // for this venue only; sessions are tagged with it when they are created (lib/localSessions.js).
+  bootLocationId: null,
   tables: isMock ? buildInitialTables() : [],
 
   // Helper to update a single table
@@ -2005,7 +2011,7 @@ export const useStore = create((set, get) => ({
       id: `ORD-${++_orderNum}`,
       items: [], firedCourses: [],
       sentAt: null, covers, server,
-      seatedAt: Date.now(), note: '', orderNote: '',
+      seatedAt: Date.now(), _loc: venueTag(), note: '', orderNote: '',
       subtotal: 0, total: 0,
       customer: seatCustomer,
       ...(booking ? { booking } : {}),
@@ -2029,7 +2035,7 @@ export const useStore = create((set, get) => ({
       id: `ORD-${++_orderNum}`,
       items: items.map(i => ({ ...i, status:'pending' })),
       firedCourses: [], sentAt: null, covers, server,
-      seatedAt: now, note: '', orderNote: '',
+      seatedAt: now, _loc: venueTag(), note: '', orderNote: '',
       subtotal: items.reduce((s,i)=>s+i.price*i.qty, 0),
       total: items.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
       ...(customer ? { customer } : {}),
@@ -2076,7 +2082,7 @@ export const useStore = create((set, get) => ({
       firedCourses: [], sentAt: null,
       covers: parent.session?.covers || 2,
       server: staffName || parent.session?.server || 'Server',
-      seatedAt: Date.now(), note: '', orderNote: '',
+      seatedAt: Date.now(), _loc: venueTag(), note: '', orderNote: '',
       subtotal: splitItems.reduce((s,i)=>s+i.price*i.qty, 0),
       total: splitItems.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
     };
@@ -2138,7 +2144,7 @@ export const useStore = create((set, get) => ({
           items: [], firedCourses: [], sentAt: null,
           covers: covers || 2,
           server: s.staff?.name || 'Staff',
-          seatedAt: Date.now(),
+          seatedAt: Date.now(), _loc: venueTag(),
           note: '', orderNote: '', subtotal: 0, total: 0,
         };
         // Update covers if changed
@@ -2507,7 +2513,7 @@ export const useStore = create((set, get) => ({
       set(s => ({
         tables: s.tables.map(t => {
           if (t.id !== activeTableId) return t;
-          const session = t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), note:'', orderNote:'', subtotal:0, total:0 };
+          const session = t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
           const items = [...session.items, newItem];
           const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
           return { ...t, status:t.status==='available'?'open':t.status, session:{ ...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now() } };
@@ -2529,7 +2535,7 @@ export const useStore = create((set, get) => ({
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if (t.id!==activeTableId) return t;
-        const session = t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), note:'', orderNote:'', subtotal:0, total:0 };
+        const session = t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
         const items=[...session.items, newItem];
         const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
         return {...t, session:{...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now()}};
