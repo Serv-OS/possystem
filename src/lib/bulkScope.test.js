@@ -13,18 +13,19 @@ const items = [
   { id: 'a', name: 'Americano', scope: 'local' },
   { id: 'b', name: 'Latte', scope: 'shared' },
   { id: 'c', name: 'Large', parentId: 'a', scope: 'local' },        // a size child
-  { id: 'd', name: 'Oat milk', type: 'subitem', scope: 'local' },  // a sub-item
+  { id: 'd', name: 'Oat milk', type: 'subitem', scope: 'local' },  // an option-only sub-item
   { id: 'e', name: 'Old', archived: true, scope: 'local' },
+  { id: 'f', name: 'Glazed donut', type: 'subitem', soldAlone: true, scope: 'local' },  // a sub-item SOLD ALONE: a product (v5.9.75)
 ];
 
 test('targets are top-level, live products not already at that scope', () => {
-  assert.deepEqual(bulkScopeTargets(items, 'shared').map((i) => i.id), ['a']);
+  assert.deepEqual(bulkScopeTargets(items, 'shared').map((i) => i.id), ['a', 'f'], 'a sold-alone sub item shares like any product; an option-only one never does');
   assert.deepEqual(bulkScopeTargets(items, 'local').map((i) => i.id), ['b']);
-  assert.deepEqual(bulkScopeTargets(items, 'global').map((i) => i.id), ['a', 'b']);
+  assert.deepEqual(bulkScopeTargets(items, 'global').map((i) => i.id), ['a', 'b', 'f']);
 });
 
 test('re-send includes products already at that level, so broken copies can be repaired', () => {
-  assert.deepEqual(bulkScopeTargets(items, 'global', { includeSame: true }).map((i) => i.id), ['a', 'b']);
+  assert.deepEqual(bulkScopeTargets(items, 'global', { includeSame: true }).map((i) => i.id), ['a', 'b', 'f']);
   const already = [{ id: 'g', name: 'Latte', scope: 'global' }];
   assert.deepEqual(bulkScopeTargets(already, 'global').map((i) => i.id), [], 'normally skipped');
   assert.deepEqual(bulkScopeTargets(already, 'global', { includeSame: true }).map((i) => i.id), ['g'], 're-send takes it');
@@ -42,14 +43,14 @@ test('it runs ONE product at a time, in order', async () => {
   };
   const r = await runBulkScope({ targets: bulkScopeTargets(items, 'global'), scope: 'global', setScope });
   assert.equal(maxInFlight, 1);
-  assert.deepEqual(order, ['a', 'b']);
-  assert.equal(r.promoted, 2); assert.equal(r.copies, 6); assert.equal(r.failed.length, 0);
+  assert.deepEqual(order, ['a', 'b', 'f']);
+  assert.equal(r.promoted, 3); assert.equal(r.copies, 9); assert.equal(r.failed.length, 0);
 });
 
 test('one failure does not stop the rest, and is named', async () => {
   const setScope = async (item) => item.id === 'a' ? { ok: false, error: { message: 'not in an org' } } : { ok: true, action: 'rescoped' };
   const r = await runBulkScope({ targets: bulkScopeTargets(items, 'global'), scope: 'global', setScope });
-  assert.equal(r.done, 2); assert.equal(r.ok.length, 1); assert.equal(r.failed.length, 1);
+  assert.equal(r.done, 3); assert.equal(r.ok.length, 2); assert.equal(r.failed.length, 1);
   assert.equal(r.failed[0].error, 'not in an org');
   assert.match(bulkScopeWords(r, 'global'), /1 product failed: Americano \(not in an org\)/);
 });

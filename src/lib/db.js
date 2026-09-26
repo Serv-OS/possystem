@@ -1508,6 +1508,28 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
   // its bare id is the master, held by the owning venue (round-3 review).
   const bareOf = (id) => (String(id).endsWith(`_${srcSuffix}`) ? String(id).slice(0, -(srcSuffix.length + 1)) : String(id));
 
+  // v5.9.75 (Peter, 26 Sep: donuts built at Train Station as sub items in a deal showed at
+  // Leeds, not Huddersfield): a SOLD-ALONE sub item is a product on the grid, so its copy
+  // keeps a category: the source category's master, addressed at the peer venue, when that
+  // category exists there. An option-only sub item still gets none (it never renders in a grid).
+  const peerCatCache = new Map();
+  const peerCatForSub = async (sourceCatId) => {
+    if (!sourceCatId) return null;
+    if (peerCatCache.has(sourceCatId)) return peerCatCache.get(sourceCatId);
+    let out = null;
+    try {
+      const { data: catRow } = await supabase.from('menu_categories').select('id, master_id, location_id').eq('id', sourceCatId).maybeSingle();
+      const master = await masterCategoryOf(catRow);
+      if (master) {
+        const pid = peerCatIdAt(master.id, master.location_id, peerLocId);
+        const { data: pc } = await supabase.from('menu_categories').select('id').eq('id', pid).maybeSingle();
+        if (pc) out = pid;
+      }
+    } catch (e) { console.warn('[shareModifierGroups] category lookup threw for sub-item', sourceCatId, e?.message || e); }
+    peerCatCache.set(sourceCatId, out);
+    return out;
+  };
+
   // Copy a sold-alone sub-item (menu_items row) to the peer. Returns peer item id.
   const copySubItem = async (itemId) => {
     if (!itemId) return null;
@@ -1535,7 +1557,7 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
     let subIds;
     try { subIds = await peerIdMapsFor(sourceLocId, peerLocId); }
     catch (e) { console.warn('[shareModifierGroups] venue setup unreadable, sub-item skipped', peerItemId, e?.message || e); return null; }
-    const { data: existingSub, error: probeErr } = await supabase.from('menu_items').select('id').eq('id', peerItemId).maybeSingle();
+    const { data: existingSub, error: probeErr } = await supabase.from('menu_items').select('id, cat').eq('id', peerItemId).maybeSingle();
     if (probeErr) { console.warn('[shareModifierGroups] could not check the peer sub-item, skipped', peerItemId, probeErr); return null; }
     const subScope = scope || 'shared';
     // An EDIT refreshes what follows an edit; a share/re-send writes what a
@@ -1546,6 +1568,12 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       : resendFields(subScope, { exists: !!existingSub, lockPricing: !!si.lock_pricing }));
     const pick = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => allowed.has(k)));
     const subPricing = remapPricingMenus(fieldOf(si, 'pricing'), subIds.menuIdFor).pricing;
+    // The copy keeps the source's choice. With none, a sub item is not sold alone (rule 6).
+    const subSoldAlone = resolveSoldAlone({ sold_alone: si.sold_alone, type: si.type ?? 'subitem' });
+    // A new copy, or an existing one with no category at all (nothing of its own to keep),
+    // gets the category; a peer's own category is never overwritten (Shared's promise).
+    const subCat = subSoldAlone && (!existingSub || !existingSub.cat) ? await peerCatForSub(si.cat) : null;
+    if (subSoldAlone && si.cat && !subCat && !existingSub?.cat) unmappedSub.push(`category of ${si.name} (not at that venue yet, so it has none there)`);
     const peerSub = {
       ...pick({ ...carryVerbatim(si), ...nameColumnsFor(si), ...(subPricing !== undefined ? { pricing: subPricing } : {}) }),
       ...pick(remapForPeer(si, {
@@ -1557,8 +1585,8 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       id: peerItemId,
       location_id: peerLocId,
       type: si.type ?? 'subitem',
-      ...(existingSub ? {} : { cat: null, cats: [], parent_id: null }),   // sub-items never render in a grid
-      // The copy keeps the source's choice. With none, a sub item is not sold alone (rule 6).
+      ...(existingSub ? {} : { cat: null, cats: [], parent_id: null }),   // an option-only sub item never renders in a grid
+      ...(subCat ? { cat: subCat, cats: [subCat] } : {}),                   // a sold-alone one is a product there too (v5.9.75)
       sold_alone: resolveSoldAlone({ sold_alone: si.sold_alone, type: si.type ?? 'subitem' }),
       ...(existingSub ? {} : { scope: subScope, org_id: orgId }),
       master_id: subMasterId,
@@ -1874,7 +1902,7 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       // new row take everything. archived (restore only) and sort_order are
       // written here, on a deliberate share, never on an edit. A probe that
       // FAILS skips the peer: treating it as "new" clobbered overrides.
-      const { data: existingPeer, error: probeErr } = await supabase.from('menu_items').select('id').eq('id', peerId).maybeSingle();
+      const { data: existingPeer, error: probeErr } = await supabase.from('menu_items').select('id, cat').eq('id', peerId).maybeSingle();
       if (probeErr) { console.warn('[setMenuItemScope] could not check the peer row, skipped', peerLocId, probeErr); skippedPeers++; continue; }
       const allowed = new Set(resendFields(newScope, { exists: !!existingPeer, lockPricing: !!(item.lockPricing ?? item.lock_pricing) }));
       // The category must resolve AND exist at the peer, or an existing copy keeps
@@ -1883,6 +1911,9 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
         let catOk = false;
         if (peerCat) { const { data: pc, error: pcErr } = await supabase.from('menu_categories').select('id').eq('id', peerCat).maybeSingle(); catOk = !pcErr && !!pc; }
         if (!catOk) { allowed.delete('cat'); allowed.delete('cats'); unmappedAll.push(`${peerLocId}|category (left as that venue has it)`); }
+        // v5.9.75: a copy with NO category has nothing of its own to keep (a sub item copied
+        // as a deal option, later sold alone), so a re-send gives it the master's.
+        else if (!existingPeer.cat) { allowed.add('cat'); allowed.add('cats'); }
       }
       const pick = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => allowed.has(k)));
       const remapped = remapForPeer(item, {

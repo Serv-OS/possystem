@@ -18,8 +18,10 @@
  * child or a sub-item, which inherit), never archived, and only those that are
  * not already at the target scope.
  */
+import { isOptionOnlyItem } from './menuRules.js';
+
 export function bulkScopeTargets(items, scope, { includeSame = false } = {}) {
-  return (items || []).filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem'
+  return (items || []).filter((i) => i && !i.archived && !i.parentId && !isOptionOnlyItem(i)   // v5.9.75: a sold-alone sub item is a product
     && (includeSame ? scope !== 'local' : (i.scope || 'local') !== scope));
 }
 
@@ -100,7 +102,7 @@ export function bulkScopeConfirmWords(count, scope, venues) {
 export function missingMasters(masters, presentIds, venueId) {
   const suffix = String(venueId || '').slice(-8);
   const present = new Set(presentIds || []);
-  return (masters || []).filter((m) => m && !m.archived && !m.parent_id && (m.type || 'simple') !== 'subitem'
+  return (masters || []).filter((m) => m && !m.archived && !m.parent_id && !isOptionOnlyItem(m)
     && ['shared', 'global'].includes(m.scope || 'local')
     && (!m.master_id || m.master_id === m.id)
     && String(m.location_id) !== String(venueId)

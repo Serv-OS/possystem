@@ -1924,8 +1924,8 @@ function ItemsLibrary() {
           // v5.9.60: say the whole picture. Peter, 24 Sep: Hot drinks had 6 products, the
           // strip said "3" for Global and "5" for Shared, because it only counted what
           // would CHANGE. True, but it read as a bug.
-          const inView = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem').length : 0;
-          const already = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && (i.type || 'simple') !== 'subitem' && (i.scope || 'local') === bulkScope).length : 0;
+          const inView = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && !isOptionOnlyItem(i)).length : 0;
+          const already = bulkScope ? parents.filter((i) => i && !i.archived && !i.parentId && !isOptionOnlyItem(i) && (i.scope || 'local') === bulkScope).length : 0;
           const running = !!bulkScopeRun;
           const go = async () => {
             if (!bulkScope || !targets.length || running) return;
@@ -2810,7 +2810,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 product-level property; sharing a child directly used to create a standalone
                 product at peer locations. setMenuItemScope now redirects a child to its parent,
                 but hiding the control keeps the operator on the correct (parent) row. */}
-            {!isSub && !item.parentId && (
+            {!item.parentId && (!isSub || !isOptionOnlyItem(item)) && (   /* v5.9.75: a sold-alone sub item is a product, so it shares */
               <div>
                 <span style={lbl}>Sharing</span>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 4 }}>
