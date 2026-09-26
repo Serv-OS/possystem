@@ -1,3 +1,7 @@
+# Session, 26 Sep 2026, v5.9.80, Customers: points and stamps for everyone (branch fix/customers-loyalty-rows)
+
+- Platform PostgREST max_rows = 1000 (Ops too). customer_loyalty by company = 8,028 rows, customer_stamp_cards 4,511: the page got the first 1,000 of each. Now loadLoyaltyFor(companyId, ids) in 150 id slices (idChunks), merged into the maps; search finds included. First page back to updated_at desc (index + set form policy from 20260926b).
+
 # Session, 26 Sep 2026, v5.9.79, till: remove customer + customer display holds an open order (branch fix/till-customer)
 
 - Remove customer: POSSurface chip ✕ → removeCustomer(): setSessionCustomer(table, null) for dine-in, allergen filter cleared when the profile supplied it, clearCustomer(), toast. MPOS not touched (its capture sheet has no chip).

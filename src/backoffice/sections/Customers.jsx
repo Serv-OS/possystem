@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
-import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption } from '../../lib/customersQuery';
+import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption, idChunks } from '../../lib/customersQuery';
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
 
@@ -74,7 +74,40 @@ export default function Customers() {
   const [stampPrograms, setStampPrograms] = useState([]); // v5.5.257: all active stamp programs
   const [loadError, setLoadError] = useState('');       // v5.9.78: a failed read is not "no customers"
   const [searching, setSearching] = useState(false);     // v5.9.78: a server search is in flight
-  const orgRef = useRef({ orgId: null, locMap: {} });
+  const orgRef = useRef({ orgId: null, locMap: {}, companyId: null, hasStampPrograms: false });
+
+  // v5.9.80: loyalty memberships, tiers and stamp cards for THESE customers, read in slices of
+  // 150 ids. A read by company stops at the API's 1,000 row cap, so at Coffee Boy (8,028 members,
+  // 4,511 stamp cards) most customers showed no points and no stamps. Results merge into the maps,
+  // so a search that finds more customers adds theirs.
+  const loadLoyaltyFor = async (companyId, custIds, withStamps) => {
+    if (!platformSupabase || !companyId || !custIds?.length) return;
+    const chunks = idChunks(custIds);
+    const loy = await Promise.all(chunks.map((slice) => platformSupabase
+      .from('customer_loyalty')
+      .select('customer_id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, member_code, tier_id, enrolled_at, last_earn_at')
+      .eq('company_id', companyId).in('customer_id', slice)));
+    const loyaltyRows = loy.flatMap((r) => r?.data || []);
+    if (loyaltyRows.length) setLoyaltyMap((m) => { const n = { ...m }; loyaltyRows.forEach((r) => { n[r.customer_id] = r; }); return n; });
+    const tierIds = [...new Set(loyaltyRows.filter((r) => r.tier_id).map((r) => r.tier_id))];
+    if (tierIds.length) {
+      const { data: tRows } = await platformSupabase.from('loyalty_tiers').select('id, name, color, icon').in('id', tierIds);
+      if (tRows?.length) setTierMap((m) => { const n = { ...m }; tRows.forEach((t) => { n[t.id] = t; }); return n; });
+    }
+    if (!withStamps) return;
+    const sc = await Promise.all(chunks.map((slice) => platformSupabase
+      .from('customer_stamp_cards')
+      .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
+      .eq('company_id', companyId).in('customer_id', slice)));
+    const cards = sc.flatMap((r) => r?.data || []);
+    if (cards.length) setStampDataMap((m) => {
+      const n = { ...m };
+      const fresh = {};
+      cards.forEach((c) => { (fresh[c.customer_id] = fresh[c.customer_id] || []).push(c); });
+      Object.assign(n, fresh);
+      return n;
+    });
+  };
 
   // Load all customers + their per-location stats (for the org)
   useEffect(() => {
@@ -106,7 +139,9 @@ export default function Customers() {
           .from('customers')
           .select('id, name, phone, phone_raw, email, marketing_opt_in, marketing_opt_in_at, notes, allergens, created_at, updated_at')
           .eq('org_id', orgId).is('deleted_at', null)
-          .order('id')
+          // v5.9.80: newest first again. Migration 20260926b (run 26 Sep) made the security rule
+          // run once per read and added the (org_id, updated_at desc) index: 16 ms for 1,000.
+          .order('updated_at', { ascending: false })
           .limit(CUSTOMER_PAGE_SIZE);
         if (custErr) { setLoadError(custErr.message || 'The customer list could not be read.'); return; }
         const ids = (customerRows || []).map(c => c.id);
@@ -143,51 +178,20 @@ export default function Customers() {
               .limit(1).maybeSingle();
 
             if (platLoc?.company_id) {
-              // Fetch all loyalty memberships for this company
-              const { data: loyaltyRows } = await platformSupabase
-                .from('customer_loyalty')
-                .select('customer_id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, member_code, tier_id, enrolled_at, last_earn_at')
-                .eq('company_id', platLoc.company_id);
-
-              const lMap = {};
-              (loyaltyRows || []).forEach(r => { lMap[r.customer_id] = r; });
-              setLoyaltyMap(lMap);
-
-              // Fetch tier names
-              const loyaltyTierIds = [...new Set((loyaltyRows || []).filter(r => r.tier_id).map(r => r.tier_id))];
-              if (loyaltyTierIds.length) {
-                const { data: tRows } = await platformSupabase
-                  .from('loyalty_tiers')
-                  .select('id, name, color, icon')
-                  .in('id', loyaltyTierIds);
-                const tMap = {};
-                (tRows || []).forEach(t => { tMap[t.id] = t; });
-                setTierMap(tMap);
-              }
-
-              // v5.5.257: Fetch stamp card programs + per-customer cards
+              // v5.5.257: stamp card programs (a handful per company).
+              let progs = [];
               try {
-                const { data: progs } = await platformSupabase
+                const { data } = await platformSupabase
                   .from('stamp_card_programs')
                   .select('id, name, icon, stamps_required, reward_description, active')
                   .eq('company_id', platLoc.company_id)
                   .eq('active', true);
-                setStampPrograms(progs || []);
-
-                if (progs?.length && ids.length) {
-                  // v5.9.78: by company only; the customer id list made a 37 KB URL.
-                  const { data: stampCards } = await platformSupabase
-                    .from('customer_stamp_cards')
-                    .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
-                    .eq('company_id', platLoc.company_id);
-                  const scMap = {};
-                  (stampCards || []).forEach(sc => {
-                    if (!scMap[sc.customer_id]) scMap[sc.customer_id] = [];
-                    scMap[sc.customer_id].push(sc);
-                  });
-                  setStampDataMap(scMap);
-                }
-              } catch (e) { console.warn('[Customers] stamp cards fetch:', e?.message); }
+                progs = data || [];
+                setStampPrograms(progs);
+              } catch (e) { console.warn('[Customers] stamp programs fetch:', e?.message); }
+              orgRef.current = { ...orgRef.current, companyId: platLoc.company_id, hasStampPrograms: progs.length > 0 };
+              // Memberships, tiers and stamp cards for the customers on screen (v5.9.80).
+              await loadLoyaltyFor(platLoc.company_id, ids, progs.length > 0);
             }
           } catch (loyaltyErr) {
             console.warn('[Customers] loyalty fetch failed:', loyaltyErr?.message);
@@ -227,6 +231,8 @@ export default function Customers() {
           (cl || []).forEach((row) => { (byCust[row.customer_id] = byCust[row.customer_id] || []).push({ ...row, locationName: locMap[row.location_id] || '—' }); });
           if (seq !== searchSeq.current) return;
           setCustomers((cs) => mergeCustomerRows(cs, fresh.map((c) => enrichCustomer(c, byCust[c.id] || []))));
+          const { companyId, hasStampPrograms } = orgRef.current;
+          loadLoyaltyFor(companyId, fresh.map((c) => c.id), hasStampPrograms).catch((e) => console.warn('[Customers] search loyalty:', e?.message));
         }
       } catch (e) { console.warn('[Customers] search failed:', e?.message || e); }
       finally { if (seq === searchSeq.current) setSearching(false); }
