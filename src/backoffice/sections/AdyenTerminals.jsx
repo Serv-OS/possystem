@@ -426,8 +426,26 @@ export default function AdyenTerminals() {
   // The rebuild on 10 Sep left this switch off the page by mistake.
   const setTablePay = async (r, on) => {
     setBusy(`tp-${r.id}`); clearMessages();
-    try { await writeSettings(r, { modes: { ...(r.modes || {}), table_pay: on } }); await loadList(status); }
-    catch (e) { fail(`The Pay at table switch for ${r.label} could not be saved.`, e, 'readers'); }
+    try { await writeSettings(r, { modes: { ...(r.modes || {}), table_pay: on } }); }
+    catch (e) { fail(`The Pay at table switch for ${r.label} could not be saved.`, e, 'readers'); setBusy(''); return; }
+    // v5.9.70: the reader's OWN screen too (Peter, 26 Sep: "pay at table still showing
+    // despite me turning it off"). The till side is the row above; the button on the reader
+    // is an Adyen terminal setting, sent by adyen-terminal-admin terminal_table_pay_set.
+    const headline = `Pay at table is ${on ? 'on' : 'off'} for ${r.label} on the till, but the reader's own screen could not be updated.`;
+    try {
+      const a = await callAdmin('terminal_table_pay_set', { terminal_device_id: r.id, enabled: on });
+      if (a.ok === false) {
+        const first = (a.errors || [])[0];
+        fail(headline, { message: first?.text || a.error || 'Adyen refused the change.', detail: first?.detail || null }, 'readers');
+      } else {
+        setNotice({
+          where: 'readers',
+          text: `${r.label}: Pay at table is ${on ? 'on' : 'off'}.`,
+          lines: [...(a.applied || []), 'The reader picks this up on its next sync (Admin menu, Sync) or when it restarts.'],
+        });
+      }
+    } catch (e) { fail(headline, e, 'readers'); }
+    await loadList(status);
     setBusy('');
   };
   const setStandaloneFor = async (r, on) => {
@@ -623,6 +641,7 @@ export default function AdyenTerminals() {
                 <Switch label="Take payments from the till" checked={r.modes?.pos_dispatch !== false} disabled={!!busy}
                   onChange={(on) => setPosDispatch(r, on)} />
                 <Switch label="Pay at table on this reader" checked={r.modes?.table_pay !== false} disabled={!!busy}
+                  title="Also hides or shows the Pay at table button on the reader's own screen. The reader applies it on its next sync or a restart."
                   onChange={(on) => setTablePay(r, on)} />
                 <Switch label="Staff can type an amount on the reader" checked={sa === true} disabled={!!busy || sa == null}
                   title="Payments typed on the reader book against the venue and show in payment reports. They do not attach to a till check."
@@ -705,7 +724,7 @@ export default function AdyenTerminals() {
 
             <div>
               <div style={{ fontWeight: 800 }}>Send reader settings to Adyen</div>
-              <p style={S.p}>Sends the address for payment updates, the Pay at table button and the tip choices to every reader here. Adding a reader does this on its own.</p>
+              <p style={S.p}>Sends the address for payment updates, the Pay at table button and the tip choices to every reader here. Readers with Pay at table switched off keep it off. Adding a reader does this on its own.</p>
               <div style={{ marginTop: 8 }}>
                 <button style={S.btn} disabled={!canAdd || busy === 'sync'} onClick={sendSettings}>{busy === 'sync' ? 'Sending' : 'Send reader settings to Adyen'}</button>
               </div>

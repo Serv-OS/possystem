@@ -17,6 +17,7 @@ import {
   parseTipPresetText, normaliseTipPresets, tipPresetChanges, tipChangeSentence, readReaderTips, readerTipsPatch,
   tipsFromTipConfig, tipsFromGratuities, tipConfigFromTips, buildGratuities, tipsSentence,
   eventUrlWithKey, eventsEndpoint, buildEventUrls, buildNotification, buildPayAtTable, buildStoreSettingsPatches,
+  buildTerminalTablePayPatches, terminalTablePayLine, terminalTablePayOutcome, TERMINAL_SETTING_KEYS,
   appliedLine, plainAdyenDetail, storeSettingsOutcome, readSyncState, syncStatePatch,
   readerStatus, normaliseSerial, serialFromPoiid, modelFromPoiid, nextReaderName, readerRows, tillSentence,
 } from './readerSettings.js';
@@ -176,6 +177,9 @@ test('buildNotification is the Pay at table wake up button with empty details; b
   assert.equal(buildNotification('  ').title, 'Pay at table');
   assert.equal(buildNotification('x'.repeat(50)).title.length, 40);
   assert.deepEqual(buildPayAtTable(), { enablePayAtTable: true, paymentInstrument: 'Card' });
+  // v5.9.70: the terminal level OFF override for one reader
+  assert.deepEqual(buildNotification('Pay at table', false), { enabled: false, showButton: false, title: 'Pay at table', category: 'SaleWakeUp', details: '' });
+  assert.deepEqual(buildPayAtTable(false), { enablePayAtTable: false, paymentInstrument: 'Card' });
 });
 
 test('buildStoreSettingsPatches is four patches in order, each its own PATCH body', () => {
@@ -455,4 +459,47 @@ test('TS mirror: every export, function and constant, answers exactly as the JS 
   }
   assert.equal(ts.tillSentence('pos-1', [{ id: 'pos-1', name: 'Bar' }]), tillSentence('pos-1', [{ id: 'pos-1', name: 'Bar' }]));
   assert.equal(ts.tillSentence('pos-9', []), tillSentence('pos-9', []));
+});
+
+
+// ── v5.9.70: a reader's own Pay at table switch, on Adyen ─────────────────────
+import fs from 'node:fs';
+const readSrc = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+
+test('the terminal patches are the two Pay at table groups, off or on, in the store patch shape', () => {
+  assert.deepEqual(TERMINAL_SETTING_KEYS, ['wakeup_button', 'pay_at_table']);
+  const off = buildTerminalTablePayPatches(false);
+  assert.deepEqual(off.map((p) => p.key), ['wakeup_button', 'pay_at_table']);
+  assert.deepEqual(off[0].body, { nexo: { notification: { enabled: false, showButton: false, title: 'Pay at table', category: 'SaleWakeUp', details: '' } } });
+  assert.deepEqual(off[1].body, { payAtTable: { enablePayAtTable: false, paymentInstrument: 'Card' } });
+  assert.equal(off[0].label, 'Pay at table button');
+  const on = buildTerminalTablePayPatches(true);
+  assert.equal(on[0].body.nexo.notification.showButton, true);
+  assert.equal(on[1].body.payAtTable.enablePayAtTable, true);
+  assert.equal(buildTerminalTablePayPatches(undefined)[1].body.payAtTable.enablePayAtTable, true, 'undefined means on, like the store');
+});
+
+test('the terminal outcome reads like the store sync: plain lines, refusals named, a missing answer is not sent', () => {
+  const patches = buildTerminalTablePayPatches(false);
+  const o = terminalTablePayOutcome(patches, [{ key: 'wakeup_button', ok: true, status: 200 }, { key: 'pay_at_table', ok: false, status: 403, detail: {} }], false);
+  assert.equal(o.ok, false);
+  assert.deepEqual(o.applied, ["The Pay at table button is off this reader's menu."]);
+  assert.match(o.errors[0].text, /^Adyen refused Pay at table for this reader/);
+  const none = terminalTablePayOutcome(patches, [], false);
+  assert.deepEqual(none.errors.map((e) => e.text), ['The Pay at table button was not sent.', 'Pay at table was not sent.']);
+  const good = terminalTablePayOutcome(buildTerminalTablePayPatches(true), [{ key: 'wakeup_button', ok: true, status: 200 }, { key: 'pay_at_table', ok: true, status: 200 }], true);
+  assert.deepEqual(good, { ok: true, applied: ["The Pay at table button is back on this reader's menu.", 'Pay at table is on for this reader.'], errors: [] });
+  assert.equal(terminalTablePayLine('other', false), 'other applied.');
+});
+
+test('pins: the switch reaches the reader through terminal_table_pay_set, and the store sync keeps switched off readers off', () => {
+  const fn = readSrc('../../../supabase/functions/adyen-terminal-admin/index.ts');
+  assert.match(fn, /action === 'terminal_table_pay_set'/);
+  assert.match(fn, /mgmt\(cfg, 'PATCH', `\/terminals\/\$\{encodeURIComponent\(poiid\)\}\/terminalSettings`, patch\.body\)/, 'terminal level, never the store path');
+  assert.match(fn, /buildTerminalTablePayPatches\(on\)/);
+  assert.match(fn, /table_pay !== false\) continue;/, 'the store sync loop only touches readers switched off');
+  assert.match(fn, /pushTerminalTablePay\(String\(row\.adyen_terminal_id \|\| ''\), false\)/);
+  const bo = readSrc('../../backoffice/sections/AdyenTerminals.jsx');
+  assert.match(bo, /callAdmin\('terminal_table_pay_set', \{ terminal_device_id: r\.id, enabled: on \}\)/);
+  assert.match(bo, /on its next sync/);
 });
