@@ -67,13 +67,17 @@ export function Slideshow({ slides = [], fit = 'cover', transition = 'fade' }) {
   );
 }
 
-export function BoardHeader({ theme = {}, name = '' }) {
+// basePx (v5.9.77): the header's base font in px from the SCREEN (lib/menuBoardSections.js
+// headerBasePx), so the logo, title and note are the same size on every board of the venue whatever
+// the menu on it; without it (old callers) the header follows the fitted base as before.
+export function BoardHeader({ theme = {}, name = '', basePx = 0 }) {
   const sz = boardSizes(theme), c = boardColors(theme);
   const title = (theme.title || '').trim();
   const note = (theme.subtitle || '').trim();
   const showName = !theme.logoUrl && !title;
   return (
     <div style={{
+      ...(basePx > 0 ? { fontSize: `${basePx}px` } : {}),
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1em', flex: '0 0 auto',
       borderBottom: theme.headerRule === false ? 'none' : `0.09em solid ${c.heading}`, paddingBottom: '0.35em', marginBottom: '0.6em',
     }}>
@@ -91,10 +95,10 @@ export function BoardHeader({ theme = {}, name = '' }) {
   );
 }
 
-export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0 }) {
+export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0, basePx = 0 }) {
   const c = boardColors(theme);
   return (
-    <div style={{ flex: '0 0 auto', borderTop: `0.04em solid ${c.muted}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.32em', color: c.muted }}>
+    <div style={{ ...(basePx > 0 ? { fontSize: `${basePx * 0.32}px` } : {}), flex: '0 0 auto', borderTop: `0.04em solid ${c.muted}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', ...(basePx > 0 ? {} : { fontSize: '0.32em' }), color: c.muted }}>
       <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}</span>
       {pages > 1 && (
         <span style={{ display: 'flex', gap: '.5em', alignItems: 'center' }} aria-label={`Page ${page + 1} of ${pages}`}>

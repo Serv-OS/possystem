@@ -440,3 +440,15 @@ function piecesOf(col) {
 
 /** Layout & display → keep categories whole? Default: fill (a category may continue in the next column). */
 export const boardKeepsWhole = (disp) => (disp && disp.flow) === 'whole';
+
+// ── The header is sized by the SCREEN, not by the menu (v5.9.77) ─────────────────────────────
+// Peter, 26 Sep 2026: "two menu boards, same settings, logo at different sizes, sub text different
+// sizes, title different size, how is that possible?" Because every size was em against the fitted
+// base, and the base is whatever makes THAT board's menu fill the screen: more items, smaller base,
+// smaller logo. Branding must be the same on every screen, so the header and footer take their base
+// from the screen's short side (like vmin), and only the menu body follows the fit.
+export const HEADER_VMIN = 2.8;   // 2.8% of the short side: a 1080p TV gives 30px, the base the Leeds board fitted at
+export function headerBasePx(w, h) {
+  const m = Math.min(Number(w) || 0, Number(h) || 0);
+  return m > 0 ? Math.max(6, Math.round((m * HEADER_VMIN) / 100)) : 0;
+}

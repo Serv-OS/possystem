@@ -18,7 +18,7 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
-import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
+import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
 
@@ -623,6 +623,20 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
   const disp = { ...DEF_DISP, ...board.display_options };
   const ar = board.orientation === 'portrait' ? '9 / 16' : '16 / 9';
   const rootRef = useRef(null);
+  // v5.9.77: the header is sized by the frame (the TV sizes it by the screen), so the preview shows
+  // the same logo, title and note on every board whatever its menu.
+  const [frame, setFrame] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return undefined;
+    const read = () => setFrame((f) => (f.w === el.clientWidth && f.h === el.clientHeight ? f : { w: el.clientWidth, h: el.clientHeight }));
+    read();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [board.mode, board.orientation]);
+  const headerPx = headerBasePx(frame.w, frame.h);
 
   const blocks = board.layout?.blocks;
   // The TV's sections exactly (lib/menuBoardSections.js): subcategories, headings, add-ons, text
@@ -655,14 +669,14 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
     <div ref={rootRef} style={{ aspectRatio: ar, background: t.bgColor, color: t.textColor, borderRadius: 10, border: '4px solid #060504', padding: '10px 12px', overflow: 'hidden', fontFamily: t.font || 'inherit', position: 'relative' }}>
       {t.bgImageUrl && <><div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${t.bgImageUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }} /><div style={{ position: 'absolute', inset: 0, background: t.bgColor, opacity: 0.72 }} /></>}
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <BoardHeader theme={t} name={board.name} />
+        <BoardHeader theme={t} name={board.name} basePx={headerPx} />
         {secs.length === 0
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a8276', fontSize: 11 }}>Add categories to preview</div>
           : <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <BoardBody rootRef={rootRef} sections={secs} cols={cols} textScale={disp.textScale} fontRange={PREVIEW_FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={String(page)}
+              <BoardBody rootRef={rootRef} sections={secs} cols={cols} textScale={disp.textScale} fontRange={PREVIEW_FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={`${page}|${headerPx}`}
                 theme={t} disp={disp} six={six} activeMenuId={activeMenuId} />
             </div>}
-        <BoardFooter theme={t} pages={pages.length} page={page % pages.length} />
+        <BoardFooter theme={t} pages={pages.length} page={page % pages.length} basePx={headerPx} />
       </div>
     </div>
   );

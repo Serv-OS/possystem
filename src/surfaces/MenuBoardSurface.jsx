@@ -23,7 +23,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
-import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, boardPages, pageSeconds, boardKeepsWhole } from '../lib/menuBoardSections';
+import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectionsForMenu, boardColumns, boardPages, pageSeconds, boardKeepsWhole, headerBasePx } from '../lib/menuBoardSections';
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from './menuboard/BoardParts';
 import { marketingSlides } from '../lib/menuBoardSlides';
 import { boardFollowsMenus, resolveBoardMenu } from '../lib/menuBoardMenus';
@@ -417,6 +417,8 @@ function Board({ data }) {
   // display keeps categories whole.
   const cols = boardColumns({ textScale, orientation, fixedCols, totalItems });
   const fitKey = [fitTick, stage.w, stage.h, orientation, page, pages.length].join('|');
+  // v5.9.77: the header and footer are sized by the screen, so every board of the venue wears the same logo, title and note.
+  const headerPx = headerBasePx(stage.w, stage.h);
 
   useEffect(() => {
     const refit = () => {
@@ -493,14 +495,14 @@ function Board({ data }) {
       {scrim && <div style={scrim} />}
       <div style={stageStyle}>
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', padding: pad, boxSizing: 'border-box' }}>
-        <BoardHeader theme={theme} name={data.board?.name} />
+        <BoardHeader theme={theme} name={data.board?.name} basePx={headerPx} />
 
         <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <BoardBody rootRef={boardRef} sections={sections} cols={cols} textScale={textScale} fontRange={FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={fitKey}
             theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} defaultImage={data.defaultImage} />
         </div>
 
-        <BoardFooter theme={theme} live pages={pages.length} page={page % pages.length} />
+        <BoardFooter theme={theme} live pages={pages.length} page={page % pages.length} basePx={headerPx} />
       </div>
       </div>
     </div>
