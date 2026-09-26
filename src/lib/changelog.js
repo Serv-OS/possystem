@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.79',
+    date: '26 Sep 2026',
+    items: [
+      'Till: a customer can be taken off an order. The customer chip on the order has a ✕ next to Edit (wrong person attached). A table order forgets the guest too, and the allergen filter that came with their profile is cleared. The customer record itself is untouched.',
+      'Customer display: an open order stays on the screen for as long as it is open, so customers can enter their number for loyalty. It used to fall back to the ads 45 seconds after the last change on the till. The thank you after payment still clears after a few seconds; a till that dies mid order clears the screen after 20 minutes.',
+    ],
+  },
+  {
     v: '5.9.78',
     date: '26 Sep 2026',
     items: [

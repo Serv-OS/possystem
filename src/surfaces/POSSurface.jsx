@@ -72,7 +72,7 @@ export default function POSSurface() {
     loadCurrentDrawerSession, signOutAfterCashUp,
     getPOSItems, getPOSTotals, getPOSOrderNote, quoteDelivery,
     activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
-    orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer,
+    orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer, setSessionCustomer,
     orderQueue, showToast,
     pendingItem, setPendingItem, clearPendingItem,
     eightySixIds, toggle86,
@@ -186,6 +186,16 @@ export default function POSSurface() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTableId, tables]);
+
+  // v5.9.79: take the customer off THIS order (the wrong person was attached). A table order
+  // forgets the guest as well, or re-entering the table would put them straight back; the
+  // allergen filter that came with the profile goes with them. The customer record itself stays.
+  const removeCustomer = () => {
+    if (orderType === 'dine-in' && activeTableId) setSessionCustomer(activeTableId, null);
+    if (Array.isArray(customer?.allergens) && customer.allergens.length) setAllergens([]);
+    clearCustomer();
+    showToast?.('Customer removed from this order', 'info');
+  };
 
   // v4.7.6: load menu_category_links on mount — a menu owns a category via the
   // category's PRIMARY menuId OR a menu_category_links row ("assign categories
@@ -1330,6 +1340,8 @@ export default function POSSurface() {
                     )}
                   </div>
                   <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,flexShrink:0}}>Edit</button>
+                  {/* v5.9.79 (Peter, 26 Sep: "no way to remove a customer from an order in case it's the wrong one") */}
+                  <button onClick={removeCustomer} aria-label="Remove customer from this order" title="Remove customer from this order" style={{fontSize:13,fontWeight:800,color:'var(--t3)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:'0 2px',flexShrink:0,lineHeight:1}}>✕</button>
                 </div>
               )}
               {!customer&&(
