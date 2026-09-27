@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.94, board packer: no small splits, keep 2 rows (branch fix/board-no-small-splits)
+
+- Peter's photo (Cold Drinks): Coolers split 1/1. menuBoardSections MIN_SPLIT_ROWS 6 (smaller sections whole), KEEP_ROWS 2 (heading keeps 2 rows, the last 2 rows travel together).
+
 # Session, 27 Sep 2026, v5.9.93, till Link to existing member + display UK mobile check (branch feat/till-link-existing)
 
 - link-existing-v2.patch (adversarial review passed, round 2): src/lib/customerLink.js + customerLinkRun.js, order chip action (blank profile: name ''/'Customer', no email), search limited to phoneless members, customer-merge from the till, notice; src/lib/ukMobile.js used by the display keypad and captureLoyaltyByPhone. MPOS has no chip (not offered there).

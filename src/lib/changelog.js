@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.94',
+    date: '27 Sep 2026',
+    items: [
+      'Menu boards: a small category (fewer than 6 items) never splits across columns, and a long category that continues in the next column keeps at least 2 items on each side, so no drink sits alone. The Cold Drinks board had Coolers split one and one.',
+    ],
+  },
+  {
     v: '5.9.93',
     date: '27 Sep 2026',
     items: [
