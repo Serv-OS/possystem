@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.89',
+    date: '27 Sep 2026',
+    items: [
+      'Customer display: after a member types their number it shows their stamp cards, with filled dots, the count ("2 of 9") and any free drink ready. It no longer says "0 points" at a venue that runs stamps only. Staff see the same under the customer\'s name on the till ("☕ 2/9").',
+    ],
+  },
+  {
     v: '5.9.88',
     date: '27 Sep 2026',
     items: [

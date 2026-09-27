@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.89, stamps on the customer display (branch feat/stamps-on-login)
+
+- Peter: "once a customer logs in it shows how many stamps they currently have". Portal already shows stamps (HomeTab + Stamps tab). The display showed points only. lib/stampSummary.js (stampSummary, stampDots, stampChip, showPoints); captureLoyaltyByPhone returns stampCards + points/stamps flags; POSSurface publishes them and shows the chip; LoyaltyResultPanel draws cards.
+
 # Session, 27 Sep 2026, v5.9.88 HOTFIX, till crash on a new number from the customer display (branch hotfix/display-new-number-crash)
 
 - Regression from v5.9.85: captureLoyaltyByPhone now succeeds for a new number, and POSSurface onCustomerPhone set customer.name undefined; the order chip ran customer.name.split. lib/customerInitials.js (customerInitials/customerLabel/firstNameOf) used by the chip, the CustomerModal results, the portal greeting; setCustomer name defaults to ''.
