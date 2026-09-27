@@ -18,7 +18,7 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
-import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
+import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, LINE_SPACING_OPTS, LINE_SPACING_DEFAULT, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
 
@@ -554,6 +554,8 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
                   <Field label="Category headings"><Pills opts={SIZE_OPTS} val={board.theme.headingSize || 'm'} on={v => setTheme({ headingSize: v })} /></Field>
                   <Field label="Item text"><Pills opts={SIZE_OPTS} val={board.theme.itemSize || 'm'} on={v => setTheme({ itemSize: v })} /></Field>
+                  {/* v5.9.92 (Peter, 27 Sep 2026: "reduce the padding between each line") */}
+                  <Field label="Line spacing"><Pills opts={LINE_SPACING_OPTS} val={board.theme.lineSpacing || LINE_SPACING_DEFAULT} on={v => setTheme({ lineSpacing: v })} /></Field>
                   <Field label="Prices"><Pills opts={[['pill', 'Pill'], ['plain', 'Plain text']]} val={board.theme.priceStyle || 'pill'} on={v => setTheme({ priceStyle: v })} /></Field>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

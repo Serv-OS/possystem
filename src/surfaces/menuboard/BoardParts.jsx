@@ -12,7 +12,7 @@ import { money } from '../../lib/currency';
 import { dietaryBadges } from '../../lib/dietary';
 import { productImage } from '../../lib/productImage';
 import { resolveBoardPrice } from '../../lib/menuPricing';
-import { boardSizes, boardColors, sizeRuns, sizeName, packBoard, fitFont, scaledFont } from '../../lib/menuBoardSections';
+import { boardSizes, boardColors, sizeRuns, sizeName, packBoard, fitFont, scaledFont, boardSpacing } from '../../lib/menuBoardSections';
 import { slideHoldMs, nextSlideIndex, ratioCss } from '../../lib/menuBoardSlides';
 
 const upper = (mode) => (mode === 'as-typed' ? 'none' : 'uppercase');
@@ -170,13 +170,13 @@ function TextPanel({ sec, wrap, theme, sz, c, tag = {} }) {
 }
 
 // The gaps the packer reads back (v5.9.76): below a section, a size run, a heading; between rows.
-export const SECTION_GAP_EM = 1.4;
-const RUN_GAP_EM = 0.7, ROW_GAP_EM = 0.35, HEAD_GAP_EM = 0.55;
+// v5.9.92: the gaps come from Design > Line spacing (lib/menuBoardSections.js boardSpacing).
+export const SECTION_GAP_EM = 1.4;   // the Normal section gap, kept for older callers
 const tagIf = (on, ...names) => (on ? Object.fromEntries(names.map((n) => [n, ''])) : {});
 
 // One product (or add-on) as a line, sizes indented beneath it (Price grid by size OFF).
 function Line({ it, ctx, measure = false }) {
-  const { theme, disp, sz, c, sold, price, defaultImage } = ctx;
+  const { theme, disp, sz, c, sold, price, defaultImage, sp } = ctx;
   const isAddOn = !!it._addOn;
   const variants = it._variants || [];
   const hasVar = variants.length > 0;
@@ -185,7 +185,7 @@ function Line({ it, ctx, measure = false }) {
   const img = disp.showImages && !isAddOn ? productImage(it, defaultImage) : null;
   const nameSize = isAddOn ? sz.item * 0.82 : sz.item;
   return (
-    <div {...tagIf(measure, 'data-mb-row')} style={{ marginBottom: isAddOn ? '0.3em' : '0.65em' }}>
+    <div {...tagIf(measure, 'data-mb-row')} style={{ marginBottom: `${isAddOn ? sp.listAddOn : sp.list}em` }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55em' }}>
         {img && <img src={img} alt="" style={{ width: '2.4em', height: '2.4em', objectFit: 'cover', borderRadius: '.3em', flexShrink: 0, opacity: s ? 0.5 : 1 }} />}
         <div style={{ minWidth: 0, flex: 1 }}>
@@ -222,7 +222,7 @@ function Line({ it, ctx, measure = false }) {
 // v5.9.76: the size labels are half the item size and may wrap ("SMALL / BOY"), so a price column
 // is as wide as its prices, not its label, and the name column stops wrapping every second name.
 function RunGrid({ run, from = 0, to, ctx, measure = false }) {
-  const { theme, disp, sz, c, sold, price } = ctx;
+  const { theme, disp, sz, c, sold, price, sp } = ctx;
   const lines = run.lines.slice(from, to === undefined ? run.lines.length : to);
   if (disp.sizeGrid === false) {
     return <div {...tagIf(measure, 'data-mb-run', 'data-mb-list')}>{lines.map((it) => <Line key={it.id} it={it} ctx={ctx} measure={measure} />)}</div>;
@@ -232,7 +232,7 @@ function RunGrid({ run, from = 0, to, ctx, measure = false }) {
   const cell = (k, child, extra) => <div key={k} style={{ textAlign: 'right', ...extra }}>{child}</div>;
   const priceOf = (v, size) => (disp.showPrices && price(v) > 0 ? <Price value={price(v)} size={size} theme={theme} c={c} /> : null);
   return (
-    <div {...tagIf(measure, 'data-mb-run')} style={{ display: 'grid', gridTemplateColumns: cols, columnGap: `${sz.item * 0.9}em`, rowGap: `${ROW_GAP_EM}em`, alignItems: 'baseline', marginBottom: `${RUN_GAP_EM}em` }}>
+    <div {...tagIf(measure, 'data-mb-run')} style={{ display: 'grid', gridTemplateColumns: cols, columnGap: `${sz.item * 0.9}em`, rowGap: `${sp.row}em`, alignItems: 'baseline', marginBottom: `${sp.run}em` }}>
       {n > 0 && (
         <Fragment>
           <div />
@@ -275,7 +275,7 @@ function sectionCtx(sec, { theme = {}, disp = {}, six, activeMenuId = null, defa
   const sz = boardSizes(theme), c = boardColors(theme);
   const sold = (id) => !!(six && typeof six.has === 'function' && six.has(id));
   const price = (it) => resolveBoardPrice(it, activeMenuId);
-  const base = { theme, disp, sz, c, sold, price, defaultImage, runs: [] };
+  const base = { theme, disp, sz, c, sold, price, defaultImage, runs: [], sp: boardSpacing(theme) };
   if (sec.type === 'text' || sec.type === 'image') return base;
   let lines = (sec.items || []).filter((it) => !(disp.hidePriceless && price(it) <= 0 && !(it._variants || []).length));
   if (disp.soldOut === 'hide') lines = lines.filter((it) => !sold(it.id));
@@ -288,7 +288,7 @@ function SectionHeading({ sec, ctx, measure = false }) {
   const { theme, sz, c } = ctx;
   return (
     <div {...tagIf(measure, 'data-mb-head')} style={{
-      fontSize: `${sz.heading}em`, fontWeight: 700, letterSpacing: '.12em', color: c.heading, marginBottom: `${HEAD_GAP_EM}em`,
+      fontSize: `${sz.heading}em`, fontWeight: 700, letterSpacing: '.12em', color: c.heading, marginBottom: `${ctx.sp.head}em`,
       textTransform: upper(theme.headingCase),
       ...(theme.headingRule !== false ? { borderBottom: `0.06em solid ${c.heading}`, paddingBottom: '0.25em' } : {}),   // on unless switched off (the photo's rule under each heading)
     }}>{sec.title}</div>
@@ -299,7 +299,7 @@ function SectionHeading({ sec, ctx, measure = false }) {
 // shape sets its height from the width, so the measure copy needs no media in it.
 function AtomicPanel({ sec, ctx, measure = false }) {
   const { theme, sz, c } = ctx;
-  const wrap = { marginBottom: `${SECTION_GAP_EM}em` };
+  const wrap = { marginBottom: `${ctx.sp.section}em` };
   if (sec.type === 'image') {
     return (
       <div {...tagIf(measure, 'data-mb-atomic')} style={{ ...wrap, position: 'relative', aspectRatio: ratioCss(sec.ratio), borderRadius: '0.4em', overflow: 'hidden', background: '#000' }}>
@@ -322,7 +322,7 @@ export function BoardSection({ sec, theme = {}, disp = {}, six, activeMenuId = n
   if (!ctx) return null;
   if (sec.type === 'text' || sec.type === 'image') return <AtomicPanel sec={sec} ctx={ctx} measure={measure} />;
   return (
-    <div {...tagIf(measure, 'data-mb-cat')} style={{ marginBottom: `${SECTION_GAP_EM}em` }}>
+    <div {...tagIf(measure, 'data-mb-cat')} style={{ marginBottom: `${ctx.sp.section}em` }}>
       <SectionHeading sec={sec} ctx={ctx} measure={measure} />
       {ctx.runs.map((run, ri) => <RunGrid key={ri} run={run} ctx={ctx} measure={measure} />)}
     </div>
@@ -343,7 +343,7 @@ export function BoardPiece({ sec, piece, ...props }) {
     if (!run) return null;
     inner = <RunGrid run={run} from={piece.from} to={piece.to} ctx={ctx} />;
   }
-  return <div style={{ marginBottom: piece.last && piece.kind !== 'atomic' ? `${SECTION_GAP_EM}em` : 0 }}>{inner}</div>;
+  return <div style={{ marginBottom: piece.last && piece.kind !== 'atomic' ? `${ctx.sp.section}em` : 0 }}>{inner}</div>;
 }
 
 // The heights of every row in the hidden measure copy, at the font size the board has right now.

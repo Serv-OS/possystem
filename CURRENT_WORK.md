@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.92, menu board line spacing (branch feat/board-line-spacing)
+
+- Peter: "reduce the padding between each line". lib/menuBoardSections.js LINE_SPACING / boardSpacing (tight default); BoardParts reads ctx.sp for row, run, heading, section and list gaps; Design > Line spacing.
+
 # Session, 27 Sep 2026, v5.9.91, loyalty panel held until the order ends (branch fix/display-hold-loyalty)
 
 - Peter: stamps on the display "only last 15 seconds". resultTimer 9 s / 25 s removed for results (loyaltyResultHoldMs: error 8 s, else hold); the idle safety timer also clears the panel.
