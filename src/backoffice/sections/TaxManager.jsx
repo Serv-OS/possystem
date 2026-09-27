@@ -3,7 +3,7 @@ import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { UK_DEFAULT_RATES, US_DEFAULT_RATES } from '../../lib/tax';
 import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
-import { assembleTaxProfiles } from '../../lib/rowMapping';
+import { assembleTaxProfiles, mapTaxRateRow, venueTaxRates } from '../../lib/rowMapping';
 // v5.7.33: the REAL engine powers the builder's live preview. This is UI-only
 // maths on a sample item; no till or customer page computes with the engine yet.
 import { computeTax, validateProfile, lineBasisSettings, isAddedOnRateLine } from '../../lib/taxEngine';
@@ -873,7 +873,10 @@ function LegacyRatesSection() {
     const fetched = data || [];
     // A tightened RLS SELECT policy returns zero rows with NO error. Silently publishing that
     // would switch the running POS to "no tax" mid-service.
-    if (!fetched.length && !expectEmpty && (useStore.getState().taxRates || []).length) {
+    // 27 Sep 2026: only rates that belong to THIS venue count as "rates loaded". Leeds had none
+    // of its own; this screen saw Train Station's (left over from the last push) and refused the
+    // true answer, and the menu strip offered Train Station's rates to Leeds products.
+    if (!fetched.length && !expectEmpty && venueTaxRates(useStore.getState().taxRates, locId).length) {
       setLoadFailed(true);
       setError('Tax rates came back EMPTY while the till still has rates loaded — not applying them. Check your sign-in/access before seeding anything.');
       setLoading(false);
@@ -881,13 +884,9 @@ function LegacyRatesSection() {
     }
     setLoadFailed(false);
     setRates(fetched);
-    // Sync to Zustand store so POS/checkout/order panel pick up name changes immediately
-    useStore.setState({ taxRates: fetched.map(r => ({
-      id: r.id, name: r.name, code: r.code,
-      rate: parseFloat(r.rate), type: r.type,
-      appliesTo: r.applies_to || ['all'],
-      isDefault: r.is_default, active: r.active,
-    })) });
+    // Sync to Zustand store so POS/checkout/order panel pick up name changes immediately.
+    // 27 Sep 2026: through the one mapper, so each rate carries its venue (lib/rowMapping.js).
+    useStore.setState({ taxRates: fetched.map(mapTaxRateRow) });
     setLoading(false);
   };
 

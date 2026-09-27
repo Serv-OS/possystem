@@ -257,20 +257,31 @@ test('loadItemCodes: any other failure still leaves the field working', async ()
 // reached from a unit test (one needs Supabase, the other needs a browser), and
 // both are the kind of thing a later edit breaks silently.
 
-test('db.js writes item_code only when the item carries it, and never loses a save', () => {
+test('the item writer writes item_code only when the item carries it, and never loses a save', () => {
+  // 27 Sep 2026: the column mapping lives in ONE place, lib/menuItemWrite.js menuItemRow
+  // (db.js upsertMenuItem, which built its own copy, became the insert only insertMenuItem),
+  // and the retry without the code in lib/menuWriters.js itemCodeRetry, used by every edit
+  // and every creation.
+  const row = fs.readFileSync(new URL('./menuItemWrite.js', import.meta.url), 'utf8');
+  const writers = fs.readFileSync(new URL('./menuWriters.js', import.meta.url), 'utf8');
   const db = fs.readFileSync(new URL('./db.js', import.meta.url), 'utf8');
   // Touched fields discipline: an item loaded before the column existed carries
   // no field, and its save must leave the column alone rather than null a code.
-  assert.ok(/item\.itemCode !== undefined \|\| item\.item_code !== undefined/.test(db),
+  assert.ok(/item\.itemCode !== undefined \|\| item\.item_code !== undefined/.test(row),
     'item_code is written unconditionally, which nulls codes from older loads');
   // A RENAME MUST NEVER TOUCH THE CODE: nothing derives it from a name.
-  assert.ok(/item_code: itemCodeForSave\(item\.itemCode \?\? item\.item_code\)/.test(db),
+  assert.ok(/item_code: itemCodeForSave\(item\.itemCode \?\? item\.item_code\)/.test(row),
     'item_code is built from something other than the code itself');
+  assert.ok(!/item_code:\s*_displayName/.test(row));
   assert.ok(!/item_code:\s*_displayName/.test(db));
+  // An edit writes the code only when the edit itself sets it.
+  assert.match(row, /item_code:\s+\{ keys: \['itemCode', 'item_code'\] \}/);
   // And the item is saved again without the code when the code alone is refused.
-  assert.ok(db.includes('isMissingItemCodeColumn(result.error) || isDuplicateItemCodeError(result.error)'),
+  assert.ok(writers.includes('if (!isMissingItemCodeColumn(error) && !isDuplicateItemCodeError(error)) return null;'),
     'a refused code would take the whole menu save down with it');
-  assert.ok(/delete retry\.item_code/.test(db));
+  assert.ok(/delete retry\.item_code/.test(writers));
+  assert.match(writers, /retryWithout: itemCodeRetry,/, 'every item edit and creation retries without it');
+  assert.match(db, /retryWithout: itemCodeRetry,/, 'and so does the insert only helper');
 });
 
 test('the Back Office field is hidden until the column exists, and writes once', () => {

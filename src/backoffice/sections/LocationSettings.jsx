@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { saveLocation } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
+import { mergeKeys } from '../../lib/threeWayMerge';
 import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
 import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
@@ -297,14 +298,28 @@ export default function LocationSettings() {
     // never written.
     let opsErr = null;
     if (supabase) {
-      const { data: opsRows, error: oErr } = await supabase.from('locations').update({
-        show_item_images: showItemImages,
-        address: venueAddress.trim() || null,
-        pos_settings: { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails },
-      }).eq('id', locId).select('id');
-      opsErr = oErr || (!opsRows || opsRows.length === 0
-        ? new Error(`Ops-DB update matched 0 rows for location ${locId} — RLS may be blocking UPDATE`)
-        : null);
+      // 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board", the same
+      // stale window class): pos_settings was merged over the copy loaded when this screen
+      // opened, so a screen left open put back keys saved elsewhere since (the receipt printer,
+      // tip on receipt, order screens keep paid, the default product image). It is read again
+      // now and only what THIS screen changed is laid over it (lib/threeWayMerge.js mergeKeys).
+      // A failed read saves nothing to pos_settings rather than merge onto a guess.
+      const { data: curRow, error: readErr } = await supabase.from('locations').select('pos_settings').eq('id', locId).maybeSingle();
+      if (readErr || !curRow) {
+        opsErr = readErr || new Error(`Could not read this venue's POS settings (location ${locId}), so they were not saved`);
+      } else {
+        const mine = { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails };
+        const mergedPos = mergeKeys(posSettingsRaw || {}, mine, curRow.pos_settings || {});
+        const { data: opsRows, error: oErr } = await supabase.from('locations').update({
+          show_item_images: showItemImages,
+          address: venueAddress.trim() || null,
+          pos_settings: mergedPos,
+        }).eq('id', locId).select('id');
+        opsErr = oErr || (!opsRows || opsRows.length === 0
+          ? new Error(`Ops-DB update matched 0 rows for location ${locId}: RLS may be blocking UPDATE`)
+          : null);
+        if (!opsErr) setPosSettingsRaw(mergedPos);
+      }
       reportSave('location settings', opsErr);
     }
     setSaving(false);

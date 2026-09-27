@@ -21,7 +21,9 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useStore, findDuplicateProductName } from '../../store';
+import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords } from '../../store';
+import { venueTaxRates } from '../../lib/rowMapping';
+import { categoryFormOf, categoryFormPatch } from '../../lib/categoryForm';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
 import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches, detachPatches,
          attachButtonLabel, attachResultLine, displayNameOf, expandPicks, sizesOf } from '../../lib/menu/modifierAttach';
@@ -30,7 +32,7 @@ import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches,
 // swaps the WHOLE app (POS shell included) for the red error page.
 import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
-import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo } from '../../lib/db';
+import { uploadProductImage, deleteProductImage, saveQuickScreenIds, readQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from '../../lib/bulkScope';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
@@ -58,6 +60,13 @@ import {
   ITEM_CODE_MAX, ITEM_CODE_HELP, checkItemCode, codeOf, loadItemCodes,
   suggestItemCode, takenItemCodes,
 } from '../../lib/itemCode';
+
+// 27 Sep 2026: the tax rates a product here may use are THIS venue's only. Leeds had no rates
+// of its own; the Back Office still held Train Station's from the last push and offered them,
+// and "Apply to all" wrote Train Station's rate ids into 430 Leeds products. Demo mode has one
+// pretend venue, so it keeps every rate.
+const venueRatesOf = (rates) => (isMock ? (rates || []) : venueTaxRates(rates, getActiveLocationSync()));
+const NO_VENUE_RATES = 'This venue has no tax rates yet';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
@@ -282,7 +291,8 @@ function useItemCodes() {
 }
 
 function TaxSection({ item, onUpdate, markBOChange }) {
-  const { taxRates, taxProfiles } = useStore();
+  const { taxRates: allTaxRates, taxProfiles } = useStore();
+  const taxRates = venueRatesOf(allTaxRates);
 
   const setTaxRate = (id) => {
     onUpdate({ taxRateId: id || null, tax_rate_id: id || null });
@@ -305,8 +315,8 @@ function TaxSection({ item, onUpdate, markBOChange }) {
 
   if (!taxRates?.length) return (
     <div style={{ padding:'20px 0', color:'var(--t4)', fontSize:12, textAlign:'center' }}>
-      No tax rates configured.<br/>
-      Go to <strong style={{ color:'var(--t2)' }}>Tax & VAT</strong> to set up rates first.
+      {NO_VENUE_RATES}.<br/>
+      Go to <strong style={{ color:'var(--t2)' }}>Tax & VAT</strong> to set up this venue's rates first.
     </div>
   );
 
@@ -1420,7 +1430,17 @@ function MenuTab() {
       })()}
       {editingCat && (
         <CatModal cat={editingCat} roots={roots}
-          onSave={p=>{updateCategory(editingCat.id,p);markBOChange();setEditingCat(null);showToast('Updated','success');}}
+          onSave={p=>{
+            // 27 Sep 2026: only the fields changed in the form, compared against the values it
+            // OPENED with (the category as it was when the editor opened), so a field another
+            // window changed since is refused in plain words, never put back. "Updated" only
+            // once it saved (a refusal shows its own red message).
+            const opened = editingCat;
+            setEditingCat(null);
+            if (!Object.keys(p).length) return;
+            markBOChange();
+            Promise.resolve(updateCategory(opened.id, p, { opened })).then(r => { if (r?.ok) showToast('Updated','success'); });
+          }}
           onDelete={()=>{removeCategory(editingCat.id);setSelCatId(null);setEditingCat(null);markBOChange();}}
           onClose={()=>setEditingCat(null)}/>
       )}
@@ -1666,11 +1686,12 @@ function CatGlyph({ cat, size = 20 }) {
 
 function ItemsLibrary() {
   const { menuItems, menuCategories, addMenuItem, updateMenuItem, archiveMenuItem,
-          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles } = useStore();
+          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles, menuLoading } = useStore();
 
   const recipeCosts = useRecipeCosts();          // v5.5.813 — B7 COST + GP%
   const [hovRow, setHovRow] = useState(null);
   const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
+  const [bulkRun, setBulkRun] = useState(null);   // 27 Sep 2026: { done, total } while a tax strip saves
   const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
   const [bulkScope, setBulkScope] = useState('');           // v5.9.54 — bulk sharing (local/shared/global)
   const [bulkScopeRun, setBulkScopeRun] = useState(null);   // { done, total } while it runs
@@ -1862,23 +1883,32 @@ function ItemsLibrary() {
             already have a rate are never touched. */}
         {!showArchived && (() => {
           const missingTax = menuItems.filter(i => !i.archived && !i.taxRateId);
-          if (missingTax.length === 0 || !(taxRates || []).length) return null;
+          if (missingTax.length === 0) return null;
+          const venueRates = venueRatesOf(taxRates);
           return (
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
               <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {missingTax.length} item{missingTax.length===1?' has':'s have'} no tax rate</span>
               <select value={bulkTaxId} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
-                <option value="">— pick the default rate —</option>
-                {(taxRates||[]).map(t=><option key={t.id} value={t.id}>{t.name} ({t.rate}%)</option>)}
+                <option value="">{venueRates.length ? 'Pick the default rate' : NO_VENUE_RATES}</option>
+                {venueRates.map(t=><option key={t.id} value={t.id}>{t.name} ({t.rate}%)</option>)}
               </select>
-              <button disabled={!bulkTaxId}
-                onClick={()=>{
-                  missingTax.forEach(i=>updateMenuItem(i.id,{ taxRateId: bulkTaxId }));
+              {/* 27 Sep 2026: each product saves only its tax rate, compare and set, one bounded
+                  batch at a time (store bulkUpdateMenuItems), and the strip says what really
+                  saved. A product given a rate since this list was made is left alone. */}
+              <button disabled={!bulkTaxId || !venueRates.some(r=>r.id===bulkTaxId) || !!bulkRun || menuLoading}
+                onClick={async ()=>{
+                  const t=venueRates.find(r=>r.id===bulkTaxId);
+                  if (!t) return;
+                  setBulkRun({ done:0, total:missingTax.length });
+                  const out = await bulkUpdateMenuItems(
+                    missingTax.map(i=>({ id:i.id, patch:{ taxRateId: t.id }, onlyIf:(row)=>!row.archived && !row.taxRateId })),
+                    { onProgress:(done,total)=>setBulkRun({ done, total }) });
+                  setBulkRun(null);
                   markBOChange();
-                  const t=(taxRates||[]).find(r=>r.id===bulkTaxId);
-                  showToast(`${t?.name||'Tax rate'} set on ${missingTax.length} item${missingTax.length===1?'':'s'}`,'success');
+                  showToast(bulkSummaryWords(out, t.name||'Tax rate'), (out.failed||out.skipped||out.gone)?'error':'success', 9000);
                 }}
                 style={{ padding:'6px 14px', borderRadius:8, cursor:bulkTaxId?'pointer':'not-allowed', fontFamily:'inherit', background:bulkTaxId?'var(--acc)':'var(--bg3)', border:'none', color:bulkTaxId?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
-                Apply to all {missingTax.length}
+                {bulkRun ? `Saving… ${bulkRun.done} of ${bulkRun.total}` : `Apply to all ${missingTax.length}`}
               </button>
               <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
             </div>
@@ -1935,7 +1965,9 @@ function ItemsLibrary() {
             const result = await runBulkScope({ targets, scope: bulkScope, setScope: setMenuItemScope,
               onProgress: (p) => setBulkScopeRun({ done: p.done, total: p.total }),
               shouldStop: () => bulkScopeStop.current });
-            for (const it of result.ok) updateMenuItem(it.id, { scope: bulkScope });
+            // 27 Sep 2026: setMenuItemScope has saved each product's sharing; this saves the same
+            // field through the compare and set writer (only the scope, never the whole row).
+            await bulkUpdateMenuItems(result.ok.map(it => ({ id: it.id, patch: { scope: bulkScope } })));
             for (const f of result.failed) reportSave('bulk item scope', new Error(`${f.item.menuName || f.item.name}: ${f.error}`));
             setBulkScopeRun(null);
             useStore.getState().markBOChange?.();
@@ -1987,11 +2019,18 @@ function ItemsLibrary() {
           const activeItems = menuItems.filter(i => !i.archived);
           const missingProfile = activeItems.filter(i => !i.taxProfileId);
           if (!activeItems.length) return null;
-          const apply = (targets, label) => {
-            targets.forEach(i => updateMenuItem(i.id, { taxProfileId: bulkProfileId }));
-            markBOChange();
+          // 27 Sep 2026: bounded, awaited, only the profile column, compare and set per product,
+          // and one honest summary ("set on 428, 3 skipped: changed elsewhere").
+          const apply = async (targets, label, onlyMissing) => {
+            if (bulkRun) return;   // (a venue reload that is running is waited for, not refused)
             const pName = profiles.find(p => p.id === bulkProfileId)?.name || 'Tax profile';
-            showToast(`${pName} set on ${targets.length} item${targets.length===1?'':'s'} (${label})`, 'success');
+            setBulkRun({ done:0, total:targets.length });
+            const out = await bulkUpdateMenuItems(
+              targets.map(i => ({ id: i.id, patch: { taxProfileId: bulkProfileId }, onlyIf: onlyMissing ? (row) => !row.taxProfileId : null })),
+              { onProgress: (done, total) => setBulkRun({ done, total }) });
+            setBulkRun(null);
+            markBOChange();
+            showToast(`${bulkSummaryWords(out, pName)} (${label})`, (out.failed||out.skipped||out.gone) ? 'error' : 'success', 9000);
           };
           return (
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--acc) 9%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
@@ -2001,12 +2040,12 @@ function ItemsLibrary() {
                 {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <button disabled={!bulkProfileId || !missingProfile.length}
-                onClick={()=>apply(missingProfile, 'items without a profile')}
+                onClick={()=>apply(missingProfile, 'items without a profile', true)}
                 style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkProfileId&&missingProfile.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkProfileId&&missingProfile.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkProfileId&&missingProfile.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
                 Fill {missingProfile.length} without one
               </button>
               <button disabled={!bulkProfileId}
-                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. Per-item legacy tax settings still take priority where set.`)) apply(activeItems, 'all items'); }}
+                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. Per-item legacy tax settings still take priority where set.`)) apply(activeItems, 'all items', false); }}
                 style={{ padding:'6px 14px', borderRadius:8, cursor:bulkProfileId?'pointer':'not-allowed', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:bulkProfileId?'var(--t1)':'var(--t4)', fontSize:12, fontWeight:800 }}>
                 Apply to all {activeItems.length}
               </button>
@@ -3110,6 +3149,15 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 })}
               </div>
               <input style={inp} value={item.variantLabel||''} onChange={e=>onUpdate({variantLabel:e.target.value})} placeholder="Custom label e.g. Colour, Region, Weight…"/>
+              {/* 27 Sep 2026: the label has no database column. Push to POS now sends the menu
+                  as the database holds it (never this screen's memory), so a label chosen here
+                  does not reach the tills yet; they show "Size". Said here rather than
+                  silently lost. */}
+              {!isMock && (item.variantLabel || 'Size') !== 'Size' && (
+                <div style={{ fontSize:10.5, color:'var(--amber, #F5A623)', marginTop:5, lineHeight:1.5 }}>
+                  Not saved yet: this label stays on this screen only, and the tills show "Size".
+                </div>
+              )}
             </div>
 
             {/* Variants list */}
@@ -4067,10 +4115,12 @@ function InstructionsTab() {
 
 // ── Edit Category Modal ───────────────────────────────────────────────────────
 function CatModal({ cat, roots, onSave, onDelete, onClose }) {
-  // v5.7.33: taxProfileId rides the form — the patch flows through updateCategory
-  // → sbUpsertCategory (store) AND the push path's upsertMenuCategory (db.js),
-  // both of which now write tax_profile_id conditionally.
-  const [f, setF] = useState({ label:cat.label, icon:cat.icon||'🍽', color:cat.color||'#3b82f6', parentId:cat.parentId||'', accountingGroup:cat.accountingGroup||'', defaultCourse:cat.defaultCourse??1, taxProfileId:cat.taxProfileId||'' });
+  // v5.7.33: taxProfileId rides the form.
+  // 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board"): Save sends
+  // ONLY the fields changed in this form (lib/categoryForm.js), never all seven. A window that
+  // renamed a category used to put back the tax profile another window had set since it opened.
+  const [opened] = useState(() => categoryFormOf(cat));
+  const [f, setF] = useState(opened);
   const set = (k,v) => setF(p=>({...p,[k]:v}));
   const { taxProfiles } = useStore();
   const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
@@ -4121,7 +4171,7 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
         <div style={{ display:'flex', gap:7, marginTop:14 }}>
           <button onClick={()=>{if(confirm('Delete?'))onDelete();}} style={{ padding:'8px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:600 }}>Delete</button>
           <button onClick={onClose} style={{ flex:1, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
-          <button onClick={()=>onSave({...f,parentId:f.parentId||null,taxProfileId:f.taxProfileId||null})} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
+          <button onClick={()=>onSave(categoryFormPatch(opened, f))} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
         </div>
       </div>
     </div>
@@ -4210,26 +4260,50 @@ function QuickScreenManager() {
 
   const catFor = item => menuCategories.find(c => c.id === item?.cat);
 
+  // 27 Sep 2026: the Quick Screen as the DATABASE holds it, read when this section opens, is the
+  // compare and set base for the saves here. The store's list can be the last push's rather than
+  // the database's (a venue whose saved list is empty), and the first save after signing in was
+  // then refused as "changed in another window" when nothing had changed. A saved list that
+  // differs from the one on screen is shown instead, so a drag never starts from an old grid.
+  const dbBase = useRef(null);
+  const saveChain = useRef(Promise.resolve());
+  useEffect(() => {
+    if (isMock) return undefined;
+    let live = true;
+    readQuickScreenIds().then((r) => {
+      if (!live || !r?.ok) return;
+      dbBase.current = r.ids;
+      const shown = (useStore.getState().quickScreenIds || []).filter(Boolean);
+      if (r.ids.length && JSON.stringify(r.ids) !== JSON.stringify(shown)) setQuickScreenIds(r.ids);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [setQuickScreenIds]);
+
   const save = async (newIds) => {
     const filtered = newIds.filter(Boolean);
     const prevIds  = quickScreenIds;
     setQuickScreenIds(filtered);
     markBOChange();
     if (isMock) return true;
-    // Write directly using the supabase client already in scope — same as image uploads
-    let err = null;
-    try {
-      const locId = await getLocationId();
-      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
-      const { data, error } = await supabase
-        .from('locations')
-        .update({ quick_screen_ids: filtered })
-        .eq('id', locId)
-        .select('id');
-      // 0 rows is a plain success with an empty body — a policy matching nothing
-      // reads exactly like a save. Ask for the id back and treat nothing as failure.
-      err = error || (!data?.length ? new Error('Quick Screen update matched 0 rows') : null);
-    } catch (e) { err = e; }
+    // 27 Sep 2026: compare and set by value (db.saveQuickScreenIds). The grid is saved whole, so
+    // a window left open used to put back the grid it loaded over one saved elsewhere since.
+    // This window's saves go one at a time, each checked against what the one before it saved.
+    const run = saveChain.current.then(async () => {
+      const base = dbBase.current != null ? dbBase.current : prevIds.filter(Boolean);
+      try { return await saveQuickScreenIds(filtered, { base }); }
+      catch (e) { return { ok: false, outcome: 'error', error: e }; }
+    });
+    saveChain.current = run.catch(() => null);
+    const res = await run;
+    if (res.outcome === 'conflict') {
+      if (Array.isArray(res.ids)) dbBase.current = res.ids;
+      reportSave('quick screen', new Error('Quick Screen: changed in another window since this page loaded, so this change was not saved'));
+      setQuickScreenIds(res.ids || prevIds);   // the grid the tills will get, as it is saved
+      showToast('The Quick Screen was changed in another window since this page loaded. Your change was NOT saved; the latest is showing now. Make it again if it is still needed.', 'error', 9000);
+      return false;
+    }
+    if (res.ok) dbBase.current = res.outcome === 'noop' && Array.isArray(res.ids) ? res.ids : filtered;
+    const err = res.ok ? null : (res.error || new Error('Quick Screen was not saved'));
     reportSave('quick screen', err);   // v5.5.962: was a silent console.error swallow
     if (err) {
       console.error('[QuickScreen] save failed:', err.message);

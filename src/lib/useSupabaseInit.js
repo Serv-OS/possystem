@@ -9,12 +9,13 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot, isLoginSurfaceMode } from './supabase';
+import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot, isLoginSurfaceMode, isBackOfficeMode } from './supabase';
 import {
   fetchMenuItems, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
   primeOrderRefLease,
 } from './db';
+import { mapMenuItemRow, mapTaxRateRow } from './rowMapping';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 import { refreshTablePlan } from '../sync/TablePlanSync';
 
@@ -95,25 +96,14 @@ export default function useSupabaseInit() {
       // and variant children (Half / Pint) lost their parent — children
       // were no longer hidden in the menu list and parents no longer
       // opened a size picker. Mapping below mirrors SyncBridge.jsx exactly.
+      // 27 Sep 2026: through the one mapper (lib/rowMapping.js mapMenuItemRow), which keeps the
+      // row's database updated_at as srvAt (the compare and set token of a Back Office edit).
+      // In Back Office the menu on screen is the Back Office's own read (store loadVenueMenu):
+      // once that has landed, this boot read leaves it alone, or it would put back rows the
+      // person has a save of on its way.
       const { data: items } = await fetchMenuItems();
-      if (items?.length) {
-        useStore.setState({ menuItems: items.map(item => ({
-          ...item,
-          price:        item.pricing?.base ?? item.price ?? 0,
-          menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
-          receiptName:  item.receipt_name ?? item.receiptName ?? item.name,
-          kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name,
-          sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
-          parentId:     item.parent_id    ?? item.parentId    ?? null,
-          soldAlone:    item.sold_alone   ?? item.soldAlone,
-          centreId:     item.centre_id    ?? item.centreId    ?? null,
-          taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
-          taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
-          taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-          assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
-          assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
-          image: item.image ?? null,
-        })) });
+      if (items?.length && !(isBackOfficeMode() && useStore.getState().menuReadLocationId === locId)) {
+        useStore.setState({ menuItems: items.map(mapMenuItemRow) });
       }
 
       // Floor plan + sections
@@ -295,18 +285,17 @@ export default function useSupabaseInit() {
 
       // Tax rates for this location
       if (locId && supabase) {
-        const { data: rates } = await supabase
+        const { data: rates, error: ratesErr } = await supabase
           .from('tax_rates')
           .select('*')
           .eq('location_id', locId)
           .eq('active', true)
           .order('rate', { ascending: false });
-        if (rates?.length) useStore.setState({ taxRates: rates.map(r => ({
-          id: r.id, name: r.name, code: r.code,
-          rate: parseFloat(r.rate), type: r.type,
-          appliesTo: r.applies_to || ['all'],
-          isDefault: r.is_default, active: r.active,
-        })) });
+        if (rates?.length) useStore.setState({ taxRates: rates.map(mapTaxRateRow) });
+        // 27 Sep 2026: in Back Office a successful read of NO rates is the answer, never "keep
+        // the last venue's" (Leeds had none and was offered Train Station's). A till keeps its
+        // rates on an empty read: it charges with them.
+        else if (!ratesErr && Array.isArray(rates) && isBackOfficeMode()) useStore.setState({ taxRates: [] });
       }
 
       // Latest config push

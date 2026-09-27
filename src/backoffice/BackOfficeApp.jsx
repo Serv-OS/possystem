@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useStore } from '../store';
+import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
+import { withTimeout } from '../lib/withTimeout';
+import { pushedByName } from '../lib/pushedBy';
+import { mergeInstructionGroups } from '../lib/threeWayMerge';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
 import SupportChat from '../components/SupportChat';
@@ -13,8 +16,8 @@ import { hasWeakPasswordNote } from '../lib/secondStep/client';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
-import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
-import { fetchTableTombstones, fetchFloorPlanVersioned } from '../lib/db';
+import { fetchTableTombstones, fetchFloorPlanVersioned, insertConfigPush } from '../lib/db';
+import { readVenueMenu, unsavedMenuRows, unsavedWords, menuSnapshotFromRead } from '../lib/venueMenuRead';
 import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextSeq } from '../lib/tablePlan';
 import { refreshTablePlan } from '../sync/TablePlanSync';
 import { normaliseSections } from '../lib/sectionPlan';
@@ -561,103 +564,17 @@ export default function BackOfficeApp() {
     })();
   }, [authUser, secondStepOk]);
 
+  // 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board"): the menu
+  // comes from ONE fresh read of the database (lib/venueMenuRead.js readVenueMenu, the same
+  // read Push to POS sends the tills), applied through store loadVenueMenu: menus, categories,
+  // products, modifier groups, tax rates and profiles, each through the one mapper that keeps
+  // the row's updated_at (srvAt) for compare and set. A row with a save of this tab on its way
+  // keeps this tab's copy. Tax rates take the read as it is, an empty list included (Leeds had
+  // none of its own and this loader kept Train Station's). While it runs the store says
+  // menuLoading, and Push to POS waits for it.
   const loadLocationData = async (locationId) => {
     if (!locationId) return;
-    const { fetchMenus, fetchMenuCategories, fetchMenuItems } = await import('../lib/db.js');
-    const [menusRes, catsRes, itemsRes, modGroupsRes] = await Promise.all([
-      fetchMenus(locationId),
-      fetchMenuCategories(locationId),
-      fetchMenuItems(locationId),
-      // Load modifier group definitions from Supabase
-      supabase ? supabase.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : { data: null },
-    ]);
-    const { useStore } = await import('../store/index.js');
-    const patch = {};
-    // v5.7.14 - normalise to camelCase like SyncBridge and applyConfigUpdate
-    // (v5.7.11 fixed those two doors; THIS loader is the one a Back Office
-    // refresh actually runs, so the default-menu star still vanished here).
-    // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
-    if (menusRes.data?.length)   patch.menus          = menusRes.data.map(normaliseMenuRow);
-    if (catsRes.data?.length)    patch.menuCategories  = catsRes.data.map(c => ({
-      ...c,
-      menuId: c.menu_id ?? c.menuId,
-      parentId: c.parent_id ?? c.parentId,
-      accountingGroup: c.accounting_group ?? c.accountingGroup,
-      sortOrder: c.sort_order ?? c.sortOrder,
-      defaultCourse: c.default_course ?? c.defaultCourse ?? 1,
-      spacerSlots: c.spacer_slots ?? c.spacerSlots ?? [],
-      taxProfileId: c.tax_profile_id ?? c.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-      image: c.image ?? null,   // v5.8.65: category photo (writers only send it when present)
-    }));
-    if (itemsRes.data?.length)   patch.menuItems       = itemsRes.data.map(item => ({
-      ...item,
-      menuName:    item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
-      receiptName: item.receipt_name ?? item.receiptName ?? item.name ?? 'Item',
-      kitchenName: item.kitchen_name ?? item.kitchenName ?? item.name ?? 'Item',
-      sortOrder:   item.sort_order   ?? item.sortOrder   ?? 0,
-      isDefault:   item.is_default   ?? item.isDefault,
-      soldAlone:   item.sold_alone   ?? item.soldAlone,
-      parentId:    item.parent_id    ?? item.parentId,
-      assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
-      // THE BUG: this line was missing for months. Without it, BackOfficeApp's loader leaves
-      // assignedInstructionGroups undefined on every item. MenuManager shows empty. Push
-      // builds a snapshot where JSON.stringify drops the undefined field — POS receives
-      // items without instruction groups — from the user's POV they “vanish on push”.
-      // The DB still has the data in assigned_instruction_groups (jsonb) the whole time.
-      assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
-      taxRateId:   item.tax_rate_id  ?? item.taxRateId  ?? null,
-      taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
-      taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-      // v4.6.3: ownership / sharing fields (added by v4.6.0 schema migration)
-      scope:        item.scope         ?? 'local',
-      orgId:        item.org_id        ?? item.orgId        ?? null,
-      masterId:     item.master_id     ?? item.masterId     ?? null,
-      lockPricing:  item.lock_pricing  ?? item.lockPricing  ?? false,
-      lockedFields: item.locked_fields ?? item.lockedFields ?? [],
-    }));
-    // Map modifier groups from snake_case DB columns to camelCase store format
-    if (modGroupsRes.data?.length) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
-      id: g.id, name: g.name, min: g.min ?? 0, max: g.max ?? 1,
-      selectionType: g.selection_type ?? 'single',
-      options: g.options ?? [],
-      sortOrder: g.sort_order ?? 0,
-    }));
-
-    // Load tax rates for this location
-    if (supabase) {
-      const { data: taxRates } = await supabase
-        .from('tax_rates')
-        .select('*')
-        .eq('location_id', locationId)
-        .eq('active', true)
-        .order('rate', { ascending: false });
-      if (taxRates?.length) patch.taxRates = taxRates.map(r => ({
-        id: r.id, name: r.name, code: r.code,
-        rate: parseFloat(r.rate), type: r.type,
-        appliesTo: r.applies_to || ['all'],
-        isDefault: r.is_default, active: r.active,
-      }));
-    }
-
-    // v5.7.33: tax profiles + lines + the venue default profile (delivery only —
-    // nothing computes with these yet; they ride the Push to POS snapshot so
-    // tills receive them). Both table reads must succeed before applying, so a
-    // half-failed load never leaves line-less profiles in the store.
-    if (supabase) {
-      try {
-        const [profRes, lineRes, locRes] = await Promise.all([
-          supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
-          supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
-          supabase.from('locations').select('default_tax_profile_id').eq('id', locationId).maybeSingle(),
-        ]);
-        if (Array.isArray(profRes.data) && Array.isArray(lineRes.data)) {
-          patch.taxProfiles = assembleTaxProfiles(profRes.data, lineRes.data);
-        }
-        if (locRes.data) patch.venueDefaultTaxProfileId = locRes.data.default_tax_profile_id || null;
-      } catch (e) { console.warn('[BackOfficeApp] tax profiles load failed:', e?.message); }
-    }
-
-    if (Object.keys(patch).length) useStore.setState(patch);
+    await loadVenueMenu(locationId);
 
     // v5.9.4: the floor plan, through sync/TablePlanSync (lib/tablePlan.js), applied to the store
     // AS IT IS NOW (not a copy taken before the waits above). The read is the plan version:
@@ -667,6 +584,18 @@ export default function BackOfficeApp() {
     // holding an open order stays reachable, flagged planRemoved (shown read only, never editable).
     await refreshTablePlan({ locationId, mode: 'full', reason: 'backoffice', backOffice: true });
   };
+
+  // 27 Sep 2026: read the venue again every time this tab comes back to the front. It used to
+  // happen only by accident (the auth event supabase-js raises on return), and Peter pressed
+  // Push to POS half a second after coming back, before that reload landed. The push and the
+  // bulk strips now wait for a load that is running (store whenMenuLoadIdle).
+  const activeLocationId = orgCtx?.locationId || null;
+  useEffect(() => {
+    if (isMock || !activeLocationId) return;
+    const onVisible = () => { if (!document.hidden) loadVenueMenu(activeLocationId); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [activeLocationId]);
 
   // Show spinner while checking session
   if (!authChecked) return (
@@ -945,7 +874,9 @@ export default function BackOfficeApp() {
               <a href="?mode=office" style={{ padding:'6px 12px', borderRadius:8, background:'var(--glass-bg)', boxShadow:'var(--glass-hi)', color:'var(--t1)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="office" size={14}/>Office</a>
             </div>
             {/* Push to POS button */}
-            <PushToPOSButton />
+            {/* 27 Sep 2026: a display name, never the email (config_pushes is readable with the
+                public key: lib/pushedBy.js). */}
+            <PushToPOSButton pushedBy={pushedByName(authUser?.user_metadata?.full_name, authUser?.user_metadata?.name, orgCtx?.userName)} />
             <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--t3)' }}>
               <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
               <span>Live</span>
@@ -1062,13 +993,88 @@ export default function BackOfficeApp() {
 }
 
 // ── Push to POS button ────────────────────────────────────────────────────────
-function PushToPOSButton() {
-  const { pendingBOChanges, clearBOChanges, tables, locationSections, menuItems, menuCategories, menus, staff } = useStore();
+// 27 Sep 2026. Peter: "I archived choc babychino but its still on the menu board". Push to POS
+// used to (1) build the tills' snapshot from this tab's MEMORY, taken when the button last
+// rendered, and (2) write every product, category and menu in that memory back over the
+// database. A Back Office loaded at 13:52 pushed at 13:59 and un-archived the Choc Babyccino
+// another window had archived at 13:56, and put back its old tax rates; a push half a second
+// after returning to a tab sent a menu from before the reload. Now a push:
+//   1. waits for a venue load that is running and for this tab's own saves to land,
+//   2. reads the menu FRESH from the database (lib/venueMenuRead.js, one read, one mapper),
+//      and stops, sending nothing, if that read fails,
+//   3. lists anything on this screen the database does not have and saves it INSERT ONLY
+//      when the person says so (never silently),
+//   4. sends the tills exactly what the database holds, and shows the same on this screen.
+// It writes no existing menu row, ever. The tables have worked this way since v5.9.4.
+function PushToPOSButton({ pushedBy = null }) {
+  const { pendingBOChanges, clearBOChanges, tables, locationSections, staff, menuLoading } = useStore();
   const [pushing, setPushing] = useState(false);
   const [justPushed, setJustPushed] = useState(false);
+  // A display name only, never an email: config_pushes is readable with the public key.
+  const who = pushedByName(pushedBy, staff?.name);
+
+  const stop = (msg) => {
+    useStore.getState().showToast?.(msg, 'error', 9000);
+    setPushing(false);
+  };
 
   const handlePush = async () => {
     setPushing(true);
+
+    // Resolve location once, stamp it on the snapshot. v5.5.2: lets the POS hydrator
+    // detect cross-location config-push leakage and lets every table in the snapshot
+    // carry its source location_id (used by the cross-location upsert guard).
+    let snapshotLocationId = null;
+    try { snapshotLocationId = await getLocationId(); }
+    catch (e) { console.warn('[handlePush] snapshot locationId resolve failed:', e?.message); }
+
+    // 1 + 2. The menu: a reload in flight lands first, this tab's saves land first, then ONE
+    // fresh read. Nothing from this component's render (the old closure) is used.
+    let menuRead = null;
+    let menuTicket = null;
+    if (!isMock) {
+      if (!snapshotLocationId || snapshotLocationId === 'loc-demo') { stop('Push stopped: could not tell which venue this is. Nothing was sent. Try again.'); return; }
+      // Every wait and read has a time limit (MENU_WAIT_MS). A read that hangs (a stale socket
+      // just after Safari resumes the tab, the very moment this runs) used to leave Push to POS
+      // disabled with a wait cursor and no word.
+      const waitFor = (p, label, ms = MENU_WAIT_MS) => withTimeout(p, ms, label);
+      const readMenu = () => waitFor(readVenueMenu(supabase, snapshotLocationId), 'menu read')
+        .catch((e) => ({ ok: false, failed: ['timed out'], error: e }));
+      try {
+        // A little longer than the load's own limit, so a load that gives up ends first.
+        await waitFor(whenMenuLoadIdle(), 'menu load', MENU_WAIT_MS + 5000);
+        await waitFor(whenMenuWritesIdle(), 'menu saves');
+      } catch (e) {
+        console.warn('[handlePush] waited too long:', e?.message || e);
+        stop('Push stopped: the menu is still loading or saving. Nothing was sent. Try again.');
+        return;
+      }
+      menuTicket = beginMenuRead();
+      menuRead = await readMenu();
+      if (!menuRead.ok) {
+        console.warn('[handlePush] menu read failed:', (menuRead.failed || []).join(', '), menuRead.error?.message || '');
+        stop('Push stopped: could not read the menu. Nothing was sent. Try again.');
+        return;
+      }
+      // 3. Rows on this screen the database does not have: say so, and save them only on OK.
+      const unsaved = unsavedMenuRows(useStore.getState(), menuRead, snapshotLocationId);
+      if (unsaved.total) {
+        if (!window.confirm(unsavedWords(unsaved))) { stop('Push stopped. Nothing was sent.'); return; }
+        let saved;
+        try { saved = await waitFor(saveUnsavedMenuRows(unsaved), 'saving new rows'); }
+        catch (e) { saved = { ok: false, failed: [{ kind: 'save', name: 'new rows', error: e?.message || 'took too long' }] }; }
+        if (!saved.ok) {
+          const first = saved.failed.slice(0, 3).map(f => `${f.name || f.kind} (${f.error})`).join('; ');
+          stop(`Push stopped: ${saved.failed.length} of them could not be saved: ${first}. Nothing was sent.`);
+          return;
+        }
+        try { await waitFor(whenMenuWritesIdle(), 'menu saves'); }
+        catch { stop('Push stopped: the menu is still saving. Nothing was sent. Try again.'); return; }
+        menuTicket = beginMenuRead();
+        menuRead = await readMenu();
+        if (!menuRead.ok) { stop('Push stopped: could not read the menu. Nothing was sent. Try again.'); return; }
+      }
+    }
 
     // Build config snapshot — layout + menu config (not operational/session state)
     // Include print routing config in snapshot
@@ -1083,19 +1089,22 @@ function PushToPOSButton() {
     // every till in an auto/hybrid venue back to manual. null = omit from the
     // snapshot entirely (absent fields are a no-op on tills).
     let quickScreenModePush = null;
+    // 27 Sep 2026: the Quick Screen list from the same read (this tab's copy only if it fails).
+    let quickScreenIdsPush = useStore.getState().quickScreenIds || [];
     try {
-      const locId = await getLocationId();
+      const locId = snapshotLocationId;
       if (locId && supabase) {
         const [rtRes, prnRes, locRes] = await Promise.all([
           supabase.from('print_routing').select('centres,routing').eq('location_id', locId).single(),
           supabase.from('printers').select('*').eq('location_id', locId),
-          supabase.from('locations').select('pos_settings, quick_screen_mode').eq('id', locId).maybeSingle(),
+          supabase.from('locations').select('pos_settings, quick_screen_mode, quick_screen_ids').eq('id', locId).maybeSingle(),
         ]);
         if (rtRes.data) printRouting = { centres: rtRes.data.centres||[], routing: rtRes.data.routing||{} };
         if (prnRes.data) printers = prnRes.data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model, connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||[], location:r.meta?.location||'' }));
         if (locRes.data) {
           takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
           quickScreenModePush = ['manual','auto','hybrid'].includes(locRes.data.quick_screen_mode) ? locRes.data.quick_screen_mode : null;
+          if (Array.isArray(locRes.data.quick_screen_ids)) quickScreenIdsPush = locRes.data.quick_screen_ids;
         }
       }
     } catch {}
@@ -1107,15 +1116,6 @@ function PushToPOSButton() {
       try { printers = JSON.parse(localStorage.getItem('rpos-printers') || '[]'); } catch {}
     }
     const deviceProfiles = (() => { try { return JSON.parse(localStorage.getItem('rpos-device-profiles') || 'null') || []; } catch { return []; } })();
-
-    // Resolve location once, stamp it on the snapshot. v5.5.2: lets the POS hydrator
-    // detect cross-location config-push leakage and lets every table in the snapshot
-    // carry its source location_id (used by the cross-location upsert guard).
-    let snapshotLocationId = null;
-    try {
-      const { getLocationId } = await import('../lib/supabase.js');
-      snapshotLocationId = await getLocationId();
-    } catch (e) { console.warn('[handlePush] snapshot locationId resolve failed:', e?.message); }
 
     // v5.9.4 table plan (lib/tablePlan.js). The tables in a push come from a FRESH read of the
     // plan, never from this tab's store: a Back Office tab left open for hours (or one that missed
@@ -1172,10 +1172,39 @@ function PushToPOSButton() {
       }));
     }
 
+    // The menu part: the fresh read, never this tab's memory (27 Sep 2026). Demo mode (no
+    // database) sends what the demo screen shows, as it always did.
+    const menuPart = menuRead ? menuSnapshotFromRead(menuRead) : (() => {
+      const st = useStore.getState();
+      return {
+        menus: st.menus || [], menuItems: st.menuItems || [], menuCategories: st.menuCategories || [],
+        modifierGroupDefs: st.modifierGroupDefs || [], taxRates: st.taxRates || [],
+        taxProfiles: st.taxProfiles || [], venueDefaultTaxProfileId: st.venueDefaultTaxProfileId ?? null,
+      };
+    })();
+
+    // Instruction groups have no table: they live only in pushes. 27 Sep 2026: a window left open
+    // used to push its own list and undo groups another window had added and pushed since. The
+    // latest push's list is read and THIS window's changes are laid onto it, group by group
+    // (lib/threeWayMerge.js mergeInstructionGroups; the base is the list this window last
+    // received or pushed). If that read fails, this window's list goes as it always did.
+    const myInstructionGroups = useStore.getState().instructionGroupDefs;
+    let instructionGroupDefs = myInstructionGroups || [];
+    if (!isMock && supabase && snapshotLocationId) {
+      try {
+        const { data: lastPush, error: lastErr } = await withTimeout(
+          supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
+            .eq('location_id', snapshotLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          MENU_WAIT_MS, 'last push read');
+        if (!lastErr) instructionGroupDefs = mergeInstructionGroups(instructionGroupsBase(), instructionGroupDefs, lastPush?.instructionGroupDefs);
+        else console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', lastErr.message);
+      } catch (e) { console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', e?.message || e); }
+    }
+
     const snapshot = {
       version: Date.now(),
       pushedAt: new Date().toISOString(),
-      pushedBy: staff?.name || 'Manager',
+      pushedBy: who,
       locationId: snapshotLocationId,
       printRouting: printRouting || { centres:[], routing:{} },
       printers,
@@ -1184,22 +1213,14 @@ function PushToPOSButton() {
       tablePlan: pushPlan,
       tableTombstones: pushTombstones,
       locationSections: pushSections,
-      menus,
-      menuItems,
-      menuCategories,
-      taxRates: useStore.getState().taxRates || [],
-      // v5.7.33: tax profiles + the venue default ride the push so tills get
-      // them on Push to POS (delivery only — nothing computes with them yet).
-      // Item and category assignments ride menuItems/menuCategories above.
-      // Absent/empty is a no-op till-side (applyConfigUpdate no-clear guards).
-      taxProfiles: useStore.getState().taxProfiles || [],
-      // v5.7.33 review fix: ALWAYS carried, null included, so clearing the
-      // venue default propagates to running tills (apply guards on key
-      // presence, not truthiness).
-      venueDefaultTaxProfileId: useStore.getState().venueDefaultTaxProfileId ?? null,
+      // menus, menuItems, menuCategories, modifierGroupDefs, taxRates, and (when they read)
+      // taxProfiles + venueDefaultTaxProfileId: lib/venueMenuRead.js menuSnapshotFromRead.
+      // v5.7.33: tax profiles + the venue default ride the push so tills get them on Push to
+      // POS; absent is a no-op till-side (applyConfigUpdate guards on key presence).
+      ...menuPart,
       discountPresets: useStore.getState().discountPresets || [],
       discountRules: useStore.getState().discountRules || [],
-      quickScreenIds: useStore.getState().quickScreenIds || [],
+      quickScreenIds: quickScreenIdsPush,
       // v5.5.962 Smart Quick Screen — mode (from the DB read above, omitted when
       // unknown) + best-seller lists ride the push. quickScreenAuto null is
       // filtered till-side by the hasEntries guard.
@@ -1208,59 +1229,37 @@ function PushToPOSButton() {
       takeawayCustomerDetails,
       changeCount: pendingBOChanges,
       profiles: deviceProfiles,
-      modifierGroupDefs: useStore.getState().modifierGroupDefs || [],
-      instructionGroupDefs: useStore.getState().instructionGroupDefs || [],
+      instructionGroupDefs,
       // v5.6.25 Table Bookings — packages + rules ride the push so they survive
       // a POS reload (INTEGRATION.md invariant 7). Absent/empty = no-op till-side.
       packages: useStore.getState().packages || [],
       ...(useStore.getState().bookingRules ? { bookingRules: useStore.getState().bookingRules } : {}),
     };
 
+    // Write to Supabase so physical devices on other machines receive it. Awaited: a push the
+    // tills were never told about must not say "Pushed". pushed_by is the signed in person's
+    // display name (never the email: this table is readable with the public key).
+    if (!isMock) {
+      const res = await insertConfigPush({ pushed_by: who, snapshot, change_count: pendingBOChanges }, snapshotLocationId);
+      if (res?.error) {
+        stop(`Push failed: the tills were not told (${res.error.message || 'the database refused it'}). Try again.`);
+        return;
+      }
+    }
+
     // Persist snapshot so POS tabs that open later can still receive it
     try {
       localStorage.setItem('rpos-config-snapshot', JSON.stringify(snapshot));
     } catch {}
 
-    // Write to Supabase so physical devices on other machines receive it
-    import('../lib/db.js').then(async ({ insertConfigPush, upsertMenuItem, upsertMenuCategory, upsertMenu }) => {
-      const { getLocationId } = await import('../lib/supabase.js');
-      const locationId = await getLocationId();
-
-      // Write config push (for realtime notification to POS devices)
-      insertConfigPush({ pushed_by: staff?.name || 'Manager', snapshot, change_count: pendingBOChanges }, locationId);
-
-      // MENUS FIRST, and AWAITED (v5.9.22). menu_categories.menu_id references
-      // menus(id), so a category whose menu row is missing is refused outright
-      // (23503). This push wrote items and categories and never the menus, so
-      // at Huddersfield every category write failed from April until today and
-      // only the console knew: the tills read the snapshot, so they looked
-      // right, while menu boards, online ordering and the kiosk had nothing.
-      // Awaited so the categories below find their parent already there.
-      if (locationId && menus?.length) {
-        await Promise.allSettled(menus.map(m => upsertMenu(m, locationId)));
-      }
-
-      // Also write ALL menu items and categories to Supabase so they're queryable
-      // This makes Supabase the source of truth, not just the snapshot
-      if (locationId && menuItems?.length) {
-        for (const item of menuItems.filter(i => !i.archived)) {
-          upsertMenuItem({
-            ...item,
-            location_id: locationId,
-            tax_rate_id: item.taxRateId ?? item.tax_rate_id ?? null,
-            tax_overrides: item.taxOverrides ?? item.tax_overrides ?? {},
-          }, locationId).catch(e => console.warn('[push] upsertMenuItem failed for', item.id, item.name, '—', e?.message || e));
-        }
-      }
-      if (locationId && menuCategories?.length) {
-        for (const cat of menuCategories) {
-          upsertMenuCategory({ ...cat, location_id: locationId }, locationId).catch(e => console.warn('[push] upsertMenuCategory failed for', cat.id, cat.label, '—', e?.message || e));
-        }
-      }
-    });
-
     // Broadcast to all open POS terminals in this browser session
     broadcastConfigPush(snapshot);
+
+    // 4. This screen shows what the tills just received (the same read).
+    if (menuRead) applyVenueMenuRead(menuRead, { ...menuTicket, locationId: snapshotLocationId });
+    // (Unless the list was edited while this push ran: that edit stays on screen for the next.)
+    if (useStore.getState().instructionGroupDefs === myInstructionGroups) useStore.setState({ instructionGroupDefs });
+    setInstructionGroupsBase(instructionGroupDefs);
 
     clearBOChanges();
     setPushing(false);
@@ -1277,18 +1276,23 @@ function PushToPOSButton() {
     );
   }
 
+  // Not while a push runs, and not while the venue is being read again (coming back to the tab):
+  // the push would otherwise wait on a menu the person cannot see yet.
+  const busy = pushing || menuLoading;
   return (
     <button
       onClick={handlePush}
-      disabled={pushing}
+      disabled={busy}
+      title={menuLoading && !pushing ? 'Loading the latest menu…' : undefined}
       style={{
         display:'flex', alignItems:'center', gap:8,
-        padding:'7px 16px', borderRadius:10, cursor:'pointer',
+        padding:'7px 16px', borderRadius:10, cursor: busy ? 'wait' : 'pointer',
         fontFamily:'inherit', fontSize:13, fontWeight:700, border:'none',
         background: pendingBOChanges > 0 ? 'var(--acc)' : 'var(--bg3)',
         color: pendingBOChanges > 0 ? '#0b0c10' : 'var(--t3)',
         transition:'all .15s',
         boxShadow: pendingBOChanges > 0 ? '0 0 12px var(--acc-b)' : 'none',
+        opacity: busy ? 0.7 : 1,
       }}
     >
       {pendingBOChanges > 0 && (
@@ -1297,7 +1301,7 @@ function PushToPOSButton() {
           background:'rgba(0,0,0,.2)', color:'inherit',
         }}>{pendingBOChanges}</span>
       )}
-      <span>Push to POS</span>
+      <span>{pushing ? 'Pushing…' : 'Push to POS'}</span>
       <span style={{ fontSize:15 }}>→</span>
     </button>
   );

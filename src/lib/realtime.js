@@ -8,7 +8,7 @@
  * Each change event calls the appropriate store action to update state.
  */
 
-import { supabase, isMock, LOCATION_ID } from './supabase';
+import { supabase, isMock, LOCATION_ID, isBackOfficeMode } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { reassertSession } from '../sync/SessionSync';
@@ -20,7 +20,8 @@ import { channelCancelAlert } from './ezcaterCatering';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
-import { capClosedChecks } from '../store';
+import { capClosedChecks, isMenuRowPending } from '../store';
+import { mapMenuItemRow as mapItemRow, mapTaxRateRow, srvNewer } from './rowMapping';
 import { getLocationConfig, clearLocationConfigCache } from './locationTime';
 
 let channels = [];
@@ -227,18 +228,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       table: 'tax_rates',
       filter: `location_id=eq.${locationId}`,
     }, async () => {
-      // Re-fetch all rates for this location when any change happens
-      const { data } = await supabase
+      // Re-fetch all rates for this location when any change happens (27 Sep 2026: the rates
+      // carry their venue, lib/rowMapping.js mapTaxRateRow). Until
+      // 20260927_OPS_menu_rows_server_time.sql adds tax_rates to supabase_realtime this channel
+      // never fires.
+      // An EMPTY read is applied in Back Office only (the venue really has none: Leeds kept
+      // Train Station's rates because empty reads were skipped). A till keeps its rates: a
+      // tightened read policy answers with no rows and no error, and a till must never drop to
+      // no tax in the middle of service (the same rule as useSupabaseInit and SyncBridge).
+      const { data, error } = await supabase
         .from('tax_rates').select('*')
         .eq('location_id', locationId)
         .eq('active', true)
         .order('rate', { ascending: false });
-      if (data) store.setState({ taxRates: data.map(r => ({
-        id: r.id, name: r.name, code: r.code,
-        rate: parseFloat(r.rate), type: r.type,
-        appliesTo: r.applies_to || ['all'],
-        isDefault: r.is_default, active: r.active,
-      })) });
+      if (error || !Array.isArray(data)) return;
+      if (data.length || isBackOfficeMode()) store.setState({ taxRates: data.map(mapTaxRateRow) });
     })
     .subscribe();
 
@@ -665,6 +669,12 @@ export function startRealtime(store, locationId = LOCATION_ID) {
   // MPOS and the kitchen prints stale tickets. Now any UPDATE flows through to
   // every device's menuItems store within ~500ms, with the same camelCase
   // mapping SyncBridge / useSupabaseInit use so parentId etc don't get lost.
+  // 27 Sep 2026: menu_items was never in the supabase_realtime publication, so this channel
+  // never fired (two Back Offices on one venue never saw each other's changes: Peter, "I
+  // archived choc babychino but its still on the menu board"). 20260927_OPS_menu_rows_server_time.sql
+  // adds it. An event never lands over a row this device has a save of on its way (the
+  // person's newer value stays), nor over a copy the database stamped later (srvAt, the
+  // server clock once that file runs).
   const menuItemsChannel = supabase
     .channel(`menu_items:${locationId}`)
     .on('postgres_changes', {
@@ -680,11 +690,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         return;
       }
       if (!row?.id) return;
+      if (isMenuRowPending('items', row.id)) return;
       const mapped = mapMenuItemRow(row);
       store.setState(s => {
         const list = s.menuItems || [];
         const idx = list.findIndex(m => m.id === mapped.id);
         if (idx === -1) return { menuItems: [...list, mapped] };
+        if (srvNewer(list[idx], mapped)) return {};
         const next = list.slice();
         next[idx] = { ...next[idx], ...mapped };
         return { menuItems: next };
@@ -729,27 +741,11 @@ export function startRealtime(store, locationId = LOCATION_ID) {
   return stopRealtime;
 }
 
-// Mirrors SyncBridge's snake→camel mapping for a single menu_items row.
-// Single-source-of-truth would be cleaner long-term; this stays in lockstep
-// with useSupabaseInit + SyncBridge for now.
+// A single menu_items row mapped for the store. 27 Sep 2026: this is lib/rowMapping.js
+// mapMenuItemRow, the ONE mapper every loader uses (it keeps the row's database updated_at as
+// srvAt). The export stays for the callers and tests that import it from here.
 export function mapMenuItemRow(item) {
-  return {
-    ...item,
-    price:        item.pricing?.base ?? item.price ?? 0,
-    menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
-    receiptName:  item.receipt_name ?? item.receiptName ?? item.name,
-    kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name,
-    sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
-    parentId:     item.parent_id    ?? item.parentId    ?? null,
-    soldAlone:    item.sold_alone   ?? item.soldAlone,
-    centreId:     item.centre_id    ?? item.centreId    ?? null,
-    taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
-    taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
-    taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-    assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
-    assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
-    image: item.image ?? null,
-  };
+  return mapItemRow(item);
 }
 
 export function stopRealtime() {
