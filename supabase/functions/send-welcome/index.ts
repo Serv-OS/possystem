@@ -32,6 +32,9 @@ import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_s
 import { resolveAndRender } from '../_shared/template-resolver.ts';
 import { wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { platformAdmin } from '../_shared/gift-card-utils.ts';
+// @ts-ignore plain JS shared with node tests
+import { welcomePortalUrl, dropEmptyLinkLines, welcomeVenueName } from '../_shared/welcomeLink.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -159,17 +162,22 @@ Deno.serve(async (req) => {
   }
 
   // ── 2. Fetch venue info for branding ───────────────────────────────
+  // v5.9.85 (Peter, 27 Sep 2026: the welcome said "our venue" and "View your account:" with no
+  // link): online_slug lives on PLATFORM locations; asking OPS for it failed the whole read.
   const { data: loc } = await opsAdmin
     .from('locations')
-    .select('name, online_slug')
+    .select('name')
     .eq('id', location_id)
     .maybeSingle();
+  const { data: pLoc } = await platformAdmin
+    .from('locations')
+    .select('name, online_slug')
+    .or(`ops_location_id.eq.${location_id},id.eq.${location_id}`)
+    .limit(1)
+    .maybeSingle();
 
-  const venueName = loc?.name || 'our venue';
-  const slug = loc?.online_slug || '';
-  const portalUrl = slug
-    ? `https://${slug}.${CUSTOMER_DOMAIN}/account/register`
-    : '';
+  const venueName = welcomeVenueName(loc?.name, pLoc?.name);
+  const portalUrl = welcomePortalUrl(pLoc?.online_slug, CUSTOMER_DOMAIN);
 
   // ── 3. Build merge tag data ────────────────────────────────────────
   const firstName = customer.name ? customer.name.split(' ')[0] : '';
@@ -188,7 +196,8 @@ Deno.serve(async (req) => {
 
     // Resolve template: custom → default from message-types registry
     const rendered = await resolveAndRender(company_id, 'loyalty_welcome', 'sms', mergeData);
-    const smsMsg = rendered?.body || `Hi ${firstName || 'there'}! Welcome to ${venueName}! You're now earning loyalty points on every order.`;
+    // An empty {{portal_url}} never leaves a dangling "View your account:" line (v5.9.85).
+    const smsMsg = dropEmptyLinkLines(rendered?.body || `Hi ${firstName || 'there'}! Welcome to ${venueName}! You're now earning loyalty points on every order.`);
 
     smsSent = await sendSms(e164, smsMsg);
 
