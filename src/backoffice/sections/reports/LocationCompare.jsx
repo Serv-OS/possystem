@@ -16,11 +16,18 @@
 //
 // Medians are used (not means) so one outlier doesn't pull the reference point
 // away from where "typical" really is.
+//
+// v5.10.3: every venue is read over the SAME business days (range.fromDay..toDay, or the
+// same service's wall clock times) on ITS OWN clock: its timezone and business day start
+// (getVenueClock + _filters venueRange). Until then the active venue's window was used
+// for every venue, so a Utah venue's "Yesterday" was London's 06:30 to 06:29.
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchAccessibleLocations, fetchClosedChecksMultiRange } from '../../../lib/db';
+import { getVenueClock } from '../../../lib/locationTime';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { venueRange } from './_filters';
 
 function median(arr) {
   if (!arr.length) return 0;
@@ -95,7 +102,9 @@ function computeAlerts(rows) {
   return alerts;
 }
 
-export default function LocationCompare({ rangeFrom, rangeTo, periodLabelText, fmt, fmtN }) {
+// range = getPeriodRange's answer for the active venue; only its days (and, for a
+// service, its wall clock times) are used, re-read on each venue's clock.
+export default function LocationCompare({ range, periodLabelText, fmt, fmtN }) {
   const [locations, setLocations] = useState(null);
   const [checks, setChecks]       = useState(null);
   const [loading, setLoading]     = useState(true);
@@ -110,9 +119,13 @@ export default function LocationCompare({ rangeFrom, rangeTo, periodLabelText, f
         const locs   = locRes.data || [];
         setLocations(locs);
         if (!locs.length) { setChecks([]); setLoading(false); return; }
-        if (!rangeFrom || !rangeTo) { setChecks([]); setLoading(false); return; }
-        const ids = locs.map(l => l.id);
-        const res = await fetchClosedChecksMultiRange(ids, rangeFrom, rangeTo, 2000);
+        if (!range?.fromDay || !range?.toDay) { setChecks([]); setLoading(false); return; }
+        const windows = await Promise.all(locs.map(async l => {
+          const r = venueRange(range, await getVenueClock(l.id));
+          return { locationId: l.id, from: r.from, to: r.to };
+        }));
+        const res = await fetchClosedChecksMultiRange(windows, 2000);
+        if (res.error) throw res.error;
         setChecks(res.data || []);
       } catch (err) {
         console.error('[LocationCompare] fetch failed', err);
@@ -121,7 +134,7 @@ export default function LocationCompare({ rangeFrom, rangeTo, periodLabelText, f
       }
       setLoading(false);
     })();
-  }, [rangeFrom?.getTime(), rangeTo?.getTime()]);
+  }, [range]);
 
   const rows = useMemo(() =>
     (checks && locations) ? rollupByLocation(checks, locations).sort((a, b) => b.revenue - a.revenue) : [],
@@ -159,7 +172,7 @@ export default function LocationCompare({ rangeFrom, rangeTo, periodLabelText, f
     return <div style={{ padding:'40px 0', textAlign:'center', color:'var(--t4)', fontSize:12 }}>Loading every location you have access to…</div>;
   }
   if (error) {
-    return <EmptyState icon="⚠" message={`Could not load locations: ${error.message}. Run the v4.6.22 SQL migration if you haven't yet.`}/>;
+    return <EmptyState icon="⚠" message={`Could not load locations: ${error.message}`}/>;
   }
   if (!locations || locations.length === 0) {
     return <EmptyState icon="📍" message="No locations accessible. Check that your user_locations junction has rows for your user."/>;
@@ -183,6 +196,7 @@ export default function LocationCompare({ rangeFrom, rangeTo, periodLabelText, f
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
         <div style={{ fontSize:11, color:'var(--t3)' }}>
           Comparing <strong style={{ color:'var(--t1)' }}>{locations.length}</strong> locations · {periodLabelText || 'today'}
+          <div style={{ color:'var(--t4)', marginTop:2 }}>Each location is read over these business days on its own clock (its time zone and day start).</div>
         </div>
         <ExportBtn onClick={onExport}/>
       </div>

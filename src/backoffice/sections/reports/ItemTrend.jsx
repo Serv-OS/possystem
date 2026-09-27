@@ -6,11 +6,15 @@
 // Row totals on the right, column totals on the bottom. Top-50 items by
 // period qty by default with a toggle to show all. Sticky item-name column
 // so the names stay visible while you scroll horizontally across dates.
+//
+// v5.10.3: a column is the VENUE's business day (range.timeZone + range.dayStart). Until
+// then the columns and the buckets were the browser's midnights.
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { ExportBtn, EmptyState, StatTile } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { dayOfCheck, dayText, rangeDays, weekdayOf } from './_filters';
 
 // Attribution constants for the sources breakdown
 const SRC_STANDALONE = '__standalone';
@@ -21,22 +25,19 @@ const METRICS = [
   { id:'rev', label:'Revenue' },
 ];
 
-// Format a Date as YYYY-MM-DD (local timezone — the period the user picked
-// is already local, no need to convert).
-function fmtDayKey(d) {
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
+// A day is a venue business day as 'YYYY-MM-DD' (dayOfCheck); it is its own key.
 // Short header label for the day column ("Mon 5", "Tue 6", …)
-function fmtDayHeader(d) {
-  const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
-  return `${dow} ${d.getDate()}`;
+function fmtDayHeader(ymd) {
+  const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekdayOf(ymd)];
+  return `${dow} ${Number(ymd.slice(8, 10))}`;
 }
 // Tooltip label ("Mon 5 May 2026")
-function fmtDayFull(d) {
-  return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' });
+function fmtDayFull(ymd) {
+  return dayText(ymd, { weekday:'short', day:'numeric', month:'short', year:'numeric' });
 }
 
-export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
+// range = getPeriodRange's answer (fromDay/toDay + the venue clock, timeZone/dayStart).
+export default function ItemTrend({ checks, fmt, fmtN, range }) {
   const { menuCategories = [], menuItems = [] } = useStore();
   const [metric, setMetric] = useState('qty');
   const [topN, setTopN] = useState(50);
@@ -102,17 +103,10 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
 
   // Day axis — every day in the range, even days with zero sales (zeros are
   // signal too; don't hide them).
-  const days = useMemo(() => {
-    if (!rangeFrom || !rangeTo) return [];
-    const start = new Date(rangeFrom); start.setHours(0,0,0,0);
-    const end   = new Date(rangeTo);   end.setHours(0,0,0,0);
-    const out = [];
-    for (let t = start.getTime(); t <= end.getTime(); t += 24*60*60*1000) {
-      const d = new Date(t);
-      if (dowFilter === 'all' || Number(dowFilter) === d.getDay()) out.push(d);
-    }
-    return out;
-  }, [rangeFrom, rangeTo, dowFilter]);
+  const days = useMemo(
+    () => rangeDays(range).filter(d => dowFilter === 'all' || Number(dowFilter) === weekdayOf(d)),
+    [range, dowFilter]
+  );
 
   // Category id → label
   const catLabel = useMemo(() => {
@@ -135,7 +129,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     const map = {};
     const totalsByDay = {};
     let periodTotal = 0;
-    const dayKeys = new Set(days.map(fmtDayKey));
+    const dayKeys = new Set(days);
 
     // Canonical name resolver — given a menu_item, return its current
     // display name (menuName preferred). Used for bucket keying so both
@@ -179,8 +173,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
 
     checks.filter(c => c.status !== 'voided').forEach(c => {
       if (!c.closedAt) return;
-      const d = new Date(c.closedAt);
-      const dayKey = fmtDayKey(d);
+      const dayKey = dayOfCheck(c.closedAt, range);
       if (!dayKeys.has(dayKey)) return;
       (c.items || []).forEach(i => {
         if (i.voided) return;
@@ -240,7 +233,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     arr.sort((a, b) => (metric === 'qty' ? b.total - a.total : b.totalRev - a.totalRev));
     return { rows: arr, totalsByDay, periodTotal };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checks, days, metric, catFilter, search, includeMods, menuById, menuByName]);
+  }, [checks, days, range, metric, catFilter, search, includeMods, menuById, menuByName]);
 
   // Top-N truncation
   const visibleRows = topN === 'all' ? rows : rows.slice(0, Number(topN));
@@ -252,7 +245,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
   const cellMax = useMemo(() => {
     const vals = [];
     visibleRows.forEach(r => days.forEach(d => {
-      const v = cellOf(r, fmtDayKey(d));
+      const v = cellOf(r, d);
       if (v > 0) vals.push(v);
     }));
     if (!vals.length) return 1;
@@ -311,21 +304,21 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
     const headers = [
       { key:'name', label:'Item' },
       { key:'cat',  label:'Category' },
-      ...days.map(d => ({ key: fmtDayKey(d), label: fmtDayFull(d) })),
+      ...days.map(d => ({ key: d, label: fmtDayFull(d) })),
       { key:'_total', label: metric === 'qty' ? 'Period qty' : 'Period revenue' },
     ];
     const csvRows = visibleRows.map(r => {
       const out = { name: r.name, cat: catLabel[r.cat] || '' };
-      days.forEach(d => { out[fmtDayKey(d)] = cellOf(r, fmtDayKey(d)) || ''; });
+      days.forEach(d => { out[d] = cellOf(r, d) || ''; });
       out._total = rowTotal(r).toFixed(metric === 'qty' ? 0 : 2);
       return out;
     });
     // Append a column-totals footer row
     const footer = { name: 'TOTAL', cat: '' };
-    days.forEach(d => { footer[fmtDayKey(d)] = (totalsByDay[fmtDayKey(d)] || 0).toFixed(metric === 'qty' ? 0 : 2); });
+    days.forEach(d => { footer[d] = (totalsByDay[d] || 0).toFixed(metric === 'qty' ? 0 : 2); });
     footer._total = periodTotal.toFixed(metric === 'qty' ? 0 : 2);
     csvRows.push(footer);
-    downloadCsv(`item-trend-${metric}-${fmtDayKey(new Date(rangeFrom))}-to-${fmtDayKey(new Date(rangeTo))}.csv`, toCsv(csvRows, headers));
+    downloadCsv(`item-trend-${metric}-${range?.fromDay}-to-${range?.toDay}.csv`, toCsv(csvRows, headers));
   };
 
   if (!days.length || rows.length === 0) {
@@ -450,7 +443,7 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
                 <th style={thStickySt}>Item</th>
                 <th style={{ ...thSt, textAlign:'left', minWidth:120, position:'sticky', left:200, background:'var(--bg2)', zIndex:2, borderRight:'1px solid var(--bdr2)' }}>Category</th>
                 {days.map(d => (
-                  <th key={fmtDayKey(d)} title={fmtDayFull(d)} style={thDaySt}>{fmtDayHeader(d)}</th>
+                  <th key={d} title={fmtDayFull(d)} style={thDaySt}>{fmtDayHeader(d)}</th>
                 ))}
                 <th style={{ ...thSt, textAlign:'right', borderLeft:'2px solid var(--bdr2)', position:'sticky', right:0, background:'var(--bg2)' }}>Total</th>
               </tr>
@@ -483,11 +476,11 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
                     {catLabel[r.cat] || '—'}
                   </td>
                   {days.map(d => {
-                    const v = cellOf(r, fmtDayKey(d));
+                    const v = cellOf(r, d);
                     const intensity = v > 0 ? Math.min(1, v / cellMax) : 0;
                     const bg = v === 0 ? 'transparent' : `rgba(232, 160, 32, ${0.08 + intensity * 0.55})`;
                     return (
-                      <td key={fmtDayKey(d)} title={`${r.name} · ${fmtDayFull(d)}: ${metric === 'qty' ? fmtN(v) : fmt(v)}`}
+                      <td key={d} title={`${r.name} · ${fmtDayFull(d)}: ${metric === 'qty' ? fmtN(v) : fmt(v)}`}
                         style={{ ...tdDaySt, background:bg }}>
                         {v > 0 ? (metric === 'qty' ? fmtN(v) : fmt(v)) : ''}
                       </td>
@@ -504,9 +497,9 @@ export default function ItemTrend({ checks, fmt, fmtN, rangeFrom, rangeTo }) {
                 <td style={{ ...tdStickySt, background:'var(--bg2)', fontWeight:800, color:'var(--t1)' }}>TOTAL</td>
                 <td style={{ ...tdSt, position:'sticky', left:200, background:'var(--bg2)', borderRight:'1px solid var(--bdr2)' }}/>
                 {days.map(d => {
-                  const v = totalsByDay[fmtDayKey(d)] || 0;
+                  const v = totalsByDay[d] || 0;
                   return (
-                    <td key={fmtDayKey(d)} style={{ ...tdDaySt, fontWeight:800, color:'var(--t1)' }}>
+                    <td key={d} style={{ ...tdDaySt, fontWeight:800, color:'var(--t1)' }}>
                       {v > 0 ? (metric === 'qty' ? fmtN(v) : fmt(v)) : ''}
                     </td>
                   );

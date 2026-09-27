@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.3',
+    date: '28 Sep 2026',
+    items: [
+      'Back Office reports: the day, service and hour a sale is counted in are now the venue\'s, wherever the person looking is. Viewed from California, a London 12:30 lunch check was counted at 04:30, outside every service.',
+      'Sales summary, Daypart and Shifts put each check in the right service (Breakfast, Lunch, Late bar) on the venue\'s clock.',
+      'Daily trend and Item trend: one column per venue business day (06:30 to 06:30 at Coffee Boy), the same days as the period and Daily trading. They were the device\'s midnights, and across a clock change one day showed twice.',
+      'Daypart: the busiest hours and days are the venue\'s. A sale after midnight before the day starts counts on the night it belongs to.',
+      'Shifts: days, services and first/last check times are the venue\'s. The Export button on the service view now downloads (it did nothing).',
+      'Z report: From, To and Printed are in the venue\'s time, and the slip says which.',
+      'Location compare: each venue is read over the same business days on its own clock and day start. Every venue used to be read over the current venue\'s hours.',
+    ],
+  },
+  {
     v: '5.10.2',
     date: '28 Sep 2026',
     items: [

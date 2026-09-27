@@ -282,8 +282,8 @@ export default function BOReports({ setSection } = {}) {
           {view === 'shifts'      && <Shifts       checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
           {view === 'payroll'     && <PayrollReport fmt={fmt}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
-          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
+          {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} range={range}/>}
+          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={range}/>}
           {view === 'daily_trading' && <DailyTrading fromDay={range.fromDay} toDay={range.toDay} fmt={fmt}/>}
           {view === 'menu_eng'    && <MenuEngineering checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
@@ -293,9 +293,9 @@ export default function BOReports({ setSection } = {}) {
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} fmtN={fmtN}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} timeZone={range.timeZone} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'location_compare' && <LocationCompare rangeFrom={range.from} rangeTo={range.to} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'location_compare' && <LocationCompare range={range} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
           {view === 'cash_drawer' && <CashDrawer   fromMs={range.from} toMs={range.to}/>}
           {view === 'transactions' && <Transactions checks={filtered} fmt={fmt}/>}
           {view === 'open'       && <LegacyOpen   openOrders={openOrders} fmt={fmt}/>}

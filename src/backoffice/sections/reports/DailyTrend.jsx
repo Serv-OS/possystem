@@ -2,30 +2,34 @@
 // Line charts of revenue / covers / avg check / tip rate per day, with
 // optional previous-period overlay so "is business growing" answers itself.
 // Best/worst day callouts + 7-day rolling-average line on revenue chart.
+//
+// v5.10.3: a day is the VENUE's business day (range.timeZone + range.dayStart, the same
+// days the period was built from). Until then the axis and the buckets were the browser's
+// midnights, so from California a London day ran 08:00 to 08:00 and a 06:30 day start
+// was ignored.
 
 import { useMemo } from 'react';
-import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { dayOfCheck, dayText, prevRangeDays, rangeDays, weekdayOf } from './_filters';
 
-function fmtDayKey(d) {
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+// Days are business days as 'YYYY-MM-DD' (no clock involved in any label).
+function fmtDayShort(ymd) {
+  return `${DOW[weekdayOf(ymd)]} ${Number(ymd.slice(8, 10))}/${Number(ymd.slice(5, 7))}`;
 }
-function fmtDayShort(d) {
-  return `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]} ${d.getDate()}/${d.getMonth()+1}`;
-}
-function fmtDayFull(d) {
-  return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' });
+function fmtDayFull(ymd) {
+  return dayText(ymd, { weekday:'short', day:'numeric', month:'short' });
 }
 
-// Aggregate checks → per-day buckets keyed by YYYY-MM-DD
-function buildDayBuckets(checks, days) {
-  const dayKeys = days.map(fmtDayKey);
+// Aggregate checks → per-day buckets keyed by the business day (YYYY-MM-DD)
+function buildDayBuckets(checks, days, clock) {
   const init = () => ({ revenue:0, covers:0, checks:0, tips:0, voids:0, refunds:0, items:0 });
-  const buckets = Object.fromEntries(dayKeys.map(k => [k, init()]));
+  const buckets = Object.fromEntries(days.map(k => [k, init()]));
   checks.forEach(c => {
     if (!c.closedAt) return;
-    const k = fmtDayKey(new Date(c.closedAt));
+    const k = dayOfCheck(c.closedAt, clock);
     if (!buckets[k]) return;
     if (c.status === 'voided') { buckets[k].voids += 1; return; }
     buckets[k].revenue += Number(c.total) || 0;
@@ -38,49 +42,36 @@ function buildDayBuckets(checks, days) {
   return buckets;
 }
 
-export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, rangeFrom, rangeTo }) {
-  const { locationConfig } = useStore();
+// range = getPeriodRange's answer: fromDay/toDay are the venue business days, and
+// timeZone/dayStart the clock each check is put on a day with.
+export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }) {
+  // Day axis for the active range, and for the comparison period (same number of
+  // business days, immediately before)
+  const days     = useMemo(() => rangeDays(range),     [range]);
+  const prevDays = useMemo(() => prevRangeDays(range), [range]);
 
-  // Day axis for the active range
-  const days = useMemo(() => {
-    if (!rangeFrom || !rangeTo) return [];
-    const start = new Date(rangeFrom); start.setHours(0,0,0,0);
-    const end   = new Date(rangeTo);   end.setHours(0,0,0,0);
-    const out = [];
-    for (let t = start.getTime(); t <= end.getTime(); t += 24*60*60*1000) {
-      out.push(new Date(t));
-    }
-    return out;
-  }, [rangeFrom, rangeTo]);
-
-  // Day axis for the comparison period (same length, immediately before)
-  const prevDays = useMemo(() => {
-    if (!days.length) return [];
-    return days.map(d => new Date(d.getTime() - days.length * 24 * 60 * 60 * 1000));
-  }, [days]);
-
-  const buckets     = useMemo(() => buildDayBuckets(checks,     days),     [checks,     days]);
-  const prevBuckets = useMemo(() => buildDayBuckets(prevChecks, prevDays), [prevChecks, prevDays]);
+  const buckets     = useMemo(() => buildDayBuckets(checks,     days,     range), [checks,     days,     range]);
+  const prevBuckets = useMemo(() => buildDayBuckets(prevChecks, prevDays, range), [prevChecks, prevDays, range]);
 
   // ── Series ────────────────────────────────────────────────────────────────
   const series = useMemo(() => {
-    const revenue   = days.map(d => buckets[fmtDayKey(d)].revenue);
-    const covers    = days.map(d => buckets[fmtDayKey(d)].covers);
-    const checksNum = days.map(d => buckets[fmtDayKey(d)].checks);
+    const revenue   = days.map(d => buckets[d].revenue);
+    const covers    = days.map(d => buckets[d].covers);
+    const checksNum = days.map(d => buckets[d].checks);
     const avgCheck  = days.map((d, i) => checksNum[i] ? revenue[i] / checksNum[i] : 0);
-    const tipRate   = days.map((d, i) => revenue[i] ? (buckets[fmtDayKey(d)].tips / revenue[i]) * 100 : 0);
-    const items     = days.map(d => buckets[fmtDayKey(d)].items);
+    const tipRate   = days.map((d, i) => revenue[i] ? (buckets[d].tips / revenue[i]) * 100 : 0);
+    const items     = days.map(d => buckets[d].items);
 
-    const prevRevenue   = prevDays.map(d => prevBuckets[fmtDayKey(d)]?.revenue || 0);
-    const prevCovers    = prevDays.map(d => prevBuckets[fmtDayKey(d)]?.covers || 0);
+    const prevRevenue   = prevDays.map(d => prevBuckets[d]?.revenue || 0);
+    const prevCovers    = prevDays.map(d => prevBuckets[d]?.covers || 0);
     const prevAvg       = prevDays.map((d, i) => {
-      const c = prevBuckets[fmtDayKey(d)]?.checks || 0;
-      const r = prevBuckets[fmtDayKey(d)]?.revenue || 0;
+      const c = prevBuckets[d]?.checks || 0;
+      const r = prevBuckets[d]?.revenue || 0;
       return c ? r / c : 0;
     });
     const prevTipRate   = prevDays.map((d, i) => {
-      const r = prevBuckets[fmtDayKey(d)]?.revenue || 0;
-      const t = prevBuckets[fmtDayKey(d)]?.tips || 0;
+      const r = prevBuckets[d]?.revenue || 0;
+      const t = prevBuckets[d]?.tips || 0;
       return r ? (t / r) * 100 : 0;
     });
 
@@ -100,7 +91,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, rangeFr
     const totalRevenue = sum(series.revenue);
     const totalCovers  = sum(series.covers);
     const totalChecks  = sum(series.checksNum);
-    const totalTips    = sum(days.map(d => buckets[fmtDayKey(d)].tips));
+    const totalTips    = sum(days.map(d => buckets[d].tips));
     const prevTotalRev = sum(series.prevRevenue);
     const prevTotalCov = sum(series.prevCovers);
     const avgCheck     = totalChecks ? totalRevenue / totalChecks : 0;
@@ -138,11 +129,10 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, rangeFr
       { key:'items', label:'Items sold' },
     ];
     const rows = days.map((d, i) => {
-      const k = fmtDayKey(d);
-      const b = buckets[k];
+      const b = buckets[d];
       return {
-        date: k,
-        dow: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()],
+        date: d,
+        dow: DOW[weekdayOf(d)],
         rev: b.revenue.toFixed(2),
         covers: b.covers,
         checks: b.checks,
@@ -152,7 +142,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, rangeFr
         items: b.items,
       };
     });
-    downloadCsv(`daily-trend-${fmtDayKey(days[0])}-to-${fmtDayKey(days[days.length-1])}.csv`, toCsv(rows, headers));
+    downloadCsv(`daily-trend-${days[0]}-to-${days[days.length-1]}.csv`, toCsv(rows, headers));
   };
 
   if (!days.length || totals.totalChecks === 0) {
@@ -266,7 +256,7 @@ function ChartCard({ title, sub, values, prev, rolling, format, days, integer, p
         {/* Data points */}
         {values.map((v, i) => (
           <circle key={i} cx={xFor(i)} cy={yFor(v)} r="2.5" fill="var(--acc)">
-            <title>{`${days[i].toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}: ${format(v)}`}</title>
+            <title>{`${fmtDayFull(days[i])}: ${format(v)}`}</title>
           </circle>
         ))}
         {/* X-axis date labels */}
