@@ -88,7 +88,7 @@ test('ticking the last item does not bump unless the screen asks (v5.9.95)', asy
   assert.equal(normaliseKdsSettings({ autoBumpWhenAllTicked: 'yes' }).autoBumpWhenAllTicked, false);
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../../surfaces/kds/KDSSurface.jsx', import.meta.url), 'utf8');
-  assert.match(src, /if \(shouldBumpAfterTick\(items, settingsRef\.current\)\) \{ bump\(id\); return; \}/);
+  assert.match(src, /if \(ticked && shouldBumpAfterTick\(items, settingsRef\.current\)\) \{ bump\(id\); return; \}/, 'v5.9.96: only a tick (never an untick) can bump');
   assert.doesNotMatch(src, /every\(i => i\._bumped\)\) \{ bump\(id\)/);
   const sheet = fs.readFileSync(new URL('../../surfaces/kds/KdsSettingsSheet.jsx', import.meta.url), 'utf8');
   assert.match(sheet, /label="Bump when every item is ticked"/);

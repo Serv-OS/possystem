@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.96',
+    date: '27 Sep 2026',
+    items: [
+      'Kitchen screen: tap a ticked item again to untick it, for a tick made by accident. Unticking never bumps the ticket.',
+      'Kitchen screen: item ticks on one ticket now save one after another, so a quick tick then untick always ends on the last tap and never ticks itself again on the next refresh.',
+    ],
+  },
+  {
     v: '5.9.95',
     date: '27 Sep 2026',
     items: [

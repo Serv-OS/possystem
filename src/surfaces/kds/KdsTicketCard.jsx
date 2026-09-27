@@ -143,16 +143,19 @@ function CourseChip({ label, accent, font, big = false }) {
   );
 }
 
-/** Tick one item as made. At least a 44px touch area around a box the size of the qty chip. */
+/**
+ * Tick one item as made; tap it again to untick (v5.9.96, Peter: a tick by accident must come off).
+ * At least a 44px touch area around a box the size of the qty chip.
+ */
 function TickBox({ ticked, onTick, size, big, disabled = false }) {
   const pad = Math.max(0, Math.ceil((44 - size) / 2));
   return (
-    <button type="button" disabled={disabled}
-      aria-label={ticked ? 'Item done' : 'Mark item done'}
-      onClick={(e) => { e.stopPropagation(); if (!ticked && !disabled) onTick(); }}
+    <button type="button" disabled={disabled} aria-pressed={ticked}
+      aria-label={ticked ? 'Item done, tap to untick' : 'Mark item done'}
+      onClick={(e) => { e.stopPropagation(); if (!disabled) onTick(); }}
       style={{
         flex: 'none', appearance: 'none', background: 'transparent', border: 0, padding: pad, margin: -pad,
-        cursor: ticked || disabled ? 'default' : 'pointer', display: 'flex',
+        cursor: disabled ? 'default' : 'pointer', display: 'flex',
       }}>
       <span style={{
         width: size, height: size, borderRadius: big ? 14 : 9, display: 'flex', alignItems: 'center', justifyContent: 'center',

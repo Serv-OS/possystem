@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.96, KDS: untick an item (branch fix/kds-untick)
+
+- Peter: "you can't untick an item if you click by accident". TickBox toggles; bumpItem uses lib/kds/kdsItemTicks.js toggleTick; saves per ticket chained and coalesced; incoming rows keep this screen's touched ticks until the database shows them or 30 s after the last save (withLocalTicks).
+
 # Session, 27 Sep 2026, v5.9.95, KDS: no auto bump on the last tick (branch fix/kds-no-auto-bump)
 
 - Peter: "don't auto bump the check, leave it there until they click bump". kdsSettings autoBumpWhenAllTicked (default false) + shouldBumpAfterTick; KDSSurface bumpItem uses it via settingsRef; settings sheet toggle under BUMPING.
