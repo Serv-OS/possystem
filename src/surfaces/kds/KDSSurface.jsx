@@ -33,6 +33,9 @@ import {
 import {
   normaliseKdsSettings, kdsSettingsStorageKey, isMissingColumnError, shouldBumpAfterTick,
 } from '../../lib/kds/kdsSettings';
+import {
+  toggleTick, touchedTicks, mergeIncomingTicks, overlayTicks, tickFlags, ticksActive, LOCAL_TICKS_GRACE_MS,
+} from '../../lib/kds/kdsItemTicks';
 import { gridColumnWidth, cardScale } from '../../lib/kds/kdsFit';
 import { KdsTicketCard, KdsTicketModal } from './KdsTicketCard';
 import { KdsSettingsSheet, KdsManagerPin } from './KdsSettingsSheet';
@@ -275,6 +278,19 @@ export function KDSSurface() {
   const writeSeq = useRef(0);
   // In flight bump writes by ticket id, so Undo can wait for the bump to land first.
   const pendingBumps = useRef(new Map());
+  // v5.9.96 (item untick): this screen's item ticks that the database has not shown back yet, by
+  // ticket id: { touched, items, sent, settledBy, chain }. Saves for one ticket run one after another
+  // and each is built when it starts, so the database always ends on the last tap. Incoming rows keep these
+  // ticks on top until they match (lib/kds/kdsItemTicks.js).
+  const localTicks = useRef(new Map());
+  const withLocalTicks = useCallback((row) => {
+    const pending = localTicks.current.get(row.id);
+    if (!pending) return row;
+    const { row: out, settled } = mergeIncomingTicks(row, pending, Date.now());
+    if (settled && localTicks.current.get(row.id) === pending) localTicks.current.delete(row.id);
+    return out;
+  }, []);
+  const withLocalTicksRef = useRef(withLocalTicks);
   /** Run one kds_tickets write, fenced by writeSeq. Resolves to { error }. */
   const tracked = useCallback((makeQuery) => {
     writeSeq.current += 1;
@@ -296,7 +312,7 @@ export function KDSSurface() {
         // its link is unknown, never "no tickets". Keep what is on screen.
         if (data && !trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: data.length })) return;
         if (data && writeSeq.current === seqAtStart) {
-          setRows(data.map(mapRow));
+          setRows(data.map(r => withLocalTicksRef.current(mapRow(r))));
           // A ticket bumped somewhere else while it was open closes the pop out.
           setSel(s => (s && s.mode === 'live' && !data.some(r => r.id === s.id) ? null : s));
         }
@@ -307,13 +323,13 @@ export function KDSSurface() {
     const channel = supabase
       .channel(`kds-tickets-${locationId}${centreId ? `-${centreId}` : ''}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
-        const t = mapRow(payload.new);
+        const t = withLocalTicksRef.current(mapRow(payload.new));
         if (centreId && t.centreId !== centreId) return;
         if (t.status !== 'pending' && t.status !== 'held') return;
         setRows(prev => prev.some(r => r.id === t.id) ? prev.map(r => r.id === t.id ? t : r) : [...prev, t]);
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
-        const t = mapRow(payload.new);
+        const t = withLocalTicksRef.current(mapRow(payload.new));
         if (payload.new.status === 'bumped') {
           // Unguarded on purpose: it also cleans up rows that leaked in before v5.5.913.
           setRows(prev => prev.filter(r => r.id !== t.id));
@@ -454,18 +470,39 @@ export function KDSSurface() {
     }
   }, [live, patchRow, showToast, writeFailed, tracked]);
 
-  const bumpItem = useCallback(async (id, index) => {
+  // v5.9.96 (Peter, 27 Sep 2026: "you can't untick an item if you click by accident"): a tap
+  // ticks an item, a tap on a ticked item unticks it. Unticking never bumps.
+  const bumpItem = useCallback((id, index) => {
     const t = ticketsRef.current.find(x => x.id === id);
     if (!t) return;
-    const items = t.items.map((it, i) => (i === index ? { ...it, _bumped: true } : it));
+    const next = toggleTick(t.items, index);
+    if (!next) return;
+    const { items, ticked } = next;
     // v5.9.95: ticking the last item leaves the ticket up until someone presses Bump, unless this
     // screen switched "Bump when every item is ticked" on (voided lines do not count).
-    if (shouldBumpAfterTick(items, settingsRef.current)) { bump(id); return; }
+    if (ticked && shouldBumpAfterTick(items, settingsRef.current)) { bump(id); return; }
+    ticketsRef.current = ticketsRef.current.map(x => (x.id === id ? { ...x, items } : x));
     patchRow(id, { items });
-    if (live) {
-      const { error } = await tracked(() => ticketWrite(id, { items }, 'Kitchen item ticked'));
-      if (error) writeFailed('Item tick');
-    }
+    if (!live) return;
+    const prev = localTicks.current.get(id);
+    const now = Date.now();
+    const entry = {
+      touched: touchedTicks(prev, index, items, now), items,
+      sent: ticksActive(prev, now) ? [...(prev.sent || [])] : [], settledBy: null, chain: null,
+    };
+    localTicks.current.set(id, entry);
+    entry.chain = (prev?.chain || Promise.resolve()).then(async () => {
+      // Only the newest tap for this ticket saves; an older one that waited here has nothing to do.
+      if (localTicks.current.get(id) !== entry) return;
+      // Built now, not at tap time (review round): lines this screen did not touch come from the
+      // newest copy on screen, so a tick another screen made while this save waited is kept.
+      const cur = ticketsRef.current.find(x => x.id === id);
+      const payload = cur ? overlayTicks(cur.items, entry.touched) : entry.items;
+      entry.sent.push(tickFlags(payload));
+      const { error } = await tracked(() => ticketWrite(id, { items: payload }, ticked ? 'Kitchen item ticked' : 'Kitchen item unticked'));
+      if (error) writeFailed(ticked ? 'Item tick' : 'Item untick');
+      if (localTicks.current.get(id) === entry) entry.settledBy = Date.now() + LOCAL_TICKS_GRACE_MS;
+    }).catch(() => {});
   }, [live, patchRow, bump, writeFailed, tracked]);
 
   /** Bring a bumped ticket back. Recall keeps counting from first sent (Peter). */
