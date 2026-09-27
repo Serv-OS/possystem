@@ -3,7 +3,7 @@ import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
-import { pairingCodeState, canIssueNewCode } from '../../lib/pairingCodeState';
+import { pairingCodeState, canIssueNewCode, replaceCodeWarning } from '../../lib/pairingCodeState';
 
 const DEFAULT_PRODUCTION_CENTRES = [
   { id:'pc1', name:'Hot kitchen',  icon:'🔥' },
@@ -237,6 +237,11 @@ export default function DeviceRegistry() {
   });
 
   const regenerateCode = async (deviceId) => {
+    // v5.9.83: never throw away a working, unused code without asking (27 Sep: the App Review code went this way).
+    const dev = (devices || []).find((x) => x.id === deviceId);
+    const live = issued[deviceId] || (dev ? { code: dev.pairing_code, expiresAt: dev.pairing_expires_at } : null);
+    const warn = live ? replaceCodeWarning({ code: live.code, expiresAt: live.expiresAt }) : null;
+    if (warn && !window.confirm(warn)) return;
     const res = await issueCode(deviceId, { force: false });
     if (!res.ok) {
       // Never reveal a code the DB didn't accept: the OLD code is still the live one.

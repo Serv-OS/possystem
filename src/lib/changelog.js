@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.83',
+    date: '27 Sep 2026',
+    items: [
+      'Back Office > Hardware > Terminals: a pairing code shows the YEAR it runs out ("valid until 27 Sept 2027, 09:32, works once"). It read "valid until 27 Sept, 09:32", so a code good for a year looked like it died that morning. New pairing code now asks first when the current code has not been used yet, because it replaces it and anyone holding the old one (App Review, a new site) can no longer pair.',
+    ],
+  },
+  {
     v: '5.9.82',
     date: '26 Sep 2026',
     items: [
