@@ -19,6 +19,7 @@ import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
+import { bookedTaxRecord } from './taxShare';
 import { describeMenuChange } from './menuDiff';
 import { normaliseMenuRow } from './rowMapping';
 import { money } from './currency';
@@ -935,7 +936,9 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
       // (US) tax: refunds give back each line's own tax and reprints show what was
       // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      ...(c.tax_breakdown?.hasExclusiveTax ? { taxBreakdown: c.tax_breakdown } : {}),
+      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
+      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
+      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
@@ -953,6 +956,9 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       processor: c.processor || 'stripe',         // refund routes by this
       loyalty: c.loyalty || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
+      // 27 Sep 2026: what paid the check (v5.9.11). A refund pro rates the VAT against it
+      // (refundMath.refundTaxBasis): a reader close's total is the card part only.
+      tenders: Array.isArray(c.tenders) ? c.tenders : null,
     }));
   }
   return result;
@@ -982,7 +988,9 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
       // (US) tax: refunds give back each line's own tax and reprints show what was
       // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      ...(c.tax_breakdown?.hasExclusiveTax ? { taxBreakdown: c.tax_breakdown } : {}),
+      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
+      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
+      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
@@ -1000,6 +1008,9 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       processor: c.processor || 'stripe',         // refund routes by this
       loyalty: c.loyalty || null,
       source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
+      // 27 Sep 2026: what paid the check (v5.9.11). A refund pro rates the VAT against it
+      // (refundMath.refundTaxBasis): a reader close's total is the card part only.
+      tenders: Array.isArray(c.tenders) ? c.tenders : null,
     }));
   }
   return result;

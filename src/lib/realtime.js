@@ -17,6 +17,7 @@ import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
+import { bookedTaxRecord } from './taxShare';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -369,8 +370,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
         // v5.9.12: tax as booked, so a refund or reprint on THIS till returns / shows
         // the added-on (US) tax the check charged. Inclusive rows: no new keys at
-        // all, exactly as before.
-        ...(check.tax_breakdown?.hasExclusiveTax ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+        // all, exactly as before. 27 Sep 2026: a scaled UK record (discounted bill, comp, QR closed
+        // short) loads too, so reports read its booked VAT (taxShare.bookedTaxRecord).
+        ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
         method: check.method,
         closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
         // Carry the occupation's seatedAt (epoch ms) so isSessionClosed can tombstone
@@ -461,7 +463,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             items: check.items || [], discounts: check.discounts || [],
             subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
             // v5.9.12: tax as booked, only for a check that charged added-on tax
-            ...(check.tax_breakdown?.hasExclusiveTax ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+            ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
             method: check.method,
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],

@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.98',
+    date: '27 Sep 2026',
+    items: [
+      'VAT on discounted bills: a UK bill with a discount now records VAT on what was charged, not the full price. A bill at half price records half the VAT. The checkout screen, the receipt, the closed check, the Z report, the Tax report and a reprint all show the same figure. Promo codes and loyalty rewards are unchanged (they are recorded as tenders).',
+      'Handheld (MPOS): the VAT shown and recorded is on the lines as charged after their item discounts.',
+      'QR tabs and QR orders closed in Orders now record their VAT, including modifier prices and each product\'s own rate. A tab whose card capture came up short records only the VAT on what the card took.',
+      'Refunds on a reader sale paid partly by gift card give back the right VAT. A £2 refund on a £10 bill (paid £8 gift card and £2 card) used to reverse all £1.67 of the VAT; it now reverses £0.33.',
+      'Daily trading (P&L): gross takings at a UK venue no longer add the VAT on top of prices that already include it. Net sales now take the VAT out.',
+    ],
+  },
+  {
     v: '5.9.97',
     date: '27 Sep 2026',
     items: [

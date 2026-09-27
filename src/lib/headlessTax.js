@@ -21,11 +21,11 @@
 import { computeCheckTotals } from './payments/checkTotals.js';
 import { lineTaxRefs } from './venueTaxRates.js';
 import { computeOrderTaxUnified } from './taxCompute.js';
+import { modsTotal } from './channelMoney.js';
+import { isUsableBreakdown, scaleTaxRecord } from './taxShare.js';
 
-/** A frozen breakdown is usable when it carries a real number for the total tax. */
-export function isUsableBreakdown(b) {
-  return !!b && typeof b === 'object' && b.totalTax != null && Number.isFinite(Number(b.totalTax));
-}
+// Moved to taxShare.js (27 Sep 2026) so the check totals seam can use them; re-exported here.
+export { isUsableBreakdown, scaleTaxRecord };
 
 /**
  * @param {object} draft  terminal_jobs.check_draft
@@ -67,34 +67,6 @@ export function headlessTaxBreakdown(draft, ctx = {}) {
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 /**
- * A tax record for a share of a bill (0..1): every figure scaled, per item
- * detail dropped (it would not add up to the share). For a QR tab whose card
- * capture came up short, the check books only what the card took, so it books
- * only that share of the VAT; the rest is taken on the till as its own sale,
- * which books its own (27 Sep 2026, review of the Leeds fix).
- */
-export function scaleTaxRecord(t, share) {
-  if (!isUsableBreakdown(t)) return null;
-  const f = Math.max(0, Math.min(1, Number(share)));
-  if (!Number.isFinite(f)) return null;
-  if (f === 1) return t;
-  const out = {
-    ...t,
-    subtotal: (Number(t.subtotal) || 0) * f,
-    totalTax: round2(Number(t.totalTax) * f),
-    total: (Number(t.total) || 0) * f,
-    exclusiveTax: round2((Number(t.exclusiveTax) || 0) * f),
-    breakdown: Array.isArray(t.breakdown) ? t.breakdown.map((b) => ({ ...b, tax: (Number(b.tax) || 0) * f, net: (Number(b.net) || 0) * f, gross: (Number(b.gross) || 0) * f })) : [],
-    share: f,
-  };
-  delete out.lineTaxes;
-  delete out.serviceTax;
-  delete out.deliveryTax;
-  delete out.taxV2;
-  return out;
-}
-
-/**
  * The VAT of a list of lines at this till's rates, for a check the till writes
  * without a checkout screen (a QR tab force closed, or closed short, in Orders;
  * 27 Sep 2026, review: these booked tax_amount null). Items only, as the QR
@@ -126,6 +98,68 @@ export function paidShare(paidGoods, items) {
   const paid = Number(paidGoods);
   if (!(gross > 0) || !Number.isFinite(paid)) return 1;
   return Math.max(0, Math.min(1, paid / gross));
+}
+
+/**
+ * QR order lines ready to tax (27 Sep 2026, the dropped v5.9.97 QR close fix). order_queue lines
+ * keep the base price and each modifier's price apart (mods[].price) and carry no tax rate, so a
+ * naive tax over them missed every priced modifier and took the venue default for every product.
+ * Each line's unit price takes its modifiers (modsTotal, as QrCheckout taxed them), and its rate,
+ * per order type overrides and tax profile come back from this till's menu by itemId (else the
+ * variant's parent), as channelMoney.buildChannelCloseFields does. A line not on this till's menu
+ * keeps whatever it carries (none: the venue default, the rule for our own products).
+ */
+export function qrTaxLines(items, menuItems = []) {
+  const byId = new Map();
+  for (const m of (Array.isArray(menuItems) ? menuItems : [])) if (m && m.id != null) byId.set(String(m.id), m);
+  const find = (id) => (id != null && id !== '' ? byId.get(String(id)) : undefined);
+  return (Array.isArray(items) ? items : []).filter((i) => i && !i.voided).map((i) => {
+    const mi = find(i.itemId ?? i.id) || find(i.parentId);
+    const out = {
+      ...i,
+      price: +((Number(i.price) || 0) + modsTotal(i.mods)).toFixed(2),
+      qty: Number(i.qty) || 1,
+      itemId: i.itemId ?? i.id ?? null,
+    };
+    if (mi) {
+      out.taxRateId = mi.taxRateId ?? mi.tax_rate_id ?? null;
+      out.taxOverrides = mi.taxOverrides ?? mi.tax_overrides ?? {};
+      out.taxProfileId = mi.taxProfileId ?? mi.tax_profile_id ?? null;
+      if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
+    }
+    return out;
+  });
+}
+
+/**
+ * The tax a QR check the till writes books: a tab or a single order force closed in Orders, or a
+ * tab the guest closed short. `paidGoods` is the goods money the check books (captured less tip
+ * and surcharge); a short capture books only its share of the VAT (paidShare), the rest is taken
+ * on the till as its own sale. Returns the closed_checks fields:
+ *   taxAmount     the VAT booked (null only when the venue has no tax set up, or nothing to tax)
+ *   taxBreakdown  the record, only when added-on tax was charged or it is a share (as every
+ *                 customer surface writes tax_breakdown; a share is what reports must read as
+ *                 booked, taxShare.bookedTaxRecord)
+ *   exclusiveTax  the added-on (US) tax in it, which QR round totals include, so the caller
+ *                 takes it out of the subtotal it books (0 for UK VAT)
+ * Never throws.
+ */
+export function qrCloseTax(items, ctx = {}, { paidGoods = null } = {}) {
+  const none = { taxAmount: null, taxBreakdown: null, exclusiveTax: 0 };
+  try {
+    const lines = qrTaxLines(items, ctx.menuItems);
+    const share = paidGoods == null ? 1 : paidShare(Math.max(0, Number(paidGoods) || 0), lines);
+    const rec = itemsTaxRecord(lines, ctx, { orderType: 'dine-in', share });
+    if (!rec) return none;
+    const exclusiveTax = rec.hasExclusiveTax ? round2(Math.max(0, Number(rec.exclusiveTax) || 0)) : 0;
+    return {
+      taxAmount: round2(rec.totalTax),
+      taxBreakdown: exclusiveTax > 0 || rec.share != null ? rec : null,
+      exclusiveTax,
+    };
+  } catch {
+    return none;   // fail toward the old record (no tax figure), never toward a guessed one
+  }
 }
 
 /**

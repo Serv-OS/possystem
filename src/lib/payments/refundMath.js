@@ -109,6 +109,40 @@ export function selectedAddedOnTax(check, items, share, serviceRefunded = 0) {
 }
 
 /**
+ * 27 Sep 2026 (review of the Leeds VAT fix): the bill a refund's VAT is pro rated
+ * against. A reader close stores `total` as the CARD part only (the gift card taken
+ * before the job was sent is not in it), so pro rating the check's whole VAT against
+ * that total reversed far too much: a £10 sale paid £8 gift card plus £2 card gave back
+ * all £1.67 of its VAT on a £2 refund. The money that settled the whole bill is the
+ * tenders (every one: gift card, card, credits) less the tip; `total` stays the basis
+ * whenever it is the larger (the till stores the gross, so its total already includes
+ * every tender plus the tip, and nothing changes there), and for rows with no tenders.
+ */
+export function refundTaxBasis(check) {
+  const total = num(check?.total);
+  const tenders = Array.isArray(check?.tenders) ? check.tenders : [];
+  if (!tenders.length) return total;
+  const settled = r2(tenders.reduce((s, t) => s + num(t?.amount) + num(t?.tip), 0) - num(check?.tip));
+  return Math.max(total, settled);
+}
+
+/**
+ * The tax a refund gives back, for refunds[].taxAmount (the VAT reports net off).
+ * A check whose tax is ALL added on (US) returns exactly the breakdown's figure for
+ * the refunded lines (bd.tax, v5.9.12). Anything with inclusive VAT in it is pro rata
+ * on the check's stored tax against refundTaxBasis. Null when the check stored no tax.
+ */
+export function refundTaxAmount(check, bd) {
+  const amount = num(bd?.amount);
+  const addedOnly = num(bd?.tax) > 0 && check?.taxAmount != null
+    && Math.abs(num(check.taxAmount) - addedOnTaxOf(check)) < 0.01;
+  if (addedOnly) return bd.tax;
+  if (check?.taxAmount == null) return null;
+  const basis = refundTaxBasis(check);
+  return basis > 0 ? r2(num(check.taxAmount) * (amount / basis)) : null;
+}
+
+/**
  * The denominator for pro-rata. The sum of the check's own line values, because
  * that is the same basis the selected refund items are priced on. Falls back to
  * `subtotal` for a check whose items did not survive (a headless close).

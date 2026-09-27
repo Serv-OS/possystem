@@ -9,7 +9,8 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
-import { LINES_ONLY_BASIS } from '../../lib/taxBasis';
+import { LINES_ONLY_BASIS, linesAfterItemDiscounts } from '../../lib/taxBasis';
+import { inclusiveTaxOnCharged, linesGoods } from '../../lib/taxShare';
 import { Sx, money } from './MShellStyles';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 import { findPaxTerminal, getPosDeviceId } from '../../lib/payments/terminalJobs';
@@ -48,7 +49,8 @@ export default function MTender({ onBack, onConfirm }) {
   // discount (LINES_ONLY_BASIS), not the menu price. The result rides to the
   // close as chargedTaxBreakdown so the record books this exact tax.
   const taxResult = useMemo(() => {
-    try { return computeOrderTaxUnified(order.items, taxCtx, orderType, LINES_ONLY_BASIS); }
+    // 27 Sep 2026: UK inclusive VAT on the lines as discounted, as the close books it.
+    try { return inclusiveTaxOnCharged(computeOrderTaxUnified(order.items, taxCtx, orderType, LINES_ONLY_BASIS), linesGoods(order.items), linesAfterItemDiscounts(order.items)); }
     catch { return { totalTax: 0 }; }
   }, [order.items, taxCtx, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;

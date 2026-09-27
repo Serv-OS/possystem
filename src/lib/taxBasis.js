@@ -142,6 +142,11 @@ export function creditDiscountsFromPayment(paymentInfo) {
   });
 }
 
+/** 27 Sep 2026: the live lines after their own item discounts (what a lines-only bill charges). */
+export function linesAfterItemDiscounts(items) {
+  return (Array.isArray(items) ? items : []).filter(i => i && !i.voided).reduce((s, i) => s + lineAfterItemDiscount(i), 0);
+}
+
 /**
  * MPOS charges each line after its own item discount and NOTHING else (no check
  * discount, no service charge, no delivery fee: a separate, known MPOS gap). Its
@@ -176,4 +181,19 @@ export function recordCheckBasis(check) {
 export function chargedAddedOnTax(paymentInfo) {
   const t = paymentInfo?.chargedTaxBreakdown;
   return (t && typeof t === 'object' && t.hasExclusiveTax && Number(t.exclusiveTax) > 0) ? t : null;
+}
+
+/**
+ * 27 Sep 2026: the tax a device CHARGED, for a close to book. The added-on tax as above, or an
+ * inclusive (UK) record: MPOS works its VAT out on the lines it charges (after their item
+ * discounts, taxShare.inclusiveTaxOnCharged), and it never takes the check or auto discounts a
+ * close would otherwise apply (a known MPOS gap), so its own figure is the VAT on the money
+ * taken. Null when nothing usable was handed over (every other close computes as before).
+ */
+export function chargedTaxOf(paymentInfo) {
+  const added = chargedAddedOnTax(paymentInfo);
+  if (added) return added;
+  const t = paymentInfo?.chargedTaxBreakdown;
+  return (t && typeof t === 'object' && !t.hasExclusiveTax && Array.isArray(t.breakdown)
+    && t.totalTax != null && Number.isFinite(Number(t.totalTax))) ? t : null;
 }

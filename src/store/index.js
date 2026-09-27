@@ -11,7 +11,7 @@ import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, o
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
-import { creditDiscountsFromPayment, chargedAddedOnTax } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, chargedTaxOf } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
@@ -47,7 +47,7 @@ import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
   refundBreakdown, cardLegsOf, legRefundedMinor, allocateToLegs,
-  rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt, addedOnTaxOf,
+  rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount,
 } from '../lib/payments/refundMath';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
@@ -5822,7 +5822,7 @@ export const useStore = create((set, get) => ({
     // calculateOrderTax object as before, byte for byte.
     // A device that charged its own added-on tax (MPOS) hands it over as
     // paymentInfo.chargedTaxBreakdown: that exact tax is booked.
-    let taxBreakdown = chargedAddedOnTax(paymentInfo);
+    let taxBreakdown = chargedTaxOf(paymentInfo);   // 27 Sep 2026: MPOS UK VAT on what it charged too
     if (!taxBreakdown && (taxRates?.length || taxCtxHasConfig(get().getTaxContext()))) {
       try {
         taxBreakdown = computeCheckTotals({
@@ -6549,7 +6549,7 @@ export const useStore = create((set, get) => ({
     // delivery fee and the checkout's promo / loyalty credits) so the tax booked
     // is the tax charged. UK inclusive: identical object, byte for byte.
     // MPOS hands over the added-on tax it charged (chargedTaxBreakdown): booked as is.
-    let taxBreakdown = chargedAddedOnTax(paymentInfo);
+    let taxBreakdown = chargedTaxOf(paymentInfo);   // 27 Sep 2026: MPOS UK VAT on what it charged too
     if (!taxBreakdown && (taxRates?.length || taxCtxHasConfig(get().getTaxContext()))) {
       try {
         taxBreakdown = computeCheckTotals({
@@ -6879,14 +6879,11 @@ export const useStore = create((set, get) => ({
     // refund entry carried no tax portion at all, which is why `tax_amount` stayed
     // overstated after every refund).
     // v5.9.12: on a check whose tax is ALL added on (US sales tax), the tax that
-    // came back is exactly the breakdown's figure for these items. Anything with
-    // inclusive VAT in it keeps the pro-rata rule unchanged.
-    const addedOnly = bd.tax > 0 && chkBefore.taxAmount != null
-      && Math.abs(Number(chkBefore.taxAmount) - addedOnTaxOf(chkBefore)) < 0.01;
-    const taxRefunded = addedOnly ? bd.tax
-      : (chkBefore.taxAmount != null && Number(chkBefore.total) > 0)
-      ? r2(Number(chkBefore.taxAmount) * (amount / Number(chkBefore.total)))
-      : null;
+    // came back is exactly the breakdown's figure for these items.
+    // 27 Sep 2026: inclusive VAT is pro rata against the money that settled the whole
+    // bill (tenders less tip, or total when larger), never the card part alone of a
+    // reader close paid partly by gift card (refundMath.refundTaxAmount).
+    const taxRefunded = refundTaxAmount(chkBefore, bd);
 
     let nextRefunds = null;
     let nextStatus = null;
