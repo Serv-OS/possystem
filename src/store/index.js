@@ -16,11 +16,11 @@ import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates } from '../lib/rowMapping';
-import { createMenuWriters, categoryInsertRetry } from '../lib/menuWriters';
+import { createMenuWriters, categoryInsertRetry, runItemEditWrites, putBackFollowers } from '../lib/menuWriters';
 import { deleteRowChecked } from '../lib/menuRowWrite';
 import { menuItemRow, categoryRow, menuRow } from '../lib/menuItemWrite';
-import { readVenueMenu, menuPatchFromRead, parentsFirst } from '../lib/venueMenuRead';
-import { saveModifierGroupChecked, createLatestQueue } from '../lib/modifierGroupWrite';
+import { readVenueMenu, menuPatchFromRead, parentsFirst, rowVenue, emptyItemsReadSuspect, venueItemCount, suspectReadWords } from '../lib/venueMenuRead';
+import { saveModifierGroupChecked, createLatestQueue, insertModifierGroupOnce } from '../lib/modifierGroupWrite';
 import { runBulkEdits, bulkSummaryWords } from '../lib/menuBulk';
 import { scheduleMenuTranslate } from '../lib/menuTranslateTrigger';
 import { createScopedPropagator, savedForPropagation } from '../lib/scopedPropagation';
@@ -377,6 +377,19 @@ const menuWriters = createMenuWriters({
 // New groups being written whole (addModifierGroupDef), id → the write: a reload must not
 // drop them from the screen while their first save is on its way.
 const _groupCreates = new Map();
+// 27 Sep 2026 (review round 3): groups made in this tab whose FIRST save failed. Push to POS
+// offers exactly these, insert only (lib/venueMenuRead.js unsavedMenuRows), never a group that
+// is only missing from the read (that one was deleted in another window and stays deleted).
+const _groupCreateFailed = new Set();
+export const unsavedGroupIds = () => new Set(_groupCreateFailed);
+
+// 27 Sep 2026 (review round 3): a menu row made in this tab carries its venue from birth, so a
+// reload after a venue switch never carries it into another venue, its first save is never
+// inserted at another venue, and Push to POS offers it only to its own (lib/venueMenuRead.js).
+const venueAtBirth = () => {
+  const loc = getActiveLocationSync();
+  return loc && loc !== 'loc-demo' ? { location_id: loc } : {};
+};
 // Modifier groups: a save re-reads the group and lays only this tab's change onto it
 // (lib/modifierGroupWrite.js). One save per group at a time; saves that wait fold into one.
 const modifierGroupSaves = createLatestQueue(async (id, { base, mine }) => {
@@ -410,8 +423,10 @@ export async function whenMenuWritesIdle() {
       menuWriters.items.whenIdle(), menuWriters.categories.whenIdle(), menuWriters.menus.whenIdle(),
       runInMenuWriteQueue(() => null).catch(() => null), modifierGroupSaves.whenIdle(),
     ]);
+    // 27 Sep 2026 (review round 3): modifier group saves count too. The rename cascade starts
+    // them only once its product's save has landed, after the wait above may have begun.
     const busy = menuWriters.items.pendingIds().size + menuWriters.categories.pendingIds().size
-      + menuWriters.menus.pendingIds().size + _groupCreates.size;
+      + menuWriters.menus.pendingIds().size + _groupCreates.size + modifierGroupSaves.pendingKeys().size;
     if (!busy) return;
     if (_groupCreates.size) await new Promise((r) => setTimeout(r, 150));
   }
@@ -456,7 +471,8 @@ export const beginMenuRead = () => ({ seq: ++_readSeq, mark: menuWriters.mark() 
  * Lay a fresh read of the venue's menu over the store (lib/venueMenuRead.js menuPatchFromRead):
  * the database wins, except rows with a save of this tab on its way or landed since the read
  * began. Tax rates take the read as it is, an empty list included (27 Sep: Leeds had no rates
- * and the Back Office kept Train Station's). Returns false when a newer read was applied.
+ * and the Back Office kept Train Station's). Returns false when a newer read was applied, or
+ * when an empty product read looked suspect and nothing was applied.
  */
 export function applyVenueMenuRead(read, { seq = null, mark = null, locationId = null } = {}) {
   if (!read) return false;
@@ -470,9 +486,19 @@ export function applyVenueMenuRead(read, { seq = null, mark = null, locationId =
     for (const id of menuWriters[kind].landedSince(since)) keep.add(id);
     return keep;
   };
+  // 27 Sep 2026 (review round 3): an EMPTY product read while this screen holds this venue's
+  // products is suspect (a narrowed read answers with no rows and no error): nothing is applied,
+  // the menu stays on screen and the person is told (lib/venueMenuRead.js emptyItemsReadSuspect).
+  const items = keepOf('items');
+  const now = useStore.getState();
+  if (emptyItemsReadSuspect(now, read, locationId, { keep: items })) {
+    console.warn('[menu] the product read came back EMPTY while this screen holds this venue\'s products: not applied');
+    now.showToast?.(suspectReadWords(venueItemCount(now, locationId)), 'warning', MENU_TOAST_MS);
+    return false;
+  }
   const groups = new Set([...modifierGroupSaves.pendingKeys(), ..._groupCreates.keys()]);
   useStore.setState((s) => menuPatchFromRead(s, read, {
-    keep: { items: keepOf('items'), categories: keepOf('categories'), menus: keepOf('menus'), groups },
+    keep: { items, categories: keepOf('categories'), menus: keepOf('menus'), groups },
     locationId,
   }));
   return true;
@@ -518,19 +544,42 @@ export async function saveUnsavedMenuRows(unsaved) {
     if (r?.ok) { saved += 1; return; }
     failed.push({ kind, name, error: r?.error?.message || r?.outcome || 'not saved' });
   };
+  // Each row goes to the venue it was made at, or not at all (menuWriters create locationId).
   const first = [
-    ...(unsaved.menus || []).map((m) => menuWriters.menus.create(m.id, () => menuRow(live('menus', m.id) || m), { label: m.name, quiet: true }).then(note('menu', m.name))),
+    ...(unsaved.menus || []).map((m) => menuWriters.menus.create(m.id, () => menuRow(live('menus', m.id) || m),
+      { label: m.name, quiet: true, locationId: rowVenue(m) }).then(note('menu', m.name))),
     // v5.9.22: a category is never lost over a menu that is not there (the link is dropped).
     ...parentsFirst(unsaved.menuCategories || []).map((c) => menuWriters.categories.create(c.id,
       () => categoryRow(live('menuCategories', c.id) || c, live('menuCategories', c.id)),
-      { label: c.label, quiet: true, retryWithout: categoryInsertRetry }).then(note('category', c.label))),
+      { label: c.label, quiet: true, retryWithout: categoryInsertRetry, locationId: rowVenue(c) }).then(note('category', c.label))),
+    // 27 Sep 2026 (review round 3): modifier groups whose first save failed, insert only.
+    ...(unsaved.modifierGroupDefs || []).map((g) => saveGroupFirstTime(live('modifierGroupDefs', g.id) || g).then(note('modifier group', g.name))),
   ];
   await Promise.all(first);
   const items = [...(unsaved.menuItems || [])].sort((a, b) => (a.parentId ? 1 : 0) - (b.parentId ? 1 : 0));
   await Promise.all(items.map((i) => menuWriters.items.create(i.id,
-    () => menuItemRow(live('menuItems', i.id) || i), { label: i.menuName || i.name, quiet: true })
+    () => menuItemRow(live('menuItems', i.id) || i), { label: i.menuName || i.name, quiet: true, locationId: rowVenue(i) })
     .then(note('product', i.menuName || i.name))));
   return { ok: failed.length === 0, saved, failed };
+}
+
+// A modifier group whose first save failed, saved INSERT ONLY (Push to POS lists it first). It
+// is held in _groupCreates while it runs, so a reload keeps it on screen and an edit of it waits.
+async function saveGroupFirstTime(group) {
+  if (isMock || !supabase) return { ok: true, outcome: 'noop' };
+  let loc = null;
+  try { loc = getActiveLocationSync() || await getLocationId(); } catch { loc = null; }
+  const write = insertModifierGroupOnce({ client: supabase, locationId: loc, group });
+  _groupCreates.set(group.id, write.catch(() => null));
+  let r;
+  try { r = await write; } finally { _groupCreates.delete(group.id); }
+  reportSave('modifier group', r.ok ? null : r.error);
+  if (!r.ok) return r;
+  _groupCreateFailed.delete(group.id);
+  const at = r.row?.updated_at ?? null;
+  useStore.setState((s) => ({ modifierGroupDefs: (s.modifierGroupDefs || []).map((g) => (g.id === group.id ? { ...g, srvAt: at, location_id: loc } : g)) }));
+  scheduleMenuTranslate(loc);
+  return r;
 }
 
 /**
@@ -567,7 +616,7 @@ const sbDeleteMenu = (id) => (isMock ? Promise.resolve({ ok: true, outcome: 'noo
 // RUNS, from the live store row, so a photo set meanwhile is included (v5.8.65).
 const sbCreateCategory = (cat) => menuWriters.categories.create(cat.id,
   () => categoryRow(cat, useStore.getState().menuCategories?.find((c) => c.id === cat.id)),
-  { label: cat.label });
+  { label: cat.label, locationId: rowVenue(cat) });
 const sbDeleteCategory = (id) => (isMock ? Promise.resolve({ ok: true, outcome: 'noop' }) : menuWriters.categories.task(id, async () => {
   const locationId = getActiveLocationSync() || await getLocationId().catch(() => null);
   const r = await deleteRowChecked({ client: supabase, table: 'menu_categories', id, locationId });
@@ -1442,10 +1491,11 @@ export const useStore = create((set, get) => ({
   categoryLinks: [],
   setCategoryLinks: rows => set({ categoryLinks: Array.isArray(rows) ? rows : [] }),
   addMenu: menu => {
-    const newMenu = { id:`menu-${Date.now()}`, ...menu };
+    // 27 Sep 2026 (review round 3): stamped with its venue (venueAtBirth).
+    const newMenu = { id:`menu-${Date.now()}`, ...menu, ...venueAtBirth() };
     set(s => ({ menus: [...s.menus, newMenu] }));
     // 27 Sep 2026: a creation is an insert that never overwrites (lib/menuWriters.js).
-    menuWriters.menus.create(newMenu.id, menuRow(newMenu), { label: newMenu.name });
+    menuWriters.menus.create(newMenu.id, menuRow(newMenu), { label: newMenu.name, locationId: rowVenue(newMenu) });
     return newMenu;   // v5.5.958: callers auto-creating a first menu need the id
   },
   // 27 Sep 2026: only the fields in `patch` are written, compare and set on the row's
@@ -1494,7 +1544,8 @@ export const useStore = create((set, get) => ({
     { id:'bcat-snacks',   menuId:'menu-2', parentId:null, label:'Bar snacks',   icon:'🍟', color:'#22c55e', accountingGroup:'Food',      sortOrder:5 },
   ] : []),
   addCategory: cat => {
-    const newCat = { id:`cat-${Date.now()}`, ...cat };
+    // 27 Sep 2026 (review round 3): stamped with its venue (venueAtBirth).
+    const newCat = { id:`cat-${Date.now()}`, ...cat, ...venueAtBirth() };
     set(s => ({ menuCategories: [...s.menuCategories, newCat] }));
     sbCreateCategory(newCat);
   },
@@ -1611,12 +1662,14 @@ export const useStore = create((set, get) => ({
         let error = null;
         try { ({ error } = await write); } finally { _groupCreates.delete(group.id); }
         reportSave('modifier group', error);   // v5.5.971: toast alone; now raises the banner too
-        if (error) { console.warn('modifier group save failed:', error.message); return false; }
+        if (error) { _groupCreateFailed.add(group.id); console.warn('modifier group save failed:', error.message); return false; }
+        _groupCreateFailed.delete(group.id);
       }
       // 23 Sep 2026: the group's copies at other venues follow this edit (coalesced).
       scheduleGroupPropagation(group);
       return true;
     } catch (e) {
+      if (!base) _groupCreateFailed.add(group.id);   // a first save that threw (27 Sep 2026)
       reportSave('modifier group', e);
       console.warn('modifier group save failed', e); return false;
     }
@@ -1634,7 +1687,8 @@ export const useStore = create((set, get) => ({
   },
 
   addModifierGroupDef: g => {
-    const newGroup = { id: `mgd-${Date.now()}`, ...g };
+    // 27 Sep 2026 (review round 3): stamped with its venue (venueAtBirth).
+    const newGroup = { id: `mgd-${Date.now()}`, ...g, ...venueAtBirth() };
     set(s => ({ modifierGroupDefs: [...s.modifierGroupDefs, newGroup] }));
     useStore.getState()._saveModGroupOrWarn(newGroup);
   },
@@ -1657,6 +1711,7 @@ export const useStore = create((set, get) => ({
   removeModifierGroupDef: id => {
     const removed = useStore.getState().modifierGroupDefs.find(g => g.id === id);
     set(s => ({ modifierGroupDefs: s.modifierGroupDefs.filter(g => g.id !== id) }));
+    _groupCreateFailed.delete(id);
     if (isMock) return;
     // v5.5.834: authenticated client + a location_id filter (the old raw fetch
     // deleted on id ALONE — cross-tenant hazard) + a VISIBLE failure. The old
@@ -1966,19 +2021,9 @@ export const useStore = create((set, get) => ({
       return { menuItems: items };
     });
     if (blocked) return Promise.resolve({ ok: false, outcome: 'blocked' });
-    // A group save failure must NEVER fail the item save: warn so the operator re-checks the lists.
-    if (groupSaves.length) {
-      Promise.all(groupSaves.map(({ group, base }) => useStore.getState()._saveModGroup(group, base)))
-        .then(results => {
-          if (results.some(r => r === false)) useStore.getState().showToast?.('Item saved. Modifier lists may need a manual refresh', 'warning');
-        })
-        .catch(() => useStore.getState().showToast?.('Item saved. Modifier lists may need a manual refresh', 'warning'));
-    }
     const rowOf = (list, iid) => (list || []).find(i => i.id === iid);
-    let mainSave = Promise.resolve({ ok: false, outcome: 'noop' });
-    for (const w of writes) {
+    const editRow = (w) => {
       const p = menuWriters.items.edit(w.id, w.patch, rowOf(before, w.id), rowOf(after, w.id), { quiet: !!(opts.quiet || w.derived) });
-      if (w.main) mainSave = p;
       // 23 Sep 2026: a Shared or Global product's edit follows to its copies at every other
       // venue (gated, coalesced, single-flight: scheduleScopedPropagation). 27 Sep 2026: only
       // once the database has ACCEPTED this save, and copied from the database's row, so an edit
@@ -1989,8 +2034,34 @@ export const useStore = create((set, get) => ({
           if (savedForPropagation(r)) scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), w.id, keys, r.row || null);
         }).catch(() => {});
       }
-    }
-    return mainSave;
+      return p;
+    };
+    // 27 Sep 2026 (review round 3): what follows from this edit (the sizes' cascaded fields, a
+    // parent's type flip, the new name in modifier group options) is saved only once the
+    // product's own save has LANDED (lib/menuWriters.js runItemEditWrites). A save refused as
+    // changed in another window used to change the sizes and the groups anyway; now they are
+    // left alone, and the screen shows them as they were.
+    return runItemEditWrites(writes, {
+      editRow,
+      onLanded: () => {
+        if (!groupSaves.length) return;
+        // A group save failure must NEVER fail the item save: warn so the operator re-checks the lists.
+        Promise.all(groupSaves.map(({ group, base }) => useStore.getState()._saveModGroup(group, base)))
+          .then(results => {
+            if (results.some(r => r === false)) useStore.getState().showToast?.('Item saved. Modifier lists may need a manual refresh', 'warning');
+          })
+          .catch(() => useStore.getState().showToast?.('Item saved. Modifier lists may need a manual refresh', 'warning'));
+      },
+      onSkipped: () => {
+        const followers = writes.filter(w => !w.main);
+        if (!followers.length && !groupSaves.length) return;
+        set(s => ({
+          menuItems: putBackFollowers(s.menuItems, followers, before, after),
+          // A renamed group goes back only while it is still exactly as this edit left it.
+          ...(groupSaves.length ? { modifierGroupDefs: s.modifierGroupDefs.map(g => groupSaves.find(x => x.group === g)?.base || g) } : {}),
+        }));
+      },
+    });
   },
   addMenuItem: item => {
     const base = item.price || item.basePrice || 0;
@@ -2017,6 +2088,8 @@ export const useStore = create((set, get) => ({
       receiptName: item.receiptName || item.name || 'New item',
       kitchenName: item.kitchenName || item.name || 'New item',
       pricing: item.pricing || { base, dineIn:null, takeaway:null, collection:null, delivery:null },
+      // 27 Sep 2026 (review round 3): stamped with its venue (venueAtBirth).
+      ...venueAtBirth(),
     };
     // v5.5.797: AUTO-MODIFIABLE on create — a top-level product born with
     // modifier groups attached (clone, import, AI add) and the plain type
@@ -2044,7 +2117,7 @@ export const useStore = create((set, get) => ({
     // built when the write runs, from the live store row, so an edit made meanwhile is included.
     const created = menuWriters.items.create(newItem.id,
       () => menuItemRow(useStore.getState().menuItems.find(i => i.id === newItem.id) || newItem),
-      { label: newItem.menuName });
+      { label: newItem.menuName, locationId: rowVenue(newItem) });
     // 23 Sep 2026: a new size under a Shared/Global product reaches every venue by
     // re-sending the product, which copies the size and re-points its groups.
     // 27 Sep 2026: once the size's own insert has LANDED (it used to be a fixed 800 ms wait, and

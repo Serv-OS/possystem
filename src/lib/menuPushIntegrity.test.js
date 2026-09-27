@@ -51,7 +51,7 @@ test('handlePush holds no render time menu data (the old closure)', () => {
   for (const k of ['menuItems', 'menuCategories', 'menus', 'taxRates', 'modifierGroupDefs']) {
     assert.ok(!new RegExp(`\\b${k}\\b`).test(destructure[1]), `${k} must not come from the render`);
   }
-  assert.ok(!/useStore\.getState\(\)\.(menuItems|menuCategories|taxRates|modifierGroupDefs)\b/.test(between(HANDLE, 'const snapshot = {', '\n    };\n')),
+  assert.ok(!/useStore\.getState\(\)\.(menuItems|menuCategories|taxRates|modifierGroupDefs)\b/.test(between(HANDLE, 'const snapshot = {', '\n      };\n')),
     'the snapshot never takes the menu from memory');
   assert.match(HANDLE, /const menuPart = menuRead \? menuSnapshotFromRead\(menuRead\)/, 'the menu part is the fresh read');
   assert.match(HANDLE, /\.\.\.menuPart,/);
@@ -73,9 +73,12 @@ test('the push waits for a reload and for this tab\'s saves, then reads, and sto
   assert.ok(failed > 0 && insert > failed, 'a failed read returns before anything is sent');
   // Sent only once, awaited, stamped with a display NAME: config_pushes is readable with the
   // public key, so an email address would be published (lib/pushedBy.js).
-  assert.match(HANDLE, /const res = await insertConfigPush\(\{ pushed_by: who, snapshot, change_count: pendingBOChanges \}, snapshotLocationId\);/);
-  assert.match(PUSH, /const who = pushedByName\(pushedBy, staff\?\.name\);/);
-  assert.match(BO, /<PushToPOSButton pushedBy=\{pushedByName\(authUser\?\.user_metadata\?\.full_name, authUser\?\.user_metadata\?\.name, orgCtx\?\.userName\)\} \/>/);
+  assert.match(HANDLE, /res = await withTimeout\(insertConfigPush\(\{ pushed_by: who, snapshot, change_count: pendingBOChanges \}, snapshotLocationId\), PUSH_SEND_MS, 'sending the push'\);/);
+  // 27 Sep 2026 (review round 3): the raw names go down, so the staff name is reached before
+  // "Manager" (the parent used to settle on "Manager" itself).
+  assert.match(PUSH, /const who = pushedByName\(\.\.\.\(Array\.isArray\(nameCandidates\) \? nameCandidates : \[nameCandidates\]\), staff\?\.name\);/);
+  assert.match(BO, /<PushToPOSButton nameCandidates=\{\[authUser\?\.user_metadata\?\.full_name, authUser\?\.user_metadata\?\.name, orgCtx\?\.userName\]\} \/>/);
+  assert.doesNotMatch(BO, /<PushToPOSButton pushedBy=\{pushedByName\(/, 'never a name settled before the staff name is known');
   assert.doesNotMatch(BO, /pushedBy=\{authUser\?\.email/, 'never the email');
   // And this screen then shows exactly what the tills received.
   assert.ok(HANDLE.indexOf('applyVenueMenuRead(menuRead') > HANDLE.indexOf('broadcastConfigPush(snapshot)'));
@@ -115,4 +118,51 @@ test('menus land before the categories that name them, and a category is kept ov
   const guard = between(WRITERS, 'export const isMissingMenuRow = (error) =>', ';\n');
   assert.match(guard, /'23503'/, "Postgres's foreign key violation");
   assert.match(guard, /menu_id\|menu_categories_menu_id_fkey/, 'and only THIS foreign key');
+});
+
+// ── Review round 3 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+test('the button is always given back, and the send has a time limit that says the push may still land', () => {
+  // The whole push runs in try / finally; the finally gives the button back.
+  assert.match(HANDLE, /^const handlePush = async \(\) => \{\n\s+setPushing\(true\);\n(\s+\/\/[^\n]*\n)*\s+try \{\n/);
+  assert.match(HANDLE, /\} finally \{\n\s+setPushing\(false\);\n\s+\}$/);
+  assert.equal((PUSH.match(/setPushing\(false\)/g) || []).length, 1, 'only the finally releases it');
+  assert.doesNotMatch(between(PUSH, 'const stop = (msg) => {', '\n  };\n'), /setPushing/);
+  // insertConfigPush is bounded by withTimeout, called as the imported function.
+  assert.match(BO, /^import \{ withTimeout \} from '\.\.\/lib\/withTimeout';$/m);
+  assert.match(BO, /^const PUSH_SEND_MS = MENU_WAIT_MS \* 2;$/m);
+  const send = between(HANDLE, 'let res;', 'if (res?.error) {');
+  assert.match(send, /res = await withTimeout\(insertConfigPush\(/);
+  assert.doesNotMatch(send, /\w+\.withTimeout\(/, 'never a method pulled off an object');
+  assert.match(send, /catch \(e\) \{[\s\S]*showToast\?\.\(PUSH_MAY_LAND, 'warning', 12000\);\s*return;/);
+  assert.match(BO, /const PUSH_MAY_LAND = 'The push may still land: the database did not answer in time\. Check the tills before pushing again\.';/);
+  // Out of time: nothing more happens here (no broadcast, no "Pushed").
+  assert.ok(HANDLE.indexOf('PUSH_MAY_LAND') < HANDLE.indexOf('broadcastConfigPush(snapshot)'));
+});
+
+test('an empty product read that looks suspect stops the push before anything is offered or sent', () => {
+  const guard = HANDLE.indexOf('if (emptyReadStop()) return;');
+  assert.ok(guard > HANDLE.indexOf('if (!menuRead.ok) {'), 'after the read');
+  assert.ok(guard < HANDLE.indexOf('const unsaved = unsavedMenuRows('), 'before the unsaved rows are listed (they would be the whole menu)');
+  assert.equal((HANDLE.match(/if \(emptyReadStop\(\)\) return;/g) || []).length, 2, 'after both reads');
+  assert.match(HANDLE, /if \(!emptyItemsReadSuspect\(st, menuRead, snapshotLocationId\)\) return false;/);
+  assert.match(HANDLE, /Nothing was sent\. Check you are signed in, then reload the page\./);
+  // The load keeps the menu on screen and says so.
+  const apply = between(STORE, 'export function applyVenueMenuRead(', '\n}\n');
+  assert.match(apply, /if \(emptyItemsReadSuspect\(now, read, locationId, \{ keep: items \}\)\) \{[\s\S]*showToast\?\.\(suspectReadWords\(venueItemCount\(now, locationId\)\), 'warning', MENU_TOAST_MS\);\s*return false;/);
+});
+
+test('Push to POS offers only this venue\'s unsaved rows, and modifier groups whose first save failed', () => {
+  assert.match(HANDLE, /const unsaved = unsavedMenuRows\(useStore\.getState\(\), menuRead, snapshotLocationId, \{ failedGroupIds: unsavedGroupIds\(\) \}\);/);
+  const save = between(STORE, 'export async function saveUnsavedMenuRows(unsaved) {', '\n}\n');
+  assert.match(save, /saveGroupFirstTime\(live\('modifierGroupDefs', g\.id\) \|\| g\)/);
+  for (const kind of ['menus', 'categories', 'items']) {
+    assert.match(save, new RegExp(`menuWriters\\.${kind}\\.create\\([\\s\\S]*?locationId: rowVenue\\(`), `${kind} go only to the venue they were made at`);
+  }
+  const first = between(STORE, 'async function saveGroupFirstTime(group) {', '\n}\n');
+  assert.match(first, /insertModifierGroupOnce\(\{ client: supabase, locationId: loc, group \}\)/, 'insert only');
+  assert.match(first, /_groupCreateFailed\.delete\(group\.id\);/);
+  const saveGroup = between(STORE, '_saveModGroup: async (group, base = null) => {', '_saveModGroupOrWarn:');
+  assert.match(saveGroup, /if \(error\) \{ _groupCreateFailed\.add\(group\.id\);/);
+  assert.match(saveGroup, /if \(!base\) _groupCreateFailed\.add\(group\.id\);/);
 });

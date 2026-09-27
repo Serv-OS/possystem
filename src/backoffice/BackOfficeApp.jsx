@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
+import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, unsavedGroupIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
 import { withTimeout } from '../lib/withTimeout';
 import { pushedByName } from '../lib/pushedBy';
 import { mergeInstructionGroups } from '../lib/threeWayMerge';
@@ -17,7 +17,7 @@ import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
 import { fetchTableTombstones, fetchFloorPlanVersioned, insertConfigPush } from '../lib/db';
-import { readVenueMenu, unsavedMenuRows, unsavedWords, menuSnapshotFromRead } from '../lib/venueMenuRead';
+import { readVenueMenu, unsavedMenuRows, unsavedWords, menuSnapshotFromRead, emptyItemsReadSuspect, venueItemCount } from '../lib/venueMenuRead';
 import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextSeq } from '../lib/tablePlan';
 import { refreshTablePlan } from '../sync/TablePlanSync';
 import { normaliseSections } from '../lib/sectionPlan';
@@ -875,8 +875,9 @@ export default function BackOfficeApp() {
             </div>
             {/* Push to POS button */}
             {/* 27 Sep 2026: a display name, never the email (config_pushes is readable with the
-                public key: lib/pushedBy.js). */}
-            <PushToPOSButton pushedBy={pushedByName(authUser?.user_metadata?.full_name, authUser?.user_metadata?.name, orgCtx?.userName)} />
+                public key: lib/pushedBy.js). The raw names go down, so the button can fall back
+                to the staff name before "Manager". */}
+            <PushToPOSButton nameCandidates={[authUser?.user_metadata?.full_name, authUser?.user_metadata?.name, orgCtx?.userName]} />
             <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--t3)' }}>
               <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
               <span>Live</span>
@@ -993,6 +994,11 @@ export default function BackOfficeApp() {
 }
 
 // ── Push to POS button ────────────────────────────────────────────────────────
+// 27 Sep 2026 (review round 3): the send (insertConfigPush) has a time limit too. A big menu is
+// a big row, so it gets longer than a read. Out of time is not "not sent": the row may land.
+const PUSH_SEND_MS = MENU_WAIT_MS * 2;
+const PUSH_MAY_LAND = 'The push may still land: the database did not answer in time. Check the tills before pushing again.';
+
 // 27 Sep 2026. Peter: "I archived choc babychino but its still on the menu board". Push to POS
 // used to (1) build the tills' snapshot from this tab's MEMORY, taken when the button last
 // rendered, and (2) write every product, category and menu in that memory back over the
@@ -1006,265 +1012,299 @@ export default function BackOfficeApp() {
 //      when the person says so (never silently),
 //   4. sends the tills exactly what the database holds, and shows the same on this screen.
 // It writes no existing menu row, ever. The tables have worked this way since v5.9.4.
-function PushToPOSButton({ pushedBy = null }) {
+function PushToPOSButton({ nameCandidates = [] }) {
   const { pendingBOChanges, clearBOChanges, tables, locationSections, staff, menuLoading } = useStore();
   const [pushing, setPushing] = useState(false);
   const [justPushed, setJustPushed] = useState(false);
   // A display name only, never an email: config_pushes is readable with the public key.
-  const who = pushedByName(pushedBy, staff?.name);
+  // 27 Sep 2026 (review round 3): the signed in person's names first, then the staff name, then
+  // "Manager" (lib/pushedBy.js skips anything with an @). The parent used to settle the name
+  // itself, so it was already "Manager" here and the staff name was never reached.
+  const who = pushedByName(...(Array.isArray(nameCandidates) ? nameCandidates : [nameCandidates]), staff?.name);
 
+  // The button is given back in handlePush's finally, however the push ends.
   const stop = (msg) => {
     useStore.getState().showToast?.(msg, 'error', 9000);
-    setPushing(false);
   };
 
   const handlePush = async () => {
     setPushing(true);
+    // 27 Sep 2026 (review round 3): the button is ALWAYS given back, however the push ends. A
+    // throw anywhere below used to leave it disabled on "Pushing..." until the page reloaded.
+    try {
+      // Resolve location once, stamp it on the snapshot. v5.5.2: lets the POS hydrator
+      // detect cross-location config-push leakage and lets every table in the snapshot
+      // carry its source location_id (used by the cross-location upsert guard).
+      let snapshotLocationId = null;
+      try { snapshotLocationId = await getLocationId(); }
+      catch (e) { console.warn('[handlePush] snapshot locationId resolve failed:', e?.message); }
 
-    // Resolve location once, stamp it on the snapshot. v5.5.2: lets the POS hydrator
-    // detect cross-location config-push leakage and lets every table in the snapshot
-    // carry its source location_id (used by the cross-location upsert guard).
-    let snapshotLocationId = null;
-    try { snapshotLocationId = await getLocationId(); }
-    catch (e) { console.warn('[handlePush] snapshot locationId resolve failed:', e?.message); }
-
-    // 1 + 2. The menu: a reload in flight lands first, this tab's saves land first, then ONE
-    // fresh read. Nothing from this component's render (the old closure) is used.
-    let menuRead = null;
-    let menuTicket = null;
-    if (!isMock) {
-      if (!snapshotLocationId || snapshotLocationId === 'loc-demo') { stop('Push stopped: could not tell which venue this is. Nothing was sent. Try again.'); return; }
-      // Every wait and read has a time limit (MENU_WAIT_MS). A read that hangs (a stale socket
-      // just after Safari resumes the tab, the very moment this runs) used to leave Push to POS
-      // disabled with a wait cursor and no word.
-      const waitFor = (p, label, ms = MENU_WAIT_MS) => withTimeout(p, ms, label);
-      const readMenu = () => waitFor(readVenueMenu(supabase, snapshotLocationId), 'menu read')
-        .catch((e) => ({ ok: false, failed: ['timed out'], error: e }));
-      try {
-        // A little longer than the load's own limit, so a load that gives up ends first.
-        await waitFor(whenMenuLoadIdle(), 'menu load', MENU_WAIT_MS + 5000);
-        await waitFor(whenMenuWritesIdle(), 'menu saves');
-      } catch (e) {
-        console.warn('[handlePush] waited too long:', e?.message || e);
-        stop('Push stopped: the menu is still loading or saving. Nothing was sent. Try again.');
-        return;
-      }
-      menuTicket = beginMenuRead();
-      menuRead = await readMenu();
-      if (!menuRead.ok) {
-        console.warn('[handlePush] menu read failed:', (menuRead.failed || []).join(', '), menuRead.error?.message || '');
-        stop('Push stopped: could not read the menu. Nothing was sent. Try again.');
-        return;
-      }
-      // 3. Rows on this screen the database does not have: say so, and save them only on OK.
-      const unsaved = unsavedMenuRows(useStore.getState(), menuRead, snapshotLocationId);
-      if (unsaved.total) {
-        if (!window.confirm(unsavedWords(unsaved))) { stop('Push stopped. Nothing was sent.'); return; }
-        let saved;
-        try { saved = await waitFor(saveUnsavedMenuRows(unsaved), 'saving new rows'); }
-        catch (e) { saved = { ok: false, failed: [{ kind: 'save', name: 'new rows', error: e?.message || 'took too long' }] }; }
-        if (!saved.ok) {
-          const first = saved.failed.slice(0, 3).map(f => `${f.name || f.kind} (${f.error})`).join('; ');
-          stop(`Push stopped: ${saved.failed.length} of them could not be saved: ${first}. Nothing was sent.`);
+      // 1 + 2. The menu: a reload in flight lands first, this tab's saves land first, then ONE
+      // fresh read. Nothing from this component's render (the old closure) is used.
+      let menuRead = null;
+      let menuTicket = null;
+      if (!isMock) {
+        if (!snapshotLocationId || snapshotLocationId === 'loc-demo') { stop('Push stopped: could not tell which venue this is. Nothing was sent. Try again.'); return; }
+        // Every wait and read has a time limit (MENU_WAIT_MS). A read that hangs (a stale socket
+        // just after Safari resumes the tab, the very moment this runs) used to leave Push to POS
+        // disabled with a wait cursor and no word.
+        const waitFor = (p, label, ms = MENU_WAIT_MS) => withTimeout(p, ms, label);
+        const readMenu = () => waitFor(readVenueMenu(supabase, snapshotLocationId), 'menu read')
+          .catch((e) => ({ ok: false, failed: ['timed out'], error: e }));
+        try {
+          // A little longer than the load's own limit, so a load that gives up ends first.
+          await waitFor(whenMenuLoadIdle(), 'menu load', MENU_WAIT_MS + 5000);
+          await waitFor(whenMenuWritesIdle(), 'menu saves');
+        } catch (e) {
+          console.warn('[handlePush] waited too long:', e?.message || e);
+          stop('Push stopped: the menu is still loading or saving. Nothing was sent. Try again.');
           return;
         }
-        try { await waitFor(whenMenuWritesIdle(), 'menu saves'); }
-        catch { stop('Push stopped: the menu is still saving. Nothing was sent. Try again.'); return; }
+        // 27 Sep 2026 (review round 3): an EMPTY product read while this screen holds this venue's
+        // products is suspect (a narrowed read answers with no rows and no error). The tills are
+        // never sent an empty menu on it (lib/venueMenuRead.js emptyItemsReadSuspect).
+        const emptyReadStop = () => {
+          const st = useStore.getState();
+          if (!emptyItemsReadSuspect(st, menuRead, snapshotLocationId)) return false;
+          console.warn('[handlePush] the product read came back EMPTY while this screen holds this venue\'s products');
+          stop(`Push stopped: the database sent back NO products for this venue, but this screen has ${venueItemCount(st, snapshotLocationId)}. Nothing was sent. Check you are signed in, then reload the page.`);
+          return true;
+        };
         menuTicket = beginMenuRead();
         menuRead = await readMenu();
-        if (!menuRead.ok) { stop('Push stopped: could not read the menu. Nothing was sent. Try again.'); return; }
-      }
-    }
-
-    // Build config snapshot — layout + menu config (not operational/session state)
-    // Include print routing config in snapshot
-    // Load routing from Supabase (source of truth), fall back to localStorage
-    let printRouting = { centres:[], routing:{} };
-    let printers = [];
-    // v5.5.799: takeaway customer-details level rides the snapshot so tills refresh
-    // on push (fallback: whatever this session already has, default 'full').
-    let takeawayCustomerDetails = useStore.getState().takeawayCustomerDetails || 'full';
-    // v5.5.962: quick-screen mode is read from the DB at push time, NOT from the
-    // BO store — an unhydrated store defaults to 'manual' and a push would flip
-    // every till in an auto/hybrid venue back to manual. null = omit from the
-    // snapshot entirely (absent fields are a no-op on tills).
-    let quickScreenModePush = null;
-    // 27 Sep 2026: the Quick Screen list from the same read (this tab's copy only if it fails).
-    let quickScreenIdsPush = useStore.getState().quickScreenIds || [];
-    try {
-      const locId = snapshotLocationId;
-      if (locId && supabase) {
-        const [rtRes, prnRes, locRes] = await Promise.all([
-          supabase.from('print_routing').select('centres,routing').eq('location_id', locId).single(),
-          supabase.from('printers').select('*').eq('location_id', locId),
-          supabase.from('locations').select('pos_settings, quick_screen_mode, quick_screen_ids').eq('id', locId).maybeSingle(),
-        ]);
-        if (rtRes.data) printRouting = { centres: rtRes.data.centres||[], routing: rtRes.data.routing||{} };
-        if (prnRes.data) printers = prnRes.data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model, connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||[], location:r.meta?.location||'' }));
-        if (locRes.data) {
-          takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
-          quickScreenModePush = ['manual','auto','hybrid'].includes(locRes.data.quick_screen_mode) ? locRes.data.quick_screen_mode : null;
-          if (Array.isArray(locRes.data.quick_screen_ids)) quickScreenIdsPush = locRes.data.quick_screen_ids;
+        if (!menuRead.ok) {
+          console.warn('[handlePush] menu read failed:', (menuRead.failed || []).join(', '), menuRead.error?.message || '');
+          stop('Push stopped: could not read the menu. Nothing was sent. Try again.');
+          return;
+        }
+        if (emptyReadStop()) return;
+        // 3. Rows on this screen the database does not have: say so, and save them only on OK.
+        // Only this venue's, and modifier groups only when their own first save failed.
+        const unsaved = unsavedMenuRows(useStore.getState(), menuRead, snapshotLocationId, { failedGroupIds: unsavedGroupIds() });
+        if (unsaved.total) {
+          if (!window.confirm(unsavedWords(unsaved))) { stop('Push stopped. Nothing was sent.'); return; }
+          let saved;
+          try { saved = await waitFor(saveUnsavedMenuRows(unsaved), 'saving new rows'); }
+          catch (e) { saved = { ok: false, failed: [{ kind: 'save', name: 'new rows', error: e?.message || 'took too long' }] }; }
+          if (!saved.ok) {
+            const first = saved.failed.slice(0, 3).map(f => `${f.name || f.kind} (${f.error})`).join('; ');
+            stop(`Push stopped: ${saved.failed.length} of them could not be saved: ${first}. Nothing was sent.`);
+            return;
+          }
+          try { await waitFor(whenMenuWritesIdle(), 'menu saves'); }
+          catch { stop('Push stopped: the menu is still saving. Nothing was sent. Try again.'); return; }
+          menuTicket = beginMenuRead();
+          menuRead = await readMenu();
+          if (!menuRead.ok) { stop('Push stopped: could not read the menu. Nothing was sent. Try again.'); return; }
+          if (emptyReadStop()) return;
         }
       }
-    } catch {}
-    // Fallback to localStorage if Supabase failed
-    if (!printRouting.centres.length) {
-      try { printRouting = JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres:[], routing:{} }; } catch {}
-    }
-    if (!printers.length) {
-      try { printers = JSON.parse(localStorage.getItem('rpos-printers') || '[]'); } catch {}
-    }
-    const deviceProfiles = (() => { try { return JSON.parse(localStorage.getItem('rpos-device-profiles') || 'null') || []; } catch { return []; } })();
 
-    // v5.9.4 table plan (lib/tablePlan.js). The tables in a push come from a FRESH read of the
-    // plan, never from this tab's store: a Back Office tab left open for hours (or one that missed
-    // another Back Office's delete) used to push its old names and deleted tables to every till.
-    // Each table carries the database updated_at it was read with (srvAt), and the snapshot says
-    // so (tablePlan.v 2, fromRead), so a till keeps whichever copy the database stamped later.
-    // The deletes ride along as tombstones: the database's (server deleted_at) plus any this
-    // machine holds locally (a delete made before the tombstone table existed). Their local seq
-    // is stripped: it is this machine's counter and means nothing on a till.
-    // If the fresh read fails, this tab's tables go out UNSTAMPED (fromRead false): a till then
-    // treats them like an old push and adds or renames nothing its own plan read has decided.
-    let pushTombstones = {};
-    let pushTables = null;
-    let pushPlan = { v: 2, fromRead: false, srvReadAt: 0 };
-    // Sections (lib/sectionPlan.js): the venue's SAVED list from the same fresh read when it has
-    // one, else this tab's list (a venue with nothing saved yet pushes what it always pushed).
-    let pushSections = locationSections;
-    if (snapshotLocationId) {
+      // Build config snapshot — layout + menu config (not operational/session state)
+      // Include print routing config in snapshot
+      // Load routing from Supabase (source of truth), fall back to localStorage
+      let printRouting = { centres:[], routing:{} };
+      let printers = [];
+      // v5.5.799: takeaway customer-details level rides the snapshot so tills refresh
+      // on push (fallback: whatever this session already has, default 'full').
+      let takeawayCustomerDetails = useStore.getState().takeawayCustomerDetails || 'full';
+      // v5.5.962: quick-screen mode is read from the DB at push time, NOT from the
+      // BO store — an unhydrated store defaults to 'manual' and a push would flip
+      // every till in an auto/hybrid venue back to manual. null = omit from the
+      // snapshot entirely (absent fields are a no-op on tills).
+      let quickScreenModePush = null;
+      // 27 Sep 2026: the Quick Screen list from the same read (this tab's copy only if it fails).
+      let quickScreenIdsPush = useStore.getState().quickScreenIds || [];
       try {
-        const readSeq = nextSeq();
-        const [fp, tRes] = await Promise.all([
-          fetchFloorPlanVersioned(snapshotLocationId).catch(e => ({ data: null, error: e })),
-          fetchTableTombstones(snapshotLocationId).catch(e => ({ data: null, error: e })),
-        ]);
-        const state = loadPlanState(snapshotLocationId);
-        const tombs = mergeTombs(state.tombs, tombstonesFromRows(tRes?.data, readSeq), { cleared: state.cleared });
-        // A LOCAL mark for a table the fresh read still has is out of date (the row was re-created,
-        // or the delete never went through): never send it. Server marks go as they are; a till
-        // compares them with each copy's updated_at.
-        const inRead = new Set((Array.isArray(fp?.data?.tables) ? fp.data.tables : []).map(r => r.id));
-        for (const [id, t] of Object.entries(tombs)) if (!t.srv && inRead.has(id)) delete tombs[id];
-        const savedSecs = normaliseSections(fp?.data?.sections);
-        if (savedSecs && savedSecs.length) pushSections = savedSecs;
-        pushTombstones = Object.fromEntries(Object.entries(tombs).map(([id, t]) => [id, { at: t.at, srv: !!t.srv, ...(t.label ? { label: t.label } : {}) }]));
-        if (Array.isArray(fp?.data?.tables) && fp.data.tables.length) {
-          pushTables = fp.data.tables.map(r => {
-            const t = normaliseFloorRow(r, { locationId: snapshotLocationId });
-            return {
-              id: t.id, label: t.label, x: t.x, y: t.y, w: t.w, h: t.h,
-              shape: t.shape, maxCovers: t.maxCovers, section: t.section, sortOrder: t.sortOrder,
-              locationId: t.locationId || snapshotLocationId,
-              srvAt: t.srvAt || 0, srvIso: t.srvIso || null,
-            };
-          });
-          pushPlan = { v: 2, fromRead: true, srvReadAt: fp.data.srvReadAt || 0 };
+        const locId = snapshotLocationId;
+        if (locId && supabase) {
+          const [rtRes, prnRes, locRes] = await Promise.all([
+            supabase.from('print_routing').select('centres,routing').eq('location_id', locId).single(),
+            supabase.from('printers').select('*').eq('location_id', locId),
+            supabase.from('locations').select('pos_settings, quick_screen_mode, quick_screen_ids').eq('id', locId).maybeSingle(),
+          ]);
+          if (rtRes.data) printRouting = { centres: rtRes.data.centres||[], routing: rtRes.data.routing||{} };
+          if (prnRes.data) printers = prnRes.data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model, connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||[], location:r.meta?.location||'' }));
+          if (locRes.data) {
+            takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
+            quickScreenModePush = ['manual','auto','hybrid'].includes(locRes.data.quick_screen_mode) ? locRes.data.quick_screen_mode : null;
+            if (Array.isArray(locRes.data.quick_screen_ids)) quickScreenIdsPush = locRes.data.quick_screen_ids;
+          }
         }
-      } catch (e) { console.warn('[handlePush] table plan read failed, pushing unstamped tables:', e?.message || e); }
-    }
-    if (!pushTables) {
-      pushTables = tables.filter(t => !t.planRemoved && !t.parentId && !t._isNew).map(t => ({
-        id:t.id, label:t.label, x:t.x, y:t.y, w:t.w, h:t.h,
-        shape:t.shape, maxCovers:t.maxCovers, section:t.section, sortOrder:t.sortOrder,
-        locationId: t.locationId || snapshotLocationId,
-      }));
-    }
+      } catch {}
+      // Fallback to localStorage if Supabase failed
+      if (!printRouting.centres.length) {
+        try { printRouting = JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres:[], routing:{} }; } catch {}
+      }
+      if (!printers.length) {
+        try { printers = JSON.parse(localStorage.getItem('rpos-printers') || '[]'); } catch {}
+      }
+      const deviceProfiles = (() => { try { return JSON.parse(localStorage.getItem('rpos-device-profiles') || 'null') || []; } catch { return []; } })();
 
-    // The menu part: the fresh read, never this tab's memory (27 Sep 2026). Demo mode (no
-    // database) sends what the demo screen shows, as it always did.
-    const menuPart = menuRead ? menuSnapshotFromRead(menuRead) : (() => {
-      const st = useStore.getState();
-      return {
-        menus: st.menus || [], menuItems: st.menuItems || [], menuCategories: st.menuCategories || [],
-        modifierGroupDefs: st.modifierGroupDefs || [], taxRates: st.taxRates || [],
-        taxProfiles: st.taxProfiles || [], venueDefaultTaxProfileId: st.venueDefaultTaxProfileId ?? null,
+      // v5.9.4 table plan (lib/tablePlan.js). The tables in a push come from a FRESH read of the
+      // plan, never from this tab's store: a Back Office tab left open for hours (or one that missed
+      // another Back Office's delete) used to push its old names and deleted tables to every till.
+      // Each table carries the database updated_at it was read with (srvAt), and the snapshot says
+      // so (tablePlan.v 2, fromRead), so a till keeps whichever copy the database stamped later.
+      // The deletes ride along as tombstones: the database's (server deleted_at) plus any this
+      // machine holds locally (a delete made before the tombstone table existed). Their local seq
+      // is stripped: it is this machine's counter and means nothing on a till.
+      // If the fresh read fails, this tab's tables go out UNSTAMPED (fromRead false): a till then
+      // treats them like an old push and adds or renames nothing its own plan read has decided.
+      let pushTombstones = {};
+      let pushTables = null;
+      let pushPlan = { v: 2, fromRead: false, srvReadAt: 0 };
+      // Sections (lib/sectionPlan.js): the venue's SAVED list from the same fresh read when it has
+      // one, else this tab's list (a venue with nothing saved yet pushes what it always pushed).
+      let pushSections = locationSections;
+      if (snapshotLocationId) {
+        try {
+          const readSeq = nextSeq();
+          const [fp, tRes] = await Promise.all([
+            fetchFloorPlanVersioned(snapshotLocationId).catch(e => ({ data: null, error: e })),
+            fetchTableTombstones(snapshotLocationId).catch(e => ({ data: null, error: e })),
+          ]);
+          const state = loadPlanState(snapshotLocationId);
+          const tombs = mergeTombs(state.tombs, tombstonesFromRows(tRes?.data, readSeq), { cleared: state.cleared });
+          // A LOCAL mark for a table the fresh read still has is out of date (the row was re-created,
+          // or the delete never went through): never send it. Server marks go as they are; a till
+          // compares them with each copy's updated_at.
+          const inRead = new Set((Array.isArray(fp?.data?.tables) ? fp.data.tables : []).map(r => r.id));
+          for (const [id, t] of Object.entries(tombs)) if (!t.srv && inRead.has(id)) delete tombs[id];
+          const savedSecs = normaliseSections(fp?.data?.sections);
+          if (savedSecs && savedSecs.length) pushSections = savedSecs;
+          pushTombstones = Object.fromEntries(Object.entries(tombs).map(([id, t]) => [id, { at: t.at, srv: !!t.srv, ...(t.label ? { label: t.label } : {}) }]));
+          if (Array.isArray(fp?.data?.tables) && fp.data.tables.length) {
+            pushTables = fp.data.tables.map(r => {
+              const t = normaliseFloorRow(r, { locationId: snapshotLocationId });
+              return {
+                id: t.id, label: t.label, x: t.x, y: t.y, w: t.w, h: t.h,
+                shape: t.shape, maxCovers: t.maxCovers, section: t.section, sortOrder: t.sortOrder,
+                locationId: t.locationId || snapshotLocationId,
+                srvAt: t.srvAt || 0, srvIso: t.srvIso || null,
+              };
+            });
+            pushPlan = { v: 2, fromRead: true, srvReadAt: fp.data.srvReadAt || 0 };
+          }
+        } catch (e) { console.warn('[handlePush] table plan read failed, pushing unstamped tables:', e?.message || e); }
+      }
+      if (!pushTables) {
+        pushTables = tables.filter(t => !t.planRemoved && !t.parentId && !t._isNew).map(t => ({
+          id:t.id, label:t.label, x:t.x, y:t.y, w:t.w, h:t.h,
+          shape:t.shape, maxCovers:t.maxCovers, section:t.section, sortOrder:t.sortOrder,
+          locationId: t.locationId || snapshotLocationId,
+        }));
+      }
+
+      // The menu part: the fresh read, never this tab's memory (27 Sep 2026). Demo mode (no
+      // database) sends what the demo screen shows, as it always did.
+      const menuPart = menuRead ? menuSnapshotFromRead(menuRead) : (() => {
+        const st = useStore.getState();
+        return {
+          menus: st.menus || [], menuItems: st.menuItems || [], menuCategories: st.menuCategories || [],
+          modifierGroupDefs: st.modifierGroupDefs || [], taxRates: st.taxRates || [],
+          taxProfiles: st.taxProfiles || [], venueDefaultTaxProfileId: st.venueDefaultTaxProfileId ?? null,
+        };
+      })();
+
+      // Instruction groups have no table: they live only in pushes. 27 Sep 2026: a window left open
+      // used to push its own list and undo groups another window had added and pushed since. The
+      // latest push's list is read and THIS window's changes are laid onto it, group by group
+      // (lib/threeWayMerge.js mergeInstructionGroups; the base is the list this window last
+      // received or pushed). If that read fails, this window's list goes as it always did.
+      const myInstructionGroups = useStore.getState().instructionGroupDefs;
+      let instructionGroupDefs = myInstructionGroups || [];
+      if (!isMock && supabase && snapshotLocationId) {
+        try {
+          const { data: lastPush, error: lastErr } = await withTimeout(
+            supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
+              .eq('location_id', snapshotLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+            MENU_WAIT_MS, 'last push read');
+          if (!lastErr) instructionGroupDefs = mergeInstructionGroups(instructionGroupsBase(), instructionGroupDefs, lastPush?.instructionGroupDefs);
+          else console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', lastErr.message);
+        } catch (e) { console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', e?.message || e); }
+      }
+
+      const snapshot = {
+        version: Date.now(),
+        pushedAt: new Date().toISOString(),
+        pushedBy: who,
+        locationId: snapshotLocationId,
+        printRouting: printRouting || { centres:[], routing:{} },
+        printers,
+        // v5.9.4: see the table plan note above (fresh read, database times, tombstones).
+        tables: pushTables,
+        tablePlan: pushPlan,
+        tableTombstones: pushTombstones,
+        locationSections: pushSections,
+        // menus, menuItems, menuCategories, modifierGroupDefs, taxRates, and (when they read)
+        // taxProfiles + venueDefaultTaxProfileId: lib/venueMenuRead.js menuSnapshotFromRead.
+        // v5.7.33: tax profiles + the venue default ride the push so tills get them on Push to
+        // POS; absent is a no-op till-side (applyConfigUpdate guards on key presence).
+        ...menuPart,
+        discountPresets: useStore.getState().discountPresets || [],
+        discountRules: useStore.getState().discountRules || [],
+        quickScreenIds: quickScreenIdsPush,
+        // v5.5.962 Smart Quick Screen — mode (from the DB read above, omitted when
+        // unknown) + best-seller lists ride the push. quickScreenAuto null is
+        // filtered till-side by the hasEntries guard.
+        ...(quickScreenModePush ? { quickScreenMode: quickScreenModePush } : {}),
+        quickScreenAuto: useStore.getState().quickScreenAuto || null,
+        takeawayCustomerDetails,
+        changeCount: pendingBOChanges,
+        profiles: deviceProfiles,
+        instructionGroupDefs,
+        // v5.6.25 Table Bookings — packages + rules ride the push so they survive
+        // a POS reload (INTEGRATION.md invariant 7). Absent/empty = no-op till-side.
+        packages: useStore.getState().packages || [],
+        ...(useStore.getState().bookingRules ? { bookingRules: useStore.getState().bookingRules } : {}),
       };
-    })();
 
-    // Instruction groups have no table: they live only in pushes. 27 Sep 2026: a window left open
-    // used to push its own list and undo groups another window had added and pushed since. The
-    // latest push's list is read and THIS window's changes are laid onto it, group by group
-    // (lib/threeWayMerge.js mergeInstructionGroups; the base is the list this window last
-    // received or pushed). If that read fails, this window's list goes as it always did.
-    const myInstructionGroups = useStore.getState().instructionGroupDefs;
-    let instructionGroupDefs = myInstructionGroups || [];
-    if (!isMock && supabase && snapshotLocationId) {
-      try {
-        const { data: lastPush, error: lastErr } = await withTimeout(
-          supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
-            .eq('location_id', snapshotLocationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-          MENU_WAIT_MS, 'last push read');
-        if (!lastErr) instructionGroupDefs = mergeInstructionGroups(instructionGroupsBase(), instructionGroupDefs, lastPush?.instructionGroupDefs);
-        else console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', lastErr.message);
-      } catch (e) { console.warn('[handlePush] last push unreadable, instruction groups go as this window has them:', e?.message || e); }
-    }
-
-    const snapshot = {
-      version: Date.now(),
-      pushedAt: new Date().toISOString(),
-      pushedBy: who,
-      locationId: snapshotLocationId,
-      printRouting: printRouting || { centres:[], routing:{} },
-      printers,
-      // v5.9.4: see the table plan note above (fresh read, database times, tombstones).
-      tables: pushTables,
-      tablePlan: pushPlan,
-      tableTombstones: pushTombstones,
-      locationSections: pushSections,
-      // menus, menuItems, menuCategories, modifierGroupDefs, taxRates, and (when they read)
-      // taxProfiles + venueDefaultTaxProfileId: lib/venueMenuRead.js menuSnapshotFromRead.
-      // v5.7.33: tax profiles + the venue default ride the push so tills get them on Push to
-      // POS; absent is a no-op till-side (applyConfigUpdate guards on key presence).
-      ...menuPart,
-      discountPresets: useStore.getState().discountPresets || [],
-      discountRules: useStore.getState().discountRules || [],
-      quickScreenIds: quickScreenIdsPush,
-      // v5.5.962 Smart Quick Screen — mode (from the DB read above, omitted when
-      // unknown) + best-seller lists ride the push. quickScreenAuto null is
-      // filtered till-side by the hasEntries guard.
-      ...(quickScreenModePush ? { quickScreenMode: quickScreenModePush } : {}),
-      quickScreenAuto: useStore.getState().quickScreenAuto || null,
-      takeawayCustomerDetails,
-      changeCount: pendingBOChanges,
-      profiles: deviceProfiles,
-      instructionGroupDefs,
-      // v5.6.25 Table Bookings — packages + rules ride the push so they survive
-      // a POS reload (INTEGRATION.md invariant 7). Absent/empty = no-op till-side.
-      packages: useStore.getState().packages || [],
-      ...(useStore.getState().bookingRules ? { bookingRules: useStore.getState().bookingRules } : {}),
-    };
-
-    // Write to Supabase so physical devices on other machines receive it. Awaited: a push the
-    // tills were never told about must not say "Pushed". pushed_by is the signed in person's
-    // display name (never the email: this table is readable with the public key).
-    if (!isMock) {
-      const res = await insertConfigPush({ pushed_by: who, snapshot, change_count: pendingBOChanges }, snapshotLocationId);
-      if (res?.error) {
-        stop(`Push failed: the tills were not told (${res.error.message || 'the database refused it'}). Try again.`);
-        return;
+      // Write to Supabase so physical devices on other machines receive it. Awaited: a push the
+      // tills were never told about must not say "Pushed". pushed_by is the signed in person's
+      // display name (never the email: this table is readable with the public key).
+      if (!isMock) {
+        // 27 Sep 2026 (review round 3): the send has a time limit (PUSH_SEND_MS). withTimeout is
+        // called as the imported function, never as a method pulled off an object (v5.8.59:
+        // lib/withTimeout.js). Out of time is NOT "not sent": the row may still land, so the
+        // person is told to check the tills before pushing again.
+        let res;
+        try {
+          res = await withTimeout(insertConfigPush({ pushed_by: who, snapshot, change_count: pendingBOChanges }, snapshotLocationId), PUSH_SEND_MS, 'sending the push');
+        } catch (e) {
+          console.warn('[handlePush] the send did not answer:', e?.message || e);
+          useStore.getState().showToast?.(PUSH_MAY_LAND, 'warning', 12000);
+          return;
+        }
+        if (res?.error) {
+          stop(`Push failed: the tills were not told (${res.error.message || 'the database refused it'}). Try again.`);
+          return;
+        }
       }
+
+      // Persist snapshot so POS tabs that open later can still receive it
+      try {
+        localStorage.setItem('rpos-config-snapshot', JSON.stringify(snapshot));
+      } catch {}
+
+      // Broadcast to all open POS terminals in this browser session
+      broadcastConfigPush(snapshot);
+
+      // 4. This screen shows what the tills just received (the same read).
+      if (menuRead) applyVenueMenuRead(menuRead, { ...menuTicket, locationId: snapshotLocationId });
+      // (Unless the list was edited while this push ran: that edit stays on screen for the next.)
+      if (useStore.getState().instructionGroupDefs === myInstructionGroups) useStore.setState({ instructionGroupDefs });
+      setInstructionGroupsBase(instructionGroupDefs);
+
+      clearBOChanges();
+      setJustPushed(true);
+      setTimeout(() => setJustPushed(false), 3000);
+    } catch (e) {
+      console.warn('[handlePush] failed:', e?.message || e);
+      stop(`Push did not finish (${e?.message || 'unexpected error'}). Check the tills before pushing again.`);
+    } finally {
+      setPushing(false);
     }
-
-    // Persist snapshot so POS tabs that open later can still receive it
-    try {
-      localStorage.setItem('rpos-config-snapshot', JSON.stringify(snapshot));
-    } catch {}
-
-    // Broadcast to all open POS terminals in this browser session
-    broadcastConfigPush(snapshot);
-
-    // 4. This screen shows what the tills just received (the same read).
-    if (menuRead) applyVenueMenuRead(menuRead, { ...menuTicket, locationId: snapshotLocationId });
-    // (Unless the list was edited while this push ran: that edit stays on screen for the next.)
-    if (useStore.getState().instructionGroupDefs === myInstructionGroups) useStore.setState({ instructionGroupDefs });
-    setInstructionGroupsBase(instructionGroupDefs);
-
-    clearBOChanges();
-    setPushing(false);
-    setJustPushed(true);
-    setTimeout(() => setJustPushed(false), 3000);
   };
 
   if (justPushed) {

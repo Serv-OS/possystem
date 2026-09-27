@@ -12,7 +12,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createMenuWriters, changedElsewhereMessage, categoryMenuLinkRetry, categoryInsertRetry } from './menuWriters.js';
+import {
+  createMenuWriters, changedElsewhereMessage, categoryMenuLinkRetry, categoryInsertRetry,
+  runItemEditWrites, putBackFollowers, itemSaveLanded,
+} from './menuWriters.js';
 import { readVenueMenu, menuPatchFromRead, menuSnapshotFromRead, unsavedMenuRows } from './venueMenuRead.js';
 import { runBulkEdits, bulkSummaryWords } from './menuBulk.js';
 import { insertRowOnce } from './menuRowWrite.js';
@@ -83,6 +86,33 @@ function backOfficeTab(db) {
       const next = { ...prev, ...patch };
       state.menuItems = state.menuItems.map((r) => (r.id === id ? next : r));
       return writers.items.edit(id, patch, prev, next, opts);
+    },
+    // store updateMenuItem's variant cascade, reduced (27 Sep 2026, review round 3): the product's
+    // own save first, its sizes only once it landed (runItemEditWrites), and the sizes put back on
+    // screen when it did not (putBackFollowers).
+    editWithSizes(id, patch) {
+      const before = state.menuItems;
+      const writes = [{ id, patch, main: true }];
+      const after = state.menuItems.map((r) => {
+        if (r.id === id) return { ...r, ...patch };
+        if (r.parentId !== id) return r;
+        writes.push({ id: r.id, patch, cascade: true });
+        return { ...r, ...patch };
+      });
+      state.menuItems = after;
+      const followed = [];
+      const skipped = [];
+      const main = runItemEditWrites(writes, {
+        editRow: (w) => {
+          if (!w.main) followed.push(w.id);
+          return writers.items.edit(w.id, w.patch, before.find((r) => r.id === w.id), after.find((r) => r.id === w.id));
+        },
+        onSkipped: (r) => {
+          skipped.push(r.outcome);
+          state.menuItems = putBackFollowers(state.menuItems, writes.filter((w) => !w.main), before, after);
+        },
+      });
+      return { main, followed, skipped };
     },
     // store updateCategory: show the edit, save only the patch. opts.opened: the category as the
     // editor had it when it OPENED (MenuManager CatModal), which the edit is checked against.
@@ -359,4 +389,108 @@ test('category editor: without a reload, a rename saves and another tab\'s profi
   const before = db.log.length;
   assert.equal((await A.editCategory('cat-hot', {}, { opened })).outcome, 'noop');
   assert.equal(db.log.length, before);
+});
+
+// ── Review round 3 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+// A product with one size: the size takes the product's category (the variant cascade).
+const withSizes = () => {
+  const d = leeds();
+  d.menu_items.push(
+    item('m-coffee', 'Coffee', { type: 'variants' }),
+    item('m-coffee-reg', 'Regular', { parent_id: 'm-coffee', sold_alone: false }),
+  );
+  return d;
+};
+
+test('the variant cascade follows ONLY a product save that landed; a refusal leaves the sizes alone', async () => {
+  const db = fakeMenuDb(withSizes(), { trigger: true });
+  const A = backOfficeTab(db);
+  const B = backOfficeTab(db);
+  await A.load();
+  await B.load();
+  // A moves Coffee to Cold drinks: it lands, and its size follows.
+  const a = A.editWithSizes('m-coffee', { cat: 'cat-cold' });
+  assert.equal((await a.main).outcome, 'applied');
+  await A.writers.items.whenIdle();
+  assert.deepEqual(a.followed, ['m-coffee-reg']);
+  assert.equal(db.row('menu_items', 'm-coffee-reg').cat, 'cat-cold');
+  // B, still holding the old menu, moves Coffee to Kids: refused as changed in another window.
+  const sizeWrites = db.log.filter((l) => l === 'menu_items.update').length;
+  const b = B.editWithSizes('m-coffee', { cat: 'cat-kids' });
+  assert.equal((await b.main).outcome, 'conflict');
+  await B.writers.items.whenIdle();
+  assert.deepEqual(b.followed, [], 'the size is not written');
+  assert.deepEqual(b.skipped, ['conflict']);
+  assert.equal(db.log.filter((l) => l === 'menu_items.update').length, sizeWrites + 1, 'only the refused product write');
+  assert.equal(db.row('menu_items', 'm-coffee-reg').cat, 'cat-cold', 'A\'s cascade stands');
+  assert.notEqual(B.state.menuItems.find((i) => i.id === 'm-coffee-reg').cat, 'cat-kids', 'B\'s screen no longer shows the size moved');
+  assert.equal(B.state.menuItems.find((i) => i.id === 'm-coffee').cat, 'cat-cold', 'and shows the product as the database has it');
+  // After a reload B's move lands, and the size follows.
+  await B.load();
+  const b2 = B.editWithSizes('m-coffee', { cat: 'cat-kids' });
+  assert.equal((await b2.main).outcome, 'applied');
+  await B.writers.items.whenIdle();
+  assert.equal(db.row('menu_items', 'm-coffee-reg').cat, 'cat-kids');
+  // The case that used to split a product from its sizes: another window changed ONLY the
+  // product (the size row did not move, so the size's own compare and set would have let the
+  // cascade through). B's refused move must not reach the size.
+  db.touch('menu_items', 'm-coffee', { cat: 'cat-hot' });
+  const b3 = B.editWithSizes('m-coffee', { cat: 'cat-cold' });
+  assert.equal((await b3.main).outcome, 'conflict');
+  await B.writers.items.whenIdle();
+  assert.equal(db.row('menu_items', 'm-coffee-reg').cat, 'cat-kids', 'the size stays with the product\'s saved category');
+  assert.equal(B.state.menuItems.find((i) => i.id === 'm-coffee-reg').cat, 'cat-kids', 'and the screen shows it there');
+});
+
+test('what follows an item save: which outcomes let it run, and the screen put back', async () => {
+  for (const o of ['applied', 'merged', 'already', 'noop']) assert.equal(itemSaveLanded({ outcome: o }), true, o);
+  for (const o of ['conflict', 'gone', 'error', 'dropped', 'blocked', undefined]) assert.equal(itemSaveLanded({ outcome: o }), false, String(o));
+  const run = async (mainResult) => {
+    const started = [];
+    const calls = [];
+    const writes = [{ id: 'p', patch: { cat: 'x' }, main: true }, { id: 's', patch: { cat: 'x' }, cascade: true }];
+    const main = runItemEditWrites(writes, {
+      editRow: (w) => { started.push(w.id); return w.main ? mainResult() : Promise.resolve({ ok: true, outcome: 'applied' }); },
+      onLanded: () => calls.push('landed'),
+      onSkipped: (r) => calls.push(`skipped:${r.outcome}`),
+    });
+    try { await main; } catch { /* a rejected save */ }
+    await new Promise((r) => setTimeout(r, 0));
+    return { started, calls };
+  };
+  assert.deepEqual(await run(async () => ({ ok: true, outcome: 'merged' })), { started: ['p', 's'], calls: ['landed'] });
+  assert.deepEqual(await run(async () => ({ ok: false, outcome: 'conflict' })), { started: ['p'], calls: ['skipped:conflict'] });
+  assert.deepEqual(await run(async () => { throw new Error('socket'); }), { started: ['p'], calls: ['skipped:error'] });
+  // The screen: only fields still showing this edit's value go back.
+  const before = [{ id: 's', cat: 'hot', allergens: [] }, { id: 't', cat: 'hot' }];
+  const after = [{ id: 's', cat: 'cold', allergens: ['milk'] }, { id: 't', cat: 'cold' }];
+  const now = [{ id: 's', cat: 'cold', allergens: ['milk', 'soya'] }, { id: 't', cat: 'cold' }, { id: 'u', cat: 'cold' }];
+  const out = putBackFollowers(now, [{ id: 's', patch: { cat: 'cold', allergens: ['milk'] } }], before, after);
+  assert.deepEqual(out, [{ id: 's', cat: 'hot', allergens: ['milk', 'soya'] }, { id: 't', cat: 'cold' }, { id: 'u', cat: 'cold' }], 'an allergen added since stays; rows not written are untouched');
+  assert.equal(putBackFollowers(now, [], before, after), now, 'nothing followed: the same list');
+});
+
+test('a row made at one venue is never inserted at another (a venue switch while its first save waited)', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  const OTHER = '3f915972-7107-4f70-9b3d-de80ba9ab0c2';
+  const state = { menuItems: [], menuCategories: [], menus: [] };
+  const writers = createMenuWriters({
+    getClient: () => db,
+    resolveLocation: async () => OTHER,   // the Back Office is now on the other venue
+    getRow: (kind, id) => state[SLICE[kind]].find((r) => r.id === id),
+    updateRow: () => {},
+    wait: async () => {},
+  });
+  const r = await writers.items.create('m-new', { name: 'Milk', menu_name: 'Milk', pricing: { base: 1 } }, { locationId: LOC });
+  assert.equal(r.ok, false);
+  assert.match(String(r.error?.message), /made at venue/);
+  assert.equal(db.row('menu_items', 'm-new'), undefined, 'nothing inserted anywhere');
+  const c = await writers.categories.create('cat-new', { label: 'Cold' }, { locationId: LOC });
+  assert.equal(c.ok, false);
+  assert.equal(db.row('menu_categories', 'cat-new'), undefined);
+  // Made at the venue the Back Office is on: inserted there.
+  const ok = await writers.items.create('m-new', { name: 'Milk', menu_name: 'Milk', pricing: { base: 1 } }, { locationId: OTHER });
+  assert.equal(ok.outcome, 'created');
+  assert.equal(db.row('menu_items', 'm-new').location_id, OTHER);
 });

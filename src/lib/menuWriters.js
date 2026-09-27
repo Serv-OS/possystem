@@ -14,7 +14,7 @@
 
 import {
   columnsForEdit, columnsForCategoryPatch, columnsForMenuPatch,
-  menuItemRow, categoryRow, menuRow, pickColumns, keysForColumns,
+  menuItemRow, categoryRow, menuRow, pickColumns, keysForColumns, sameValue,
   ITEM_COLUMNS, CATEGORY_COLUMNS, MENU_COLUMNS,
 } from './menuItemWrite.js';
 import { writeRowChecked, insertRowOnce, createRowQueue } from './menuRowWrite.js';
@@ -141,6 +141,11 @@ export function createMenuWriters(deps) {
       try { loc = await resolveLocation(); } catch { loc = null; }
       if (job.kind === 'create') {
         if (!loc || loc === 'loc-demo') return { ok: false, outcome: 'error', error: new Error('No location') };
+        // 27 Sep 2026 (review round 3): a row made at one venue is never inserted at another
+        // (the person switched venue while its first save waited in the queue).
+        if (job.locationId && job.locationId !== loc) {
+          return { ok: false, outcome: 'error', error: new Error(`refusing to create ${t.table} ${id}: it was made at venue ${job.locationId}, this Back Office is now on ${loc}`) };
+        }
         // The row is built when the write RUNS (a category photo set meanwhile is included).
         const once = () => {
           const row = typeof job.row === 'function' ? job.row() : job.row;
@@ -236,10 +241,14 @@ export function createMenuWriters(deps) {
       },
       /**
        * Save a NEW row (insert only, never overwrites). `row` is the full column map, or a
-       * function returning it when the write runs.
+       * function returning it when the write runs. opts.locationId: the venue the row was made
+       * at; the insert is refused if the Back Office is on another venue when it runs.
        */
       create(id, row, opts = {}) {
-        return queue.create(id, { row, label: opts.label || null, quiet: !!opts.quiet, retryWithout: opts.retryWithout || null });
+        return queue.create(id, {
+          row, label: opts.label || null, quiet: !!opts.quiet, retryWithout: opts.retryWithout || null,
+          locationId: opts.locationId || null,
+        });
       },
       /** Run fn in this row's order (the narrow archive write). */
       task: (id, fn) => queue.task(id, fn),
@@ -254,4 +263,74 @@ export function createMenuWriters(deps) {
   };
 
   return { items: make('items'), categories: make('categories'), menus: make('menus'), mark: () => clock };
+}
+
+// ── What follows from an item edit (27 Sep 2026, review round 3) ─────────────────────────────
+// An edit of a product can change more than its own row: its sizes take its category, tax and
+// allergens (the variant cascade), a parent's type flips when a size moves, and a rename is
+// copied into modifier group options. These used to be saved at the same moment as the product,
+// so a product save refused as "changed in another window" still changed its sizes and groups.
+// Now they follow only once the product's own save has LANDED.
+
+/**
+ * Did the product's own save land, so what follows from it may be saved? applied and merged
+ * saved it; already means the database holds it; noop means there was nothing to write (the
+ * product already had the value, or the demo has no database), so a size still out of step is
+ * brought into line. conflict, gone, error and dropped did not land.
+ */
+export const itemSaveLanded = (result) => ['applied', 'merged', 'already', 'noop'].includes(result?.outcome);
+
+/**
+ * Run an item edit's writes: the product's own first, the rest only once it landed.
+ *   writes            [{ id, patch, main? }]: the one marked main is the product's own
+ *   editRow(w)        starts one write and returns its promise
+ *   onLanded(result)  after the rest have started (the store saves the renamed groups here)
+ *   onSkipped(result) the product's save did not land: nothing else was written
+ * Returns the product's own save, which is what updateMenuItem resolves.
+ */
+export function runItemEditWrites(writes, { editRow, onLanded = null, onSkipped = null }) {
+  const list = Array.isArray(writes) ? writes : [];
+  const main = list.find((w) => w.main);
+  const rest = list.filter((w) => !w.main);
+  if (!main) {
+    for (const w of rest) editRow(w);
+    return Promise.resolve({ ok: false, outcome: 'noop' });
+  }
+  const mainSave = Promise.resolve(editRow(main));
+  mainSave.then((r) => {
+    if (!itemSaveLanded(r)) { onSkipped?.(r); return; }
+    for (const w of rest) editRow(w);
+    onLanded?.(r);
+  }, (e) => { onSkipped?.({ ok: false, outcome: 'error', error: e }); }).catch((e) => {
+    console.warn('[menuWriters] after an item save:', e?.message || e);
+  });
+  return mainSave;
+}
+
+/**
+ * The screen after an item save that did not land: each field the edit's OTHER writes changed
+ * (a size's cascaded category, a parent's flipped type) goes back to what it was before the
+ * edit, but only while it still shows this edit's value (anything changed since stays).
+ *   rows    the list now;  writes: the edit's other writes ({ id, patch })
+ *   before, after: the list just before and just after the edit
+ */
+export function putBackFollowers(rows, writes, before, after) {
+  const keysOf = new Map((writes || []).map((w) => [w.id, Object.keys(w.patch || {})]));
+  if (!keysOf.size) return rows;
+  const was = new Map((before || []).map((r) => [r?.id, r]));
+  const became = new Map((after || []).map((r) => [r?.id, r]));
+  return (rows || []).map((r) => {
+    const keys = r ? keysOf.get(r.id) : null;
+    const b = keys ? was.get(r.id) : null;
+    const a = keys ? became.get(r.id) : null;
+    if (!keys || !b || !a) return r;
+    let out = r;
+    for (const k of keys) {
+      if (sameValue(r[k], a[k]) && !sameValue(r[k], b[k])) {
+        if (out === r) out = { ...r };
+        out[k] = b[k];
+      }
+    }
+    return out;
+  });
 }

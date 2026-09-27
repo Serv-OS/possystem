@@ -32,14 +32,36 @@
 // Pure: the Supabase client is passed in, so node:test drives it with a fake.
 
 import { columnConflicts, pickColumns, sameValue } from './menuItemWrite.js';
-import { srvTimeOf } from './rowMapping.js';
 
 export const now = () => new Date().toISOString();
 
-const sameTime = (a, b) => {
+/**
+ * A database time as whole MICROseconds since 1970, or NaN when it is not a time.
+ * 27 Sep 2026: after 20260927_OPS_menu_rows_server_time.sql, updated_at carries microseconds
+ * (2026-09-27T14:05:44.964123+00:00) and Date.parse keeps only milliseconds, so two different
+ * stamps in the same millisecond compared as the same time. The fraction is read as digits,
+ * never through a float. Accepts the Data API spelling (T, +00:00) and the realtime one
+ * (a space, +00). A number is taken as milliseconds. Today's values are about 1.8e15, well
+ * inside the 9e15 a double holds exactly.
+ */
+export const srvMicrosOf = (v) => {
+  if (v == null || v === '') return NaN;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 1000) : NaN;
+  const m = /^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(?::(\d\d))?(?:\.(\d+))?\s*(Z|[+-]\d\d(?::?\d\d)?)?$/i.exec(String(v).trim());
+  if (!m) return NaN;
+  let zone = (m[5] || 'Z').toUpperCase();
+  if (/^[+-]\d\d$/.test(zone)) zone += ':00';
+  else if (/^[+-]\d{4}$/.test(zone)) zone = `${zone.slice(0, 3)}:${zone.slice(3)}`;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3] || '00'}${zone}`);
+  if (!Number.isFinite(ms)) return NaN;
+  return ms * 1000 + Number((m[4] || '').padEnd(6, '0').slice(0, 6));
+};
+
+/** Are two database times the same instant, to the microsecond? Unknown on either side: no. */
+export const sameTime = (a, b) => {
   if (a == null || b == null) return false;
   if (String(a) === String(b)) return true;
-  const x = srvTimeOf(a), y = srvTimeOf(b);
+  const x = srvMicrosOf(a), y = srvMicrosOf(b);
   return Number.isFinite(x) && Number.isFinite(y) && x === y;
 };
 

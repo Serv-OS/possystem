@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { columnsForPatch, columnsForEdit, menuItemRow, columnConflicts, sameValue, categoryRow, columnsForCategoryPatch, columnsForMenuPatch } from './menuItemWrite.js';
-import { writeRowChecked, insertRowOnce, createRowQueue, deleteRowChecked, updateScopeChecked } from './menuRowWrite.js';
+import { writeRowChecked, insertRowOnce, createRowQueue, deleteRowChecked, updateScopeChecked, sameTime, srvMicrosOf } from './menuRowWrite.js';
 import { mapMenuItemRow } from './rowMapping.js';
 import { fakeMenuDb } from './fixtures/fakeMenuDb.js';
 
@@ -194,6 +194,34 @@ test('compare and set with the database clock (after the migration): same answer
   assert.equal(r2.outcome, 'conflict', 'the old token no longer matches: our own first write moved it');
   const r3 = await write(db, { srvAt: r.row.updated_at, cols: { pricing: { base: 4 } }, base: { pricing: { base: 3 } } });
   assert.equal(r3.outcome, 'applied');
+});
+
+// 27 Sep 2026 (review round 3): after the migration updated_at carries MICROseconds. Two stamps
+// in the same millisecond used to compare equal (Date.parse keeps milliseconds only), so a row
+// another window had changed looked untouched and the edit was reported as refused by row level
+// security instead of being merged or refused as changed elsewhere.
+test('database times are compared to the microsecond, in either spelling', () => {
+  assert.equal(sameTime('2026-09-27T14:05:44.964123+00:00', '2026-09-27T14:05:44.964124+00:00'), false, 'one microsecond apart');
+  assert.equal(sameTime('2026-09-27T14:05:44.964123+00:00', '2026-09-27 14:05:44.964123+00'), true, 'Data API and realtime spellings');
+  assert.equal(sameTime('2026-09-27T14:05:44.964+00:00', '2026-09-27T14:05:44.964000+00:00'), true, 'trailing zeros');
+  assert.equal(sameTime('2026-09-27T15:05:44.5+01:00', '2026-09-27T14:05:44.500000Z'), true, 'another offset');
+  assert.equal(sameTime('2026-09-27T14:05:44Z', '2026-09-27T14:05:44.000001Z'), false);
+  assert.equal(sameTime(null, null), false, 'unknown is never the same');
+  assert.equal(sameTime('not a time', 'not a time either'), false);
+  assert.equal(srvMicrosOf('2026-09-27T14:05:44.964123+00:00') - srvMicrosOf('2026-09-27T14:05:44.964+00:00'), 123);
+});
+
+test('compare and set: a change elsewhere in the SAME millisecond is seen as a change', async () => {
+  const mine = '2026-09-27T14:04:21.000123+00:00';
+  const db = fakeMenuDb({ menu_items: [dbRow({ updated_at: '2026-09-27T14:04:21.000456+00:00', tax_rate_id: '1913bd65' })] });
+  const r = await write(db, { srvAt: mine, cols: { tax_rate_id: '6a159b5e' }, base: { tax_rate_id: '6368f6fb' } });
+  assert.equal(r.outcome, 'conflict', 'refused as changed elsewhere, never as refused by row level security');
+  assert.equal(fresh(db).tax_rate_id, '1913bd65');
+  const db2 = fakeMenuDb({ menu_items: [dbRow({ updated_at: '2026-09-27T14:04:21.000456+00:00', archived: true })] });
+  const r2 = await write(db2, { srvAt: mine, cols: { pricing: { base: 2.5 } }, base: { pricing: { base: 2.2 } } });
+  assert.equal(r2.outcome, 'merged', 'only another column moved: the edit is sent again');
+  assert.equal(fresh(db2).archived, true);
+  assert.equal(fresh(db2).pricing.base, 2.5);
 });
 
 test('a column the database cannot take is dropped and the rest saved (item code)', async () => {

@@ -207,7 +207,40 @@ test('instruction groups: a push lays this window\'s changes onto the latest pus
   const handle = between(bo, 'const handlePush = async () => {', '\n  };\n');
   assert.match(handle, /select\('snapshot->instructionGroupDefs'\)/);
   assert.match(handle, /instructionGroupDefs = mergeInstructionGroups\(instructionGroupsBase\(\), instructionGroupDefs, lastPush\?\.instructionGroupDefs\);/);
-  assert.match(between(handle, 'const snapshot = {', '\n    };\n'), /\n\s+instructionGroupDefs,\n/);
+  assert.match(between(handle, 'const snapshot = {', '\n      };\n'), /\n\s+instructionGroupDefs,\n/);
   assert.match(handle, /setInstructionGroupsBase\(instructionGroupDefs\);/);
   assert.match(STORE, /if \(snap\.instructionGroupDefs\?\.length\) setInstructionGroupsBase\(snap\.instructionGroupDefs\);/);
+});
+
+// ── Review round 3 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+test('a product\'s sizes and modifier groups follow its save only once it landed', () => {
+  const upd = between(STORE, 'updateMenuItem: (id, patch, opts = {}) => {', 'addMenuItem: item => {');
+  assert.match(upd, /return runItemEditWrites\(writes, \{/);
+  assert.doesNotMatch(upd, /for \(const w of writes\) \{/, 'no write starts before the product\'s own save is known');
+  const landed = between(upd, 'onLanded: () => {', 'onSkipped:');
+  assert.match(landed, /_saveModGroup\(group, base\)/, 'the rename cascade runs only here');
+  assert.equal((upd.match(/_saveModGroup\(/g) || []).length, 1, 'and nowhere else');
+  const skipped = between(upd, 'onSkipped: () => {', '\n    });\n');
+  assert.match(skipped, /putBackFollowers\(s\.menuItems, followers, before, after\)/);
+  assert.match(skipped, /groupSaves\.find\(x => x\.group === g\)\?\.base \|\| g/);
+  // Modifier group saves count as saves in flight (Push to POS waits for them).
+  assert.match(between(STORE, 'export async function whenMenuWritesIdle() {', '\n}\n'), /\+ modifierGroupSaves\.pendingKeys\(\)\.size;/);
+});
+
+test('menu rows made in this tab carry their venue from birth, and their first save goes only there', () => {
+  assert.match(STORE, /const venueAtBirth = \(\) => \{\s*const loc = getActiveLocationSync\(\);\s*return loc && loc !== 'loc-demo' \? \{ location_id: loc \} : \{\};/);
+  assert.match(between(STORE, 'addMenu: menu => {', 'updateMenu:'), /\.\.\.menu, \.\.\.venueAtBirth\(\) \};[\s\S]*locationId: rowVenue\(newMenu\)/);
+  assert.match(between(STORE, 'addCategory: cat => {', 'updateCategory:'), /\.\.\.cat, \.\.\.venueAtBirth\(\) \};/);
+  assert.match(STORE, /\{ label: cat\.label, locationId: rowVenue\(cat\) \}\);/);
+  const add = between(STORE, 'addMenuItem: item => {', 'getItemPrice:');
+  assert.match(add, /\.\.\.venueAtBirth\(\),\n\s+\};/);
+  assert.match(add, /\{ label: newItem\.menuName, locationId: rowVenue\(newItem\) \}/);
+  assert.match(between(STORE, 'addModifierGroupDef: g => {', 'updateModifierGroupDef:'), /\.\.\.g, \.\.\.venueAtBirth\(\) \};/);
+  // A reload drops rows kept for another venue: the venue goes into every merge.
+  const vmr = read('./venueMenuRead.js');
+  assert.match(vmr, /mergeReadRows\(state\?\.menuItems, read\.menuItems, \{ keep: k\('items'\), keepArchived: true, locationId \}\)/);
+  assert.match(vmr, /mergeReadRows\(state\?\.modifierGroupDefs, read\.modifierGroupDefs, \{ keep: k\('groups'\), locationId \}\)/);
+  const w = read('./menuWriters.js');
+  assert.match(w, /if \(job\.locationId && job\.locationId !== loc\) \{/);
 });

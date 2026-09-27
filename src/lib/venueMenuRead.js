@@ -16,7 +16,7 @@
 
 import {
   mapMenuItemRow, mapCategoryRow, mapMenuRow, mapModifierGroupRow, mapTaxRateRow,
-  assembleTaxProfiles,
+  assembleTaxProfiles, srvAtOf,
 } from './rowMapping.js';
 
 export const PAGE = 1000;   // the Data API's row cap per request; bigger menus are paged
@@ -91,6 +91,9 @@ export async function readVenueMenu(client, locationId) {
   return out;
 }
 
+/** The venue a row says it belongs to, or null when it does not say. */
+export const rowVenue = (r) => r?.location_id ?? r?.locationId ?? null;
+
 /**
  * A fresh read laid over the rows a tab holds. The database wins, except:
  *   keep          rows this tab must keep its own copy of: a save still on its way (the
@@ -99,40 +102,78 @@ export async function readVenueMenu(client, locationId) {
  *                 read began (the read cannot have seen it). The caller works this out from
  *                 its write clock, never from times: no device clock is compared.
  *   keepArchived  archived rows the Archived view loaded stay (the read has live rows only)
+ *   locationId    the venue the read is for. 27 Sep 2026 (review round 3): a row kept or
+ *                 archived that says it belongs to ANOTHER venue is dropped, so a save that
+ *                 was on its way when the person switched venue never follows them into the
+ *                 next one. Rows created in this tab carry their venue from birth (store
+ *                 addMenuItem, addCategory, addMenu, addModifierGroupDef).
  * Rows the read does not have are dropped unless kept or archived.
  */
-export function mergeReadRows(current, read, { keep = new Set(), keepArchived = false } = {}) {
+export function mergeReadRows(current, read, { keep = new Set(), keepArchived = false, locationId = null } = {}) {
+  const here = (r) => !locationId || !rowVenue(r) || rowVenue(r) === locationId;
   const have = new Map((current || []).map((r) => [r?.id, r]));
   const seen = new Set();
   const out = [];
   for (const r of read || []) {
     seen.add(r.id);
     const local = have.get(r.id);
-    out.push(local && keep.has(r.id) ? local : r);
+    out.push(local && keep.has(r.id) && here(local) ? local : r);
   }
   for (const l of current || []) {
-    if (!l || seen.has(l.id)) continue;
+    if (!l || seen.has(l.id) || !here(l)) continue;
     if (keep.has(l.id) || (keepArchived && l.archived)) out.push(l);
   }
   return out;
 }
 
 /**
+ * Is an EMPTY product read suspect? 27 Sep 2026 (review round 3). A read that row level security
+ * narrows answers with no rows and NO error, and laying that over the screen would wipe the
+ * menu (and a push would send the tills no products). TaxManager refuses an empty tax read the
+ * same way. Suspect when all of these hold:
+ *   * the read of live products came back empty, and so did the read of every product id
+ *     (archived included: a venue whose products were all archived elsewhere is not suspect),
+ *   * this screen holds at least one product the database was seen to have at THIS venue
+ *     (it carries this venue and a database time, srvAt).
+ * Not suspect: a new venue with no products (nothing of that venue on screen), a product
+ * created here whose first save failed (no database time), and a product in `keep` (its save
+ * is on its way, or landed after the read began, so the read cannot have seen it).
+ */
+export function emptyItemsReadSuspect(state, read, locationId, { keep = null } = {}) {
+  if (!locationId || !read || !Array.isArray(read.menuItems) || read.menuItems.length) return false;
+  if (read.itemIds instanceof Set && read.itemIds.size) return false;
+  return (state?.menuItems || []).some((r) => r && rowVenue(r) === locationId && srvAtOf(r) && !(keep && keep.has(r.id)));
+}
+
+/** How many products of `locationId` this screen holds (for the words of a suspect read). */
+export const venueItemCount = (state, locationId) =>
+  (state?.menuItems || []).filter((r) => r && rowVenue(r) === locationId).length;
+
+/** The words when an empty product read is not applied (the Back Office load). */
+export const suspectReadWords = (n) =>
+  `The database sent back NO products for this venue, but this screen has ${n}. That usually means the read was blocked (sign in or access), so the menu on screen was kept. Check you are signed in, then reload the page.`;
+
+/**
  * The store patch for a fresh read (the Back Office load, and Push to POS once it has sent).
  * Only the parts that read are applied; a part that failed leaves the store as it was.
- *   keep  { items, categories, menus, groups }: Sets of ids whose local copy stays (above)
+ *   keep         { items, categories, menus, groups }: Sets of ids whose local copy stays (above)
+ *   locationId   the venue read: rows kept from another venue are dropped (mergeReadRows)
  * Tax rates take the read AS IT IS, an empty list included. 27 Sep 2026: Leeds had no rates of
  * its own, every loader skipped the empty read and kept Train Station's (from the last push),
  * and "Apply to all" wrote Train Station's rate ids into 430 Leeds products.
+ * A suspect empty product read (emptyItemsReadSuspect) is not applied AT ALL: a read that was
+ * narrowed shows no categories or menus either, so the whole menu on screen stays as it was
+ * (and Push to POS stops before it sends anything).
  */
 export function menuPatchFromRead(state, read, { keep = {}, locationId = null } = {}) {
   const patch = {};
   if (!read) return patch;
   const k = (name) => (keep && keep[name]) || new Set();
-  if (Array.isArray(read.menus)) patch.menus = mergeReadRows(state?.menus, read.menus, { keep: k('menus') });
-  if (Array.isArray(read.menuCategories)) patch.menuCategories = mergeReadRows(state?.menuCategories, read.menuCategories, { keep: k('categories') });
-  if (Array.isArray(read.menuItems)) patch.menuItems = mergeReadRows(state?.menuItems, read.menuItems, { keep: k('items'), keepArchived: true });
-  if (Array.isArray(read.modifierGroupDefs)) patch.modifierGroupDefs = mergeReadRows(state?.modifierGroupDefs, read.modifierGroupDefs, { keep: k('groups') });
+  if (emptyItemsReadSuspect(state, read, locationId, { keep: k('items') })) return patch;
+  if (Array.isArray(read.menus)) patch.menus = mergeReadRows(state?.menus, read.menus, { keep: k('menus'), locationId });
+  if (Array.isArray(read.menuCategories)) patch.menuCategories = mergeReadRows(state?.menuCategories, read.menuCategories, { keep: k('categories'), locationId });
+  if (Array.isArray(read.menuItems)) patch.menuItems = mergeReadRows(state?.menuItems, read.menuItems, { keep: k('items'), keepArchived: true, locationId });
+  if (Array.isArray(read.modifierGroupDefs)) patch.modifierGroupDefs = mergeReadRows(state?.modifierGroupDefs, read.modifierGroupDefs, { keep: k('groups'), locationId });
   if (Array.isArray(read.taxRates)) patch.taxRates = read.taxRates;
   if (Array.isArray(read.taxProfiles)) patch.taxProfiles = read.taxProfiles;
   if (read.venueDefaultTaxProfileId !== undefined) patch.venueDefaultTaxProfileId = read.venueDefaultTaxProfileId;
@@ -148,21 +189,30 @@ export function menuPatchFromRead(state, read, { keep = {}, locationId = null } 
  * landed. Push to POS lists them and saves them insert only, or stops; it never sends them to
  * the tills silently. An archived product is not listed (nothing to sell), and a product the
  * database has archived is in `itemIds`, so it is never mistaken for an unsaved one.
+ *   locationId       the venue being pushed. Only rows that SAY they belong to it are offered
+ *                    (27 Sep 2026, review round 3): a row of another venue, or one that does not
+ *                    say (left in memory from an old push), could copy another venue's product
+ *                    into this one. Rows created in this tab carry their venue from birth.
+ *   failedGroupIds   ids of modifier groups created in this tab whose FIRST save failed (store
+ *                    unsavedGroupIds). Only those groups are offered: a group that is on screen
+ *                    but not in the read for any other reason was deleted in another window,
+ *                    and must not come back. They are saved insert only, like the rest.
  */
-export function unsavedMenuRows(store, read, locationId = null) {
+export function unsavedMenuRows(store, read, locationId = null, { failedGroupIds = null } = {}) {
   const menuIds = new Set((read.menus || []).map((m) => m.id));
   const catIds = new Set((read.menuCategories || []).map((c) => c.id));
   const itemIds = read.itemIds || new Set((read.menuItems || []).map((i) => i.id));
-  // A row that says it belongs to ANOTHER venue (left in memory from an old push) is never
-  // offered: saving it here would copy another venue's product into this one.
-  const ours = (r) => {
-    const loc = r?.location_id ?? r?.locationId ?? null;
-    return !locationId || !loc || loc === locationId;
-  };
+  const groupIds = new Set((read.modifierGroupDefs || []).map((g) => g.id));
+  const failedGroups = failedGroupIds instanceof Set ? failedGroupIds : new Set(failedGroupIds || []);
+  const ours = (r) => !locationId || rowVenue(r) === locationId;
   const menus = (store.menus || []).filter((m) => m?.id && ours(m) && !menuIds.has(m.id));
   const menuCategories = (store.menuCategories || []).filter((c) => c?.id && ours(c) && !catIds.has(c.id));
   const menuItems = (store.menuItems || []).filter((i) => i?.id && ours(i) && !i.archived && !itemIds.has(i.id) && !String(i.id).startsWith('demo-'));
-  return { menus, menuCategories, menuItems, total: menus.length + menuCategories.length + menuItems.length };
+  const modifierGroupDefs = (store.modifierGroupDefs || []).filter((g) => g?.id && failedGroups.has(g.id) && ours(g) && !groupIds.has(g.id));
+  return {
+    menus, menuCategories, menuItems, modifierGroupDefs,
+    total: menus.length + menuCategories.length + menuItems.length + modifierGroupDefs.length,
+  };
 }
 
 // Parents before children, so a sub category's parent row is there first.
@@ -191,6 +241,8 @@ export function unsavedWords(unsaved) {
   if (unsaved.menuItems.length) parts.push(`${unsaved.menuItems.length} product${unsaved.menuItems.length === 1 ? '' : 's'} (${names(unsaved.menuItems, (i) => i.menuName || i.name)})`);
   if (unsaved.menuCategories.length) parts.push(`${unsaved.menuCategories.length} categor${unsaved.menuCategories.length === 1 ? 'y' : 'ies'} (${names(unsaved.menuCategories, (c) => c.label || c.name)})`);
   if (unsaved.menus.length) parts.push(`${unsaved.menus.length} menu${unsaved.menus.length === 1 ? '' : 's'} (${names(unsaved.menus, (m) => m.name)})`);
+  const groups = unsaved.modifierGroupDefs || [];
+  if (groups.length) parts.push(`${groups.length} modifier group${groups.length === 1 ? '' : 's'} (${names(groups, (g) => g.name)})`);
   return `These are on this screen but NOT in the database (never saved, or deleted in another window):\n\n${parts.join('\n')}\n\nOK saves them now (new rows only, nothing already saved is changed) and then pushes.\nCancel stops the push: nothing is sent. Reload the page to see the menu as it is saved.`;
 }
 

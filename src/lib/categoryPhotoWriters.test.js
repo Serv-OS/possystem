@@ -44,7 +44,7 @@ test('the queued store writer reads the photo from the LIVE store row, not the q
   assert.ok(body.includes('...categoryImageField(liveCat ?? cat)'));
   assert.ok(!body.includes('...categoryImageField(cat)'), 'never builds the photo from the copy captured at enqueue time');
   // A creation builds its row when the write RUNS, from the live store row.
-  const create = slice(store, 'const sbCreateCategory = (cat) =>', '{ label: cat.label });');
+  const create = slice(store, 'const sbCreateCategory = (cat) =>', '{ label: cat.label, locationId: rowVenue(cat) });');
   assert.ok(create.includes('() => categoryRow(cat, useStore.getState().menuCategories'), 'looks up the live row when the write runs');
   // An edit writes the photo only when the edit itself carries it (never a plain save).
   const patchFn = slice(rowLib, 'export function columnsForCategoryPatch(', '\n}\n');

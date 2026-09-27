@@ -193,6 +193,8 @@ export const mapMenuRow = (m) => {
 
 // A modifier_groups row. updated_at only exists once 20260927_OPS_menu_rows_server_time.sql
 // has run; before that srvAt is null and every save re-reads the row first.
+// 27 Sep 2026 (review round 3): it carries its venue, so a group kept on screen while its save
+// was on its way never follows the person into another venue (venueMenuRead mergeReadRows).
 export const mapModifierGroupRow = (g) => {
   if (!g || typeof g !== 'object') return g;
   return {
@@ -202,6 +204,7 @@ export const mapModifierGroupRow = (g) => {
     options: Array.isArray(g.options) ? g.options : [],
     sortOrder: g.sort_order ?? g.sortOrder ?? 0,
     srvAt: g.updated_at ?? g.srvAt ?? null,
+    locationId: g.location_id ?? g.locationId ?? null,
   };
 };
 

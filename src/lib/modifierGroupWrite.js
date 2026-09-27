@@ -17,6 +17,7 @@
 import { mergeById } from './threeWayMerge.js';
 import { sameValue } from './menuItemWrite.js';
 import { mapModifierGroupRow } from './rowMapping.js';
+import { insertRowOnce } from './menuRowWrite.js';
 
 const FIELDS = ['name', 'min', 'max', 'selectionType', 'sortOrder'];
 
@@ -76,6 +77,36 @@ export async function saveModifierGroupChecked({ client, locationId, base, mine 
     if (String(again.data.updated_at) === String(read.data.updated_at)) return refused;
   }
   return { ok: false, outcome: 'conflict', error: new Error('the group kept changing in another window while this one saved') };
+}
+
+// Before 20260927_OPS_menu_rows_server_time.sql modifier_groups has no updated_at column, and
+// PostgREST refuses a row that names one: the stamp insertRowOnce adds is dropped, the rest saved.
+export const groupStampRetry = (error, cols) => {
+  if (!cols || !('updated_at' in cols) || !/updated_at/.test(String(error?.message || ''))) return null;
+  const retry = { ...cols };
+  delete retry.updated_at;
+  return { cols: retry, note: 'no-updated-at-column' };
+};
+
+/**
+ * Save a group whose FIRST save failed, INSERT ONLY (27 Sep 2026, review round 3: Push to POS
+ * lists it first, lib/venueMenuRead.js unsavedMenuRows). An existing id is never overwritten,
+ * and a group made at another venue is never saved here. Resolves insertRowOnce's
+ * { ok, outcome: created | exists | error, row?, error? }.
+ */
+export async function insertModifierGroupOnce({ client, locationId, group }) {
+  if (!client) return { ok: false, outcome: 'error', error: new Error('No database') };
+  if (!locationId || locationId === 'loc-demo') return { ok: false, outcome: 'error', error: new Error('No location') };
+  if (!group?.id) return { ok: false, outcome: 'error', error: new Error('No group id') };
+  const made = group.location_id ?? group.locationId ?? null;
+  if (made && made !== locationId) {
+    return { ok: false, outcome: 'error', error: new Error(`refusing to save modifier group ${group.id}: it was made at venue ${made}, this Back Office is on ${locationId}`) };
+  }
+  return insertRowOnce({
+    client, table: 'modifier_groups',
+    row: { id: group.id, location_id: locationId, ...modifierGroupRow(group) },
+    retryWithout: groupStampRetry,
+  });
 }
 
 /**
