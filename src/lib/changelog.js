@@ -11,7 +11,7 @@ export const CHANGELOG = [
     date: '28 Sep 2026',
     items: [
       'Bar tabs at a UK venue now record their VAT. A closed bar tab recorded no VAT at all (only US sales tax was recorded). It now records the VAT the checkout showed, worked out the same way as every other till sale.',
-      'QR tabs the guest closes on their own phone: groundwork only. The phone can work out the VAT (modifier prices and each product\'s own rate included) and the server can record it (database update 20260927c), but the phone does not send it yet, so these tabs still record no VAT.',
+      'A QR tab the guest closes on their own phone now works out its VAT, including modifier prices and each product\'s own rate. It is recorded once the database update 20260927c is run; until then these tabs still record no VAT.',
     ],
   },
   {

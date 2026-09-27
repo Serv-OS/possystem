@@ -95,6 +95,13 @@ test('wiring: the phone close books the VAT on its own write and hands it to the
   assert.match(src, /\.\.\.\(vat\.taxBreakdown \? \{ tax_breakdown: vat\.taxBreakdown \} : \{\}\),/);
   assert.match(src, /check: \{ table_label: tableLabelForCheck, \.\.\.qrTabSettleVat\(vat\) \}/);
   assert.match(src, /taxCtx = null, menuItems = \[\], taxRates = \[\],/);
+  // The page hands it the rows it already loaded (its own buildLocalTaxCtx, every live menu row, the rates).
+  const page = fs.readFileSync(new URL('../surfaces/online/OnlineSurface.jsx', import.meta.url), 'utf8');
+  const mount = page.slice(page.indexOf('<TabResumeScreen'), page.indexOf('/>', page.indexOf('<TabResumeScreen')));
+  assert.match(mount, /taxCtx=\{taxCtx\}/);
+  assert.match(mount, /menuItems=\{items\}/);
+  assert.match(mount, /taxRates=\{taxRates\}/);
+  assert.match(page, /const taxCtx = useMemo\(\(\) => buildLocalTaxCtx\(\{/);
 });
 
 test('the server file books it: 20260927c reads the two numbers from p_check', () => {

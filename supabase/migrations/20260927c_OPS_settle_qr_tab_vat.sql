@@ -3,7 +3,7 @@
 -- WHY. Since the fence (20260919a2, live 20 Sep 2026) the check for a QR tab the guest closes on
 -- their own phone is written HERE, by settle_qr_tab, not by the phone. It never set tax_amount,
 -- so every such check booked no VAT at a UK venue: the same class of fault as the 192 Leeds reader
--- sales fixed in v5.9.97. The phone (TabResumeScreen, v5.9.99) now works the VAT out from the
+-- sales fixed in v5.9.97. The phone (TabResumeScreen, v5.9.100) now works the VAT out from the
 -- venue's own rows (headlessTax.qrTabCloseFields: modifiers folded in, each line's rate restored
 -- from the menu) and sends it in p_check as tax_amount and exclusive_tax.
 --
