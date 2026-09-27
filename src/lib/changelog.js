@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.97',
+    date: '27 Sep 2026',
+    items: [
+      'Card sales on the reader now record their VAT. A sale closed by the reader check recorded no VAT at all (192 Leeds sales). It now records the tax the checkout showed, or works it out from the items at this venue\'s rates.',
+      'A 100% comp now records £0 taken and no VAT, at a table and at the counter. It used to record the full price as cash that was never taken.',
+      'A counter sale closed by the reader check keeps its discounts.',
+    ],
+  },
+  {
     v: '5.9.96',
     date: '27 Sep 2026',
     items: [

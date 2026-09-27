@@ -10,6 +10,7 @@ import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
+import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
 import { creditDiscountsFromPayment, chargedAddedOnTax } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
@@ -5839,6 +5840,7 @@ export const useStore = create((set, get) => ({
         }).tax;
       } catch {}
     }
+    taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
 
     const ref = getNextOrderRefLocal();
     // v5.5.279: stamp locationId on in-memory record so the cross-location
@@ -5889,13 +5891,15 @@ export const useStore = create((set, get) => ({
         } catch { return 0; }   // fail toward NO phantom fee, never toward one
       })(),
       tip:        paymentInfo.tip || 0,
-      total:      paymentInfo.grand || session.total || 0,
+      // 27 Sep 2026: `??`, not `||`. A 100% comp at a table charges £0, and `0 || session.total`
+      // booked the undiscounted bill as taken (phantom cash in the drawer). No grand: as before.
+      total:      paymentInfo.grand ?? session.total ?? 0,
       taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
       method:     paymentInfo.method || 'card',
       // v5.9.11: what paid the check, per tender (lib/accounting/tenders.js). CheckoutModal
       // hands over the exact list; other callers (MPOS card, a table closed with no payment
       // info, the terminal reconciler's termPay) get it derived from their payment info.
-      tenders:    tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand || session.total || 0, tip: paymentInfo.tip || 0 }),
+      tenders:    tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? session.total ?? 0, tip: paymentInfo.tip || 0 }),
       giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
@@ -6106,6 +6110,22 @@ export const useStore = create((set, get) => ({
       // a live session whose total no longer matches what the card took.
       const items = Array.isArray(d.items) ? d.items.filter(i => !i?.voided).map(i => ({ ...i })) : [];
       const subtotal = (d.subtotalMinor ?? 0) / 100;
+      // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"): this
+      // record used to book taxAmount null, so 192 of Leeds' reader sales had no VAT (every reader
+      // sale this path closed first). Now the bill's own tax frozen by CheckoutModal, else the
+      // same maths buildCloseRecord uses over the frozen items (lib/headlessTax.js). It never
+      // throws: anything unexpected books no tax figure, as before.
+      let headlessTax = null;
+      try {
+        headlessTax = headlessTaxBreakdown(d, {
+          taxRates: get().taxRates,
+          taxCtx: get().getTaxContext(),
+          hasTaxConfig: taxCtxHasConfig(get().getTaxContext()),
+          deviceConfig: get().deviceConfig,
+          discountRules: get().discountRules,
+          timezone: get().locationConfig?.timezone,
+        });
+      } catch { headlessTax = null; }
       record = {
         id: job.closed_check_id,
         ref: getNextOrderRefLocal(),
@@ -6121,10 +6141,11 @@ export const useStore = create((set, get) => ({
         // between total and subtotal IS whatever service was genuinely on the bill
         // (zero when none was). Never a guessed rate (the old `subtotal * 0.125`
         // invented a fee the customer was never charged).
-        subtotal, service: Math.max(0, ((d.totalMinor ?? 0) - (d.subtotalMinor ?? 0))) / 100,
+        // 27 Sep 2026: less any sales tax added on top (US), now booked as taxAmount. UK: unchanged.
+        subtotal, service: headlessService(d, headlessTax),
         tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
         total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
-        taxAmount: null,
+        taxAmount: headlessTax?.totalTax != null ? headlessTax.totalTax : null,
         method: priorLegs.length ? 'split' : 'card',
         tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
@@ -6135,7 +6156,7 @@ export const useStore = create((set, get) => ({
         closedAt: Date.now(),
         seatedAt: d.seatedAt ? Number(d.seatedAt) : null,
         status: 'paid', refunds: [],
-        taxBreakdown: null,
+        taxBreakdown: headlessTax,
       };
     }
     // Tag with the job's REAL source so reports distinguish Table Pay from a POS
@@ -6547,6 +6568,7 @@ export const useStore = create((set, get) => ({
         }).tax;
       } catch {}
     }
+    taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
     // If the walk-in was reopened from orderQueue (OrdersHub openOrder) it already
     // has a ref (e.g. '#6720'). Reuse it so the closed check matches what the user
     // sees and so we can remove the stale queue entry below. Only generate a new
@@ -6571,11 +6593,13 @@ export const useStore = create((set, get) => ({
       subtotal,
       service: 0,
       tip: paymentInfo.tip || 0,
-      total: paymentInfo.grand || subtotal,
+      // 27 Sep 2026: `??`, not `||`. A 100% comp charges £0, and `0 || subtotal` booked the full
+      // price as taken in cash (7 "Custom 100%" checks at Leeds showed £44.90 cash never taken).
+      total: paymentInfo.grand ?? subtotal,
       taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
-      tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand || subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
+      tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
       giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
