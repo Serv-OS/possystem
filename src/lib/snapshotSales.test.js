@@ -167,3 +167,16 @@ test('owner-snapshot answers VAT with net, and a failed read is a 500, not £0',
 test('manager-snapshot answers VAT with net', () => {
   assert.match(read('manager-snapshot'), /net: r2\(net\), vat: r2\(vat\), gross: r2\(gross\), orders, tips: r2\(tips\),/);
 });
+
+// v5.10.2: the Manager app's Clock out (v5.8.21) sends the punch's timesheet id to manager-approve,
+// and the button only renders when the punch has one. The team read selected no `id`, so every
+// punch went out with `id: undefined` and the button never showed.
+test('manager-snapshot: every wf_timesheets read selects id, and each punch sends it', () => {
+  const src = read('manager-snapshot');
+  const selects = [...src.matchAll(/\.from\('wf_timesheets'\)\s*\.select\('([^']*)'\)/g)].map((m) => m[1].split(',').map((c) => c.trim()));
+  assert.ok(selects.length >= 2, 'expected the team read and the pending approvals read');
+  for (const cols of selects) assert.ok(cols.includes('id'), `a wf_timesheets read without id: ${cols.join(', ')}`);
+  // The team read (paged) is the one the punches come from.
+  assert.match(src, /pagedRows\('timesheets', \(\) => sb\.from\('wf_timesheets'\)\.select\('id, /);
+  assert.match(src, /const punches = tsRows[\s\S]*?\.map\(\(t: any\) => \(\{\s*id: t\.id, staffId: t\.staff_id,/);
+});

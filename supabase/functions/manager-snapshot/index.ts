@@ -70,10 +70,13 @@ Deno.serve(async (req) => {
     // Every list read pages (_shared/pagedRows.js): PostgREST returns at most 1000 rows a request
     // whatever .limit() asks for (.limit(20000) came back with 1000). A failed read is an error
     // (500 with the message), never £0 or an empty team.
+    // v5.10.2: the timesheets read carries `id`. Each punch sends it as the target of the Team
+    // tab's Clock out (manager-approve 'timesheet.clock_out'); without it the button (v5.8.21)
+    // never rendered (snapshotSales.test.js pins it).
     const [checks, { data: fc }, tsRows, shifts, staff, sess, ftables] = await Promise.all([
       pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
-      pagedRows('timesheets', () => sb.from('wf_timesheets').select('staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
+      pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
       pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).order('id')),
       pagedRows('staff', () => sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).order('id')),
       pagedRows('open tables', () => sb.from('active_sessions').select('table_id, session').eq('location_id', loc).order('id')),

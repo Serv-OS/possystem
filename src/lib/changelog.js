@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.2',
+    date: '28 Sep 2026',
+    items: [
+      'Manager app, Team tab: a manager can now clock someone out from "On shift now". The Clock out button was added in 5.8.21 but never showed, because the app was never sent which timesheet each person was on. It shows only for managers and owners (or anyone given the manager approvals permission). It asks for the manager PIN, then clocks the person out exactly as the Time Clock would (the same break and pay rules) and records who did it.',
+      'Manager app: a wrong PIN on an approval, a purchase order or a clock out now says "PIN not recognised" and asks again. It showed "Edge Function returned a non-2xx status code" and kept the wrong PIN.',
+    ],
+  },
+  {
     v: '5.10.1',
     date: '28 Sep 2026',
     items: [

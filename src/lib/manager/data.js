@@ -2,6 +2,7 @@
 // (requireToken + location-fenced); the pure engines (floor/team/...) classify the result.
 import { supabase } from '../supabase.js';
 import { withTimeout, TimeoutError } from '../withTimeout.js';
+import { approveErrorMessage } from './approveError.js';
 
 /** A snapshot that has not answered by now never will (a phone that has been asleep). */
 export const MANAGER_SNAPSHOT_TIMEOUT_MS = 15000;
@@ -34,7 +35,7 @@ export async function managerApprove(opsLocationId, pin, action, targetId, extra
   const { data, error } = await supabase.functions.invoke('manager-approve', {
     body: { action, ops_location_id: opsLocationId, pin: String(pin || ''), target_id: targetId, ...extra },
   });
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: await approveErrorMessage(error) };
   return data;
 }
 
@@ -46,6 +47,6 @@ export async function managerRaisePO(opsLocationId, pin, { supplierId = null, su
   const { data, error } = await supabase.functions.invoke('manager-approve', {
     body: { action: 'po.raise', ops_location_id: opsLocationId, pin: String(pin || ''), supplier_id: supplierId, supplier_name: supplierName, lines },
   });
-  if (error) return { ok: false, error: error.message };
+  if (error) return { ok: false, error: await approveErrorMessage(error) };
   return data;
 }

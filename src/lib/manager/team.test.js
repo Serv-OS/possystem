@@ -1,7 +1,8 @@
 /** team.test.js — Manager Team live (on-shift / no-show / break-due / labour). Run: `node --test` */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { onShiftNow, noShows, breaksDue, liveLabourMinor } from './team.js';
+import { onShiftNow, noShows, breaksDue, liveLabourMinor, canClockOut } from './team.js';
+import { roleFlags } from './access.js';
 
 const NOW = 1_800_000_000_000;
 const min = (n) => NOW - n * 60000;
@@ -43,4 +44,23 @@ test('liveLabourMinor: pennies, pro-rata, minus break', () => {
   // 2h worked at £12/h (1200p) = £24 = 2400p
   const r = liveLabourMinor([{ staffId: 'a', inMs: min(150), breakMins: 30 }], { a: 1200 }, NOW);
   assert.equal(r, 2400);
+});
+
+// v5.10.2: Clock out on the Team tab. The punch carries its timesheet id (manager-snapshot from
+// v5.10.2), and only people manager-approve lets clock someone out see the button.
+test('onShiftNow carries the timesheet id; a punch without one has none', () => {
+  const r = onShiftNow([{ id: 'ts-1', staffId: 'a', inMs: min(90) }, { staffId: 'b', inMs: min(30) }], NOW);
+  assert.equal(r[0].id, 'ts-1');
+  assert.equal(r[1].id, null);
+});
+test('canClockOut: needs the timesheet id AND approval rights (Manager, Owner, manager_approvals)', () => {
+  const row = { id: 'ts-1', staffId: 'a' };
+  assert.equal(canClockOut(row, roleFlags('manager')), true);
+  assert.equal(canClockOut(row, roleFlags('Owner')), true);
+  assert.equal(canClockOut(row, roleFlags('supervisor')), false);
+  assert.equal(canClockOut(row, roleFlags('supervisor', ['manager_approvals'])), true);
+  assert.equal(canClockOut(row, roleFlags('staff')), false);
+  // Before v5.10.2 every punch came without an id: no button, whoever is signed in.
+  assert.equal(canClockOut({ id: null, staffId: 'a' }, roleFlags('manager')), false);
+  assert.equal(canClockOut(row, undefined), false);
 });
