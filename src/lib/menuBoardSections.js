@@ -357,6 +357,14 @@ export function packBoard(measured, { cols = 1, height = 0, whole = false } = {}
 }
 
 /** A section as the rows the packer moves, in order; the gap below rides on its last row. */
+// v5.9.94 (Peter, 27 Sep 2026, a photo of the Cold Drinks board: "there is plenty of space but it's
+// moving one item to a new column rather than underneath, we don't want categories to split like
+// that"): Coolers (two drinks) was split one and one across the columns to level them. A category
+// with fewer than MIN_SPLIT_ROWS rows never splits, and a longer one that does continue keeps at
+// least KEEP_ROWS rows on each side of the break, so no drink sits alone.
+export const MIN_SPLIT_ROWS = 6;
+export const KEEP_ROWS = 2;
+
 function sectionUnits(sec, si, whole) {
   const units = [];
   if (sec.atomic) units.push({ sec: si, kind: 'atomic', h: Number(sec.h) || 0 });
@@ -372,7 +380,8 @@ function sectionUnits(sec, si, whole) {
     if (units.length) units[units.length - 1].h += Number(sec.after) || 0;
   }
   if (units.length) units[units.length - 1].last = true;
-  if (whole) units.forEach((u) => { u.whole = true; });
+  const rows = units.filter((u) => u.kind === 'item').length;
+  if (whole || (!sec.atomic && rows < MIN_SPLIT_ROWS)) units.forEach((u) => { u.whole = true; });
   return units;
 }
 
@@ -380,8 +389,21 @@ function sectionUnits(sec, si, whole) {
 function groupLen(units, k) {
   const u = units[k];
   if (u.whole) { let g = 1; while (units[k + g] && units[k + g].sec === u.sec) g++; return k === firstOf(units, k) ? g : 1; }
-  if (u.kind === 'head') { let g = 1; if (units[k + g] && units[k + g].kind === 'sizes') g++; if (units[k + g] && units[k + g].kind === 'item') g++; return g; }
-  if (u.kind === 'sizes') return units[k + 1] && units[k + 1].kind === 'item' ? 2 : 1;
+  const same = (j) => units[j] && units[j].sec === u.sec;
+  // The tail: the last KEEP_ROWS rows of a category travel together (never one drink alone at the top of a column).
+  const itemsFrom = (j) => { let n = 0; for (let x = j; same(x); x++) if (units[x].kind === 'item') n++; return n; };
+  const toEnd = () => { let g = 0; while (same(k + g)) g++; return g; };
+  if (u.kind === 'head') {
+    // A heading keeps its size header and its first KEEP_ROWS rows.
+    let g = 1, items = 0;
+    while (same(k + g) && items < KEEP_ROWS) { if (units[k + g].kind === 'item') items++; g++; }
+    return g;
+  }
+  if (u.kind === 'sizes') {
+    if (itemsFrom(k + 1) <= KEEP_ROWS) return toEnd();
+    return units[k + 1] && units[k + 1].kind === 'item' ? 2 : 1;
+  }
+  if (u.kind === 'item' && itemsFrom(k) <= KEEP_ROWS) return toEnd();
   return 1;
 }
 const firstOf = (units, k) => { let j = k; while (j > 0 && units[j - 1].sec === units[k].sec) j--; return j; };

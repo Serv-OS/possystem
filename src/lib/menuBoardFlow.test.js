@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { packBoard, boardKeepsWhole, headerBasePx, HEADER_VMIN, boardSpacing, LINE_SPACING, LINE_SPACING_DEFAULT } from './menuBoardSections.js';
+import { packBoard, boardKeepsWhole, headerBasePx, HEADER_VMIN, boardSpacing, LINE_SPACING, LINE_SPACING_DEFAULT, MIN_SPLIT_ROWS, KEEP_ROWS } from './menuBoardSections.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -39,8 +39,9 @@ test('the packing is the lowest height that holds everything, so the fit can gro
 test('a heading never ends a column and a size header never ends a column', () => {
   // Column height 130: heading (40) + header (24) + one row (30) = 94 fit; the heading alone would
   // have fitted after the first category's rows, but it moves with its first row.
-  const m = [cat([[1, 1]]), cat([[1, 3]])];   // 40+24+30+30 = 124 then 40+24+30+30+30+30
-  const r = packBoard(m, { cols: 3, height: 130 });
+  // v5.9.94: a category needs 6 or more rows to split at all, so the second one is long.
+  const m = [cat([[1, 1]]), cat([[1, 7]])];
+  const r = packBoard(m, { cols: 3, height: 250 });
   assert.equal(r.fits, true);
   for (const col of r.bands[0].cols) {
     const last = col[col.length - 1];
@@ -122,4 +123,26 @@ test('line spacing: Tight by default, Normal is the old look, every gap comes fr
   assert.doesNotMatch(src, /ROW_GAP_EM|RUN_GAP_EM|HEAD_GAP_EM/);
   const bo = read('../backoffice/sections/MenuBoards.jsx');
   assert.match(bo, /label="Line spacing"><Pills opts=\{LINE_SPACING_OPTS\}/);
+});
+
+test('a small category never splits, and a split never leaves one drink alone (v5.9.94)', () => {
+  // Peter, 27 Sep 2026, the Cold Drinks board: Coolers (2 drinks) was split one and one.
+  assert.equal(MIN_SPLIT_ROWS, 6); assert.equal(KEEP_ROWS, 2);
+  const plain = (k) => ({ head: 40, after: 30, runs: [{ sizes: 0, items: Array(k).fill(30) }] });
+  const sized = (k) => ({ head: 40, after: 30, runs: [{ sizes: 24, items: Array(k).fill(30) }] });
+  // Milkshakes 11, Protein 3, Coolers 2 | Blended 5, Smoothies 11 (the photo).
+  const board = [sized(11), plain(3), plain(2), sized(5), plain(11)];
+  for (const h of [700, 760, 800, 900]) {
+    const r = packBoard(board, { cols: 2, height: h });
+    if (!r.fits) continue;
+    const bySec = {};
+    r.bands[0].cols.forEach((col, ci) => col.forEach((p) => { (bySec[p.sec] = bySec[p.sec] || new Set()).add(ci); }));
+    for (const sec of [1, 2, 3]) assert.equal(bySec[sec].size, 1, `section ${sec} (fewer than 6 rows) stays in one column at height ${h}`);
+    // Any split of a long category keeps at least 2 rows each side.
+    for (const sec of [0, 4]) {
+      if (bySec[sec].size < 2) continue;
+      const counts = r.bands[0].cols.map((col) => col.filter((p) => p.sec === sec && p.kind === 'run').reduce((n, p) => n + (p.to - p.from), 0)).filter((n) => n > 0);
+      assert.ok(counts.every((n) => n >= 2), `section ${sec} split ${counts.join('/')} at height ${h}`);
+    }
+  }
 });
