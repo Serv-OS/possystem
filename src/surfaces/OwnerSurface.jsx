@@ -12,6 +12,10 @@ import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
+import { withTimeout, TimeoutError } from '../lib/withTimeout';
+
+/** A refresh that has not answered by now is never going to (a woken phone). */
+const LOAD_TIMEOUT_MS = 15000;
 
 const money = (n, currency = 'GBP', dp = 0) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -156,19 +160,30 @@ function Login({ theme, onToggleTheme }) {
 function Dashboard({ email, theme, onToggleTheme }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [updated, setUpdated] = useState('');
 
   const load = useCallback(async () => {
-    setErr('');
+    // 27 Sep 2026: tapping refresh looked like it did nothing at all. On a phone that has
+    // been asleep the call can hang for good (a stalled auth lock or a socket the OS
+    // dropped), and nothing here ever finished: no new time, no error, no spinner. So the
+    // call is raced against a timer, the arrow shows it is working, and a call that never
+    // comes back says so.
+    setErr(''); setBusy(true);
     try {
-      const { data: d, error } = await supabase.functions.invoke('owner-snapshot', { body: {} });
+      const { data: d, error } = await withTimeout(
+        supabase.functions.invoke('owner-snapshot', { body: {} }), LOAD_TIMEOUT_MS, 'Owner snapshot');
       if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
       if (d?.error) throw new Error(d.error);
       setData(d);
       setUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
-    } catch (e) { setErr(e.message || 'Could not load'); }
-    finally { setLoading(false); }
+    } catch (e) {
+      setErr(e instanceof TimeoutError
+        ? 'Could not reach ServOS. Tap the arrow to try again, or close and reopen the app.'
+        : (e.message || 'Could not load'));
+    }
+    finally { setBusy(false); setLoading(false); }
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 120000); return () => clearInterval(t); }, [load]);
 
@@ -187,7 +202,8 @@ function Dashboard({ email, theme, onToggleTheme }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <ThemeBtn theme={theme} onClick={onToggleTheme} />
-          <button onClick={load} title="Refresh" style={iconBtn}>↻</button>
+          <button onClick={load} disabled={busy} title="Refresh" aria-busy={busy}
+            style={{ ...iconBtn, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>{busy ? '⋯' : '↻'}</button>
           <button onClick={() => supabase.auth.signOut()} title="Sign out" style={iconBtn}>⎋</button>
         </div>
       </div>
