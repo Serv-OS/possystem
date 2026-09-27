@@ -23,6 +23,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName } from '../_shared/twilio-verify.ts';
 import { createSessionToken as mintSessionToken, verifySessionToken as readSessionToken } from '../_shared/loyalty-session.ts';
 import { giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS } from '../_shared/giftCardMatch.ts';
+import { resolveSenderForOrg } from '../_shared/sending-domain.ts';
+import { maskEmail } from '../_shared/customerMergePlan.js';
+import {
+  JOIN_MESSAGES, joinMessage, saveMemberProfile, joinNotice, providerEmailRequest, pickPortalVenue, portalVenueName,
+} from '../_shared/portalEmailJoin.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -154,6 +159,303 @@ async function giftCardsForProvenPhone(companyId: string, provenPhone: string | 
   } catch {
     return [];
   }
+}
+
+// ── The signed in member's account, as verify answers it ────────────────
+// Shared by verify and by update_profile's automatic join (27 Sep 2026), so the joined account
+// reaches the portal in exactly the shape a fresh sign in gives. `phone` is the phone the member
+// PROVED with the code: gift cards are matched on it and nothing else (18 Sep 2026).
+async function memberAccount(customer: any, companyId: string, phone: string | null) {
+  // ── Get/create loyalty membership ────────────────────────────────
+  let loyaltyData: any = null;
+  let tier: any = null;
+  let rewards: any[] = [];
+  let allRewards: any[] = [];
+  let recentTx: any[] = [];
+
+  try {
+    // Check if loyalty is enabled
+    const { data: config } = await platformAdmin
+      .from('loyalty_config')
+      .select('*')
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (config?.enabled) {
+      // Get or create membership
+      let { data: membership } = await platformAdmin
+        .from('customer_loyalty')
+        .select('*')
+        .eq('customer_id', customer.id)
+        .eq('company_id', companyId)
+        .maybeSingle();
+
+      if (!membership) {
+        // Auto-enroll
+        const memberCode = generateMemberCode();
+        const { data: newMember } = await platformAdmin
+          .from('customer_loyalty')
+          .insert({
+            customer_id: customer.id,
+            company_id: companyId,
+            member_code: memberCode,
+            points_balance: config.registration_bonus || 0,
+            points_earned_total: config.registration_bonus || 0,
+            referral_code: generateReferralCode(),
+          })
+          .select('*')
+          .single();
+        membership = newMember;
+      }
+
+      if (membership) {
+        loyaltyData = membership;
+
+        // Get tier
+        if (membership.tier_id) {
+          const { data: t } = await platformAdmin
+            .from('loyalty_tiers')
+            .select('name, color, icon, points_multiplier')
+            .eq('id', membership.tier_id)
+            .maybeSingle();
+          tier = t;
+        }
+
+        // Get rewards
+        const { data: rw } = await platformAdmin
+          .from('loyalty_rewards')
+          .select('id, name, description, icon, points_cost, reward_type, reward_value')
+          .eq('company_id', companyId)
+          .eq('active', true)
+          .order('sort_order');
+
+        allRewards = rw || [];
+        rewards = allRewards.filter(r => r.points_cost <= membership.points_balance);
+
+        // Recent transactions
+        const { data: tx } = await opsAdmin
+          .from('loyalty_transactions')
+          .select('type, points, created_at')
+          .eq('customer_id', customer.id)
+          .eq('company_id', companyId)
+          .order('created_at', { ascending: false })
+          .limit(20);
+        recentTx = tx || [];
+      }
+    }
+  } catch (e) {
+    console.warn('[loyalty-otp] loyalty data fetch failed:', e);
+  }
+
+  // ── Get linked gift cards (proven phone only) ────────────────────
+  // `phone` is the number Twilio just approved the code for; the customer row was found by it.
+  const giftCards = await giftCardsForProvenPhone(companyId, phone);
+
+  // ── Fetch stamp card programs + customer progress ──────────────
+  let stampCardsVerify: any[] = [];
+  try {
+    const { data: programs } = await platformAdmin
+      .from('stamp_card_programs')
+      .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
+      .eq('company_id', companyId)
+      .eq('active', true)
+      .order('created_at');
+    if (programs && programs.length > 0) {
+      const progIds = programs.map((p: any) => p.id);
+      const { data: progress } = await platformAdmin
+        .from('customer_stamp_cards')
+        .select('program_id, stamps_collected, completed_count, last_stamp_at')
+        .eq('customer_id', customer.id)
+        .eq('company_id', companyId)
+        .in('program_id', progIds);
+      const progressMap: Record<string, any> = {};
+      (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
+      stampCardsVerify = programs.map((p: any) => ({
+        id: p.id, name: p.name, description: p.description, icon: p.icon || '☕',
+        stamps_required: p.stamps_required, reward_type: p.reward_type,
+        reward_description: p.reward_description,
+        stamps_collected: progressMap[p.id]?.stamps_collected || 0,
+        completed_count: progressMap[p.id]?.completed_count || 0,
+        last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
+      }));
+    }
+  } catch {}
+
+  // Earned stamp rewards = completed cards − redeem-ledger rows (ops stamp_transactions).
+  // Kiosk + online read this payload: without it a completed card is invisible at checkout.
+  const stampRewardsVerify: any[] = [];
+  try {
+    const withCompleted = stampCardsVerify.filter((sc: any) => (sc.completed_count || 0) > 0);
+    if (withCompleted.length) {
+      const { data: cfgs } = await platformAdmin
+        .from('stamp_card_programs')
+        .select('id, reward_config')
+        .in('id', withCompleted.map((sc: any) => sc.id));
+      const cfgMap: Record<string, any> = {};
+      (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
+      for (const sc of withCompleted) {
+        const { count } = await opsAdmin
+          .from('stamp_transactions')
+          .select('id', { count: 'exact', head: true })
+          .eq('customer_id', customer.id)
+          .eq('program_id', sc.id)
+          .eq('type', 'redeem');
+        const available = Math.max(0, (sc.completed_count || 0) - (count || 0));
+        sc.rewards_available = available;
+        if (available > 0) {
+          stampRewardsVerify.push({
+            program_id: sc.id,
+            name: sc.reward_description || sc.name,
+            reward_type: sc.reward_type || 'free_item',
+            reward_config: cfgMap[sc.id] || {},
+            available,
+          });
+        }
+      }
+    }
+  } catch {}
+
+  return {
+    customer: {
+      id: customer.id,
+      name: customer.name,
+      email: customer.email,
+      phone: customer.phone,
+      birthday: customer.birthday || null,
+      marketing_opt_in: customer.marketing_opt_in || false,
+    },
+    loyalty: loyaltyData ? {
+      member_code: loyaltyData.member_code,
+      points_balance: loyaltyData.points_balance,
+      points_earned_total: loyaltyData.points_earned_total,
+      points_redeemed_total: loyaltyData.points_redeemed_total,
+      visit_count: loyaltyData.visit_count,
+      enrolled_at: loyaltyData.enrolled_at,
+      tier: tier ? {
+        name: tier.name,
+        color: tier.color,
+        icon: tier.icon,
+        multiplier: tier.points_multiplier,
+      } : null,
+      rewards_available: rewards.map(r => ({
+        id: r.id, name: r.name, description: r.description,
+        icon: r.icon, points_cost: r.points_cost,
+        reward_type: r.reward_type,
+        // What the reward gives (amount_minor / percent / eligible_items). The kiosk turns
+        // this into money off; without it every points reward staged 0p and still spent
+        // the points. loyalty-balance (the till's lookup) already sends the full row.
+        reward_value: r.reward_value || {},
+      })),
+      // v5.5.885: earned stamp-card rewards (completed cards not yet redeemed): checkout
+      // surfaces list these as FREE alongside points rewards.
+      stamp_rewards: stampRewardsVerify,
+      all_rewards: allRewards.map(r => ({
+        id: r.id, name: r.name, description: r.description,
+        icon: r.icon, points_cost: r.points_cost,
+        reward_type: r.reward_type,
+      })),
+      recent_transactions: recentTx.map(tx => ({
+        type: tx.type, points: tx.points, created_at: tx.created_at,
+      })),
+    } : null,
+    gift_cards: giftCards,
+    stamp_cards: stampCardsVerify,
+  };
+}
+
+// ── The venue a portal save is made from ────────────────────────────────
+// The portal's own venue when it belongs to the member's company, else the company's first venue
+// (what the welcome always used). A location from another company is never trusted (27 Sep 2026).
+async function portalVenue(companyId: string, requested: unknown, withName = false): Promise<{ opsLocationId: string | null; name: string }> {
+  try {
+    const { data: rows } = await platformAdmin
+      .from('locations')
+      .select('id, name, ops_location_id')
+      .eq('company_id', companyId)
+      .limit(50);
+    const pick = pickPortalVenue(rows || [], typeof requested === 'string' ? requested : '');
+    let opsName = '';
+    if (withName && pick.opsLocationId) {
+      const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', pick.opsLocationId).maybeSingle();
+      opsName = loc?.name || '';
+    }
+    return { opsLocationId: pick.opsLocationId, name: portalVenueName(opsName, pick.platformName) };
+  } catch {
+    return { opsLocationId: null, name: '' };
+  }
+}
+
+// Fire-and-forget: the welcome (SMS + email) on a member's first profile update. send-welcome
+// sends it once per customer (welcome_sent_at). It brands by venue, so without one it is skipped
+// (verify already refuses a company with no linked venue, so a signed in member always has one).
+function fireWelcome(customerId: string, companyId: string, opsLocationId: string | null) {
+  if (!opsLocationId) return;
+  try {
+    fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/send-welcome`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+      },
+      body: JSON.stringify({ customer_id: customerId, company_id: companyId, location_id: opsLocationId }),
+    }).catch(() => {});
+  } catch { /* the welcome is best effort */ }
+}
+
+// Work that must finish after the reply (the notice email): the edge runtime keeps the worker
+// alive for it, so the member's save is not held up; outside it (local serve) it is awaited.
+async function afterReply(work: Promise<unknown>) {
+  const safe = work.catch(() => {});
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(safe); else await safe;
+}
+
+// ── The one notice after an automatic join (27 Sep 2026, safeguard 3) ────
+// Sent to the email the join was made on, through the same provider path as the welcome and the
+// receipts (RECEIPT_EMAIL_PROVIDER, the org's verified sending domain when it has one), and
+// logged in receipt_emails. It never throws: a failed send is logged and the join stands.
+const EMAIL_PROVIDER = (Deno.env.get('RECEIPT_EMAIL_PROVIDER') || 'log').toLowerCase();
+const EMAIL_FROM = Deno.env.get('RECEIPT_EMAIL_FROM') || 'hello@posup.co.uk';
+
+async function sendJoinNotice(p: {
+  to: string; orgId: string | null; opsLocationId: string | null; venueName: string;
+  provenPhone: string; survivorId: string; foldedId: string;
+}): Promise<void> {
+  const notice = joinNotice({ venueName: p.venueName, provenPhone: p.provenPhone });
+  let status = 'failed';
+  let error: string | null = null;
+  try {
+    const sender = await resolveSenderForOrg(opsAdmin, p.orgId, EMAIL_FROM);
+    const request = providerEmailRequest({
+      provider: EMAIL_PROVIDER,
+      resendKey: Deno.env.get('RESEND_API_KEY') ?? '',
+      postmarkKey: Deno.env.get('POSTMARK_API_TOKEN') ?? '',
+      sender, to: p.to, subject: notice.subject, html: notice.html, text: notice.text,
+    });
+    if (!request) {
+      error = `no email provider (${EMAIL_PROVIDER})`;
+    } else {
+      const res = await fetch(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(request.body) });
+      if (res.ok) status = 'sent'; else error = `provider answered ${res.status}`;
+    }
+  } catch (e) {
+    error = (e as any)?.message || String(e);
+  }
+  console.log('[loyalty-otp] join notice', JSON.stringify({
+    survivor_id: p.survivorId, folded_id: p.foldedId, to: maskEmail(p.to), status, error,
+  }));
+  if (!p.opsLocationId) return;
+  try {
+    await opsAdmin.from('receipt_emails').insert({
+      location_id: p.opsLocationId,
+      to_email: p.to,
+      subject: notice.subject,
+      status,
+      provider: EMAIL_PROVIDER,
+      error,
+      sent_at: status === 'sent' ? new Date().toISOString() : null,
+    });
+  } catch { /* the log is best effort */ }
 }
 
 // ── Phone normalisation ──────────────────────────────────────────────────
@@ -378,205 +680,13 @@ Deno.serve(async (req) => {
       return json({ error: 'We could not set up your account. Please try again.' }, 500);
     }
 
-    // ── Get/create loyalty membership ────────────────────────────────
-    let loyaltyData: any = null;
-    let tier: any = null;
-    let rewards: any[] = [];
-    let allRewards: any[] = [];
-    let recentTx: any[] = [];
-
-    try {
-      // Check if loyalty is enabled
-      const { data: config } = await platformAdmin
-        .from('loyalty_config')
-        .select('*')
-        .eq('company_id', companyId)
-        .maybeSingle();
-
-      if (config?.enabled) {
-        // Get or create membership
-        let { data: membership } = await platformAdmin
-          .from('customer_loyalty')
-          .select('*')
-          .eq('customer_id', customer.id)
-          .eq('company_id', companyId)
-          .maybeSingle();
-
-        if (!membership) {
-          // Auto-enroll
-          const memberCode = generateMemberCode();
-          const { data: newMember } = await platformAdmin
-            .from('customer_loyalty')
-            .insert({
-              customer_id: customer.id,
-              company_id: companyId,
-              member_code: memberCode,
-              points_balance: config.registration_bonus || 0,
-              points_earned_total: config.registration_bonus || 0,
-              referral_code: generateReferralCode(),
-            })
-            .select('*')
-            .single();
-          membership = newMember;
-        }
-
-        if (membership) {
-          loyaltyData = membership;
-
-          // Get tier
-          if (membership.tier_id) {
-            const { data: t } = await platformAdmin
-              .from('loyalty_tiers')
-              .select('name, color, icon, points_multiplier')
-              .eq('id', membership.tier_id)
-              .maybeSingle();
-            tier = t;
-          }
-
-          // Get rewards
-          const { data: rw } = await platformAdmin
-            .from('loyalty_rewards')
-            .select('id, name, description, icon, points_cost, reward_type, reward_value')
-            .eq('company_id', companyId)
-            .eq('active', true)
-            .order('sort_order');
-
-          allRewards = rw || [];
-          rewards = allRewards.filter(r => r.points_cost <= membership.points_balance);
-
-          // Recent transactions
-          const { data: tx } = await opsAdmin
-            .from('loyalty_transactions')
-            .select('type, points, created_at')
-            .eq('customer_id', customer.id)
-            .eq('company_id', companyId)
-            .order('created_at', { ascending: false })
-            .limit(20);
-          recentTx = tx || [];
-        }
-      }
-    } catch (e) {
-      console.warn('[loyalty-otp] loyalty data fetch failed:', e);
-    }
-
-    // ── Get linked gift cards (proven phone only) ────────────────────
-    // `phone` is the number Twilio just approved the code for; the customer row was found by it.
-    const giftCards = await giftCardsForProvenPhone(companyId, phone);
-
-    // ── Fetch stamp card programs + customer progress ──────────────
-    let stampCardsVerify: any[] = [];
-    try {
-      const { data: programs } = await platformAdmin
-        .from('stamp_card_programs')
-        .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
-        .eq('company_id', companyId)
-        .eq('active', true)
-        .order('created_at');
-      if (programs && programs.length > 0) {
-        const progIds = programs.map((p: any) => p.id);
-        const { data: progress } = await platformAdmin
-          .from('customer_stamp_cards')
-          .select('program_id, stamps_collected, completed_count, last_stamp_at')
-          .eq('customer_id', customer.id)
-          .eq('company_id', companyId)
-          .in('program_id', progIds);
-        const progressMap: Record<string, any> = {};
-        (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
-        stampCardsVerify = programs.map((p: any) => ({
-          id: p.id, name: p.name, description: p.description, icon: p.icon || '☕',
-          stamps_required: p.stamps_required, reward_type: p.reward_type,
-          reward_description: p.reward_description,
-          stamps_collected: progressMap[p.id]?.stamps_collected || 0,
-          completed_count: progressMap[p.id]?.completed_count || 0,
-          last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
-        }));
-      }
-    } catch {}
-
-    // Earned stamp rewards = completed cards − redeem-ledger rows (ops stamp_transactions).
-    // Kiosk + online read this payload — without it a completed card is invisible at checkout.
-    const stampRewardsVerify: any[] = [];
-    try {
-      const withCompleted = stampCardsVerify.filter((sc: any) => (sc.completed_count || 0) > 0);
-      if (withCompleted.length) {
-        const { data: cfgs } = await platformAdmin
-          .from('stamp_card_programs')
-          .select('id, reward_config')
-          .in('id', withCompleted.map((sc: any) => sc.id));
-        const cfgMap: Record<string, any> = {};
-        (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
-        for (const sc of withCompleted) {
-          const { count } = await opsAdmin
-            .from('stamp_transactions')
-            .select('id', { count: 'exact', head: true })
-            .eq('customer_id', customer.id)
-            .eq('program_id', sc.id)
-            .eq('type', 'redeem');
-          const available = Math.max(0, (sc.completed_count || 0) - (count || 0));
-          sc.rewards_available = available;
-          if (available > 0) {
-            stampRewardsVerify.push({
-              program_id: sc.id,
-              name: sc.reward_description || sc.name,
-              reward_type: sc.reward_type || 'free_item',
-              reward_config: cfgMap[sc.id] || {},
-              available,
-            });
-          }
-        }
-      }
-    } catch {}
-
     // ── Create session token ─────────────────────────────────────────
     const token = await createSessionToken(customer.id, companyId, phone);
 
     return json({
       verified: true,
       token,
-      customer: {
-        id: customer.id,
-        name: customer.name,
-        email: customer.email,
-        phone: customer.phone,
-        birthday: customer.birthday || null,
-        marketing_opt_in: customer.marketing_opt_in || false,
-      },
-      loyalty: loyaltyData ? {
-        member_code: loyaltyData.member_code,
-        points_balance: loyaltyData.points_balance,
-        points_earned_total: loyaltyData.points_earned_total,
-        points_redeemed_total: loyaltyData.points_redeemed_total,
-        visit_count: loyaltyData.visit_count,
-        enrolled_at: loyaltyData.enrolled_at,
-        tier: tier ? {
-          name: tier.name,
-          color: tier.color,
-          icon: tier.icon,
-          multiplier: tier.points_multiplier,
-        } : null,
-        rewards_available: rewards.map(r => ({
-          id: r.id, name: r.name, description: r.description,
-          icon: r.icon, points_cost: r.points_cost,
-          reward_type: r.reward_type,
-          // What the reward gives (amount_minor / percent / eligible_items). The kiosk turns
-          // this into money off; without it every points reward staged 0p and still spent
-          // the points. loyalty-balance (the till's lookup) already sends the full row.
-          reward_value: r.reward_value || {},
-        })),
-        // v5.5.885: earned stamp-card rewards (completed cards not yet redeemed) — checkout
-        // surfaces list these as FREE alongside points rewards.
-        stamp_rewards: stampRewardsVerify,
-        all_rewards: allRewards.map(r => ({
-          id: r.id, name: r.name, description: r.description,
-          icon: r.icon, points_cost: r.points_cost,
-          reward_type: r.reward_type,
-        })),
-        recent_transactions: recentTx.map(tx => ({
-          type: tx.type, points: tx.points, created_at: tx.created_at,
-        })),
-      } : null,
-      gift_cards: giftCards,
-      stamp_cards: stampCardsVerify,
+      ...(await memberAccount(customer, companyId, phone)),
     });
   }
 
@@ -663,51 +773,80 @@ Deno.serve(async (req) => {
     const session = await verifySessionToken(token);
     if (!session) return json({ error: 'Invalid or expired session' }, 401);
 
-    // All profile data lives on the customers table (single source of truth)
+    // All profile data lives on the customers table (single source of truth). The email is saved on
+    // its own, after the rest: it may belong to the member's other profile (27 Sep 2026, below).
     const updates: Record<string, unknown> = {};
     // customers.name is NOT NULL: a cleared name is stored empty, never null (a null refused the whole save).
     if (typeof body.name === 'string') updates.name = body.name.trim();
-    if (typeof body.email === 'string') updates.email = body.email.trim() || null;
     if (typeof body.birthday === 'string') updates.birthday = body.birthday || null;
     if (typeof body.marketing_opt_in === 'boolean') updates.marketing_opt_in = body.marketing_opt_in;
+    const typedEmail: string | null = typeof body.email === 'string' ? body.email.trim() : null;
 
-    if (Object.keys(updates).length === 0) return json({ error: 'No fields to update' }, 400);
+    if (Object.keys(updates).length === 0 && typedEmail === null) return json({ error: 'No fields to update' }, 400);
 
-    const { error: upErr } = await opsAdmin
-      .from('customers')
-      .update(updates)
-      .eq('id', session.customerId);
+    // The phone the member proved with the code. It is what an automatic join moves onto the kept
+    // profile and what the new session carries, so gift cards stay on it alone (18 Sep 2026).
+    const provenPhone: string | null = session.phone || null;
 
-    if (upErr) return json({ error: upErr.message }, 500);
+    // ── Joining the member's profile with the one their email is on (27 Sep 2026) ──
+    // Peter: "I don't want a merge tool, I want it so when someone signs up it auto merges their
+    // records, matches them as long as they use the same email, it knows the record exists and
+    // just adds them together." saveMemberProfile saves the details and, when the email is on
+    // another profile of the business with no phone, runs the merge core with the service
+    // clients (no HTTP). The email never fails the whole save.
+    const outcome: any = await saveMemberProfile(
+      { ops: opsAdmin, platform: platformAdmin },
+      { sessionCustomerId: session.customerId, provenPhone, updates, typedEmail, now: new Date().toISOString() },
+    );
+    if (outcome.join && !outcome.join.ok) {
+      console.warn('[loyalty-otp] portal join not finished', JSON.stringify({
+        customer_id: session.customerId, code: outcome.join.code, step: outcome.join.step ?? null,
+        done: outcome.join.done ?? null, refusals: (outcome.join.refusals || []).map((r: any) => r.code),
+      }));
+    }
+    if (outcome.kind === 'failed') return json({ error: outcome.error?.message || 'Could not save' }, 500);
+    // The session names a profile that is gone (joined into another one that the phone could
+    // not follow, or deleted): sign in again, and verify finds whoever holds the phone.
+    if (outcome.kind === 'signed_out') return json({ error: JOIN_MESSAGES.signed_out, code: 'sign_in_again' }, 401);
+
+    if (outcome.kind === 'joined') {
+      const joined = outcome.join;
+      console.log('[loyalty-otp] portal join', JSON.stringify({
+        customer_id: session.customerId, survivor_id: joined.survivorId, folded_id: joined.sourceId, mode: joined.mode,
+        steps: joined.steps, stayed: joined.stayed, warnings: (joined.warnings || []).map((w: any) => w.code),
+      }));
+      const venue = await portalVenue(session.companyId, body.location_id, true);
+      if (joined.notify && joined.noticeTo && provenPhone) {
+        // Never blocks the join, never fails it: sendJoinNotice catches everything.
+        await afterReply(sendJoinNotice({
+          to: joined.noticeTo, orgId: outcome.member?.org_id ?? null, opsLocationId: venue.opsLocationId,
+          venueName: venue.name, provenPhone, survivorId: joined.survivorId, foldedId: joined.sourceId,
+        }));
+      }
+      fireWelcome(joined.survivorId, session.companyId, venue.opsLocationId);
+      // The member proved this phone with the code and the kept profile holds it now
+      // (runPortalJoin checks): the normal verify outcome, for the kept profile.
+      const freshToken = await createSessionToken(joined.survivorId, session.companyId, provenPhone);
+      return json({
+        updated: true,
+        joined: true,
+        email_saved: true,
+        message: JOIN_MESSAGES.joined,
+        verified: true,
+        token: freshToken,
+        ...(await memberAccount(joined.survivor, session.companyId, provenPhone)),
+      });
+    }
 
     // Fire-and-forget: send welcome notification (SMS + email) on first profile update
-    try {
-      // Resolve a location_id from company_id for branding
-      let welcomeLocId = companyId;
-      if (platformAdmin) {
-        const { data: wLoc } = await platformAdmin
-          .from('locations')
-          .select('ops_location_id')
-          .eq('company_id', session.companyId)
-          .limit(1).maybeSingle();
-        if (wLoc?.ops_location_id) welcomeLocId = wLoc.ops_location_id;
-      }
-      const welcomeUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/send-welcome`;
-      fetch(welcomeUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
-        },
-        body: JSON.stringify({
-          customer_id: session.customerId,
-          company_id: session.companyId,
-          location_id: welcomeLocId,
-        }),
-      }).catch(() => {});
-    } catch {}
+    const venue = await portalVenue(session.companyId, body.location_id);
+    fireWelcome(session.customerId, session.companyId, venue.opsLocationId);
 
-    return json({ updated: true });
+    if (outcome.emailCode) {
+      console.warn('[loyalty-otp] email not saved', JSON.stringify({ customer_id: session.customerId, code: outcome.emailCode }));
+      return json({ updated: true, email_saved: false, code: outcome.emailCode, message: joinMessage(outcome.emailCode, 'email_not_saved') });
+    }
+    return json({ updated: true, email_saved: true });
   }
 
   return json({ error: 'Unknown action. Use: send, verify, refresh, update_profile' }, 400);

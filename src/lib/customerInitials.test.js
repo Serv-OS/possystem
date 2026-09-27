@@ -25,7 +25,7 @@ test('pins: no till surface splits or replaces a customer name directly', () => 
   const pos = read('../surfaces/POSSurface.jsx');
   assert.doesNotMatch(pos, /customer\.name\.split\(/);
   assert.match(pos, /\{customerInitials\(customer\.name, customer\.phone\)\}/);
-  assert.match(pos, /setCustomer\(\{ \.\.\.cur, phone, name: res\.name \|\| cur\.name \|\| '' \}\)/);
+  assert.match(pos, /setCustomer\(\{ \.\.\.cur, phone, name: res\.name \|\| cur\.name \|\| ''(, stampSummary: stamps)? \}\)/, 'never an undefined name (v5.9.89 adds the stamps)');
   const modal = read('../components/CustomerModal.jsx');
   assert.doesNotMatch(modal, /c\.name\.split\(/);
   const portal = read('../surfaces/customer/CustomerPortal.jsx');

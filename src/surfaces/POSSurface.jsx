@@ -44,6 +44,7 @@ import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
 import { customerInitials, customerLabel } from '../lib/customerInitials';
+import { stampSummary, stampChip } from '../lib/stampSummary';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -532,8 +533,10 @@ export default function POSSurface() {
         if (res?.ok) {
           const cur = useStore.getState().customer || {};
           // v5.9.88: a new number has no name yet; never store undefined (the chip crashed on it).
-          setCustomer({ ...cur, phone, name: res.name || cur.name || '' });
-          publishLoyalty({ known: res.known, name: res.name, points: res.points, rewards: res.rewards || [], customerId: res.customerId, smsSent: res.smsSent });
+          // v5.9.89: stamps travel with the customer (the till chip shows "2/9") and to the display.
+          const stamps = res.stampsEnabled === false ? [] : stampSummary(res.stampCards);
+          setCustomer({ ...cur, phone, name: res.name || cur.name || '', stampSummary: stamps });
+          publishLoyalty({ known: res.known, name: res.name, points: res.points, rewards: res.rewards || [], customerId: res.customerId, smsSent: res.smsSent, stamps, pointsEnabled: res.pointsEnabled !== false, stampsEnabled: res.stampsEnabled !== false });
         } else {
           publishLoyalty({ error: true });
         }
@@ -1332,7 +1335,7 @@ export default function POSSurface() {
                 <div style={{background:'var(--bg3)',borderRadius:10,padding:'8px 12px',marginTop:8,display:'flex',alignItems:'center',gap:10,border:'1px solid var(--bdr)'}}>
                   <div style={{width:32,height:32,borderRadius:'50%',background:'var(--acc-d)',border:'1.5px solid var(--acc-b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,color:'var(--acc)',flexShrink:0}}>{customerInitials(customer.name, customer.phone)}</div>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}</div>
+                    <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}{stampChip(customer.stampSummary) ? <span style={{fontSize:11,fontWeight:800,color:'var(--acc)',marginLeft:6}}>{stampChip(customer.stampSummary)}</span> : null}</div>
                     <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?' · Named order':''}</div>
                     {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
                     {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(

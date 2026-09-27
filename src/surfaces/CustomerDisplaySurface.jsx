@@ -24,6 +24,7 @@ import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRede
 import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 import { displayHoldMs } from '../lib/customerDisplayIdle';
+import { stampDots, showPoints } from '../lib/stampSummary';
 
 // v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
 // order never times out on its own; the 45 s timer sent customers back to the ads mid order.
@@ -377,8 +378,30 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
         <div style={{ textAlign: 'center', flexShrink: 0 }}>
           <div style={{ fontSize: 40 }}>🎉</div>
           <div style={{ fontSize: 26, fontWeight: 800, marginTop: 4 }}>Welcome back{result.name ? `, ${result.name}` : ''}!</div>
-          {result.points != null && <div style={{ fontSize: 20, color: brand, fontWeight: 800, marginTop: 4 }}>{result.points} points</div>}
+          {showPoints(result) && <div style={{ fontSize: 20, color: brand, fontWeight: 800, marginTop: 4 }}>{result.points} points</div>}
         </div>
+        {/* v5.9.89 (Peter, 27 Sep 2026: "show how many stamps they currently have"): each stamp card
+            with its filled dots, the count, and a free drink when one is ready. */}
+        {Array.isArray(result.stamps) && result.stamps.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16, flexShrink: 0 }}>
+            {result.stamps.map((s) => (
+              <div key={s.id} data-stamp-card style={{ padding: '14px 16px', borderRadius: 14, background: C.surface, border: `1.5px solid ${brand}44` }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>{s.icon} {s.name}</div>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: brand, whiteSpace: 'nowrap' }}>{s.have} of {s.need}</div>
+                </div>
+                {s.need <= 20 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                    {stampDots(s.have, s.need).map((on, i) => (
+                      <span key={i} style={{ width: 22, height: 22, borderRadius: '50%', background: on ? brand : 'transparent', border: `2px solid ${on ? brand : C.dim}` }} />
+                    ))}
+                  </div>
+                )}
+                {s.ready > 0 && <div style={{ fontSize: 16, fontWeight: 800, color: brand, marginTop: 8 }}>{s.ready} free {s.reward || 'reward'} ready</div>}
+              </div>
+            ))}
+          </div>
+        )}
         {rewards.length > 0 ? (
           <>
             <div style={{ fontSize: 15, color: C.dim, textAlign: 'center', margin: '16px 0 10px' }}>Tap a reward to use it</div>
@@ -401,7 +424,7 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
             </div>
           </>
         ) : (
-          <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 16 }}>You're earning points on this order</div>
+          <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 16 }}>{result.pointsEnabled === false ? "You're earning stamps on this order" : "You're earning points on this order"}</div>
         )}
       </div>
     );

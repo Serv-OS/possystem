@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore, getCollectionSlots } from '../store';
 import { kitchenLoadFromStore, prepMinutes, liveOrderCount } from '../lib/prepTime';
 import { supabase, getLocationId } from '../lib/supabase';
@@ -7,7 +7,7 @@ import AddressAutocomplete from './AddressAutocomplete';
 import { customerInitials } from '../lib/customerInitials';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
-  const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
+  const { searchCustomers, searchCustomersLive, addToHistory, showToast, showDelayedToast, takeawayCustomerDetails, autoJoinCustomerByEmail } = useStore();
   // v5.8.6: quote the same wait the kitchen is actually carrying. The slot grid
   // was hard-coded to now+15 regardless of the venue's lead time, so a caller
   // was promised a time the website would have refused for the same order.
@@ -79,6 +79,13 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   });
   const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
+  // 27 Sep 2026: Confirm now waits for the customer check (and a join by email), so a second tap
+  // while the first is still working must not attach the customer twice.
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  // ...and a form closed while it checks must not attach the customer afterwards.
+  const closedRef = useRef(false);
+  const cancel = () => { closedRef.current = true; onCancel?.(); };
 
   const slots = getCollectionSlots(quotedLead, tz);
   const isCollection = orderType === 'collection';
@@ -131,12 +138,19 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   };
 
   const handleConfirm = async () => {
+    if (busyRef.current) return;
     if (!String(name || '').trim() || (!nameOnly && !String(phone || '').trim())) {
       showToast(nameOnly ? 'Customer name is required' : 'Name and phone number are required', 'error'); return;
     }
     if (isDelivery && (!addr1.trim() || !postcode.trim())) {
       showToast('Delivery address and postcode are required', 'error'); return;
     }
+    busyRef.current = true; setBusy(true);
+    await confirmChecked().catch((e) => console.warn('[CustomerModal] confirm failed:', e?.message || e));
+    busyRef.current = false; setBusy(false);
+  };
+
+  const confirmChecked = async () => {
     // v5.5.248: before creating, check if this phone already exists in the DB.
     // If it does, auto-populate from the existing profile to prevent duplicates.
     // v5.5.799: skipped in name-only mode — there's no phone to dedupe on.
@@ -165,7 +179,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         showToast(`Matched existing customer: ${match.name}`, 'success');
       }
     } catch {}
-    const customer = {
+    let customer = {
       name: finalName, phone: phone.trim(), email: finalEmail, notes: finalNotes,
       ...(finalAllergens.length ? { allergens: finalAllergens } : {}),
       isASAP,
@@ -173,6 +187,20 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
       ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     };
+    // 27 Sep 2026, Peter: "when someone signs up it auto merges their records, matches them as long
+    // as they use the same email". Staff typed the phone and the email here, so the till joins by
+    // itself, no question: the phone goes on the profile that has this email and no phone, or the
+    // empty profile the phone is on is folded into it (lib/customerAutoJoin.js). Only an email that
+    // is NEW in this form joins: one that came in with a reopened order or a table's guest
+    // (writable with the public key) never does. Anything else saves phone only, as before.
+    if (!nameOnly && phone.trim() && typeof autoJoinCustomerByEmail === 'function') {
+      // Never throws (the store answers 'none' on anything unexpected); the phone only save runs.
+      const joined = await autoJoinCustomerByEmail(customer, { openedWithEmail: existing?.email || '' }).catch(() => null);
+      if (joined?.customer) customer = joined.customer;
+      // Delayed: the attach toast the caller shows next would paint over it at once.
+      if (joined?.toast) (showDelayedToast || showToast)(joined.toast, joined.kind === 'linked' ? 'success' : 'warning');
+    }
+    if (closedRef.current) return;   // staff closed the form while it was checking
     addToHistory(customer);
     onConfirm(customer);
   };
@@ -201,7 +229,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
               {existing ? 'Editing customer details: update only what you need' : (isDriveThru ? 'Name or car, so the order reaches the right window' : orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
             </div>
           </div>
-          <button onClick={onCancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
+          <button onClick={cancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
         </div>
 
         {/* Customer search results */}
@@ -339,8 +367,8 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
 
         {/* Confirm / cancel */}
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onCancel}>Cancel</button>
-          <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15 }} onClick={handleConfirm}>
+          <button className="btn btn-ghost" style={{ flex: 1 }} onClick={cancel}>Cancel</button>
+          <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15, opacity: busy ? .6 : 1 }} onClick={handleConfirm} disabled={busy}>
             {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : isDriveThru ? 'Confirm drive thru →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
           </button>
         </div>

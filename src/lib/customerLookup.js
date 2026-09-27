@@ -190,6 +190,9 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
       // v5.5.264: stamp cards and gift cards from loyalty-balance
       stampCards: loyaltyData?.stamp_cards || [],
       giftCards: loyaltyData?.gift_cards || [],
+      // v5.9.89: which halves of loyalty the venue runs, so the display shows stamps, not "0 points".
+      pointsEnabled: loyaltyData?.points_enabled !== false,
+      stampsEnabled: loyaltyData?.stamps_enabled !== false,
     };
   } catch (e) {
     console.warn('[customerLookup] unexpected error:', e?.message || e);
@@ -238,6 +241,7 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
       let name = existing.name || '';
       let rewards = [];
       let customerId = existing.id;
+      let stampCards = [], pointsEnabled = true, stampsEnabled = true;
       try {
         const d = await fetchCustomerByPhone(rawPhone, locationId);
         if (d?.knownCustomer) {
@@ -245,9 +249,11 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
           name = d.name || name;
           rewards = Array.isArray(d.rewards) ? d.rewards : [];
           customerId = d.customerId || customerId;
+          stampCards = Array.isArray(d.stampCards) ? d.stampCards : [];
+          pointsEnabled = d.pointsEnabled !== false; stampsEnabled = d.stampsEnabled !== false;
         }
       } catch { /* points/rewards best-effort */ }
-      return { ok: true, known: true, name, points, rewards, customerId };
+      return { ok: true, known: true, name, points, rewards, customerId, stampCards, pointsEnabled, stampsEnabled };
     }
 
     // New number → create the customer, then SMS them the loyalty signup form.
