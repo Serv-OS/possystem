@@ -4,8 +4,9 @@
 // PAIRED location's "today" money + the live floor + live team, for a paired device (anon) or a BO
 // user. Money mirrors owner-snapshot exactly (_shared/snapshotSales.js, 27 Sep 2026: what customers
 // paid for the goods after discounts and comps, per check like the Daily trading report; net is
-// EX-VAT; pennies; VAT is a liability, never profit; never the shelf subtotal). The client classifies floor/team with the unit-tested engines in
-// src/lib/manager/*. Service-role reads, fenced by location + caller.
+// EX-VAT; pennies; VAT is a liability, never profit; never the shelf subtotal). The client
+// classifies floor/team with the unit-tested engines in src/lib/manager/*. Service-role reads,
+// fenced by location + caller.
 //
 //   POST { action:'snapshot', ops_location_id }  — token in Authorization header.
 // Auth: the device claimed to THIS location (ops_devices.device_uid = auth.uid()), OR a BO user with
