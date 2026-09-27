@@ -5,6 +5,9 @@
 // labour + labour %, COGS (a configurable %), fixed overhead → gross profit and
 // operating profit, forecast vs actual, with period totals. All computed
 // server-side by the trading-report edge fn. Self-fetching.
+//
+// 28 Sep 2026: refunds come off on the day they were made and show as their own line, and a
+// day is the venue's business day (business_day_start), like Sales summary and Xero.
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
@@ -37,7 +40,7 @@ const S = {
   note:  { fontSize: 11.5, color: 'var(--t4)', marginTop: 10, lineHeight: 1.5 },
   ladder:{ border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)', padding: '14px 18px', marginBottom: 16, maxWidth: 480 },
   lTitle:{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 },
-  lRow:  { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '5px 0', fontSize: 13.5, color: 'var(--t1)' },
+  lRow:  { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '5px 0', fontSize: 13.5, color: 'var(--t1)' },
   lLess: { color: 'var(--t3)', paddingLeft: 16 },
   lSub:  { borderTop: '1px solid var(--bdr)', fontWeight: 800, marginTop: 2, paddingTop: 7 },
   lFinal:{ borderTop: '2px solid var(--bdr2)', fontWeight: 900, fontSize: 15.5, marginTop: 2, paddingTop: 8 },
@@ -98,6 +101,8 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   if (!data) return <div style={S.empty}>No data.</div>;
 
   const { rows, totals } = data;
+  // The venue's business day start (06:30 at Coffee Boy): the report's days run from it.
+  const dayStart = data.day_start || null;
   // Labour against the Workforce target: predicted = rota cost on the forecast, actual = timesheets on net sales.
   const tgt = labourTarget != null ? Math.round(labourTarget * 1000) / 10 : null;
   const labourPred = rows.reduce((a, r) => a + (Number(r.labour_theo) || 0), 0);
@@ -130,7 +135,8 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
       <div style={S.ladder}>
         <div style={S.lTitle}>Period P&amp;L · actual</div>
         <div style={S.lRow}><span>Gross takings <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
-        <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less Refunds <span style={S.lHint}>(inc VAT) money given back{totals.refund_count ? `, ${totals.refund_count} refund${totals.refund_count === 1 ? '' : 's'}` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.refunds || 0)}</span></div>
+        <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income{totals.refund_vat ? ', after refunds' : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
         <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less COGS <span style={S.lHint}>— {basis === 'recipe' ? 'recipe cost' : 'estimate'}{totals.actual_sales > 0 ? ` ${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
         {basis === 'estimate' && totals.cogs_recipe > 0 && (
@@ -168,7 +174,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
         <table style={S.table}>
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
-            <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
+            <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>Refunds</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
             <th style={S.th}>Labour (act / pred)</th><th style={S.th}>Labour % pred</th><th style={S.th}>Labour % act</th>
             <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
@@ -183,6 +189,9 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
                   {r.last_year > 0 && <span style={S.ly} title="Use same weekday last year" onClick={() => setForecast(r.date, r.last_year)}>LY {money(r.last_year)}</span>}
                 </td>
                 <td style={S.td}>{money(r.gross_sales)}</td>
+                <td style={{ ...S.td, color: r.refunds > 0 ? 'var(--red)' : 'var(--t3)' }}
+                  title={r.refund_count ? `${r.refund_count} refund${r.refund_count === 1 ? '' : 's'} made this day (inc VAT)` : undefined}>
+                  {r.refunds > 0 ? `−${money(r.refunds)}` : money(0)}</td>
                 <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.vat)}</td>
                 <td style={S.td}>{money(r.actual_sales)}</td>
                 <td style={{ ...S.td, ...sign(vsFc(r.actual_sales, r.forecast)) }}>{vsFcText(vsFc(r.actual_sales, r.forecast))}</td>
@@ -201,6 +210,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
             <td style={{ ...S.td, ...S.tdL }}>Total</td>
             <td style={S.td}>{money(totals.forecast)}</td>
             <td style={S.td}>{money(totals.gross_sales)}</td>
+            <td style={{ ...S.td, color: totals.refunds > 0 ? 'var(--red)' : 'var(--t3)' }}>{totals.refunds > 0 ? `−${money(totals.refunds)}` : money(0)}</td>
             <td style={{ ...S.td, color: 'var(--t3)' }}>{money(totals.vat)}</td>
             <td style={S.td}>{money(totals.actual_sales)}</td>
             <td style={{ ...S.td, ...sign(vsFc(totals.actual_sales, totals.forecast)) }}>{vsFcText(vsFc(totals.actual_sales, totals.forecast))}</td>
@@ -213,7 +223,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
+      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: gross takings, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
     </div>
   );
 }

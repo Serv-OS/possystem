@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.1',
+    date: '28 Sep 2026',
+    items: [
+      'Daily trading (P&L): refunds now come off, on the day the refund was made, as their own line. Gross takings, less refunds, less VAT, gives net sales. A sale refunded in full used to count in full. The VAT line is the VAT owed: VAT on sales less the VAT refunded.',
+      'Daily trading (P&L): each day now runs from the venue business day start (06:30 to 06:30 at Coffee Boy), the same days as Sales summary and Xero, so sales after midnight count on the night they belong to. The rota stays on its shift date, and a timesheet counts on the day most of the shift was worked.',
+    ],
+  },
+  {
     v: '5.10.0',
     date: '28 Sep 2026',
     items: [

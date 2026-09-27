@@ -1,3 +1,11 @@
+# Session, 28 Sep 2026, v5.10.1, Daily trading refunds and business days (branch fix/trading-report-refunds-day)
+
+- trading-report (edge fn, needs its own deploy, AFTER the web release: the old screen's ladder would not add up once refunds come off): _shared/tradingSales.js tradingDays sums sales (checkSalesParts) and refunds (refundSalesParts on accountingDay.refundParts) per day with a dayOf the handler passes; timesheetDays puts a timesheet on the business day of the middle of the shift. Refunds read like accountingData.refundRows (400 day lookback, neq refunds []). Clock from accountingData.venueClock (throws on a failed read).
+- Peter's calls (28 Sep): days are the venue business day (06:30 at Coffee Boy), not midnight; a timesheet counts on the business day most of the shift falls in; the rota stays on shift_date.
+- DailyTrading.jsx: ladder Gross, less Refunds, less VAT (owed, net of refund VAT), Net; Refunds column; note says the day start and the refund day rule.
+- Real data (read only): Leeds 25 to 27 Sep net 1,968.04 -> 1,958.75 (-9.29): 3 refunds, 10.95 inc VAT, 1.66 VAT (the 1.00 test on 25 Sep, 6.15 on 26 Sep, 3.80 on 27 Sep). Nothing at Leeds sold before 06:30, so the business day moves nothing there. Every business day at Leeds (3) and Provo (89) matches the accounting layer exactly (sales less refunds). Provo demo moves a lot between days (157 of 511 checks before 06:00 London: Peter testing from California).
+- Seen, not fixed (task chips): the 27 Sep Leeds 3.80 refund (chk-1790514704775-51d46e) has legs [] and cardStatus none, so the till said to refund the card by hand; the report and Xero take it off as a card refund. Back Office report periods (_filters.js getPeriodRange) use the browser clock, not the venue zone (Peter in California sees London days shifted by 8 hours).
+
 # Session, 28 Sep 2026, v5.10.0, Owner and Manager app takings (branch fix/snapshot-sales)
 
 - owner-snapshot and manager-snapshot (edge fns, EACH needs its own deploy): takings go through _shared/snapshotSales.js addCheckSales (checkSalesParts per check; SALES_CHECK_COLS = trading-report's CHECK_COLS). They were net = subtotal (VAT in, before every discount) and gross = total. Orders = checks not voided (a comp counts, at £0); tips = the row's tip; both now answer vat too (UI unchanged).
