@@ -23,6 +23,7 @@ import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
+import { queueCustomerWithDeclared, declaredFromQueueCustomer } from '../lib/orderAllergy';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
 export const QUEUE_ROW_CAP = 500;
@@ -89,7 +90,10 @@ function queueToRow(o, locationId) {
     ref: o.ref,
     location_id: locationId,
     type: o.type || 'dine-in',
-    customer: o.customer || {},
+    // 26 Sep 2026 (allergy v4): the order's declared allergies ride in the customer jsonb
+    // (order_queue has no column; the house home for order level extras). A row without any is
+    // written exactly as before, so its sync hash does not move (src/lib/orderAllergy.js).
+    customer: queueCustomerWithDeclared(o.customer, o.declaredAllergens),
     items: o.items || [],
     total: money2(o.total),
     status: o.status || 'received',
@@ -103,10 +107,14 @@ function queueToRow(o, locationId) {
 }
 
 function rowToQueue(row) {
+  // 26 Sep 2026 (allergy v4): the declaration is lifted back out of the customer jsonb, and
+  // always set ([] when the row has none) so a merge takes a clear made on another till.
+  const { customer, declaredAllergens } = declaredFromQueueCustomer(row.customer);
   return {
     ref: row.ref,
     type: row.type,
-    customer: row.customer || null,
+    customer,
+    declaredAllergens,
     items: row.items || [],
     total: Number(row.total) || 0,
     status: row.status,

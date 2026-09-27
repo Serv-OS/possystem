@@ -4,6 +4,7 @@ import { kitchenLoadFromStore, prepMinutes, liveOrderCount } from '../lib/prepTi
 import { supabase, getLocationId } from '../lib/supabase';
 import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime';
 import AddressAutocomplete from './AddressAutocomplete';
+import { confirmedGuestAllergens } from '../lib/orderAllergy';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
@@ -141,7 +142,12 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     let finalNotes = notes.trim();
     // v5.5.894: allergens must SURVIVE the rebuild — this modal used to construct a fresh
     // customer object and silently drop them, so a pulled-up profile lost its allergy record.
-    let finalAllergens = Array.isArray(existing?.allergens) ? existing.allergens : [];
+    // 26 Sep 2026 (allergy v5): but only for the SAME guest. Editing the attached customer into
+    // a different person (another phone) carried the first guest's allergies onto the second,
+    // and since v4 those print on the kitchen docket (the review of v4: a FALSE allergy). The
+    // list is now the matched profile's, else the edited customer's when it is the same guest,
+    // else none (confirmedGuestAllergens).
+    let matchedProfile = null;
     if (phone.trim()) try {
       const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
       const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
@@ -157,10 +163,11 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         finalName = name.trim() || match.name || 'Customer';
         finalEmail = email.trim() || match.email || '';
         finalNotes = notes.trim() || match.notes || '';
-        if (Array.isArray(match.allergens) && match.allergens.length) finalAllergens = match.allergens;
+        matchedProfile = match;
         showToast(`Matched existing customer: ${match.name}`, 'success');
       }
     } catch {}
+    const finalAllergens = confirmedGuestAllergens(existing, { name: name.trim(), phone: phone.trim() }, matchedProfile);
     const customer = {
       name: finalName, phone: phone.trim(), email: finalEmail, notes: finalNotes,
       ...(finalAllergens.length ? { allergens: finalAllergens } : {}),
@@ -169,7 +176,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
       ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     };
-    addToHistory(customer);
+    // 26 Sep 2026 (allergy v5): the history save never writes allergies to a profile. The
+    // allergies above are the profile's own (or none); taking one off a profile stays a Back
+    // Office job, and adding one is the order banner's explicit "Save to profile".
+    addToHistory(customer, { saveAllergens: false });
     onConfirm(customer);
   };
 

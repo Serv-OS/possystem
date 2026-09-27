@@ -30,6 +30,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
 import { chargedAddedOnTax } from '../lib/taxBasis';
+import { orderDeclared } from '../lib/orderAllergy';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -248,7 +249,13 @@ function MPOSRouter() {
     // need at least a name + phone before the menu (kitchen ticket, queue row,
     // receipt). v5.5.341: takeaway was previously skipping capture.
     // Drive thru (16 Sep 2026) captures a name only; MCustomerCapture drops the phone rule for it.
-    useStore.setState({ walkInOrder: null, customer: null, activeTableId: null });
+    // 26 Sep 2026: allergens too. The Allergen chips are the declared allergies of the order on
+    // screen and they print on its kitchen docket (Peter: "come up on the KDS and the ticket
+    // printed"); this new order has declared none (src/lib/orderAllergy.js).
+    // v6: a kitchen update still waiting for the walk in being dropped goes first (the review of
+    // v5: an allergy tapped after the send was lost when the handheld moved on inside 4 s).
+    useStore.getState().flushKitchenAllergy({ walkIn: true });
+    useStore.setState({ walkInOrder: null, customer: null, activeTableId: null, allergens: [] });
     if (type === 'collection' || type === 'delivery' || type === 'takeaway' || type === 'drive-thru') {
       setFlow({ screen: 'customerCapture' });
     } else {
@@ -264,7 +271,12 @@ function MPOSRouter() {
       setFlow({ screen: 'covers', context: { table } });
     } else {
       // Existing session → table view
-      useStore.setState({ walkInOrder: null });
+      // 26 Sep 2026 (allergy v4): the Allergen chips LOAD this table's declared allergies
+      // (session.declaredAllergens) or nothing, like openTableInPOS on the till. A raw setState
+      // on purpose: loading must not write the declaration (setAllergens would).
+      // v6: the walk in being dropped tells the kitchen first (see onPickType).
+      useStore.getState().flushKitchenAllergy({ walkIn: true });
+      useStore.setState({ walkInOrder: null, allergens: orderDeclared(table.session) });
       setActiveTableId(table.id);
       useStore.getState().setOrderType('dine-in');
       setFlow({ screen: 'tableView', context: { tableId: table.id } });
@@ -531,6 +543,10 @@ function MPOSRouter() {
     // Walk-in-side cleanup: drop the now-paid order from local state. Only once the
     // record exists — on failure the cart has to survive so a retry can rebuild it.
     if (!tableId) useStore.setState({ walkInOrder: null, customer: null });
+    // 26 Sep 2026: the paid guest's declared allergies must not show on the next order (Peter: they
+    // print on the docket). After the record: clearTable / recordWalkInClosed run the payment time
+    // fire synchronously, from the paid order's own declaration, before this.
+    useStore.setState({ allergens: [] });
     // Belt-and-braces: clear activeTableId so the next "Take next order" lands
     // on a clean slate even if clearTable's reducer hasn't propagated yet.
     setActiveTableId(null);
@@ -559,7 +575,10 @@ function MPOSRouter() {
   const onAllDone = () => {
     setCloseFailure(null);
     setActiveTableId(null);
-    useStore.setState({ walkInOrder: null, customer: null });
+    // 26 Sep 2026: allergens too, the next order starts clean (see onPaymentApproved).
+    // v6: the walk in being dropped tells the kitchen first (see onPickType).
+    useStore.getState().flushKitchenAllergy({ walkIn: true });
+    useStore.setState({ walkInOrder: null, customer: null, allergens: [] });
     setFlow({ screen: null });
     setTab(runnerMode ? 'orders' : 'home');
   };
@@ -770,7 +789,12 @@ function MPOSRouter() {
           // the background — its session lives in the store and the realtime
           // sub keeps it visible to other devices.
           setActiveTableId(null);
-          useStore.setState({ walkInOrder: null, customer: null });
+          // 26 Sep 2026: allergens too. The send has gone (sendToKitchen ran before this screen), so
+          // the fresh order starts with none declared (Peter: they print on the docket).
+          // v6: an allergy tapped on the sent walk in after the send reaches the kitchen first
+          // (the review of v5: "Take next order" inside the settle time lost it).
+          useStore.getState().flushKitchenAllergy({ walkIn: true });
+          useStore.setState({ walkInOrder: null, customer: null, allergens: [] });
           setFlow({ screen: 'newOrder' });
         }}
         onStayHere={() => {

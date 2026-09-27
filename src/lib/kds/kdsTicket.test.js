@@ -10,6 +10,7 @@ import {
   KDS_TYPES, KDS_STATUS, buildTicketMeta, parseLegacyTicket, ticketMeta, needsTypeLookup, fallbackTypeForChannel,
   kdsTypeKey, ticketHeadline, identityLine, ticketLine, courseGroups, minutesSince, formatElapsed,
   statusOf, sortTickets, typeCounts, rollUp, shortRef, joinNotes, normaliseOrderType, applyQueueLookup, ticketView, identityParts, venueBusinessDayStart,
+  declaredAllergyLine, ticketAllergy, ticketAllergyBanner, orderAllergyLine,
 } from './kdsTicket.js';
 
 test('six types, delivery is pink, drive thru is blue and red stays the LATE colour only', () => {
@@ -346,4 +347,104 @@ test('venueBusinessDayStart: the venue clock, not the device clock, and DST corr
   // Missing settings fall back to London 06:00.
   assert.equal(iso(venueBusinessDayStart(Date.parse('2026-09-14T05:30:00Z'))), '2026-09-14T05:00:00.000Z');
   assert.throws(() => venueBusinessDayStart(Date.now(), 'Not/AZone'));
+});
+
+// ── Declared allergies (26 Sep 2026) ──────────────────────────────────────────
+// Peter: "even if allergies are not on products, when allergies are selected it should come up
+// on the KDS and the ticket printed". Coffee Boy Leeds has 454 products and not one carries
+// allergen data (live check 26 Sep 2026), so every case below has NO item.allergens.
+
+test('declaredAllergyLine: ids become the menu editor labels, aliases land on them, unknown words stay, empty is null', () => {
+  assert.equal(declaredAllergyLine(['nuts', 'milk']), 'TREE NUTS · MILK');
+  assert.equal(declaredAllergyLine(['dairy', 'Soya', 'milk']), 'MILK · SOY');   // alias, and the duplicate collapses
+  assert.equal(declaredAllergyLine(['kiwi fruit']), 'KIWI FRUIT');              // not one of the 14: kept, never dropped
+  assert.equal(declaredAllergyLine('gluten'), 'GLUTEN');                         // a lone id
+  assert.equal(declaredAllergyLine([]), null);
+  assert.equal(declaredAllergyLine(null), null);
+  assert.equal(declaredAllergyLine(['', null, '  ']), null);
+});
+
+test('ticketAllergy: the order allergies (plus a v3 line stamp still queued), never the product allergen data', () => {
+  assert.equal(ticketAllergy({ name: 'Flat white', guestAllergens: ['nuts'] }), 'TREE NUTS');
+  assert.equal(ticketAllergy({ name: 'Flat white' }, ['nuts', 'milk']), 'TREE NUTS · MILK');
+  assert.equal(ticketAllergy({ name: 'Flat white', guestAllergens: ['nuts'] }, ['milk'], ['nuts']), 'TREE NUTS · MILK');
+  // Product allergens are the amber "⚠" line, not this one.
+  assert.equal(ticketAllergy({ name: 'Latte', allergens: ['milk'] }), null);
+  assert.equal(ticketAllergy({ name: 'Latte', allergens: ['milk'] }, []), null);
+  assert.equal(ticketAllergy(null, undefined, 'milk'), null);   // a non array extra is ignored
+});
+
+test('ticketLine: a declared allergy renders even when the product has no allergen data', () => {
+  const stamped = ticketLine({ qty: 1, name: 'Flat white', mods: ['Oat milk'], allergy: 'TREE NUTS · MILK' }, 0);
+  assert.equal(stamped.allergy, 'TREE NUTS · MILK');
+  assert.equal(stamped.allergen, null);                       // no product allergen line
+  assert.deepEqual(stamped.mods, ['Oat milk']);
+  // A queued line that only carries the raw ids (the v3 stamp, no longer written) still reads.
+  assert.equal(ticketLine({ qty: 1, name: 'Flat white', guestAllergens: ['nuts'] }, 0).allergy, 'TREE NUTS');
+  // The writer's line wins over the ids, and is upper cased.
+  assert.equal(ticketLine({ name: 'X', allergy: 'milk', guestAllergens: ['nuts'] }, 0).allergy, 'MILK');
+  // Nothing declared: null, the old shape untouched.
+  assert.equal(ticketLine({ qty: 1, name: 'Flat white' }, 0).allergy, null);
+});
+
+test('buildTicketMeta carries the allergy line and an old row reads back null', () => {
+  const m = buildTicketMeta({ channel: 'till', orderType: 'takeaway', allergy: '  TREE NUTS · MILK ' });
+  assert.equal(m.allergy, 'TREE NUTS · MILK');
+  assert.equal(buildTicketMeta({ channel: 'till' }).allergy, null);
+  assert.equal(ticketMeta({ meta: { v: 1, channel: 'till', allergy: 'MILK' } }).allergy, 'MILK');
+  assert.equal(ticketMeta({ table_label: 'T4' }).allergy, null);
+});
+
+test('ticketAllergyBanner: meta first, else the distinct allergies across the lines', () => {
+  assert.equal(ticketAllergyBanner({ allergy: 'MILK' }, [{ allergy: 'TREE NUTS' }]), 'MILK');
+  assert.equal(ticketAllergyBanner({}, [{ allergy: 'TREE NUTS · MILK' }, { allergy: 'MILK' }, { allergy: 'EGGS', voided: true }]), 'TREE NUTS · MILK');
+  assert.equal(ticketAllergyBanner(null, [{ name: 'Latte', allergens: ['milk'] }]), null);
+  const view = ticketView({ id: 'k1', table: 'T2', items: [{ qty: 1, name: 'Soup', guestAllergens: ['celery'] }], meta: buildTicketMeta({ channel: 'table', isTable: true }) });
+  assert.equal(view.allergy, 'CELERY');
+  assert.equal(view.groups[0].lines[0].allergy, 'CELERY');
+  assert.equal(ticketView({ id: 'k2', table: 'T2', items: [{ qty: 1, name: 'Soup' }] }).allergy, null);
+});
+
+test('rollUp never sums an allergy order into a plain one, and shows the line', () => {
+  const rows = rollUp([
+    { items: [{ qty: 1, name: 'Flat white' }] },
+    { items: [{ qty: 2, name: 'Flat white', allergy: 'TREE NUTS' }] },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find(r => r.mods.includes('ALLERGY: TREE NUTS')).qty, 2);
+});
+
+test('orderAllergyLine: the ticket banner is the order\'s declaration, plus any v3 line stamp, null when none', () => {
+  assert.equal(orderAllergyLine(['nuts', 'milk'], [{ name: 'Soup' }]), 'TREE NUTS · MILK');
+  assert.equal(orderAllergyLine([], [{ name: 'Soup', guestAllergens: ['celery'] }]), 'CELERY');   // an old queued line
+  assert.equal(orderAllergyLine(['milk'], [{ name: 'Latte', allergens: ['milk', 'eggs'] }]), 'MILK');   // product data never counts
+  assert.equal(orderAllergyLine([], [{ name: 'Soup' }]), null);
+  assert.equal(orderAllergyLine(undefined, undefined), null);
+});
+
+// ── v4 (26 Sep 2026): the capture model moved to src/lib/orderAllergy.js ──────────
+// The declared allergies now belong to the ORDER (session / walk in / tab / queue entry), and
+// orderAllergy.test.js holds its tests and the send and order switch pins. This file keeps the
+// rendering: how a declaration becomes the line the KDS card and the docket show.
+
+test('source pin: every kitchen ticket writer stamps `allergy`, and nothing strips it on the way to the printer', () => {
+  const store = fs.readFileSync(new URL('../../store/index.js', import.meta.url), 'utf8');
+  // No line is stamped any more (v3's per line copy of the chips is gone).
+  assert.ok(!/guestAllergens: \[\.\.\.get\(\)\.allergens\]/.test(store), 'addItem must not stamp the chips on the line');
+  assert.ok((store.match(/allergy: ticketAllergy\(i, /g) || []).length >= 5, 'send, reprint, bar round, channel orders and the table move all stamp allergy');
+  assert.match(store, /createKdsTickets = \([^)]*orderAllergens/);
+  // routePrintJob's printAllergens strip only touches mods, so `allergy` reaches the docket builder.
+  const strip = /const printItems = centre\?\.printAllergens[\s\S]*?mods: Array\.isArray\(it\.mods\)[\s\S]*?\}\)\);/.exec(store);
+  assert.ok(strip, 'printAllergens strip not found');
+  assert.ok(!/allergy\b/.test(strip[0]), 'the strip must not touch item.allergy');
+  // The card renders it as its own red block, the docket builder prints it under the line.
+  const card = fs.readFileSync(new URL('../../surfaces/kds/KdsTicketCard.jsx', import.meta.url), 'utf8');
+  assert.match(card, /line\.allergy && \(/);
+  assert.match(card, />ALLERGY: \{line\.allergy\}</);
+  assert.match(card, /view\.allergy && <AllergyBlock/);
+  const doc = fs.readFileSync(new URL('../printDoc.js', import.meta.url), 'utf8');
+  assert.match(doc, /if \(item\.allergy\) b\.red\(\)\.bold\(true\)\.doubleHeight\(\)\.line\(` {2}ALLERGY: /);
+  const transfer = /export function buildTransferNoticeTicketDoc[\s\S]*?\n\}\n/.exec(doc);
+  assert.ok(transfer, 'buildTransferNoticeTicketDoc not found');
+  assert.match(transfer[0], /if \(it\.allergy\) b\.red\(\)\.bold\(true\)\.doubleHeight\(\)\.line\(` {2}ALLERGY: /);
 });

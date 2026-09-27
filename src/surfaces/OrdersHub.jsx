@@ -40,6 +40,7 @@ import {
 // this till is not linked; no card capture starts on a till that is not linked.
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { orderDeclared, reopenedAllergyFields } from '../lib/orderAllergy';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -1018,6 +1019,9 @@ export default function OrdersHub() {
             price: -(Number(p.amount) || 0), qty: 1, mods: [], notes: '',
           })),
         ];
+        // 26 Sep 2026 (allergy v6): the walk in this replaces tells the kitchen first if an
+        // allergy declared after its send is still waiting (the review of v5).
+        useStore.getState().flushKitchenAllergy({ walkIn: true });
         useStore.setState({
           walkInOrder: {
             id: `ORD-${(o.ref || '').replace('#', '')}`,
@@ -1028,7 +1032,12 @@ export default function OrdersHub() {
             serviceChargeWaived: true,
             sentAt: o.sentAt,
             total: f.due,
+            // 26 Sep 2026 (allergy v4): a channel order declares none of its own yet; the chips
+            // load that, never the previous order's. v6: its lines count as with the kitchen
+            // already (reopenedAllergyFields), so reopening it announces nothing.
+            ...reopenedAllergyFields(o._raw || o, payItems),
           },
+          allergens: orderDeclared(o._raw || o),
           customer: o.customer || null,
           orderType: o._raw?.type || o.type || 'delivery',
           activeTableId: null,
@@ -1049,6 +1058,16 @@ export default function OrdersHub() {
       // walk-in slot so the POS actually shows the items. Previously this branch
       // only called setSurface('pos') which left walkInOrder null, so the POS
       // rendered an empty cart every time.
+      // 26 Sep 2026 (allergy v4): the reopened order brings its own declared allergies back (its
+      // queue entry carries them, src/lib/orderAllergy.js), and the Allergen chips load exactly
+      // those: never what the till had on for the previous order.
+      // v6 (the review of v5): the reopened order also knows what the kitchen already holds
+      // (reopenedAllergyFields: the entry's declaration went with its send, and every update
+      // since is folded into it), so its next send, payment or chip tap never prints a false
+      // "ALLERGY UPDATE ... NEW" for food the kitchen already has marked. The walk in it
+      // replaces tells the kitchen first if an update is still waiting.
+      const reopenDeclared = orderDeclared(o._raw || o);
+      useStore.getState().flushKitchenAllergy({ walkIn: true });
       useStore.setState({
         walkInOrder: {
           id: `ORD-${(o.ref||'').replace('#','')}`,
@@ -1058,7 +1077,10 @@ export default function OrdersHub() {
           total: o.total,
           isASAP: o.isASAP,
           collectionTime: o.collectionTime,
+          ...reopenedAllergyFields(o._raw || o, o.items || []),
+          declaredAllergens: reopenDeclared,
         },
+        allergens: reopenDeclared,
         customer: o.customer || null,
         // v4.6.5 follow-up Bug 2 real root cause: the orderQueue-to-list transform at
         // OrdersHub line 113-125 doesn't include `type` on the outer object — the original

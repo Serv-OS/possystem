@@ -27,6 +27,7 @@
 import { supabase } from './supabase';
 import { qrSessionWriteAction, qrRowOnFloor } from './publicOrder';   // pure, tested in publicOrder.test.js
 import { mustChangeRow } from './rowWrites';
+import { carryOrderAllergy } from './orderAllergy';   // pure
 
 export async function syncQrTableSession(locationId, tableId) {
   if (!supabase || !locationId || !tableId) return;
@@ -105,6 +106,10 @@ export async function syncQrTableSession(locationId, tableId) {
       // tableLabel grows with sub-numbers as operators view it on the
       // floor plan; useful for "Table 4 has 2 open QR tabs" badge later.
       qr_tab_count: rows.length,
+      // 26 Sep 2026 (allergy v5): a declaration a till set on this QR session (and what the
+      // kitchen was told) survives the rebuild from order_queue; nothing else of the old
+      // session is kept, as before.
+      ...carryOrderAllergy(existing?.session),
     };
 
     if (action === 'insert') {

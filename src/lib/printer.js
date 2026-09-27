@@ -22,7 +22,7 @@ import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import {
   buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
-  buildTransferNoticeTicketDoc, buildTestPageDoc, docHasCut, docHasDrawer,
+  buildTransferNoticeTicketDoc, buildAllergyUpdateTicketDoc, buildTestPageDoc, docHasCut, docHasDrawer,
 } from './printDoc.js';
 import {
   EscPosBuilder, resolvePrinterSpec, encodeEscPos, encodeStarLine, encodeStarRaster, cashDrawerBytes,
@@ -912,6 +912,21 @@ class PrintService {
     return { ok: false, error: 'No kitchen printer configured' };
   }
 
+
+  // 26 Sep 2026 (allergy v5): an allergy declared after the kitchen got the order. Kitchen role
+  // printer for the centre, like the transfer notice; its own builder (printDoc.js).
+  async printAllergyUpdateTicket(ticketData, printerId = null, opts = {}) {
+    const printer = this._printerForRole('kitchen', printerId);
+    if (printer?.address) {
+      const bytes = await encodeDocForPrinter(buildAllergyUpdateTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
+      return this._submitJob(printer, 'kitchen', bytes, {
+        idempotencyKey: opts.idempotencyKey,
+        metadata: { tableLabel: ticketData.table, centreName: ticketData.centreName, allergy: ticketData.allergy, type: 'allergy-update' },
+        label: `Allergy update: ${ticketData.table || 'Walk-in'} (${ticketData.centreName || 'kitchen'})`,
+      });
+    }
+    return { ok: false, error: 'No kitchen printer configured' };
+  }
 
   async printTransferNoticeTicket(ticketData, printerId = null, opts = {}) {
     // v4.6.28: kitchen alert on table move. Uses the kitchen-role printer for

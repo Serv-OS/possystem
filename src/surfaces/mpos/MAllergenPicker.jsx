@@ -10,16 +10,15 @@ import { Sx } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
 
 export default function MAllergenPicker({ onClose }) {
-  const { allergens = [] } = useStore();
+  const { allergens = [], toggleAllergen, clearAllergens } = useStore();
 
-  const toggle = (id) => {
-    const next = allergens.includes(id)
-      ? allergens.filter(a => a !== id)
-      : [...allergens, id];
-    useStore.setState({ allergens: next });
-  };
+  // 26 Sep 2026 (allergy v4): through the store actions, not a raw setState. The chips are the
+  // declared allergies of the ORDER on screen and print on its kitchen docket, so a chip here,
+  // or Clear, edits that order's declaration (store withDeclaration), exactly like the till. A
+  // raw setState changed the chips alone and the order would have printed something else.
+  const toggle = (id) => toggleAllergen(id);
 
-  const clearAll = () => useStore.setState({ allergens: [] });
+  const clearAll = () => clearAllergens();
 
   return (
     <MBottomSheet onClose={onClose}>

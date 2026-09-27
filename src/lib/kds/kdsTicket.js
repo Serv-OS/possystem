@@ -24,6 +24,9 @@
 // with .eq('table_label', table.label). Never change what goes in that column.
 
 import { resolveLocalDateTime } from '../openingHours.js';
+// Both are pure data / pure functions (no React, no Supabase), so node:test still loads this file.
+import { ALLERGENS } from '../../data/seed.js';
+import { normaliseAllergenId } from '../kioskAllergens.js';
 
 /**
  * Order type colours and labels. Delivery is Peter's fifth type (14 Sep 2026), drive thru
@@ -96,8 +99,10 @@ export function shortRef(ref) {
  *   isTable     true when the ticket belongs to a table (table orders, QR at a table)
  *   customerName, orderRef (full ref, shortened here for display), appCode (delivery app
  *   code, wins over the ref), source (till name), staff, note (order level kitchen note)
+ *   allergy     the guest's declared allergies as one uppercase line (26 Sep 2026, see
+ *               declaredAllergyLine); the card and the docket show it as a banner
  */
-export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note } = {}) {
+export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note, allergy } = {}) {
   const ch = clean(channel);
   const table = !!isTable || ch === 'table';
   // Tables show no number (Peter, 14 Sep 2026). Bar tabs have no order number either.
@@ -112,6 +117,7 @@ export function buildTicketMeta({ channel, orderType, isTable = false, customerN
     source: clean(source),
     staff: clean(staff),
     note: cleanNote(note),
+    allergy: clean(allergy),
   };
 }
 
@@ -126,6 +132,70 @@ export function joinNotes(...notes) {
     out.push(s);
   }
   return out.length ? out.join('\n') : null;
+}
+
+// ── Declared allergies (26 Sep 2026) ──────────────────────────────────────────
+// Peter: "even if allergies are not on products, when allergies are selected it should
+// come up on the KDS and the ticket printed". The till's Allergen filter only ever reached
+// the kitchen through PRODUCTS that carried matching allergen data, as the "⚠ MILK"
+// modifier line. Coffee Boy Leeds has no allergen data on any of its 454 items, so nothing
+// ever showed. Now every kitchen ticket item carries `allergy`: one uppercase line
+// ("TREE NUTS · MILK") that the KDS card and the printed docket show as is, whatever the
+// product says, and the ticket meta carries the same line for the banner. The allergies
+// themselves are the ORDER's declaration (src/lib/orderAllergy.js, v4); this file only turns
+// ids into the line and reads it back. Optional additions, so an old till or screen simply
+// ignores them.
+
+const ALLERGEN_LABEL = new Map(ALLERGENS.map(a => [a.id, a.label]));
+
+/**
+ * 'nuts', 'milk' → 'TREE NUTS · MILK'. Ids are read through the kiosk's normaliser so a
+ * customer profile holding 'dairy' or 'Soya' lands on the menu editor's word; anything
+ * else is kept as typed, in capitals, never dropped. Duplicates collapse. Null when empty.
+ */
+export function declaredAllergyLine(ids) {
+  const list = Array.isArray(ids) ? ids : (ids ? [ids] : []);
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    const id = normaliseAllergenId(raw);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(String(ALLERGEN_LABEL.get(id) || clean(raw) || id).toUpperCase());
+  }
+  return out.length ? out.join(' · ') : null;
+}
+
+/** The ids a line carries from the v3 per line stamp (guestAllergens, no longer written), [] for every other line. */
+function legacyLineIds(item) {
+  return Array.isArray(item?.guestAllergens) ? item.guestAllergens : [];
+}
+
+/**
+ * The `allergy` line for one kitchen ticket item: the order's declared allergies (v4, 26 Sep
+ * 2026: the ORDER's declaration, src/lib/orderAllergy.js, never the attached customer's saved
+ * list on top). A queued line that still carries the v3 stamp (`guestAllergens`) keeps it, so
+ * nothing already queued is lost; no line is stamped any more. Product allergen data
+ * (item.allergens) is deliberately not part of this: that stays the "⚠ MILK" modifier line.
+ */
+export function ticketAllergy(item, ...orderAllergens) {
+  const ids = [
+    ...legacyLineIds(item),
+    ...orderAllergens.flatMap(a => (Array.isArray(a) ? a : [])),
+  ];
+  return declaredAllergyLine(ids);
+}
+
+/**
+ * The ticket level line (meta.allergy, the KDS and docket banner): the order's declaration,
+ * plus any v3 line stamp among `lines` (the same rule as ticketAllergy, so the banner never
+ * shows less than the lines under it). Null when the order declares nothing.
+ */
+export function orderAllergyLine(declared, lines) {
+  return declaredAllergyLine([
+    ...(Array.isArray(declared) ? declared : []),
+    ...(Array.isArray(lines) ? lines : []).flatMap(legacyLineIds),
+  ]);
 }
 
 /**
@@ -262,10 +332,32 @@ export function ticketLine(item, index) {
     name: String(item?.name || 'Item'),
     mods,
     allergen: allergens.length ? allergens.join(' · ') : null,
+    // 26 Sep 2026: the guest's DECLARED allergies (Peter: "even if allergies are not on
+    // products"). Writers stamp `allergy`, the finished line; a line that only carries the raw
+    // ids (guestAllergens, the v3 per line stamp, no longer written) is still read, so nothing
+    // already queued is lost. Nothing here reads item.allergens.
+    allergy: clean(item?.allergy)?.toUpperCase() || declaredAllergyLine(item?.guestAllergens),
     course: item?.course ?? 1,
     bumped: !!item?._bumped,
     voided: !!item?.voided,
   };
+}
+
+/**
+ * The ticket level ALLERGY banner: the line the writer stamped in meta, else the distinct
+ * allergies across the ticket's lines (a writer that stamped lines but not meta). Null when
+ * nobody declared an allergy on this order.
+ */
+export function ticketAllergyBanner(meta, items) {
+  if (meta?.allergy) return meta.allergy;
+  const seen = new Set();
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (it?.voided) continue;
+    const line = ticketLine(it, 0).allergy;
+    if (!line) continue;
+    for (const part of line.split(' · ')) { const p = clean(part); if (p) seen.add(p); }
+  }
+  return seen.size ? [...seen].join(' · ') : null;
 }
 
 const COURSE_LABEL = { 0: 'Immediate', 1: 'Course 1', 2: 'Course 2', 3: 'Course 3' };
@@ -351,7 +443,9 @@ export function rollUp(tickets) {
       const line = ticketLine(it, i);
       if (line.bumped || line.voided) return;
       if (!fired.includes(line.course)) return;
-      const detail = [...line.mods, ...(line.allergen ? [`⚠ ${line.allergen}`] : [])];
+      // 26 Sep 2026: a declared allergy is part of the key too, so the rail never sums an
+      // allergy order into a plain one and shows the line (red on the board).
+      const detail = [...line.mods, ...(line.allergen ? [`⚠ ${line.allergen}`] : []), ...(line.allergy ? [`ALLERGY: ${line.allergy}`] : [])];
       const key = line.name + '||' + detail.slice().sort().join('~');
       const row = map.get(key);
       if (row) row.qty += line.qty;
@@ -403,6 +497,8 @@ export function ticketView(row, queueRow = null) {
     coversLabel: covers > 1 ? `${covers} cv` : null,
     staff: meta.staff,
     note: meta.note,
+    // 26 Sep 2026: the declared allergies banner (Peter: unmissable on the KDS).
+    allergy: ticketAllergyBanner(meta, row?.items),
     groups: courseGroups(row?.items, row?.firedCourses),
   };
 }

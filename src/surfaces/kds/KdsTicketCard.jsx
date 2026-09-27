@@ -95,7 +95,7 @@ function cardSizes(s) {
     course: 12,
     bodyGap: scaled(9, s, 7), lineGap: scaled(11, s, 8),
     chip: scaled(30, s, 26), chipFont: scaled(17, s, 15), chipPad: scaled(7, s, 5),
-    item: 19, itemMin: 14, mods: 15, allergen: 13,
+    item: 19, itemMin: 14, mods: 15, allergen: 13, allergy: 14,
     note: 15, notePad: `${scaled(8, s, 6)}px ${scaled(11, s, 8)}px`,
     footPad: scaled(12, s, 9),
   };
@@ -104,7 +104,7 @@ const MODAL = {
   headline: 46, headlineMin: 26, ident: 20, meta: 17, badge: 15, course: 15,
   timerPad: '14px 22px', timerLabel: 12, timerValue: 44,
   chip: 52, chipFont: 28, chipPad: 12, lineGap: 18,
-  item: 30, itemMin: 18, mods: 23, allergen: 19, note: 20, notePad: '14px 18px',
+  item: 30, itemMin: 18, mods: 23, allergen: 19, allergy: 22, note: 20, notePad: '14px 18px',
 };
 
 /** Accent for the top bar and course chip: the type colour, or the time status colour. */
@@ -192,8 +192,28 @@ function LineRow({ line, big, z, onTick, canTick, showTick }) {
         {line.allergen && (
           <div style={{ font: `700 ${z.allergen}px ${MONO}`, letterSpacing: big ? 0 : '.06em', color: C.allergen, overflowWrap: 'anywhere' }}>⚠ {line.allergen}</div>
         )}
+        {/* 26 Sep 2026: the guest's DECLARED allergies (Peter: "even if allergies are not on
+            products ... it should come up on the KDS"). A solid red block, uppercase, whatever
+            the product's allergen data says (that stays the amber line above). */}
+        {line.allergy && (
+          <div style={{
+            alignSelf: 'flex-start', maxWidth: '100%', borderRadius: big ? 8 : 6, padding: big ? '6px 12px' : '3px 8px',
+            font: `800 ${z.allergy}px/1.25 ${MONO}`, letterSpacing: '.06em', color: C.allergyInk, background: C.allergy,
+            overflowWrap: 'anywhere', textDecoration: done ? 'line-through' : 'none',
+          }}>ALLERGY: {line.allergy}</div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** 26 Sep 2026: the ticket's declared allergies, one red banner above the food (Peter: unmissable at a glance). */
+function AllergyBlock({ text, big, z }) {
+  return (
+    <div style={{
+      width: '100%', background: C.allergy, color: C.allergyInk, borderRadius: big ? 10 : 8, padding: z.notePad,
+      font: `800 ${big ? z.allergy : z.note}px/1.3 ${MONO}`, letterSpacing: '.06em', overflowWrap: 'anywhere', textAlign: 'left',
+    }}>⚠ ALLERGY: {text}</div>
   );
 }
 
@@ -298,6 +318,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(view.id); }
         }}
         style={{ cursor: 'pointer', padding: `${z.padTop}px ${z.padX}px ${z.footPad}px`, display: 'flex', flexDirection: 'column', gap: z.bodyGap, width: '100%', textAlign: 'left' }}>
+        {view.allergy && <AllergyBlock text={view.allergy} big={false} z={z} />}
         {view.groups.map(g => (
           <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: z.bodyGap }}>
             {show.course && <CourseChip label={g.label} accent={accent} font={z.course} />}
@@ -382,6 +403,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {view.allergy && <AllergyBlock text={view.allergy} big z={z} />}
           {note && <NoteBlock note={note} big z={z} />}
           {view.groups.map(g => (
             <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

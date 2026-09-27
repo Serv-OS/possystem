@@ -32,7 +32,9 @@ test('pins: a customer can be taken off an order (till chip: Remove)', () => {
   const pos = read('../surfaces/POSSurface.jsx');
   assert.match(pos, /const removeCustomer = \(\) => \{/);
   assert.match(pos, /if \(orderType === 'dine-in' && activeTableId\) setSessionCustomer\(activeTableId, null\);/, 'a table order forgets the guest too');
-  assert.match(pos, /if \(Array\.isArray\(customer\?\.allergens\) && customer\.allergens\.length\) setAllergens\(\[\]\);/, 'the allergen filter that came with the profile goes with it');
+  // 26 Sep 2026 (allergy v5): the chips are the order's declared allergies, so exactly the ones
+  // attaching this customer ADDED come off (the order's own record); anything staff declared stays.
+  assert.match(pos, /\n\s+dropCustomerAllergies\(customer\);\n\s+clearCustomer\(\);/, 'the allergies that came with the profile go with it');
   assert.match(pos, /clearCustomer\(\);\n\s+showToast\?\.\('Customer removed from this order'/);
   assert.match(pos, /aria-label="Remove customer from this order"/);
 });

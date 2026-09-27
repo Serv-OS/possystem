@@ -18,6 +18,8 @@ import { giftRecordFrom } from '../lib/giftCommit';
 import { singleTender } from '../lib/accounting/tenders';
 import { computeOrderTaxUnified } from '../lib/taxCompute';
 import { creditDiscountsFromPayment } from '../lib/taxBasis';
+import { declaredAllergyLine } from '../lib/kds/kdsTicket';
+import { onScreenDeclared } from '../lib/orderAllergy';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -186,7 +188,7 @@ const labelStyle = { display:'block', fontSize:11, fontWeight:700, color:'var(--
 
 // ─── Main Bar Surface ─────────────────────────────────────────────────────────
 export default function BarSurface() {
-  const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, setTabHold, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
+  const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, setTabHold, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, clearAllergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
 
   const [showOpenModal, setShowOpenModal]   = useState(false);
   // v5.5.909: can this venue take a card hold at all? Ryft in-person cannot — pre-auth is
@@ -226,6 +228,10 @@ export default function BarSurface() {
   useEffect(() => { if (tabs.length===0 && isMock) seedTabs(); }, []);
 
   const activeTab = tabs.find(t=>t.id===activeTabId);
+  // 26 Sep 2026 (allergy v5): the open tab's declared allergies (what its next round prints), with
+  // Clear. The review of v4: the Bar had no chips, so a wrongly handed over allergy stayed on
+  // every later round of the tab with no way to take it off.
+  const tabAllergyLine = activeTab ? declaredAllergyLine(onScreenDeclared({ surface: 'bar', activeTabId, tabs, allergens })) : null;
   const filteredTabs = tabs.filter(t=>showTabFilter==='active' ? t.status!=='closed' : true);
 
   // Determine active menu for this device
@@ -350,6 +356,10 @@ export default function BarSurface() {
 
   const fireRound = () => {
     if (!activeTab||!roundItems.length) return;
+    // 26 Sep 2026 (allergy v4): every round prints the TAB's declared allergies (addRoundToTab
+    // reads tab.declaredAllergens), so the same guest's next round on the same tab carries them
+    // and another tab never does. The Allergen chips here load the open tab's declaration by
+    // themselves when staff switch tabs (the store's order switch follower).
     const res = addRoundToTab(activeTab.id, roundItems, roundNote);
     if (res && res.ok === false) return;   // over the card hold — keep the round so staff can trim it or cash off
     setRoundItems([]);
@@ -742,6 +752,13 @@ export default function BarSurface() {
                   <div style={{ fontSize:11,color:'var(--t3)' }}>{activeTab.rounds.reduce((s,r)=>s+r.items.reduce((s2,i)=>s2+i.qty,0),0)} items · {activeTab.rounds.length} rounds</div>
                 </div>
               </div>
+
+              {tabAllergyLine&&(
+                <div role="alert" style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, padding:'7px 8px 7px 10px', borderRadius:9, background:'var(--red)', color:'#fff' }}>
+                  <span style={{ flex:1, minWidth:0, fontSize:12, fontWeight:800, letterSpacing:'.03em', overflowWrap:'anywhere' }}>⚠ ALLERGY: {tabAllergyLine}</span>
+                  <button onClick={clearAllergens} aria-label="Clear the allergies on this tab" title="Clear the allergies on this tab" style={{ flexShrink:0, width:24, height:24, borderRadius:6, border:'1px solid rgba(255,255,255,.45)', background:'transparent', color:'#fff', fontSize:12, fontWeight:800, cursor:'pointer', fontFamily:'inherit', lineHeight:1 }}>✕</button>
+                </div>
+              )}
 
               {/* Tab note */}
               {editingNote ? (

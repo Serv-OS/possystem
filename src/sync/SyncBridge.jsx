@@ -25,6 +25,7 @@ import { mergeBroadcastTables, bootTables, normaliseFloorRow, loadPlanState, sav
 import { isSessionClosed } from './sessionClosure';
 import { startTablePlanSync } from './TablePlanSync';
 import { defaultSections } from '../lib/sectionPlan';
+import { allergyFieldsDiffer } from '../lib/orderAllergy';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -965,6 +966,12 @@ export default function SyncBridge({ onSyncPulse }) {
         // via the 10s reconciler poll (stale on other terminals, wrong course/
         // seat/note on a kitchen ticket fired from another device in that window).
         if (t.session?.serviceChargeWaived !== p.session?.serviceChargeWaived) return true;
+        // 26 Sep 2026 (allergy v4): the order's declared allergies (a chip, Clear all, a customer
+        // attached) change nothing counted above, and must reach the other tills and survive a
+        // reload like every other session field (Peter: they print on the kitchen docket).
+        // v5: also what the kitchen was told (kitchenAllergens, so another till does not tell it
+        // again) and whose profile the order took (attachedProfiles, attach once).
+        if (allergyFieldsDiffer(t.session, p.session)) return true;
         const itemSig = (s) => (s?.items || []).map(i => `${i.uid||i.id}:${i.notes||''}:${i.seat ?? ''}:${i.course ?? ''}`).join('|');
         if (itemSig(t.session) !== itemSig(p.session)) return true;
         return false;

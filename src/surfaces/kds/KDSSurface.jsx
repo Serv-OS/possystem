@@ -706,7 +706,11 @@ export function KDSSurface() {
                     <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ font: `600 16px/1.25 ${SANS}`, color: C.railItem, overflowWrap: 'anywhere' }}>{r.name}</span>
                       {r.mods.map((m, i) => (
-                        <span key={i} style={{ font: `600 14px/1.3 ${SANS}`, color: m.startsWith('⚠') ? C.allergen : C.meta1, overflowWrap: 'anywhere' }}>{m}</span>
+                        <span key={i} style={{
+                          // 26 Sep 2026: a declared allergy (rollUp, "ALLERGY: ...") reads red and bold on the rail.
+                          font: `${m.startsWith('ALLERGY') ? 800 : 600} 14px/1.3 ${SANS}`,
+                          color: m.startsWith('ALLERGY') ? C.allergy : m.startsWith('⚠') ? C.allergen : C.meta1, overflowWrap: 'anywhere',
+                        }}>{m}</span>
                       ))}
                     </div>
                   </div>

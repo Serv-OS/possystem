@@ -15,6 +15,8 @@ import { useStore } from '../../store';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { LINES_ONLY_BASIS } from '../../lib/taxBasis';
 import { receiptTargetStatus } from '../../lib/printer';
+import { declaredAllergyLine } from '../../lib/kds/kdsTicket';
+import { onScreenDeclared, kitchenOnly } from '../../lib/orderAllergy';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
@@ -24,7 +26,14 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
     activeTableId, tables, walkInOrder,
     removeItem, updateItemQty, orderType, setOrderNote,
     printCustomerReceipt, locationConfig, showToast, staff,
+    surface, activeTabId, tabs, allergens, clearAllergens,
   } = useStore();
+  // 26 Sep 2026 (allergy v4): the declared allergies of the order in this cart, exactly what its
+  // next send prints (src/lib/orderAllergy.js), for the red banner under the header.
+  const declaredLine = declaredAllergyLine(onScreenDeclared({ surface, activeTabId, tabs, activeTableId, tables, walkInOrder, allergens }));
+  // v5: allergies the kitchen was told for this order's food and the order no longer declares
+  // (taken off after the send). The kitchen keeps them, the safe side, so the cart says so.
+  const kitchenStillLine = declaredAllergyLine(kitchenOnly(activeTableId ? tables.find(t => t.id === activeTableId)?.session : walkInOrder));
   // Print-bill UX is optimistic: tap → haptic + immediate "Sending…" toast →
   // button re-enables after ~800ms (debounce, prevents accidental double-tap)
   // → print runs in background → success replaces toast with "Bill sent ✓",
@@ -192,6 +201,20 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           <button onClick={() => setShowOrderActions(true)} style={Sx.iconBtn} aria-label="Order actions">⋯</button>
         )}
       </div>
+
+      {/* 26 Sep 2026 (allergy v4): the ORDER's declared allergies, one red banner, what the kitchen
+          docket and the KDS will show (Peter). The x clears them for this order (Clear all). */}
+      {declaredLine && (
+        <div role="alert" style={{ margin:'8px 12px 0', display:'flex', alignItems:'center', gap:8, padding:'8px 10px 8px 12px', borderRadius:10, background:'var(--red)', color:'#fff', flexShrink:0 }}>
+          <span style={{ flex:1, minWidth:0, fontSize:13, fontWeight:800, letterSpacing:'.03em', overflowWrap:'anywhere' }}>⚠ ALLERGY: {declaredLine}</span>
+          <button onClick={() => clearAllergens()} aria-label="Clear the allergies on this order" style={{ flexShrink:0, width:30, height:30, borderRadius:8, border:'1px solid rgba(255,255,255,.45)', background:'transparent', color:'#fff', fontSize:14, fontWeight:800, cursor:'pointer', fontFamily:'inherit', lineHeight:1 }}>✕</button>
+        </div>
+      )}
+      {kitchenStillLine && (
+        <div style={{ margin:'6px 12px 0', padding:'6px 10px', borderRadius:8, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', fontSize:12, fontWeight:700, flexShrink:0 }}>
+          The kitchen still has {kitchenStillLine} for this order. Tell them if that was a mistake.
+        </div>
+      )}
 
       {/* Items — grouped by course, mirroring how the desktop POS shows
           dine-in checks. Course 0 is "Immediate" (drinks etc), 1 = starters,

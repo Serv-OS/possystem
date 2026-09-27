@@ -13,8 +13,10 @@ import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { creditDiscountsFromPayment, chargedAddedOnTax } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
-import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
+import { buildTicketMeta, joinNotes, ticketAllergy, orderAllergyLine, declaredAllergyLine } from '../lib/kds/kdsTicket';
+import { allergenIds, orderDeclared, orderOnScreen, tableOnScreen, declarationFor, sendDeclared, withDeclaration, toggledDeclaration, seedDeclared, withSeededCart, attachCustomer, detachCustomer, sessionWithCustomer, seatedProfiles, mergeProfiles, attachedProfiles, movedFromWalkIn, followOrderOnScreen, kitchenAllergyUpdate, kitchenAfterSend, kitchenTicketsOf, kitchenTicketsAfterSend, kitchenKeyFor, kitchenOrderByKey, kitchenToldPatch, kitchenUpdatePlan, ticketHoldsLines, ticketIsOrders, retagOrderTicket, lineUidMaker } from '../lib/orderAllergy';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
+import { withTimeout } from '../lib/withTimeout';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
@@ -402,11 +404,26 @@ const URL_SURFACE_PIN = (() => {
 
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
-let _itemUid = 1;
-const uid = () => `i${_itemUid++}`;
+// 26 Sep 2026 (allergy v6): line uids are unique per till and page load (lineUidMaker). They were
+// `i${n}` from 1 on every till and after every reload, so the review of v5 found a late allergy
+// marking ANOTHER guest's kitchen ticket that happened to share a uid. Nothing reads their shape.
+const uid = lineUidMaker();
 let _orderNum = 1000;
 let _tabNum   = 1;
 let _autoSignoutTimer = null;   // v5.5.734: pending auto-sign-out timeout, cancelled on any login/logout
+// 26 Sep 2026 (allergy v5): a new walk in order number, for the order object an allergy tapped
+// before the first item creates (withDeclaration). The same numbering addItem uses.
+const _newOrderId = () => `ORD-${++_orderNum}`;
+// 26 Sep 2026 (allergy v5): an allergy declared on an order the kitchen already has goes to the
+// kitchen KITCHEN_ALLERGY_SETTLE_MS after the last chip, so tapping three allergies prints one
+// ALLERGY UPDATE docket, and a wrong tap put right at once prints none. A send or a course fire
+// tells the kitchen at once (tellKitchenAllergy). Keyed by kitchenKeyFor (the table and its
+// session, or the walk in's number). Plain setTimeout / clearTimeout calls, never as methods.
+// v6: each value is { timer, last }, `last` being the order as the last edit left it.
+const KITCHEN_ALLERGY_SETTLE_MS = 4000;
+// v6: how long the kitchen update waits for kds_tickets before its docket goes from this till's view.
+const KITCHEN_ALLERGY_READ_MS = 2500;
+const _kitchenAllergyTimers = new Map();
 
 const CAT_COURSE = { starters:1, mains:2, pizza:2, sides:2, desserts:3, drinks:0, cocktails:0, quick:1 };
 
@@ -749,8 +766,17 @@ export const useStore = create((set, get) => ({
 
   login: (newStaff) => {
     if (_autoSignoutTimer) { clearTimeout(_autoSignoutTimer); _autoSignoutTimer = null; }   // cancel a stale pay/send sign-out
-    const { patch, restored } = operatorSwitchPatch(get(), newStaff, Date.now());
-    set(patch);
+    // 26 Sep 2026 (allergy v4): a cart parked here keeps its declared allergies (withSeededCart),
+    // and when the counter cart is swapped (parked, handed back, or a clean one) the Allergen
+    // chips load the declaration of the order now on screen: the returning operator's held
+    // order carries its own, a clean checkout has none. The walk in swap changes no order key,
+    // so the follower under the store would not; a same operator re-scan swaps nothing and
+    // leaves the chips alone.
+    // v6: an allergy declared on the counter order after its send reaches the kitchen BEFORE the
+    // cart is parked (the review of v5: an operator switch inside the settle time lost it).
+    get().flushKitchenAllergy({ walkIn: true });
+    const { patch, restored } = operatorSwitchPatch(withSeededCart(get()), newStaff, Date.now());
+    set(s => ('walkInOrder' in patch ? { ...patch, allergens: declarationFor({ ...s, ...patch }) } : patch));
     if (restored && restored.count) {
       get().showToast?.(`Your held order is back — ${restored.count} item${restored.count === 1 ? '' : 's'}`, 'info');
     }
@@ -788,7 +814,10 @@ export const useStore = create((set, get) => ({
 
   logout: () => {
     if (_autoSignoutTimer) { clearTimeout(_autoSignoutTimer); _autoSignoutTimer = null; }
-    set(logoutPatch(get(), Date.now()));
+    // 26 Sep 2026 (allergy v4): the parked cart keeps its declaration; the chips go with it.
+    // v6: a kitchen update still waiting for that cart goes first (see login).
+    get().flushKitchenAllergy({ walkIn: true });
+    set(s => { const patch = logoutPatch(withSeededCart(s), Date.now()); return { ...patch, allergens: declarationFor({ ...s, ...patch }) }; });
   },
 
   // v5.5.731: per-device auto sign-out policy (deviceConfig.signout). trigger 'pay' = a check was
@@ -2008,6 +2037,12 @@ export const useStore = create((set, get) => ({
     // the loyalty flow (or use their existing membership) automatically.
     const tbl = get().tables.find(t => t.id === tableId);
     const seatCustomer = customer || tbl?.reservation?.customer || null;
+    // Auto-apply the customer's stored allergens (if any) on next visit.
+    // 26 Sep 2026 (allergy v4): seating IS the attach, so the guest's saved allergies become the
+    // new order's declaration (session.declaredAllergens, src/lib/orderAllergy.js), and a guest
+    // with none seats with an empty one. From here on only the order's declaration reaches the
+    // kitchen (Peter: "come up on the KDS and the ticket printed"), never the previous table's.
+    const declaredAllergens = allergenIds(seatCustomer?.allergens);
     const session = {
       id: `ORD-${++_orderNum}`,
       items: [], firedCourses: [],
@@ -2015,13 +2050,14 @@ export const useStore = create((set, get) => ({
       seatedAt: Date.now(), _loc: venueTag(), note: '', orderNote: '',
       subtotal: 0, total: 0,
       customer: seatCustomer,
+      declaredAllergens,
+      // v5: seating took this guest's profile (attach once, and what taking them off removes).
+      attachedProfiles: seatedProfiles(seatCustomer),
       ...(booking ? { booking } : {}),
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
-    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
-    // Auto-apply the customer's stored allergens (if any) on next visit.
+    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', allergens: declaredAllergens });
     if (seatCustomer?.allergens?.length) {
-      set({ allergens: [...seatCustomer.allergens] });
       get().showToast?.(`Allergen filter applied — ${seatCustomer.name} is allergic to ${seatCustomer.allergens.join(', ')}`, 'info');
     }
   },
@@ -2032,6 +2068,19 @@ export const useStore = create((set, get) => ({
   // v5.7.21: optional `booking` — same contract as seatTable above.
   seatTableWithItems: (tableId, items, { covers, server, customer = null, booking = null }) => {
     const now = Date.now();
+    // 26 Sep 2026 (allergy v4): the new table order's declaration. The counter's Seat moves the
+    // walk in's own lines here, so the walk in's declaration comes with them (the same guest);
+    // a booking's package lines come from nowhere on screen and bring only the seated guest's
+    // saved allergies (the attach). Never the chips of an order that is not moving.
+    // v6: the walk in leaves the till here (walkInOrder: null below), so a kitchen update still
+    // waiting for its food already sent goes first (the review of v5).
+    get().flushKitchenAllergy({ walkIn: true });
+    const st = get();
+    const movedWalkIn = movedFromWalkIn(st.walkInOrder, items);
+    const walkInDeclared = movedWalkIn
+      ? sendDeclared(st.walkInOrder, st.allergens, orderOnScreen(st).kind === 'walkin')
+      : [];
+    const declaredAllergens = allergenIds(walkInDeclared, customer?.allergens);
     const session = {
       id: `ORD-${++_orderNum}`,
       items: items.map(i => ({ ...i, status:'pending' })),
@@ -2039,30 +2088,44 @@ export const useStore = create((set, get) => ({
       seatedAt: now, _loc: venueTag(), note: '', orderNote: '',
       subtotal: items.reduce((s,i)=>s+i.price*i.qty, 0),
       total: items.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
+      declaredAllergens,
+      // v5: the guests whose profile the walk in took come with its lines, then the seated guest.
+      attachedProfiles: mergeProfiles(movedWalkIn ? attachedProfiles(st.walkInOrder) : [], seatedProfiles(customer, walkInDeclared)),
       ...(customer ? { customer } : {}),
       ...(booking ? { booking } : {}),
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
     if (customer?.allergens?.length) {
-      set({ allergens: [...customer.allergens] });
       get().showToast?.(`Allergen filter applied — ${customer.name} is allergic to ${customer.allergens.join(', ')}`, 'info');
     }
-    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null });
+    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null, allergens: declaredAllergens });
     get().showToast(`Items moved to ${get().tables.find(t=>t.id===tableId)?.label}`, 'success');
   },
 
   // Merge walk-in items into an already-occupied table
   mergeItemsToTable: (tableId, newItems) => {
+    // 26 Sep 2026 (allergy v4): the walk in's lines join this table's order, so its declared
+    // allergies join the table's declaration (a union: merging never drops an allergy).
+    // v6: the walk in leaves the till here (walkInOrder: null below), so a kitchen update still
+    // waiting for its food already sent goes first (the review of v5).
+    get().flushKitchenAllergy({ walkIn: true });
+    const st = get();
+    const walkInDeclared = movedFromWalkIn(st.walkInOrder, newItems)
+      ? sendDeclared(st.walkInOrder, st.allergens, orderOnScreen(st).kind === 'walkin')
+      : [];
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
         const items = [...t.session.items, ...newItems.map(i=>({...i, status:'pending'}))];
         const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
-        return { ...t, session: { ...t.session, items, subtotal, total: subtotal*1.125 } };
+        return { ...t, session: { ...t.session, items, subtotal, total: subtotal*1.125, declaredAllergens: allergenIds(orderDeclared(t.session), walkInDeclared) } };
       }),
       walkInOrder: null, customer: null,
     }));
-    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
+    set(s => ({ activeTableId:tableId, surface:'pos', orderType:'dine-in', allergens: orderDeclared(s.tables.find(t => t.id === tableId)?.session) }));
+    // v5: the table's food already in the kitchen now belongs to an order that declares the
+    // walk in's allergies too, so the kitchen hears about them (tellKitchenAllergy).
+    get()._queueKitchenAllergy({ tableId });
     get().showToast(`Items merged into ${get().tables.find(t=>t.id===tableId)?.label}`, 'success');
   },
 
@@ -2077,6 +2140,17 @@ export const useStore = create((set, get) => ({
     const childLabel = `${parent.label}.${checkNum}`;
     const childId = `${parentTableId}-${checkNum}`;
 
+    // 26 Sep 2026 (allergy v4): the new check is the same party at the same table, so it starts
+    // with the parent's declared allergies, plus the walk in's when its lines are what moved
+    // here (the counter's New check). A union: splitting never drops an allergy.
+    // v6: the walk in leaves the till here (walkInOrder: null below), so a kitchen update still
+    // waiting for its food already sent goes first (the review of v5).
+    get().flushKitchenAllergy({ walkIn: true });
+    const st = get();
+    const walkInDeclared = movedFromWalkIn(st.walkInOrder, splitItems)
+      ? sendDeclared(st.walkInOrder, st.allergens, orderOnScreen(st).kind === 'walkin')
+      : [];
+    const childDeclared = allergenIds(orderDeclared(parent.session), walkInDeclared);
     const childSession = {
       id: `ORD-${++_orderNum}`,
       items: splitItems.map(i => ({...i, status:'pending'})),
@@ -2086,6 +2160,7 @@ export const useStore = create((set, get) => ({
       seatedAt: Date.now(), _loc: venueTag(), note: '', orderNote: '',
       subtotal: splitItems.reduce((s,i)=>s+i.price*i.qty, 0),
       total: splitItems.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
+      declaredAllergens: childDeclared,
     };
 
     // Remove split items from parent
@@ -2115,7 +2190,7 @@ export const useStore = create((set, get) => ({
         childTable,
       ],
       walkInOrder: null, customer: null,
-      activeTableId: childId, surface: 'pos', orderType: 'dine-in',
+      activeTableId: childId, surface: 'pos', orderType: 'dine-in', allergens: childDeclared,
     }));
     get().showToast(`Check 2 created — ${childLabel}`, 'success');
   },
@@ -2132,7 +2207,12 @@ export const useStore = create((set, get) => ({
       get().showToast('QR tab — close it from Orders Hub → Open QR tabs (captures the card hold + saves to history)', 'info');
       return;
     }
-    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
+    // 26 Sep 2026 (allergy v4): the Allergen chips LOAD this table's declared allergies
+    // (session.declaredAllergens, src/lib/orderAllergy.js) or nothing, never what the last
+    // order had on (Peter: the allergies now print on the docket). Explicit here although the
+    // order switch follower below the store would do it too, because re-opening the table that
+    // is already active changes no key.
+    set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', allergens: orderDeclared(t?.session) });
   },
 
   // Save a table session without sending to kitchen — creates session if needed (seats the table)
@@ -2140,14 +2220,16 @@ export const useStore = create((set, get) => ({
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId) return t;
-        const session = t.session || {
+        // 26 Sep 2026 (allergy v4): a session created here takes the chips on screen as its
+        // declared allergies (seedDeclared), like addItem's.
+        const session = t.session || seedDeclared({
           id: `ORD-${++_orderNum}`,
           items: [], firedCourses: [], sentAt: null,
           covers: covers || 2,
           server: s.staff?.name || 'Staff',
           seatedAt: Date.now(), _loc: venueTag(),
           note: '', orderNote: '', subtotal: 0, total: 0,
-        };
+        }, s, 'table', tableId);
         // Update covers if changed
         const updatedSession = { ...session, covers: covers || session.covers };
         return { ...t, status: 'occupied', session: updatedSession };
@@ -2176,6 +2258,11 @@ export const useStore = create((set, get) => ({
     if (qrClose.reason === 'stranded') {
       console.warn('[clearTable] QR session with no open tab in the queue — closing it here rather than stranding it:', tableId);
     }
+    // 26 Sep 2026 (allergy v6): an allergy declared on this table after its food went to the
+    // kitchen reaches the kitchen NOW, before the session goes. The review of v5: Sesame tapped
+    // and the table paid inside the settle time printed nothing while the till showed ALLERGY.
+    // Every close, paid or not: food already in the kitchen may still be cooking.
+    get().flushKitchenAllergy({ tableId });
     // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. If the check being paid still has
     // lines the kitchen never fired (never sent, or sent-but-held courses), fire them
     // ALL now in one combined send — course holds ignored, the customer is paying.
@@ -2318,6 +2405,10 @@ export const useStore = create((set, get) => ({
   //     every centre that saw any of those items, so kitchen/expo sees the new
   //     location for already-prepared food.
   transferTable: (fromId, toId) => {
+    // 26 Sep 2026 (allergy v5): a kitchen update still waiting on either table goes now; its
+    // timer is keyed by the table, so after the move it would find no order and print nothing.
+    get().flushKitchenAllergy({ tableId: fromId });
+    get().flushKitchenAllergy({ tableId: toId });
     const { tables } = get();
     const from = tables.find(t => t.id === fromId);
     const to   = tables.find(t => t.id === toId);
@@ -2347,17 +2438,29 @@ export const useStore = create((set, get) => ({
             ...(from.session.absorbedSessions || []),
             from.session.id,
           ].filter(Boolean))],
+          // 26 Sep 2026 (allergy v4): a combine keeps BOTH orders' declared allergies (a union,
+          // never dropped). A straight transfer carries the moved session's own field as is.
+          declaredAllergens: allergenIds(orderDeclared(to.session), orderDeclared(from.session)),
+          // v5: both orders' attach records; kitchenAllergens stays the destination's (what its
+          // own tickets hold), so the kitchen update queued below tells it the moved order's.
+          attachedProfiles: mergeProfiles(attachedProfiles(to.session), attachedProfiles(from.session)),
+          // v6: both orders' kitchen ticket records, each with what it already carries, so that
+          // update covers only the food that lacks an allergy (the review of v5: the moved food
+          // was announced a third time as NEW).
+          kitchenTickets: [...kitchenTicketsOf(to.session), ...kitchenTicketsOf(from.session)],
         }
       : { ...from.session, items: mergedItems, subtotal: mergedSubtotal, total: mergedSubtotal * 1.125 };
 
-    set(s => ({
-      tables: s.tables.map(t => {
+    set(s => {
+      const tables = s.tables.map(t => {
         if (t.id === fromId) return { ...t, status:'available', session:null, childIds:[] };
         if (t.id === toId)   return { ...t, status:'occupied', session: mergedSession, reservation:null };
         return t;
-      }),
-      activeTableId: toId,
-    }));
+      });
+      // The chips load the moved order's declaration (a combine into the table already on
+      // screen changes no key, so the follower below the store would not).
+      return { tables, activeTableId: toId, allergens: declarationFor({ ...s, tables, activeTableId: toId }) };
+    });
 
     // Persist the move NOW, not on the debounced flush. The debounce plus the
     // delete-pass grace left the source's active_sessions row alive for ~4s, and
@@ -2401,6 +2504,10 @@ export const useStore = create((set, get) => ({
               name: i.kitchenName || i.menu_name || i.menuName || i.name,
               mods: i.mods,
               course: i.course,
+              // 26 Sep 2026: the declared allergies of the order these lines now belong to print
+              // under the item on the move docket like the kitchen docket (Peter). v4: the moved
+              // order's declaration (a combine's union), never a customer's saved list.
+              allergy: ticketAllergy(i, orderDeclared(mergedSession)),
             })),
             server: from.session?.server || to.session?.server || '',
             type: 'transfer-notice',
@@ -2411,6 +2518,10 @@ export const useStore = create((set, get) => ({
         console.warn('[transferTable] transfer notice failed:', err);
       }
     }
+
+    // 26 Sep 2026 (allergy v5): a combine can add allergies to the destination's food already in
+    // the kitchen; the move docket above only lists the moved lines (tellKitchenAllergy).
+    if (destHasSession) get()._queueKitchenAllergy({ tableId: toId });
 
     get().showToast(
       destHasSession
@@ -2509,12 +2620,16 @@ export const useStore = create((set, get) => ({
       });
     }
 
+    // 26 Sep 2026 (allergy v4): the line carries NO allergy of its own any more (v3 stamped the
+    // chips on each line, and a wrong tap survived Clear all). The order holds the declaration:
+    // an order created or first written here takes the chips on screen (seedDeclared), because
+    // staff may tap Tree nuts before ringing the first item (src/lib/orderAllergy.js).
     if (activeTableId) {
       // Add to the table's session
       set(s => ({
         tables: s.tables.map(t => {
           if (t.id !== activeTableId) return t;
-          const session = t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+          const session = seedDeclared(t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 }, s, 'table', activeTableId);
           const items = [...session.items, newItem];
           const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
           return { ...t, status:t.status==='available'?'open':t.status, session:{ ...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now() } };
@@ -2525,7 +2640,7 @@ export const useStore = create((set, get) => ({
       set(s => {
         const items = [...(s.walkInOrder?.items||[]), newItem];
         const subtotal = items.reduce((a,i)=>a+i.price*i.qty, 0);
-        return { walkInOrder:{ ...(s.walkInOrder||{id:`ORD-${++_orderNum}`}), items, subtotal, total:subtotal } };
+        return { walkInOrder:{ ...seedDeclared(s.walkInOrder||{id:`ORD-${++_orderNum}`}, s, 'walkin'), items, subtotal, total:subtotal } };
       });
     }
   },
@@ -2533,16 +2648,17 @@ export const useStore = create((set, get) => ({
   addCustomItem: (name, price, notes) => {
     const { activeTableId, staff } = get();
     const newItem = { uid:uid(), itemId:'custom', name, price:parseFloat(price)||0, qty:1, mods:[], notes, allergens:[], seat:'shared', course:1, fired:false, status:'pending' };
+    // 26 Sep 2026 (allergy v4): the order, not the line, holds the declaration (see addItem).
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if (t.id!==activeTableId) return t;
-        const session = t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+        const session = seedDeclared(t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 }, s, 'table', activeTableId);
         const items=[...session.items, newItem];
         const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
         return {...t, session:{...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now()}};
       }) }));
     } else {
-      set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...(s.walkInOrder||{id:`ORD-${++_orderNum}`}),items}};});
+      set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...seedDeclared(s.walkInOrder||{id:`ORD-${++_orderNum}`}, s, 'walkin'),items}};});
     }
   },
 
@@ -2787,6 +2903,13 @@ export const useStore = create((set, get) => ({
     const source = session?.items || get().walkInOrder?.items || [];
     const items = source.filter(i => uidSet.has(i.uid) && !i.voided && !i.noKitchen);
     if (!items.length) { get().showToast('Nothing to reprint for this order', 'warn'); return 0; }
+    // 26 Sep 2026: the reprint shows the declared allergies like the first docket did (Peter).
+    // v4: the declaration of the order being reprinted (the table's session, else the walk in),
+    // never the chips of another order or a customer's saved list on top.
+    const reprintState = get();
+    const reprintAllergens = table
+      ? sendDeclared(session, reprintState.allergens, tableOnScreen(reprintState, table.id))
+      : sendDeclared(reprintState.walkInOrder, reprintState.allergens, orderOnScreen(reprintState).kind === 'walkin');
     const routingConfig = (() => {
       try {
         const stored = get().printRouting;
@@ -2825,6 +2948,7 @@ export const useStore = create((set, get) => ({
             ...(i.allergens?.length ? [`⚠ ${i.allergens.map(a=>a.toUpperCase()).join(' · ')}`] : []),
             ...(i.notes ? [`📝 ${i.notes}`] : []),
           ],
+          allergy: ticketAllergy(i, reprintAllergens),
           course: i.course ?? 1,
           // Reprint means the kitchen wants the docket again NOW — never HOLD headers.
           fired: true,
@@ -2853,6 +2977,30 @@ export const useStore = create((set, get) => ({
     // The lines a send should pick up. Normal send: pending only (original
     // behaviour). fireAll: pending PLUS sent-but-held (fired === false).
     const isUnsentLine = (i) => !i.voided && (i.status === 'pending' || (fireAll && i.status === 'sent' && !i.fired));
+
+    // 26 Sep 2026 (allergy v5): an allergy declared on this order since the kitchen last got it
+    // reaches the lines the kitchen ALREADY has first (an ALLERGY UPDATE docket and the open KDS
+    // tickets, tellKitchenAllergy), without waiting for the settle timer. The new tickets below
+    // carry the whole declaration themselves.
+    get().flushKitchenAllergy(targetTableId ? { tableId: targetTableId } : { walkIn: true });
+
+    // 26 Sep 2026, Peter: "even if allergies are not on products, when allergies are selected
+    // it should come up on the KDS and the ticket printed". v4: the allergies declared on THE
+    // ORDER BEING SENT (session.declaredAllergens or walkInOrder.declaredAllergens, see
+    // src/lib/orderAllergy.js), whatever is on screen. A payment time fire for another table
+    // (MPOS clearTable) and a scheduled order firing from the background tick send their own
+    // order's declaration. Never the attached customer's saved list on top (attaching added it
+    // to the declaration once, so Clear all always works), never product allergen data. The
+    // chips count only for the order on screen that has no field yet (sendDeclared).
+    const declaredAllergens = (tableId) => {
+      const st = get();
+      const on = orderOnScreen(st);
+      if (tableId) {
+        const session = st.tables.find(t => t.id === tableId)?.session;
+        return sendDeclared(session, st.allergens, !bypassSchedule && tableOnScreen(st, tableId));
+      }
+      return sendDeclared(st.walkInOrder, st.allergens, !bypassSchedule && on.kind === 'walkin');
+    };
 
     // Get routing config — prefer store value (pushed from back office), fall back to localStorage
     const getRoutingConfig = () => {
@@ -2888,7 +3036,9 @@ export const useStore = create((set, get) => ({
     // v5.8.66: `meta` is the ticket's own order type, name, number and till name for the
     // redesigned KDS (kds_tickets.meta, see src/lib/kds/kdsTicket.js). table_label keeps
     // its old text because fireCourse matches tickets on it.
-    const createKdsTickets = (items, tableLabel, serverName, covers, _firedOnSend, meta = null) => {
+    // 26 Sep 2026: orderAllergens = the allergies declared on the order (declaredAllergens above);
+    // every ticket line gets `allergy`, the KDS card and the docket show it under the item.
+    const createKdsTickets = (items, tableLabel, serverName, covers, _firedOnSend, meta = null, orderAllergens = []) => {
       const routingConfig = getRoutingConfig();
       const byCenter = {};
       const FIRED_ON_SEND = _firedOnSend;
@@ -2942,6 +3092,7 @@ export const useStore = create((set, get) => ({
               ...(i.allergens?.length ? [`⚠ ${i.allergens.map(a=>a.toUpperCase()).join(' · ')}`] : []),
               ...(i.notes ? [`📝 ${i.notes}`] : []),
             ],
+            allergy: ticketAllergy(i, orderAllergens),
             course: i.course ?? 1,
             fired: FIRED_ON_SEND.includes(i.course ?? 1),
             centreId, uid: i.uid,
@@ -2955,13 +3106,15 @@ export const useStore = create((set, get) => ({
       const session = table?.session;
       const pendingItems = session?.items?.filter(isUnsentLine) || [];
       const firedOnSend = computeFiredOnSend(session?.items || []);
+      const tableAllergens = declaredAllergens(targetTableId);
       const tableMeta = buildTicketMeta({
         channel: 'table', isTable: true,
         customerName: session?.customer?.name,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(session?.orderNote, session?.customer?.notes),
+        allergy: orderAllergyLine(tableAllergens, pendingItems),
       });
-      const newTickets = createKdsTickets(pendingItems, table?.label || targetTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend, tableMeta);
+      const newTickets = createKdsTickets(pendingItems, table?.label || targetTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend, tableMeta, tableAllergens);
       // Route print jobs for each ticket (fires to mapped printer per centre)
       const printConfig = getRoutingConfig();
       const getCentrePrinter = (centreId) => {
@@ -3008,7 +3161,17 @@ export const useStore = create((set, get) => ({
             return { ...i, fired: firedCourses.includes(i.course), status: 'sent' };
           });
           const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
-          return {...t, status:'occupied', session:{...t.session, items, firedCourses, sentAt:t.session.sentAt||Date.now(), server:staff?.name||t.session.server, subtotal, total:subtotal*1.125, lastUpdated: Date.now() }};
+          // 26 Sep 2026 (allergy v5): what the kitchen now holds for this order (kitchenAllergens,
+          // the kitchen update compares with it), and a session that had no declaration field
+          // records the one this send used, so the order and its tickets agree.
+          // v6: and which tickets this send made (ids, centres, line uids, what they carry), so a
+          // later allergy updates exactly these, never another order's that shares a line uid.
+          const allergyFields = {
+            kitchenAllergens: kitchenAfterSend(t.session, tableAllergens, newTickets.length > 0),
+            ...(Array.isArray(t.session.declaredAllergens) ? {} : { declaredAllergens: tableAllergens }),
+            ...(newTickets.length ? { kitchenTickets: kitchenTicketsAfterSend(t.session, newTickets, tableAllergens) } : {}),
+          };
+          return {...t, status:'occupied', session:{...t.session, items, firedCourses, sentAt:t.session.sentAt||Date.now(), server:staff?.name||t.session.server, subtotal, total:subtotal*1.125, ...allergyFields, lastUpdated: Date.now() }};
         }),
         kdsTickets: [...s.kdsTickets, ...newTickets],
       }));
@@ -3039,6 +3202,9 @@ export const useStore = create((set, get) => ({
         if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1);
         return d.getTime();
       };
+      // 26 Sep 2026 (allergy v4): the walk in's declared allergies, read once, before the
+      // scheduled check (that branch returns early and must stash them on its queue entry).
+      const walkInAllergens = declaredAllergens(null);
       if (!bypassSchedule && customer?.collectionTime && !customer?.isASAP) {
         const collectAt = _parseCollectionTimeToMs(customer.collectionTime);
         // v4.6.60: lead time configurable via Location settings (default 30min, 5-min increments)
@@ -3057,6 +3223,11 @@ export const useStore = create((set, get) => ({
             customer: { ...customer },
             // Keep items as pending — nothing has hit the kitchen yet.
             items: pendingItems.map(i => ({ ...i })),
+            // 26 Sep 2026 (allergy v4): the order's declaration travels with the entry (its
+            // order_queue row carries it in the customer jsonb, QueueSync), because it fires
+            // later from the background tick, long after the chips have moved on to other
+            // orders. fireScheduledOrder puts it back on the order it sends.
+            declaredAllergens: walkInAllergens,
             total: pendingItems.reduce((s, i) => s + i.price * i.qty, 0),
             status: 'scheduled',
             scheduledFireAt,
@@ -3094,8 +3265,9 @@ export const useStore = create((set, get) => ({
         customerName: customer?.name, orderRef: ref,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(order.orderNote, customer?.notes),
+        allergy: orderAllergyLine(walkInAllergens, pendingItems),
       });
-      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend, walkInMeta);
+      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend, walkInMeta, walkInAllergens);
       // v4.6.5 Bug 3: walk-in / takeaway / collection / delivery orders must ALSO route
       // print jobs to each production centre. Previously only the table branch did this,
       // so non-table orders only hit the KDS screen and silently skipped every printer.
@@ -3117,6 +3289,8 @@ export const useStore = create((set, get) => ({
           type: 'kitchen',
         });
       });
+      // 26 Sep 2026 (allergy v6): this order's ticket records after the send (see the table branch).
+      const wiKitchenTickets = newTickets.length ? kitchenTicketsAfterSend(order, newTickets, walkInAllergens) : null;
       // Always add walk-in orders to queue so they appear in Orders Hub
       // (ref is taken above, before the KDS tickets, v5.8.66)
       const queueEntry = {
@@ -3134,6 +3308,12 @@ export const useStore = create((set, get) => ({
         total: order.items.reduce((s, i) => s + i.price * i.qty, 0),
         status: 'prep', createdAt: order.createdAt || Date.now(), sentAt: Date.now(),
         collectionTime: customer?.collectionTime, isASAP: customer?.isASAP, staff: staff?.name,
+        // 26 Sep 2026 (allergy v4): the order's declaration rides the queue entry, so reopening
+        // it from Orders Hub (on any till, after a reload) brings the allergy back with it.
+        declaredAllergens: walkInAllergens,
+        // v6: the kitchen tickets of this order, so a reopen on this till updates exactly those
+        // (on this till's copy only: QueueSync writes the row's own columns, as before).
+        ...(wiKitchenTickets ? { kitchenTickets: wiKitchenTickets } : {}),
       };
       const alreadyQueued = get().orderQueue.find(o => o.ref === ref);
       if (alreadyQueued) {
@@ -3142,7 +3322,8 @@ export const useStore = create((set, get) => ({
         addToQueue(queueEntry);
       }
       set(s => ({
-        walkInOrder: { ...(s.walkInOrder||{}), ref, sentAt: Date.now(), items: (s.walkInOrder?.items||[]).map(i => wiFiredOnSend.includes(i.course ?? 1) ? {...i, fired:true, status:'sent'} : i) },
+        // v5: kitchenAllergens = what the kitchen now holds for this walk in (see the table branch).
+        walkInOrder: { ...(s.walkInOrder||{}), declaredAllergens: walkInAllergens, kitchenAllergens: kitchenAfterSend(s.walkInOrder, walkInAllergens, newTickets.length > 0), ...(wiKitchenTickets ? { kitchenTickets: wiKitchenTickets } : {}), ref, sentAt: Date.now(), items: (s.walkInOrder?.items||[]).map(i => wiFiredOnSend.includes(i.course ?? 1) ? {...i, fired:true, status:'sent'} : i) },
         kdsTickets: [...s.kdsTickets, ...newTickets],
       }));
       newTickets.forEach(t => insertKDSTicket(t));
@@ -3166,7 +3347,14 @@ export const useStore = create((set, get) => ({
       subtotal: entry.total || 0,
       total: entry.total || 0,
       createdAt: entry.createdAt || Date.now(),
+      // 26 Sep 2026 (allergy v4): the order's own declaration, stashed on its queue entry when it
+      // was scheduled. Always an array, so the send reads this and never the chips on screen.
+      declaredAllergens: orderDeclared(entry),
     };
+    // 26 Sep 2026 (allergy v6): the walk in on screen steps aside for this send and comes back as
+    // it was, so a kitchen update still waiting for it goes now, while it is the walk in (its
+    // timer would find the scheduled order in its place and could not mark it told).
+    get().flushKitchenAllergy({ walkIn: true });
     const prev = {
       walkInOrder: get().walkInOrder,
       customer:    get().customer,
@@ -3180,7 +3368,11 @@ export const useStore = create((set, get) => ({
     try {
       // bypassSchedule=true: this order is already at/past its fire time,
       // don't let the scheduler re-defer it.
-      get().sendToKitchen({ bypassSchedule: true });
+      // 26 Sep 2026: tableId: null pins the WALK IN branch. Without it sendToKitchen fell back
+      // to the activeTableId, so a tick that fired while staff had a table open sent that
+      // table's unsent lines instead of this order (and would now have printed this order's
+      // allergies on them). The allergies come from `reconstructed` above.
+      get().sendToKitchen({ bypassSchedule: true, tableId: null });
     } finally {
       // Restore prior POS context. orderQueue mutations persist because
       // sendToKitchen matched the ref via alreadyQueued and merged into the
@@ -3286,11 +3478,16 @@ export const useStore = create((set, get) => ({
   },
 
   fireCourse: (courseNum) => {
+    if (!get().activeTableId) return;
+    // 26 Sep 2026 (allergy v5): an allergy declared since the send reaches the kitchen BEFORE the
+    // held course fires (the review of v4: mains fired from a ticket with none), and the fire
+    // docket repeats what the kitchen now holds for this order.
+    get().flushKitchenAllergy({ tableId: get().activeTableId });
     const { activeTableId, tables } = get();
-    if (!activeTableId) return;
     const table = tables.find(t => t.id === activeTableId);
     const session = table?.session;
     if (!session) return;
+    const fireAllergy = declaredAllergyLine(allergenIds(session.kitchenAllergens, orderDeclared(session)));
 
     // Mark course as fired in POS session
     set(s => ({
@@ -3399,6 +3596,8 @@ export const useStore = create((set, get) => ({
           tableLabel,
           course: courseNum,
           type: 'fire-marker',
+          // 26 Sep 2026 (allergy v5): printed under FIRE COURSE N; none prints as before.
+          ...(fireAllergy ? { allergy: fireAllergy } : {}),
         });
       });
       // v5.5.977: the course has food and this venue routes to production centres, but
@@ -3417,7 +3616,16 @@ export const useStore = create((set, get) => ({
 
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
-  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null }),
+  // 26 Sep 2026 (allergy v4): the walk in is gone (sent, paid, cleared), so the Allergen chips
+  // load the declaration of whatever order is on screen now: the active table's, else nothing.
+  // The walk in's own declaration went to the kitchen (and its queue entry) with it; nothing
+  // global survives into the next order (the v4.4.9 intent: the next walk in starts clean).
+  // v6: a kitchen update still waiting for this walk in goes first (the review of v5: an allergy
+  // tapped after the send and the order cleared inside the settle time never reached the kitchen).
+  clearWalkIn: () => {
+    get().flushKitchenAllergy({ walkIn: true });
+    set(s => ({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null, allergens: declarationFor({ ...s, walkInOrder: null }) }));
+  },
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -3486,19 +3694,250 @@ export const useStore = create((set, get) => ({
   // ── Allergens ─────────────────────────────
   // v4.6.67: when allergen filter is set on a customer-attached order, the toast
   // offers Save to profile. This action runs upsertCustomer with the active filter.
-  saveAllergensToCustomer: async (customer) => {
+  // 26 Sep 2026 (allergy v4): `list` is what the explicit "Save to profile" button asks for
+  // (the profile plus the order's new allergies); the till never saves a profile by itself.
+  saveAllergensToCustomer: async (customer, list = get().allergens) => {
     if (!customer?.phone) return null;
-    const list = get().allergens || [];
-    return await get().upsertCustomer({ ...customer, allergens: list });
+    return await get().upsertCustomer({ ...customer, allergens: allergenIds(list) });
   },
   // ── Allergens ─────────────────────────────
+  // 26 Sep 2026 (allergy v4): store.allergens is the Allergen chips: the declared allergies of
+  // the ORDER ON SCREEN (src/lib/orderAllergy.js). The three staff actions below EDIT that
+  // order's declaration and the chips together (withDeclaration: the table session, else the
+  // walk in, else the Bar's open tab; before anything is rung, the chips alone until the order
+  // is created). Loading happens by itself when a different order comes on screen (the
+  // follower under the store), so a chip can never carry from one order to the next. The
+  // product filter and the AllergenModal warning keep reading store.allergens, so a table's
+  // second round still warns. v3's per line stamps and mirroring are gone.
+  // v5: a walk in with nothing rung gets its order object on the first tap (_newOrderId), and
+  // an edit of an order the kitchen already has queues the kitchen update (_queueKitchenAllergy).
+  // v6: a chip tap starts from the ORDER's declaration (toggledDeclaration), never the chips
+  // alone: the review of v5 found a table adopted from another till still showing the old chips,
+  // where one tap on Gluten wrote [gluten] and silently dropped the MILK the order declared.
   allergens: [],
-  toggleAllergen: id => set(s=>({ allergens:s.allergens.includes(id)?s.allergens.filter(a=>a!==id):[...s.allergens,id] })),
-  clearAllergens: () => set({ allergens:[] }),
+  toggleAllergen: id => {
+    set(s => withDeclaration(s, toggledDeclaration(s, id), Date.now(), _newOrderId));
+    get()._queueKitchenAllergy();
+  },
+  clearAllergens: () => {
+    set(s => withDeclaration(s, [], Date.now(), _newOrderId));
+    get()._queueKitchenAllergy();
+  },
   // Bulk-set the active allergen filter (e.g. from a seated guest's saved allergens). POSSurface's
   // table-customer hydrate calls this; without it, seating a table that carries a customer with
   // allergens (a reservation / waitlist party) threw "setAllergens is not a function".
-  setAllergens: (arr) => set({ allergens: Array.isArray(arr) ? [...arr] : [] }),
+  setAllergens: (arr) => {
+    set(s => withDeclaration(s, Array.isArray(arr) ? arr : [], Date.now(), _newOrderId));
+    get()._queueKitchenAllergy();
+  },
+  // 26 Sep 2026 (allergy v5): taking customer `c` off the order on screen removes exactly the
+  // allergies their attach ADDED (detachCustomer), never one staff declared themselves (the
+  // review of v4: Milk tapped by staff went with a wrong customer who also had Milk saved).
+  dropCustomerAllergies: (c) => {
+    const res = detachCustomer(get(), c);
+    if (res) set(res.patch);
+    return res?.dropped || [];
+  },
+
+  // ── The kitchen hears about a late allergy (26 Sep 2026, allergy v5) ──────
+  // Peter: "when allergies are selected it should come up on the KDS and the ticket printed".
+  // The review of v4: a guest who mentions an allergy during starters got mains cooked from a
+  // ticket with none. An allergy declared on an order the kitchen ALREADY has lines of now goes
+  // to the kitchen: KITCHEN_ALLERGY_SETTLE_MS after the last edit (_queueKitchenAllergy), or at
+  // once when that order is sent again, a course is fired, or the order leaves this till
+  // (flushKitchenAllergy: paid, cleared, the operator switched, the next order taken).
+  // tellKitchenAllergy does nothing when the kitchen already holds every declared allergy
+  // (kitchenAllergyUpdate, src/lib/orderAllergy.js); otherwise, in one go:
+  //   - the order's open tickets, on this till and in kds_tickets (every KDS reads those), get
+  //     the allergy on every line and in meta (retagOrderTicket), so the card shows the red banner;
+  //   - each production centre with the order's food STILL IN THE KITCHEN prints ONE "ALLERGY
+  //     UPDATE" docket listing that food (routePrintJob type 'allergy-update'; it says it is not
+  //     a new order); nothing prints when all of it has been served (kitchenUpdatePlan);
+  //   - the order records what the kitchen holds now (kitchenAllergens, kitchenToldPatch).
+  // Additions only: an allergy taken off after the send stays with the kitchen (the safe side),
+  // and the till's banner says so. Returns true when there was something to tell.
+  // v6 (the review of v5): the order's tickets are the ones its sends RECORDED (order.kitchenTickets,
+  // by ticket id), never "any ticket at the location holding a line with this uid": uids were
+  // i1, i2 ... on every till and after every reload, so v5 marked another guest's latte TREE NUTS
+  // and printed it instead of this order's soup. A line on no recorded ticket (an order sent
+  // before v6) is matched by uid AND this order's table label or number (ticketIsOrders). Whether
+  // food is still in the kitchen is the kitchen's own record: kds_tickets' status when this till
+  // can read it, else this till's copy, where a ticket it cannot see counts as still cooking.
+  tellKitchenAllergy: (key) => {
+    const pending = _kitchenAllergyTimers.get(key);
+    if (pending) { clearTimeout(pending.timer); _kitchenAllergyTimers.delete(key); }
+    const st = get();
+    // v6: the order as the last edit left it, when it has since left this till (a handheld's
+    // "Take next order", a table paid on another device, any path without a flush of its own):
+    // the kitchen is told all the same, and nothing is recorded on whatever order is there now.
+    const found = kitchenOrderByKey(st, key) || pending?.last || null;
+    const upd = found ? kitchenAllergyUpdate(found.order) : null;
+    if (!upd) return false;
+    const line = declaredAllergyLine(upd.ids);
+    const addedLine = declaredAllergyLine(upd.added);
+    if (!line) return false;
+    const staleIds = new Set(upd.stale.map(r => r.id));
+    const looseUids = new Set(upd.loose.map(i => i.uid).filter(Boolean));
+    // A walk in's tickets carry its order number in meta (what the KDS shows), a table's its label,
+    // and a table's are never older than its session (the last party's at the same table).
+    const scope = found.kind === 'table'
+      ? { label: found.label, since: found.order?.seatedAt }
+      : { orderNo: buildTicketMeta({ channel: 'till', orderRef: found.order?.ref }).orderNo };
+    const isLoose = (tk) => looseUids.size > 0 && ticketHoldsLines(tk, looseUids) && ticketIsOrders(tk, scope);
+    const isOrders = (tk) => !!tk && tk.status !== 'bumped' && (staleIds.has(tk.id) || isLoose(tk));
+    const localTickets = st.kdsTickets || [];
+    const label = found.kind === 'table' ? found.label : (localTickets.find(tk => staleIds.has(tk?.id))?.table || found.label || 'WALK-IN');
+    set(s => ({
+      kdsTickets: (s.kdsTickets || []).map(tk => (isOrders(tk) ? (retagOrderTicket(tk, line) || tk) : tk)),
+      ...kitchenToldPatch(s, found, upd.ids, Date.now()),
+    }));
+
+    // This till's view of a ticket. `absent` is what a ticket it does not hold means: gone when
+    // this till IS the kitchen's record (demo, training: nothing else writes kds_tickets), else
+    // unknown, which counts as still cooking.
+    const localState = (absent) => (id) => {
+      const tk = localTickets.find(t => t?.id === id);
+      return tk ? (tk.status === 'bumped' ? 'gone' : 'live') : absent;
+    };
+    const localLoose = localTickets.filter(tk => isOrders(tk) && isLoose(tk));
+
+    // Paper: one docket per centre with the order's food still in the kitchen. Lines on no known
+    // ticket are routed the way the send routed them, like fireCourse's fallback.
+    const printUpdate = (plan) => {
+      try {
+        const byCentre = new Map(plan.docket.map(([cid, lines]) => [cid, [...lines]]));
+        let routingHasCentres = false;
+        if (plan.route.length) {
+          const routingConfig = (() => {
+            try {
+              const stored = st.printRouting;
+              if (stored?.centres?.length) return stored;
+              const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}')?.printRouting;
+              if (snap?.centres?.length) return snap;
+              return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
+            } catch { return { centres: [], routing: {} }; }
+          })();
+          routingHasCentres = (routingConfig.centres || []).length > 0;
+          const routingCtx = makeRoutingCtx(found.kind === 'table' ? 'dine-in' : (st.orderType || 'dine-in'));
+          plan.route.forEach(i => {
+            resolveCentresForItem(i, routingConfig, routingCtx).centreIds.forEach(cid => {
+              if (!byCentre.has(cid)) byCentre.set(cid, []);
+              if (!byCentre.get(cid).includes(i)) byCentre.get(cid).push(i);
+            });
+          });
+        }
+        if (!byCentre.size) {
+          // 26 Sep 2026 (allergy v6): food on no ticket this till knows that no production centre
+          // takes. The order is marked told, so say so plainly, like fireCourse does: a silent
+          // miss here is a missing allergy while the till shows the banner. Nothing to route means
+          // all of it was served; the next send carries the declaration.
+          if (plan.route.length && routingHasCentres) {
+            get().showToast(`ALLERGY ${line} for ${label} was NOT sent to the kitchen: no production centre matched this food. Tell the kitchen directly.`, 'error');
+          }
+          return;
+        }
+        byCentre.forEach((lines, centreId) => {
+          get().routePrintJob({
+            centreId, tableLabel: label, type: 'allergy-update', allergy: line, added: addedLine, server: st.staff?.name || '',
+            items: lines.map(i => ({ qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name, course: i.course ?? 1, allergy: line })),
+          });
+        });
+        get().showDelayedToast?.(`Kitchen told: ${label}, ALLERGY ${line}`, 'warning', 1200);
+      } catch (err) {
+        console.warn('[allergy] kitchen update docket failed:', err?.message || err);
+      }
+    };
+
+    if (isMock || !supabase || isTrainingMode()) {
+      printUpdate(kitchenUpdatePlan(upd, localState('gone'), localLoose));
+      return true;
+    }
+    // Every KDS screen, and the docket from the kitchen's own record: the order's recorded tickets
+    // read BY ID (plus, for lines on no recorded ticket, this order's open rows by label or number),
+    // then the live ones updated through mustChangeRow like fireCourse's fired courses.
+    // The read never holds the paper back: after KITCHEN_ALLERGY_READ_MS (a hung request on a
+    // weak venue network) the docket goes from this till's own view, where a ticket it cannot see
+    // counts as still cooking, and the KDS rows are updated whenever the read does come back.
+    const readKitchen = (async () => {
+      try {
+        const locId = getActiveLocationSync() || await getLocationId();
+        if (!locId || locId === 'loc-demo') return null;
+        const readRows = async (query) => {
+          let res = await query('id, status, centre_id, table_label, sent_at, items, meta');
+          if (res?.error && isMissingColumnError(res.error, 'meta')) res = await query('id, status, centre_id, table_label, sent_at, items');
+          return res?.error ? null : (res?.data || []);
+        };
+        const recIds = [...staleIds];
+        const rows = recIds.length
+          ? await readRows(cols => supabase.from('kds_tickets').select(cols).eq('location_id', locId).in('id', recIds))
+          : [];
+        const openRows = looseUids.size
+          ? await readRows(cols => supabase.from('kds_tickets').select(cols).eq('location_id', locId).in('status', ['pending', 'held']).order('sent_at', { ascending: false }).limit(200))
+          : [];
+        if (!rows || !openRows) return null;
+        const liveRow = (r) => r.status === 'pending' || r.status === 'held';
+        const byId = new Map(rows.map(r => [r.id, r]));
+        const dbLoose = openRows.filter(r => liveRow(r) && isLoose(r));
+        const plan = kitchenUpdatePlan(upd, (id) => {
+          const row = byId.get(id);
+          if (row) return liveRow(row) ? 'live' : 'gone';
+          return localState(undefined)(id);   // not written yet (offline queue): this till's copy
+        }, [...dbLoose, ...localLoose]);
+        const want = new Set(plan.retag);
+        const byRow = new Map();
+        [...rows.filter(liveRow), ...dbLoose].forEach(r => { if (want.has(r.id)) byRow.set(r.id, r); });
+        return { plan, toRetag: [...byRow.values()] };
+      } catch (e) {
+        console.warn('[allergy] kds_tickets read failed', e?.message || e);
+        return null;
+      }
+    })();
+    (async () => {
+      let got = null;
+      try { got = await withTimeout(readKitchen, KITCHEN_ALLERGY_READ_MS, 'Allergy update read'); }
+      catch (e) { console.warn('[allergy] kds_tickets read slow, the docket goes from this till', e?.message || e); }
+      printUpdate(got?.plan || kitchenUpdatePlan(upd, localState(undefined), localLoose));
+      const toRetag = got ? got.toRetag : ((await readKitchen)?.toRetag || []);
+      for (const row of toRetag) {
+        try {
+          const next = retagOrderTicket(row, line);
+          if (!next) continue;
+          const r = await mustChangeRow({
+            table: 'kds_tickets', type: 'update',
+            payload: { items: next.items, ...(next.meta && row.meta ? { meta: next.meta } : {}) },
+            match: { id: row.id }, kind: 'kds_allergy', label: `Allergy update ${label}`,
+          });
+          if (r.outcome === 'error') console.warn('[allergy] kds_tickets update failed', r.error?.message || r.error);
+        } catch (e) { console.warn('[allergy] kds_tickets update failed', e?.message || e); }
+      }
+    })();
+    return true;
+  },
+  // Tell the kitchen now if it is missing an allergy of this order (`target` as kitchenKeyFor).
+  // Never throws: it runs at the start of a send, a course fire, and wherever an order leaves.
+  flushKitchenAllergy: (target = null) => {
+    try {
+      const key = kitchenKeyFor(get(), target);
+      return key ? get().tellKitchenAllergy(key) : false;
+    } catch (e) {
+      console.warn('[allergy] kitchen update failed:', e?.message || e);
+      return false;
+    }
+  },
+  // After a staff edit: (re)start the settle timer for that order, when the kitchen has its lines.
+  // v6: the timer keeps the order as this edit left it (`last`), for tellKitchenAllergy when the
+  // order has left the till before the timer runs.
+  _queueKitchenAllergy: (target = null) => {
+    const st = get();
+    const key = kitchenKeyFor(st, target);
+    if (!key) return;
+    const prev = _kitchenAllergyTimers.get(key);
+    if (prev) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      try { get().tellKitchenAllergy(key); } catch (e) { console.warn('[allergy] kitchen update failed:', e?.message || e); }
+    }, KITCHEN_ALLERGY_SETTLE_MS);
+    _kitchenAllergyTimers.set(key, { timer, last: kitchenOrderByKey(st, key) });
+  },
 
   // ── Order type / customer ─────────────────
   orderType: 'dine-in',
@@ -3543,14 +3982,23 @@ export const useStore = create((set, get) => ({
   // v5.5.894: pulling a customer up RE-ATTACHES their stored allergens — the saved profile
   // allergens now apply to the POS allergen filter automatically, and staff get a loud red
   // warning. Attaching a customer WITHOUT allergens (or clearing) leaves the filter alone.
-  setCustomer: c => {
-    if (c && Array.isArray(c.allergens) && c.allergens.length) {
-      set({ customer: c, allergens: [...c.allergens] });
-      const labels = c.allergens.map(a => (ALLERGEN_DEFS.find(x => x.id === a)?.label || a)).join(', ');
+  // 26 Sep 2026 (allergy v4): attaching ADDS the guest's saved allergies to the order's
+  // declaration once (attachCustomer: only for a different guest from the one already on the
+  // order), it no longer replaces the chips. From then on only the order's declaration counts,
+  // so staff can clear an allergy the profile holds and it stays cleared. `declare: false` puts
+  // the order's own customer back on screen (the table hydrate, a profile save) without adding.
+  // v5: "the order already has this guest" is the ORDER's record (order.attachedProfiles), not
+  // this global customer, which stays on screen from a table to the walk in; a walk in with
+  // nothing rung gets its order object; an order the kitchen has queues the kitchen update.
+  setCustomer: (c, { declare = true } = {}) => {
+    if (!declare) { set({ customer: c }); return; }
+    const { patch, brings } = attachCustomer(get(), c, Date.now(), _newOrderId);
+    set(patch);
+    if (brings.length) {
+      get()._queueKitchenAllergy();
+      const labels = brings.map(a => (ALLERGEN_DEFS.find(x => x.id === a)?.label || a)).join(', ');
       const st = get();
       if (typeof st.showToast === 'function') st.showToast(`⚠️ ALLERGY — ${c.name || 'Customer'}: ${labels}`, 'error');
-    } else {
-      set({ customer: c });
     }
   },
   clearCustomer: () => set({ customer:null, pendingLoyaltyReward:null }),
@@ -3586,13 +4034,21 @@ export const useStore = create((set, get) => ({
   // up automatically when staff returns to the table. Persists immutably; if the
   // table has no session yet (rare, but possible during reservation), this is a
   // no-op since reservation flow stores the customer on tbl.reservation, not session.
-  setSessionCustomer: (tableId, c) => set(s => ({
-    tables: s.tables.map(t =>
-      t.id === tableId && t.session
-        ? { ...t, session: { ...t.session, customer: c || null } }
-        : t
-    ),
-  })),
+  // 26 Sep 2026 (allergy v4): attaching a guest here adds their saved allergies to the table's
+  // declared allergies once (sessionWithCustomer), the job POSSurface's v4.4.9 hydrate used to do
+  // by re-applying them on every visit. When this table is the order on screen the chips follow.
+  // v5: a guest added to a table the kitchen already has queues the kitchen update.
+  setSessionCustomer: (tableId, c) => {
+    set(s => {
+      const tables = s.tables.map(t =>
+        t.id === tableId && t.session
+          ? { ...t, session: sessionWithCustomer(t.session, c) }
+          : t
+      );
+      return tableOnScreen(s, tableId) ? { tables, allergens: declarationFor({ ...s, tables }) } : { tables };
+    });
+    get()._queueKitchenAllergy({ tableId });
+  },
   // v4.6.62: customer cache (session). DB-backed via searchCustomersLive + upsertCustomer.
   customerHistory: [],
   _cachedOrgId: null,
@@ -3712,7 +4168,10 @@ export const useStore = create((set, get) => ({
   },
 
   // Entry point from CustomerModal when the operator confirms customer details.
-  addToHistory: (c) => {
+  // 26 Sep 2026 (allergy v5): saveAllergens false = the profile's allergies are not written (the
+  // customer modal: it only ever knows the profile's own list, and a stale copy written back
+  // would undo a removal made in Back Office). The cached copy keeps them for the local search.
+  addToHistory: (c, { saveAllergens = true } = {}) => {
     const phoneN = get()._normalisePhone(c.phone);
     const cached = {
       ...c,
@@ -3729,7 +4188,7 @@ export const useStore = create((set, get) => ({
       ].slice(0, 50),
     }));
     // Async upsert to Supabase (don't block the UI)
-    get().upsertCustomer(c).catch(err => console.warn('[addToHistory upsert]', err?.message || err));
+    get().upsertCustomer(saveAllergens ? c : { ...c, allergens: undefined }).catch(err => console.warn('[addToHistory upsert]', err?.message || err));
     return cached;
   },
 
@@ -4392,11 +4851,14 @@ export const useStore = create((set, get) => ({
   // ── Bar tabs ──────────────────────────────
   tabs: [],
   activeTabId: null,
-  openTab: ({ name, seatId=null, tableId=null, preAuth=false, preAuthAmount=50, note='', preAuthPaymentIntentId=null, preAuthStripeAccount=null, preAuthHeldMinor=null, preAuthProcessor=null }) => {
+  openTab: ({ name, seatId=null, tableId=null, preAuth=false, preAuthAmount=50, note='', preAuthPaymentIntentId=null, preAuthStripeAccount=null, preAuthHeldMinor=null, preAuthProcessor=null, declaredAllergens=[] }) => {
     // v5.5.324: when a real card hold was placed at open, the PaymentIntent +
     // connected-account + held amount ride along on the tab so close can
     // capture it (and void can release it). Null when no reader / hold skipped.
-    const tab = { id:`tab-${Date.now()}`, ref:`TAB-${_tabNum++}`, name:name.trim(), seatId, tableId, openedBy:get().staff?.name||'Staff', openedAt:Date.now(), status:'open', preAuth, preAuthAmount, preAuthPaymentIntentId, preAuthStripeAccount, preAuthHeldMinor, preAuthProcessor, rounds:[], note, total:0 };
+    // 26 Sep 2026 (allergy v4): declaredAllergens = the tab's declared allergies from the start
+    // (the POS hands a walk in's over when it opens a tab for it); a tab opened on the Bar
+    // starts with none. Every round reads the tab's (addRoundToTab).
+    const tab = { id:`tab-${Date.now()}`, ref:`TAB-${_tabNum++}`, name:name.trim(), seatId, tableId, openedBy:get().staff?.name||'Staff', openedAt:Date.now(), status:'open', preAuth, preAuthAmount, preAuthPaymentIntentId, preAuthStripeAccount, preAuthHeldMinor, preAuthProcessor, rounds:[], note, total:0, declaredAllergens: allergenIds(declaredAllergens) };
     set(s=>({ tabs:[tab,...s.tabs], activeTabId:tab.id }));
     // v4.6.26: when a bar tab is linked to a real table, flip that table on
     // the floor plan to 'occupied' so it renders correctly. Only do this if
@@ -4412,7 +4874,10 @@ export const useStore = create((set, get) => ({
     return tab;
   },
   setActiveTab: id => set({ activeTabId:id }),
-  addRoundToTab: (tabId, items, note='') => {
+  // 26 Sep 2026 (allergy v4): opts.declaredAllergens = allergies the round brings with it (the
+  // POS walk in handed to this tab); they join the tab's declaration (a union), and the round's
+  // tickets carry the tab's whole declaration.
+  addRoundToTab: (tabId, items, note='', opts={}) => {
     // PRE-AUTH CAP: a card-held tab can only be captured up to the held amount. Block a round that
     // would push the tab over it — otherwise closing/cashing-off errors on the un-capturable overage.
     // (Card holds generally can't be raised, so staff take payment to close + reopen, or take a bigger
@@ -4427,7 +4892,17 @@ export const useStore = create((set, get) => ({
         return { ok: false, reason: 'preauth_limit', remaining };
       }
     }
-    const round = { id:uid(), sentAt:Date.now(), items:items.map(i=>({...i})), subtotal:items.reduce((s,i)=>s+i.price*i.qty,0), note };
+    // The tab's declaration for this round: its own (the chips when the tab is the order on
+    // screen and has no field yet, see sendDeclared) plus what the round brings. The round
+    // records it too: bar_tabs has no column for the tab's, but its rounds jsonb survives a
+    // reload and reaches the other tills (orderDeclared reads the last round's back).
+    const _decState = get();
+    const _decOn = orderOnScreen(_decState);
+    const tabDeclared = allergenIds(
+      sendDeclared(_capTab, _decState.allergens, _decOn.kind === 'tab' && _decOn.id === tabId),
+      opts?.declaredAllergens,
+    );
+    const round = { id:uid(), sentAt:Date.now(), items:items.map(i=>({...i})), subtotal:items.reduce((s,i)=>s+i.price*i.qty,0), note, declaredAllergens: tabDeclared };
     // v4.6.11: bar rounds deplete daily counts too — previously a bar tab could
     // sell an item past its stock with no auto-86 triggered.
     (items || []).forEach(i => {
@@ -4438,7 +4913,7 @@ export const useStore = create((set, get) => ({
         if (mod.itemId) get().decrementDailyCount(mod.itemId, (mod.qty || 1) * (i.qty || 1));
       });
     });
-    set(s=>({ tabs:s.tabs.map(t=>{ if(t.id!==tabId)return t; const rounds=[...t.rounds,round]; return{...t,rounds,status:'running',total:rounds.reduce((s,r)=>s+r.subtotal,0)}; }) }));
+    set(s=>({ tabs:s.tabs.map(t=>{ if(t.id!==tabId)return t; const rounds=[...t.rounds,round]; return{...t,rounds,status:'running',total:rounds.reduce((s,r)=>s+r.subtotal,0),declaredAllergens:tabDeclared}; }) }));
     // v4.6.5 Bug 5: bar tab rounds never hit production centres. Now mirrors sendToKitchen
     // so each round fires KDS tickets + print jobs for every centre its items touch.
     try {
@@ -4485,7 +4960,13 @@ export const useStore = create((set, get) => ({
         sentAt: Date.now(), minutes: 0,
         firedCourses: [0, 1], allCourses: [1],
         // v5.8.66: a bar round is Dine-in by name, the tab name as the headline (Peter).
-        meta: buildTicketMeta({ channel: 'bar', customerName: tab.name || null, source: thisDeviceName(), staff: staffName }),
+        // 26 Sep 2026: the tab's declared allergies (Peter: on the KDS and the docket whatever
+        // the product says). v4: the TAB's declaration (tabDeclared above), so the same guest's
+        // next round on the same tab carries it and another tab never does.
+        meta: buildTicketMeta({
+          channel: 'bar', customerName: tab.name || null, source: thisDeviceName(), staff: staffName,
+          allergy: orderAllergyLine(tabDeclared, centreItems),
+        }),
         items: centreItems.map(i => ({
           qty: i.qty,
           name: i.kitchenName || i.menu_name || i.menuName || i.name,
@@ -4496,6 +4977,7 @@ export const useStore = create((set, get) => ({
             ...(i.notes ? [`📝 ${i.notes}`] : []),
             ...(note ? [`📝 ${note}`] : []),
           ],
+          allergy: ticketAllergy(i, tabDeclared),
           course: i.course ?? 1,
           fired: true,
           centreId, uid: i.uid,
@@ -6323,6 +6805,15 @@ export const useStore = create((set, get) => ({
 
   recordWalkInClosed: (walkInOrder, orderType, customer, paymentInfo = {}) => {
     if (!walkInOrder?.items?.length) return;
+    // 26 Sep 2026 (allergy v6): an allergy declared on this walk in after its food went to the
+    // kitchen reaches the kitchen NOW, before the payment time fire and before the order goes.
+    // The review of v5: Tree nuts tapped at the tender and paid inside the settle time printed
+    // nothing, while the till's banner said ALLERGY. Telling the kitchen writes the walk in
+    // (what the kitchen holds), so the live order is read again: the payment time fire below
+    // runs only for the store's own walk in.
+    const wasLive = walkInOrder === get().walkInOrder;
+    get().flushKitchenAllergy({ walkIn: true });
+    if (wasLive) walkInOrder = get().walkInOrder || walkInOrder;
     // v5.5.853: a channel (HubRise) order paid at the till books via the SAME money
     // builder as the prepaid "collected" path (lib/channelMoney) — from the QUEUE row's
     // decoded figures, never from the payment cart (see OrdersHub.openOrder: that cart
@@ -7320,11 +7811,16 @@ export const useStore = create((set, get) => ({
     const isFireMarker = job.type === 'fire-marker';
     // v4.6.28: transfer-notice — kitchen alert fired when a table moves/combines.
     const isTransferNotice = job.type === 'transfer-notice';
+    // 26 Sep 2026 (allergy v5): allergy-update, an allergy declared after the kitchen got the order
+    // (store tellKitchenAllergy). Its own builder, never a new order docket.
+    const isAllergyUpdate = job.type === 'allergy-update';
     const idempotencyKey = isFireMarker
       ? `fire-${job.tableLabel || 'walkin'}-${job.centreId}-${job.course || 0}-${basePrintJob.sentAt}`
       : isTransferNotice
         ? `transfer-${job.fromTable || '?'}-${job.tableLabel || '?'}-${job.centreId}-${basePrintJob.sentAt}`
-        : `kitchen-${job.tableLabel || 'walkin'}-${job.centreId}-${job.course || 0}-${basePrintJob.sentAt}`;
+        : isAllergyUpdate
+          ? `allergy-${job.tableLabel || 'walkin'}-${job.centreId}-${basePrintJob.sentAt}`
+          : `kitchen-${job.tableLabel || 'walkin'}-${job.centreId}-${job.course || 0}-${basePrintJob.sentAt}`;
 
     // Local UI job marker — reflects Supabase-side state via realtime subs
     set(s => ({ printJobs: [{ ...basePrintJob, status: 'sending', printerId, attempts: 0 }, ...s.printJobs.slice(0, 49)] }));
@@ -7347,7 +7843,7 @@ export const useStore = create((set, get) => ({
       // Coffee-shop "sticker" mode: when this centre is set to split each item onto its own
       // ticket, dispatch one kitchen ticket per item UNIT (qty-expanded), each labelled
       // "ITEM X OF Y" with a unique idempotency key. Skips the single combined ticket below.
-      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem) {
+      if (!isFireMarker && !isTransferNotice && !isAllergyUpdate && centre?.splitPerItem) {
         const units = [];
         printItems.forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
         const total = units.length || 1;
@@ -7371,6 +7867,18 @@ export const useStore = create((set, get) => ({
             table: job.tableLabel || '',
             courseNum: job.course,
             centreName: centre?.name || job.printerName || 'Kitchen',
+            sentAt: basePrintJob.sentAt,
+            // 26 Sep 2026 (allergy v5): the order's allergy under FIRE COURSE N (none: as before).
+            ...(job.allergy ? { allergy: job.allergy } : {}),
+          }, printerId, { idempotencyKey })
+        : isAllergyUpdate
+        ? await printService.printAllergyUpdateTicket({
+            table: job.tableLabel || '',
+            centreName: centre?.name || job.printerName || 'Kitchen',
+            allergy: job.allergy,
+            added: job.added || null,
+            items: printItems,
+            server: job.server,
             sentAt: basePrintJob.sentAt,
           }, printerId, { idempotencyKey })
         : isTransferNotice
@@ -7741,6 +8249,9 @@ export const useStore = create((set, get) => ({
       // isTable is QR at a table for every channel but kiosk (the same test as before), and a
       // kiosk order with a table (its label, "Table 12 · #47", is then the headline). A kiosk
       // CHECK ID leads the note; with no flag the note is the order's own notes, as before.
+      // 26 Sep 2026 (allergy v4): the order's declared allergies, from the queue entry (lifted out
+      // of the customer jsonb by QueueSync) or straight from a raw row's customer jsonb.
+      const channelDeclared = allergenIds(order.declaredAllergens, order.customer?.declaredAllergens);
       const _kdsMeta = buildTicketMeta({
         channel: order.source || 'kiosk',
         orderType: typeKey,
@@ -7754,6 +8265,11 @@ export const useStore = create((set, get) => ({
         source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel)
           : (isEzcaterOrder(order) ? 'ezCater' : srcLabel),
         note: flagNote ? joinNotes(flagNote, order.customer?.notes) : order.customer?.notes,
+        // 26 Sep 2026: the order's declared allergies (v4: the ORDER's declaration, never a
+        // customer's saved list). A till order re-sent from Orders Hub carries it on its queue
+        // entry, or inside the row's customer jsonb when this reads a raw row (the catering and
+        // online release); kiosk and online send none yet and read exactly as before.
+        allergy: orderAllergyLine(channelDeclared, order.items),
       });
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
@@ -7767,6 +8283,7 @@ export const useStore = create((set, get) => ({
           qty: i.qty,
           name: i.kitchenName || i.name,
           mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
+          allergy: ticketAllergy(i, channelDeclared),
           course: 1, fired: true, status: 'sent', centreId,
         })),
         status: 'pending',                                                   // ← was 'fired'
@@ -8254,6 +8771,19 @@ export const useStore = create((set, get) => ({
   clearPendingItem: () => set({ pendingItem:null }),
 }));
 // NOTE: these are appended but the store is defined above — we patch via the create callback
+
+// 26 Sep 2026 (allergy v4): the Allergen chips follow the ORDER ON SCREEN. Whenever a different
+// order comes on screen (seat, open or switch table, a table paid or voided, a transfer, a split
+// check, the Bar surface and back, a bar tab switch or close) the chips become THAT order's
+// declared allergies, [] when it has none, never the previous order's (followOrderOnScreen in
+// src/lib/orderAllergy.js, which has the tests). One rule here, so every switch path, today's
+// and any added later, gets it without its own reset. The walk in swaps that change no order key
+// (clearWalkIn, the operator switch, an Orders Hub reopen, the MPOS resets) set the chips
+// themselves. A synchronous listener: the chips are right before set() returns.
+useStore.subscribe((state, prev) => {
+  const patch = followOrderOnScreen(state, prev);
+  if (patch) useStore.setState(patch);
+});
 
 // Mock-mode-only debug handle so local preview sessions can drive store state the
 // mock DB can't reach (e.g. bind a cash drawer to test the cash flow). Never set

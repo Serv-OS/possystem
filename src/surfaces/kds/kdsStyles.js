@@ -13,6 +13,10 @@ export const C = {
   ident: '#AEB8B3', meta1: '#8C968F', meta2: '#7E8A84', meta3: '#6F7A74', empty: '#5C6560',
   bump: '#22C55E', bumpInk: '#06210F', bumpHover: '#2FD96C', mods: '#8FE3B4',
   allergen: '#FFC46B', note: '#FFD79A', railQty: '#4ADE80', clock: '#9AA5A0',
+  // 26 Sep 2026: the guest's DECLARED allergies (Peter: "should come up on the KDS"). Red on
+  // purpose: the one thing on the board that must never be missed, so it shares the LATE red
+  // (no order type is red). White text on a solid block, not a coloured line.
+  allergy: '#FF6B6B', allergyInk: '#FFFFFF',
 };
 
 /** Ghost button in the header: Recall last, History, Settings. */

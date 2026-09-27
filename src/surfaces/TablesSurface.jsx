@@ -1116,6 +1116,8 @@ export default function TablesSurface() {
           onConfirm={(c)=>{
             // Write customer onto the table session. POSSurface's v4.4.9 hydrate-on-mount
             // useEffect picks up customer + allergens next time staff enters POS.
+            // 26 Sep 2026 (allergy v4): the guest's saved allergies are added to the table's
+            // declared allergies here, once (store setSessionCustomer); POSSurface shows the guest.
             setSessionCustomer(selectedTable.id, c);
             setShowCustomer(false);
             showToast(c?.name ? `Guest "${c.name}" attached` : 'Guest attached', 'success');

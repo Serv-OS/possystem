@@ -305,6 +305,22 @@ export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42
 }
 
 // ─── Kitchen ticket ───────────────────────────────────────────────────────────
+
+/**
+ * 'TREE NUTS · MILK' across the docket's lines, each allergy once, null when no line carries
+ * one. item.allergy is the guest's DECLARED allergies (src/lib/kds/kdsTicket.js ticketAllergy),
+ * never the product's allergen data. Added 26 Sep 2026 (Peter: "the ticket printed").
+ */
+export function kitchenAllergyBanner(items) {
+  const seen = new Set();
+  for (const it of (Array.isArray(items) ? items : [])) {
+    const s = it?.allergy == null ? '' : String(it.allergy).trim();
+    if (!s) continue;
+    for (const part of s.toUpperCase().split(' · ')) { const p = part.trim(); if (p) seen.add(p); }
+  }
+  return seen.size ? [...seen].join(' · ') : null;
+}
+
 export function buildKitchenTicketDoc({ table, server, covers, centreName, items, sentAt, delivery, itemLabel, reprint }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -375,14 +391,29 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
 
   if(server) b.fontB().line(`Server: ${server}`).fontA();
   if(covers>1) b.fontB().line(`Covers: ${covers}`).fontA();
+
+  // v5.7.28: noKitchen lines (the prepaid booking package revenue line) never print on a
+  // kitchen docket.
+  const kitchenItems = (items||[]).filter(i => !i?.noKitchen);
+
+  // 26 Sep 2026, Peter: "even if allergies are not on products, when allergies are selected
+  // it should come up on the KDS and the ticket printed". item.allergy is the guest's
+  // DECLARED allergies, stamped by the till whatever the product says. It is its own field,
+  // not a "⚠" mod, so the centre's printAllergens switch (store routePrintJob strips product
+  // allergen mods) never removes it. A banner up top, and again under each line below. A
+  // docket with no declared allergy prints exactly as before (printer.golden.test.js).
+  const allergyBanner = kitchenAllergyBanner(kitchenItems);
+  if (allergyBanner) {
+    b.divider().red().bold(true).center().doubleBoth().line('!! ALLERGY !!')
+     .normal().center().bold(true).doubleHeight().line(allergyBanner).normal().left().bold(false).black();
+  }
+
   // v4.6.9: no more single-course header line. Per-course headers below handle it.
   b.divider().bold(true).lf();
 
   // v4.6.9: group items by course with FIRING/HOLD headers, mirroring the KDS layout.
   const byCourse = {};
-  // v5.7.28: noKitchen lines (the prepaid booking package revenue line) never print on a
-  // kitchen docket.
-  (items||[]).filter(i => !i?.noKitchen).forEach(i => {
+  kitchenItems.forEach(i => {
     const c = i.course ?? 1;
     if (!byCourse[c]) byCourse[c] = [];
     byCourse[c].push(i);
@@ -412,6 +443,8 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
         if (!text) return;
         b.red().bold(true).line(`  ${text}`).bold(false).black();
       });
+      // 26 Sep 2026: the guest's declared allergies under the line, double height, red, bold.
+      if (item.allergy) b.red().bold(true).doubleHeight().line(`  ALLERGY: ${String(item.allergy).toUpperCase()}`).normal().bold(false).black();
       if(item.notes) b.red().bold(true).underline(true).line(`  ${item.notes}`).bold(false).underline(false).black();
       b.lf();
     });
@@ -421,7 +454,7 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
   return b.toDoc();
 }
 
-export function buildFireCourseTicketDoc({ table, courseNum, centreName, sentAt }, { cols = 42 } = {}) {
+export function buildFireCourseTicketDoc({ table, courseNum, centreName, sentAt, allergy }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 
@@ -437,6 +470,51 @@ export function buildFireCourseTicketDoc({ table, courseNum, centreName, sentAt 
 
   b.lf().center().bold(true).doubleBoth().line(`FIRE COURSE ${courseNum}`).normal();
 
+  // 26 Sep 2026 (allergy v5): the order's declared allergies under the fire line, red, double
+  // height (the review of v4: a held course fired with no allergy on it). A fire with none
+  // prints exactly as before (printer.golden.test.js).
+  if (allergy) b.lf().red().center().bold(true).doubleHeight().line(`ALLERGY: ${String(allergy).toUpperCase()}`).normal().bold(false).black();
+
+  b.divider('=').lf(3).cut();
+  return b.toDoc();
+}
+
+/**
+ * 26 Sep 2026 (allergy v5): the docket for an allergy declared AFTER the kitchen got the order
+ * (store tellKitchenAllergy). Peter: "when allergies are selected it should come up on the KDS
+ * and the ticket printed"; the review of v4 found a guest who mentions an allergy during starters
+ * got mains cooked from a ticket with none. It lists the food of that order this centre already
+ * has, each with the allergy under it like the kitchen docket, and says it is not a new order so
+ * nothing is started twice.
+ */
+export function buildAllergyUpdateTicketDoc({ table, centreName, allergy, added, items, server, sentAt }, { cols = 42 } = {}) {
+  const b = new DocBuilder(cols);
+  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const all = String(allergy || '').toUpperCase();
+  const fresh = added ? String(added).toUpperCase() : '';
+
+  b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
+   .normal().center().line(time).divider('=');
+  b.red().center().bold(true).doubleBoth().line('!! ALLERGY UPDATE !!').normal().bold(false).black();
+  if (table) {
+    // The kitchen docket's label rule: "Takeaway . Sarah" prints as is, a bare "T7" as TABLE T7.
+    const isNonTableLabel = / . /.test(table)
+      || /^(takeaway|collection|delivery|counter|drive-thru)$/i.test(table)
+      || /^(online|kiosk|qr|table|hubrise)\s/i.test(table);
+    b.center().bold(true).doubleBoth().line(isNonTableLabel ? table : `TABLE ${table}`).normal();
+  }
+  b.center().bold(true).line('NOT A NEW ORDER').bold(false);
+  b.divider();
+  b.red().center().bold(true).doubleHeight().line(`ALLERGY: ${all}`).normal().bold(false).black();
+  if (fresh && fresh !== all) b.red().center().bold(true).line(`NEW: ${fresh}`).bold(false).black();
+  if (server) b.center().line(`Server: ${server}`);
+  b.divider('-');
+  b.left().bold(true).line('Check this food, already with you:').bold(false);
+  (items||[]).forEach(it => {
+    b.bold(true).line(`${it.qty || 1} × ${it.name || ''}`).bold(false);
+    const a = String(it.allergy || all).toUpperCase();
+    if (a) b.red().bold(true).doubleHeight().line(`  ALLERGY: ${a}`).normal().bold(false).black();
+  });
   b.divider('=').lf(3).cut();
   return b.toDoc();
 }
@@ -464,6 +542,9 @@ export function buildTransferNoticeTicketDoc({ fromTable, toTable, centreName, i
         if (t) b.line(`  · ${t}`);
       });
     }
+    // 26 Sep 2026: the guest's declared allergies under the line like the kitchen docket (Peter:
+    // "the ticket printed"); a move docket with none prints exactly as before (golden test).
+    if (it.allergy) b.red().bold(true).doubleHeight().line(`  ALLERGY: ${String(it.allergy).toUpperCase()}`).normal().bold(false).black();
   });
   b.divider('=').lf(3).cut();
   return b.toDoc();

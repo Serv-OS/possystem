@@ -43,6 +43,8 @@ import Challenge21Modal from '../components/Challenge21Modal';
 import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
+import { declaredAllergyLine } from '../lib/kds/kdsTicket';
+import { onScreenDeclared, profileAdds, allergenIds, kitchenOnly, customerWithPhone } from '../lib/orderAllergy';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -61,7 +63,7 @@ const slashBreak = (s) => String(s ?? '').replace(/\//g, '/\u200B');
 export default function POSSurface() {
   const compact = useCompact();
   const {
-    staff, allergens, toggleAllergen, clearAllergens,
+    staff, allergens, toggleAllergen, clearAllergens, walkInOrder, dropCustomerAllergies,
     addItem, addCustomItem, removeItem, updateItemQty, updateItemNote, configureLineOptions,
     updateItemSeat, updateItemCourse, setOrderNote,
     sendToKitchen, fireCourse, saveTableSession, toggleServiceCharge,
@@ -130,56 +132,57 @@ export default function POSSurface() {
   const _needsCashIn = typeof needsCashIn === 'function' ? needsCashIn() : false;
   const _canCashup = Array.isArray(staff?.permissions) && staff.permissions.includes('cashup');
 
-  // v5.5.882: when the allergen filter changes AND a customer is attached AND the filter differs
-  // from the customer's stored allergens, AUTO-SAVE to the customer profile (debounced so rapid
-  // toggling settles into one write). This used to "prompt to save" via a showToast action button —
-  // but showToast only takes (msg, type), so the button was silently discarded and the save was
-  // UNREACHABLE (the feature never worked). Auto-save matches the intended behaviour: attach a
-  // customer, record their allergens, the profile remembers. Clearing the filter to empty never
-  // auto-removes stored allergens (safety: removal is a deliberate act, done in BO → Customers).
-  const _lastAllergenSaveRef = useRef('');
-  useEffect(() => {
-    if (!customer?.phone) return;
-    if (!Array.isArray(allergens) || allergens.length === 0) return;
-    const filterKey = [...allergens].sort().join(',');
-    const storedKey = (customer.allergens || []).slice().sort().join(',');
-    if (filterKey === storedKey) return;                        // already matches
-    if (_lastAllergenSaveRef.current === filterKey) return;     // already saved this exact set
-    const timer = setTimeout(async () => {
-      const st = useStore.getState();
-      const list = st.allergens || [];
-      if (!list.length) return;
-      const savedKey = [...list].sort().join(',');
-      const updatedId = await st.saveAllergensToCustomer(customer);
-      if (updatedId) {
-        _lastAllergenSaveRef.current = savedKey;
-        const updatedCustomer = { ...customer, allergens: [...list] };
-        setCustomer(updatedCustomer);
-        // Persist to the current table session too, so re-seating carries them. (The old code
-        // passed a session object into saveTableSession's COVERS slot — setSessionCustomer is
-        // the real session.customer writer.)
-        const tblId = st.activeTableId;
-        if (tblId && (st.tables || []).find(x => x.id === tblId)?.session) {
-          st.setSessionCustomer(tblId, updatedCustomer);
-        }
-        const labels = list.map(a => (ALLERGENS.find(x => x.id === a)?.label || a)).join(', ');
-        st.showToast(`${labels} saved to ${customer.name}'s profile`, 'success');
+  // v5.5.882 auto saved every chip change to the attached customer's profile, 1.2 s later.
+  // 26 Sep 2026 (allergy v4): replaced by an explicit "Save to <name>'s profile" button under the
+  // order's ALLERGY banner. The chips now print on the kitchen docket (Peter: "come up on the KDS
+  // and the ticket printed"), and the old save could put a wrongly tapped chip on a profile for
+  // good, with nobody asking, and that profile then declares it again on every visit. The button
+  // shows only when the order declares something the profile does not hold, and saves only
+  // ADDITIONS: taking an allergy off a profile stays a deliberate act in Back Office (the
+  // v5.5.882 rule). The order's declaration itself never depends on the profile.
+  const [savingAllergyProfile, setSavingAllergyProfile] = useState(false);
+  const saveDeclaredToProfile = async () => {
+    const st = useStore.getState();
+    const cust = st.customer;
+    const adds = profileAdds(onScreenDeclared(st), cust);
+    if (!cust?.phone || !adds.length || savingAllergyProfile) return;
+    const list = allergenIds(cust.allergens, adds);
+    setSavingAllergyProfile(true);
+    try {
+      const updatedId = await st.saveAllergensToCustomer(cust, list);
+      if (!updatedId) { st.showToast(`Could not save to ${cust.name || 'the customer'}'s profile, try again`, 'error'); return; }
+      const updatedCustomer = { ...cust, allergens: list };
+      // The same guest, shown again without declaring anything (declare: false).
+      setCustomer(updatedCustomer, { declare: false });
+      // Persist to the current table session too, so re-seating carries them. (The old code
+      // passed a session object into saveTableSession's COVERS slot; setSessionCustomer is
+      // the real session.customer writer.)
+      const tblId = st.activeTableId;
+      if (tblId && (st.tables || []).find(x => x.id === tblId)?.session) {
+        st.setSessionCustomer(tblId, updatedCustomer);
       }
-    }, 1200);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allergens, customer?.phone]);
+      const labels = adds.map(a => (ALLERGENS.find(x => x.id === a)?.label || a)).join(', ');
+      st.showToast(`${labels} saved to ${cust.name}'s profile`, 'success');
+    } finally {
+      setSavingAllergyProfile(false);
+    }
+  };
 
   // v4.6.65: hydrate `customer` state from the active table's session so the
   // attached customer chip + Edit/Remove pills show up when staff returns to a table.
+  // 26 Sep 2026 (allergy v4): this no longer touches the Allergen chips. They are the table
+  // ORDER's declared allergies (session.declaredAllergens), loaded by the store whenever a
+  // different order comes on screen (the follower under the store, src/lib/orderAllergy.js), so
+  // re-entering a table shows what that table declared, including an allergy staff cleared
+  // staying cleared. The v4.4.9 re-apply of the guest's saved list is gone for that reason: the
+  // saved list was added to the order once, when the guest was attached. declare: false puts the
+  // order's own customer back on screen without declaring anything again.
   useEffect(() => {
     if (!activeTableId) return;
     const t = tables.find(x => x.id === activeTableId);
     const sessionCust = t?.session?.customer;
     if (sessionCust && sessionCust.phone && (!customer || customer.phone !== sessionCust.phone)) {
-      setCustomer(sessionCust);
-      // v4.4.9: auto-apply guest's saved allergen filters when re-entering their table
-      if (Array.isArray(sessionCust.allergens)) setAllergens(sessionCust.allergens);
+      setCustomer(sessionCust, { declare: false });
     } else if (!sessionCust && customer && orderType === 'dine-in') {
       // Table switched and the new table has no attached customer
       setCustomer(null);
@@ -190,9 +193,12 @@ export default function POSSurface() {
   // v5.9.79: take the customer off THIS order (the wrong person was attached). A table order
   // forgets the guest as well, or re-entering the table would put them straight back; the
   // allergen filter that came with the profile goes with them. The customer record itself stays.
+  // 26 Sep 2026 (allergy v5): "goes with them" means exactly the allergies attaching them ADDED
+  // to this order (the order's own record, store dropCustomerAllergies). An allergy staff
+  // declared themselves stays, even one the wrong profile also holds.
   const removeCustomer = () => {
     if (orderType === 'dine-in' && activeTableId) setSessionCustomer(activeTableId, null);
-    if (Array.isArray(customer?.allergens) && customer.allergens.length) setAllergens([]);
+    dropCustomerAllergies(customer);
     clearCustomer();
     showToast?.('Customer removed from this order', 'info');
   };
@@ -367,6 +373,18 @@ export default function POSSurface() {
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
   const items = getPOSItems();
+  // 26 Sep 2026 (allergy v4): the declared allergies of the order on screen, exactly what its
+  // next send prints (src/lib/orderAllergy.js), for the red banner at the top of the order.
+  // This surface only renders on 'pos', so the order is the active table or the walk in.
+  const declaredOnScreen = onScreenDeclared({ surface: 'pos', activeTableId, tables, walkInOrder, allergens });
+  const declaredLine = declaredAllergyLine(declaredOnScreen);
+  const declaredNotOnProfile = customer?.phone ? profileAdds(declaredOnScreen, customer) : [];
+  // v5: the attached customer's saved allergies this order does not declare (they were cleared,
+  // or the customer was already on screen from the last order): one tap adds them.
+  const profileNotDeclared = allergenIds(customer?.allergens).filter(id => !declaredOnScreen.includes(id));
+  // v5: allergies the kitchen was told for this order's food and the order no longer declares.
+  // They stay with the kitchen (the safe side), so the till says so.
+  const kitchenStillHas = kitchenOnly(activeTableId ? session : walkInOrder);
   // v5.5.890: footer tax breakdown was an un-memoized IIFE in the totals JSX — recomputed the
   // whole tax engine on every render (every keystroke / store write). Same memo pattern as
   // CheckoutModal. Display-only.
@@ -530,7 +548,9 @@ export default function POSSurface() {
         const res = await captureLoyaltyByPhone(phone, dev?.locationId, dev?.orgId);
         if (res?.ok) {
           const cur = useStore.getState().customer || {};
-          setCustomer({ ...cur, phone, name: res.name || cur.name });
+          // 26 Sep 2026 (allergy v5): a different phone is a different person, so the attached
+          // customer's saved allergies and id do not come with it (customerWithPhone).
+          setCustomer(customerWithPhone(cur, phone, res.name));
           publishLoyalty({ known: res.known, name: res.name, points: res.points, rewards: res.rewards || [], customerId: res.customerId, smsSent: res.smsSent });
         } else {
           publishLoyalty({ error: true });
@@ -926,8 +946,11 @@ export default function POSSurface() {
         showToast('Payment complete', 'success');
       }
       // v4.4.9: reset attached customer + allergen filter so the next walk-in/seat starts clean
+      // 26 Sep 2026 (allergy v4): the chips already follow: clearTable puts the next order on
+      // screen and the store loads its declaration, clearWalkIn does the same. clearAllergens
+      // here would now CLEAR that next order's declaration (a counter cart waiting behind the
+      // table just paid), so it is gone.
       clearCustomer();
-      clearAllergens();
     } catch (mutErr) {
       console.error('[PayComplete] State mutation failed — continuing to print:', mutErr?.message || mutErr);
     }
@@ -1333,9 +1356,16 @@ export default function POSSurface() {
                     <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customer.name}</div>
                     <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?' · Named order':''}</div>
                     {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
+                    {/* 26 Sep 2026 (allergy v4): this is what the PROFILE holds. What prints is the
+                        order's ALLERGY banner below, which staff can clear for this order. */}
                     {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(
-                      <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2}}>
-                        ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
+                      <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                        <span>⚠ On profile: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}</span>
+                        {/* 26 Sep 2026 (allergy v5): the profile holds allergies this order does
+                            not declare, so they would not print. One tap declares them. */}
+                        {profileNotDeclared.length>0&&(
+                          <button onClick={()=>setAllergens(allergenIds(declaredOnScreen, profileNotDeclared))} style={{padding:'1px 8px',borderRadius:6,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',fontSize:10.5,fontWeight:800,cursor:'pointer',fontFamily:'inherit'}}>Add to this order</button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1354,6 +1384,35 @@ export default function POSSurface() {
             </>
           )}
         </div>
+
+        {/* 26 Sep 2026 (allergy v4): the ORDER's declared allergies, one red banner (Peter: "when
+            allergies are selected it should come up on the KDS and the ticket printed"). The
+            next send prints them on every line; v5: food the kitchen already has gets an ALLERGY
+            UPDATE docket and its KDS tickets updated a few seconds after the change (store
+            tellKitchenAllergy). The x is Clear all. The save button is the only way the till
+            writes a profile (see saveDeclaredToProfile). */}
+        {(declaredLine||kitchenStillHas.length>0)&&(
+          <div style={{margin:'8px 12px 0',flexShrink:0}}>
+            {declaredLine&&(
+            <div role="alert" style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px 8px 12px',borderRadius:10,background:'var(--red)',color:'#fff'}}>
+              <Icon name="warn" size={15}/>
+              <span style={{flex:1,minWidth:0,fontSize:12.5,fontWeight:800,letterSpacing:'.03em',overflowWrap:'anywhere'}}>ALLERGY: {declaredLine}</span>
+              <button onClick={clearAllergens} aria-label="Clear the allergies on this order" title="Clear the allergies on this order" style={{flexShrink:0,width:26,height:26,borderRadius:7,border:'1px solid rgba(255,255,255,.45)',background:'transparent',color:'#fff',fontSize:13,fontWeight:800,cursor:'pointer',fontFamily:'inherit',lineHeight:1}}>✕</button>
+            </div>
+            )}
+            {/* v5: taken off after the send. The kitchen keeps it (the safe side); staff tell them. */}
+            {kitchenStillHas.length>0&&(
+              <div style={{marginTop:declaredLine?5:0,padding:'5px 10px',borderRadius:8,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',fontSize:11,fontWeight:700}}>
+                The kitchen still has {declaredAllergyLine(kitchenStillHas)} for this order. Tell them if that was a mistake.
+              </div>
+            )}
+            {declaredNotOnProfile.length>0&&(
+              <button onClick={saveDeclaredToProfile} disabled={savingAllergyProfile} style={{marginTop:5,padding:'4px 10px',borderRadius:8,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',fontSize:11,fontWeight:700,cursor:savingAllergyProfile?'default':'pointer',fontFamily:'inherit',opacity:savingAllergyProfile?.6:1}}>
+                {savingAllergyProfile ? 'Saving…' : `Save ${declaredAllergyLine(declaredNotOnProfile)} to ${customer?.name || 'the customer'}'s profile`}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Order label row */}
         <div style={{padding:'6px 12px 3px',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
@@ -2148,7 +2207,9 @@ export default function POSSurface() {
               showToast(`New check at ${result.tableLabel} — sent to kitchen`, 'success');
 
             } else if (result.type === 'bar' && result.action === 'new') {
-              const tab = store.openTab({ name: result.tabName });
+              // 26 Sep 2026 (allergy v4): the walk in's declared allergies go with it to the tab,
+              // so this round and every later one on the tab carries them.
+              const tab = store.openTab({ name: result.tabName, declaredAllergens: onScreenDeclared(store) });
               store.addRoundToTab(tab.id, items);
               store.setCustomer({ name: result.tabName });
               store.setOrderType('dine-in');
@@ -2158,7 +2219,8 @@ export default function POSSurface() {
               showToast(`Bar tab "${result.tabName}" opened`, 'success');
 
             } else if (result.type === 'bar' && result.action === 'add') {
-              const addRes = store.addRoundToTab(result.tabId, items);
+              // 26 Sep 2026 (allergy v4): the walk in's declared allergies join the tab's.
+              const addRes = store.addRoundToTab(result.tabId, items, '', { declaredAllergens: onScreenDeclared(store) });
               if (addRes && addRes.ok === false) {
                 // Over the tab's card hold — keep the order on the POS so staff can cash off or trim it.
                 // addRoundToTab already showed the explanatory toast.
