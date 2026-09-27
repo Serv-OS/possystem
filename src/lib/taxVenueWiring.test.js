@@ -210,5 +210,5 @@ test('both venue creation paths seed the rates, the Back Office one BEFORE pulli
 test('Back Office says when another tab of this browser is open on the same venue', () => {
   const bo = code(read('backoffice/BackOfficeApp.jsx'));
   assert.match(bo, /<OtherTabBanner key=\{orgCtx\?\.locationId \|\| 'none'\} venue=\{orgCtx\?\.locationId \|\| null\} \/>/);
-  assert.match(bo, /import \{ startBoSessionWatch \} from '\.\.\/lib\/boSessions';/);
+  assert.match(bo, /import \{ startBoSessionWatch(, sameAuthUser)? \} from '\.\.\/lib\/boSessions';/);
 });

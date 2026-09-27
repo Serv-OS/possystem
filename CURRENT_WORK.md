@@ -1,3 +1,10 @@
+# Session, 27 Sep 2026, v5.9.98, Back Office stale tab + tax venue fix (branch fix/stale-tab-overwrite) HELD FOR PETER
+
+- Workflows wpcpg54hm (stale tab), wmx2zrcx2 (tax root cause), w6a5mob85 (hardening), wmgegmx7o (fixes + tax port + review), w45rtnxfp (final fixes) + tab venue sameAuthUser.
+- Push to POS writes no existing row (fresh read, waits for write queue); compare and set per changed column (lib/menuWriters, menuRowWrite, menuItemWrite); failed first saves offered on Push only; non-column item keys carried (ITEM_EXTRA_KEYS); tabVenue (getResolvedLocationIdSync) for Back Office writes; sameAuthUser keeps the tab's venue across auth refreshes; tax seeding on venue creation; venue-only rates/discounts/packages in loaders, snapshot and applyConfigUpdate; guarded Apply to all (bulkTax.js); till lineTaxRefs at add time.
+- Migrations for Peter AFTER this ships (not before): 20260927_OPS_menu_rows_server_time.sql (server updated_at triggers, publishes menu_items + tax_rates to realtime; tills ignore those events) then 20260927d_OPS_tax_rates_seed.sql (+ _ROLLBACK).
+- Known, not in scope: floor tables and ~60 other Back Office sections still read the shared venue key (lower risk: no cross-tab auth rerun now).
+
 # Session, 27 Sep 2026, v5.9.97, card sale VAT (branch fix/headless-vat)
 
 - From tax workflow wmx2zrcx2 (tax-fix-v3.patch), only the VAT recording parts: lib/headlessTax.js + venueTaxRates.js (lineTaxRefs); store headless reader close books tax (try/catch, never throws); CheckoutModal freezes taxBreakdown + walk-in discounts into check_draft; `grand ?? subtotal` (walk in) and `grand ?? session.total` (table) for 100% comps, and taxForChargedGoods books no VAT on a bill discounted to nothing. QR close VAT DROPPED from this release (review: it missed priced modifiers and product rates); QR closes still book null VAT as before. The rest of the tax patch waits for the combined Back Office release with the stale tab fix.
