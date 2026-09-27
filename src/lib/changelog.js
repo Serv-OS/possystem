@@ -15,6 +15,8 @@ export const CHANGELOG = [
       'Daily trading (P&L) and Bookings ask for the venue\'s dates. After 4pm in California they asked for a day behind London, and a 06:30 day start made "Yesterday" include today as well.',
       'Custom dates are whole business days at the venue, so 27 Sep matches "Yesterday" on the 28th. This month on the 1st before the day starts shows last month instead of nothing. Period labels show the venue\'s dates and times, and a single business day reads as one day.',
       'Tables Ready insights use the venue\'s calendar days.',
+      'Manager app, Team tab: a manager can now clock someone out from "On shift now". The Clock out button was added in 5.8.21 but never showed, because the app was never sent which timesheet each person was on. It shows only for managers and owners (or anyone given the manager approvals permission). It asks for the manager PIN, then clocks the person out exactly as the Time Clock would (the same break and pay rules) and records who did it.',
+      'Manager app: a wrong PIN on an approval, a purchase order or a clock out now says "PIN not recognised" and asks again. It showed "Edge Function returned a non-2xx status code" and kept the wrong PIN.',
     ],
   },
   {
