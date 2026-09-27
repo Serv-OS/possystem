@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.84',
+    date: '27 Sep 2026',
+    items: [
+      'Owner app: the refresh arrow now shows it is working, and a refresh that cannot reach ServOS says so instead of looking like nothing happened. On a phone that had been asleep the call could hang for good, leaving the figures and the "Updated" time frozen with no error.',
+      'Manager app: the same guard on its snapshot, so a woken phone never sits on old figures in silence.',
+    ],
+  },
+  {
     v: '5.9.83',
     date: '27 Sep 2026',
     items: [
