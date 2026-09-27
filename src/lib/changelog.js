@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.91',
+    date: '27 Sep 2026',
+    items: [
+      'Customer display: a member\'s stamps and rewards stay on screen until the order is finished (paid or cleared). They disappeared after about 10 seconds. Only a "please try again" message clears itself.',
+    ],
+  },
+  {
     v: '5.9.90',
     date: '27 Sep 2026',
     items: [

@@ -23,7 +23,7 @@ import { money, setActiveCurrency } from '../lib/currency';
 import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
-import { displayHoldMs } from '../lib/customerDisplayIdle';
+import { displayHoldMs, loyaltyResultHoldMs } from '../lib/customerDisplayIdle';
 import { stampDots, showPoints } from '../lib/stampSummary';
 
 // v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
@@ -107,7 +107,7 @@ export default function CustomerDisplaySurface() {
             setPayload(p);
             if (idleTimer.current) clearTimeout(idleTimer.current);
             const ms = displayHoldMs(st);
-            if (ms > 0) idleTimer.current = setTimeout(() => setPayload({ state: 'idle', items: [], total: 0 }), ms);
+            if (ms > 0) idleTimer.current = setTimeout(() => { setPayload({ state: 'idle', items: [], total: 0 }); setLoyaltyResult(null); setPhoneInput(''); }, ms); // v5.9.91: an abandoned order drops the member's panel too
           },
           (r) => {  // loyalty lookup result
             setSubmitting(false);
@@ -115,8 +115,9 @@ export default function CustomerDisplaySurface() {
             setPhoneInput('');
             setLoyaltyResult(r || {});
             if (resultTimer.current) clearTimeout(resultTimer.current);
-            const ms = (r?.known && (r.rewards || []).length) ? 25000 : 9000; // longer while rewards are tappable
-            resultTimer.current = setTimeout(() => setLoyaltyResult(null), ms);
+            // v5.9.91: held until the order ends (lib/customerDisplayIdle.js loyaltyResultHoldMs).
+            const ms = loyaltyResultHoldMs(r);
+            if (ms > 0) resultTimer.current = setTimeout(() => setLoyaltyResult(null), ms);
           },
           (tr) => {  // POS is asking the customer to choose a gratuity
             setTipReq(tr && typeof tr.total === 'number' ? tr : null);

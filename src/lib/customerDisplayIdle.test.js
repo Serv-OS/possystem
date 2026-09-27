@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { displayHoldMs, TERMINAL_HOLD_MS, OPEN_ORDER_SAFETY_MS } from './customerDisplayIdle.js';
+import { displayHoldMs, TERMINAL_HOLD_MS, OPEN_ORDER_SAFETY_MS, loyaltyResultHoldMs, LOYALTY_ERROR_HOLD_MS } from './customerDisplayIdle.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -20,7 +20,7 @@ test('an open order holds for 20 minutes, a thank you for 6.5 s, idle not at all
 
 test('pins: the display uses the rule, and the till still sends idle itself when the basket empties', () => {
   const disp = read('../surfaces/CustomerDisplaySurface.jsx');
-  assert.match(disp, /import \{ displayHoldMs \} from '\.\.\/lib\/customerDisplayIdle'/);
+  assert.match(disp, /import \{ displayHoldMs, loyaltyResultHoldMs \} from '\.\.\/lib\/customerDisplayIdle'/);
   assert.match(disp, /const ms = displayHoldMs\(st\);\n\s+if \(ms > 0\) idleTimer\.current = setTimeout/, 'no 45 s timer on an open order');
   assert.doesNotMatch(disp, /IDLE_AFTER_MS/);
   const pos = read('../surfaces/POSSurface.jsx');
@@ -35,4 +35,17 @@ test('pins: a customer can be taken off an order (till chip: Remove)', () => {
   assert.match(pos, /if \(Array\.isArray\(customer\?\.allergens\) && customer\.allergens\.length\) setAllergens\(\[\]\);/, 'the allergen filter that came with the profile goes with it');
   assert.match(pos, /clearCustomer\(\);\n\s+showToast\?\.\('Customer removed from this order'/);
   assert.match(pos, /aria-label="Remove customer from this order"/);
+});
+
+test('the member panel stays until the order ends; only an error clears itself (v5.9.91)', () => {
+  // Peter, 27 Sep: "only last 15 seconds then logs out, it needs to stay on until the end of transaction".
+  assert.equal(loyaltyResultHoldMs({ known: true, stamps: [{}], rewards: [] }), 0);
+  assert.equal(loyaltyResultHoldMs({ known: true, rewards: [{ id: 'r' }] }), 0);
+  assert.equal(loyaltyResultHoldMs({ known: false, smsSent: true }), 0, 'a new member\'s "You\'re in" stays too');
+  assert.equal(loyaltyResultHoldMs({ error: true }), LOYALTY_ERROR_HOLD_MS);
+  const disp = read('../surfaces/CustomerDisplaySurface.jsx');
+  assert.match(disp, /const ms = loyaltyResultHoldMs\(r\);\n\s+if \(ms > 0\) resultTimer\.current = setTimeout/);
+  assert.doesNotMatch(disp, /25000 : 9000/);
+  assert.match(disp, /if \(st === 'idle'\) \{ setPhoneInput\(''\); setSubmitting\(false\); setLoyaltyResult\(null\); \}/, 'the order ending clears it');
+  assert.match(disp, /setPayload\(\{ state: 'idle', items: \[\], total: 0 \}\); setLoyaltyResult\(null\);/, 'an abandoned order clears it too');
 });

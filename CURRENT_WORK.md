@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.91, loyalty panel held until the order ends (branch fix/display-hold-loyalty)
+
+- Peter: stamps on the display "only last 15 seconds". resultTimer 9 s / 25 s removed for results (loyaltyResultHoldMs: error 8 s, else hold); the idle safety timer also clears the panel.
+
 # Session, 27 Sep 2026, v5.9.90, automatic joining on email (branch feat/stamps-on-login, with v5.9.89 stamps)
 
 - Peter: "when someone signs up it auto merges their records ... as long as they use the same email". Portal: loyalty-otp update_profile → _shared/portalEmailJoin.js (decideEmailJoin, runPortalJoin on the merge core, fresh session for the survivor, notice). Till: src/lib/customerAutoJoin.js + customerAutoJoinRun.js from CustomerModal and MCustomerCapture only (never order close / reopen), customer-merge for display shells, customer-join-notice edge function (DEPLOYED 27 Sep). loyalty-otp deploy after the web release. Both passed adversarial review (minors only).
