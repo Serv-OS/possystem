@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.86',
+    date: '27 Sep 2026',
+    items: [
+      'FIX (till crash): picking a customer who has an email but no phone (every imported member without a phone) crashed the whole till with "Cannot read properties of null (reading \'replace\')". The customer form now treats a missing phone as empty.',
+    ],
+  },
+  {
     v: '5.9.85',
     date: '27 Sep 2026',
     items: [

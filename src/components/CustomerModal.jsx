@@ -94,8 +94,8 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
   // Name/email search stays at 3 chars since those are ilike prefix matches.
   useEffect(() => {
-    const phoneDigits = phone.replace(/[^\d+]/g, '');
-    const q = phoneDigits.length >= 6 ? phone : name.length >= 3 ? name : '';
+    const phoneDigits = String(phone || '').replace(/[^\d+]/g, '');
+    const q = phoneDigits.length >= 6 ? phone : String(name || '').length >= 3 ? name : '';
     if (!q) { setResults([]); setSearched(false); return; }
     // Show local cache immediately for snappy UI
     setResults(searchCustomers(q));
@@ -121,13 +121,16 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   }, [phone, name]);
 
   const selectCustomer = (c) => {
-    setName(c.name); setPhone(c.phone); setEmail(c.email || '');
+    // v5.9.86 (Leeds, 27 Sep 2026: "App Error: Cannot read properties of null (reading 'replace')"): an
+    // imported member with an email and NO phone (1,357 at Coffee Boy) set phone to null, and the live
+    // search below called phone.replace on it, crashing the whole till. Every field stays a string.
+    setName(c.name || ''); setPhone(c.phone || ''); setEmail(c.email || '');
     if (c.address) { setAddr1(c.address.line1 || ''); setPostcode(c.address.postcode || ''); setAddrGeo(c.address.lat != null ? { lat: c.address.lat, lng: c.address.lng } : null); }
     setResults([]); setSearched(false);
   };
 
   const handleConfirm = async () => {
-    if (!name.trim() || (!nameOnly && !phone.trim())) {
+    if (!String(name || '').trim() || (!nameOnly && !String(phone || '').trim())) {
       showToast(nameOnly ? 'Customer name is required' : 'Name and phone number are required', 'error'); return;
     }
     if (isDelivery && (!addr1.trim() || !postcode.trim())) {

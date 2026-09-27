@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.86 HOTFIX, till crash on a customer with no phone (branch hotfix/null-phone-crash)
+
+- Leeds POS 1 (Sunmi) App Error "Cannot read properties of null (reading 'replace')" after staff picked Simon Hughes (imported aaa70b4f, email only). CustomerModal.selectCustomer did setPhone(c.phone) (null) and the live search effect ran phone.replace. Now setPhone(c.phone || '') etc.
+
 # Session, 27 Sep 2026, v5.9.85, display join + welcome text (branch fix/display-join-welcome)
 
 - Leeds (trading): a new customer typed his number on the customer display and got an error. captureLoyaltyByPhone inserted without name (customers.name NOT NULL) since 17 Sep; now name '' and marketing_opt_in false (no consent on the display), 23505 race re-read, a failed read is not a new number.
