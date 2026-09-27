@@ -102,6 +102,9 @@ export function KdsSettingsSheet({ settings, onChange, onClose, saveNote }) {
             <Toggle key={k} label={label} sub={sub} on={settings.show[k]} onToggle={() => toggle(k)} />
           ))}
 
+          <div style={{ ...monoLabel, padding: '26px 0 6px' }}>BUMPING</div>
+          <Toggle label="Bump when every item is ticked" sub="Off: the ticket stays up until someone presses Bump" on={settings.autoBumpWhenAllTicked === true} onToggle={() => set({ autoBumpWhenAllTicked: !(settings.autoBumpWhenAllTicked === true) })} />
+
           <div style={{ ...monoLabel, padding: '26px 0 6px' }}>TIME THRESHOLDS</div>
           <div style={{ font: `400 14px/1.4 ${SANS}`, color: C.meta2, paddingBottom: 4 }}>Minutes since the order fired before the timer changes colour.</div>
           <ThresholdRow from={KDS_STATUS.ok} to={KDS_STATUS.caution} label="Green → Orange" sub="Order is running behind"

@@ -27,6 +27,10 @@ export const KDS_DEFAULTS = Object.freeze({
   density: 'comfortable',    // 'comfortable' | 'compact'
   caution: 10,               // minutes, green to orange (design default, Peter chose it)
   late: 15,                  // minutes, orange to red
+  // v5.9.95 (Peter, 27 Sep 2026: "when they are ticking off each individual item don't auto bump the
+  // check, leave it there until they click bump"): ticking the last item no longer bumps; a screen
+  // can switch the old behaviour back on in its settings.
+  autoBumpWhenAllTicked: false,
   show: Object.freeze(Object.fromEntries(KDS_TOGGLES.map(([k]) => [k, true]))),
 });
 
@@ -74,6 +78,7 @@ export function normaliseKdsSettings(raw) {
     caution,
     late,
     show,
+    autoBumpWhenAllTicked: src.autoBumpWhenAllTicked === true,
   };
 }
 
@@ -101,4 +106,11 @@ export function matchManagerPin(staff, pin) {
   const p = String(pin ?? '');
   if (!p) return null;
   return (staff || []).find(s => isManagerStaff(s) && s.pin && String(s.pin) === p) || null;
+}
+
+/** After an item tick: bump the whole ticket only when the screen asks for it and every live line is ticked. */
+export function shouldBumpAfterTick(items, settings) {
+  if (!settings || settings.autoBumpWhenAllTicked !== true) return false;
+  const live = (Array.isArray(items) ? items : []).filter((i) => i && !i.voided);
+  return live.length > 0 && live.every((i) => i._bumped);
 }
