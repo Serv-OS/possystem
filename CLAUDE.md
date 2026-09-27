@@ -199,6 +199,8 @@ supabase/
   workforce-onboarding — Contract e-sign (public /sign/<token> page)
   trading-report     — Daily Trading P&L (forecast + same-weekday-LY; sales/VAT/COGS/labour/overhead ladder)
   owner-snapshot     — Owner app (?mode=owner) multi-location top-down snapshot in one call
+  manager-snapshot   — Manager app (?mode=manager) single-venue today: money, floor, team, kitchen
+                       (both read takings via _shared/snapshotSales.js, the trading-report reading; every read paged, v5.10.0)
   review-*           — Review Manager: review-admin / sync / reply / submit / request / google (one-time platform OAuth)
   ryft-* / payments-* — Ryft dual-processor payments (card-present, tabs, refunds, disputes) + onboard/admin/processor
 ```
@@ -283,7 +285,7 @@ supabase/
 
 ### Reporting (24 reports)
 Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineering, DailyTrend, Daypart, Item Trend, Order Types, KDS Performance, Shifts, Cash Drawer, Z Report, Catalog, Loyalty, Exceptions, Location Compare, **Daily Trading (P&L)**, **Payroll**, Card Payments & Payouts (Ryft), Disputes.
-- **Daily Trading (P&L)** (`reports/DailyTrading.jsx` + `trading-report` edge fn) — operator sets a per-day forecast (suggests same-weekday-last-year); full P&L ladder **gross takings → less VAT (HMRC, never profit) → net sales → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**. Per check via `_shared/tradingSales.js` (v5.9.99): what customers paid for the goods after discounts and comps, read per tender like the accounting day layer (loyalty and promo credit are discounts, tips and service are not sales); VAT is the money tenders' share of `tax_amount`; net = gross − VAT. COGS%/overhead in `wf_venue_settings.settings`. Net sales (ex-VAT) is the P&L revenue basis.
+- **Daily Trading (P&L)** (`reports/DailyTrading.jsx` + `trading-report` edge fn) — operator sets a per-day forecast (suggests same-weekday-last-year); full P&L ladder **gross takings → less VAT (HMRC, never profit) → net sales → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**. Per check via `_shared/tradingSales.js` (v5.9.99): what customers paid for the goods after discounts and comps, read per tender like the accounting day layer (loyalty and promo credit are discounts, tips and service are not sales); VAT is the money tenders' share of `tax_amount`; net = gross − VAT. COGS%/overhead in `wf_venue_settings.settings`. Net sales (ex-VAT) is the P&L revenue basis. The Owner and Manager apps read takings the same way (`_shared/snapshotSales.js addCheckSales`, v5.10.0).
 - **Payroll** (`reports/PayrollReport.jsx`) — closed `wf_payroll_runs`: per-run wages/tips, per-staff breakdown, CSV.
 
 ### Workforce / Staff Management (Back Office → Workforce)

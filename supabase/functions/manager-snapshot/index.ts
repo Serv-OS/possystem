@@ -2,9 +2,11 @@
 //
 // Single-venue data engine for the ServOS Manager app (?mode=manager). One round trip returns the
 // PAIRED location's "today" money + the live floor + live team, for a paired device (anon) or a BO
-// user. Money mirrors owner-snapshot exactly (net = closed_checks.subtotal EX-VAT; pennies; VAT is
-// a liability, never profit). The client classifies floor/team with the unit-tested engines in
-// src/lib/manager/*. Service-role reads, fenced by location + caller.
+// user. Money mirrors owner-snapshot exactly (_shared/snapshotSales.js, 27 Sep 2026: what customers
+// paid for the goods after discounts and comps, per check like the Daily trading report; net is
+// EX-VAT; pennies; VAT is a liability, never profit; never the shelf subtotal). The client
+// classifies floor/team with the unit-tested engines in src/lib/manager/*. Service-role reads,
+// fenced by location + caller.
 //
 //   POST { action:'snapshot', ops_location_id }  — token in Authorization header.
 // Auth: the device claimed to THIS location (ops_devices.device_uid = auth.uid()), OR a BO user with
@@ -12,6 +14,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { pagedRows } from '../_shared/pagedRows.js';
+import { SALES_CHECK_COLS, emptySales, addCheckSales } from '../_shared/snapshotSales.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -63,14 +67,17 @@ Deno.serve(async (req) => {
     const today = ymd(now, tz);
     const startIso = new Date(now.getTime() - 36 * 3600 * 1000).toISOString(); // pad ±tz; filter to `today` below
 
-    const [{ data: checks }, { data: fc }, { data: tsRows }, { data: shifts }, { data: staff }, { data: sess }, { data: ftables }] = await Promise.all([
-      sb.from('closed_checks').select('subtotal, total, tip, status, voided, closed_at').eq('location_id', loc).gte('closed_at', startIso).limit(20000),
+    // Every list read pages (_shared/pagedRows.js): PostgREST returns at most 1000 rows a request
+    // whatever .limit() asks for (.limit(20000) came back with 1000). A failed read is an error
+    // (500 with the message), never £0 or an empty team.
+    const [checks, { data: fc }, tsRows, shifts, staff, sess, ftables] = await Promise.all([
+      pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
-      sb.from('wf_timesheets').select('staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).limit(5000),
-      sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).limit(2000),
-      sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).limit(2000),
-      sb.from('active_sessions').select('table_id, session').eq('location_id', loc).limit(2000),
-      sb.from('floor_tables').select('id, label').eq('location_id', loc).limit(2000),
+      pagedRows('timesheets', () => sb.from('wf_timesheets').select('staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
+      pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).order('id')),
+      pagedRows('staff', () => sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).order('id')),
+      pagedRows('open tables', () => sb.from('active_sessions').select('table_id, session').eq('location_id', loc).order('id')),
+      pagedRows('tables', () => sb.from('floor_tables').select('id, label').eq('location_id', loc).order('id')),
     ]);
     // v5.5.990 — the Manager app used to hardcode 'a break is due after 6h with
     // none logged', blind to age and to the venue's own policy. Ship both so it
@@ -79,17 +86,15 @@ Deno.serve(async (req) => {
     const breakPolicy = (vsRow?.settings ?? {}) as Record<string, unknown>;
     // table_id on a session IS the floor_tables.id → resolve the friendly label ("T2", "B3", …).
     const tableLabel: Record<string, string> = {};
-    for (const f of ftables ?? []) if (f?.id) tableLabel[f.id] = f.label;
+    for (const f of ftables) if (f?.id) tableLabel[f.id] = f.label;
 
-    // ── Money (today, venue-local) — net = subtotal (ex-VAT), exclude voided ──
-    let net = 0, gross = 0, orders = 0, tips = 0;
-    for (const c of checks ?? []) {
-      if (c.voided || String(c.status || '') === 'voided') continue;
-      if (ymd(new Date(c.closed_at), tz) !== today) continue;
-      net += Number(c.subtotal) || 0; gross += Number(c.total) || 0; orders += 1; tips += Number(c.tip) || 0;
-    }
+    // ── Money (today, venue-local): what customers paid for the goods, VAT apart; voided checks
+    //    count for nothing (_shared/snapshotSales.js, the same reading as owner-snapshot) ──
+    const sales = emptySales();
+    for (const c of checks) if (ymd(new Date(c.closed_at), tz) === today) addCheckSales(sales, c);
+    const { net, vat, gross, orders, tips } = sales;
     let labour = 0;
-    for (const t of tsRows ?? []) {
+    for (const t of tsRows) {
       if (!['approved', 'paid'].includes(String(t.status))) continue;
       if (!t.clock_in || ymd(new Date(t.clock_in), tz) !== today) continue;
       labour += Number(t.pay_amount) || 0;
@@ -97,7 +102,7 @@ Deno.serve(async (req) => {
     const forecast = Number(fc?.amount) || 0;
     const money = {
       currency,
-      net: r2(net), gross: r2(gross), orders, tips: r2(tips),
+      net: r2(net), vat: r2(vat), gross: r2(gross), orders, tips: r2(tips),
       avgCheck: orders ? r2(net / orders) : 0,
       forecast: r2(forecast), forecastPct: forecast > 0 ? Math.round((net / forecast) * 100) : null,
       labour: r2(labour), labourPct: net > 0 ? r2((labour / net) * 100) : null,
@@ -105,7 +110,7 @@ Deno.serve(async (req) => {
     };
 
     // ── Floor (active_sessions.session jsonb → floor.js input shape) ──
-    const floor = (sess ?? []).map((row: any) => {
+    const floor = sess.map((row: any) => {
       const s = row.session || {};
       const items = Array.isArray(s.items) ? s.items : [];
       const hasOrder = !!s.sentAt || items.some((i: any) => i.status === 'sent' || i.fired);
@@ -124,13 +129,13 @@ Deno.serve(async (req) => {
     // ── Team (timesheets + today's shifts → team.js input shape) ──
     const nameOf: Record<string, string> = {};
     const dobOf: Record<string, string | null> = {};
-    for (const m of staff ?? []) { nameOf[m.id] = m.name; dobOf[m.id] = m.dob ?? null; }
+    for (const m of staff) { nameOf[m.id] = m.name; dobOf[m.id] = m.dob ?? null; }
     // "On shift now" must include anyone STILL clocked in (clock_out null) even if they clocked in
     // before midnight venue-time — otherwise a late/overnight shift vanishes the moment the venue
     // date rolls over (clocked in 23:48, it's now 00:12 → punch date != today). Today's completed
     // punches stay in for the day's team view. (tsRows is already bounded to clock_in within ~36h,
     // so a forgotten clock-out can't linger forever.)
-    const punches = (tsRows ?? [])
+    const punches = tsRows
       .filter((t: any) => t.clock_in && (t.clock_out == null || ymd(new Date(t.clock_in), tz) === today))
       .map((t: any) => ({
         id: t.id, staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
@@ -139,14 +144,14 @@ Deno.serve(async (req) => {
         dob: dobOf[t.staff_id] || null,
       }));
     const parseShiftMs = (date: string, time: string) => (date && time ? ms(`${date}T${time}`) : null);
-    const teamShifts = (shifts ?? [])
+    const teamShifts = shifts
       .filter((sh: any) => String(sh.status) === 'published')
       .map((sh: any) => ({
         staffId: sh.staff_id, name: nameOf[sh.staff_id] || 'Staff', role: sh.role_key || null,
         startMs: parseShiftMs(sh.shift_date, sh.start_time), endMs: parseShiftMs(sh.shift_date, sh.finish_time),
       }));
     const ratesMinor: Record<string, number> = {};
-    for (const t of tsRows ?? []) if (t.effective_rate != null) ratesMinor[t.staff_id] = Math.round(Number(t.effective_rate) * 100);
+    for (const t of tsRows) if (t.effective_rate != null) ratesMinor[t.staff_id] = Math.round(Number(t.effective_rate) * 100);
 
     // ── Approvals inbox (pending) — completed-but-unapproved timesheets (last 14d) + pending time-off.
     //    Surfaced for the Team tab's approvals (the UI gates display on the team_approvals flag; writes
@@ -178,20 +183,20 @@ Deno.serve(async (req) => {
     //    must never break takings/floor/team, so default to []. ──
     let kitchenItems: any[] = [];
     try {
-      const { data: pars } = await sb.from('par_levels')
-        .select('inventory_item_id, par_level, reorder_point').eq('location_id', loc).limit(5000);
-      const ids = (pars ?? []).map((p: any) => p.inventory_item_id).filter(Boolean);
+      const pars = await pagedRows('par levels', () => sb.from('par_levels')
+        .select('inventory_item_id, par_level, reorder_point').eq('location_id', loc).order('id'));
+      const ids = pars.map((p: any) => p.inventory_item_id).filter(Boolean);
       if (ids.length) {
-        const [{ data: invs }, { data: sups }] = await Promise.all([
-          sb.from('inventory_items').select('id, name, on_hand, default_supplier_id')
-            .eq('location_id', loc).in('id', ids).is('archived_at', null),
-          sb.from('suppliers').select('id, name').eq('location_id', loc).limit(2000),
+        const [invs, sups] = await Promise.all([
+          pagedRows('stock items', () => sb.from('inventory_items').select('id, name, on_hand, default_supplier_id')
+            .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
+          pagedRows('suppliers', () => sb.from('suppliers').select('id, name').eq('location_id', loc).order('id')),
         ]);
         const supName: Record<string, string> = {};
-        for (const s of sups ?? []) supName[s.id] = s.name;
+        for (const s of sups) supName[s.id] = s.name;
         const parBy: Record<string, any> = {};
-        for (const p of pars ?? []) parBy[p.inventory_item_id] = p;
-        kitchenItems = (invs ?? []).map((i: any) => {
+        for (const p of pars) parBy[p.inventory_item_id] = p;
+        kitchenItems = invs.map((i: any) => {
           const p = parBy[i.id] || {};
           return {
             itemId: i.id, name: i.name,
@@ -209,13 +214,13 @@ Deno.serve(async (req) => {
     // ── Ops: cheap headline counts for the Home tile (full detail lives in the Ops tab). Isolated. ──
     let ops = { openMaintenance: 0, activeAlerts: 0 };
     try {
-      const [{ data: maint }, { data: al }] = await Promise.all([
-        sb.from('maintenance_requests').select('status').eq('location_id', loc).limit(2000),
-        sb.from('ops_alerts').select('id').eq('location_id', loc).eq('status', 'sent').limit(2000),
+      const [maint, al] = await Promise.all([
+        pagedRows('maintenance requests', () => sb.from('maintenance_requests').select('status').eq('location_id', loc).order('id')),
+        pagedRows('alerts', () => sb.from('ops_alerts').select('id').eq('location_id', loc).eq('status', 'sent').order('id')),
       ]);
       ops = {
-        openMaintenance: (maint ?? []).filter((m: any) => !['resolved', 'cancelled'].includes(String(m.status))).length,
-        activeAlerts: (al ?? []).length,
+        openMaintenance: maint.filter((m: any) => !['resolved', 'cancelled'].includes(String(m.status))).length,
+        activeAlerts: al.length,
       };
     } catch { ops = { openMaintenance: 0, activeAlerts: 0 }; }
 
@@ -228,17 +233,17 @@ Deno.serve(async (req) => {
         .in('status', ['SENT', 'PARTIAL']).order('expected_date', { ascending: true }).limit(500);
       if ((pos ?? []).length) {
         const poIds = (pos ?? []).map((p: any) => p.id);
-        const [{ data: dels }, { data: lines }, { data: sups }] = await Promise.all([
-          sb.from('deliveries').select('po_id, status').eq('location_id', loc).in('po_id', poIds).limit(2000),
-          sb.from('po_lines').select('po_id').in('po_id', poIds).limit(20000),
-          sb.from('suppliers').select('id, name').eq('location_id', loc).limit(2000),
+        const [dels, lines, sups] = await Promise.all([
+          pagedRows('deliveries', () => sb.from('deliveries').select('po_id, status').eq('location_id', loc).in('po_id', poIds).order('id')),
+          pagedRows('order lines', () => sb.from('po_lines').select('po_id').in('po_id', poIds).order('id')),
+          pagedRows('suppliers', () => sb.from('suppliers').select('id, name').eq('location_id', loc).order('id')),
         ]);
         const delByPo: Record<string, string> = {};
-        for (const d of dels ?? []) if (d.po_id && !delByPo[d.po_id]) delByPo[d.po_id] = d.status;
+        for (const d of dels) if (d.po_id && !delByPo[d.po_id]) delByPo[d.po_id] = d.status;
         const lineBy: Record<string, number> = {};
-        for (const l of lines ?? []) lineBy[l.po_id] = (lineBy[l.po_id] || 0) + 1;
+        for (const l of lines) lineBy[l.po_id] = (lineBy[l.po_id] || 0) + 1;
         const supName: Record<string, string> = {};
-        for (const s of sups ?? []) supName[s.id] = s.name;
+        for (const s of sups) supName[s.id] = s.name;
         kitchenDeliveries = (pos ?? []).map((p: any) => ({
           id: p.id, reference: p.reference || null,
           supplier: p.supplier_id ? (supName[p.supplier_id] || null) : null,
@@ -259,10 +264,10 @@ Deno.serve(async (req) => {
         .eq('location_id', loc).eq('active', true).order('sort_order').limit(500);
       const todays = (scheds ?? []).filter((s: any) => !Array.isArray(s.days_of_week) || s.days_of_week.length === 0 || s.days_of_week.includes(dow));
       if (todays.length) {
-        const { data: logs } = await sb.from('prep_log')
-          .select('schedule_id, actual_qty, recorded_at, recorded_by_name').eq('location_id', loc).eq('prep_date', today).limit(1000);
+        const logs = await pagedRows('prep log', () => sb.from('prep_log')
+          .select('schedule_id, actual_qty, recorded_at, recorded_by_name').eq('location_id', loc).eq('prep_date', today).order('id'));
         const logBy: Record<string, any> = {};
-        for (const l of logs ?? []) if (l.schedule_id) logBy[l.schedule_id] = l;
+        for (const l of logs) if (l.schedule_id) logBy[l.schedule_id] = l;
         kitchenBatches = todays.map((s: any) => {
           const l = logBy[s.id];
           return {
