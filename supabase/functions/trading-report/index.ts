@@ -6,13 +6,18 @@
 //   • Actual net sales (ex-VAT, ex service/tip): what customers paid for the
 //     goods after discounts and comps, read per tender like the accounting day
 //     layer (_shared/tradingSales.js, 27 Sep 2026). Never the shelf subtotal.
-//   • Theoretical labour (wf_shifts.computed_cost, the published rota).
-//   • Actual labour (wf_timesheets.pay_amount, approved/paid).
+//     Refunds come off on the day of the refund (28 Sep 2026).
+//   • Theoretical labour (wf_shifts.computed_cost, the published rota), on its shift_date.
+//   • Actual labour (wf_timesheets.pay_amount, approved/paid), on the business day most of
+//     the shift falls in.
 //   • COGS (a configurable % of sales) + fixed daily overhead — both stored in
 //     wf_venue_settings.settings (the system has no real cost data, so these are
 //     operator estimates).
 // → gross profit (sales − COGS) and operating profit (− labour − overhead),
 //   theoretical vs actual, with variances + period totals.
+//
+// A DAY is the venue business day (_shared/businessDay.js: platform locations.timezone and
+// business_day_start), the day Sales summary and Xero use (28 Sep 2026; it was midnight).
 //
 //   get          { ops_location_id, from, to }   (YYYY-MM-DD)
 //   set_forecast { ops_location_id, date, amount }
@@ -21,8 +26,9 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
-import { checkSalesParts } from '../_shared/tradingSales.js';
-import { isVoidedCheck } from '../_shared/accountingDay.js';
+import { tradingDays, timesheetDays } from '../_shared/tradingSales.js';
+import { businessDayOf, businessDayWindow } from '../_shared/businessDay.js';
+import { venueClock } from '../_shared/accountingData.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -43,7 +49,6 @@ async function authed(req: Request, ops: string): Promise<boolean> {
   return p?.role === 'super_admin';
 }
 
-const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 function dayList(from: string, to: string): string[] {
   const out: string[] = []; const d = new Date(from + 'T00:00:00Z'); const end = new Date(to + 'T00:00:00Z');
   while (d <= end) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); }
@@ -71,24 +76,37 @@ async function pagedRows(what: string, build: () => any): Promise<any[]> {
 // discounts for a 100% comp (_shared/tradingSales.js).
 const CHECK_COLS = 'id, closed_at, subtotal, total, tax_amount, service, tip, status, voided, discounts, tenders, method, payment_method, source, processor, gift_card, loyalty, promo, payment_intents';
 
-// Sum closed_checks per venue-local day: net (ex-VAT) + VAT + gross (inc VAT), per check by
-// checkSalesParts (_shared/tradingSales.js): the goods the customer paid for, after discounts
-// and comps; loyalty and promo credit are discounts; service and tips are NOT sales.
-async function salesByDay(ops: string, fromYmd: string, toYmd: string, tz: string): Promise<Record<string, { net: number; vat: number; gross: number }>> {
-  const startUtc = new Date(fromYmd + 'T00:00:00Z'); startUtc.setUTCHours(startUtc.getUTCHours() - 14);   // tz padding
-  const endUtc = new Date(toYmd + 'T23:59:59Z'); endUtc.setUTCHours(endUtc.getUTCHours() + 14);
-  const out: Record<string, { net: number; vat: number; gross: number }> = {};
-  const data = await pagedRows('closed checks', () => opsAdmin.from('closed_checks').select(CHECK_COLS)
-    .eq('location_id', ops).gte('closed_at', startUtc.toISOString()).lte('closed_at', endUtc.toISOString())
-    .order('closed_at').order('id'));
-  for (const c of data) {
-    if (isVoidedCheck(c)) continue;
-    const key = ymd(new Date(c.closed_at), tz);
-    const p = checkSalesParts(c);
-    const e = (out[key] ??= { net: 0, vat: 0, gross: 0 });
-    e.net += p.net; e.vat += p.vat; e.gross += p.gross;
-  }
-  return out;
+// How far back a refunded check can have closed and still have a refund inside the range
+// (the same lookback the accounting layer uses, _shared/accountingData.ts).
+const REFUND_LOOKBACK_DAYS = 400;
+const DAY_MS = 86400000;
+
+type Clock = { timezone: string; dayStart: string };
+type DaySales = { gross: number; refunds: number; sales_vat: number; refund_vat: number; vat: number; net: number; checks: number; refund_count: number };
+
+// The real instants a run of business days covers: [fromIso, toIso).
+function rangeWindow(fromYmd: string, toYmd: string, clock: Clock) {
+  return {
+    fromIso: businessDayWindow(fromYmd, clock.timezone, clock.dayStart).fromIso,
+    toIso: businessDayWindow(toYmd, clock.timezone, clock.dayStart).toIso,
+  };
+}
+
+// Sales and refunds per business day (_shared/tradingSales.js tradingDays): the goods the
+// customer paid for, after discounts and comps, less what went back on refunds, each on its
+// own day; loyalty and promo credit are discounts; service and tips are NOT sales.
+async function salesByDay(ops: string, fromYmd: string, toYmd: string, clock: Clock): Promise<Record<string, DaySales>> {
+  const { fromIso, toIso } = rangeWindow(fromYmd, toYmd, clock);
+  const since = new Date(Date.parse(fromIso) - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString();
+  const [saleRows, refundRows] = await Promise.all([
+    pagedRows('closed checks', () => opsAdmin.from('closed_checks').select(CHECK_COLS)
+      .eq('location_id', ops).gte('closed_at', fromIso).lt('closed_at', toIso)
+      .order('closed_at').order('id')),
+    pagedRows('refunds', () => opsAdmin.from('closed_checks').select(`${CHECK_COLS}, refunds`)
+      .eq('location_id', ops).gte('closed_at', since).lt('closed_at', toIso).neq('refunds', '[]')
+      .order('closed_at').order('id')),
+  ]);
+  return tradingDays({ saleRows, refundRows, dayOf: (ms: number) => businessDayOf(ms, clock.timezone, clock.dayStart) });
 }
 
 Deno.serve(async (req) => {
@@ -101,15 +119,13 @@ Deno.serve(async (req) => {
   if (!ops) return json({ error: 'ops_location_id required' }, 400);
   if (!(await authed(req, ops))) return json({ error: 'no access to this location' }, 403);
 
-  // venue settings (org_id, currency, cogs/overhead from settings jsonb) + tz
+  // venue settings (org_id, currency, cogs/overhead from settings jsonb)
   const { data: vs } = await opsAdmin.from('wf_venue_settings').select('org_id, currency, settings').eq('location_id', ops).maybeSingle();
   const settings = (vs?.settings && typeof vs.settings === 'object') ? vs.settings : {};
   const cogsPct = Number(settings.cogs_pct ?? 0);
   const cogsBasis = String(settings.cogs_basis || 'estimate'); // 'estimate' (%) | 'recipe' (actual from stock ledger)
   const overhead = Number(settings.daily_overhead ?? 0);
   const currency = vs?.currency || 'GBP';
-  const { data: ploc } = await platformAdmin.from('locations').select('timezone').or(`ops_location_id.eq.${ops},id.eq.${ops}`).maybeSingle();
-  const tz = ploc?.timezone || 'Europe/London';
 
   // org_id for FK-valid inserts: prefer the venue-settings row, else resolve from
   // the ops locations table (same source wfData uses). Needed when a venue has no
@@ -152,9 +168,15 @@ Deno.serve(async (req) => {
   if (days.length > 120) return json({ error: 'range too large (max ~120 days)' }, 400);
 
   try {
+    // The venue's own clock (platform locations: time zone and business day start). A failed
+    // read is an error: no day is ever cut on a guessed clock.
+    const clock = await venueClock(platformAdmin, ops);
+    const dayOf = (ms: number) => businessDayOf(ms, clock.timezone, clock.dayStart);
+    const { fromIso, toIso } = rangeWindow(from, to, clock);
+
     // sales (this range + same-weekday-last-year for the suggestion)
     const lyFrom = shift364(from), lyTo = shift364(to);
-    const [sales, lySales] = await Promise.all([salesByDay(ops, from, to, tz), salesByDay(ops, lyFrom, lyTo, tz)]);
+    const [sales, lySales] = await Promise.all([salesByDay(ops, from, to, clock), salesByDay(ops, lyFrom, lyTo, clock)]);
 
     // forecasts
     const fc: Record<string, number> = {};
@@ -166,20 +188,19 @@ Deno.serve(async (req) => {
     const { data: shifts } = await opsAdmin.from('wf_shifts').select('shift_date, computed_cost, status').eq('location_id', ops).gte('shift_date', from).lte('shift_date', to);
     for (const s of shifts ?? []) { if (s.status === 'draft') continue; labTheo[s.shift_date] = (labTheo[s.shift_date] || 0) + (Number(s.computed_cost) || 0); }
 
-    // actual labour (approved/paid timesheets), by venue-local clock_in day
-    const labAct: Record<string, number> = {};
-    const tsStart = new Date(from + 'T00:00:00Z'); tsStart.setUTCHours(tsStart.getUTCHours() - 14);
-    const tsEnd = new Date(to + 'T23:59:59Z'); tsEnd.setUTCHours(tsEnd.getUTCHours() + 14);
-    const ts = await pagedRows('timesheets', () => opsAdmin.from('wf_timesheets').select('clock_in, pay_amount, status').eq('location_id', ops).gte('clock_in', tsStart.toISOString()).lte('clock_in', tsEnd.toISOString()).order('clock_in').order('id'));
-    for (const t of ts) { if (!['approved', 'paid'].includes(t.status)) continue; const k = ymd(new Date(t.clock_in), tz); labAct[k] = (labAct[k] || 0) + (Number(t.pay_amount) || 0); }
+    // actual labour (approved/paid timesheets), on the business day most of the shift falls
+    // in. A shift that clocked in up to two days before the range can still belong to it.
+    const tsFrom = new Date(Date.parse(fromIso) - 2 * DAY_MS).toISOString();
+    const ts = await pagedRows('timesheets', () => opsAdmin.from('wf_timesheets').select('id, clock_in, clock_out, pay_amount, status').eq('location_id', ops).gte('clock_in', tsFrom).lt('clock_in', toIso).order('clock_in').order('id'));
+    const labAct = timesheetDays({ timesheets: ts, dayOf });
 
-    // Stock-ledger costs per venue-local day: SALE_DEPLETION = recipe COGS of what sold;
+    // Stock-ledger costs per business day: SALE_DEPLETION = recipe COGS of what sold;
     // WASTE = stock thrown away (a separate loss that also reduces operating profit).
     const recipeCogs: Record<string, number> = {};
     const wasteCost: Record<string, number> = {};
-    const mv = await pagedRows('stock movements', () => opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', tsStart.toISOString()).lte('occurred_at', tsEnd.toISOString()).order('occurred_at').order('id'));
+    const mv = await pagedRows('stock movements', () => opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', fromIso).lt('occurred_at', toIso).order('occurred_at').order('id'));
     for (const m of mv) {
-      const k = ymd(new Date(m.occurred_at), tz);
+      const k = dayOf(Date.parse(m.occurred_at));
       const v = Math.abs(Number(m.value_delta) || 0);
       if (m.movement_type === 'WASTE') wasteCost[k] = (wasteCost[k] || 0) + v;
       else recipeCogs[k] = (recipeCogs[k] || 0) + v;
@@ -187,10 +208,11 @@ Deno.serve(async (req) => {
 
     const rows = days.map((d) => {
       const forecast = fc[d] ?? 0;
-      const s = sales[d] ?? { net: 0, vat: 0, gross: 0 };
-      const actualSales = s.net;            // net, ex-VAT — the P&L basis
-      const vat = s.vat;                    // VAT collected (HMRC's, not income)
-      const grossSales = s.gross;           // gross takings inc VAT: paid for goods after discounts (never the shelf subtotal)
+      const s = sales[d];
+      const actualSales = s?.net ?? 0;      // net, ex-VAT, after refunds: the P&L basis
+      const vat = s?.vat ?? 0;              // VAT owed: on sales less on refunds (HMRC's, not income)
+      const grossSales = s?.gross ?? 0;     // gross takings inc VAT: paid for goods after discounts (never the shelf subtotal), before refunds
+      const refunds = s?.refunds ?? 0;      // refunded inc VAT, on the day of the refund
       const lastYear = lySales[shift364(d)]?.net ?? 0;
       const lt = labTheo[d] ?? 0, la = labAct[d] ?? 0;
       const recipeC = recipeCogs[d] || 0;                       // actual COGS from the stock ledger
@@ -202,7 +224,8 @@ Deno.serve(async (req) => {
       return {
         date: d,
         forecast: r2(forecast), actual_sales: r2(actualSales), last_year: r2(lastYear),
-        vat: r2(vat), gross_sales: r2(grossSales),
+        vat: r2(vat), gross_sales: r2(grossSales), refunds: r2(refunds), refund_vat: r2(s?.refund_vat ?? 0),
+        refund_count: s?.refund_count ?? 0,
         sales_variance: r2(actualSales - forecast),
         labour_theo: r2(lt), labour_actual: r2(la),
         labour_pct_theo: forecast > 0 ? r2(lt / forecast * 100) : null,
@@ -220,14 +243,15 @@ Deno.serve(async (req) => {
     const sum = (k: string) => Math.round(rows.reduce((s, r) => s + (Number((r as any)[k]) || 0), 0) * 100) / 100;
     const totals = {
       forecast: sum('forecast'), actual_sales: sum('actual_sales'), last_year: sum('last_year'),
-      vat: sum('vat'), gross_sales: sum('gross_sales'),
+      vat: sum('vat'), gross_sales: sum('gross_sales'), refunds: sum('refunds'), refund_vat: sum('refund_vat'),
+      refund_count: rows.reduce((n, r) => n + r.refund_count, 0),
       labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
       cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'),
       cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), waste: sum('waste'), overhead: sum('overhead'),
       gp_theo: sum('gp_theo'), gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
       labour_pct_actual: sum('actual_sales') > 0 ? Math.round(sum('labour_actual') / sum('actual_sales') * 10000) / 100 : null,
     };
-    return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, cogs_basis: cogsBasis, daily_overhead: overhead, currency }, tz });
+    return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, cogs_basis: cogsBasis, daily_overhead: overhead, currency }, tz: clock.timezone, day_start: clock.dayStart });
   } catch (e) {
     // A read that failed is never shown as a day of zero sales.
     return json({ error: (e as Error)?.message || 'Could not build the report' }, 500);
