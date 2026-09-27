@@ -1,3 +1,8 @@
+# Session, 27 Sep 2026, v5.9.97, card sale VAT (branch fix/headless-vat)
+
+- From tax workflow wmx2zrcx2 (tax-fix-v3.patch), only the VAT recording parts: lib/headlessTax.js + venueTaxRates.js (lineTaxRefs); store headless reader close books tax (try/catch, never throws); CheckoutModal freezes taxBreakdown + walk-in discounts into check_draft; `grand ?? subtotal` (walk in) and `grand ?? session.total` (table) for 100% comps, and taxForChargedGoods books no VAT on a bill discounted to nothing. QR close VAT DROPPED from this release (review: it missed priced modifiers and product rates); QR closes still book null VAT as before. The rest of the tax patch waits for the combined Back Office release with the stale tab fix.
+- Backfill of the 192 no-VAT Leeds checks is a data write for Peter (not done).
+
 # Session, 27 Sep 2026, v5.9.96, KDS: untick an item (branch fix/kds-untick)
 
 - Peter: "you can't untick an item if you click by accident". TickBox toggles; bumpItem uses lib/kds/kdsItemTicks.js toggleTick; saves per ticket chained and coalesced; incoming rows keep this screen's touched ticks until the database shows them or 30 s after the last save (withLocalTicks).

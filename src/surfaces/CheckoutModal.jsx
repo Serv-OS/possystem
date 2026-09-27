@@ -1991,7 +1991,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           server: session?.server || null,
           staffId: useStore.getState().staff?.id || null,
           items: (items || []).filter(i => !i.voided),
-          discounts: session?.discounts || [],
+          // 27 Sep 2026: a counter sale has no session, so its discounts were lost when the
+          // reconciler closed it (four Leeds checks charged less than their subtotal and
+          // recorded no discount). The walk in order's own discounts go in the draft.
+          discounts: session?.discounts || (!tableId && !isBarTab ? (useStore.getState().walkInOrder?.discounts || []) : []),
+          // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"):
+          // the bill's own tax, as shown and charged, so a check the reconciler closes books
+          // exactly this VAT (it booked none: 183 of 298 Leeds checks). lib/headlessTax.js.
+          ...(taxBreakdown && Number.isFinite(Number(taxBreakdown.totalTax)) ? { taxBreakdown } : {}),
           subtotalMinor: toMinor(subtotal),
           totalMinor: toMinor(total),
           // v5.5.862: the occupation identity. The paid-table guard and the durable
