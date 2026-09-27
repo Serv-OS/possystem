@@ -38,6 +38,11 @@ export const CHANGELOG = [
     items: [
       'Discounts a manager approves now record only the manager\'s name and role on the bill. They used to record the manager\'s whole staff record, PIN included, on the open table and the closed check.',
       'Exceptions report: a discount a manager approved at the till now shows who approved it.',
+    v: '5.9.100',
+    date: '28 Sep 2026',
+    items: [
+      'Bar tabs at a UK venue now record their VAT. A closed bar tab recorded no VAT at all (only US sales tax was recorded). It now records the VAT the checkout showed, worked out the same way as every other till sale.',
+      'A QR tab the guest closes on their own phone now works out its VAT, including modifier prices and each product\'s own rate. It is recorded once the database update 20260927c is run; until then these tabs still record no VAT.',
     ],
   },
   {

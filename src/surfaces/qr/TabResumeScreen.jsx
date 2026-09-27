@@ -25,11 +25,16 @@ import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 import { tabCloseRefusalMessage } from '../../lib/publicOrder';
+import { qrTabCloseFields, qrTabSettleVat } from '../../lib/headlessTax';
+import { taxCtxHasConfig } from '../../lib/taxCompute';
 
+// taxCtx / menuItems / taxRates: the venue's tax context (buildLocalTaxCtx), menu and rates the
+// page already loaded, for the tab's VAT. Without them the check books no VAT, as before.
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
   tab, rounds, runningTotal, theme,
   onAddMore, onClosed, onAbandon,
+  taxCtx = null, menuItems = [], taxRates = [],
 }) {
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState('');
@@ -152,6 +157,10 @@ export default function TabResumeScreen({
         const pr = await requestPaymentProof({ opsLocationId: locId, processor: isRyft ? 'ryft' : 'stripe', kind: 'card', paymentRef: ovId });
         if (pr.proofId) ovProofIds.push(pr.proofId);
       }
+      // 27 Sep 2026: the tab's VAT (it booked tax_amount null), from the venue rows this page
+      // already loaded (its buildLocalTaxCtx, menu and rates). Booked by the fallback write below,
+      // and handed to settle_qr_tab, which writes the check when the fence is live.
+      const vat = qrTabCloseFields(rounds, runningTotal, { menuItems, taxRates, taxCtx, hasTaxConfig: taxCtxHasConfig(taxCtx) });
       const legacySettle = async () => {
         // FENCE STAGE 1 FALLBACK: today's two direct writes, only while settle_qr_tab (or the
         // proof function) is not live.
@@ -168,7 +177,7 @@ export default function TabResumeScreen({
         } catch (e) { console.warn('[TabResume] mark-collected:', e?.message); }
         // Aggregate items across all rounds for the closed_check.
         const allItems = (rounds || []).flatMap(r => r.items || []);
-        const tabTip = +(rounds || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+        const tabTip = vat.tip;
         try {
           // v5.9.11: writeClosedCheckRow drops a column the database does not have yet and
           // retries, so a paid sale is never lost to a migration Peter has not run.
@@ -183,8 +192,10 @@ export default function TabResumeScreen({
             items: allItems.map(i => ({ ...i, voided: false })),
             discounts: [],
             // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
-            subtotal: +(runningTotal - tabTip).toFixed(2),
-            service: 0, tip: tabTip, tax_amount: null,
+            // 27 Sep 2026: and its VAT (it booked null); added-on tax comes out of subtotal.
+            subtotal: vat.subtotal,
+            service: 0, tip: tabTip, tax_amount: vat.taxAmount,
+            ...(vat.taxBreakdown ? { tax_breakdown: vat.taxBreakdown } : {}),
             total: runningTotal,
             method: 'card',
             // v5.9.11: one card tender for the tab, its tip on it.
@@ -207,7 +218,7 @@ export default function TabResumeScreen({
         ? { ...(await legacySettle()), path: 'legacy' }
         : await settleQrTab({
           opsLocationId: locId, paymentIntentId: tab.payment_intent_id,
-          check: { table_label: tableLabelForCheck }, proofIds: ovProofIds, legacySettle,
+          check: { table_label: tableLabelForCheck, ...qrTabSettleVat(vat) }, proofIds: ovProofIds, legacySettle,
         });
       if (!settled.ok) {
         // The card WAS charged: never say otherwise. Staff close the tab on the till.

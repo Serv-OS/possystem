@@ -163,6 +163,33 @@ export function qrCloseTax(items, ctx = {}, { paidGoods = null } = {}) {
 }
 
 /**
+ * A QR tab the guest closes on their own phone (TabResumeScreen). 27 Sep 2026: it booked
+ * tax_amount null, whoever wrote the check (the phone's fallback write, or settle_qr_tab on the
+ * server). `rounds` are the tab's order_queue rows, `runningTotal` what the phone charged, each
+ * round's tip included. The goods booked are runningTotal less the tips, so a whole tab books its
+ * whole VAT (qrCloseTax: modifiers folded in, rates restored from the menu). Returns the tip, the
+ * subtotal to book (goods less any added-on tax, which QR round totals include) and qrCloseTax's
+ * taxAmount / taxBreakdown / exclusiveTax. Never throws.
+ */
+export function qrTabCloseFields(rounds, runningTotal, ctx = {}) {
+  const rows = Array.isArray(rounds) ? rounds : [];
+  const tip = +rows.reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+  const goods = +((Number(runningTotal) || 0) - tip).toFixed(2);
+  const tax = qrCloseTax(rows.flatMap((r) => (Array.isArray(r?.items) ? r.items : [])), ctx, { paidGoods: goods });
+  return { tip, subtotal: +(goods - tax.exclusiveTax).toFixed(2), ...tax };
+}
+
+/**
+ * The VAT a phone hands settle_qr_tab in p_check (27 Sep 2026). The server books it the way
+ * place_public_order books a page's tax_amount, clamped to the goods it books (migration
+ * 20260927c); a server without that migration ignores both keys. Empty when there is no figure.
+ */
+export function qrTabSettleVat(fields) {
+  if (!fields || fields.taxAmount == null || !Number.isFinite(Number(fields.taxAmount))) return {};
+  return { tax_amount: round2(fields.taxAmount), exclusive_tax: round2(Math.max(0, Number(fields.exclusiveTax) || 0)) };
+}
+
+/**
  * The service a headless close books (27 Sep 2026, second review). The frozen
  * draft's total minus its subtotal is whatever was on the bill over the goods.
  * At a sales tax venue (exclusive, US) that includes the tax added on top, and

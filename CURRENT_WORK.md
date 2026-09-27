@@ -35,6 +35,12 @@
 - Proven: 8 new tests (discountApprover.test.js); demo till on this branch, manager signed in, Comp 100% on T2: session discount manager = { id, name, role }; buildCloseRecord + closedCheckRow on it and on an injected legacy record: no pin, nfcCardId or permissions.
 - For Peter: supabase/migrations/20260928a_OPS_discount_manager_scrub.sql (STEP 1 read only count, STEP 2 three idempotent UPDATEs, no rollback on purpose). Its SET expressions were run as read only SELECTs over the 11 real rows: 0 secrets left, nothing else changed. Then change the PINs of "Test" (Leeds) and "Peter" (Provo).
 - Not changed, known: tills still load every staff PIN (staffRoster.js selects pin) to check PINs on the device. Separate, bigger job.
+# Session, 27 Sep 2026, v5.9.100, bar tab and guest QR tab close VAT (branch fix/tab-close-vat, on main after PR 170 and 172)
+
+- Bar tabs: BarSurface stamped tax only for added-on (US) tax, so UK tabs booked tax_amount null. lib/barTabTax.js: tabBill (the old tabBillWithTax, moved unchanged) + tabCloseTax (US: the bill's record as before; UK: computeCheckTotals over the tab lines, no auto rules or service, then taxForChargedGoods). Tests: barTabTax.test.js.
+- Guest QR tab close (TabResumeScreen): since the fence (a2, live 20 Sep) settle_qr_tab WRITES this check on the server and never set tax_amount; the phone's own write is only the fallback. Phone: headlessTax.qrTabCloseFields (qrCloseTax over the rounds, tip out, added-on out of subtotal) on the fallback write, and qrTabSettleVat into p_check. Server: migration 20260927c_OPS_settle_qr_tab_vat.sql (PETER RUNS, outside service): books p_check tax_amount / exclusive_tax only when JSON numbers, clamped to the goods booked; guard refuses if the live function is not the 20260919a2 version. Offline proof: supabase/tests/fence_stage_1/testVat.py 35/35 (testA 434/434 unchanged). Tests: qrTabCloseTax.test.js.
+- OnlineSurface passes taxCtx / menuItems (items, every live menu row) / taxRates to TabResumeScreen (Peter approved 28 Sep). A guest who taps Close before the page rows load books null, as before. ServOS Build holds the release until after Leeds closes and hands Peter 20260927c after v5.9.100 is live.
+- Known gaps: a UK QR tab with an automatic deal books a scaled tax_amount on the server path but tax_breakdown [] (Z report recomputes from items); a bar tab held card capture short of the bill still books the whole bill as total (pre-existing).
 
 # Session, 27 Sep 2026, v5.9.99, Daily trading sales after discounts (branch fix/trading-report-discounts)
 

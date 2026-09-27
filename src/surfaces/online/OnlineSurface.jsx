@@ -790,6 +790,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           rounds={resumeRounds}
           runningTotal={runningTotal}
           theme={theme}
+          /* 28 Sep 2026: the venue rows this page already loaded, so the tab's close books its VAT */
+          taxCtx={taxCtx}
+          menuItems={items}
+          taxRates={taxRates}
           onAddMore={() => setExistingTab({ ...resumeTab, runningTotal, rounds: resumeRounds })}
           onClosed={() => {
             setResumeTab(null); setResumeRounds([]); setExistingTab(null);
