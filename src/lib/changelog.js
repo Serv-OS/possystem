@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.0',
+    date: '28 Sep 2026',
+    items: [
+      'Discounts a manager approves now record only the manager\'s name and role on the bill. They used to record the manager\'s whole staff record, PIN included, on the open table and the closed check.',
+      'Exceptions report: a discount a manager approved at the till now shows who approved it.',
+    ],
+  },
+  {
     v: '5.9.99',
     date: '27 Sep 2026',
     items: [

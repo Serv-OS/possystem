@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { money, currencySymbol } from '../lib/currency';
+import { approverStamp } from '../lib/discountApprover';
 
 const FALLBACK_PRESETS = [
   { id:'staff50',  label:'Staff meal',       type:'percent', value:50,  requiresManager:false },
@@ -79,7 +80,8 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
     onConfirm({
       id:`disc-${Date.now()}`, label, type, value, scope: scopeVal,
       itemUids: scopeVal==='items' ? activeItems.map(i=>i.uid) : null,
-      amount, manager: mgr,
+      // v5.10.0: a name tag, never the staff record (that carried the manager's PIN onto the check).
+      amount, manager: approverStamp(mgr),
     });
   };
 

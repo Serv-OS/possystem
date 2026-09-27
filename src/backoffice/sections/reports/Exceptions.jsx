@@ -26,7 +26,7 @@ function flattenEvents(checks) {
         // shows instead of the generic 'Discount'.
         type:'discount', amount: d.amount || d.value || 0, ts: c.closedAt, ref: c.ref || c.id,
         server: c.server || '—', tableLabel: c.tableLabel || c.customer || '—',
-        reason: d.label || d.name || d.reason || 'Discount', approvedBy: d.appliedBy || d.by || null,
+        reason: d.label || d.name || d.reason || 'Discount', approvedBy: d.appliedBy || d.by || d.manager?.name || null,
       });
     });
     (c.refunds||[]).forEach(r => {
