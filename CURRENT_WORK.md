@@ -1,3 +1,12 @@
+# Session, 28 Sep 2026, v5.10.2, Back Office report periods on the venue clock (branch fix/bo-report-venue-clock)
+
+- Peter (California) viewing Coffee Boy Leeds (Europe/London, day starts 06:30) got "Yesterday" = 06:30 to 06:29 PACIFIC (14:30 to 14:29 London): reports/_filters.js getPeriodRange built every range with setHours on the browser clock and never used config.timezone. Now it uses _shared/businessDay.js (venueZone, businessDayOf, businessDayStartMs, wallTimeToInstant) with the venue zone and business_day_start; returns fromDay/toDay (venue business days) and timeZone as well; prev maths unchanged. periodLabel reads the venue's dates and times; one business day reads as one day (was "28 Sept to 29 Sept" at a 06:30 venue).
+- BOReports: the fetch waited for nothing, fired on mount with the pre config range (browser midnight) and never refetched when the config arrived, so "Today" read the wrong window until another pill was clicked. Now it waits for locationConfig and refetches when the range changes.
+- DailyTrading and BookingsReport take fromDay/toDay (were toYmd of the instants on the browser calendar: a day behind London after 16:00 Pacific, and an extra day at a 06:30 venue). WaitlistInsights passes the venue timezone (calendar days, no business day start) so a US venue does not fall back to London.
+- Behaviour changes to know: custom dates are business days (were device midnight); This month on the 1st before the day start is last month (old code gave from after to).
+- Not changed (display, device local; follow up): classifyShift in Sales Summary / Daypart / Shifts, DailyTrend and ItemTrend day buckets, ZReport From/To text, LocationCompare uses one venue's range for every venue.
+- Tests: src/backoffice/sections/reports/_filters.test.js (18), every range checked with the process clock in LA, London, Tokyo and UTC; 14 of them fail on the old code.
+
 # Session, 28 Sep 2026, v5.10.1, Daily trading refunds and business days (branch fix/trading-report-refunds-day)
 
 - trading-report (edge fn, needs its own deploy, AFTER the web release: the old screen's ladder would not add up once refunds come off): _shared/tradingSales.js tradingDays sums sales (checkSalesParts) and refunds (refundSalesParts on accountingDay.refundParts) per day with a dayOf the handler passes; timesheetDays puts a timesheet on the business day of the middle of the shift. Refunds read like accountingData.refundRows (400 day lookback, neq refunds []). Clock from accountingData.venueClock (throws on a failed read).

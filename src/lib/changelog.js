@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.2',
+    date: '28 Sep 2026',
+    items: [
+      'Back Office reports: every period (Today, Yesterday, This week, Last week, This month, Last month, Last 7 and 30 days, Custom and the service periods) now runs on the venue\'s own clock and business day start, wherever the person looking is. Viewed from California, Leeds "Yesterday" was 14:30 to 14:29 London time; it is now 06:30 to 06:29 London time. DST nights give the right 23 or 25 hour day.',
+      'Reports open on the right range. "Today" was loaded before the venue\'s settings arrived, so it used the device\'s midnight until another period was picked.',
+      'Daily trading (P&L) and Bookings ask for the venue\'s dates. After 4pm in California they asked for a day behind London, and a 06:30 day start made "Yesterday" include today as well.',
+      'Custom dates are whole business days at the venue, so 27 Sep matches "Yesterday" on the 28th. This month on the 1st before the day starts shows last month instead of nothing. Period labels show the venue\'s dates and times, and a single business day reads as one day.',
+      'Tables Ready insights use the venue\'s calendar days.',
+    ],
+  },
+  {
     v: '5.10.1',
     date: '28 Sep 2026',
     items: [
