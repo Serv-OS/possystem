@@ -25,7 +25,9 @@ test('pins: no till surface splits or replaces a customer name directly', () => 
   const pos = read('../surfaces/POSSurface.jsx');
   assert.doesNotMatch(pos, /customer\.name\.split\(/);
   assert.match(pos, /\{customerInitials\(customer\.name, customer\.phone\)\}/);
-  assert.match(pos, /setCustomer\(\{ \.\.\.cur, phone, name: res\.name \|\| cur\.name \|\| ''(, stampSummary: stamps)? \}\)/, 'never an undefined name (v5.9.89 adds the stamps)');
+  // 27 Sep 2026: the display handler builds the customer as `next` (it adds blankProfile, which
+  // offers "Link to existing member"), still never with an undefined name.
+  assert.match(pos, /(setCustomer\(|const next = )\{ \.\.\.cur, phone, name: res\.name \|\| cur\.name \|\| ''(, stampSummary: stamps)?(, blankProfile: displayProfileLooksBlank\(res\))? \}/, 'never an undefined name (v5.9.89 adds the stamps)');
   const modal = read('../components/CustomerModal.jsx');
   assert.doesNotMatch(modal, /c\.name\.split\(/);
   const portal = read('../surfaces/customer/CustomerPortal.jsx');

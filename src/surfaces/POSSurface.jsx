@@ -27,6 +27,8 @@ import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem } from '../lib/menuRules';
 import CheckoutModal from './CheckoutModal';
 import CustomerModal from '../components/CustomerModal';
+import LinkMemberModal from '../components/LinkMemberModal';
+import { canOfferLink, displayProfileLooksBlank } from '../lib/customerLink';
 import VoidModal from '../components/VoidModal';
 import DiscountModal from '../components/DiscountModal';
 import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
@@ -199,6 +201,25 @@ export default function POSSurface() {
     showToast?.('Customer removed from this order', 'info');
   };
 
+  // 27 Sep 2026 (Peter: "if a customer adds their number and then a staff member can link that to
+  // a profile that currently has no number"): LinkMemberModal linked the order's number to a
+  // member. The order takes the member's name, allergy list and stamps (the chip shows "2/9"), a
+  // table keeps the guest, and the customer display greets the member with their stamps.
+  const applyMemberLink = (res, linkedFrom) => {
+    setLinkMemberFor(null);
+    if (!res?.ok) return;
+    showToast?.(res.toast, 'success');
+    const st = useStore.getState();
+    const cur = st.customer;
+    // The order moved on while it linked (customer removed or changed): the link stands (payment
+    // finds the member by the phone, which is theirs now), but this order is not rewritten.
+    if (!res.customer || !cur || String(cur.phone ?? '') !== String(linkedFrom?.phone ?? '')) return;
+    setCustomer(res.customer);
+    const tblId = st.activeTableId;
+    if (tblId && (st.tables || []).find(x => x.id === tblId)?.session) st.setSessionCustomer(tblId, res.customer);
+    if (res.loyalty && displayUsesScreen()) { try { publishLoyalty(res.loyalty); } catch { /* the display is best effort */ } }
+  };
+
   // v4.7.6: load menu_category_links on mount — a menu owns a category via the
   // category's PRIMARY menuId OR a menu_category_links row ("assign categories
   // to a menu" in Menu Manager writes links, not menuId). v5.6.97: moved ABOVE
@@ -343,6 +364,8 @@ export default function POSSurface() {
   const [customPrice, setCustomPrice] = useState('');
   const [customNote, setCustomNote] = useState('');
   const [showCustomerModal, setShowCustomerModal] = useState(false);
+  // 27 Sep 2026: the order's customer "Link to existing member" is open for (LinkMemberModal)
+  const [linkMemberFor, setLinkMemberFor] = useState(null);
   const [pendingOrderType, setPendingOrderType] = useState(null);
   const [rightTab, setRightTab] = useState('menu');  // 'menu' | 'orders'
   const [voidTarget, setVoidTarget]   = useState(null);
@@ -535,10 +558,16 @@ export default function POSSurface() {
           // v5.9.88: a new number has no name yet; never store undefined (the chip crashed on it).
           // v5.9.89: stamps travel with the customer (the till chip shows "2/9") and to the display.
           const stamps = res.stampsEnabled === false ? [] : stampSummary(res.stampCards);
-          setCustomer({ ...cur, phone, name: res.name || cur.name || '', stampSummary: stamps });
+          // 27 Sep 2026: blankProfile tells the chip the number is on an EMPTY profile, so it offers
+          // "Link to existing member" even when staff typed a name for the order (name only form).
+          // memberLinked goes: a new number is a new customer until staff link it again.
+          const next = { ...cur, phone, name: res.name || cur.name || '', stampSummary: stamps, blankProfile: displayProfileLooksBlank(res) };
+          delete next.memberLinked;
+          setCustomer(next);
           publishLoyalty({ known: res.known, name: res.name, points: res.points, rewards: res.rewards || [], customerId: res.customerId, smsSent: res.smsSent, stamps, pointsEnabled: res.pointsEnabled !== false, stampsEnabled: res.stampsEnabled !== false });
         } else {
-          publishLoyalty({ error: true });
+          // 27 Sep 2026: a number that is not a UK mobile says "Please check your number" on the display.
+          publishLoyalty(res?.code === 'bad_number' ? { error: true, badNumber: true } : { error: true });
         }
       } catch { publishLoyalty({ error: true }); }
     });
@@ -1343,6 +1372,12 @@ export default function POSSurface() {
                         ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
                       </div>
                     )}
+                    {/* 27 Sep 2026 (Peter: "if a customer adds their number and then a staff member can link that
+                        to a profile that currently has no number"): a new customer with just a phone, whatever the
+                        takeaway details setting. Link BEFORE payment (order history makes the profile no longer empty). */}
+                    {canOfferLink(customer)&&!isTrainingMode()&&(
+                      <button data-link-member onClick={()=>setLinkMemberFor(customer)} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,marginTop:3,textAlign:'left'}}>Link to existing member</button>
+                    )}
                   </div>
                   <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,flexShrink:0}}>Edit</button>
                   {/* v5.9.79 (Peter, 26 Sep: "no way to remove a customer from an order in case it's the wrong one") */}
@@ -1989,6 +2024,7 @@ export default function POSSurface() {
       {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
       {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
+      {linkMemberFor&&<LinkMemberModal customer={linkMemberFor} onLinked={applyMemberLink} onClose={()=>setLinkMemberFor(null)}/>}
       {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
 
       {/* Void modal */}

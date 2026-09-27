@@ -172,6 +172,35 @@ export function joinAllowed(preview, { sourceId, targetId } = {}) {
   return String(p.source_id) === String(sourceId) && String(p.target_id) === String(targetId);
 }
 
+/**
+ * WHY customer-merge would not let the till join them, as a short code (27 Sep 2026: the till's
+ * "Link to existing member" shows plain words for each, lib/customerLink.js linkMessage). A
+ * refusal answer carries its own code (device_needs_blank_source, not_allowed, read_failed...; a
+ * refused merge names the plan's first refusal, e.g. different_phones). A preview that answered
+ * but would not do what the till asked: 'not_blank' (the profile folded in has history),
+ * 'swapped' (the kept profile would be the other one), or the plan's first refusal.
+ */
+export function joinRefusalCode(answer, { sourceId, targetId } = {}) {
+  const status = Number(answer?.status) || 0;
+  const b = answer?.body || {};
+  if (!status) return 'no_answer';
+  const first = Array.isArray(b.refusals) && b.refusals[0]?.code ? String(b.refusals[0].code) : '';
+  if (b.ok !== true) {
+    if (b.code === 'refused' && first) return first;
+    return String(b.code || 'refused');
+  }
+  // 27 Sep 2026 (review): the turned round pair is named FIRST. When neither profile has history
+  // the server keeps the OLDER one (customerMergePlan chooseSurvivor), so an older empty profile
+  // makes the member the one folded in; source_blank then describes the member, and "not_blank"
+  // would tell staff the empty profile "already has an order", which is not true.
+  const sameIds = String(b.source_id) === String(sourceId) && String(b.target_id) === String(targetId);
+  if (b.swapped === true || (b.source_id != null && !sameIds)) return 'swapped';
+  if (b.source_blank === false) return 'not_blank';
+  if (b.can_merge !== true) return first || 'refused';
+  if (!sameIds) return 'swapped';
+  return 'refused';
+}
+
 /** A merge answer: 'merged', 'retry' (stopped part way, safe to send again) or 'refused'. */
 export function mergeOutcome(status, body) {
   const b = body || {};

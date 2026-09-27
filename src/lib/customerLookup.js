@@ -17,6 +17,8 @@ import { supabase, platformSupabase, getLocationId, ensureAuthToken, whenDeviceC
 
 export { isMissingFn } from './customerFenceRules';
 import { isMissingFn } from './customerFenceRules';
+import { displayNumberAccepted } from './ukMobile';
+import { getActiveCurrencyCode } from './currency';
 
 // Mirror of store._normalisePhone — kept local so this util can be used
 // without depending on the Zustand store (the kiosk's customer-details
@@ -222,6 +224,11 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
  * Returns { ok, known, name, points, smsSent, customerId }.
  */
 export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
+  // 27 Sep 2026 (Peter: the display took 0776295512, ten digits, and made a profile for a number
+  // that is nobody's): the till checks the number again with the display's own rule
+  // (lib/ukMobile.js) before it reads, creates or texts anything. An older display that still
+  // sends seven digits is stopped here.
+  if (!displayNumberAccepted(rawPhone, getActiveCurrencyCode())) return { ok: false, code: 'bad_number' };
   const phoneN = normalisePhone(rawPhone);
   if (!phoneN || !supabase || !orgId) return { ok: false };
   try {
