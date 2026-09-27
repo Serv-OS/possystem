@@ -4,6 +4,7 @@ import { kitchenLoadFromStore, prepMinutes, liveOrderCount } from '../lib/prepTi
 import { supabase, getLocationId } from '../lib/supabase';
 import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime';
 import AddressAutocomplete from './AddressAutocomplete';
+import { customerInitials } from '../lib/customerInitials';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
@@ -217,7 +218,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
               onMouseEnter={e => e.currentTarget.style.background = 'var(--bg4)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                 <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--acc-d)', border: '1px solid var(--acc-b)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: 'var(--acc)', flexShrink: 0 }}>
-                  {c.name.split(' ').map(n => n[0]).join('').slice(0,2)}
+                  {customerInitials(c.name, c.phone)}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{c.name}</div>
