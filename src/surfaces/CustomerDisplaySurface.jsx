@@ -19,7 +19,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../lib/supabase';
-import { money, setActiveCurrency } from '../lib/currency';
+import { money, setActiveCurrency, getActiveCurrencyCode } from '../lib/currency';
+import { displayNumberAccepted, ukRuleApplies, CHECK_NUMBER_TEXT } from '../lib/ukMobile';
 import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
@@ -54,6 +55,8 @@ export default function CustomerDisplaySurface() {
   const [slideIdx, setSlideIdx] = useState(0);
   const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
   const [phoneInput, setPhoneInput] = useState('');
+  // 27 Sep 2026: true after Collect points with a number that is not a UK mobile (lib/ukMobile.js)
+  const [phoneError, setPhoneError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [loyaltyResult, setLoyaltyResult] = useState(null);
   // { total, cfg, nonce } while the POS is waiting on a gratuity choice
@@ -103,11 +106,13 @@ export default function CustomerDisplaySurface() {
             if (st === 'idle' && Date.now() < terminalUntil.current) return;
             if (st === 'approved' || st === 'declined') terminalUntil.current = Date.now() + 6000;
             else if (st === 'active' || st === 'paying') terminalUntil.current = 0;
-            if (st === 'idle') { setPhoneInput(''); setSubmitting(false); setLoyaltyResult(null); }
+            if (st === 'idle') { setPhoneInput(''); setPhoneError(false); setSubmitting(false); setLoyaltyResult(null); }
             setPayload(p);
             if (idleTimer.current) clearTimeout(idleTimer.current);
+            // 27 Sep 2026 (review): the abandoned order net below clears "Please check your number" too,
+            // or the next customer's empty keypad would open with the last customer's warning under it.
             const ms = displayHoldMs(st);
-            if (ms > 0) idleTimer.current = setTimeout(() => { setPayload({ state: 'idle', items: [], total: 0 }); setLoyaltyResult(null); setPhoneInput(''); }, ms); // v5.9.91: an abandoned order drops the member's panel too
+            if (ms > 0) idleTimer.current = setTimeout(() => { setPayload({ state: 'idle', items: [], total: 0 }); setLoyaltyResult(null); setPhoneInput(''); setPhoneError(false); }, ms); // v5.9.91: an abandoned order drops the member's panel too
           },
           (r) => {  // loyalty lookup result
             setSubmitting(false);
@@ -166,6 +171,12 @@ export default function CustomerDisplaySurface() {
 
   const submitPhone = () => {
     if ((phoneInput || '').replace(/\D/g, '').length < 7) return;
+    // 27 Sep 2026, Peter: a customer typed 0776295512 (ten digits) and the till made a loyalty
+    // profile and texted the link to a number that is nobody's. A UK venue's display now sends only
+    // a real UK mobile (lib/ukMobile.js); anything else says "Please check your number" and nothing
+    // is sent, so nothing is created. The till checks again (captureLoyaltyByPhone).
+    if (!displayNumberAccepted(phoneInput, getActiveCurrencyCode())) { setPhoneError(true); return; }
+    setPhoneError(false);
     publishCustomerPhone(phoneInput);
     setSubmitting(true);
     if (submitTimer.current) clearTimeout(submitTimer.current);
@@ -254,8 +265,9 @@ export default function CustomerDisplaySurface() {
     if (loyaltyResult) left = <LoyaltyResultPanel result={loyaltyResult} brand={brand} venueName={venueName} C={C} onRedeem={(r) => publishRedeemReward(r)} />;
     else if (submitting) left = <Centered><div style={{ fontSize: 24, color: C.dim }}>Checking…</div></Centered>;
     else if (loyaltyEnabled) left = <PhoneKeypad value={phoneInput} brand={brand} C={C}
-      onKey={d => setPhoneInput(p => (p + d).slice(0, 15))}
-      onBackspace={() => setPhoneInput(p => p.slice(0, -1))}
+      error={phoneError} ukNumber={ukRuleApplies(getActiveCurrencyCode())}
+      onKey={d => { setPhoneError(false); setPhoneInput(p => (p + d).slice(0, 15)); }}
+      onBackspace={() => { setPhoneError(false); setPhoneInput(p => p.slice(0, -1)); }}
       onSubmit={submitPhone} />;
     else left = slides;
     return (
@@ -316,16 +328,19 @@ function Centered({ children }) {
   return <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24 }}>{children}</div>;
 }
 
-function PhoneKeypad({ value, brand, C, onKey, onBackspace, onSubmit }) {
+function PhoneKeypad({ value, brand, C, error, ukNumber, onKey, onBackspace, onSubmit }) {
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
   const ready = (value || '').replace(/\D/g, '').length >= 7;
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ fontSize: 30, fontWeight: 800, textAlign: 'center' }}>Earn rewards 🎁</div>
       <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 6, marginBottom: 18 }}>Enter your mobile to collect points</div>
-      <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: '2px', minHeight: 42, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
-        {value || <span style={{ color: C.faint }}>0000000000</span>}
+      {/* 27 Sep 2026: the hint showed ten zeros, one short of a UK mobile (0776295512 came in with
+          ten digits); a UK venue's hint now has the eleven of 07xxx xxxxxx. */}
+      <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: '2px', minHeight: 42, marginBottom: error ? 6 : 16, fontVariantNumeric: 'tabular-nums' }}>
+        {value || <span style={{ color: C.faint }}>{ukNumber ? '07000 000000' : '0000000000'}</span>}
       </div>
+      {error && <div role="alert" data-check-number style={{ fontSize: 18, fontWeight: 800, color: '#dc2626', marginBottom: 10, textAlign: 'center' }}>{CHECK_NUMBER_TEXT}</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 80px)', gap: 10 }}>
         {keys.map((k, i) => k === '' ? <div key={i} /> : (
           <button key={i} onClick={() => (k === '⌫' ? onBackspace() : onKey(k))} style={{
@@ -360,6 +375,11 @@ function rewardBenefit(r) {
 }
 
 function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
+  // 27 Sep 2026: the till refused the number (not a UK mobile, lib/ukMobile.js). Plain words, and
+  // nothing was created. Checked before `error`, which the till also sends for an older display.
+  if (result?.badNumber) {
+    return <Centered><div style={{ fontSize: 44 }}>📱</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{CHECK_NUMBER_TEXT}</div></Centered>;
+  }
   if (result?.error) {
     return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
   }

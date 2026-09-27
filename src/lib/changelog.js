@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.93',
+    date: '27 Sep 2026',
+    items: [
+      'Till: "Link to existing member". A new customer on the order (a number typed on the customer display, or a phone staff typed) shows the option under their name. Staff search by name or email; only members with no phone are listed; one tap links them, the order uses the member and the chip shows their stamps. Works with customer details turned off. Link before taking payment; after payment a manager joins them in Back Office > Customers.',
+      'Customer display: only a real UK mobile is accepted (07 and 9 more digits, or +44 7...). Anything else shows "Please check your number"; nothing is saved and no text is sent.',
+    ],
+  },
+  {
     v: '5.9.92',
     date: '27 Sep 2026',
     items: [

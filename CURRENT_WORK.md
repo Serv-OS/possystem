@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.93, till Link to existing member + display UK mobile check (branch feat/till-link-existing)
+
+- link-existing-v2.patch (adversarial review passed, round 2): src/lib/customerLink.js + customerLinkRun.js, order chip action (blank profile: name ''/'Customer', no email), search limited to phoneless members, customer-merge from the till, notice; src/lib/ukMobile.js used by the display keypad and captureLoyaltyByPhone. MPOS has no chip (not offered there).
+
 # Session, 27 Sep 2026, v5.9.92, menu board line spacing (branch feat/board-line-spacing)
 
 - Peter: "reduce the padding between each line". lib/menuBoardSections.js LINE_SPACING / boardSpacing (tight default); BoardParts reads ctx.sp for row, run, heading, section and list gaps; Design > Line spacing.

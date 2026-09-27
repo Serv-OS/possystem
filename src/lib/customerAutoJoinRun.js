@@ -20,7 +20,7 @@ import { withTimeout } from './withTimeout.js';
 import { uniqueClashOf, mergeRequestBody } from './customerMerge.js';
 import {
   AUTO_JOIN_COLS, looksLikeEmail, emailSearchPattern, exactEmailRows, emailIsNew, phoneVariants,
-  decideAutoJoin, joinAllowed, mergeOutcome, linkedToast, apartToast, customerAfterJoin, realName,
+  decideAutoJoin, joinAllowed, joinRefusalCode, mergeOutcome, linkedToast, apartToast, customerAfterJoin, realName,
 } from './customerAutoJoin.js';
 import { isBlankName } from '../../supabase/functions/_shared/customerMergePlan.js';
 import { emailJoinTags } from '../../supabase/functions/_shared/emailJoinNotice.js';
@@ -194,14 +194,16 @@ export async function claimPhoneForProfile({ db, orgId, holder, phoneN, phoneRaw
  * counts). The till asks for the preview first and goes on only when it says the empty profile is
  * folded into the EMAIL's profile. Stopped part way: the same request is sent once more; a merge
  * resumes and never counts twice.
- * Returns { ok, outcome: 'merged' | 'retry' | 'refused', survivor, survivorId }.
+ * Returns { ok, outcome: 'merged' | 'retry' | 'refused', survivor, survivorId, code }. `code` says
+ * why it did not join (joinRefusalCode; null when it did), so the till's "Link to existing member"
+ * can say it in plain words (27 Sep 2026).
  */
 export async function joinShellIntoProfile({ postMerge, locId, sourceId, targetId }) {
   const ids = { sourceId, targetId };
   const pv = await postMerge(mergeRequestBody({ action: 'preview', targetId, sourceId, locationId: locId }));
   if (!joinAllowed(pv?.body, ids)) {
     console.warn('[customer join] customer-merge preview did not allow the join:', pv?.status || 0, pv?.body?.code || '', pv?.body?.error || '');
-    return { ok: false, outcome: 'refused', survivor: null, survivorId: null };
+    return { ok: false, outcome: 'refused', survivor: null, survivorId: null, code: joinRefusalCode(pv, ids) };
   }
   const body = mergeRequestBody({ action: 'merge', targetId, sourceId, locationId: locId });
   let r = await postMerge(body);
@@ -215,6 +217,7 @@ export async function joinShellIntoProfile({ postMerge, locId, sourceId, targetI
     outcome,
     survivor: r?.body?.survivor || null,
     survivorId: r?.body?.survivor_id || null,
+    code: outcome === 'merged' ? null : joinRefusalCode(r, ids),
   };
 }
 

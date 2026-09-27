@@ -53,6 +53,9 @@ import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions'
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
+import { searchPhonelessMembers, linkOrderCustomer, linkRefused } from '../lib/customerLinkRun.js';
+import { phonelessResults } from '../lib/customerLink.js';
+import { fetchCustomerByPhone } from '../lib/customerLookup';
 
 // Database fence stage 1 (money functions): loyalty-redeem, loyalty-earn and loyalty-refund accept
 // a till or kiosk only when its session is BOUND to its devices row at this venue (the device arm
@@ -101,7 +104,8 @@ async function postLoyaltyWithDeviceLink(fn, body) {
 
 // 27 Sep 2026: customer-merge from a till, ONLY for the customer forms' automatic join by email
 // (the empty profile the portal or the customer display made from a phone, folded into the
-// profile the email is on; lib/customerAutoJoinRun.js). A till is let in only once its session is
+// profile the email is on; lib/customerAutoJoinRun.js) and the order chip's "Link to existing
+// member" (the same fold into the member staff tapped; lib/customerLinkRun.js). A till is let in only once its session is
 // BOUND to its devices row at this venue (the device arm of pos_can_access), and then only to
 // fold in an empty profile; so wait for the boot link first and re-link once after a 403
 // not_allowed. Never throws: { status, body }, status 0 when nothing came back. Safe to send
@@ -3680,9 +3684,13 @@ export const useStore = create((set, get) => ({
   // Live Supabase search. CustomerModal calls this with debounce.
   // v5.5.280: raised minimum from 2→3 chars for Supabase queries to reduce
   // load at scale. Phone queries additionally gated to 6+ digits in CustomerModal.
-  searchCustomersLive: async (q) => {
+  // 27 Sep 2026: { phoneless: true } is the order chip's "Link to existing member" search
+  // (components/LinkMemberModal.jsx): name or email only, ONLY profiles with no phone (a phone is a
+  // loyalty login, never moved), no phone fallback, and the till's customer cache is left alone.
+  searchCustomersLive: async (q, opts = {}) => {
+    const phoneless = opts?.phoneless === true;
     if (!q || q.length < 3) return [];
-    if (isMock || !supabase) return get().searchCustomers(q);
+    if (isMock || !supabase) return phoneless ? phonelessResults(get().searchCustomers(q)) : get().searchCustomers(q);
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) { console.warn('[searchCustomersLive] no locId'); return []; }
@@ -3696,7 +3704,9 @@ export const useStore = create((set, get) => ({
       const term = String(q).trim();
       const safe = term.replace(/[,%]/g, '');
       let enriched = [];
-      if (orgId) {
+      if (orgId && phoneless) {
+        enriched = (await searchPhonelessMembers({ db: supabase, orgId, q: term })).rows;
+      } else if (orgId) {
         // Primary path: search within the organisation
         const { data, error: searchErr } = await supabase
           .from('customers')
@@ -3727,6 +3737,8 @@ export const useStore = create((set, get) => ({
           }
         } catch (e) { console.warn('[searchCustomersLive] customer-search threw:', e?.message || e); }
       }
+      // 27 Sep 2026: the link search stops here, phoneless rows only (customer-search returns any).
+      if (phoneless) return phonelessResults(enriched);
       // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
       // try a direct phone match using normalised phone. Ensures POS devices
       // with anonymous auth can still find customers by phone number.
@@ -3760,7 +3772,7 @@ export const useStore = create((set, get) => ({
       return enriched;
     } catch (err) {
       console.warn('[searchCustomersLive] failed:', err?.message || err);
-      return get().searchCustomers(q);
+      return phoneless ? phonelessResults(get().searchCustomers(q)) : get().searchCustomers(q);
     }
   },
 
@@ -3863,6 +3875,46 @@ export const useStore = create((set, get) => ({
     } catch (err) {
       console.warn('[customer join] failed:', err?.message || err);
       return none;
+    }
+  },
+
+  // ── Link a new customer to an existing member (27 Sep 2026) ─────────────────
+  // Peter: "if a customer adds their number and then a staff member can link that to a profile
+  // that currently has no number". Coffee Boy Leeds takes takeaway and collection with the
+  // customer details setting reduced, so staff never see an email box ("we have details disabled
+  // so only the phone number is there for takeaway and collection so nowhere to type those details
+  // in") and the email join above never runs there. The order chip's "Link to existing member"
+  // (components/LinkMemberModal.jsx) calls this with the member staff tapped: the empty profile
+  // the customer display made from the phone is folded into that member by customer-merge (the
+  // server's empty shell rule for a till is the authority), or, when no profile has the number
+  // yet, the phone goes on the member. Only members with NO phone. BEFORE payment: order history
+  // is written at payment (attributeOrderToCustomer), after which the server refuses a till.
+  // The rules and the words: lib/customerLink.js; the reads and writes: lib/customerLinkRun.js.
+  // Returns { ok: true, customer, toast, loyalty } or { ok: false, code, message }; never throws.
+  linkOrderCustomerToMember: async (customer, member) => {
+    if (isMock || !supabase) return linkRefused('offline');
+    if (isTrainingMode()) return linkRefused('training');   // TRAINING MODE: nothing is written
+    try {
+      const locId = getActiveLocationSync() || await getLocationId();
+      if (!locId || locId === 'loc-demo') return linkRefused('no_venue');
+      let orgId = get()._cachedOrgId;
+      if (!orgId) {
+        const { data: loc, error: locErr } = await supabase.from('locations').select('org_id').eq('id', locId).single();
+        if (locErr) console.warn('[link member] locations lookup failed:', locErr.message);
+        orgId = loc?.org_id;
+        if (orgId) set({ _cachedOrgId: orgId });
+      }
+      if (!orgId) return linkRefused('no_venue');
+      const phoneN = get()._normalisePhone(customer?.phone);
+      return await linkOrderCustomer({
+        customer, member, phoneN, db: supabase, orgId, locId,
+        postMerge: postCustomerMerge,
+        sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
+        lookup: (phone) => fetchCustomerByPhone(phone, locId),
+      });
+    } catch (err) {
+      console.warn('[link member] failed:', err?.message || err);
+      return linkRefused('failed');
     }
   },
 

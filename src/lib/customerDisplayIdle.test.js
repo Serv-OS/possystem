@@ -46,6 +46,7 @@ test('the member panel stays until the order ends; only an error clears itself (
   const disp = read('../surfaces/CustomerDisplaySurface.jsx');
   assert.match(disp, /const ms = loyaltyResultHoldMs\(r\);\n\s+if \(ms > 0\) resultTimer\.current = setTimeout/);
   assert.doesNotMatch(disp, /25000 : 9000/);
-  assert.match(disp, /if \(st === 'idle'\) \{ setPhoneInput\(''\); setSubmitting\(false\); setLoyaltyResult\(null\); \}/, 'the order ending clears it');
+  // 27 Sep 2026: the number check (lib/ukMobile.js) also clears its "Please check your number" here.
+  assert.match(disp, /if \(st === 'idle'\) \{ setPhoneInput\(''\);(?: setPhoneError\(false\);)? setSubmitting\(false\); setLoyaltyResult\(null\); \}/, 'the order ending clears it');
   assert.match(disp, /setPayload\(\{ state: 'idle', items: \[\], total: 0 \}\); setLoyaltyResult\(null\);/, 'an abandoned order clears it too');
 });
