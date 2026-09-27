@@ -5,8 +5,10 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
+import { isTrainingMode } from '../trainingMode';
 import { toBase, unitLabel } from './uom.js';
 import { postStockMovement } from './data.js';
+import { buildMenuWasteRow, usableIngredientLines } from './menuWaste.js';
 
 export const WASTE_REASONS = ['Spoilage', 'Out of date', 'Prep / trim', 'Over-production', 'Breakage / spill', 'Staff meal', 'Customer return', 'Training', 'Other'];
 
@@ -42,26 +44,33 @@ export const fetchWaste = async (fromIso, toIso, locationId = null, limit = 500)
  * sale_value = forgone revenue) and posts a WASTE movement per recipe ingredient so
  * stock actually comes off. `ingredients` = [{ inventoryItemId, qtyBase }] from the
  * recipe explosion. Idempotent per (event, ingredient).
+ *
+ * 26 Sep 2026, Peter: "should be able to waste without stock". A product with no
+ * recipe lines (no stock set up, or not linked yet) is recorded all the same: the
+ * summary row keeps product, qty, reason, note and the lost sale; cost_value is null
+ * and no movement posts because there is no stock to take it off. Venues with recipes
+ * behave exactly as before.
  */
 export const logMenuItemWaste = async ({ productName, qty, salePrice, ingredients, reason, note, source = 'pos' }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
+  // 26 Sep 2026: in Training Mode "NOTHING the device does is committed" (lib/trainingMode.js). Waste without
+  // stock made this insert reachable at every venue with no stock, so a practice waste on a
+  // training till would land in waste_events. No write; `training` lets the screen say so.
+  if (isTrainingMode()) return { data: null, error: null, training: true };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const lines = (ingredients || []).filter(i => i.inventoryItemId && Number(i.qtyBase) > 0);
-  if (!lines.length) return { data: null, error: new Error('Nothing to deduct from stock') };
+  const lines = usableIngredientLines(ingredients);
 
-  // Current (net) cost per ingredient → total stock cost of the waste.
-  const ids = [...new Set(lines.map(l => l.inventoryItemId))];
-  const { data: rows } = await supabase.from('inventory_items').select('id, current_cost').eq('location_id', locationId).in('id', ids);
-  const costById = {}; (rows || []).forEach(r => { costById[r.id] = r.current_cost == null ? 0 : Number(r.current_cost); });
-  const costValue = lines.reduce((s, l) => s + Number(l.qtyBase) * (costById[l.inventoryItemId] || 0), 0);
-  const saleValue = (Number(salePrice) || 0) * (Number(qty) || 1);
+  // Current (net) cost per ingredient → total stock cost of the waste (only when there are lines).
+  const costById = {};
+  if (lines.length) {
+    const ids = [...new Set(lines.map(l => l.inventoryItemId))];
+    const { data: rows } = await supabase.from('inventory_items').select('id, current_cost').eq('location_id', locationId).in('id', ids);
+    (rows || []).forEach(r => { costById[r.id] = r.current_cost == null ? 0 : Number(r.current_cost); });
+  }
 
-  const { data: ev, error } = await supabase.from('waste_events').insert({
-    location_id: locationId, inventory_item_id: null, item_name: productName, qty: Number(qty) || 1, unit: 'item',
-    qty_base: Number(qty) || 1, reason: reason || null, note: note || null,
-    cost_value: Math.round(costValue * 100) / 100, sale_value: Math.round(saleValue * 100) / 100, source,
-  }).select().maybeSingle();
+  const row = buildMenuWasteRow({ locationId, productName, qty, salePrice, ingredients: lines, costById, reason, note, source });
+  const { data: ev, error } = await supabase.from('waste_events').insert(row).select().maybeSingle();
   if (error || !ev) return { data: null, error: error || new Error('Could not log waste') };
 
   for (const l of lines) {
@@ -78,6 +87,9 @@ export const logMenuItemWaste = async ({ productName, qty, salePrice, ingredient
 /** Log waste of an inventory item: writes waste_events + posts a WASTE movement. */
 export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, source = 'backoffice' }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
+  // 26 Sep 2026: same Training Mode gate as logMenuItemWaste (a waste row + a WASTE movement
+  // are both commits). Back Office Wastage reads `training` for its toast.
+  if (isTrainingMode()) return { data: null, error: null, training: true };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   if (!(Number(qty) > 0)) return { data: null, error: new Error('Quantity must be > 0') };

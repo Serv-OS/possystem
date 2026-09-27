@@ -1,3 +1,8 @@
+# Session, 26 Sep 2026, v5.9.82, waste without stock (branch feat/waste-without-stock)
+
+- Peter: "waste isn't showing cause they don't have any stock, but people still like to waste things". Leeds: 0 stock items, 0 recipes, 454 products. The till modal dead ended on "No recipes are linked yet"; logMenuItemWaste refused "Nothing to deduct from stock".
+- lib/stock/menuWaste.js (pure: listWasteProducts, buildMenuWasteRow, usableIngredientLines, wasteRefusal, firstReadError) + tests; waste.js records a product waste (inventory_item_id null, cost null, sale_value) when there are no lines, Training Mode gate on both writers; PosWasteModal lists all products, hasStock ignores archived items, loadFailed blocks Record, amber note for stock-without-recipes; recipes.js returns read errors on the ctx; Wastage.jsx points a no stock venue at menu waste. Three review rounds.
+
 # Session, 26 Sep 2026, v5.9.81, a void closes a QR floor order (branch fix/void-no-seated)
 
 - Leeds t1 (Provo demo QR session, source qr, openedAt 1782772603516, no seatedAt, not on the Leeds plan) came back 22 s after each void (13:07, 13:43 UTC): tombstones had seated_at null; SessionReconciler rebuildOrphans + self heal re-published it from POS 1 (heartbeat open_tables 1).
