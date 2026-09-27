@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.99',
+    date: '27 Sep 2026',
+    items: [
+      'Daily trading (P&L): sales are now what customers paid for the goods, after discounts and comps. A 50% staff discount shows half the sales and a 100% comp shows none (both showed at full price). Loyalty rewards and promo codes count as discounts, not takings. VAT is the VAT on what was paid.',
+      'Daily trading (P&L): a range with more than 1,000 sales (about 5 days at a busy venue) now counts every sale. It stopped at the first 1,000. If the report cannot read its data it now says so instead of showing £0.',
+    ],
+  },
+  {
     v: '5.9.98',
     date: '27 Sep 2026',
     items: [
