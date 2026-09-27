@@ -86,16 +86,17 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
   const prevAvgCover = prev.covers ? prev.net / prev.covers : 0;
 
   // v4.6.25: service-period breakdown when shifts are configured.
+  // v5.10.3: which service a check belongs to is read on the venue's clock.
   const servicePeriods = useMemo(() => {
     const shifts = locationConfig?.shifts || [];
-    const bds    = locationConfig?.businessDayStart || '00:00';
+    const tz     = locationConfig?.timezone;
     if (!shifts.length) return null;
     const rows = shifts.map(s => ({ shift: s, net: 0, covers: 0, count: 0, tips: 0 }));
     const idx = {};
     rows.forEach((r, i) => { idx[r.shift.id || r.shift.name] = i; });
     let unclassified = { net: 0, covers: 0, count: 0 };
     (checks || []).filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
-      const s = classifyShift(c.closedAt, shifts, bds);
+      const s = classifyShift(c.closedAt, shifts, tz);
       // v5.6.79 — subtract only the ITEMS portion of each refund from a
       // subtotal-based net, and show tips net of any tip that went back.
       const refItems = (c.refunds||[]).reduce((x,r)=>x+((Number(r.amount)||0)-(Number(r.tipAmount)||0)-(Number(r.serviceAmount)||0)),0);

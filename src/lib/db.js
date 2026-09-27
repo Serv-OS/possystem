@@ -1276,12 +1276,15 @@ export const fetchAccessibleLocations = async () => {
 
 // Fetch closed checks across multiple locations in parallel. Each row is tagged
 // with its source locationId so the Location compare report can group by site.
-export const fetchClosedChecksMultiRange = async (locationIds = [], fromDate, toDate, limit = 2000) => {
-  if (!locationIds?.length) return { data: [], error: null };
+// v5.10.3: each location is read over ITS OWN window, [{ locationId, from, to }]
+// (reports/_filters venueRange: the same business days on that venue's clock).
+// Until then one window, built on the active venue's clock, was used for every venue.
+export const fetchClosedChecksMultiRange = async (windows = [], limit = 2000) => {
+  if (!windows?.length) return { data: [], error: null };
   if (isMock) return { data: [], error: null };
   try {
-    const results = await Promise.all(locationIds.map(id =>
-      fetchClosedChecksRange(id, fromDate, toDate, limit).then(r => ({
+    const results = await Promise.all(windows.map(({ locationId: id, from, to }) =>
+      fetchClosedChecksRange(id, from, to, limit).then(r => ({
         id,
         checks: (r.data || []).map(c => ({ ...c, locationId: id })),
       }))
