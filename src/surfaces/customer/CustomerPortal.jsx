@@ -12,6 +12,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { buildGiftTheme, fetchGiftBranding, formatAmount } from '../gift/giftHelpers';
 import { firstNameOf } from '../../lib/customerInitials';
+import { readProfileReply, customerAfterSave, isSignInAgain } from '../../lib/portalProfileReply';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -27,7 +28,13 @@ async function callPortal(body) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    // The code travels with the error (27 Sep 2026): 'sign_in_again' means the session's profile
+    // is gone (joined into another one, or deleted), so the portal signs in again, no alert.
+    const err = new Error(data?.error || `HTTP ${res.status}`);
+    err.code = data?.code || null;
+    throw err;
+  }
   return data;
 }
 
@@ -76,6 +83,10 @@ export default function CustomerPortal({ location }) {
 
   // Registration pre-fill data (collected before OTP)
   const [regData, setRegData] = useState(null);
+
+  // A plain words note after a profile save (27 Sep 2026): the account was joined with the
+  // member's imported one, or the email stayed off it and why.
+  const [notice, setNotice] = useState('');
 
   // Dashboard data
   const [customer, setCustomer] = useState(null);
@@ -185,6 +196,26 @@ export default function CustomerPortal({ location }) {
     }
   };
 
+  // ── A profile save's reply (27 Sep 2026) ─────────────────────────────
+  // The email the member saved was on their imported profile: loyalty-otp joined the two and
+  // sent a fresh session for the joined account. Take it now, so the member sees their stamps
+  // and points straight away. Returns readProfileReply's answer for the caller. The Profile tab
+  // shows a refusal under its own Save button (showRefusal false), the sign up screens up here.
+  const applyProfileReply = (data, showRefusal = true) => {
+    const reply = readProfileReply(data);
+    if (reply.joined) {
+      setToken(reply.session.token);
+      storeSession(reply.session.token, location.company_id);
+      setCustomer(reply.session.customer);
+      setLoyalty(reply.session.loyalty);
+      setGiftCards(reply.session.giftCards);
+      setStampCards(reply.session.stampCards);
+      setTab('home');
+    }
+    if (reply.joined || showRefusal) setNotice(reply.notice);
+    return reply;
+  };
+
   // ── Verify OTP ────────────────────────────────────────────────────────
   const verifyOtp = async () => {
     setError('');
@@ -212,21 +243,21 @@ export default function CustomerPortal({ location }) {
         // save the pre-collected profile data now
         if (screen === 'register_otp' && regData) {
           try {
-            await callPortal({
+            const saved = await callPortal({
               action: 'update_profile',
               token: data.token,
               phone: phone.replace(/\s+/g, ''),
               company_id: location.company_id,
+              location_id: location.ops_location_id || location.id,
               name: regData.name,
               email: regData.email || null,
               birthday: regData.birthday || null,
               marketing_opt_in: regData.marketingOptIn,
             });
-            setCustomer(c => ({
-              ...c,
-              name: regData.name,
-              email: regData.email || c?.email,
-            }));
+            const reply = applyProfileReply(saved);
+            if (!reply.joined) {
+              setCustomer(c => customerAfterSave(c, { name: regData.name, email: regData.email }, reply));
+            }
             setRegData(null);
           } catch (profileErr) {
             console.warn('[Portal] Profile save after reg:', profileErr?.message);
@@ -259,7 +290,15 @@ export default function CustomerPortal({ location }) {
     setOtpCode('');
     setRegData(null);
     setTab('home');
+    setNotice('');
     setScreen(isRegisterUrl ? 'register_form' : 'login');
+  };
+
+  // The session's profile is gone (joined into another one the phone could not follow, or
+  // deleted): back to sign in, with the reason on the sign in screen.
+  const signInAgain = (message) => {
+    logout();
+    setError(message || '');
   };
 
   return (
@@ -347,10 +386,12 @@ export default function CustomerPortal({ location }) {
           <RegisterScreen
             t={t} location={location} token={token} customer={customer}
             loyalty={loyalty}
-            onComplete={(updatedCustomer) => {
-              setCustomer(updatedCustomer);
+            onComplete={(typed, saved) => {
+              const reply = applyProfileReply(saved);
+              if (!reply.joined) setCustomer(c => customerAfterSave(c, typed, reply));
               setScreen('dashboard');
             }}
+            onSignInAgain={signInAgain}
           />
         )}
         {(screen === 'otp' || screen === 'register_otp') && (
@@ -364,6 +405,9 @@ export default function CustomerPortal({ location }) {
             }}
           />
         )}
+        {screen === 'dashboard' && notice && (
+          <NoticeCard t={t} text={notice} onClose={() => setNotice('')} />
+        )}
         {screen === 'dashboard' && (
           <Dashboard
             t={t} location={location} customer={customer} loyalty={loyalty}
@@ -371,6 +415,7 @@ export default function CustomerPortal({ location }) {
             onRefresh={() => refreshData(token)} onLogout={logout}
             token={token}
             walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet}
+            onProfileReply={applyProfileReply} onSignInAgain={signInAgain}
           />
         )}
       </div>
@@ -588,7 +633,7 @@ function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // REGISTER SCREEN — first-time signup after OTP verification
 // ═══════════════════════════════════════════════════════════════════════════
-function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
+function RegisterScreen({ t, location, token, customer, loyalty, onComplete, onSignInAgain }) {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState(customer?.email || '');
@@ -606,22 +651,20 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete }) {
     setSaving(true);
     setError('');
     try {
-      await callPortal({
+      const saved = await callPortal({
         action: 'update_profile',
         token,
         phone: customer?.phone || '_',
         company_id: location.company_id,
+        location_id: location.ops_location_id || location.id,
         name: fullName,
         email: email.trim() || null,
         birthday: birthday || null,
         marketing_opt_in: marketingOptIn,
       });
-      onComplete({
-        ...customer,
-        name: fullName,
-        email: email.trim() || customer?.email,
-      });
+      onComplete({ name: fullName, email: email.trim() || null }, saved);
     } catch (e) {
+      if (isSignInAgain(e) && onSignInAgain) { onSignInAgain(e.message); return; }
       setError(e.message);
     } finally {
       setSaving(false);
@@ -879,7 +922,7 @@ function OtpScreen({ t, phone, otpCode, setOtpCode, loading, error, onVerify, on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token, walletAvail, walletLoading, addToWallet }) {
+function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token, walletAvail, walletLoading, addToWallet, onProfileReply, onSignInAgain }) {
   // Loyalty feature flags — a venue can run points-only, stamps-only, or both.
   // Treat a missing/undefined flag as enabled; only hide when EXPLICITLY false.
   const pointsEnabled = loyalty?.points_enabled !== false;
@@ -931,7 +974,8 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
       {tab === 'stamps' && stampsEnabled && <StampCardsTab t={t} stampCards={stampCards} />}
       {tab === 'history' && pointsEnabled && <HistoryTab t={t} loyalty={loyalty} />}
       {tab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
-      {tab === 'profile' && <ProfileTab t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} pointsEnabled={pointsEnabled} />}
+      {/* Keyed on the profile: after a join the form starts again from the joined account's details. */}
+      {tab === 'profile' && <ProfileTab key={customer?.id || 'me'} t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} pointsEnabled={pointsEnabled} onProfileReply={onProfileReply} onSignInAgain={onSignInAgain} />}
     </>
   );
 }
@@ -1460,7 +1504,7 @@ function GiftCardsTab({ t, giftCards }) {
 }
 
 // ── Profile Tab ──────────────────────────────────────────────────────────
-function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout, pointsEnabled = true }) {
+function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout, pointsEnabled = true, onProfileReply, onSignInAgain }) {
   // Split stored name into first/last for editing
   const nameParts = (customer?.name || '').split(' ');
   const [firstName, setFirstName] = useState(nameParts[0] || '');
@@ -1470,26 +1514,35 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
   const [marketingOptIn, setMarketingOptIn] = useState(customer?.marketing_opt_in || false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [emailNote, setEmailNote] = useState('');
 
   const saveProfile = async () => {
     setSaving(true);
     setSaved(false);
+    setEmailNote('');
     try {
       const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
-      await callPortal({
+      const reply = await callPortal({
         action: 'update_profile',
         token,
         phone: customer?.phone || '_',
         company_id: location.company_id,
+        location_id: location.ops_location_id || location.id,
         name: fullName,
         email: email.trim(),
         birthday: birthday || null,
         marketing_opt_in: marketingOptIn,
       });
+      // Joined with the member's imported account: the parent takes the new session and shows
+      // the joined account (this form remounts on it). Otherwise say why an email stayed off.
+      const r = onProfileReply ? onProfileReply(reply, false) : readProfileReply(reply);
+      if (r.joined) return;
+      if (!r.emailSaved) setEmailNote(r.notice);
       setSaved(true);
       onRefresh();
       setTimeout(() => setSaved(false), 3000);
     } catch (e) {
+      if (isSignInAgain(e) && onSignInAgain) { onSignInAgain(e.message); return; }
       alert(e.message);
     } finally {
       setSaving(false);
@@ -1587,6 +1640,9 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
         >
           {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save changes'}
         </button>
+        {emailNote && (
+          <div style={{ fontSize: 12, color: t.textMuted, marginTop: 10, lineHeight: 1.5 }}>{emailNote}</div>
+        )}
       </Card>
 
       {/* Membership info */}
@@ -1629,6 +1685,24 @@ function Card({ t, children, style }) {
       padding: '20px', ...style,
     }}>
       {children}
+    </div>
+  );
+}
+
+// A note after a profile save (27 Sep 2026): the account was joined with the member's imported
+// one, or why an email stayed off it. Dismissed with the cross.
+function NoticeCard({ t, text, onClose }) {
+  return (
+    <div role="status" style={{
+      display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16,
+      background: t.card, border: `1px solid ${t.accent}`, borderRadius: t.radius,
+      padding: '14px 16px', fontSize: 13, lineHeight: 1.5, color: t.text,
+    }}>
+      <div style={{ flex: 1 }}>{text}</div>
+      <button onClick={onClose} aria-label="Close" style={{
+        border: 'none', background: 'transparent', color: t.textMuted,
+        fontSize: 16, lineHeight: 1, cursor: 'pointer', padding: 2,
+      }}>×</button>
     </div>
   );
 }

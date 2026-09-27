@@ -11,15 +11,24 @@
 //
 // Skips itself when the type is takeaway or dine-in (those don't need it).
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
 
-export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack }) {
-  const { customer, setCustomer, searchCustomers, searchCustomersLive } = useStore();
+export default function MCustomerCapture({ orderType, onContinue, onSkip: skipProp, onBack: backProp }) {
+  const { customer, setCustomer, searchCustomers, searchCustomersLive, autoJoinCustomerByEmail, showToast, showDelayedToast } = useStore();
   const [name, setName] = useState(customer?.name || '');
   const [phone, setPhone] = useState(customer?.phone || '');
   const [email, setEmail] = useState(customer?.email || '');
+  // 27 Sep 2026: the email this sheet opened with. Only an email typed HERE joins profiles by email
+  // (lib/customerAutoJoin.js emailIsNew); one carried in on the order never does.
+  const [openedWithEmail] = useState(customer?.email || '');
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  // A sheet left (Back or Skip) while it checks must not carry on to the menu afterwards.
+  const leftRef = useRef(false);
+  const onBack = () => { leftRef.current = true; backProp?.(); };
+  const onSkip = () => { leftRef.current = true; skipProp?.(); };
   const [address, setAddress] = useState(customer?.address || '');
   const [time, setTime] = useState(customer?.collectionTime || '');
   const [isASAP, setIsASAP] = useState(customer?.isASAP !== false);
@@ -80,16 +89,31 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
   })();
   const valid = Object.keys(errors).length === 0;
 
-  const submit = () => {
-    if (!valid) return;
-    setCustomer({
+  const submit = async () => {
+    if (!valid || busyRef.current) return;
+    let next = {
       name: name.trim() || null,
       phone: phone.trim() || null,
       email: email.trim() || null,
       address: address.trim() || null,
       collectionTime: isASAP ? null : time.trim() || null,
       isASAP,
-    });
+    };
+    // 27 Sep 2026, Peter: "when someone signs up it auto merges their records, matches them as long
+    // as they use the same email". Staff typed the phone and the email here, so the till joins by
+    // itself, no question (the same rules as the POS customer modal, lib/customerAutoJoin.js). The
+    // order is saved against the phone at close, which is then on the joined profile.
+    if (next.phone && next.email && typeof autoJoinCustomerByEmail === 'function') {
+      busyRef.current = true; setBusy(true);
+      // Never throws (the store answers 'none' on anything unexpected); the phone only save at close runs.
+      const joined = await autoJoinCustomerByEmail(next, { openedWithEmail }).catch(() => null);
+      busyRef.current = false; setBusy(false);
+      if (joined?.customer) next = joined.customer;
+      if (leftRef.current) return;   // staff went Back or Skipped while it was checking
+      // Delayed: an allergy warning from setCustomer below must be read first, never painted over.
+      if (joined?.toast) (showDelayedToast || showToast)?.(joined.toast, joined.kind === 'linked' ? 'success' : 'warning');
+    }
+    setCustomer(next);
     onContinue?.();
   };
 
@@ -203,8 +227,8 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
             Fill in the highlighted fields to continue
           </div>
         )}
-        <button onClick={submit} disabled={!valid} style={{ ...Sx.btnPrim, opacity: valid ? 1 : .5 }}>
-          Continue to menu
+        <button onClick={submit} disabled={!valid || busy} style={{ ...Sx.btnPrim, opacity: valid && !busy ? 1 : .5 }}>
+          {busy ? 'Checking customer…' : 'Continue to menu'}
         </button>
         {!needsCustomer && (
           <button onClick={onSkip} style={{ ...Sx.btnGhost, marginTop:8 }}>Skip — no customer details</button>

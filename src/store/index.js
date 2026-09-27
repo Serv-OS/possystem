@@ -51,6 +51,8 @@ import {
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
 import { memberTokenFor } from '../lib/memberSession.js';
+import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
+import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
 
 // Database fence stage 1 (money functions): loyalty-redeem, loyalty-earn and loyalty-refund accept
 // a till or kiosk only when its session is BOUND to its devices row at this venue (the device arm
@@ -95,6 +97,57 @@ async function postLoyaltyWithDeviceLink(fn, body) {
     res = await send();
   }
   return res;
+}
+
+// 27 Sep 2026: customer-merge from a till, ONLY for the customer forms' automatic join by email
+// (the empty profile the portal or the customer display made from a phone, folded into the
+// profile the email is on; lib/customerAutoJoinRun.js). A till is let in only once its session is
+// BOUND to its devices row at this venue (the device arm of pos_can_access), and then only to
+// fold in an empty profile; so wait for the boot link first and re-link once after a 403
+// not_allowed. Never throws: { status, body }, status 0 when nothing came back. Safe to send
+// twice: a preview writes nothing, and a merge resumes and never counts twice.
+async function postCustomerMerge(body) {
+  const send = async () => {
+    const token = await ensureAuthToken().catch(() => null);
+    if (!token) return null;
+    return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${CUSTOMER_MERGE_FN}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+  };
+  try {
+    await whenDeviceClaimed();
+    let res = await send();
+    let json = res ? await res.clone().json().catch(() => ({})) : {};
+    if (res && res.status === 403 && json?.code === 'not_allowed') {
+      try { await claimPairedDeviceOnBoot(); } catch { /* best effort */ }
+      res = await send();
+      json = res ? await res.clone().json().catch(() => ({})) : {};
+    }
+    return { status: res ? res.status : 0, body: json || {} };
+  } catch (e) {
+    console.warn('[customer-merge] call failed:', e?.message || e);
+    return { status: 0, body: {} };
+  }
+}
+
+// 27 Sep 2026: after an automatic join, the email's owner is told once (customer-join-notice
+// checks the profile itself and sends at most one notice per phone). Fire and forget: the order
+// never waits for it, and a failed email never undoes the join.
+async function postJoinNotice(body) {
+  try {
+    const token = await ensureAuthToken().catch(() => null);
+    if (!token) return;
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/customer-join-notice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) console.warn('[customer-join-notice]', res.status);
+  } catch (e) {
+    console.warn('[customer-join-notice] call failed:', e?.message || e);
+  }
 }
 import { waitlistSlice } from './waitlistSlice';
 import { bookingsSlice } from './bookingsSlice';
@@ -3762,52 +3815,54 @@ export const useStore = create((set, get) => ({
         console.warn('[upsertCustomer] phone normalisation returned null for', c.phone);
         return null;
       }
-      const row = {
-        org_id: orgId,
-        phone: phoneN,
-        phone_raw: c.phone || phoneN,
-        email: c.email || null,
-        name: c.name || 'Customer',
-        notes: c.notes || null,
-        marketing_opt_in: !!c.marketingOptIn,
-        marketing_opt_in_at: c.marketingOptIn ? new Date().toISOString() : null,
-        // v4.6.67: allergens carried through. Caller decides whether to include them.
-        allergens: Array.isArray(c.allergens) ? c.allergens : undefined,
-        updated_at: new Date().toISOString(),
-      };
-      const { data: existing, error: lookupErr } = await supabase.from('customers')
-        .select('id, name, email, marketing_opt_in, allergens')
-        .eq('org_id', orgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle();
-      if (lookupErr) {
-        console.warn('[upsertCustomer] lookup failed:', lookupErr.message, '(may be RLS — check customers SELECT policy)');
-      }
-      if (existing?.id) {
-        const patch = { updated_at: row.updated_at };
-        if (!existing.name && row.name) patch.name = row.name;
-        if (!existing.email && row.email) patch.email = row.email;
-        if (row.marketing_opt_in && !existing.marketing_opt_in) {
-          patch.marketing_opt_in = true;
-          patch.marketing_opt_in_at = row.marketing_opt_in_at;
-        }
-        // v4.6.67: replace allergens array if caller passed one (explicit save
-        // from the toast / detail page). Don't merge — operator decides exact set.
-        if (Array.isArray(row.allergens)) patch.allergens = row.allergens;
-        if (Object.keys(patch).length > 1) {
-          const { error: updErr } = await supabase.from('customers').update(patch).eq('id', existing.id);
-          if (updErr) console.warn('[upsertCustomer] update existing failed:', updErr.message);
-        }
-        return existing.id;
-      } else {
-        const { data: created, error } = await supabase.from('customers').insert(row).select('id').single();
-        if (error) {
-          console.warn('[upsertCustomer] insert failed:', error.message, '(may be RLS — check customers INSERT policy; or unique constraint on (org_id, phone))');
-          return null;
-        }
-        return created?.id || null;
-      }
+      // 27 Sep 2026: the row is written by lib/customerAutoJoinRun.js upsertCustomerRow (tested
+      // there against the live unique indexes). Still PHONE ONLY: an email another profile holds is
+      // left off and the rest saved, never the whole save lost (Ela Stettner's "DB error"). An email
+      // never finds a profile here: order close, the Orders Hub and every background save stay
+      // phone only. Only the two customer forms join by email (autoJoinCustomerByEmail below).
+      return await upsertCustomerRow({ db: supabase, orgId, c, phoneN });
     } catch (err) {
       console.warn('[upsertCustomer] failed:', err?.message || err);
       return null;
+    }
+  },
+
+  // ── Join by email, by itself (27 Sep 2026) ──────────────────────────────────
+  // Peter: "I don't want a merge tool, I want it so when someone signs up it auto merges their
+  // records, matches them as long as they use the same email, it knows the record exists and just
+  // adds them together." 1,357 imported Coffee Boy members have an email and no phone; staff
+  // typing one's phone and email used to make a second profile and a "DB error".
+  // ONLY the two interactive customer forms call this (components/CustomerModal.jsx and
+  // surfaces/mpos/MCustomerCapture.jsx), with the email the form opened with, so an email that
+  // came in on an order or a table (writable with the public key) never joins anything. Order
+  // close, the Orders Hub, the customer display and background saves stay phone only
+  // (upsertCustomer above). The rules and the words: lib/customerAutoJoin.js; the reads and
+  // writes: lib/customerAutoJoinRun.js. Returns { kind: 'none' | 'linked' | 'apart', customer,
+  // toast }; never throws, and anything unexpected is 'none' (the phone only save).
+  autoJoinCustomerByEmail: async (customer, { openedWithEmail = '' } = {}) => {
+    const none = { kind: 'none', customer };
+    if (isMock || !supabase) return none;
+    if (isTrainingMode()) return none;   // TRAINING MODE: the save writes nothing either
+    try {
+      const locId = getActiveLocationSync() || await getLocationId();
+      if (!locId || locId === 'loc-demo') return none;
+      let orgId = get()._cachedOrgId;
+      if (!orgId) {
+        const { data: loc, error: locErr } = await supabase.from('locations').select('org_id').eq('id', locId).single();
+        if (locErr) console.warn('[customer join] locations lookup failed:', locErr.message);
+        orgId = loc?.org_id;
+        if (orgId) set({ _cachedOrgId: orgId });
+      }
+      const phoneN = get()._normalisePhone(customer?.phone);
+      if (!orgId || !phoneN) return none;
+      return await autoJoinCustomer({
+        customer, openedWithEmail, phoneN, db: supabase, orgId, locId,
+        postMerge: postCustomerMerge,
+        sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
+      });
+    } catch (err) {
+      console.warn('[customer join] failed:', err?.message || err);
+      return none;
     }
   },
 

@@ -1,3 +1,8 @@
+# Session, 27 Sep 2026, v5.9.90, automatic joining on email (branch feat/stamps-on-login, with v5.9.89 stamps)
+
+- Peter: "when someone signs up it auto merges their records ... as long as they use the same email". Portal: loyalty-otp update_profile → _shared/portalEmailJoin.js (decideEmailJoin, runPortalJoin on the merge core, fresh session for the survivor, notice). Till: src/lib/customerAutoJoin.js + customerAutoJoinRun.js from CustomerModal and MCustomerCapture only (never order close / reopen), customer-merge for display shells, customer-join-notice edge function (DEPLOYED 27 Sep). loyalty-otp deploy after the web release. Both passed adversarial review (minors only).
+- Queued next: till "Link to existing member" (staff pick a phoneless profile for a display-created customer) + display rejects invalid UK mobiles.
+
 # Session, 27 Sep 2026, v5.9.89, stamps on the customer display (branch feat/stamps-on-login)
 
 - Peter: "once a customer logs in it shows how many stamps they currently have". Portal already shows stamps (HomeTab + Stamps tab). The display showed points only. lib/stampSummary.js (stampSummary, stampDots, stampChip, showPoints); captureLoyaltyByPhone returns stampCards + points/stamps flags; POSSurface publishes them and shows the chip; LoyaltyResultPanel draws cards.

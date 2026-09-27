@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.90',
+    date: '27 Sep 2026',
+    items: [
+      'Loyalty: records join automatically on a matching email. When someone signs up in their loyalty account with their phone and saves an email that is already on an imported record with no phone, the two become one straight away: they see their stamps and points at once. On the till, when staff type a phone and an email that belongs to a record with no phone, the phone goes onto that record (or the blank record the customer display made is folded into it) and the order uses it: "Linked to Simon Hughes\'s loyalty". Never joins a record that holds a different phone; the email must match exactly; the email\'s owner gets one short notice; order close and reopened orders never join. For the 1,355 imported members with an email and no phone.',
+    ],
+  },
+  {
     v: '5.9.89',
     date: '27 Sep 2026',
     items: [
