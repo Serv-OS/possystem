@@ -222,13 +222,16 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
   const phoneN = normalisePhone(rawPhone);
   if (!phoneN || !supabase || !orgId) return { ok: false };
   try {
-    const { data: existing } = await supabase
+    const { data: existing, error: lookupErr } = await supabase
       .from('customers')
       .select('id, name')
       .eq('org_id', orgId)
       .eq('phone', phoneN)
       .is('deleted_at', null)
       .maybeSingle();
+    // A failed read is not "a new number" (v5.9.85): creating a customer on a read error only fails
+    // again on the unique phone index.
+    if (lookupErr) { console.warn('[captureLoyaltyByPhone] lookup failed:', lookupErr.message); return { ok: false }; }
 
     if (existing?.id) {
       let points = 0;
@@ -248,11 +251,20 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
     }
 
     // New number → create the customer, then SMS them the loyalty signup form.
-    const { data: ins, error } = await supabase
+    // v5.9.85 (Leeds, 27 Sep 2026: "the customer just typed his number in, came up with an error"):
+    // customers.name is NOT NULL, so this insert has failed for every new number since 17 Sep and
+    // the display showed an error. Stored with an empty name (the portal treats it as no name) and
+    // NOT opted in to marketing: typing a number to join loyalty is not marketing consent.
+    let { data: ins, error } = await supabase
       .from('customers')
-      .insert({ org_id: orgId, phone: phoneN, phone_raw: rawPhone, marketing_opt_in: true })
+      .insert({ org_id: orgId, phone: phoneN, phone_raw: rawPhone, name: '', marketing_opt_in: false })
       .select('id').maybeSingle();
-    if (error || !ins?.id) return { ok: false };
+    if (error && error.code === '23505') {
+      // Another till or tab created the same number a moment ago: use it.
+      ({ data: ins, error } = await supabase.from('customers').select('id')
+        .eq('org_id', orgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle());
+    }
+    if (error || !ins?.id) { if (error) console.warn('[captureLoyaltyByPhone] create failed:', error.message); return { ok: false }; }
 
     try {
       let companyId = null;

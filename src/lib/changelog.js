@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.85',
+    date: '27 Sep 2026',
+    items: [
+      'FIX: a new customer typing their number on the customer display no longer gets an error. The customer was created without a name, which the database refuses, so every new number has failed since 17 Sep. They are now created (with no marketing consent: typing a number to join loyalty is not agreeing to marketing) and texted the link to finish joining.',
+      'FIX: the loyalty welcome text says the venue\'s name and carries the link to the customer\'s account. It said "Welcome to our venue!" and ended on "View your account:" with nothing after it, because the venue lookup asked the wrong database.',
+    ],
+  },
+  {
     v: '5.9.84',
     date: '27 Sep 2026',
     items: [

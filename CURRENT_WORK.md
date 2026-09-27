@@ -1,3 +1,9 @@
+# Session, 27 Sep 2026, v5.9.85, display join + welcome text (branch fix/display-join-welcome)
+
+- Leeds (trading): a new customer typed his number on the customer display and got an error. captureLoyaltyByPhone inserted without name (customers.name NOT NULL) since 17 Sep; now name '' and marketing_opt_in false (no consent on the display), 23505 race re-read, a failed read is not a new number.
+- Peter's welcome SMS: "Welcome to our venue! ... View your account:" empty. send-welcome read online_slug from OPS locations (no such column, whole read failed). Now Ops name + Platform slug (platformAdmin), _shared/welcomeLink.js (welcomePortalUrl, dropEmptyLinkLines, welcomeVenueName) + tests. send-welcome deployed separately.
+- Still open: Peter says the messages "are not following what's set": Coffee Boy has NO loyalty_welcome row in Platform message_templates (only the OTP service row). Find where he set it / whether the Messages save lands.
+
 # Session, 27 Sep 2026, v5.9.83, pairing code label shows the year (branch fix/pairing-expiry-label)
 
 - Peter: "when does this code actually expire, Apple are saying they cannot pair the KDS". Apple Review KDS (Provo, fe4b4470) code valid to 2027-09-27 08:32 UTC, issued this morning; the BO label had no year. Claim log: one refused_not_found on 25 Sep 06:45 UTC from a fresh anonymous install 14 s old = the reviewer's stale code (replaced 22 Sep 00:34 during pairing debugging, and again 27 Sep 08:32).
