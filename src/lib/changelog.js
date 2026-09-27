@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.87',
+    date: '27 Sep 2026',
+    items: [
+      'Back Office > Customers: "Merge with another customer…" (owners and managers). Pick the other profile, see both side by side and what moves, then join them: stamps, points, orders, visits and history move to the profile with the history, the phone and email go where they are missing, and the duplicate is retired. For the imported members who had an email but no phone and then signed up with their phone (Ela Stettner, Simon Hughes). Safe to press twice: a repeat changes nothing, and a merge that stops half way finishes when you press it again. When saving a phone or email that is already on another profile, the page now offers to merge instead of showing a database error.',
+    ],
+  },
+  {
     v: '5.9.86',
     date: '27 Sep 2026',
     items: [

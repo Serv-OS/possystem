@@ -1,3 +1,8 @@
+# Session, 27 Sep 2026, v5.9.87, Back Office customer merge (branch feat/customer-merge-tool)
+
+- Merge core (core-r2-v1.patch, adversarial review passed round 2): customer-merge edge function (DEPLOYED 27 Sep, answers 400 on a bad body), _shared/customerMergePlan.js + customerMergeRun.js (two databases, every step idempotent, crash tested), src/lib/customerMerge.js, Customers.jsx merge panel (owner/manager/super admin).
+- Till email match and portal email link: separate patches, till still in review; release after close.
+
 # Session, 27 Sep 2026, v5.9.86 HOTFIX, till crash on a customer with no phone (branch hotfix/null-phone-crash)
 
 - Leeds POS 1 (Sunmi) App Error "Cannot read properties of null (reading 'replace')" after staff picked Simon Hughes (imported aaa70b4f, email only). CustomerModal.selectCustomer did setPhone(c.phone) (null) and the live search effect ran phone.replace. Now setPhone(c.phone || '') etc.

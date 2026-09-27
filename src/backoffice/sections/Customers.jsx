@@ -14,6 +14,7 @@ import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSyn
 import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption, idChunks } from '../../lib/customersQuery';
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
+import { uniqueClashOf, canStaffMerge, mergeRequestBody, clashText, exactIlike, clashHolder, movesText, stampLine, CUSTOMER_MERGE_FN } from '../../lib/customerMerge';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -30,6 +31,24 @@ async function callGift(endpoint, body) {
   });
   const j = await res.json();
   if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+  return j;
+}
+
+// 26 Sep 2026: customer-merge folds two profiles of one person into one (Ela Stettner: imported
+// with her email and stamps, then a blank profile from her phone). Answers the function's JSON
+// whatever the status: a refusal (409) carries the reasons the preview shows.
+async function callMerge({ action, targetId, sourceId, phoneChoice }) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('Sign in first.');
+  const res = await fetch(`${FUNCTIONS_URL}/${CUSTOMER_MERGE_FN}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(mergeRequestBody({ action, targetId, sourceId, phoneChoice, locationId: getActiveLocationSync() || await getLocationId() })),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!j || typeof j !== 'object') return { ok: false, error: `The merge service answered ${res.status}.` };
+  if (!res.ok && !j.error) j.error = `The merge service answered ${res.status}.`;
   return j;
 }
 
@@ -74,6 +93,8 @@ export default function Customers() {
   const [stampPrograms, setStampPrograms] = useState([]); // v5.5.257: all active stamp programs
   const [loadError, setLoadError] = useState('');       // v5.9.78: a failed read is not "no customers"
   const [searching, setSearching] = useState(false);     // v5.9.78: a server search is in flight
+  const [orgId, setOrgId] = useState(null);               // 26 Sep 2026: for the merge search and the clash lookup
+  const [canMerge, setCanMerge] = useState(false);        // 26 Sep 2026: owner, manager or super admin (customer-merge's own rule)
   const orgRef = useRef({ orgId: null, locMap: {}, companyId: null, hasStampPrograms: false });
 
   // v5.9.80: loyalty memberships, tiers and stamp cards for THESE customers, read in slices of
@@ -129,6 +150,30 @@ export default function Customers() {
         setAllLocations(locs || []);
         const locMap = Object.fromEntries((locs || []).map(l => [l.id, l.name]));
         orgRef.current = { orgId, locMap };
+        setOrgId(orgId);
+
+        // 26 Sep 2026: the merge button is for an owner, a manager or a super admin, the same rule
+        // customer-merge applies (canStaffMerge). A failed read only hides the button.
+        // 27 Sep 2026: read beside the customer list, not in front of it (it held the first page
+        // back by three round trips, and the list is what a venue opens this screen for).
+        (async () => {
+          try {
+            const { data: { user: me } } = await supabase.auth.getUser();
+            if (!me) return;
+            const [{ data: prof }, { data: links }] = await Promise.all([
+              supabase.from('user_profiles').select('role, org_id').eq('id', me.id).maybeSingle(),
+              supabase.from('user_locations').select('role').eq('user_id', me.id).eq('location_id', locId).limit(5),
+            ]);
+            const linkRoles = (links || []).map((r) => r.role);
+            setCanMerge(canStaffMerge({
+              user: { id: me.id, is_anonymous: !!me.is_anonymous },
+              profileRole: prof?.role ?? null,
+              profileOrgId: prof?.org_id ?? null,
+              linkRole: linkRoles.find((r) => r === 'owner' || r === 'manager') ?? linkRoles[0] ?? null,
+              venueOrgId: orgId,
+            }));
+          } catch (e) { console.warn('[Customers] role read failed:', e?.message); }
+        })();
 
         // The first page of customers (v5.9.78, Peter: "the back office says no customers but
         // there is 8000"). In primary key order: the row security check on customers runs per
@@ -292,6 +337,30 @@ export default function Customers() {
 
   const selected = useMemo(() => filtered.find(c => c.id === selectedId) || customers.find(c => c.id === selectedId) || null, [filtered, customers, selectedId]);
 
+  // 26 Sep 2026: after a merge the folded in profile leaves the list and the survivor is shown,
+  // with the visit records, points and stamps it now holds.
+  const handleMerged = async (res) => {
+    const goneId = res?.merged_source_id || null;
+    const survivor = res?.survivor || null;
+    if (goneId) {
+      setCustomers((cs) => cs.filter((c) => c.id !== goneId));
+      setLoyaltyMap((m) => { const n = { ...m }; delete n[goneId]; return n; });
+      setStampDataMap((m) => { const n = { ...m }; delete n[goneId]; return n; });
+    }
+    if (!survivor?.id) { setSelectedId(null); return; }
+    let stats = [];
+    try {
+      const { data } = await supabase.from('customer_locations').select('*').eq('customer_id', survivor.id);
+      const { locMap } = orgRef.current;
+      stats = (data || []).map((cl) => ({ ...cl, locationName: locMap[cl.location_id] || 'Other venue' }));
+    } catch (e) { console.warn('[Customers] survivor stats:', e?.message); }
+    const row = enrichCustomer(survivor, stats);
+    setCustomers((cs) => mergeCustomerRows(cs.filter((c) => c.id !== goneId).map((c) => (c.id === row.id ? { ...c, ...row } : c)), [row]));
+    setSelectedId(survivor.id);
+    const { companyId, hasStampPrograms } = orgRef.current;
+    loadLoyaltyFor(companyId, [survivor.id], hasStampPrograms).catch((e) => console.warn('[Customers] survivor loyalty:', e?.message));
+  };
+
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortBy(col); setSortDir('desc'); }
@@ -432,7 +501,7 @@ export default function Customers() {
       </div>
 
       {/* Right: detail panel */}
-      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} onClose={() => setSelectedId(null)} onChanged={(updated) => {
+      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} orgId={orgId} canMerge={canMerge} onMerged={handleMerged} onClose={() => setSelectedId(null)} onChanged={(updated) => {
         setCustomers(cs => cs.map(c => c.id === updated.id ? { ...c, ...updated } : c));
       }} onDeleted={() => {
         setCustomers(cs => cs.filter(c => c.id !== selected.id));
@@ -466,8 +535,11 @@ function SortHeader({ col, sortBy, sortDir, onClick, align = 'left', children })
   );
 }
 
-function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], onClose, onChanged, onDeleted }) {
+function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], orgId = null, canMerge = false, onMerged, onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
+  const [merge, setMerge] = useState(null);   // 26 Sep 2026: { other } while the merge panel is open
+  const [clash, setClash] = useState(null);   // 26 Sep 2026: { field, holder } after a save hit a unique index
+  const [reload, setReload] = useState(0);    // 26 Sep 2026: a merge into THIS customer brings in orders and gift cards
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [giftCards, setGiftCards] = useState([]);
@@ -548,7 +620,9 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
       allergens: Array.isArray(customer.allergens) ? customer.allergens : [],
     });
     setEditing(false);
-  }, [customer.id]);
+    setClash(null);
+    setMerge(null);
+  }, [customer.id, reload]);
 
   const handleSave = async () => {
     if (isMock || !supabase) return;
@@ -570,8 +644,26 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
       reportSave('customer', null);
       onChanged?.(data);
       setEditing(false);
+      setClash(null);
     } catch (err) {
       reportSave('customer', err);
+      // 26 Sep 2026: a phone or email another profile already holds is almost always the same
+      // person twice (Ela Stettner: imported with her email, then a blank profile from her
+      // phone). Say whose it is and offer the merge, never the raw unique index error.
+      const field = uniqueClashOf(err);
+      if (field) {
+        const value = field === 'email' ? form.email.trim() : form.phone_raw.trim();
+        let holder = null;
+        try {
+          let q = supabase.from('customers').select('id, name, phone, phone_raw, email, created_at')
+            .eq('org_id', orgId).is('deleted_at', null).neq('id', customer.id).limit(10);
+          q = field === 'email' ? q.ilike('email', exactIlike(value)) : q.eq('phone', value);
+          const { data: rows } = await q;
+          holder = clashHolder(field, value, rows || [], customer.id);
+        } catch (e) { console.warn('[DetailPanel] clash lookup failed:', e?.message || e); }
+        setClash({ field, holder });
+        return;
+      }
       alert('Save failed: ' + (err?.message || err));
     }
   };
@@ -710,7 +802,19 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
           <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>Profile</div>
           {!editing ? (
-            <button onClick={() => setEditing(true)} style={btnSmall}>Edit</button>
+            <button onClick={() => {
+              // 26 Sep 2026: start from the profile as it is NOW (a merge may have just given it a
+              // phone or an email), never from what the form held when the panel opened.
+              setForm({
+                name: customer.name || '',
+                phone_raw: customer.phone_raw || customer.phone || '',
+                email: customer.email || '',
+                notes: customer.notes || '',
+                marketing_opt_in: !!customer.marketing_opt_in,
+                allergens: Array.isArray(customer.allergens) ? customer.allergens : [],
+              });
+              setEditing(true);
+            }} style={btnSmall}>Edit</button>
           ) : (
             <div style={{ display:'flex', gap:6 }}>
               <button onClick={() => setEditing(false)} style={btnSmall}>Cancel</button>
@@ -718,6 +822,20 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
             </div>
           )}
         </div>
+        {clash && (
+          <div style={{ marginBottom:10, padding:'10px 12px', borderRadius:8, background:'rgba(245,158,11,.12)', border:'1px solid rgba(245,158,11,.4)', fontSize:12, color:'var(--t1)' }}>
+            <div style={{ fontWeight:700 }}>{clashText(clash.field, clash.holder)}</div>
+            <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
+              {clash.holder && canMerge && (
+                <button onClick={() => { setMerge({ other: clash.holder }); setClash(null); }} style={{ ...btnSmall, background:'var(--acc)', color:'#fff', borderColor:'var(--acc)' }}>Merge them</button>
+              )}
+              {clash.holder && !canMerge && (
+                <span style={{ fontSize:11, color:'var(--t3)', alignSelf:'center' }}>Ask an owner or manager to merge them.</span>
+              )}
+              <button onClick={() => setClash(null)} style={btnSmall}>Dismiss</button>
+            </div>
+          </div>
+        )}
         {editing ? (
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
             <Field label="Name"><input type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={inputStyle}/></Field>
@@ -818,15 +936,209 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
         )}
       </div>
 
-      {/* Footer — soft-delete */}
-      <div style={{ padding:'12px 22px', borderTop:'1px solid var(--bdr)', display:'flex', justifyContent:'flex-end' }}>
+      {/* Footer: merge (26 Sep 2026) and soft-delete */}
+      <div style={{ padding:'12px 22px', borderTop:'1px solid var(--bdr)', display:'flex', justifyContent: canMerge ? 'space-between' : 'flex-end', gap:8 }}>
+        {canMerge && (
+          <button onClick={() => setMerge({ other: null })} style={btnSmall}>Merge with another customer…</button>
+        )}
         <button onClick={handleDelete} style={{ ...btnSmall, color:'var(--red, #cc5959)', borderColor:'var(--red-b, #cc5959)' }}>Delete customer</button>
       </div>
+
+      {merge && (
+        <MergePanel current={customer} orgId={orgId} initialOther={merge.other}
+          onClose={() => setMerge(null)}
+          onMerged={(res) => { setMerge(null); setEditing(false); setReload((n) => n + 1); onMerged?.(res); }}/>
+      )}
     </div>
   );
 }
 
 
+
+// ── 26 Sep 2026: merge two profiles of one person ────────────────
+//
+// Peter, Coffee Boy Leeds: "it should have matched the profile together". Ela Stettner was
+// imported with her email and 2 stamps; the portal then made a blank profile from her phone.
+// Pick the other profile, see what happens (customer-merge preview: which is kept, what moves,
+// anything that stops it), then merge. The function decides which profile is kept (the one with
+// history) and refuses anything unsafe; this panel only shows it.
+
+function MergePanel({ current, orgId, initialOther = null, onClose, onMerged }) {
+  const [q, setQ] = useState('');
+  const [found, setFound] = useState([]);
+  const [finding, setFinding] = useState(false);
+  const [other, setOther] = useState(initialOther);
+  const [preview, setPreview] = useState(null);
+  const [phoneChoice, setPhoneChoice] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  // The other profile, found by the database (the list on screen holds one page).
+  useEffect(() => {
+    const orFilter = customerSearchOr(q);
+    if (other || !orFilter || !orgId || isMock || !supabase) { setFound([]); setFinding(false); return undefined; }
+    let live = true;
+    setFinding(true);
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await supabase.from('customers')
+          .select('id, name, phone, phone_raw, email, created_at')
+          .eq('org_id', orgId).is('deleted_at', null).or(orFilter).limit(20);
+        if (live) setFound((data || []).filter((c) => c.id !== current.id).slice(0, 8));
+      } catch (e) {
+        console.warn('[MergePanel] search failed:', e?.message || e);
+        if (live) setFound([]);
+      } finally { if (live) setFinding(false); }
+    }, 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [q, other, orgId, current.id]);
+
+  // The preview, again whenever the pair or the phone choice changes. Nothing is written.
+  useEffect(() => {
+    if (!other) { setPreview(null); return undefined; }
+    let live = true;
+    setBusy(true);
+    setError('');
+    callMerge({ action: 'preview', targetId: current.id, sourceId: other.id, phoneChoice })
+      .then((j) => {
+        if (!live) return;
+        if (j?.ok) setPreview(j);
+        else { setPreview(null); setError(j?.error || 'The preview could not be made.'); }
+      })
+      .catch((e) => { if (live) { setPreview(null); setError(e?.message || 'The preview could not be made.'); } })
+      .finally(() => { if (live) setBusy(false); });
+    return () => { live = false; };
+  }, [other, phoneChoice, current.id]);
+
+  const doMerge = async () => {
+    if (!other || !preview?.can_merge) return;
+    setBusy(true);
+    setError('');
+    try {
+      const j = await callMerge({ action: 'merge', targetId: current.id, sourceId: other.id, phoneChoice });
+      if (!j?.ok) {
+        reportSave('customer merge', new Error(j?.error || 'merge refused'));
+        setError(j?.error || 'The merge did not go through.');
+        if (Array.isArray(j?.refusals) && j.refusals.length) setPreview((p) => (p ? { ...p, refusals: j.refusals, can_merge: false } : p));
+        return;
+      }
+      reportSave('customer merge', null);
+      onMerged?.(j);
+    } catch (e) {
+      reportSave('customer merge', e);
+      setError(e?.message || 'The merge did not go through.');
+    } finally { setBusy(false); }
+  };
+
+  const pickAgain = () => { setOther(null); setPreview(null); setPhoneChoice(null); setError(''); };
+  const phonesDiffer = !!preview && ((preview.refusals || []).some((r) => r.code === 'different_phones') || !!phoneChoice);
+  const keptName = preview?.target?.name || 'the kept profile';
+  const moves = movesText(preview?.moves);
+
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.45)', zIndex:60, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width:'min(760px, 100%)', maxHeight:'88vh', overflowY:'auto', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, boxShadow:'0 20px 60px rgba(0,0,0,.35)' }}>
+        <div style={{ padding:'16px 20px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)' }}>Merge customers</div>
+            <div style={{ fontSize:12, color:'var(--t3)', marginTop:3 }}>For one person with two profiles. The profile with stamps, points or orders is kept and the other is folded into it.</div>
+          </div>
+          <button onClick={onClose} style={{ width:28, height:28, padding:0, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t3)', borderRadius:6, cursor:'pointer', fontSize:16, fontFamily:'inherit', flexShrink:0 }}>×</button>
+        </div>
+
+        {!other ? (
+          <div style={{ padding:'16px 20px' }}>
+            <Field label="Find the other profile">
+              <input type="text" autoFocus placeholder="Name, phone or email" value={q} onChange={(e) => setQ(e.target.value)} style={inputStyle}/>
+            </Field>
+            <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+              {finding && <div style={{ fontSize:12, color:'var(--t4)' }}>Searching…</div>}
+              {!finding && q.trim().length >= 2 && found.length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t4)' }}>No other customer matches that.</div>
+              )}
+              {found.map((c) => (
+                <button key={c.id} onClick={() => setOther(c)} style={{ textAlign:'left', padding:'9px 12px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit', cursor:'pointer' }}>
+                  <div style={{ fontSize:13, fontWeight:700 }}>{(c.name || '').trim() || 'No name'}</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+                    {[c.phone_raw || c.phone, c.email].filter(Boolean).join(' · ') || 'No phone or email'} · since {fmtDate(c.created_at)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding:'16px 20px', display:'flex', flexDirection:'column', gap:12 }}>
+            {busy && !preview && <div style={{ fontSize:12, color:'var(--t4)' }}>Working out what would happen…</div>}
+            {preview && (
+              <>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:10 }}>
+                  <MergeProfileBox title="Kept" profile={preview.target} tone="keep"/>
+                  <MergeProfileBox title="Folded in and removed from the list" profile={preview.source} tone="fold"/>
+                </div>
+                {(preview.summary || []).length > 0 && (
+                  <div style={{ fontSize:12, color:'var(--t2)', display:'flex', flexDirection:'column', gap:4 }}>
+                    {preview.summary.map((line, i) => <div key={i}>{line}</div>)}
+                  </div>
+                )}
+                {moves && <div style={{ fontSize:12, color:'var(--t3)' }}>Moves across as well: {moves}.</div>}
+                {(preview.refusals || []).map((r, i) => (
+                  <div key={`r${i}`} style={{ padding:'9px 12px', borderRadius:8, background:'rgba(235,97,97,.10)', border:'1px solid rgba(235,97,97,.35)', color:'var(--red,#cc5959)', fontSize:12, fontWeight:600 }}>{r.message}</div>
+                ))}
+                {phonesDiffer && (
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', fontSize:12 }}>
+                    <span style={{ color:'var(--t3)' }}>Keep the phone:</span>
+                    {[['target', preview.target?.phone], ['source', preview.source?.phone]].map(([k, ph]) => (
+                      <button key={k} onClick={() => setPhoneChoice(k)} style={{ ...btnSmall, background: phoneChoice === k ? 'var(--acc)' : 'var(--bg3)', color: phoneChoice === k ? '#fff' : 'var(--t2)', borderColor: phoneChoice === k ? 'var(--acc)' : 'var(--bdr)' }}>
+                        {ph || 'none'} ({k === 'target' ? 'kept profile' : 'folded in profile'})
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {(preview.warnings || []).map((w, i) => (
+                  <div key={`w${i}`} style={{ padding:'8px 12px', borderRadius:8, background:'rgba(245,158,11,.10)', border:'1px solid rgba(245,158,11,.35)', color:'var(--t2)', fontSize:12 }}>{w.message}</div>
+                ))}
+              </>
+            )}
+            {error && <div style={{ fontSize:12, color:'var(--red,#cc5959)', fontWeight:600 }}>{error}</div>}
+            <div style={{ display:'flex', justifyContent:'space-between', gap:8, flexWrap:'wrap', marginTop:4 }}>
+              <button onClick={pickAgain} disabled={busy} style={btnSmall}>Choose a different profile</button>
+              <div style={{ display:'flex', gap:6 }}>
+                <button onClick={onClose} disabled={busy} style={btnSmall}>Cancel</button>
+                <button onClick={doMerge} disabled={busy || !preview?.can_merge}
+                  style={{ ...btnSmall, background: preview?.can_merge ? 'var(--acc)' : 'var(--bg3)', color: preview?.can_merge ? '#fff' : 'var(--t4)', borderColor: preview?.can_merge ? 'var(--acc)' : 'var(--bdr)', cursor: preview?.can_merge && !busy ? 'pointer' : 'not-allowed' }}>
+                  {busy && preview ? 'Merging…' : `Merge into ${keptName}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MergeProfileBox({ title, profile, tone }) {
+  if (!profile) return null;
+  const keep = tone === 'keep';
+  return (
+    <div style={{ padding:'10px 12px', borderRadius:8, background:'var(--bg2)', border: `1px solid ${keep ? 'var(--acc)' : 'var(--bdr)'}` }}>
+      <div style={{ fontSize:10, fontWeight:800, color: keep ? 'var(--acc)' : 'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>{title}</div>
+      <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>
+        {profile.name}
+        {profile.imported && <span style={{ marginLeft:6, fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:4, background:'var(--bg3)', color:'var(--t3)' }}>Imported</span>}
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:4, marginTop:8 }}>
+        <Row label="Phone" value={profile.phone || 'None'}/>
+        <Row label="Email" value={profile.email || 'None'}/>
+        <Row label="Customer since" value={fmtDate(profile.created_at)}/>
+        <Row label="Points" value={profile.points || 0}/>
+        {(profile.member_codes || []).length > 0 && <Row label="Member code" value={profile.member_codes.join(', ')}/>}
+        <Row label="Stamps" value={(profile.stamps || []).length ? profile.stamps.map(stampLine).join('; ') : 'None'}/>
+        <Row label="Orders" value={profile.orders || 0}/>
+      </div>
+    </div>
+  );
+}
 
 // ── v4.6.64: View tabs ───────────────────────────────────────────
 
