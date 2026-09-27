@@ -283,7 +283,7 @@ supabase/
 
 ### Reporting (24 reports)
 Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineering, DailyTrend, Daypart, Item Trend, Order Types, KDS Performance, Shifts, Cash Drawer, Z Report, Catalog, Loyalty, Exceptions, Location Compare, **Daily Trading (P&L)**, **Payroll**, Card Payments & Payouts (Ryft), Disputes.
-- **Daily Trading (P&L)** (`reports/DailyTrading.jsx` + `trading-report` edge fn) — operator sets a per-day forecast (suggests same-weekday-last-year); full P&L ladder **gross takings → less VAT (HMRC, never profit) → net sales → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**. VAT from `closed_checks.tax_amount`; gross = net + VAT. COGS%/overhead in `wf_venue_settings.settings`. Net sales (ex-VAT) is the P&L revenue basis.
+- **Daily Trading (P&L)** (`reports/DailyTrading.jsx` + `trading-report` edge fn) — operator sets a per-day forecast (suggests same-weekday-last-year); full P&L ladder **gross takings → less VAT (HMRC, never profit) → net sales → less COGS (configurable %) → gross profit → less labour (theoretical rota vs actual timesheets) → less overhead → operating profit**. VAT from `closed_checks.tax_amount`; per check via `_shared/tradingSales.js` (UK inclusive: gross = subtotal, net = subtotal − VAT; US added-on: gross = net + tax). COGS%/overhead in `wf_venue_settings.settings`. Net sales (ex-VAT) is the P&L revenue basis.
 - **Payroll** (`reports/PayrollReport.jsx`) — closed `wf_payroll_runs`: per-run wages/tips, per-staff breakdown, CSV.
 
 ### Workforce / Staff Management (Back Office → Workforce)

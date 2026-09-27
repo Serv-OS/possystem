@@ -19,6 +19,7 @@ import { resolveServiceCharge } from '../serviceCharge.js';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../taxCompute.js';
+import { inclusiveTaxOnCharged, linesGoods } from '../taxShare.js';
 
 /**
  * @param {object} ctx
@@ -117,6 +118,14 @@ export function computeCheckTotals(ctx) {
       tax = computeOrderTaxUnified(liveItems, taxSource, orderType || 'dine-in', checkBasis);
       exclusiveTax = tax.exclusiveTax || 0;
     } catch { tax = null; exclusiveTax = 0; }   // fail toward no added charge, never a guessed one
+    // 27 Sep 2026: UK inclusive VAT follows the discounts. The seam extracts VAT from price x qty
+    // (inclusive lines never read the basis), so a bill discounted by half booked the VAT on the
+    // full price. When nothing is added on, the VAT is the share of the goods actually charged:
+    // discountedSub (item and check discounts, manual and auto) over the undiscounted goods. The
+    // promo / loyalty credits stay out: the checkout takes them off as tenders (the accounting
+    // layer spreads VAT over them), exactly as before. No discount: share 1, the same object as
+    // before, byte for byte. Added-on (US) tax already carries the basis and is never scaled.
+    tax = inclusiveTaxOnCharged(tax, linesGoods(liveItems), discountedSub);
   }
 
   return {

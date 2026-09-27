@@ -3,7 +3,8 @@
 // Daily Trading / holistic P&L. Per day across a range it stitches together:
 //   • Forecast net sales (wf_sales_forecast.amount) — operator-set, with a
 //     "same weekday last year" suggestion learned from closed_checks.
-//   • Actual net sales (closed_checks.subtotal, ex-VAT, ex service/tip).
+//   • Actual net sales (ex-VAT, ex service/tip; _shared/tradingSales.js: UK
+//     subtotals include VAT, so net = subtotal − VAT there, 27 Sep 2026).
 //   • Theoretical labour (wf_shifts.computed_cost, the published rota).
 //   • Actual labour (wf_timesheets.pay_amount, approved/paid).
 //   • COGS (a configurable % of sales) + fixed daily overhead — both stored in
@@ -19,6 +20,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { checkSalesParts } from '../_shared/tradingSales.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -47,25 +49,24 @@ function dayList(from: string, to: string): string[] {
 }
 const shift364 = (ymdStr: string) => { const d = new Date(ymdStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 364); return d.toISOString().slice(0, 10); };
 
-// Sum closed_checks per venue-local day: net (subtotal, ex-VAT) + VAT. VAT prefers
-// the stored tax_amount (v4.6.19+); for older checks with no stored tax it falls
-// back to (total − net − service − tip). Service and tips are NOT sales.
-async function salesByDay(ops: string, fromYmd: string, toYmd: string, tz: string): Promise<Record<string, { net: number; vat: number }>> {
+// Sum closed_checks per venue-local day: net (ex-VAT) + VAT + gross (inc VAT). VAT prefers
+// the stored tax_amount (v4.6.19+); for older checks with no stored tax it falls back to
+// (total − subtotal − service − tip). Service and tips are NOT sales. 27 Sep 2026: a UK
+// subtotal already includes VAT, so gross = subtotal and net = subtotal − VAT there; only
+// added-on (US) tax sits on top (checkSalesParts, _shared/tradingSales.js).
+async function salesByDay(ops: string, fromYmd: string, toYmd: string, tz: string): Promise<Record<string, { net: number; vat: number; gross: number }>> {
   const startUtc = new Date(fromYmd + 'T00:00:00Z'); startUtc.setUTCHours(startUtc.getUTCHours() - 14);   // tz padding
   const endUtc = new Date(toYmd + 'T23:59:59Z'); endUtc.setUTCHours(endUtc.getUTCHours() + 14);
-  const out: Record<string, { net: number; vat: number }> = {};
+  const out: Record<string, { net: number; vat: number; gross: number }> = {};
   const { data } = await opsAdmin.from('closed_checks')
-    .select('subtotal, total, tax_amount, service, tip, status, voided, closed_at')
+    .select('subtotal, total, tax_amount, tax_breakdown, service, tip, status, voided, closed_at')
     .eq('location_id', ops).gte('closed_at', startUtc.toISOString()).lte('closed_at', endUtc.toISOString()).limit(20000);
   for (const c of data ?? []) {
     if (c.voided || c.status === 'voided') continue;
     const key = ymd(new Date(c.closed_at), tz);
-    const net = Number(c.subtotal) || 0;
-    const vat = c.tax_amount != null
-      ? (Number(c.tax_amount) || 0)
-      : Math.max(0, (Number(c.total) || 0) - net - (Number(c.service) || 0) - (Number(c.tip) || 0));
-    const e = (out[key] ??= { net: 0, vat: 0 });
-    e.net += net; e.vat += vat;
+    const p = checkSalesParts(c);
+    const e = (out[key] ??= { net: 0, vat: 0, gross: 0 });
+    e.net += p.net; e.vat += p.vat; e.gross += p.gross;
   }
   return out;
 }
@@ -166,10 +167,10 @@ Deno.serve(async (req) => {
 
   const rows = days.map((d) => {
     const forecast = fc[d] ?? 0;
-    const s = sales[d] ?? { net: 0, vat: 0 };
+    const s = sales[d] ?? { net: 0, vat: 0, gross: 0 };
     const actualSales = s.net;            // net, ex-VAT — the P&L basis
     const vat = s.vat;                    // VAT collected (HMRC's, not income)
-    const grossSales = actualSales + vat; // gross takings, inc VAT
+    const grossSales = s.gross;           // gross takings, inc VAT (never subtotal + VAT at a UK venue)
     const lastYear = lySales[shift364(d)]?.net ?? 0;
     const lt = labTheo[d] ?? 0, la = labAct[d] ?? 0;
     const recipeC = recipeCogs[d] || 0;                       // actual COGS from the stock ledger

@@ -4,6 +4,7 @@ import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
+import { bookedTaxRecord } from '../lib/taxShare';
 import { shortOrderRef } from '../lib/db';
 import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
 
@@ -825,11 +826,13 @@ export default function CheckHistory(){
       const nonVoided = (selectedCheck.items || []).filter(i => !i.voided);
       let taxBreakdown = null;
       const reprintTaxCtx = useStore.getState().getTaxContext();
-      if (selectedCheck.taxBreakdown?.hasExclusiveTax) {
+      const booked = bookedTaxRecord(selectedCheck);
+      if (booked) {
         // v5.9.12: a check that charged added-on (US) tax reprints the tax it
         // CHARGED (its discounts, service and credits were in the basis), never a
-        // recompute from the items under today's setup.
-        taxBreakdown = selectedCheck.taxBreakdown;
+        // recompute from the items under today's setup. 27 Sep 2026: so does a
+        // scaled record (a discounted UK bill, a comp, a QR tab closed short).
+        taxBreakdown = booked;
       } else if (taxCtxHasConfig(reprintTaxCtx)) {
         // v5.7.34: unified seam (legacy parity or profiles cascade).
         // v5.9.12: on the record's own basis (inclusive VAT ignores it: UK identical).

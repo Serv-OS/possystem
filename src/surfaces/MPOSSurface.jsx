@@ -26,10 +26,12 @@ import { getActiveLocationSync, isMock } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
-import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { taxCtxHasConfig } from '../lib/taxCompute';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
-import { chargedAddedOnTax } from '../lib/taxBasis';
+import { chargedTaxOf, creditDiscountsFromPayment } from '../lib/taxBasis';
+import { computeCheckTotals } from '../lib/payments/checkTotals';
+import { taxForChargedGoods } from '../lib/headlessTax';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -382,14 +384,33 @@ function MPOSRouter() {
     const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
     const orderType = st.orderType || 'takeaway';
     let taxBreakdown = null;
-    if (chargedAddedOnTax(paymentInfo)) {
-      // v5.9.12: the added-on tax MTender charged, exactly as recordWalkInClosed books it.
-      taxBreakdown = chargedAddedOnTax(paymentInfo);
+    if (chargedTaxOf(paymentInfo)) {
+      // v5.9.12: the tax MTender charged, exactly as recordWalkInClosed books it.
+      taxBreakdown = chargedTaxOf(paymentInfo);
     } else if (st.taxRates?.length || taxCtxHasConfig(st.getTaxContext())) {
       // v5.7.34: unified seam — legacy parity or profiles cascade, same shape.
-      try { taxBreakdown = computeOrderTaxUnified(items, st.getTaxContext(), orderType); }
+      // 27 Sep 2026: exactly as recordWalkInClosed books it (computeCheckTotals), so a
+      // recovered row carries the same VAT as a healthy close: UK VAT on the discounted
+      // lines, not the full price. The id is shared, so whichever lands first is the sale.
+      try {
+        taxBreakdown = computeCheckTotals({
+          items,
+          checkDiscounts: order.discounts || [],
+          covers: 1,
+          serviceChargeWaived: order.serviceChargeWaived || false,
+          orderType,
+          deviceConfig: st.deviceConfig,
+          discountRules: st.discountRules,
+          timezone: st.locationConfig?.timezone,
+          deliveryQuote: st.deliveryQuote,
+          taxRates: st.taxRates,
+          taxCtx: st.getTaxContext(),
+          creditDiscounts: creditDiscountsFromPayment(paymentInfo),
+        }).tax;
+      }
       catch { /* leave VAT unsplit rather than book a guess */ }
     }
+    taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // a 100% comp books no VAT, as recordWalkInClosed
     return {
       // onPaymentApproved guarantees this — the recovery row and the row a retry
       // writes MUST share an id or the upsert books the sale twice.
@@ -808,9 +829,10 @@ function MPOSRouter() {
         payment={flow.context.payment}
         onCancel={() => setFlow(f => ({ screen: 'tender', context: f.context || {} }))}
         // v5.9.12: the added-on tax MTender charged rides to the close, so the
-        // record books exactly that tax (inclusive-only checks carry nothing).
+        // record books exactly that tax. 27 Sep 2026: UK VAT too (on the lines as
+        // MPOS charged them), never the auto discounts a close would apply.
         onApproved={(info) => {
-          const charged = chargedAddedOnTax(flow.context.payment);
+          const charged = chargedTaxOf(flow.context.payment);
           onPaymentApproved(charged ? { ...info, chargedTaxBreakdown: charged } : info);
         }}
       />

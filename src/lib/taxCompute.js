@@ -47,6 +47,7 @@ import { computeTax, makeCascadeResolver, lineBasisSettings } from './taxEngine.
 import { buildLegacyProfiles, legacyProfileId } from './taxAdapter.js';
 import { calculateOrderTax } from './tax.js';
 import { allocateCheckBasis, recordCheckBasis } from './taxBasis.js';
+import { bookedTaxRecord } from './taxShare.js';
 
 /**
  * Build a tax context OUTSIDE the store - the customer surfaces (online, QR,
@@ -388,12 +389,16 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
  * v5.9.12: the tax a CLOSED check carries, for reports and reprints. A check that
  * charged added-on (US) tax stored its breakdown at close (discounts, service,
  * credits all in the basis), and that is the answer: a recompute from the items
- * would drop the basis. Anything else (every inclusive-VAT check, older rows) is
- * recomputed exactly as before, on the record's own basis, which inclusive VAT
- * never reads, so UK figures are unchanged.
+ * would drop the basis. 27 Sep 2026: so is a SCALED record (a discounted UK bill,
+ * a 100% comp, a QR tab closed short): its VAT is a share of the goods listed, and
+ * a recompute would book the undiscounted VAT again (taxShare.bookedTaxRecord).
+ * Anything else (every other inclusive-VAT check, older rows) is recomputed exactly
+ * as before, on the record's own basis, which inclusive VAT never reads, so those
+ * UK figures are unchanged.
  */
 export function recordedCheckTax(check, taxCtx) {
-  if (check?.taxBreakdown?.hasExclusiveTax) return check.taxBreakdown;
+  const booked = bookedTaxRecord(check);
+  if (booked) return booked;
   return computeOrderTaxUnified(check?.items || [], taxCtx, check?.orderType || 'dine-in', recordCheckBasis(check));
 }
 

@@ -39,6 +39,8 @@ import {
 // Database fence stage 1, fix round 2: writes that must change a row are counted and kept while
 // this till is not linked; no card capture starts on a till that is not linked.
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
+import { qrCloseTax } from '../lib/headlessTax';
+import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
@@ -112,6 +114,16 @@ function elapsed(date) {
 // v5.5.326: money() now imported from lib/currency (multi-currency); sweep adds the import
 
 // ── Root ──────────────────────────────────────────────────────────────────────
+// 27 Sep 2026: the tax a QR close written here books (headlessTax.qrCloseTax). It booked
+// tax_amount null: the reviewed fix folds each line's modifier prices in and restores each
+// line's rate, overrides and profile from this till's menu.
+function qrTaxCtx() {
+  const st = useStore.getState();
+  let taxCtx = null;
+  try { taxCtx = st.getTaxContext?.() || null; } catch { taxCtx = null; }
+  return { menuItems: st.menuItems || [], taxRates: st.taxRates || [], taxCtx, hasTaxConfig: taxCtxHasConfig(taxCtx) };
+}
+
 export default function OrdersHub() {
   const {
     tables, tabs, orderQueue,
@@ -483,7 +495,7 @@ export default function OrdersHub() {
   // capture took (lib/orderPayment.js shortTabClosedCheck, one id per hold, so it can never book
   // twice). The rest is taken on the till as its own sale.
   const closeShortQrTab = async (tab, short) => {
-    const check = shortTabClosedCheck(tab, short);
+    const check = shortTabClosedCheck(tab, short, { taxFor: (paidGoods) => qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods }) });
     if (!check) { showToast('This tab has no card payment on record. Close it with a manager.', 'error'); return; }
     if (!confirm(
       `Table ${tab.tableLabel}: the guest closed this tab on their phone and their card paid ${money(short.paidMinor / 100)} of ${money(short.dueMinor / 100)}.\n\n`
@@ -725,6 +737,9 @@ export default function OrdersHub() {
       try {
         const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
         const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'stripe');
+        // 27 Sep 2026: the VAT on what this close took (tax_amount was null). A capture short of the
+        // bill books only its share; QR round totals include any added-on (US) tax, taken out of subtotal.
+        const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge });
         const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
@@ -746,9 +761,10 @@ export default function OrdersHub() {
           // v5.8.9: each round carries customer.tip and its total INCLUDES it.
           // Booking tab.total as subtotal with tip: 0 charged the guest a tip
           // the venue then kept as sales. Split it back out.
-          subtotal: +(tab.total - tabTip).toFixed(2),
+          subtotal: +(tab.total - tabTip - qrTax.exclusiveTax).toFixed(2),
           service: surcharge,
-          tip: tabTip, tax_amount: null,
+          tip: tabTip, tax_amount: qrTax.taxAmount,
+          ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
           total: totalCollected,
           method: 'card',
           // v5.9.11: the two card charges this tab took (the hold capture and any overage),
@@ -927,6 +943,10 @@ export default function OrdersHub() {
       try {
         // What the hold captured, never more than was asked for (an older capture answer reported the hold).
         const capturedMajor = Number(data.captured_amount) > 0 ? Math.min(Number(data.captured_amount) / 100, captureAmount) : captureAmount;
+        // 27 Sep 2026: the VAT on what the hold took (tax_amount was null); a capture capped below
+        // the bill books only its share. QR totals include any added-on (US) tax, taken out of subtotal.
+        const qrTip = Number(o.customer?.tip) || 0;
+        const qrTax = qrCloseTax(o.items, qrTaxCtx(), { paidGoods: captureAmount - qrTip - surcharge });
         const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: o.ref,
@@ -937,9 +957,10 @@ export default function OrdersHub() {
           customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
           items: (o.items || []).map(i => ({ ...i, voided: false })),
           discounts: [],
-          subtotal: +((Number(o.total) || 0) - (Number(o.customer?.tip) || 0)).toFixed(2),   // v5.8.9: o.total includes the tip
+          subtotal: +((Number(o.total) || 0) - qrTip - qrTax.exclusiveTax).toFixed(2),   // v5.8.9: o.total includes the tip
           service: surcharge,                 // surface the auto-surcharge in the service line
-          tip: Number(o.customer?.tip) || 0, tax_amount: null,
+          tip: qrTip, tax_amount: qrTax.taxAmount,
+          ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
           total: captureAmount,                // what was actually charged
           method: 'card',
           // v5.9.11: one card tender, the amount the hold captured, the tab's tip on it.

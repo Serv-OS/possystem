@@ -21,6 +21,7 @@ import { useStore } from '../store';
 import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { checkClosesOccupation } from '../lib/rowWriteFence';
+import { bookedTaxRecord } from '../lib/taxShare';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -239,7 +240,8 @@ export async function forceSyncFromSupabase() {
         tableId: c.table_id,
         // v5.9.12: tax as booked (refunds and reprints of a US check read it).
         // Inclusive rows get no new keys, as before.
-        ...(c.tax_breakdown?.hasExclusiveTax ? { taxAmount: c.tax_amount ?? null, taxBreakdown: c.tax_breakdown } : {}),
+        // 27 Sep 2026: a scaled UK record too (taxShare.bookedTaxRecord), so reports read its booked VAT.
+        ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxAmount: c.tax_amount ?? null, taxBreakdown: c.tax_breakdown } : {}),
       }));
       const supabaseIds = new Set(supabaseChecks.map(c => c.id));
       const localOnly = (store.closedChecks || []).filter(c => !supabaseIds.has(c.id));

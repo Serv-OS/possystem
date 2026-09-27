@@ -25,6 +25,7 @@ import { buildLegacyProfiles } from './taxAdapter.js';
 import { normaliseTaxProfileLineRow } from './rowMapping.js';
 import { computeCheckTotals } from './payments/checkTotals.js';
 import { refundBreakdown, refundedSoFar, addedOnTaxOf, r2 } from './payments/refundMath.js';
+import { scaleTaxRecord, bookedTaxRecord } from './taxShare.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -253,8 +254,13 @@ test('UK LOCK: computeCheckTotals totals are unchanged with discounts, service, 
     assert.equal(t.service, 6.25);
     assert.equal(t.total, 56.25);
     assert.equal(t.exclusiveTax, 0);
-    // The booked breakdown is the items-only one, exactly as closes booked before.
-    assert.deepEqual(t.tax, computeOrderTaxUnified(ctx.items.filter(i => !i.voided), variant.taxCtx || { taxRates: UK_RATES }, 'dine-in'));
+    // 27 Sep 2026: the booked VAT is the items-only VAT on the goods CHARGED: discountedSub (50,
+    // after the item and check discounts) over the undiscounted goods (36 + 13 + 12 = 61). The
+    // promo / loyalty credits never move it (they are tenders). Totals above are unchanged.
+    const itemsOnly = computeOrderTaxUnified(ctx.items.filter(i => !i.voided), variant.taxCtx || { taxRates: UK_RATES }, 'dine-in');
+    assert.deepEqual(t.tax, scaleTaxRecord(itemsOnly, 50 / 61));
+    assert.equal(t.tax.share, 50 / 61);
+    assert.equal(t.tax.totalTax, Math.round(itemsOnly.totalTax * 50 / 61 * 100) / 100);
   }
 });
 
@@ -551,14 +557,22 @@ test('review: the kiosk V2 gift card is sized on the bill after the tax relief',
   assert.match(src, /giftDueMinor\(\{ total: giftTotal,/);
 });
 
-test('review: every closed-check door carries the booked US tax, and only US tax', () => {
-  const gate = /\.tax_breakdown\?\.hasExclusiveTax \? \{ taxAmount: \w+\.tax_amount \?\? null, taxBreakdown: \w+\.tax_breakdown \} : \{\}/g;
+test('review: every closed-check door carries the booked US tax, and (27 Sep 2026) a scaled UK record, nothing else', () => {
+  // The gate is taxShare.bookedTaxRecord: added-on (US) tax, or a scaled record (a discounted
+  // UK bill, a comp, a QR tab closed short). Every other inclusive row loads exactly as before.
+  const gate = /\.\.\.\(bookedTaxRecord\(\{ taxBreakdown: \w+\.tax_breakdown \}\) \? \{ taxAmount: \w+\.tax_amount \?\? null, taxBreakdown: \w+\.tax_breakdown \} : \{\}\)/g;
   const rt = fs.readFileSync(new URL('./realtime.js', import.meta.url), 'utf8');
   assert.equal((rt.match(gate) || []).length, 2);   // realtime INSERT + UPDATE-append
   const ms = fs.readFileSync(new URL('../sync/MasterSync.js', import.meta.url), 'utf8');
   assert.equal((ms.match(gate) || []).length, 1);   // force sync
   const db = fs.readFileSync(new URL('./db.js', import.meta.url), 'utf8');
-  assert.equal((db.match(/\.\.\.\(c\.tax_breakdown\?\.hasExclusiveTax \? \{ taxBreakdown: c\.tax_breakdown \} : \{\}\)/g) || []).length, 2);
+  assert.equal((db.match(/\.\.\.\(bookedTaxRecord\(\{ taxBreakdown: c\.tax_breakdown \}\) \? \{ taxBreakdown: c\.tax_breakdown \} : \{\}\)/g) || []).length, 2);
+  for (const src of [rt, ms, db]) assert.doesNotMatch(src, /tax_breakdown\?\.hasExclusiveTax \?/);
+  // The gate itself: US yes, scaled UK yes, plain UK no.
+  assert.ok(bookedTaxRecord({ taxBreakdown: { hasExclusiveTax: true, totalTax: 1 } }));
+  assert.ok(bookedTaxRecord({ taxBreakdown: { hasExclusiveTax: false, totalTax: 1, share: 0.5, breakdown: [] } }));
+  assert.equal(bookedTaxRecord({ taxBreakdown: { hasExclusiveTax: false, totalTax: 2, breakdown: [] } }), null);
+  assert.equal(bookedTaxRecord({ taxBreakdown: null }), null);
 });
 
 test('review: a catering record\'s delivery fee (booked in service) is counted once', () => {

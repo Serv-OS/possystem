@@ -135,8 +135,11 @@ export function qrTabShortLine(rows, formatMoney = (n) => n.toFixed(2)) {
  * the same money twice (the second insert is refused as a duplicate, 23505).
  *   tab: the Orders Hub QR tab (rows, allItems, firstRow, payment_intent_id, payment_session_id,
  *        processor, tableId, tableLabel)
+ *   taxFor(paidGoods): 27 Sep 2026, the VAT this check books ({ taxAmount, taxBreakdown,
+ *        exclusiveTax }, headlessTax.qrCloseTax), only the share of it the capture paid for. It
+ *        booked tax_amount null before. Without it (or if it throws), null as before.
  */
-export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOString() } = {}) {
+export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOString(), taxFor = null } = {}) {
   if (!tab || !short || !(short.paidMinor > 0)) return null;
   const processor = ['stripe', 'ryft', 'adyen'].includes(tab.processor) ? tab.processor : 'stripe';
   const holdRef = processor === 'ryft' ? (tab.payment_session_id || tab.payment_intent_id) : tab.payment_intent_id;
@@ -149,6 +152,9 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
   const baseCustomer = (first.customer && typeof first.customer === 'object') ? { ...first.customer } : {};
   delete baseCustomer.tab_join_code;
   delete baseCustomer.payment_unverified;
+  let tax = null;
+  if (typeof taxFor === 'function') { try { tax = taxFor(Math.max(0, paid - tip)); } catch { tax = null; } }
+  const added = Math.max(0, Number(tax && tax.exclusiveTax) || 0);   // QR totals include added-on (US) tax
   return {
     id: `chk-qrshort-${holdRef}`.slice(0, 120),
     ref: baseCustomer.tab_ref || first.ref || holdRef,
@@ -165,10 +171,11 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
     },
     items: (Array.isArray(tab.allItems) ? tab.allItems : []).map((i) => ({ ...i, voided: false })),
     discounts: [],
-    subtotal: +Math.max(0, paid - tip).toFixed(2),
+    subtotal: +Math.max(0, paid - tip - added).toFixed(2),
     service: 0,
     tip,
-    tax_amount: null,
+    tax_amount: tax && tax.taxAmount != null ? tax.taxAmount : null,
+    ...(tax && tax.taxBreakdown ? { tax_breakdown: tax.taxBreakdown } : {}),
     total: paid,
     method: 'card',
     processor,
