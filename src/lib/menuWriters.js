@@ -9,7 +9,11 @@
 //   * on success keeps the row's new updated_at as srvAt (and takes in other columns another
 //     window changed, when the re-read showed some),
 //   * on a refusal gives the screen the database row and tells the person in plain words,
-//   * reports every outcome to saveHealth (the red bar), so nothing fails silently.
+//   * reports every outcome to saveHealth (the red bar), so nothing fails silently,
+//   * gives every database call a time limit (MENU_WAIT_MS): a write that never answers is a
+//     failed save, and the queue behind it moves on,
+//   * remembers each row whose FIRST save (the insert) failed in this window: Push to POS offers
+//     exactly those, insert only, and a reload keeps them on screen (failedCreateIds).
 // Pure: no Supabase import, no store import.
 
 import {
@@ -17,7 +21,7 @@ import {
   menuItemRow, categoryRow, menuRow, pickColumns, keysForColumns, sameValue,
   ITEM_COLUMNS, CATEGORY_COLUMNS, MENU_COLUMNS,
 } from './menuItemWrite.js';
-import { writeRowChecked, insertRowOnce, createRowQueue } from './menuRowWrite.js';
+import { writeRowChecked, insertRowOnce, createRowQueue, writeWithin, MENU_WAIT_MS } from './menuRowWrite.js';
 import { mapMenuItemRow, mapCategoryRow, mapMenuRow, srvAtOf } from './rowMapping.js';
 import { isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode.js';
 import { isMissingImageColumn } from './categoryPhoto.js';
@@ -63,8 +67,33 @@ export const categoryMenuLinkRetry = (error, cols) => {
   console.warn('[menuWriters] category', cols.id || '', 'names a menu that is not saved (', cols.menu_id, '): saving it without the menu link');
   return { cols: retry, note: 'menu-link-dropped' };
 };
-/** A category INSERT (never an edit): no photo column, or no such menu, still saves the rest. */
-export const categoryInsertRetry = (error, cols) => categoryImageRetry(error, cols) || categoryMenuLinkRetry(error, cols);
+// 27 Sep 2026: a sub category whose parent category is not in the database (deleted in another
+// window) is refused on menu_categories_parent_id_fkey (23503) every time, so Push to POS, which
+// offers it again, stopped on it for good. Its insert keeps the CATEGORY and drops only the
+// parent: it is saved at the top level, and Push to POS says so (the result's parentDropped).
+// A parent this window still means to create (its own first save failed here) is never dropped
+// over: that error stands, so Push to POS names both and saves them in order next time
+// (createMenuWriters, the category insert).
+export const isMissingParentRow = (error) =>
+  String(error?.code || '') === '23503' && /parent_id/i.test(`${error?.message || ''} ${error?.details || ''}`);
+export const categoryParentRetry = (error, cols) => {
+  if (!cols || !cols.parent_id || !isMissingParentRow(error)) return null;
+  const retry = { ...cols };
+  delete retry.parent_id;
+  console.warn('[menuWriters] category', cols.id || '', 'names a parent category that is not in the database (', cols.parent_id, '): saving it at the top level');
+  return { cols: retry, note: 'parent-dropped' };
+};
+/** The words for sub categories Push to POS saved at the top level (store saveUnsavedMenuRows toTopLevel). */
+export function toTopLevelWords(names) {
+  const list = (names || []).filter(Boolean);
+  if (!list.length) return '';
+  const eg = list.slice(0, 3).map((n) => `"${n}"`).join(', ') + (list.length > 3 ? ` and ${list.length - 3} more` : '');
+  return list.length === 1
+    ? `${eg} was saved as a TOP LEVEL category: the category it sat under is not in the database any more (deleted in another window). Move it under another category if it belongs there.`
+    : `${eg} were saved as TOP LEVEL categories: the categories they sat under are not in the database any more (deleted in another window). Move them under another category if they belong there.`;
+}
+/** A category INSERT (never an edit): no photo column, no such menu, or no such parent category, still saves the rest. */
+export const categoryInsertRetry = (error, cols) => categoryImageRetry(error, cols) || categoryMenuLinkRetry(error, cols) || categoryParentRetry(error, cols);
 
 const TABLES = {
   items: {
@@ -114,12 +143,14 @@ function mergeInto(row, mapped, skip) {
  *   chain(fn)               the categories and menus serial chain (runInMenuWriteQueue)
  *   onSaved(kind, loc)      after a successful save (kiosk translations follow the English)
  *   wait(ms)                a timer (tests pass a fast one)
+ *   timeoutMs               each database call's time limit (MENU_WAIT_MS; tests pass a short one)
  */
 export function createMenuWriters(deps) {
   const {
     getClient, resolveLocation, getRow, updateRow,
     reportSave = () => {}, toast = () => {}, chain = null, onSaved = null,
     wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+    timeoutMs = MENU_WAIT_MS,
   } = deps;
 
   // This tab's write clock: a number that goes up every time a row's save lands (or its
@@ -133,6 +164,12 @@ export function createMenuWriters(deps) {
     let queue = null;
     const landed = new Map();   // id → clock value when its last save landed
     const markLanded = (id) => { clock += 1; landed.set(id, clock); };
+    // 27 Sep 2026: rows made in this window whose FIRST save (the insert) failed. Push to POS
+    // offers these and only these (lib/venueMenuRead.js unsavedMenuRows): a row that is on screen
+    // but not in the database for any other reason was deleted in another window, and must stay
+    // deleted. Cleared when an insert lands ('created') or finds the row there ('exists'), when
+    // the row is deleted here (forgetCreate), and when a read shows the database has it.
+    const failedCreates = new Set();
 
     const run = async (job, id) => {
       const client = getClient();
@@ -147,28 +184,46 @@ export function createMenuWriters(deps) {
           return { ok: false, outcome: 'error', error: new Error(`refusing to create ${t.table} ${id}: it was made at venue ${job.locationId}, this Back Office is now on ${loc}`) };
         }
         // The row is built when the write RUNS (a category photo set meanwhile is included).
-        const once = () => {
+        // 27 Sep 2026: every database call has a time limit (writeWithin, MENU_WAIT_MS). A hung
+        // insert used to hold this row's queue, and for categories and menus the whole serial
+        // chain, so every later save and every Push to POS waited on it for good.
+        const retry = job.retryWithout || t.retryWithout;
+        // 27 Sep 2026: the parent category is never dropped on the first try (it may be landing
+        // a beat later, v5.5.952 below), nor while it is a category this window still means to
+        // create (its own first save failed here).
+        const keepParent = (e, c) => (isMissingParentRow(e) ? null : (retry ? retry(e, c) : null));
+        let sentParent = null;
+        const once = (retryWithout) => {
           const row = typeof job.row === 'function' ? job.row() : job.row;
-          return insertRowOnce({ client, table: t.table, row: { ...row, id, location_id: loc }, retryWithout: job.retryWithout || t.retryWithout });
+          sentParent = row?.parent_id || null;
+          return writeWithin(insertRowOnce({ client, table: t.table, row: { ...row, id, location_id: loc }, retryWithout }),
+            `saving new ${t.table} ${id}`, timeoutMs);
         };
-        let r = await once();
+        let r = await once(kind === 'categories' ? keepParent : retry);
         // v5.5.952: a sub category whose parent (or its menu) is still landing, or landed from
         // another tab a beat later: wait and try once more before going loud.
-        if (r.outcome === 'error' && kind === 'categories' && isParentKeyError(r.error)) { await wait(900); r = await once(); }
-        return { ...r, locationId: loc };
+        if (r.outcome === 'error' && kind === 'categories' && isParentKeyError(r.error)) {
+          await wait(900);
+          r = await once(sentParent && failedCreates.has(sentParent) ? keepParent : retry);
+        }
+        // Saved without the parent it was sent with (categoryParentRetry): at the top level.
+        const parentDropped = kind === 'categories' && r.outcome === 'created' && !!sentParent && !r.row?.parent_id;
+        return { ...r, locationId: loc, ...(parentDropped ? { parentDropped: true } : {}) };
       }
       const row = getRow(kind, id);
       const rowLoc = row?.location_id ?? row?.locationId ?? null;
       if (rowLoc && loc && rowLoc !== loc) {
         return { ok: false, outcome: 'error', error: new Error(`refusing to write ${t.table} ${id}: it belongs to venue ${rowLoc}, this Back Office is on ${loc}`) };
       }
-      const once = () => writeRowChecked({
+      // A write that is out of time is a failed save (never a hung queue). If it lands later the
+      // compare and set makes that safe: this window's next edit of the row re reads it first.
+      const once = () => writeWithin(writeRowChecked({
         client, table: t.table, id, locationId: loc,
         // A form's edit carries the token it opened with (edit opts.opened); else the row's now.
         srvAt: job.srvAt !== undefined ? job.srvAt : srvAtOf(getRow(kind, id)),
         cols: job.cols, base: job.base, soft: job.soft,
         freshCols: t.freshCols, retryWithout: t.retryWithout,
-      });
+      }), `saving ${t.table} ${id}`, timeoutMs);
       let r = await once();
       if (r.outcome === 'error' && kind === 'categories' && isParentKeyError(r.error)) { await wait(900); r = await once(); }
       return { ...r, locationId: loc };
@@ -177,13 +232,19 @@ export function createMenuWriters(deps) {
     const onResult = (id, job, result, { queuedKeys, queuedCols, dropped }) => {
       const label = job.label || t.labelOf(getRow(kind, id));
       const o = result?.outcome;
+      if (job.kind === 'create') {
+        if (o === 'created' || o === 'exists') failedCreates.delete(id);
+        else if (o === 'error') failedCreates.add(id);
+      }
       if (['applied', 'created', 'merged'].includes(o)) {
         try { onSaved?.(kind, result.locationId || null); } catch { /* a nicety */ }
       }
       if (['applied', 'created', 'merged', 'already', 'conflict'].includes(o)) markLanded(id);
       if (o === 'applied' || o === 'created') {
         const at = result.row?.updated_at ?? null;
-        updateRow(kind, id, (r) => (r ? { ...r, srvAt: at, updated_at: at } : r));
+        // A category saved at the top level (its parent is not in the database) shows there.
+        const top = (r) => (result.parentDropped ? { parentId: null, ...('parent_id' in r ? { parent_id: null } : {}) } : {});
+        updateRow(kind, id, (r) => (r ? { ...r, ...top(r), srvAt: at, updated_at: at } : r));
         reportSave(t.entity, null);
       } else if (o === 'merged' || o === 'already') {
         // Another window changed OTHER columns: show them, except where an edit of ours is
@@ -256,6 +317,10 @@ export function createMenuWriters(deps) {
       markLanded,
       /** Ids whose save landed after clock value `since`. */
       landedSince: (since) => new Set([...landed].filter(([, at]) => at > since).map(([id]) => id)),
+      /** Ids of rows made in this window whose first save (the insert) failed. */
+      failedCreateIds: () => new Set(failedCreates),
+      /** The row was deleted here, or a read shows the database has it: nothing to offer. */
+      forgetCreate: (id) => { failedCreates.delete(id); },
       isPending: (id) => queue.isPending(id),
       pendingIds: () => queue.pendingIds(),
       whenIdle: () => queue.whenIdle(),

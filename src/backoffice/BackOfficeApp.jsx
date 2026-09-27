@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, unsavedGroupIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
+import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, failedCreateIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
 import { withTimeout } from '../lib/withTimeout';
 import { pushedByName } from '../lib/pushedBy';
 import { mergeInstructionGroups } from '../lib/threeWayMerge';
@@ -18,6 +18,10 @@ import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
 import { fetchTableTombstones, fetchFloorPlanVersioned, insertConfigPush } from '../lib/db';
 import { readVenueMenu, unsavedMenuRows, unsavedWords, menuSnapshotFromRead, emptyItemsReadSuspect, venueItemCount } from '../lib/venueMenuRead';
+import { toTopLevelWords } from '../lib/menuWriters';
+import { taggedVenueRows } from '../lib/venueTaxRates';
+import { settleBoVenue, foreignVenueSlices, venueRowsOnly } from '../lib/boVenueBoot';
+import { startBoSessionWatch, sameAuthUser } from '../lib/boSessions';
 import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextSeq } from '../lib/tablePlan';
 import { refreshTablePlan } from '../sync/TablePlanSync';
 import { normaliseSections } from '../lib/sectionPlan';
@@ -222,6 +226,42 @@ function BackOfficeToast() {
 
 // Supabase flags a password that is too short or appears in a known data leak at sign in
 // (BOLogin notes it). Peter: "a lot of people using basic passwords". Stays until changed.
+// 27 Sep 2026 (Peter: "every products tax rate has been removed but they where there earlier"):
+// he had two Back Office sessions open at Leeds, and the older one wrote its stale products back
+// over the tax he had just applied. Every tab now says when another tab of this browser is open on
+// the same venue (lib/boSessions.js). Keyed by venue where it is mounted, so a venue switch starts
+// a fresh watch.
+function OtherTabBanner({ venue }) {
+  const [others, setOthers] = useState(0);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    if (!venue) return undefined;
+    const stop = startBoSessionWatch({ venue, onChange: (n) => { setOthers(n); if (n > 0) setHidden(false); } });
+    window.addEventListener('pagehide', stop);
+    return () => { window.removeEventListener('pagehide', stop); stop(); };
+  }, [venue]);
+  if (!others || hidden) return null;
+  return (
+    <div data-testid="other-tab-banner" style={{
+      display:'flex', alignItems:'center', gap:14, flexWrap:'wrap', padding:'10px 24px',
+      background:'rgba(245,166,35,0.12)', borderBottom:'1px solid rgba(245,166,35,0.45)',
+      color:'var(--t1)', fontSize:13.5, lineHeight:1.5,
+    }}>
+      <span style={{ flex:1, minWidth:240 }}>
+        <strong>Back Office is open in another tab for this venue.</strong> Changes made there do not show here until you reload this page. Close the tabs you are not using.
+      </span>
+      <button onClick={() => window.location.reload()} style={{
+        padding:'7px 14px', borderRadius:9, border:'none', background:'var(--acc)', color:'#06130C',
+        fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
+      }}>Reload</button>
+      <button onClick={() => setHidden(true)} style={{
+        padding:'7px 12px', borderRadius:9, border:'1px solid var(--bdr)', background:'transparent', color:'var(--t2)',
+        fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
+      }}>Hide</button>
+    </div>
+  );
+}
+
 function WeakPasswordBanner({ onFix }) {
   const [show, setShow] = useState(() => hasWeakPasswordNote());
   useEffect(() => {
@@ -402,7 +442,10 @@ export default function BackOfficeApp() {
       // office mode, so this only guards legacy/edge cases).
       const u = session?.user;
       if (u && u.is_anonymous) { setAuthUser(null); return; }
-      setAuthUser(realUser(u));
+      // 27 Sep 2026: the same person's refresh keeps the user object, so the venue effect
+      // (keyed on authUser) does not re-read the venue key another tab may have changed.
+      const next = realUser(u);
+      setAuthUser(prev => (sameAuthUser(prev, next) ? prev : next));
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -559,6 +602,21 @@ export default function BackOfficeApp() {
         // auto-resolved a single location left every getActiveLocationSync() consumer (all the
         // Marketing sections, Review card, WiFi, etc.) showing "Pick a location to manage …".
         try { localStorage.setItem('rpos-bo-location', JSON.stringify(effectiveLocId)); } catch { /* quota */ }
+        // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"):
+        // SyncBridge booted at page load for rpos-bo-location, else the venue this browser is
+        // paired to, and applied THAT venue's push and discounts. When it is not the venue resolved
+        // here, the page reloads once so the boot runs for this venue; if it still differs, the
+        // other venue's tax rates, discounts and packages are cleared (lib/boVenueBoot.js). A Leeds
+        // Back Office that booted Train Station's push pushed its rates and discounts to Leeds.
+        let tabStorage = null;
+        try { tabStorage = window.sessionStorage; } catch { tabStorage = null; }
+        const bootAction = settleBoVenue({ bootedFor: useStore.getState().bootLocationId, venue: effectiveLocId, storage: tabStorage });
+        if (bootAction === 'reload') {
+          console.warn('[BackOfficeApp] booted for', useStore.getState().bootLocationId, 'but this Back Office is for', effectiveLocId, ': reloading once for the right venue');
+          window.location.reload();
+          return;
+        }
+        if (bootAction === 'purge') useStore.setState(foreignVenueSlices());
         loadLocationData(effectiveLocId);
       }
     })();
@@ -895,6 +953,7 @@ export default function BackOfficeApp() {
             padding (16px → 48px), and overrides any per-section maxWidth
             via !important so we don't have to edit 20 files individually. */}
         <WeakPasswordBanner onFix={() => setSection('security')} />
+        <OtherTabBanner key={orgCtx?.locationId || 'none'} venue={orgCtx?.locationId || null} />
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
           {section === 'security'   && <SignInSecurity orgCtx={orgCtx} />}
@@ -1079,8 +1138,9 @@ function PushToPOSButton({ nameCandidates = [] }) {
         }
         if (emptyReadStop()) return;
         // 3. Rows on this screen the database does not have: say so, and save them only on OK.
-        // Only this venue's, and modifier groups only when their own first save failed.
-        const unsaved = unsavedMenuRows(useStore.getState(), menuRead, snapshotLocationId, { failedGroupIds: unsavedGroupIds() });
+        // Only this venue's, and (27 Sep 2026) only rows whose own first save FAILED in this
+        // window, of every kind: a category or menu deleted in another window stays deleted.
+        const unsaved = unsavedMenuRows(useStore.getState(), menuRead, snapshotLocationId, { failed: failedCreateIds() });
         if (unsaved.total) {
           if (!window.confirm(unsavedWords(unsaved))) { stop('Push stopped. Nothing was sent.'); return; }
           let saved;
@@ -1088,9 +1148,14 @@ function PushToPOSButton({ nameCandidates = [] }) {
           catch (e) { saved = { ok: false, failed: [{ kind: 'save', name: 'new rows', error: e?.message || 'took too long' }] }; }
           if (!saved.ok) {
             const first = saved.failed.slice(0, 3).map(f => `${f.name || f.kind} (${f.error})`).join('; ');
-            stop(`Push stopped: ${saved.failed.length} of them could not be saved: ${first}. Nothing was sent.`);
+            const moved = saved.toTopLevel?.length ? ` ${toTopLevelWords(saved.toTopLevel)}` : '';
+            stop(`Push stopped: ${saved.failed.length} of them could not be saved: ${first}. Nothing was sent.${moved}`);
             return;
           }
+          // 27 Sep 2026: a sub category whose parent category was deleted in another window is
+          // saved at the TOP level (lib/menuWriters.js categoryParentRetry), never lost and never
+          // stopping every push; the person is told which, and where it went.
+          if (saved.toTopLevel?.length) useStore.getState().showToast?.(toTopLevelWords(saved.toTopLevel), 'warning', 12000);
           try { await waitFor(whenMenuWritesIdle(), 'menu saves'); }
           catch { stop('Push stopped: the menu is still saving. Nothing was sent. Try again.'); return; }
           menuTicket = beginMenuRead();
@@ -1197,8 +1262,10 @@ function PushToPOSButton({ nameCandidates = [] }) {
       }
 
       // The menu part: the fresh read, never this tab's memory (27 Sep 2026). Demo mode (no
-      // database) sends what the demo screen shows, as it always did.
-      const menuPart = menuRead ? menuSnapshotFromRead(menuRead) : (() => {
+      // database) sends what the demo screen shows, as it always did. Only the product fields
+      // that have NO database column (variantLabel, the pizza fields: ITEM_EXTRA_KEYS) come from
+      // this window's rows with the same id, as they always rode the push.
+      const menuPart = menuRead ? menuSnapshotFromRead(menuRead, { extrasFrom: useStore.getState().menuItems }) : (() => {
         const st = useStore.getState();
         return {
           menus: st.menus || [], menuItems: st.menuItems || [], menuCategories: st.menuCategories || [],
@@ -1242,8 +1309,11 @@ function PushToPOSButton({ nameCandidates = [] }) {
         // v5.7.33: tax profiles + the venue default ride the push so tills get them on Push to
         // POS; absent is a no-op till-side (applyConfigUpdate guards on key presence).
         ...menuPart,
-        discountPresets: useStore.getState().discountPresets || [],
-        discountRules: useStore.getState().discountRules || [],
+        // 27 Sep 2026: this venue's own presets and rules only (lib/venueTaxRates.js taggedVenueRows).
+        // Every Leeds push from 26 Sep 06:47 carried Train Station's presets and Provo's rules.
+        // Demo mode has one pretend venue and untagged rows, so it sends what it shows.
+        discountPresets: isMock ? (useStore.getState().discountPresets || []) : taggedVenueRows(useStore.getState().discountPresets || [], snapshotLocationId),
+        discountRules: isMock ? (useStore.getState().discountRules || []) : taggedVenueRows(useStore.getState().discountRules || [], snapshotLocationId),
         quickScreenIds: quickScreenIdsPush,
         // v5.5.962 Smart Quick Screen — mode (from the DB read above, omitted when
         // unknown) + best-seller lists ride the push. quickScreenAuto null is
@@ -1256,7 +1326,8 @@ function PushToPOSButton({ nameCandidates = [] }) {
         instructionGroupDefs,
         // v5.6.25 Table Bookings — packages + rules ride the push so they survive
         // a POS reload (INTEGRATION.md invariant 7). Absent/empty = no-op till-side.
-        packages: useStore.getState().packages || [],
+        // 27 Sep 2026: this venue's packages only (lib/boVenueBoot.js venueRowsOnly); Leeds pushed Provo's.
+        packages: venueRowsOnly(useStore.getState().packages || [], snapshotLocationId),
         ...(useStore.getState().bookingRules ? { bookingRules: useStore.getState().bookingRules } : {}),
       };
 

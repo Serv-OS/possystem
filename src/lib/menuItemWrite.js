@@ -98,7 +98,8 @@ const TYPE_INPUTS = ['assignedModifierGroups', 'assigned_modifier_groups', 'modi
 
 // column → the store keys that set it (`keys`), and for a derived column the keys it follows
 // (`from`). A patch key that is in no list is not a column (variantLabel, course, pizza
-// fields): nothing was ever saved for it and nothing is now.
+// fields): nothing was ever saved for it and nothing is now. The ones the tills read travel
+// in the Push to POS snapshot instead (ITEM_EXTRA_KEYS below).
 export const ITEM_COLUMNS = {
   name:                        { keys: NAME_KEYS },
   menu_name:                   { keys: NAME_KEYS },
@@ -131,6 +132,26 @@ export const ITEM_COLUMNS = {
   lock_pricing:                { keys: ['lockPricing', 'lock_pricing'] },
   locked_fields:               { keys: ['lockedFields', 'locked_fields'] },
 };
+
+// Product fields with NO menu_items column that the tills read (27 Sep 2026). They have only
+// ever reached the tills inside the Push to POS snapshot, which used to be built from the Back
+// Office's own rows. The push now sends the menu as the DATABASE holds it, which has none of
+// these, so they are carried over from this window's row with the same id: when a venue read
+// replaces the screen's rows, when Push to POS builds the snapshot, and when a push snapshot is
+// applied in Back Office (lib/venueMenuRead.js withItemExtras). Checked against the live
+// menu_items columns on 27 Sep 2026 and what the till surfaces read:
+//   variantLabel                    the size picker's heading (POS, MPOS, bar, kiosk modal)
+//   pizzaSizes, pizzaBases,         the pizza builder (ProductModal, PizzaBuilder); null means
+//   pizzaCrusts, defaultToppings    the global defaults
+//   subGroup                        the Back Office's own sort of sub items
+//   variants, modifierGroups        legacy inline sizes and option groups (ProductModal,
+//                                   ItemInfoModal, POS and MPOS "has options")
+//   hidden                          MPOS leaves the product off its menu
+// A key here must never be a column key (menuRowWrite.test.js checks it).
+export const ITEM_EXTRA_KEYS = Object.freeze([
+  'variantLabel', 'pizzaSizes', 'pizzaBases', 'pizzaCrusts', 'defaultToppings',
+  'subGroup', 'variants', 'modifierGroups', 'hidden',
+]);
 
 const isFlag = (v) => v === true || v === false;
 

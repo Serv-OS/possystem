@@ -2,8 +2,11 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { UK_DEFAULT_RATES, US_DEFAULT_RATES } from '../../lib/tax';
 import { reportSave } from '../../lib/saveHealth';
-import { useStore } from '../../store';
-import { assembleTaxProfiles, mapTaxRateRow, venueTaxRates } from '../../lib/rowMapping';
+import { useStore, loadVenueMenu } from '../../store';
+import { assembleTaxProfiles, mapTaxRateRow } from '../../lib/rowMapping';
+import { holdsOwnRates } from '../../lib/venueTaxRates';
+import { mapCopiesTaxFromMasters } from '../../lib/db';
+import { getActiveCurrencyCode } from '../../lib/currency';
 // v5.7.33: the REAL engine powers the builder's live preview. This is UI-only
 // maths on a sample item; no till or customer page computes with the engine yet.
 import { computeTax, validateProfile, lineBasisSettings, isAddedOnRateLine } from '../../lib/taxEngine';
@@ -839,6 +842,12 @@ function RateForm({ rate, onSave, onCancel }) {
 }
 
 function LegacyRatesSection() {
+  // 27 Sep 2026 (review): the no rates warning is worded for the venue's currency and stays away
+  // from a venue whose tax is set up as tax profiles.
+  const heldProfiles = useStore(st => st.taxProfiles);
+  const heldDefaultProfile = useStore(st => st.venueDefaultTaxProfileId);
+  const noRatesIsFine = (heldProfiles || []).length > 0 || !!heldDefaultProfile;
+  const ukVenue = String(getActiveCurrencyCode() || 'GBP').toUpperCase() === 'GBP';
   const [rates, setRates]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [editId, setEditId]   = useState(null);   // null | 'new' | uuid
@@ -875,8 +884,10 @@ function LegacyRatesSection() {
     // would switch the running POS to "no tax" mid-service.
     // 27 Sep 2026: only rates that belong to THIS venue count as "rates loaded". Leeds had none
     // of its own; this screen saw Train Station's (left over from the last push) and refused the
-    // true answer, and the menu strip offered Train Station's rates to Leeds products.
-    if (!fetched.length && !expectEmpty && venueTaxRates(useStore.getState().taxRates, locId).length) {
+    // true answer, hid the Seed buttons, and the menu strip offered Train Station's rates to Leeds
+    // products. A rate a till took unchecked from an old push (`unverified`) does not count either
+    // (lib/venueTaxRates.js holdsOwnRates).
+    if (!fetched.length && !expectEmpty && holdsOwnRates(useStore.getState().taxRates, locId)) {
       setLoadFailed(true);
       setError('Tax rates came back EMPTY while the till still has rates loaded — not applying them. Check your sign-in/access before seeding anything.');
       setLoading(false);
@@ -888,6 +899,26 @@ function LegacyRatesSection() {
     // 27 Sep 2026: through the one mapper, so each rate carries its venue (lib/rowMapping.js).
     useStore.setState({ taxRates: fetched.map(mapTaxRateRow) });
     setLoading(false);
+  };
+
+  // 27 Sep 2026: when this venue gains rates, every shared copy here that has none (or holds
+  // another venue's) takes its master's rate, matched by name (lib/db.js mapCopiesTaxFromMasters,
+  // each write a compare and set of the tax column only). A copy made while the venue had no
+  // rates arrived with none and nothing ever mapped it again: Leeds, Preston, Headingly and
+  // Huddersfield. The menu is then read again, so Items shows what was saved. Returns words.
+  const mapCopies = async (locId) => {
+    const r = await mapCopiesTaxFromMasters(locId);
+    if (r.mapped.length) {
+      await loadVenueMenu(locId);
+      useStore.getState().markBOChange?.();
+    }
+    if (!r.ok) reportSave('shared product tax', r.error || new Error(`${r.failed.length} shared products not updated: ${r.failed.slice(0, 3).map(f => `${f.name} (${f.error})`).join('; ')}`));
+    const parts = [];
+    if (r.mapped.length) parts.push(`${r.mapped.length} shared product${r.mapped.length === 1 ? '' : 's'} took their master's rate`);
+    if (r.unmapped.length) parts.push(`${r.unmapped.length} still have none (${r.unmapped.slice(0, 2).map(u => `${u.name}: ${u.reason}`).join('; ')}${r.unmapped.length > 2 ? '…' : ''})`);
+    if ((r.changed || []).length) parts.push(`${r.changed.length} were given a rate somewhere else meanwhile and were left as they are`);
+    if (!r.ok) parts.push(`shared products could not all be updated (${r.error?.message || `${r.failed.length} failed`})`);
+    return parts.length ? ` ${parts.join('; ')}.` : '';
   };
 
   useEffect(() => { load(); }, []);
@@ -934,8 +965,10 @@ function LegacyRatesSection() {
     }
     reportSave('tax rate', null);
     setEditId(null);
-    flash('✓ Saved');
     await load();
+    // A new rate can be the match a shared copy was waiting for (27 Sep 2026).
+    const copyWords = form.id ? '' : await mapCopies(locId).catch(e => ` Shared products were not updated (${e?.message || e}).`);
+    flash(`✓ Saved${copyWords}`);
   };
 
   const handleDelete = async (id) => {
@@ -976,9 +1009,10 @@ function LegacyRatesSection() {
       added++;
     }
     reportSave('tax rates', null);
-    setSeeding(false);
-    flash(`✓ ${defaults.length} rates added`);
     await load();
+    const copyWords = await mapCopies(locId).catch(e => ` Shared products were not updated (${e?.message || e}).`);
+    setSeeding(false);
+    flash(`✓ ${defaults.length} rates added.${copyWords}`);
   };
 
   return (
@@ -1021,6 +1055,17 @@ function LegacyRatesSection() {
           )}
         </div>
       </div>
+
+      {/* 27 Sep 2026: a venue with no rates records NO VAT on any sale. Say so, not just offer a button.
+          Not at a venue whose tax is set up as tax profiles (they charge through those), and in the
+          venue's own words: a US venue is never told to seed UK rates. */}
+      {!rates.length && !loading && !loadFailed && !noRatesIsFine && (
+        <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:13, fontWeight:700, marginBottom:12 }}>
+          {ukVenue
+            ? 'This venue has no tax rates, so its sales record no VAT. Press Seed UK rates (Standard 20% becomes the default), then check Menu, Items for products with no rate.'
+            : 'This venue has no tax rates, so its sales record no sales tax. Set up its tax profiles, or press Seed US rates, then check Menu, Items.'}
+        </div>
+      )}
 
       {/* Messages */}
       {msg   && <div style={{ padding:'10px 14px', borderRadius:8, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)', fontSize:13, marginBottom:12 }}>{msg}</div>}

@@ -12,7 +12,9 @@ import assert from 'node:assert/strict';
 import {
   readVenueMenu, readAllRows, mergeReadRows, menuPatchFromRead, unsavedMenuRows, unsavedWords,
   menuSnapshotFromRead, parentsFirst, emptyItemsReadSuspect, venueItemCount, suspectReadWords,
+  withItemExtras, readIdsOf,
 } from './venueMenuRead.js';
+import { ITEM_EXTRA_KEYS } from './menuItemWrite.js';
 import { mapTaxRateRow, venueTaxRates, mapMenuItemRow, mapModifierGroupRow, srvTimeOf, srvNewer } from './rowMapping.js';
 import { insertModifierGroupOnce } from './modifierGroupWrite.js';
 import { fakeMenuDb } from './fixtures/fakeMenuDb.js';
@@ -94,6 +96,30 @@ test('an empty tax read CLEARS the rates: never "keep the last venue\'s"', () =>
   assert.ok(!('taxRates' in menuPatchFromRead(state, { ok: false, taxRates: null })));
 });
 
+test('a FAILED tax read keeps this venue\'s rates and never another venue\'s (27 Sep 2026, the tax root cause port)', () => {
+  const leeds = mapTaxRateRow({ id: '6368f6fb', location_id: LEEDS, name: 'Standard 20%', rate: '0.2', active: true });
+  const ts = mapTaxRateRow({ id: '6a159b5e', location_id: TRAIN_STATION, name: 'Standard 20%', rate: '0.2', active: true });
+  const untagged = { id: 'old', name: 'from an old push', rate: 0.2 };
+  const patch = menuPatchFromRead({ taxRates: [leeds, ts, untagged] }, { ok: false, taxRates: null }, { locationId: LEEDS });
+  assert.deepEqual(patch.taxRates.map((r) => r.id), ['6368f6fb'], 'Train Station\'s rate, and one nobody can place, go');
+  assert.ok(!('taxRates' in menuPatchFromRead({ taxRates: [leeds] }, { ok: false, taxRates: null }, { locationId: LEEDS })), 'only this venue\'s: nothing to change');
+});
+
+test('the snapshot carries only the read venue\'s rates, and a rate a till took unchecked is never offered', async () => {
+  const db = fakeMenuDb(venue());
+  const read = await readVenueMenu(db, LEEDS);
+  assert.equal(read.locationId, LEEDS, 'the read knows its venue');
+  // A row of another venue in the answer (never expected: the query is by venue) is not sent.
+  const polluted = { ...read, taxRates: [...read.taxRates, mapTaxRateRow({ id: '6a159b5e', location_id: TRAIN_STATION, rate: '0.2' })] };
+  assert.deepEqual(menuSnapshotFromRead(polluted).taxRates.map((t) => t.id), ['6368f6fb']);
+  assert.equal(menuSnapshotFromRead({ ...read, locationId: null }).taxRates.length, 1, 'a read with no venue (demo) sends what it read');
+  const rates = [
+    mapTaxRateRow({ id: 'l20', location_id: LEEDS, rate: '0.2' }),
+    { ...mapTaxRateRow({ id: 'ts20', location_id: LEEDS, rate: '0.2' }), unverified: true },
+  ];
+  assert.deepEqual(venueTaxRates(rates, LEEDS).map((r) => r.id), ['l20'], 'lib/venueTaxRates.js ratesFromSnapshot marks those unverified');
+});
+
 test('the read wins on screen, except rows with a save of this tab on its way, and archived rows the Archived view loaded', () => {
   const local = [
     { id: 'a', name: 'mine', srvAt: 'x' },
@@ -112,7 +138,7 @@ test('the read wins on screen, except rows with a save of this tab on its way, a
   assert.equal(patch.menuReadLocationId, 'L');
 });
 
-test('rows on this screen the database lacks are listed, never mistaken for archived ones', async () => {
+test('rows made here whose first save failed are listed, never mistaken for archived ones', async () => {
   const db = fakeMenuDb(venue());
   const read = await readVenueMenu(db, LEEDS);
   const store = {
@@ -125,7 +151,10 @@ test('rows on this screen the database lacks are listed, never mistaken for arch
       { id: 'm-gone', name: 'Old', archived: true },                                  // archived here: nothing to sell
     ],
   };
-  const u = unsavedMenuRows(store, read);
+  // 27 Sep 2026: only rows whose first save FAILED in this window are offered (the writers'
+  // failedCreateIds). The archived product's id is "failed" here too, and is still never offered.
+  const failed = { menus: ['menu-new'], categories: new Set(['cat-new']), items: new Set(['m-1790517373916', 'm-1790002933030_5c26956b', 'm-gone']) };
+  const u = unsavedMenuRows(store, read, null, { failed });
   assert.deepEqual(u.menuItems.map((i) => i.id), ['m-1790517373916']);
   assert.deepEqual(u.menuCategories.map((c) => c.id), ['cat-new']);
   assert.deepEqual(u.menus.map((m) => m.id), ['menu-new']);
@@ -133,7 +162,11 @@ test('rows on this screen the database lacks are listed, never mistaken for arch
   const words = unsavedWords(u);
   assert.match(words, /1 product \(Milk\)/);
   assert.match(words, /1 category \(Cold drinks\)/);
+  assert.match(words, /their first save FAILED/);
   assert.match(words, /Cancel stops the push: nothing is sent/);
+  // Without a failed first save nothing is offered: a row on screen that the read lacks was
+  // deleted in another window, and must stay deleted.
+  assert.equal(unsavedMenuRows(store, read).total, 0);
   // A row that says it belongs to another venue (left in memory from an old push) is never
   // offered: saving it would copy another venue's product into this one. 27 Sep 2026 (review
   // round 3): nor is one that does not say; rows made in this tab carry their venue from birth.
@@ -144,8 +177,9 @@ test('rows on this screen the database lacks are listed, never mistaken for arch
       { id: 'm-ts-flat-white', name: 'Flat white', location_id: TRAIN_STATION },
     ],
   };
-  assert.deepEqual(unsavedMenuRows(mixed, read, LEEDS).menuItems.map((i) => i.id), ['m-1790517373916']);
-  assert.deepEqual(unsavedMenuRows(store, read, LEEDS).menuItems, [], 'a row with no venue is not offered to a venue');
+  const failedTs = { ...failed, items: new Set([...failed.items, 'm-ts-flat-white']) };
+  assert.deepEqual(unsavedMenuRows(mixed, read, LEEDS, { failed: failedTs }).menuItems.map((i) => i.id), ['m-1790517373916']);
+  assert.deepEqual(unsavedMenuRows(store, read, LEEDS, { failed }).menuItems, [], 'a row with no venue is not offered to a venue');
 });
 
 test('the tills\' snapshot is the read: live products with their database time, this venue\'s rates', async () => {
@@ -247,12 +281,20 @@ test('a venue switch: rows kept for a save on its way never follow the person in
   assert.equal(patch.menuReadLocationId, LEEDS);
 });
 
-test('Push to POS offers only this venue\'s rows, and modifier groups only when their own first save failed', async () => {
+test('Push to POS offers only this venue\'s rows, and only rows whose own first save failed, of every kind', async () => {
   const read = await readVenueMenu(fakeMenuDb(venue()), LEEDS);
   const store = {
-    menus: [{ id: 'menu-ts-new', name: 'TS brunch', location_id: TRAIN_STATION }, { id: 'menu-new', name: 'Brunch', location_id: LEEDS }],
-    menuCategories: [{ id: 'cat-ts-new', label: 'TS cold', location_id: TRAIN_STATION }, { id: 'cat-new', label: 'Cold drinks', location_id: LEEDS }],
-    menuItems: [],
+    menus: [
+      { id: 'menu-ts-new', name: 'TS brunch', location_id: TRAIN_STATION },
+      { id: 'menu-new', name: 'Brunch', location_id: LEEDS },
+      { id: 'menu-deleted', name: 'Deleted elsewhere', location_id: LEEDS },            // not in the read, never failed here
+    ],
+    menuCategories: [
+      { id: 'cat-ts-new', label: 'TS cold', location_id: TRAIN_STATION },
+      { id: 'cat-new', label: 'Cold drinks', location_id: LEEDS },
+      { id: 'cat-deleted', label: 'Deleted elsewhere', location_id: LEEDS },              // not in the read, never failed here
+    ],
+    menuItems: [{ id: 'm-deleted', name: 'Gone', location_id: LEEDS }],                   // not in the read, never failed here
     modifierGroupDefs: [
       mapModifierGroupRow({ id: 'mgd-milk', location_id: LEEDS, name: 'Milk' }),        // in the database
       { id: 'mgd-syrups', name: 'Syrups', location_id: LEEDS },                         // first save failed
@@ -260,14 +302,19 @@ test('Push to POS offers only this venue\'s rows, and modifier groups only when 
       { id: 'mgd-ts', name: 'TS sauces', location_id: TRAIN_STATION },                  // another venue's
     ],
   };
-  const failedGroupIds = new Set(['mgd-syrups', 'mgd-ts']);
-  const u = unsavedMenuRows(store, read, LEEDS, { failedGroupIds });
-  assert.deepEqual(u.menus.map((m) => m.id), ['menu-new']);
-  assert.deepEqual(u.menuCategories.map((c) => c.id), ['cat-new']);
-  assert.deepEqual(u.modifierGroupDefs.map((g) => g.id), ['mgd-syrups'], 'a group deleted in another window never comes back');
+  const failed = {
+    groups: new Set(['mgd-syrups', 'mgd-ts']), menus: new Set(['menu-new', 'menu-ts-new']), categories: new Set(['cat-new', 'cat-ts-new']),
+  };
+  const u = unsavedMenuRows(store, read, LEEDS, { failed });
+  assert.deepEqual(u.menus.map((m) => m.id), ['menu-new'], 'a menu deleted in another window never comes back');
+  assert.deepEqual(u.menuCategories.map((c) => c.id), ['cat-new'], 'nor a category');
+  assert.deepEqual(u.menuItems, [], 'nor a product');
+  assert.deepEqual(u.modifierGroupDefs.map((g) => g.id), ['mgd-syrups'], 'nor a group');
   assert.equal(u.total, 3);
   assert.match(unsavedWords(u), /1 modifier group \(Syrups\)/);
-  assert.deepEqual(unsavedMenuRows(store, read, LEEDS).modifierGroupDefs, [], 'no failed first saves: no groups offered');
+  assert.equal(unsavedMenuRows(store, read, LEEDS).total, 0, 'no failed first saves: nothing offered');
+  // A failed id the read DOES have (its insert landed after all) is not offered.
+  assert.deepEqual(unsavedMenuRows(store, read, LEEDS, { failed: { groups: ['mgd-milk'] } }).modifierGroupDefs, []);
 });
 
 test('a modifier group whose first save failed is saved insert only, before and after the migration', async () => {
@@ -299,4 +346,68 @@ test('a modifier group whose first save failed is saved insert only, before and 
   const wrong = await insertModifierGroupOnce({ client: db, locationId: TRAIN_STATION, group: { ...group, id: 'mgd-x' } });
   assert.equal(wrong.ok, false);
   assert.equal(db.row('modifier_groups', 'mgd-x'), undefined);
+});
+
+// ── Review round 4 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+test('the product fields with no database column survive a reload and ride Push to POS, from this window', async () => {
+  const read = await readVenueMenu(fakeMenuDb(venue()), LEEDS);
+  const latte = read.menuItems.find((i) => i.id === 'm-latte');
+  assert.equal(latte.variantLabel, undefined, 'the database has no such column');
+  const pizza = { pizzaSizes: [{ id: 'sz-10', name: '10 inch', basePrice: 9 }], pizzaBases: ['tomato'], pizzaCrusts: null, defaultToppings: ['pep'] };
+  const onScreen = [{ ...latte, variantLabel: 'Serving', subGroup: 'Milks', ...pizza, pricing: { base: 9.99 } }];
+  // A reload: the read wins for every column, the extras stay (null included: "use the defaults").
+  const patch = menuPatchFromRead({ menuItems: onScreen }, read, { locationId: LEEDS });
+  const shown = patch.menuItems.find((i) => i.id === 'm-latte');
+  assert.equal(shown.variantLabel, 'Serving');
+  assert.equal(shown.subGroup, 'Milks');
+  assert.deepEqual([shown.pizzaSizes, shown.pizzaBases, shown.pizzaCrusts, shown.defaultToppings], [pizza.pizzaSizes, ['tomato'], null, ['pep']]);
+  assert.equal(shown.pricing.base, 3.1, 'every column is the database\'s');
+  assert.equal(shown.srvAt, T0);
+  // Push to POS: the snapshot is the read, plus the extras from this window's row.
+  const snap = menuSnapshotFromRead(read, { extrasFrom: onScreen });
+  const sent = snap.menuItems.find((i) => i.id === 'm-latte');
+  assert.equal(sent.variantLabel, 'Serving');
+  assert.deepEqual(sent.pizzaSizes, pizza.pizzaSizes);
+  assert.equal(sent.pricing.base, 3.1, 'never this window\'s price');
+  assert.equal(menuSnapshotFromRead(read).menuItems.find((i) => i.id === 'm-latte').variantLabel, undefined, 'nothing to carry: the read as it is');
+  assert.equal(menuSnapshotFromRead(read, { extrasFrom: [] }).menuItems, read.menuItems);
+});
+
+test('withItemExtras copies only the extra keys, only where the row lacks them, and only by id', () => {
+  const rows = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B', variantLabel: 'Size' }, { id: 'c', name: 'C' }];
+  const from = [
+    { id: 'a', name: 'old A', variantLabel: 'Serving', archived: true, taxRateId: 'r-old', hidden: true },
+    { id: 'b', variantLabel: 'Cut' },
+    { id: 'z', variantLabel: 'Other' },
+  ];
+  const out = withItemExtras(rows, from);
+  assert.deepEqual(out, [{ id: 'a', name: 'A', variantLabel: 'Serving', hidden: true }, { id: 'b', name: 'B', variantLabel: 'Size' }, { id: 'c', name: 'C' }]);
+  assert.equal(out[2], rows[2], 'untouched rows stay the same object');
+  assert.equal(withItemExtras(rows, [{ id: 'c', name: 'x' }]), rows, 'nothing copied: the same list');
+  assert.equal(withItemExtras(rows, null), rows);
+  // Never a column: the extras and the column keys do not overlap (menuRowWrite.test.js checks
+  // it against ITEM_COLUMNS too).
+  for (const k of ['archived', 'taxRateId', 'pricing', 'menuName', 'cat']) assert.ok(!ITEM_EXTRA_KEYS.includes(k), k);
+});
+
+test('readIdsOf: the ids a read found, per kind, or null when that part failed', async () => {
+  const read = await readVenueMenu(fakeMenuDb(venue()), LEEDS);
+  assert.ok(readIdsOf(read, 'items').has('m-1790002933030_5c26956b'), 'products: every id, archived included');
+  assert.deepEqual([...readIdsOf(read, 'categories')], ['cat-hot']);
+  assert.deepEqual([...readIdsOf(read, 'menus')], ['menu-main']);
+  assert.deepEqual([...readIdsOf(read, 'groups')], ['mgd-milk']);
+  assert.equal(readIdsOf({ ok: false, menuCategories: null }, 'categories'), null);
+  assert.equal(readIdsOf(null, 'menus'), null);
+  assert.deepEqual([...readIdsOf({ menuItems: [{ id: 'x' }] }, 'items')], ['x']);
+});
+
+test('a modifier group\'s first save that never answers is a failed save, never a hung push', async () => {
+  const db = fakeMenuDb(venue());
+  db.hooks.beforeWrite = () => new Promise(() => {});
+  const group = { id: 'mgd-syrups', name: 'Syrups', options: [], location_id: LEEDS };
+  const r = await insertModifierGroupOnce({ client: db, locationId: LEEDS, group, ms: 20 });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'error');
+  assert.equal(r.error?.name, 'TimeoutError');
 });

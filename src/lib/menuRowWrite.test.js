@@ -10,8 +10,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { columnsForPatch, columnsForEdit, menuItemRow, columnConflicts, sameValue, categoryRow, columnsForCategoryPatch, columnsForMenuPatch } from './menuItemWrite.js';
-import { writeRowChecked, insertRowOnce, createRowQueue, deleteRowChecked, updateScopeChecked, sameTime, srvMicrosOf } from './menuRowWrite.js';
+import { columnsForPatch, columnsForEdit, menuItemRow, columnConflicts, sameValue, categoryRow, columnsForCategoryPatch, columnsForMenuPatch, ITEM_COLUMNS, ITEM_EXTRA_KEYS } from './menuItemWrite.js';
+import { writeRowChecked, insertRowOnce, createRowQueue, deleteRowChecked, updateScopeChecked, sameTime, srvMicrosOf, writeWithin, MENU_WAIT_MS } from './menuRowWrite.js';
 import { mapMenuItemRow } from './rowMapping.js';
 import { fakeMenuDb } from './fixtures/fakeMenuDb.js';
 
@@ -353,4 +353,37 @@ test('a sharing change is scoped to the venue and checked: applied, already, ref
   const r4 = await updateScopeChecked({ client: db, table: 'menu_items', id: BABYCCINO, locationId: 'another-venue', patch, want });
   assert.deepEqual([r4.ok, r4.outcome], [false, 'gone']);
   assert.equal((await updateScopeChecked({ client: db, table: 'menu_items', id: BABYCCINO, locationId: 'loc-demo', patch })).ok, false);
+});
+
+// ── Review round 4 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+test('a menu write has a time limit: out of time is a failed save, in time is the write\'s own answer', async () => {
+  assert.equal(MENU_WAIT_MS, 15000);
+  const late = await writeWithin(new Promise(() => {}), 'saving menu_items m-latte', 20);
+  assert.deepEqual([late.ok, late.outcome, late.error?.name], [false, 'error', 'TimeoutError']);
+  assert.match(late.error.message, /saving menu_items m-latte timed out after 20 ms/);
+  const answer = { ok: true, outcome: 'applied', row: { id: 'x' } };
+  assert.equal(await writeWithin(Promise.resolve(answer), 'x', 20), answer);
+  const thrown = await writeWithin(Promise.reject(new Error('socket')), 'x', 20);
+  assert.deepEqual([thrown.ok, thrown.outcome, thrown.error.message], [false, 'error', 'socket']);
+  // A write that never answers, through the real writer: the row queue is not held.
+  const db = fakeMenuDb({ menu_items: [dbRow()] });
+  db.hooks.beforeWrite = () => new Promise(() => {});
+  const r = await writeWithin(writeRowChecked({ client: db, table: 'menu_items', id: BABYCCINO, locationId: LOC, srvAt: dbRow().updated_at, cols: { archived: true }, base: { archived: false } }), 'saving', 20);
+  assert.equal(r.outcome, 'error');
+});
+
+test('the product fields with no column are never column keys (they ride the push, not a save)', () => {
+  // (A `from` key such as the legacy modifierGroups may be an extra: it only makes an edit look
+  // at a derived column, it is never written itself.)
+  const columnKeys = new Set();
+  for (const [col, spec] of Object.entries(ITEM_COLUMNS)) {
+    columnKeys.add(col);
+    for (const k of spec.keys || []) columnKeys.add(k);
+  }
+  for (const k of ITEM_EXTRA_KEYS) assert.ok(!columnKeys.has(k), `${k} is not a menu_items column`);
+  for (const k of ['variantLabel', 'pizzaSizes', 'pizzaBases', 'pizzaCrusts', 'defaultToppings']) assert.ok(ITEM_EXTRA_KEYS.includes(k), k);
+  // An edit of one writes nothing (there is no column to write).
+  assert.deepEqual(columnsForPatch({ variantLabel: 'Serving' }, edit(storeRow(), { variantLabel: 'Serving' }), storeRow()), {});
+  assert.ok(!('variantLabel' in menuItemRow(edit(storeRow(), { variantLabel: 'Serving' }))));
 });

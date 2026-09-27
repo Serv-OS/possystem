@@ -12,13 +12,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createMenuWriters, changedElsewhereMessage, categoryMenuLinkRetry, categoryInsertRetry,
   runItemEditWrites, putBackFollowers, itemSaveLanded,
+  categoryParentRetry, isMissingParentRow, toTopLevelWords,
 } from './menuWriters.js';
-import { readVenueMenu, menuPatchFromRead, menuSnapshotFromRead, unsavedMenuRows } from './venueMenuRead.js';
+import { readVenueMenu, menuPatchFromRead, menuSnapshotFromRead, unsavedMenuRows, readIdsOf } from './venueMenuRead.js';
 import { runBulkEdits, bulkSummaryWords } from './menuBulk.js';
 import { insertRowOnce } from './menuRowWrite.js';
+import { categoryRow } from './menuItemWrite.js';
 import { fakeMenuDb } from './fixtures/fakeMenuDb.js';
 import { categoryFormOf, categoryFormPatch } from './categoryForm.js';
 
@@ -57,28 +60,47 @@ const leeds = () => ({
 const SLICE = { items: 'menuItems', categories: 'menuCategories', menus: 'menus' };
 
 // One Back Office tab: a plain store and the real writers, wired the way store/index.js wires them.
-function backOfficeTab(db) {
+// opts.client: the client the WRITES go through (reads use db); opts.timeoutMs: each write's time
+// limit; opts.chain: the categories and menus serial chain (store runInMenuWriteQueue).
+function backOfficeTab(db, { client = db, timeoutMs = undefined, chain = null } = {}) {
   const state = { menuItems: [], menuCategories: [], menus: [], modifierGroupDefs: [], taxRates: [] };
   const toasts = [];
   const reports = [];
   const writers = createMenuWriters({
-    getClient: () => db,
+    getClient: () => client,
     resolveLocation: async () => LOC,
     getRow: (kind, id) => state[SLICE[kind]].find((r) => r.id === id),
     updateRow: (kind, id, fn) => { const k = SLICE[kind]; state[k] = state[k].map((r) => (r.id === id ? fn(r) : r)); },
     reportSave: (entity, err) => reports.push({ entity, err }),
     toast: (msg, type) => toasts.push({ msg, type }),
     wait: async () => {},
+    chain,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  });
+  const failed = () => ({
+    items: writers.items.failedCreateIds(), categories: writers.categories.failedCreateIds(), menus: writers.menus.failedCreateIds(),
   });
   return {
     state, toasts, reports, writers,
+    // store applyVenueMenuRead: rows with a save on its way, landed since the read began, or
+    // whose first save FAILED here stay; a failed one the read has is no longer offered.
     async load() {
       const mark = writers.mark();
       const read = await readVenueMenu(db, LOC);
       assert.ok(read.ok, `read failed: ${read.failed}`);
-      const keep = new Set([...writers.items.pendingIds(), ...writers.items.landedSince(mark)]);
-      Object.assign(state, menuPatchFromRead(state, read, { keep: { items: keep }, locationId: LOC }));
+      const keep = {};
+      for (const kind of ['items', 'categories', 'menus']) {
+        const inRead = readIdsOf(read, kind);
+        for (const id of writers[kind].failedCreateIds()) if (inRead.has(id)) writers[kind].forgetCreate(id);
+        keep[kind] = new Set([...writers[kind].pendingIds(), ...writers[kind].landedSince(mark), ...writers[kind].failedCreateIds()]);
+      }
+      Object.assign(state, menuPatchFromRead(state, read, { keep, locationId: LOC }));
       return read;
+    },
+    // What Push to POS would offer to save now (BackOfficeApp handlePush, step 3).
+    async offered() {
+      await Promise.all([writers.items.whenIdle(), writers.categories.whenIdle(), writers.menus.whenIdle()]);
+      return unsavedMenuRows(state, await readVenueMenu(db, LOC), LOC, { failed: failed() });
     },
     // store updateMenuItem, reduced to what matters here: show the edit, save only the patch.
     edit(id, patch, opts = {}) {
@@ -138,7 +160,7 @@ function backOfficeTab(db) {
       await writers.items.whenIdle();
       const read = await readVenueMenu(db, LOC);
       assert.ok(read.ok);
-      const unsaved = unsavedMenuRows(state, read);
+      const unsaved = unsavedMenuRows(state, read, LOC, { failed: failed() });
       assert.equal(unsaved.total, 0, 'nothing on this screen is missing from the database');
       Object.assign(state, menuPatchFromRead(state, read, { locationId: LOC }));
       return menuSnapshotFromRead(read);
@@ -493,4 +515,304 @@ test('a row made at one venue is never inserted at another (a venue switch while
   const ok = await writers.items.create('m-new', { name: 'Milk', menu_name: 'Milk', pricing: { base: 1 } }, { locationId: OTHER });
   assert.equal(ok.outcome, 'created');
   assert.equal(db.row('menu_items', 'm-new').location_id, OTHER);
+});
+
+// ── Review round 4 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+// Writes through this client fail (a network error) while `failing.on` is true.
+const flakyClient = (db, failing) => ({
+  from: (t) => {
+    const q = db.from(t);
+    const upsert = q.upsert.bind(q);
+    const update = q.update.bind(q);
+    q.upsert = (rows, o) => (failing.on ? { select: async () => ({ data: null, error: { message: 'Failed to fetch' } }) } : upsert(rows, o));
+    q.update = (patch) => (failing.on ? { eq() { return this; }, is() { return this; }, select: async () => ({ data: null, error: { message: 'Failed to fetch' } }) } : update(patch));
+    return q;
+  },
+});
+
+test('Push to POS never offers back a category or menu deleted in another window; only a first save that FAILED here', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  const failing = { on: false };
+  const A = backOfficeTab(db, { client: flakyClient(db, failing) });
+  await A.load();
+  // Another window deletes the category and the menu. A still shows both.
+  await db.from('menu_categories').delete().eq('id', 'cat-hot').eq('location_id', LOC).select('id');
+  await db.from('menus').delete().eq('id', 'menu-main').eq('location_id', LOC).select('id');
+  assert.ok(A.state.menuCategories.some((c) => c.id === 'cat-hot'), 'A is stale');
+  let u = await A.offered();
+  assert.equal(u.total, 0, 'a row deleted elsewhere is not "unsaved": it stays deleted');
+
+  // A makes a menu and a category, and both first saves fail.
+  failing.on = true;
+  A.state.menus.push({ id: 'menu-brunch', name: 'Brunch', location_id: LOC });
+  A.state.menuCategories.push({ id: 'cat-cold', label: 'Cold drinks', location_id: LOC });
+  A.state.menuItems.push({ id: 'm-milk', menuName: 'Milk', name: 'Milk', location_id: LOC });
+  assert.equal((await A.writers.menus.create('menu-brunch', { name: 'Brunch' }, { locationId: LOC })).outcome, 'error');
+  assert.equal((await A.writers.categories.create('cat-cold', { label: 'Cold drinks' }, { locationId: LOC })).outcome, 'error');
+  assert.equal((await A.writers.items.create('m-milk', { name: 'Milk', menu_name: 'Milk', pricing: { base: 1 } }, { locationId: LOC })).outcome, 'error');
+  assert.deepEqual([...A.writers.categories.failedCreateIds()], ['cat-cold']);
+  failing.on = false;
+
+  // A reload keeps them on screen (the read cannot have them) and drops the deleted ones.
+  await A.load();
+  assert.deepEqual(A.state.menuCategories.map((c) => c.id), ['cat-cold']);
+  assert.deepEqual(A.state.menus.map((m) => m.id), ['menu-brunch']);
+  assert.ok(A.state.menuItems.some((i) => i.id === 'm-milk'), 'a product whose first save failed survives a reload');
+
+  // Push to POS offers exactly those three.
+  u = await A.offered();
+  assert.deepEqual([u.menus.map((m) => m.id), u.menuCategories.map((c) => c.id), u.menuItems.map((i) => i.id)], [['menu-brunch'], ['cat-cold'], ['m-milk']]);
+
+  // Saved insert only: created, so no longer offered.
+  assert.equal((await A.writers.categories.create('cat-cold', { label: 'Cold drinks' }, { locationId: LOC })).outcome, 'created');
+  assert.deepEqual([...A.writers.categories.failedCreateIds()], []);
+  // Deleted here before it was ever saved: not offered either.
+  A.writers.menus.forgetCreate('menu-brunch');
+  // An insert that "failed" but landed after all (it answered too late): the next read has it,
+  // so it is no longer offered and the screen takes the database's row.
+  await db.from('menu_items').upsert({ id: 'm-milk', location_id: LOC, name: 'Milk', menu_name: 'Milk', archived: false, sort_order: 9 }, { onConflict: 'id', ignoreDuplicates: true }).select('*');
+  await A.load();
+  assert.deepEqual([...A.writers.items.failedCreateIds()], []);
+  assert.ok(A.state.menuItems.find((i) => i.id === 'm-milk').srvAt, 'the database copy, with its time');
+  u = await A.offered();
+  assert.equal(u.total, 0);
+  // An insert that finds the row there ('exists') clears it too.
+  failing.on = true;
+  await A.writers.items.create('m-latte-2', { name: 'Latte 2' }, { locationId: LOC });
+  failing.on = false;
+  assert.ok(A.writers.items.failedCreateIds().has('m-latte-2'));
+  await db.from('menu_items').upsert({ id: 'm-latte-2', location_id: LOC, name: 'Latte 2', archived: false }, { onConflict: 'id', ignoreDuplicates: true }).select('*');
+  assert.equal((await A.writers.items.create('m-latte-2', { name: 'Latte 2' }, { locationId: LOC })).outcome, 'exists');
+  assert.ok(!A.writers.items.failedCreateIds().has('m-latte-2'));
+});
+
+test('a write that never answers is a failed save with a time limit, and the queue behind it moves on', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  const A = backOfficeTab(db, { timeoutMs: 25 });
+  await A.load();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let held = 0;
+  db.hooks.beforeWrite = async (table, op) => { if (table === 'menu_items' && op === 'update' && held++ === 0) await gate; };
+  const r = await A.edit(LATTE, { pricing: { base: 3.4 }, price: 3.4 });
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, 'error');
+  assert.equal(r.error?.name, 'TimeoutError');
+  assert.ok(A.reports.some((x) => x.entity === 'item' && x.err?.name === 'TimeoutError'), 'the red bar says it failed');
+  await A.writers.items.whenIdle();   // never hangs: the queue moved on
+  // The next save of the same row goes out.
+  assert.equal((await A.edit(LATTE, { allergens: ['milk'] })).outcome, 'applied');
+  assert.deepEqual(db.row('menu_items', LATTE).allergens, ['milk']);
+  // The first write lands late: compare and set, so it carries only the price the person set,
+  // over the row as it is now. Nothing else is put back.
+  release();
+  await new Promise((res) => setTimeout(res, 10));
+  const row = db.row('menu_items', LATTE);
+  assert.deepEqual([row.pricing.base, row.allergens], [3.4, ['milk']]);
+  db.hooks.beforeWrite = null;
+  // The next edit re-reads (its token is out of date) and saves.
+  assert.ok(['applied', 'merged'].includes((await A.edit(LATTE, { tags: ['hot'] })).outcome));
+  assert.deepEqual(db.row('menu_items', LATTE).allergens, ['milk']);
+});
+
+test('a hung first save in the categories and menus chain holds nothing behind it past the time limit', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  let chainP = Promise.resolve();
+  const chain = (fn) => { const run = chainP.then(fn); chainP = run.catch(() => {}); return run; };
+  const A = backOfficeTab(db, { timeoutMs: 25, chain });
+  await A.load();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  db.hooks.beforeWrite = async (table, op) => { if (table === 'menu_categories' && op === 'upsert') await gate; };
+  A.state.menuCategories.push({ id: 'cat-cold', label: 'Cold drinks', location_id: LOC });
+  const created = A.writers.categories.create('cat-cold', { label: 'Cold drinks' }, { locationId: LOC });
+  // A menu edit queued behind it in the chain.
+  const edited = A.writers.menus.edit('menu-main', { name: 'All day' }, A.state.menus[0], { ...A.state.menus[0], name: 'All day' });
+  assert.equal((await created).outcome, 'error');
+  assert.equal((await edited).outcome, 'applied', 'the chain moved on');
+  assert.equal(db.row('menus', 'menu-main').name, 'All day');
+  assert.ok(A.writers.categories.failedCreateIds().has('cat-cold'), 'offered by the next Push to POS');
+  await chain(() => null);   // the chain is free (whenMenuWritesIdle waits on this)
+  release();
+  await new Promise((res) => setTimeout(res, 10));
+  assert.equal(db.row('menu_categories', 'cat-cold').label, 'Cold drinks', 'landed late, insert only');
+  await A.load();
+  assert.ok(!A.writers.categories.failedCreateIds().has('cat-cold'), 'the read has it: no longer offered');
+});
+
+// ── The tab's own venue (27 Sep 2026) ───────────────────────────────────────────────────────
+// rpos-bo-location is ONE key for every tab of the browser. A Back Office tab on Leeds while
+// another tab switched to Train Station used to insert its new products at Train Station and
+// have its edits refused ("belongs to venue ..."). The venue function below is the REAL code:
+// the store's tabVenue and venueAtBirth lines, over lib/supabase.js getActiveLocationSync and
+// getResolvedLocationIdSync, evaluated with a fake localStorage.
+const TRAIN_STATION = '3f915972-7107-4f70-9b3d-de80ba9ab0c2';
+const srcOf = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+const cutSrc = (s, a, b) => {
+  const i = s.indexOf(a);
+  assert.ok(i >= 0, `found ${a}`);
+  const j = s.indexOf(b, i + a.length);
+  assert.ok(j > i, `found the end of ${a}`);
+  return s.slice(i, j + b.length).replace(/^export /, '');
+};
+function realVenueFns({ backOffice, resolved, storage }) {
+  const supa = srcOf('./supabase.js');
+  const store = srcOf('../store/index.js');
+  const body = [
+    cutSrc(supa, 'export function getActiveLocationSync() {', '\n}\n'),
+    cutSrc(supa, 'export const getResolvedLocationIdSync = ', ';\n'),
+    cutSrc(store, 'export const tabVenue = ', ';\n'),
+    cutSrc(store, 'const venueAtBirth = () => {', '\n};\n'),
+    'return { getActiveLocationSync, tabVenue, venueAtBirth };',
+  ].join('\n');
+  return new Function('localStorage', 'isBackOfficeMode', '_resolvedLocationId', body)(storage, () => backOffice, resolved);
+}
+const browserStorage = (values) => ({ getItem: (k) => (k in values ? values[k] : null) });
+
+test('a Back Office tab whose own venue is Leeds writes to Leeds while localStorage says Train Station', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  // Another Back Office tab of this browser switched to Train Station: the shared key says so.
+  const storage = browserStorage({ 'rpos-bo-location': JSON.stringify(TRAIN_STATION) });
+  const venue = realVenueFns({ backOffice: true, resolved: LOC, storage });
+  assert.equal(venue.getActiveLocationSync(), TRAIN_STATION, 'the shared key names the other venue');
+  assert.equal(venue.tabVenue(), LOC, 'this tab keeps the venue it resolved');
+  assert.deepEqual(venue.venueAtBirth(), { location_id: LOC }, 'a row made here is born at Leeds');
+
+  const state = { menuItems: [], menuCategories: [], menus: [] };
+  const wire = (resolveLocation) => createMenuWriters({
+    getClient: () => db,
+    resolveLocation,
+    getRow: (kind, id) => state[SLICE[kind]].find((r) => r.id === id),
+    updateRow: (kind, id, fn) => { const k = SLICE[kind]; state[k] = state[k].map((r) => (r.id === id ? fn(r) : r)); },
+    wait: async () => {},
+  });
+  // store/index.js: resolveLocation: async () => tabVenue() || await getLocationId()
+  const writers = wire(async () => venue.tabVenue());
+  Object.assign(state, menuPatchFromRead(state, await readVenueMenu(db, LOC), { locationId: LOC }));
+
+  const milk = { id: 'm-milk', name: 'Milk', menu_name: 'Milk', pricing: { base: 1 }, ...venue.venueAtBirth() };
+  state.menuItems.push(milk);
+  const made = await writers.items.create(milk.id, { name: 'Milk', menu_name: 'Milk', pricing: { base: 1 } }, { locationId: milk.location_id });
+  assert.equal(made.outcome, 'created');
+  assert.equal(db.row('menu_items', 'm-milk').location_id, LOC, 'inserted at Leeds, never at Train Station');
+
+  const latte = state.menuItems.find((i) => i.id === LATTE);
+  const next = { ...latte, pricing: { base: 3.5 } };
+  state.menuItems = state.menuItems.map((i) => (i.id === LATTE ? next : i));
+  assert.equal((await writers.items.edit(LATTE, { pricing: { base: 3.5 } }, latte, next)).outcome, 'applied', 'an edit of a Leeds row saves');
+  assert.equal(db.row('menu_items', LATTE).pricing.base, 3.5);
+
+  // The old wiring, for the record: the shared key sent this tab's edit to Train Station, where
+  // the row does not belong, so it was refused.
+  const before = await wire(async () => venue.getActiveLocationSync()).items.edit(LATTE, { pricing: { base: 3.9 } }, next, { ...next, pricing: { base: 3.9 } });
+  assert.equal(before.outcome, 'error');
+  assert.match(String(before.error?.message), /belongs to venue/);
+  assert.equal(db.row('menu_items', LATTE).pricing.base, 3.5);
+});
+
+test('tills keep their paired venue; a Back Office tab not yet resolved uses the shared key as before', () => {
+  const storage = browserStorage({
+    'rpos-bo-location': JSON.stringify(TRAIN_STATION),
+    'rpos-device': JSON.stringify({ locationId: LOC }),
+  });
+  const till = realVenueFns({ backOffice: false, resolved: TRAIN_STATION, storage });
+  assert.equal(till.tabVenue(), LOC, 'a till: its paired venue (getActiveLocationSync), the Back Office key ignored');
+  assert.equal(till.tabVenue(), till.getActiveLocationSync());
+  const early = realVenueFns({ backOffice: true, resolved: null, storage });
+  assert.equal(early.tabVenue(), TRAIN_STATION, 'before this tab resolved a venue: the stored choice');
+  const demo = realVenueFns({ backOffice: true, resolved: 'loc-demo', storage });
+  assert.deepEqual(demo.venueAtBirth(), {}, 'the demo venue is never stamped on a row');
+});
+
+// ── A sub category whose parent was deleted in another window (27 Sep 2026) ──────────────────
+// Its insert was refused on menu_categories_parent_id_fkey every time, and Push to POS, which
+// offers it again, stopped on it for good. Push now saves it at the top level and says so.
+const parentFk = (parentId) => ({
+  code: '23503',
+  message: 'insert or update on table "menu_categories" violates foreign key constraint "menu_categories_parent_id_fkey"',
+  details: `Key (parent_id)=(${parentId}) is not present in table "menu_categories".`,
+});
+// Writes through this client get the database's foreign key check on the parent category, and
+// fail on the network for ids in `down`.
+const fkClient = (db, down = new Set()) => ({
+  from: (t) => {
+    const q = db.from(t);
+    const upsert = q.upsert.bind(q);
+    q.upsert = (rows, o) => {
+      const list = Array.isArray(rows) ? rows : [rows];
+      if (t === 'menu_categories' && list.some((r) => down.has(r.id))) return { select: async () => ({ data: null, error: { message: 'Failed to fetch' } }) };
+      const orphan = t === 'menu_categories' && list.find((r) => r.parent_id && !db.row('menu_categories', r.parent_id));
+      if (orphan) return { select: async () => ({ data: null, error: parentFk(orphan.parent_id) }) };
+      return upsert(rows, o);
+    };
+    return q;
+  },
+});
+
+test('the parent retry drops only a missing parent category, and only on its own foreign key', () => {
+  assert.ok(isMissingParentRow(parentFk('cat-beer')));
+  assert.ok(!isMissingParentRow({ code: '23503', message: 'violates foreign key constraint "menu_categories_menu_id_fkey"' }));
+  assert.ok(!isMissingParentRow({ code: '23505', message: 'duplicate key parent_id' }), 'only a foreign key violation');
+  assert.deepEqual(categoryParentRetry(parentFk('cat-beer'), { id: 'c', label: 'Draught', parent_id: 'cat-beer' }), { cols: { id: 'c', label: 'Draught' }, note: 'parent-dropped' });
+  assert.equal(categoryParentRetry(parentFk('cat-beer'), { id: 'c', label: 'Draught' }), null, 'nothing to drop');
+  assert.equal(categoryParentRetry({ code: '23503', message: 'menu_categories_menu_id_fkey' }, { parent_id: 'p', menu_id: 'm' }), null);
+  assert.deepEqual(categoryInsertRetry(parentFk('cat-beer'), { id: 'c', parent_id: 'cat-beer', menu_id: 'menu-main' }).cols, { id: 'c', menu_id: 'menu-main' }, 'Push to POS uses it');
+  assert.equal(toTopLevelWords([]), '');
+  assert.match(toTopLevelWords(['Draught']), /^"Draught" was saved as a TOP LEVEL category: the category it sat under is not in the database any more \(deleted in another window\)\./);
+  assert.match(toTopLevelWords(['A', 'B', 'C', 'D']), /^"A", "B", "C" and 1 more were saved as TOP LEVEL categories/);
+});
+
+test('Push to POS saves a sub category whose parent was deleted elsewhere at the TOP level, and says so', async () => {
+  const init = leeds();
+  init.menu_categories.push({ id: 'cat-beer', location_id: LOC, menu_id: 'menu-main', label: 'Beer', sort_order: 1, updated_at: T0 });
+  const db = fakeMenuDb(init, { trigger: true });
+  const A = backOfficeTab(db, { client: fkClient(db) });
+  await A.load();
+  // Another window deletes Beer; this one, loaded before, adds Draught under it.
+  db.rows('menu_categories').splice(db.rows('menu_categories').findIndex((c) => c.id === 'cat-beer'), 1);
+  const draught = { id: 'cat-draught', label: 'Draught', parentId: 'cat-beer', menuId: 'menu-main', location_id: LOC };
+  A.state.menuCategories.push(draught);
+  const live = () => A.state.menuCategories.find((c) => c.id === 'cat-draught');
+  // The editor's save (store sbCreateCategory: no parent drop) is refused, and remembered.
+  const first = await A.writers.categories.create(draught.id, () => categoryRow(live(), live()), { label: 'Draught', locationId: LOC });
+  assert.equal(first.outcome, 'error');
+  assert.equal(db.row('menu_categories', 'cat-draught'), undefined);
+  const offered = await A.offered();
+  assert.deepEqual(offered.menuCategories.map((c) => c.id), ['cat-draught'], 'Push to POS offers it');
+  // Push to POS (store saveUnsavedMenuRows): insert only, with categoryInsertRetry.
+  const pushed = await A.writers.categories.create(draught.id, () => categoryRow(live(), live()),
+    { label: 'Draught', quiet: true, retryWithout: categoryInsertRetry, locationId: LOC });
+  assert.equal(pushed.outcome, 'created', 'saved, so the push is not stopped by it again');
+  assert.equal(pushed.parentDropped, true, 'the push says so (toTopLevelWords)');
+  const row = db.row('menu_categories', 'cat-draught');
+  assert.equal(row.label, 'Draught');
+  assert.equal(row.parent_id ?? null, null, 'at the top level');
+  assert.equal(row.menu_id, 'menu-main', 'nothing else dropped');
+  assert.equal(live().parentId, null, 'this screen shows it at the top level');
+  assert.equal((await A.offered()).total, 0, 'nothing left to offer');
+});
+
+test('a parent this window still means to create is never dropped: the child waits for it', async () => {
+  const db = fakeMenuDb(leeds(), { trigger: true });
+  const down = new Set(['cat-wine']);
+  const A = backOfficeTab(db, { client: fkClient(db, down) });
+  await A.load();
+  A.state.menuCategories.push({ id: 'cat-wine', label: 'Wine', menuId: 'menu-main', location_id: LOC });
+  A.state.menuCategories.push({ id: 'cat-red', label: 'Red', parentId: 'cat-wine', menuId: 'menu-main', location_id: LOC });
+  const liveOf = (id) => A.state.menuCategories.find((c) => c.id === id);
+  const push = (id, label) => A.writers.categories.create(id, () => categoryRow(liveOf(id), liveOf(id)),
+    { label, quiet: true, retryWithout: categoryInsertRetry, locationId: LOC });
+  // The parent's own first save fails (the network), so the child's parent is missing too.
+  assert.equal((await push('cat-wine', 'Wine')).outcome, 'error');
+  const child = await push('cat-red', 'Red');
+  assert.equal(child.outcome, 'error', 'not flattened: its parent is still to be saved');
+  assert.equal(db.row('menu_categories', 'cat-red'), undefined);
+  // The next Push to POS: the parent first, then the child, under it.
+  down.clear();
+  assert.equal((await push('cat-wine', 'Wine')).outcome, 'created');
+  const again = await push('cat-red', 'Red');
+  assert.equal(again.outcome, 'created');
+  assert.equal(again.parentDropped, undefined);
+  assert.equal(db.row('menu_categories', 'cat-red').parent_id, 'cat-wine');
 });

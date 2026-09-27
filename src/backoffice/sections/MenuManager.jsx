@@ -21,7 +21,8 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords } from '../../store';
+import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
+import { withTimeout } from '../../lib/withTimeout';
 import { venueTaxRates } from '../../lib/rowMapping';
 import { categoryFormOf, categoryFormPatch } from '../../lib/categoryForm';
 import { beginDrag, dragOver } from '../../lib/dragReorder';
@@ -31,8 +32,8 @@ import { matchGroups, matchItems, attachableItems, itemsCarrying, attachPatches,
 // pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
 // swaps the WHOLE app (POS shell included) for the red error page.
 import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
-import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
-import { uploadProductImage, deleteProductImage, saveQuickScreenIds, readQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo } from '../../lib/db';
+import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { uploadProductImage, deleteProductImage, saveQuickScreenIds, readQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks, listSharedMastersMissingAt, pullSharedProductsTo, masterTaxRatesForCopies } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { bulkScopeTargets, runBulkScope, bulkScopeWords, bulkScopeConfirmWords, bulkScopeResendWords } from '../../lib/bulkScope';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
@@ -43,13 +44,15 @@ import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
 import CategoryPhotoField from '../components/CategoryPhotoField';
 import { CATEGORY_PHOTO_COPY, categoryPhotoUrl } from '../../lib/categoryPhoto';
-import { money } from '../../lib/currency';
+import { money, getActiveCurrencyCode } from '../../lib/currency';
 import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
 // can never disagree about a dish's margin.
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
-import { resolveTaxRate, netOf } from '../../lib/tax';
+import { resolveTaxRate, netOf, formatRateLabel } from '../../lib/tax';
+import { productsWithoutOwnRate } from '../../lib/venueTaxRates';
+import { planBulkTax, bulkTaxWords, isSharedCopy, taxRefreshed } from '../../lib/bulkTax';
 import { isOptionOnlyItem, moveMainProductOptions, resolveSoldAlone } from '../../lib/menuRules';
 import { categoryVisibleInMenu, categoriesOnNoMenu } from '../../lib/menuMembership';
 // Price boxes select their whole value on the first click or Tab, so typing
@@ -64,8 +67,15 @@ import {
 // 27 Sep 2026: the tax rates a product here may use are THIS venue's only. Leeds had no rates
 // of its own; the Back Office still held Train Station's from the last push and offered them,
 // and "Apply to all" wrote Train Station's rate ids into 430 Leeds products. Demo mode has one
-// pretend venue, so it keeps every rate.
-const venueRatesOf = (rates) => (isMock ? (rates || []) : venueTaxRates(rates, getActiveLocationSync()));
+// pretend venue, so it keeps every rate. (A rate a till took unchecked from an old push is not
+// this venue's either: lib/rowMapping.js venueTaxRates.)
+// 27 Sep 2026: "this venue" is the one THIS tab resolved (store tabVenue), everywhere in this
+// section. rpos-bo-location is shared by every tab, so a venue switch in another Back Office tab
+// used to point this tab's rates, Apply to all, archives and shared pulls at that other venue.
+const venueRatesOf = (rates) => (isMock ? (rates || []) : venueTaxRates(rates, tabVenue()));
+// The rates a screen OFFERS: this venue's own that are switched on (27 Sep 2026, the tax root
+// cause port). An inactive rate charges nothing (lib/tax.js resolveTaxRate).
+const liveVenueRatesOf = (rates) => venueRatesOf(rates).filter(r => r && r.active !== false);
 const NO_VENUE_RATES = 'This venue has no tax rates yet';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
@@ -212,7 +222,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
 // Returns { error }; the caller reverts its optimistic state and warns on error.
 async function archiveVariantRow(id) {
   if (isMock) return { error: null };
-  const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+  const locId = tabVenue() || await getLocationId().catch(() => null);
   if (!locId || locId === 'loc-demo') {
     const error = new Error('No location');
     reportSave('variant archive', error);
@@ -261,7 +271,7 @@ function useItemCodes() {
     (async () => {
       // Local dev has no Supabase at all, so there is nothing to detect.
       if (isMock || !supabase) { if (!cancelled) setState({ supported: false, codes: new Map() }); return; }
-      const locId = getActiveLocationSync();
+      const locId = tabVenue();
       if (!locId) { if (!cancelled) setState({ supported: false, codes: new Map() }); return; }
       const fresh = _itemCodes.locId === locId
         && _itemCodes.supported !== null
@@ -292,7 +302,7 @@ function useItemCodes() {
 
 function TaxSection({ item, onUpdate, markBOChange }) {
   const { taxRates: allTaxRates, taxProfiles } = useStore();
-  const taxRates = venueRatesOf(allTaxRates);
+  const taxRates = liveVenueRatesOf(allTaxRates);
 
   const setTaxRate = (id) => {
     onUpdate({ taxRateId: id || null, tax_rate_id: id || null });
@@ -320,7 +330,16 @@ function TaxSection({ item, onUpdate, markBOChange }) {
     </div>
   );
 
-  const noneOption = <option value="">No tax</option>;
+  // 27 Sep 2026 (the tax root cause port): a product with no rate is charged the venue's DEFAULT
+  // rate (lib/tax.js resolveTaxRate, v5.5.857), on every till and path. "No tax" said the opposite.
+  const venueDefault = taxRates.find(r => (r.isDefault || r.is_default) && r.active !== false);
+  const noneOption = <option value="">{venueDefault ? `Venue default (${venueDefault.name})` : 'Venue default (none set: records no tax)'}</option>;
+  const copyNote = isSharedCopy(item);
+  // 27 Sep 2026: a rate this product holds that is not one of this venue's live rates (another
+  // venue's, or switched off) is shown as such, never silently as the first option.
+  const notOffered = (id) => (id && !taxRates.some(r => r.id === id)
+    ? <option value={id} disabled>Not one of this venue's live rates: pick one</option>
+    : null);
   const rateOptions = taxRates.map(r => {
     const pct = (parseFloat(r.rate) * 100).toFixed(1).replace('.0','');
     return <option key={r.id} value={r.id}>{r.name} ({pct}% {r.type === 'inclusive' ? 'incl.' : 'excl.'})</option>;
@@ -345,11 +364,19 @@ function TaxSection({ item, onUpdate, markBOChange }) {
         </div>
       )}
 
+      {/* 27 Sep 2026: a shared copy's tax is not this venue's own field (lib/shareCopy.js
+          SHARED_OVERRIDABLE); the master's next edit writes its rate here again. */}
+      {copyNote && (
+        <div style={{ marginBottom:12, padding:'8px 11px', borderRadius:9, background:'var(--bg3)', border:'1px solid var(--bdr)', fontSize:11, color:'var(--t3)', lineHeight:1.6 }}>
+          This is a shared product. Its tax rate follows the master at the venue that owns it: set it there. A change here is replaced by the master's next edit.
+        </div>
+      )}
+
       <div style={{ marginBottom:16 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Default tax rate</span>
         <select value={item.taxRateId || ''} onChange={e => setTaxRate(e.target.value)}
           style={{ width:'100%', padding:'8px 11px', borderRadius:9, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
-          {noneOption}{rateOptions}
+          {noneOption}{notOffered(item.taxRateId)}{rateOptions}
         </select>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
           Applied to all order types unless overridden below.
@@ -371,6 +398,7 @@ function TaxSection({ item, onUpdate, markBOChange }) {
               onChange={e => setOverride(ot, e.target.value)}
               style={{ padding:'6px 10px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg)', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none' }}>
               <option value="">Use default</option>
+              {notOffered(item.taxOverrides?.[ot])}
               {rateOptions}
             </select>
           </div>
@@ -491,13 +519,13 @@ function MenuTab() {
   // Collapsed state is per venue on this device (a view preference, not data).
   const [catFilter, setCatFilter]   = useState('');
   const [collapsed, setCollapsed]   = useState(() => {
-    try { const v = JSON.parse(localStorage.getItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`) || '[]'); return new Set(Array.isArray(v) ? v : []); }
+    try { const v = JSON.parse(localStorage.getItem(`rpos-cat-collapsed:${tabVenue() || 'default'}`) || '[]'); return new Set(Array.isArray(v) ? v : []); }
     catch { return new Set(); }
   });
   const toggleCollapsed = (id) => setCollapsed(prev => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
-    try { localStorage.setItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`, JSON.stringify([...next])); } catch {}
+    try { localStorage.setItem(`rpos-cat-collapsed:${tabVenue() || 'default'}`, JSON.stringify([...next])); } catch {}
     return next;
   });
   // v4.7.5: cats↔menus join data, loaded on mount, mutated locally on link/unlink
@@ -1652,7 +1680,7 @@ function useRecipeCosts() {
     (async () => {
       try {
         if (isMock) { if (alive) setCosts({}); return; }
-        const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+        const loc = tabVenue() || await getLocationId().catch(() => null);
         if (!loc || loc === 'loc-demo') { if (alive) setCosts({}); return; }
         const [recRes, ctx] = await Promise.all([fetchRecipes(loc), buildCostingCtx(loc)]);
         if (!alive) return;
@@ -1686,12 +1714,17 @@ function CatGlyph({ cat, size = 20 }) {
 
 function ItemsLibrary() {
   const { menuItems, menuCategories, addMenuItem, updateMenuItem, archiveMenuItem,
-          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles, menuLoading } = useStore();
+          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles, venueDefaultTaxProfileId, menuLoading } = useStore();
 
   const recipeCosts = useRecipeCosts();          // v5.5.813 — B7 COST + GP%
   const [hovRow, setHovRow] = useState(null);
   const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
   const [bulkRun, setBulkRun] = useState(null);   // 27 Sep 2026: { done, total } while a tax strip saves
+  // 27 Sep 2026 (the tax root cause port): the rate strip's words after a run (lib/bulkTax.js),
+  // its Stop, and this venue's own rates (another venue's are never offered or computed with).
+  const [bulkTaxResult, setBulkTaxResult] = useState('');
+  const bulkTaxStop = useRef(false);
+  const ownTaxRates = useMemo(() => venueRatesOf(taxRates), [taxRates]);
   const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
   const [bulkScope, setBulkScope] = useState('');           // v5.9.54 — bulk sharing (local/shared/global)
   const [bulkScopeRun, setBulkScopeRun] = useState(null);   // { done, total } while it runs
@@ -1701,7 +1734,7 @@ function ItemsLibrary() {
   const [pullRun, setPullRun] = useState(null);
   useEffect(() => {
     let alive = true;
-    const loc = getActiveLocationSync();
+    const loc = tabVenue();
     if (!loc) { setMissingShared([]); return undefined; }
     listSharedMastersMissingAt(loc).then((m) => { if (alive) setMissingShared(m); }).catch(() => { if (alive) setMissingShared([]); });
     return () => { alive = false; };
@@ -1719,8 +1752,8 @@ function ItemsLibrary() {
       const p = menuItems.find(x => String(x.id) === String(mi.parentId));
       if (p) { taxRateId = p.taxRateId ?? null; if (!Object.keys(taxOverrides).length) taxOverrides = p.taxOverrides ?? {}; }
     }
-    return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates || [], 'dine-in'));
-  }, [menuItems, taxRates]);
+    return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, ownTaxRates, 'dine-in'));
+  }, [menuItems, ownTaxRates]);
 
   const [search,     setSearch]     = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -1880,37 +1913,152 @@ function ItemsLibrary() {
             rates, so every item sat with no rate and fixing them one-by-one through the
             editor's Tax tab was unworkable. This strip appears only while items are
             missing a rate: pick one, apply to all the gaps in a click. Items that
-            already have a rate are never touched. */}
+            already have a rate are never touched.
+            27 Sep 2026 (Peter: "I have re applied Tax to all products but thats wrong please
+            chase"): it offered whatever rates the page held (at Leeds, Train Station's). Now:
+            this venue's own live rates only; a product holding another venue's rate, or one of
+            this venue's that is switched off, counts as having none; sizes follow their
+            product; shared copies take their master's rate (lib/bulkTax.js). The menu is read
+            fresh first (store loadVenueMenu), and each product's rate is saved on its own
+            through the compare and set writer, checked against the rate the plan started from
+            (store applyBulkTaxRates): a rate set somewhere else meanwhile is left and named.
+            Every save is awaited and the words say "saved on X of N". With no rates at all it
+            says so, and lists the products either way. */}
         {!showArchived && (() => {
-          const missingTax = menuItems.filter(i => !i.archived && !i.taxRateId);
-          if (missingTax.length === 0) return null;
-          const venueRates = venueRatesOf(taxRates);
+          const loc = tabVenue();
+          const locKey = loc || 'this-venue';
+          const taggedOwn = ownTaxRates.map(r => ({ ...r, locationId: locKey }));
+          const noRate = productsWithoutOwnRate(menuItems, taggedOwn, locKey);
+          // A venue whose tax is set up as tax profiles charges through them (a US venue is never
+          // seeded with rates on purpose), so "no rates" is not a fault there.
+          const hasProfiles = (taxProfiles || []).length > 0 || !!venueDefaultTaxProfileId;
+          const ukVenue = String(getActiveCurrencyCode() || 'GBP').toUpperCase() === 'GBP';
+          if (!taggedOwn.length && hasProfiles && !bulkTaxResult) return null;
+          if (noRate.all.length === 0 && noRate.foreignOverride.length === 0 && !bulkTaxResult) return null;
+          const overrideNote = noRate.foreignOverride.length > 0 && (
+            <span style={{ fontSize:11, color:'var(--amber, #F5A623)', flexBasis:'100%' }}>
+              {noRate.foreignOverride.length} product{noRate.foreignOverride.length === 1 ? ' has' : 's have'} an order type tax rate that is not one of this venue's live rates ({noRate.foreignOverride.slice(0, 5).map(i => i.menuName || i.name || 'Item').join(', ')}{noRate.foreignOverride.length > 5 ? '…' : ''}). The tills ignore it and use the product's own rate: open {noRate.foreignOverride.length === 1 ? 'it' : 'them'} and pick this venue's rate.
+            </span>
+          );
+          const foreignIds = new Set(noRate.foreign.map(i => i.id));
+          const inactiveIds = new Set(noRate.inactive.map(i => i.id));
+          const listNames = noRate.all.length > 0 && (
+            <details style={{ fontSize:11, color:'var(--t3)', flexBasis:'100%' }}>
+              <summary style={{ cursor:'pointer' }}>Show {noRate.all.length === 1 ? 'it' : `all ${noRate.all.length}`}</summary>
+              <div style={{ marginTop:4, lineHeight:1.7, maxHeight:140, overflowY:'auto' }}>
+                {noRate.all.slice(0, 200).map(i => `${i.menuName || i.name || 'Item'}${foreignIds.has(i.id) ? " (another venue's rate)" : ''}${inactiveIds.has(i.id) ? ' (an inactive rate)' : ''}${isSharedCopy(i) ? ' (shared)' : ''}`).join(', ')}{noRate.all.length > 200 ? '…' : ''}
+              </div>
+            </details>
+          );
+          if (noRate.all.length && !taggedOwn.length) {
+            return (
+              <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'var(--red-d)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+                <span style={{ fontSize:12, fontWeight:800, color:'var(--red)' }}>⚠ {NO_VENUE_RATES}, so {noRate.all.length} product{noRate.all.length === 1 ? '' : 's'} record no {ukVenue ? 'VAT' : 'sales tax'}. Open Tax &amp; VAT and {ukVenue ? 'press Seed UK rates' : 'set up tax profiles or press Seed US rates'}.</span>
+                {listNames}
+              </div>
+            );
+          }
+          const running = !!bulkRun;
+          const offered = taggedOwn.filter(t => t.active !== false);
+          const chosen = offered.find(r => r.id === bulkTaxId);
+          // Second review (27 Sep 2026): "charged the venue default" only when there is one. With no
+          // live rate flagged default, resolveTaxRate finds nothing and those products record NO VAT.
+          const defaultRate = offered.find(r => r.isDefault || r.is_default);
+          const whyWords = [
+            noRate.foreign.length ? `${noRate.foreign.length} carry another venue's rate` : '',
+            noRate.inactive.length ? `${noRate.inactive.length} ${noRate.inactive.length === 1 ? 'is' : 'are'} on an inactive rate` : '',
+          ].filter(Boolean).join(', ');
+          // Review (27 Sep 2026): at a venue that also has tax profiles, a product with no rate
+          // charges through them, and a rate set here comes before the category and venue profile.
+          const untilWords = hasProfiles
+            ? 'This venue also has tax profiles: until a rate is set, they charge through those. A rate set here comes before the category and venue profiles.'
+            : defaultRate
+              ? `Until set, they are charged the venue default (${defaultRate.name}).`
+              : `No rate here is set as the default, so until set they record NO ${ukVenue ? 'VAT' : 'sales tax'}. Set a default in Tax & VAT.`;
+          const go = async () => {
+            if (!chosen || running || menuLoading) return;
+            // This tab's copy of the menu can be hours old, and another tab, device, Tax & VAT or a
+            // fix by hand may have set a rate since. Read the menu fresh and plan from THAT; nothing
+            // is written when the read did not land on screen.
+            let refreshed = 0;
+            if (loc && !isMock) {
+              const before = useStore.getState().menuItems;
+              let fresh = null;
+              try { fresh = await loadVenueMenu(loc); } catch (e) { fresh = { ok: false, error: e }; }
+              if (!fresh?.applied || !Array.isArray(fresh.read?.menuItems) || !Array.isArray(fresh.read?.taxRates)) {
+                showToast(`Nothing was changed: this venue's products could not be read again first (${fresh?.error?.message || fresh?.read?.error?.message || 'no answer'}). Try again.`, 'error', 9000);
+                return;
+              }
+              refreshed = taxRefreshed(before, useStore.getState().menuItems);
+            }
+            const st = useStore.getState();
+            const ownNow = venueRatesOf(st.taxRates).map(r => ({ ...r, locationId: locKey }));
+            const pick = ownNow.find(r => r.id === bulkTaxId && r.active !== false);
+            if (!pick) { showToast(`Nothing was changed: ${chosen.name} is not one of this venue's live rates any more. Pick again.`, 'error', 9000); return; }
+            const planItems = st.menuItems;
+            const copies = productsWithoutOwnRate(planItems, ownNow, locKey).all.filter(isSharedCopy);
+            let copyRates = new Map();
+            if (copies.length && loc && !isMock) {
+              try { copyRates = await masterTaxRatesForCopies(copies, loc); }
+              catch (e) { showToast(`Nothing was changed: the shared products' masters could not be read (${e?.message || e}).`, 'error', 9000); return; }
+            }
+            const plan = planBulkTax({ items: planItems, rates: ownNow, locationId: locKey, chosenRateId: pick.id, copyRates });
+            if (!plan.assign.length) { setBulkTaxResult(bulkTaxWords({ result: { ok: [], failed: [], changed: [], total: 0 }, skipped: plan.skipped, refreshed })); return; }
+            const viaMaster = plan.assign.filter(a => a.via === 'master').length;
+            const masterWords = viaMaster ? `; ${viaMaster} shared product${viaMaster === 1 ? ' takes its' : 's take their'} master's rate` : '';
+            const profileWords = hasProfiles ? ' A rate set here comes before this venue\'s tax profiles.' : '';
+            if (!window.confirm(`Set a tax rate on ${plan.assign.length} product${plan.assign.length === 1 ? '' : 's'} with none here? ${pick.name} for this venue's own products; sizes take their product's rate${masterWords}.${profileWords}`)) return;
+            bulkTaxStop.current = false;
+            setBulkTaxResult('');
+            setBulkRun({ done: 0, total: plan.assign.length });
+            // No try/finally here: the React Compiler lint skips a whole component that has one.
+            let result;
+            try {
+              result = await useStore.getState().applyBulkTaxRates({
+                assign: plan.assign, ownRateIds: plan.ownRateIds,
+                onProgress: (p) => setBulkRun({ done: p.done, total: p.total }),
+                shouldStop: () => bulkTaxStop.current,
+              });
+            } catch (err) {
+              // Never "saved" on a throw: every row counts as not saved, with the reason.
+              const why = err?.message || String(err);
+              result = { ok: [], failed: plan.assign.map((a) => ({ ...a, error: why })), changed: [], total: plan.assign.length, notTried: 0, stopped: false };
+            }
+            setBulkRun(null);
+            const words = bulkTaxWords({ result, skipped: plan.skipped, rateName: pick.name, rates: ownNow, refreshed });
+            if (result.failed.length) reportSave('bulk tax rate', new Error(words));
+            setBulkTaxResult(words);
+            showToast(words, result.failed.length || result.notTried ? 'error' : (plan.skipped.length || result.changed.length ? 'info' : 'success'), 12000);
+          };
           return (
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
-              <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {missingTax.length} item{missingTax.length===1?' has':'s have'} no tax rate</span>
-              <select value={bulkTaxId} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
-                <option value="">{venueRates.length ? 'Pick the default rate' : NO_VENUE_RATES}</option>
-                {venueRates.map(t=><option key={t.id} value={t.id}>{t.name} ({t.rate}%)</option>)}
-              </select>
-              {/* 27 Sep 2026: each product saves only its tax rate, compare and set, one bounded
-                  batch at a time (store bulkUpdateMenuItems), and the strip says what really
-                  saved. A product given a rate since this list was made is left alone. */}
-              <button disabled={!bulkTaxId || !venueRates.some(r=>r.id===bulkTaxId) || !!bulkRun || menuLoading}
-                onClick={async ()=>{
-                  const t=venueRates.find(r=>r.id===bulkTaxId);
-                  if (!t) return;
-                  setBulkRun({ done:0, total:missingTax.length });
-                  const out = await bulkUpdateMenuItems(
-                    missingTax.map(i=>({ id:i.id, patch:{ taxRateId: t.id }, onlyIf:(row)=>!row.archived && !row.taxRateId })),
-                    { onProgress:(done,total)=>setBulkRun({ done, total }) });
-                  setBulkRun(null);
-                  markBOChange();
-                  showToast(bulkSummaryWords(out, t.name||'Tax rate'), (out.failed||out.skipped||out.gone)?'error':'success', 9000);
-                }}
-                style={{ padding:'6px 14px', borderRadius:8, cursor:bulkTaxId?'pointer':'not-allowed', fontFamily:'inherit', background:bulkTaxId?'var(--acc)':'var(--bg3)', border:'none', color:bulkTaxId?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
-                {bulkRun ? `Saving… ${bulkRun.done} of ${bulkRun.total}` : `Apply to all ${missingTax.length}`}
-              </button>
-              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
+              {noRate.all.length > 0 && <>
+                <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {noRate.all.length} product{noRate.all.length===1?' has':'s have'} no tax rate here{whyWords ? ` (${whyWords})` : ''}. {untilWords}</span>
+                <select value={bulkTaxId} disabled={running} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                  <option value="">Pick a rate</option>
+                  {offered.map(t=><option key={t.id} value={t.id}>{formatRateLabel(t)}{(t.isDefault || t.is_default) ? ' (default)' : ''}</option>)}
+                </select>
+                {running ? (
+                  <>
+                    <span style={{ fontSize:11, color:'var(--t3)' }}>Saving… {bulkRun.done} of {bulkRun.total}</span>
+                    <button onClick={()=>{ bulkTaxStop.current = true; }} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700 }}>Stop</button>
+                  </>
+                ) : (
+                  <button disabled={!chosen || menuLoading} onClick={go}
+                    style={{ padding:'6px 14px', borderRadius:8, cursor:chosen?'pointer':'not-allowed', fontFamily:'inherit', background:chosen?'var(--acc)':'var(--bg3)', border:'none', color:chosen?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                    Apply to all {noRate.all.length}
+                  </button>
+                )}
+                <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps: products with one of this venue's rates are untouched.</span>
+                {listNames}
+              </>}
+              {overrideNote}
+              {bulkTaxResult && (
+                <span style={{ fontSize:11, color:'var(--t2)', flexBasis:'100%', display:'flex', gap:8, alignItems:'center' }}>
+                  {bulkTaxResult}
+                  <button onClick={()=>setBulkTaxResult('')} style={{ padding:'2px 8px', borderRadius:6, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontSize:10 }}>OK</button>
+                </span>
+              )}
             </div>
           );
         })()}
@@ -1927,8 +2075,14 @@ function ItemsLibrary() {
               <span style={{ fontSize:11, color:'var(--t3)' }}>Pulling… {pullRun.done} of {pullRun.total}</span>
             ) : (
               <button onClick={async ()=>{
-                const loc = getActiveLocationSync();
-                if (!loc || !window.confirm(`Copy ${missingShared.length} shared product${missingShared.length===1?'':'s'} into this venue, with their categories and modifier groups? Runs one product at a time.`)) return;
+                const loc = tabVenue();
+                // 27 Sep 2026: a copy maps its tax rate to this venue's by name as it arrives; with
+                // no rates here it arrives with none (Leeds, Preston, Headingly, Huddersfield). Say so
+                // first. Seeding rates later maps them (Tax & VAT, lib/db.js mapCopiesTaxFromMasters).
+                const noRatesWords = !isMock && !ownTaxRates.length
+                  ? ' WARNING: this venue has no tax rates yet, so the copies arrive with none and record no VAT until you press Seed UK rates in Tax & VAT (they then take their master\'s rate).'
+                  : '';
+                if (!loc || !window.confirm(`Copy ${missingShared.length} shared product${missingShared.length===1?'':'s'} into this venue, with their categories and modifier groups? Runs one product at a time.${noRatesWords}`)) return;
                 setPullRun({ done: 0, total: missingShared.length });
                 const result = await pullSharedProductsTo(loc, { onProgress: (p) => setPullRun({ done: p.done, total: p.total }) });
                 setPullRun(null);
@@ -3149,13 +3303,13 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 })}
               </div>
               <input style={inp} value={item.variantLabel||''} onChange={e=>onUpdate({variantLabel:e.target.value})} placeholder="Custom label e.g. Colour, Region, Weight…"/>
-              {/* 27 Sep 2026: the label has no database column. Push to POS now sends the menu
-                  as the database holds it (never this screen's memory), so a label chosen here
-                  does not reach the tills yet; they show "Size". Said here rather than
-                  silently lost. */}
+              {/* 27 Sep 2026: the label has no database column. It rides Push to POS, carried from
+                  this window's product onto the menu read from the database
+                  (lib/venueMenuRead.js withItemExtras), as it always did. Unlike the fields above
+                  it is not saved as it is typed: the tills get it with the next push. */}
               {!isMock && (item.variantLabel || 'Size') !== 'Size' && (
-                <div style={{ fontSize:10.5, color:'var(--amber, #F5A623)', marginTop:5, lineHeight:1.5 }}>
-                  Not saved yet: this label stays on this screen only, and the tills show "Size".
+                <div style={{ fontSize:10.5, color:'var(--t4)', marginTop:5, lineHeight:1.5 }}>
+                  The tills get this label with the next Push to POS.
                 </div>
               )}
             </div>
@@ -4266,7 +4420,6 @@ function QuickScreenManager() {
   // then refused as "changed in another window" when nothing had changed. A saved list that
   // differs from the one on screen is shown instead, so a drag never starts from an old grid.
   const dbBase = useRef(null);
-  const saveChain = useRef(Promise.resolve());
   useEffect(() => {
     if (isMock) return undefined;
     let live = true;
@@ -4288,12 +4441,14 @@ function QuickScreenManager() {
     // 27 Sep 2026: compare and set by value (db.saveQuickScreenIds). The grid is saved whole, so
     // a window left open used to put back the grid it loaded over one saved elsewhere since.
     // This window's saves go one at a time, each checked against what the one before it saved.
-    const run = saveChain.current.then(async () => {
+    // They run in the menu write chain (runInMenuWriteQueue), so Push to POS waits for a save
+    // still on its way (whenMenuWritesIdle) and sends the grid as saved, never the one before.
+    // With a time limit (MENU_WAIT_MS): the chain holds every category and menu save too.
+    const run = runInMenuWriteQueue(async () => {
       const base = dbBase.current != null ? dbBase.current : prevIds.filter(Boolean);
-      try { return await saveQuickScreenIds(filtered, { base }); }
+      try { return await withTimeout(saveQuickScreenIds(filtered, { base }), MENU_WAIT_MS, 'Quick Screen save'); }
       catch (e) { return { ok: false, outcome: 'error', error: e }; }
     });
-    saveChain.current = run.catch(() => null);
     const res = await run;
     if (res.outcome === 'conflict') {
       if (Array.isArray(res.ids)) dbBase.current = res.ids;
@@ -4327,14 +4482,20 @@ function QuickScreenManager() {
     if (isMock) return true;
     let err = null;
     try {
-      const locId = await getLocationId();
-      // Was a bare `return false` — no report, no toast, and the optimistic mode
-      // switch left in place, so an unresolved location looked like a mode change.
-      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
-      const patch = { quick_screen_mode: mode };
-      if (auto !== undefined) patch.quick_screen_auto = auto;
-      const { data, error } = await supabase.from('locations').update(patch).eq('id', locId).select('id');
-      err = error || (!data?.length ? new Error('Quick Screen settings update matched 0 rows') : null);
+      // 27 Sep 2026: in the menu write chain (runInMenuWriteQueue), as the Quick Screen list save
+      // above is, so Push to POS waits for a mode save still on its way (whenMenuWritesIdle) and
+      // reads the mode as saved, never the one before. With the same time limit (MENU_WAIT_MS):
+      // the chain holds every category and menu save too. Out of time is a failed save.
+      err = await runInMenuWriteQueue(() => withTimeout((async () => {
+        const locId = await getLocationId();
+        // Was a bare `return false`: no report, no toast, and the optimistic mode
+        // switch left in place, so an unresolved location looked like a mode change.
+        if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
+        const patch = { quick_screen_mode: mode };
+        if (auto !== undefined) patch.quick_screen_auto = auto;
+        const { data, error } = await supabase.from('locations').update(patch).eq('id', locId).select('id');
+        return error || (!data?.length ? new Error('Quick Screen settings update matched 0 rows') : null);
+      })(), MENU_WAIT_MS, 'Quick Screen mode save'));
     } catch (e) { err = e; }
     reportSave('quick screen', err);
     if (err) {

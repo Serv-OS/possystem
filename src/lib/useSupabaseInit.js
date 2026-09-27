@@ -16,6 +16,8 @@ import {
   primeOrderRefLease,
 } from './db';
 import { mapMenuItemRow, mapTaxRateRow } from './rowMapping';
+import { withItemExtras } from './venueMenuRead';
+import { ratesAfterRead } from './venueTaxRates';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 import { refreshTablePlan } from '../sync/TablePlanSync';
 
@@ -101,9 +103,12 @@ export default function useSupabaseInit() {
       // In Back Office the menu on screen is the Back Office's own read (store loadVenueMenu):
       // once that has landed, this boot read leaves it alone, or it would put back rows the
       // person has a save of on its way.
+      // 27 Sep 2026 (review round 4): the product fields with no database column (variantLabel,
+      // the pizza fields: lib/menuItemWrite.js ITEM_EXTRA_KEYS) came with the last push; this read
+      // cannot have them, so each row keeps them from the row it replaces (withItemExtras).
       const { data: items } = await fetchMenuItems();
       if (items?.length && !(isBackOfficeMode() && useStore.getState().menuReadLocationId === locId)) {
-        useStore.setState({ menuItems: items.map(mapMenuItemRow) });
+        useStore.setState((s) => ({ menuItems: withItemExtras(items.map(mapMenuItemRow), s.menuItems) }));
       }
 
       // Floor plan + sections
@@ -284,18 +289,23 @@ export default function useSupabaseInit() {
       }
 
       // Tax rates for this location
+      // 27 Sep 2026: rows replace the rates, tagged with this venue, and another venue's rates are
+      // never kept (lib/venueTaxRates.js ratesAfterRead). In Back Office a successful read of NO
+      // rates is the answer, never "keep the last venue's" (Leeds had none and was offered Train
+      // Station's). A till keeps this venue's own rates on an empty read: it charges with them.
+      // Applied against the store as it is when the answer lands (a push may have landed meanwhile).
       if (locId && supabase) {
-        const { data: rates, error: ratesErr } = await supabase
-          .from('tax_rates')
-          .select('*')
-          .eq('location_id', locId)
-          .eq('active', true)
-          .order('rate', { ascending: false });
-        if (rates?.length) useStore.setState({ taxRates: rates.map(mapTaxRateRow) });
-        // 27 Sep 2026: in Back Office a successful read of NO rates is the answer, never "keep
-        // the last venue's" (Leeds had none and was offered Train Station's). A till keeps its
-        // rates on an empty read: it charges with them.
-        else if (!ratesErr && Array.isArray(rates) && isBackOfficeMode()) useStore.setState({ taxRates: [] });
+        let taxRes = null;
+        try {
+          taxRes = await supabase
+            .from('tax_rates')
+            .select('*')
+            .eq('location_id', locId)
+            .eq('active', true)
+            .order('rate', { ascending: false });
+        } catch (e) { taxRes = { data: null, error: e }; }
+        const taxRows = taxRes && !taxRes.error && Array.isArray(taxRes.data) ? { data: taxRes.data.map(mapTaxRateRow), error: null } : taxRes;
+        useStore.setState(s => ({ taxRates: ratesAfterRead(taxRows, locId, s.taxRates, { trusted: isBackOfficeMode() }) }));
       }
 
       // Latest config push

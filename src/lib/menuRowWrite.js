@@ -32,8 +32,29 @@
 // Pure: the Supabase client is passed in, so node:test drives it with a fake.
 
 import { columnConflicts, pickColumns, sameValue } from './menuItemWrite.js';
+import { withTimeout } from './withTimeout.js';
 
 export const now = () => new Date().toISOString();
+
+// A menu read, a wait for one, and every menu write have this time limit. A read that hangs (a
+// stale socket just after Safari resumes a tab) used to leave Push to POS disabled with no word.
+// 27 Sep 2026: the writes too. A write that never answered held its row's queue (and the
+// categories and menus chain) for good, so every later save of that row and every Push to POS
+// waited on it. The store and Back Office take it from here (store re exports it).
+export const MENU_WAIT_MS = 15000;
+
+/**
+ * One menu database write with a time limit (27 Sep 2026). withTimeout is called as the
+ * imported function (v5.8.59, lib/withTimeout.js). Out of time resolves
+ * { ok: false, outcome: 'error', error } (error.name TimeoutError), so the queue moves on and
+ * the red bar says the save failed. The write itself may still land: every edit is a compare
+ * and set on updated_at and every creation an insert that never overwrites, so a late landing
+ * can never put back an old value (the next edit re reads the row; the next Push to POS reads
+ * the menu fresh).
+ */
+export function writeWithin(promise, label, ms = MENU_WAIT_MS) {
+  return withTimeout(promise, ms, label).catch((error) => ({ ok: false, outcome: 'error', error }));
+}
 
 /**
  * A database time as whole MICROseconds since 1970, or NaN when it is not a time.

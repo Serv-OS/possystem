@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { withTimeout } from './withTimeout.js';
 
 const read = (rel) => fs.readFileSync(new URL(`../../${rel}`, import.meta.url), 'utf8');
 const store = read('src/store/index.js');
@@ -66,7 +67,8 @@ test('store and push writers retry without the photo when the image column is mi
   // Edits and creations of categories both use it; Push to POS's insert of a category the
   // database never received also keeps the category over a missing menu (v5.9.22).
   assert.match(writersLib, /retryWithout: categoryImageRetry,/);
-  assert.match(writersLib, /export const categoryInsertRetry = \(error, cols\) => categoryImageRetry\(error, cols\) \|\| categoryMenuLinkRetry\(error, cols\);/);
+  // 27 Sep 2026: and over a parent category that is not in the database (saved at the top level).
+  assert.match(writersLib, /export const categoryInsertRetry = \(error, cols\) => categoryImageRetry\(error, cols\) \|\| categoryMenuLinkRetry\(error, cols\) \|\| categoryParentRetry\(error, cols\);/);
 });
 
 test('sharing again never overwrites a peer venue\'s own photo', () => {
@@ -145,4 +147,22 @@ test('the category modal form never carries the photo', () => {
   assert.ok(modal.includes('useState(() => categoryFormOf(cat))'), 'the form comes from categoryFormOf');
   const form = slice(read('src/lib/categoryForm.js'), 'export function categoryFormOf(', '\n}\n');
   assert.ok(!/\bimage\b/.test(form), 'the Save form state has no image field');
+});
+
+// 27 Sep 2026: the photo save runs in the menu write chain, which every later category and menu
+// save and every Push to POS waits on. With no time limit, one that never answered held them all.
+test('the category photo save in the menu write chain has a time limit, and running out is a failed save', async () => {
+  const field = read('src/backoffice/components/CategoryPhotoField.jsx');
+  assert.match(field, /import \{ useStore, runInMenuWriteQueue, MENU_WAIT_MS \} from '\.\.\/\.\.\/store';/);
+  assert.match(field, /import \{ withTimeout \} from '\.\.\/\.\.\/lib\/withTimeout';/);
+  const job = slice(field, 'runInMenuWriteQueue(async () => {', '});');
+  const timed = "const r = await withTimeout(saveCategoryImage(live, locId, nextUrl, prev), MENU_WAIT_MS, 'category photo save')\n          .catch((error) => ({ error, needsMigration: false, peersFailed: false }));";
+  assert.ok(job.includes(timed), 'the save itself is timed, inside the chain job');
+  assert.ok(job.indexOf(timed) < job.indexOf('if (!r.error) setStoreImage(cat.id, nextUrl)'), 'out of time never shows the new photo as saved');
+  // The same expression over a save that never answers: an { error } the field reports as failed.
+  const hung = new Promise(() => {});
+  const r = await withTimeout(hung, 5, 'category photo save').catch((error) => ({ error, needsMigration: false, peersFailed: false }));
+  assert.equal(r.error?.name, 'TimeoutError');
+  assert.match(r.error.message, /category photo save timed out/);
+  assert.equal(r.needsMigration, false, 'reported as a failed save, not a missing migration');
 });

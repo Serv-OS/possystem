@@ -8,8 +8,9 @@
 // wrote that memory over the database. Now the push:
 //   1. waits for this tab's own saves to land,
 //   2. reads the menu FRESH from the database (this module),
-//   3. offers to save, insert only, anything on screen the database never received,
-//   4. sends the tills exactly what the database holds, and shows the same on screen.
+//   3. offers to save, insert only, anything made on this screen whose first save failed,
+//   4. sends the tills exactly what the database holds (plus the product fields that have no
+//      column, from this screen: withItemExtras), and shows the same on screen.
 // It never writes a menu row as a side effect. The tables have worked this way since v5.9.4.
 //
 // Pure: the Supabase client is passed in (node:test drives it with a fake).
@@ -18,6 +19,8 @@ import {
   mapMenuItemRow, mapCategoryRow, mapMenuRow, mapModifierGroupRow, mapTaxRateRow,
   assembleTaxProfiles, srvAtOf,
 } from './rowMapping.js';
+import { ITEM_EXTRA_KEYS } from './menuItemWrite.js';
+import { ownVenueRates, taggedVenueRows } from './venueTaxRates.js';
 
 export const PAGE = 1000;   // the Data API's row cap per request; bigger menus are paged
 
@@ -55,6 +58,9 @@ export async function readVenueMenu(client, locationId) {
     ok: false, failed: [], error: null,
     menus: null, menuCategories: null, menuItems: null, modifierGroupDefs: null, taxRates: null,
     taxProfiles: null, venueDefaultTaxProfileId: undefined, itemIds: null,
+    // 27 Sep 2026 (tax root cause port): the venue this read is for, so the snapshot built from
+    // it carries only that venue's rates (menuSnapshotFromRead).
+    locationId: locationId || null,
   };
   if (!client) { out.failed.push('database'); out.error = new Error('No database'); return out; }
   if (!locationId || locationId === 'loc-demo') { out.failed.push('location'); out.error = new Error('No location'); return out; }
@@ -95,6 +101,33 @@ export async function readVenueMenu(client, locationId) {
 export const rowVenue = (r) => r?.location_id ?? r?.locationId ?? null;
 
 /**
+ * The product fields that have no database column (lib/menuItemWrite.js ITEM_EXTRA_KEYS:
+ * variantLabel, the pizza fields, ...) carried onto `rows` from the row with the same id in
+ * `from` (27 Sep 2026). A key is copied only where the row lacks it (undefined), so nothing a
+ * row already holds is ever replaced. Returns `rows` itself when nothing was copied.
+ * Before this branch these fields reached the tills because the push snapshot was built from
+ * the Back Office's rows; now the snapshot is the database read, which has none of them.
+ */
+export function withItemExtras(rows, from, keys = ITEM_EXTRA_KEYS) {
+  if (!Array.isArray(rows) || !Array.isArray(from) || !from.length) return rows;
+  const byId = new Map(from.filter((r) => r && r.id != null).map((r) => [r.id, r]));
+  let changed = false;
+  const out = rows.map((r) => {
+    const src = r ? byId.get(r.id) : null;
+    if (!src || src === r) return r;
+    let next = r;
+    for (const k of keys) {
+      if (src[k] === undefined || next[k] !== undefined) continue;
+      if (next === r) next = { ...r };
+      next[k] = src[k];
+    }
+    if (next !== r) changed = true;
+    return next;
+  });
+  return changed ? out : rows;
+}
+
+/**
  * A fresh read laid over the rows a tab holds. The database wins, except:
  *   keep          rows this tab must keep its own copy of: a save still on its way (the
  *                 person's edit must not flicker back, and its compare and set token must
@@ -102,6 +135,9 @@ export const rowVenue = (r) => r?.location_id ?? r?.locationId ?? null;
  *                 read began (the read cannot have seen it). The caller works this out from
  *                 its write clock, never from times: no device clock is compared.
  *   keepArchived  archived rows the Archived view loaded stay (the read has live rows only)
+ *   extras        keys with no database column (products: ITEM_EXTRA_KEYS) that a read row
+ *                 takes from the screen's row with the same id (withItemExtras): the read
+ *                 cannot have them, and dropping them lost them from the next Push to POS
  *   locationId    the venue the read is for. 27 Sep 2026 (review round 3): a row kept or
  *                 archived that says it belongs to ANOTHER venue is dropped, so a save that
  *                 was on its way when the person switched venue never follows them into the
@@ -109,7 +145,7 @@ export const rowVenue = (r) => r?.location_id ?? r?.locationId ?? null;
  *                 addMenuItem, addCategory, addMenu, addModifierGroupDef).
  * Rows the read does not have are dropped unless kept or archived.
  */
-export function mergeReadRows(current, read, { keep = new Set(), keepArchived = false, locationId = null } = {}) {
+export function mergeReadRows(current, read, { keep = new Set(), keepArchived = false, locationId = null, extras = null } = {}) {
   const here = (r) => !locationId || !rowVenue(r) || rowVenue(r) === locationId;
   const have = new Map((current || []).map((r) => [r?.id, r]));
   const seen = new Set();
@@ -117,7 +153,8 @@ export function mergeReadRows(current, read, { keep = new Set(), keepArchived = 
   for (const r of read || []) {
     seen.add(r.id);
     const local = have.get(r.id);
-    out.push(local && keep.has(r.id) && here(local) ? local : r);
+    if (local && keep.has(r.id) && here(local)) out.push(local);
+    else out.push(local && extras && here(local) ? withItemExtras([r], [local], extras)[0] : r);
   }
   for (const l of current || []) {
     if (!l || seen.has(l.id) || !here(l)) continue;
@@ -172,9 +209,15 @@ export function menuPatchFromRead(state, read, { keep = {}, locationId = null } 
   if (emptyItemsReadSuspect(state, read, locationId, { keep: k('items') })) return patch;
   if (Array.isArray(read.menus)) patch.menus = mergeReadRows(state?.menus, read.menus, { keep: k('menus'), locationId });
   if (Array.isArray(read.menuCategories)) patch.menuCategories = mergeReadRows(state?.menuCategories, read.menuCategories, { keep: k('categories'), locationId });
-  if (Array.isArray(read.menuItems)) patch.menuItems = mergeReadRows(state?.menuItems, read.menuItems, { keep: k('items'), keepArchived: true, locationId });
+  if (Array.isArray(read.menuItems)) patch.menuItems = mergeReadRows(state?.menuItems, read.menuItems, { keep: k('items'), keepArchived: true, locationId, extras: ITEM_EXTRA_KEYS });
   if (Array.isArray(read.modifierGroupDefs)) patch.modifierGroupDefs = mergeReadRows(state?.modifierGroupDefs, read.modifierGroupDefs, { keep: k('groups'), locationId });
   if (Array.isArray(read.taxRates)) patch.taxRates = read.taxRates;
+  else if (locationId && Array.isArray(state?.taxRates)) {
+    // 27 Sep 2026 (tax root cause port): the tax read failed. This venue's rates stay; another
+    // venue's never do (lib/venueTaxRates.js ratesAfterRead: a failed read keeps only this venue's).
+    const own = ownVenueRates(state.taxRates, locationId);
+    if (own.length !== state.taxRates.length) patch.taxRates = own;
+  }
   if (Array.isArray(read.taxProfiles)) patch.taxProfiles = read.taxProfiles;
   if (read.venueDefaultTaxProfileId !== undefined) patch.venueDefaultTaxProfileId = read.venueDefaultTaxProfileId;
   // The venue this store's menu was last read for. A push snapshot applied after this (the
@@ -185,30 +228,54 @@ export function menuPatchFromRead(state, read, { keep = {}, locationId = null } 
 }
 
 /**
- * What is on this tab's screen but NOT in the database: creations whose first save never
- * landed. Push to POS lists them and saves them insert only, or stops; it never sends them to
+ * The ids of one kind of row a read found in the database ('items' | 'categories' | 'menus' |
+ * 'groups'), or null when that part of the read failed. Products are every id at the venue,
+ * archived included (read.itemIds).
+ */
+export function readIdsOf(read, kind) {
+  if (!read) return null;
+  if (kind === 'items') {
+    if (read.itemIds instanceof Set) return read.itemIds;
+    return Array.isArray(read.menuItems) ? new Set(read.menuItems.map((i) => i?.id)) : null;
+  }
+  const list = { categories: read.menuCategories, menus: read.menus, groups: read.modifierGroupDefs }[kind];
+  return Array.isArray(list) ? new Set(list.map((r) => r?.id)) : null;
+}
+
+/**
+ * What is on this tab's screen but NOT in the database because its FIRST save failed in this
+ * window. Push to POS lists them and saves them insert only, or stops; it never sends them to
  * the tills silently. An archived product is not listed (nothing to sell), and a product the
  * database has archived is in `itemIds`, so it is never mistaken for an unsaved one.
- *   locationId       the venue being pushed. Only rows that SAY they belong to it are offered
- *                    (27 Sep 2026, review round 3): a row of another venue, or one that does not
- *                    say (left in memory from an old push), could copy another venue's product
- *                    into this one. Rows created in this tab carry their venue from birth.
- *   failedGroupIds   ids of modifier groups created in this tab whose FIRST save failed (store
- *                    unsavedGroupIds). Only those groups are offered: a group that is on screen
- *                    but not in the read for any other reason was deleted in another window,
- *                    and must not come back. They are saved insert only, like the rest.
+ *   locationId   the venue being pushed. Only rows that SAY they belong to it are offered
+ *                (27 Sep 2026, review round 3): a row of another venue, or one that does not
+ *                say (left in memory from an old push), could copy another venue's product
+ *                into this one. Rows created in this tab carry their venue from birth.
+ *   failed       { menus, categories, items, groups }: Sets (or arrays) of the ids made in this
+ *                window whose FIRST save failed (store failedCreateIds, from the menu writers
+ *                and the modifier group saves). 27 Sep 2026: only those are offered, for every
+ *                kind, as modifier groups already were. A row that is on screen but not in the
+ *                read for any other reason was deleted in another window, and must not come back.
  */
-export function unsavedMenuRows(store, read, locationId = null, { failedGroupIds = null } = {}) {
-  const menuIds = new Set((read.menus || []).map((m) => m.id));
-  const catIds = new Set((read.menuCategories || []).map((c) => c.id));
-  const itemIds = read.itemIds || new Set((read.menuItems || []).map((i) => i.id));
-  const groupIds = new Set((read.modifierGroupDefs || []).map((g) => g.id));
-  const failedGroups = failedGroupIds instanceof Set ? failedGroupIds : new Set(failedGroupIds || []);
+export function unsavedMenuRows(store, read, locationId = null, { failed = null } = {}) {
+  const idsIn = (kind) => readIdsOf(read, kind) || new Set();
+  const failedOf = (kind) => {
+    const v = failed ? failed[kind] : null;
+    return v instanceof Set ? v : new Set(v || []);
+  };
+  const menuIds = idsIn('menus');
+  const catIds = idsIn('categories');
+  const itemIds = idsIn('items');
+  const groupIds = idsIn('groups');
+  const fMenus = failedOf('menus');
+  const fCats = failedOf('categories');
+  const fItems = failedOf('items');
+  const fGroups = failedOf('groups');
   const ours = (r) => !locationId || rowVenue(r) === locationId;
-  const menus = (store.menus || []).filter((m) => m?.id && ours(m) && !menuIds.has(m.id));
-  const menuCategories = (store.menuCategories || []).filter((c) => c?.id && ours(c) && !catIds.has(c.id));
-  const menuItems = (store.menuItems || []).filter((i) => i?.id && ours(i) && !i.archived && !itemIds.has(i.id) && !String(i.id).startsWith('demo-'));
-  const modifierGroupDefs = (store.modifierGroupDefs || []).filter((g) => g?.id && failedGroups.has(g.id) && ours(g) && !groupIds.has(g.id));
+  const menus = (store.menus || []).filter((m) => m?.id && fMenus.has(m.id) && ours(m) && !menuIds.has(m.id));
+  const menuCategories = (store.menuCategories || []).filter((c) => c?.id && fCats.has(c.id) && ours(c) && !catIds.has(c.id));
+  const menuItems = (store.menuItems || []).filter((i) => i?.id && fItems.has(i.id) && ours(i) && !i.archived && !itemIds.has(i.id) && !String(i.id).startsWith('demo-'));
+  const modifierGroupDefs = (store.modifierGroupDefs || []).filter((g) => g?.id && fGroups.has(g.id) && ours(g) && !groupIds.has(g.id));
   return {
     menus, menuCategories, menuItems, modifierGroupDefs,
     total: menus.length + menuCategories.length + menuItems.length + modifierGroupDefs.length,
@@ -243,20 +310,27 @@ export function unsavedWords(unsaved) {
   if (unsaved.menus.length) parts.push(`${unsaved.menus.length} menu${unsaved.menus.length === 1 ? '' : 's'} (${names(unsaved.menus, (m) => m.name)})`);
   const groups = unsaved.modifierGroupDefs || [];
   if (groups.length) parts.push(`${groups.length} modifier group${groups.length === 1 ? '' : 's'} (${names(groups, (g) => g.name)})`);
-  return `These are on this screen but NOT in the database (never saved, or deleted in another window):\n\n${parts.join('\n')}\n\nOK saves them now (new rows only, nothing already saved is changed) and then pushes.\nCancel stops the push: nothing is sent. Reload the page to see the menu as it is saved.`;
+  return `These were made on this screen but their first save FAILED, so they are NOT in the database:\n\n${parts.join('\n')}\n\nOK saves them now (new rows only, nothing already saved is changed) and then pushes.\nCancel stops the push: nothing is sent. Reload the page to see the menu as it is saved.`;
 }
 
 /**
  * The menu part of a Push to POS snapshot, from a fresh read ONLY. taxProfiles and the venue
  * default ride only when they were read (absent is a no-op on a till).
+ *   extrasFrom   this window's products (27 Sep 2026): the fields with no database column
+ *                (ITEM_EXTRA_KEYS: variantLabel, the pizza fields, ...) are copied from the row
+ *                with the same id, as the snapshot built from the store always carried them.
+ *                Every column still comes from the read.
+ * 27 Sep 2026 (tax root cause port): the rates are the read venue's own and nothing else
+ * (read.locationId, lib/venueTaxRates.js taggedVenueRows). Every Leeds push from 26 Sep 06:47
+ * carried Train Station's rates because the snapshot copied whatever the page held.
  */
-export function menuSnapshotFromRead(read) {
+export function menuSnapshotFromRead(read, { extrasFrom = null } = {}) {
   return {
     menus: read.menus || [],
-    menuItems: read.menuItems || [],
+    menuItems: withItemExtras(read.menuItems || [], extrasFrom),
     menuCategories: read.menuCategories || [],
     modifierGroupDefs: read.modifierGroupDefs || [],
-    taxRates: read.taxRates || [],
+    taxRates: read.locationId ? taggedVenueRows(read.taxRates || [], read.locationId) : (read.taxRates || []),
     ...(Array.isArray(read.taxProfiles) ? { taxProfiles: read.taxProfiles } : {}),
     ...(read.venueDefaultTaxProfileId !== undefined ? { venueDefaultTaxProfileId: read.venueDefaultTaxProfileId } : {}),
   };

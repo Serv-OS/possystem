@@ -17,7 +17,7 @@
 import { mergeById } from './threeWayMerge.js';
 import { sameValue } from './menuItemWrite.js';
 import { mapModifierGroupRow } from './rowMapping.js';
-import { insertRowOnce } from './menuRowWrite.js';
+import { insertRowOnce, writeWithin } from './menuRowWrite.js';
 
 const FIELDS = ['name', 'min', 'max', 'selectionType', 'sortOrder'];
 
@@ -44,6 +44,8 @@ export const modifierGroupRow = (g) => ({
 /**
  * Save `mine` (this window's group) given `base` (the group before this window's edit).
  * Resolves { ok, outcome, group?, error? }: saved | gone | conflict | error.
+ * 27 Sep 2026: the store calls it through writeWithin (lib/menuRowWrite.js, MENU_WAIT_MS), so a
+ * save that never answers is a failed save and the group's queue moves on.
  */
 export async function saveModifierGroupChecked({ client, locationId, base, mine }) {
   if (!client) return { ok: false, outcome: 'error', error: new Error('No database') };
@@ -92,9 +94,10 @@ export const groupStampRetry = (error, cols) => {
  * Save a group whose FIRST save failed, INSERT ONLY (27 Sep 2026, review round 3: Push to POS
  * lists it first, lib/venueMenuRead.js unsavedMenuRows). An existing id is never overwritten,
  * and a group made at another venue is never saved here. Resolves insertRowOnce's
- * { ok, outcome: created | exists | error, row?, error? }.
+ * { ok, outcome: created | exists | error, row?, error? }. 27 Sep 2026: with a time limit
+ * (writeWithin, MENU_WAIT_MS): out of time is a failed save, never a hung Push to POS.
  */
-export async function insertModifierGroupOnce({ client, locationId, group }) {
+export async function insertModifierGroupOnce({ client, locationId, group, ms }) {
   if (!client) return { ok: false, outcome: 'error', error: new Error('No database') };
   if (!locationId || locationId === 'loc-demo') return { ok: false, outcome: 'error', error: new Error('No location') };
   if (!group?.id) return { ok: false, outcome: 'error', error: new Error('No group id') };
@@ -102,11 +105,11 @@ export async function insertModifierGroupOnce({ client, locationId, group }) {
   if (made && made !== locationId) {
     return { ok: false, outcome: 'error', error: new Error(`refusing to save modifier group ${group.id}: it was made at venue ${made}, this Back Office is on ${locationId}`) };
   }
-  return insertRowOnce({
+  return writeWithin(insertRowOnce({
     client, table: 'modifier_groups',
     row: { id: group.id, location_id: locationId, ...modifierGroupRow(group) },
     retryWithout: groupStampRetry,
-  });
+  }), `saving new modifier group ${group.id}`, ms);
 }
 
 /**

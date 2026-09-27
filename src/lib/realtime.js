@@ -228,21 +228,23 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       table: 'tax_rates',
       filter: `location_id=eq.${locationId}`,
     }, async () => {
-      // Re-fetch all rates for this location when any change happens (27 Sep 2026: the rates
-      // carry their venue, lib/rowMapping.js mapTaxRateRow). Until
+      // 27 Sep 2026: Back Office only. A till takes a tax rate change from Push to POS and
+      // nowhere else, like the rest of the menu (the rates it charges with change when the
+      // person pushes, never in the middle of a sale). Until
       // 20260927_OPS_menu_rows_server_time.sql adds tax_rates to supabase_realtime this channel
-      // never fires.
-      // An EMPTY read is applied in Back Office only (the venue really has none: Leeds kept
-      // Train Station's rates because empty reads were skipped). A till keeps its rates: a
-      // tightened read policy answers with no rows and no error, and a till must never drop to
-      // no tax in the middle of service (the same rule as useSupabaseInit and SyncBridge).
+      // never fires anywhere.
+      if (!isBackOfficeMode()) return;
+      // Re-fetch all rates for this location when any change happens (27 Sep 2026: the rates
+      // carry their venue, lib/rowMapping.js mapTaxRateRow). An EMPTY read is applied too: the
+      // venue really has none (Leeds kept Train Station's rates because empty reads were
+      // skipped). A failed read changes nothing.
       const { data, error } = await supabase
         .from('tax_rates').select('*')
         .eq('location_id', locationId)
         .eq('active', true)
         .order('rate', { ascending: false });
       if (error || !Array.isArray(data)) return;
-      if (data.length || isBackOfficeMode()) store.setState({ taxRates: data.map(mapTaxRateRow) });
+      store.setState({ taxRates: data.map(mapTaxRateRow) });
     })
     .subscribe();
 
@@ -675,6 +677,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
   // adds it. An event never lands over a row this device has a save of on its way (the
   // person's newer value stays), nor over a copy the database stamped later (srvAt, the
   // server clock once that file runs).
+  // 27 Sep 2026: Back Office windows only. The tills keep taking the menu from Push to POS and
+  // nothing else: a product edit reaches them when the person pushes, never half way through
+  // a change or in the middle of a sale. Back Office windows still hear each other.
   const menuItemsChannel = supabase
     .channel(`menu_items:${locationId}`)
     .on('postgres_changes', {
@@ -683,6 +688,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       table: 'menu_items',
       filter: `location_id=eq.${locationId}`,
     }, ({ eventType, new: row, old }) => {
+      if (!isBackOfficeMode()) return;
       if (eventType === 'DELETE') {
         const id = old?.id;
         if (!id) return;

@@ -8,9 +8,12 @@
  * All queries are scoped to a location_id for multi-tenancy.
  */
 
-import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
+import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
+import { copiesNeedingMasterRate } from './venueTaxRates';
+import { saveCopyTaxRates } from './bulkTax';
+import { readAllRows } from './venueMenuRead';
 import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
@@ -33,6 +36,13 @@ import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 import { saveSectionsChecked } from './sectionPlan';
 import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
+
+// 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
+// the caller passes none: the one THIS tab resolved (the same rule as store/index.js tabVenue).
+// rpos-bo-location (getActiveLocationSync) is shared by every tab of the browser, so a venue
+// switch in another Back Office tab used to send this tab's writes to that venue. Tills and every
+// other surface keep getActiveLocationSync, unchanged.
+const tabVenue = () => (isBackOfficeMode() && getResolvedLocationIdSync()) || getActiveLocationSync();
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -223,7 +233,7 @@ export const fetchMenuItems = async (locationId = null) => {
  */
 export const fetchArchivedMenuItems = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   if (!locationId) return { data: [], error: null };
   return supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', true).order('updated_at', { ascending: false });
 };
@@ -277,7 +287,7 @@ export const upsertModifierGroup = async (group, locationId = null) => {
   // 'loc-demo'`, so omitting it does NOT fail — the row silently lands on
   // 'loc-demo' and is invisible to every real venue. 'loc-demo' is also truthy,
   // so both checks below must test the literal as well as null/undefined/''.
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
   // COLUMN NOTES (schema read from the live DB, 21 Jul 2026 — this table predates
   // the migrations folder so there is no CREATE TABLE in the repo to check):
@@ -305,7 +315,7 @@ export const upsertModifierGroup = async (group, locationId = null) => {
 
 export const deleteModifierGroup = async (id, locationId = null) => {
   if (isMock) return { data: null, error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   // v5.5.834: refuse an unscoped delete. The old raw fetch filtered on id ALONE
   // (`?id=eq.<id>`) — a cross-tenant hazard the moment two venues share a group id.
   // Same loc-demo trap as the upsert: the literal must be rejected, not just null.
@@ -1345,6 +1355,86 @@ const memo60 = async (key, fn) => {
 export const clearShareMemos = () => { _memo60.clear(); _peerIdMapsMemo.clear(); };
 
 /**
+ * The tax rate each shared COPY at this venue should have: its master's rate,
+ * translated to this venue's own rate by name (and percentage), exactly as a
+ * share or a master edit writes it (27 Sep 2026). A copy's tax_rate_id is not
+ * the venue's own field (lib/shareCopy.js SHARED_OVERRIDABLE); every master edit
+ * rewrites it, so the only lasting answer is the master's.
+ *
+ * Returns Map(copy id -> { taxRateId, reason, ownerName }). Throws when the
+ * masters or a venue's rates could not be read, so nothing is written on a guess.
+ */
+export const masterTaxRatesForCopies = async (copies, locationId) => {
+  const out = new Map();
+  if (isMock || !supabase || !locationId || !Array.isArray(copies) || !copies.length) return out;
+  const masterIds = [...new Set(copies.map((c) => fieldOf(c, 'master_id')).filter(Boolean))];
+  const masters = new Map();
+  for (let i = 0; i < masterIds.length; i += 150) {
+    const { data, error } = await supabase.from('menu_items').select('id, location_id, tax_rate_id').in('id', masterIds.slice(i, i + 150));
+    if (error) throw new Error(`could not read the shared products' masters: ${error.message || error}`);
+    for (const m of data || []) masters.set(m.id, m);
+  }
+  const owners = [...new Set([...masters.values()].map((m) => m.location_id).filter((l) => l && String(l) !== String(locationId)))];
+  const names = new Map();
+  if (owners.length) {
+    try { const { data } = await supabase.from('locations').select('id,name').in('id', owners); for (const l of data || []) names.set(String(l.id), l.name); } catch { /* names are a courtesy */ }
+  }
+  const maps = new Map();
+  for (const owner of owners) {
+    // Never a remembered answer: this venue's rates may have been created a moment ago.
+    _peerIdMapsMemo.delete(`${owner}|${locationId}`);
+    maps.set(String(owner), await peerIdMapsFor(owner, locationId));
+  }
+  for (const c of copies) {
+    const m = masters.get(fieldOf(c, 'master_id'));
+    const ownerName = m ? (names.get(String(m.location_id)) || null) : null;
+    if (!m) { out.set(c.id, { taxRateId: null, reason: 'its master was not found', ownerName }); continue; }
+    if (String(m.location_id) === String(locationId)) { out.set(c.id, { taxRateId: null, reason: 'its master is at this venue', ownerName }); continue; }
+    if (!m.tax_rate_id) { out.set(c.id, { taxRateId: null, reason: 'the master has no tax rate', ownerName }); continue; }
+    const ids = maps.get(String(m.location_id));
+    const mapped = ids ? ids.taxRateIdFor(m.tax_rate_id) : null;
+    out.set(c.id, mapped
+      ? { taxRateId: mapped, reason: null, ownerName }
+      : { taxRateId: null, reason: `no rate here matches the master's ${ids ? ids.nameOf(`tax_rate_id:${m.tax_rate_id}`) : 'tax rate'}`, ownerName });
+  }
+  return out;
+};
+
+/**
+ * When a venue gains tax rates, give every shared copy there that has none its
+ * master's rate (27 Sep 2026). A copy made while the venue had no rates arrived
+ * with none (the name match had nothing to match), and nothing mapped it again
+ * when the rates were added: at Leeds, Preston, Headingly and Huddersfield every
+ * copy sat on no rate until a fix by hand. A copy holding ANOTHER venue's rate
+ * id (the Leeds bulk apply wrote Train Station's) is mapped the same way
+ * (lib/venueTaxRates.js copiesNeedingMasterRate picks the rows).
+ *
+ * Every write goes through the compare and set writer (lib/bulkTax.js
+ * saveCopyTaxRates, lib/menuRowWrite.js writeRowChecked): the tax column only,
+ * on the updated_at it was read with, so a rate set meanwhile is never replaced.
+ *
+ * Returns { ok, mapped: [{ id, taxRateId, row }], unmapped: [{ id, name, reason, ownerName }],
+ *   changed: [{ id, name, current }], failed: [{ id, name, error }], error }.
+ */
+export const mapCopiesTaxFromMasters = async (locationId) => {
+  const empty = { ok: true, mapped: [], unmapped: [], changed: [], failed: [] };
+  if (isMock || !supabase || !locationId || locationId === 'loc-demo') return empty;
+  const [rowsRes, ratesRes] = await Promise.all([
+    readAllRows(() => supabase.from('menu_items')
+      .select('id, master_id, name, menu_name, tax_rate_id, archived, updated_at')
+      .eq('location_id', locationId).not('master_id', 'is', null).order('id')),
+    readAllRows(() => supabase.from('tax_rates').select('id, active').eq('location_id', locationId).order('id')),
+  ]);
+  if (!rowsRes.rows || !ratesRes.rows) return { ...empty, ok: false, error: rowsRes.error || ratesRes.error };
+  const copies = copiesNeedingMasterRate(rowsRes.rows, ratesRes.rows.filter((r) => r.active !== false).map((r) => r.id));
+  if (!copies.length) return empty;
+  let answers;
+  try { answers = await masterTaxRatesForCopies(copies, locationId); }
+  catch (e) { return { ...empty, ok: false, error: e }; }
+  return saveCopyTaxRates({ client: supabase, locationId, copies, answers });
+};
+
+/**
  * Where a category's copy lives at a venue: the bare master id at the venue
  * that OWNS it, `<master>_<suffix>` everywhere else. Addressing the owner with a
  * suffixed id created a duplicate category there (round-2 review, 23 Sep).
@@ -2091,7 +2181,7 @@ export const pullSharedProductsTo = async (locationId, { onProgress, shouldStop 
  */
 export const propagateModifierGroupEdit = async (group) => {
   if (isMock || !supabase || !group?.id) return { ok: true, propagated: 0 };
-  const sourceLocId = group.location_id || group.locationId || getActiveLocationSync() || (await getLocationId());
+  const sourceLocId = group.location_id || group.locationId || tabVenue() || (await getLocationId());
   if (!sourceLocId) return { ok: true, propagated: 0 };
   const { org_id, otherLocationIds } = await getOrgPeerLocations(sourceLocId);
   if (!org_id || !otherLocationIds.length) return { ok: true, propagated: 0 };
@@ -2380,7 +2470,7 @@ export const upsertDiscount = async (discount, locationId = null) => {
 export const deleteDiscount = async (id) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard — never delete across tenants
-  const locationId = getActiveLocationSync() || await getLocationId();
+  const locationId = tabVenue() || await getLocationId();
   return supabase.from('discounts').delete().eq('id', id).eq('location_id', locationId);
 };
 
@@ -2440,7 +2530,7 @@ export const upsertDiscountRule = async (rule, locationId = null) => {
 export const deleteDiscountRule = async (id) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard — never delete across tenants
-  const locationId = getActiveLocationSync() || await getLocationId();
+  const locationId = tabVenue() || await getLocationId();
   return supabase.from('discount_rules').delete().eq('id', id).eq('location_id', locationId);
 };
 

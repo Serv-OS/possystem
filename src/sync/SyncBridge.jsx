@@ -10,6 +10,7 @@ import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, n
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode, isBackOfficeMode } from '../lib/supabase';
+import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { fetchMenuCategoryLinks } from '../lib/db';
@@ -275,6 +276,16 @@ export default function SyncBridge({ onSyncPulse }) {
               _sectionsLocationId: null,
               _sectionsBase: null,
               closedChecks: [],
+              // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"):
+              // the other venue's tax set up, discounts and packages go too. They were kept, so a
+              // browser that had been at Train Station (or Provo, another organisation) carried its
+              // tax rates, discount presets, auto discount rules and packages into every Leeds push.
+              taxRates: [],
+              taxProfiles: [],
+              venueDefaultTaxProfileId: null,
+              discountPresets: [],
+              discountRules: [],
+              packages: [],
               _dataLocationId: null,
             });
           }
@@ -478,35 +489,52 @@ export default function SyncBridge({ onSyncPulse }) {
             } catch (e) { console.warn('[SyncBridge] local-only sync failed', e); }
           }
 
-          // Load tax rates directly from Supabase (source of truth)
+          // Load tax rates directly from Supabase (source of truth).
+          // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"): rows
+          // replace the rates, tagged with this venue (mapTaxRateRow), and another venue's rates are
+          // never kept, whatever the read says (lib/venueTaxRates.js ratesAfterRead). In Back Office
+          // a successful read of NO rates is the answer (Leeds had none of its own, the store kept
+          // Train Station's, and "Apply to all" wrote them into 430 Leeds products). A till keeps
+          // this venue's own rates on an empty read: it charges with them.
+          // APPLIED HERE, at once, against the store as it is NOW, never in the boot patch below:
+          // that lands seconds later and would put this answer over rates a push loaded meanwhile.
+          // In Back Office the Back Office's own read (store loadVenueMenu) wins once it has landed.
           if (sb && locationId) {
+            let taxRes = null;
             try {
-              const { data: taxData, error: taxErr } = await sb.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
-              if (taxData?.length) patch.taxRates = taxData.map(mapTaxRateRow);
-              // 27 Sep 2026: in Back Office a successful read of NO rates is the answer. Leeds had
-              // none of its own, the store kept Train Station's from the last push, and "Apply to
-              // all" wrote them into 430 Leeds products. (A till keeps its rates: it charges with them.)
-              else if (!taxErr && Array.isArray(taxData) && isBackOfficeMode()) patch.taxRates = [];
-            } catch {}
+              taxRes = await sb.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
+            } catch (e) { taxRes = { data: null, error: e }; }
+            if (!(isBackOfficeMode() && useStore.getState().menuReadLocationId === locationId)) {
+              const taxRows = taxRes && !taxRes.error && Array.isArray(taxRes.data) ? { data: taxRes.data.map(mapTaxRateRow), error: null } : taxRes;
+              useStore.setState(s => ({ taxRates: ratesAfterRead(taxRows, locationId, s.taxRates, { trusted: isBackOfficeMode() }) }));
+            }
           }
 
           // Load discount presets + auto-discount rules
           if (sb && locationId) {
             try {
+              // 27 Sep 2026: an EMPTY answer replaces what the store held only when it is believed:
+              // always in Back Office, and on a till when read with a session the database answers
+              // truthfully (a device's anonymous session: clientTrustsEmpty, asked BEFORE the read).
+              // Train Station's presets and Provo's rules rode every Leeds push, and stayed on the
+              // Leeds tills, because an empty Leeds read changed nothing. A failed read changes nothing.
+              const discTrusted = isBackOfficeMode() || await clientTrustsEmpty(sb);
               const [discRes, rulesRes] = await Promise.all([
                 sb.from('discounts').select('*').eq('location_id', locationId).eq('active', true).order('sort_order'),
                 sb.from('discount_rules').select('*').eq('location_id', locationId).eq('active', true).order('priority', { ascending: false }),
               ]);
-              if (discRes.data?.length) patch.discountPresets = discRes.data.map(d => ({
-                id: d.id, name: d.name, label: d.name,
+              // Each row carries its venue, so a push carries only this venue's (taggedVenueRows)
+              // and a till takes only its own (venueRowsFromSnapshot).
+              if (readMayReplace(discRes, { trusted: discTrusted })) patch.discountPresets = discRes.data.map(d => ({
+                id: d.id, name: d.name, label: d.name, locationId,
                 type: d.type, value: parseFloat(d.value),
                 scope: d.scope,
                 categoryIds: d.category_ids || [],
                 requiresManager: d.requires_manager ?? false,
                 active: d.active, sortOrder: d.sort_order ?? 0,
               }));
-              if (rulesRes.data?.length) patch.discountRules = rulesRes.data.map(r => ({
-                id: r.id, name: r.name, active: r.active,
+              if (readMayReplace(rulesRes, { trusted: discTrusted })) patch.discountRules = rulesRes.data.map(r => ({
+                id: r.id, name: r.name, active: r.active, locationId,
                 triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
                 triggerQty: r.trigger_qty,
                 triggerGroups: r.trigger_groups || null,
@@ -623,7 +651,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // (store loadVenueMenu), which also knows which rows have a save of this tab on its way.
           // When that read has already landed, this boot read (older, or no newer) leaves it alone.
           if (isBackOfficeMode() && useStore.getState().menuReadLocationId === locationId) {
-            for (const k of ['menuItems', 'menuCategories', 'menus', 'modifierGroupDefs', 'taxRates', 'taxProfiles', 'venueDefaultTaxProfileId']) delete patch[k];
+            for (const k of ['menuItems', 'menuCategories', 'menus', 'modifierGroupDefs', 'taxProfiles', 'venueDefaultTaxProfileId']) delete patch[k];
           }
           if (Object.keys(patch).length) useStore.setState(patch);
 

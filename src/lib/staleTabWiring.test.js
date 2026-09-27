@@ -63,11 +63,11 @@ test('every loader keeps the database time through the one mapper', () => {
   assert.match(sync, /itemsRes\.data\.map\(mapMenuItemRow\)/);
   assert.match(sync, /catsRes\.data\.map\(mapCategoryRow\)/);
   assert.match(sync, /modGroupsRes\.data\.map\(mapModifierGroupRow\)/);
-  assert.match(sync, /taxData\.map\(mapTaxRateRow\)/);
+  assert.match(sync, /taxRes\.data\.map\(mapTaxRateRow\)/);
   assert.match(sync, /insertMenuItem\(\{ \.\.\.item, location_id: locationId \}, locationId\)/, 'local only items are inserted, never upserted');
   const init = read('./useSupabaseInit.js');
   assert.match(init, /items\.map\(mapMenuItemRow\)/);
-  assert.match(init, /rates\.map\(mapTaxRateRow\)/);
+  assert.match(init, /taxRes\.data\.map\(mapTaxRateRow\)/);
   assert.match(STORE, /const rows = \(data \|\| \[\]\)\.map\(mapMenuItemRow\);/, 'loadArchivedMenuItems');
   const rt = read('./realtime.js');
   assert.match(rt, /return mapItemRow\(item\);/, 'realtime maps through the same mapper');
@@ -79,13 +79,16 @@ test('every loader keeps the database time through the one mapper', () => {
 });
 
 test('in Back Office an empty tax read clears the rates; a till keeps its own', () => {
+  // 27 Sep 2026 (the tax root cause port): both through lib/venueTaxRates.js ratesAfterRead, which
+  // never keeps another venue's rates; "trusted" (an empty answer is the truth) only in Back Office.
   const sync = read('../sync/SyncBridge.jsx');
-  assert.match(sync, /else if \(!taxErr && Array\.isArray\(taxData\) && isBackOfficeMode\(\)\) patch\.taxRates = \[\];/);
+  assert.match(sync, /useStore\.setState\(s => \(\{ taxRates: ratesAfterRead\(taxRows, locationId, s\.taxRates, \{ trusted: isBackOfficeMode\(\) \}\) \}\)\);/);
   const init = read('./useSupabaseInit.js');
-  assert.match(init, /else if \(!ratesErr && Array\.isArray\(rates\) && isBackOfficeMode\(\)\) useStore\.setState\(\{ taxRates: \[\] \}\);/);
+  assert.match(init, /useStore\.setState\(s => \(\{ taxRates: ratesAfterRead\(taxRows, locId, s\.taxRates, \{ trusted: isBackOfficeMode\(\) \}\) \}\)\);/);
   // A push snapshot (the boot fetch of the last push) no longer puts an older menu, or another
   // venue's rates, back over a fresh read in Back Office.
-  assert.match(STORE, /const menuSlices = boMenuFromDb \? \{\} : \{/);
+  // 27 Sep 2026 (review round 4): only the product fields with no column are taken from it.
+  assert.match(STORE, /const menuSlices = boMenuFromDb \? \(boExtras && boExtras !== useStore\.getState\(\)\.menuItems \? \{ menuItems: boExtras \} : \{\}\) : \{/);
   assert.match(sync, /if \(isBackOfficeMode\(\) && useStore\.getState\(\)\.menuReadLocationId === locationId\) \{/);
 });
 
@@ -94,13 +97,15 @@ test('the bulk strips are bounded, awaited, summarised, and offer this venue\'s 
   assert.doesNotMatch(mm, /missingTax\.forEach\(/, 'no fire and forget loop');
   assert.doesNotMatch(mm, /targets\.forEach\(i => updateMenuItem/, 'no fire and forget loop');
   assert.match(mm, /const out = await bulkUpdateMenuItems\(/);
-  assert.match(mm, /showToast\(bulkSummaryWords\(out, t\.name\|\|'Tax rate'\)/);
-  assert.match(mm, /const venueRatesOf = \(rates\) => \(isMock \? \(rates \|\| \[\]\) : venueTaxRates\(rates, getActiveLocationSync\(\)\)\);/);
+  // 27 Sep 2026 (the tax root cause port): the rate strip runs through store applyBulkTaxRates
+  // (lib/bulkTax.js, pinned in taxVenueWiring.test.js); the profile strip keeps its summary.
+  assert.match(mm, /showToast\(`\$\{bulkSummaryWords\(out, pName\)\} \(\$\{label\}\)`/);
+  assert.match(mm, /const venueRatesOf = \(rates\) => \(isMock \? \(rates \|\| \[\]\) : venueTaxRates\(rates, tabVenue\(\)\)\);/);
   assert.match(mm, /const NO_VENUE_RATES = 'This venue has no tax rates yet';/);
-  assert.match(between(mm, 'function TaxSection(', 'const noneOption'), /const taxRates = venueRatesOf\(allTaxRates\);/);
+  assert.match(between(mm, 'function TaxSection(', 'const noneOption'), /const taxRates = liveVenueRatesOf\(allTaxRates\);/);
   assert.match(STORE, /export async function bulkUpdateMenuItems\(entries, \{ concurrency = 6, onProgress = null \} = \{\}\) \{\s*await whenMenuLoadIdle\(\);/);
   // New products take THIS venue's default rate in Back Office.
-  assert.match(between(STORE, 'addMenuItem: item => {', 'getItemPrice:'), /isBackOfficeMode\(\) \? venueTaxRates\(useStore\.getState\(\)\.taxRates, getActiveLocationSync\(\)\)/);
+  assert.match(between(STORE, 'addMenuItem: item => {', 'getItemPrice:'), /isBackOfficeMode\(\) \? venueTaxRates\(useStore\.getState\(\)\.taxRates, tabVenue\(\)\)/);
 });
 
 test('realtime never lands over a save of this tab on its way, nor over a newer copy', () => {
@@ -109,10 +114,10 @@ test('realtime never lands over a save of this tab on its way, nor over a newer 
   assert.match(ch, /if \(isMenuRowPending\('items', row\.id\)\) return;/);
   assert.match(ch, /if \(srvNewer\(list\[idx\], mapped\)\) return \{\};/);
   const tax = between(rt, 'const taxChannel = supabase', '.subscribe();');
-  // An empty read is the answer in Back Office only; a till keeps its rates (a tightened read
-  // policy answers with no rows and no error, and a till must never drop to no tax in service).
+  // 27 Sep 2026 (review round 4): Back Office only, so an empty read (the venue has no rates) is
+  // the answer there; a till never takes a rate from this channel (only from Push to POS).
   assert.match(tax, /if \(error \|\| !Array\.isArray\(data\)\) return;/);
-  assert.match(tax, /if \(data\.length \|\| isBackOfficeMode\(\)\) store\.setState\(\{ taxRates: data\.map\(mapTaxRateRow\) \}\);/);
+  assert.match(tax, /store\.setState\(\{ taxRates: data\.map\(mapTaxRateRow\) \}\);/);
 });
 
 test('settings saved whole are merged at save time: pos_settings, print routing, the Quick Screen', () => {
@@ -131,8 +136,10 @@ test('settings saved whole are merged at save time: pos_settings, print routing,
   assert.match(qs, /readQuickScreenIds\(\)\.then\(\(r\) => \{/);
   assert.match(qs, /dbBase\.current = r\.ids;/);
   assert.match(qs, /const base = dbBase\.current != null \? dbBase\.current : prevIds\.filter\(Boolean\);/);
-  assert.match(qs, /return await saveQuickScreenIds\(filtered, \{ base \}\);/);
-  assert.match(qs, /const run = saveChain\.current\.then\(/, 'this window\'s saves go one at a time');
+  assert.match(qs, /return await withTimeout\(saveQuickScreenIds\(filtered, \{ base \}\), MENU_WAIT_MS, 'Quick Screen save'\);/);
+  // 27 Sep 2026 (review round 4): one at a time IN the menu write chain, so Push to POS waits.
+  assert.match(qs, /const run = runInMenuWriteQueue\(async \(\) => \{/, 'this window\'s saves go one at a time');
+  assert.doesNotMatch(qs, /saveChain/, 'no chain of its own that Push to POS cannot see');
   // Modifier groups: every edit of an existing group passes the group as this tab had it.
   assert.match(STORE, /if \(group\) useStore\.getState\(\)\._saveModGroupOrWarn\(group, base\);/);
 });
@@ -193,13 +200,23 @@ test('the migration publishes only the two tables the app listens to', () => {
   const sql = readFileSync(new URL('../../supabase/migrations/20260927_OPS_menu_rows_server_time.sql', import.meta.url), 'utf8');
   assert.match(sql, /foreach t in array array\['menu_items', 'tax_rates'\] loop/);
   assert.doesNotMatch(sql, /array\['menu_items', 'menu_categories'/, 'modifier_groups was pruned from realtime on purpose (20260804b)');
+  // 27 Sep 2026 (review round 4): the database clock on INSERT too (a new row used to keep the
+  // device clock), and the undo drops each trigger by name.
+  for (const t of ['menu_items', 'menu_categories', 'menus', 'modifier_groups']) {
+    assert.match(sql, new RegExp(`create trigger ${t}_stamp_updated_at\\n  before insert or update on public\\.${t}\\n`), t);
+    assert.match(sql, new RegExp(`--   drop trigger if exists ${t}_stamp_updated_at on public\\.${t};`), `${t} undo`);
+  }
+  assert.doesNotMatch(sql, /^\s*before update on/m, 'no trigger on update only');
 });
 
 test('a menu read and the waits for one have a time limit', () => {
   const load = between(STORE, 'export async function loadVenueMenu(locationId) {', '\n}\n');
   assert.match(load, /await withTimeout\(readVenueMenu\(supabase, locationId\), MENU_WAIT_MS, 'menu read'\)/);
   assert.match(load, /finally \{\s*endMenuLoad\(\);/, 'menuLoading always clears');
-  assert.match(STORE, /export const MENU_WAIT_MS = 15000;/);
+  // 27 Sep 2026 (review round 4): one value, where the writers use it; the store re exports it.
+  assert.match(read('./menuRowWrite.js'), /export const MENU_WAIT_MS = 15000;/);
+  assert.match(STORE, /import \{ deleteRowChecked, writeWithin, MENU_WAIT_MS \} from '\.\.\/lib\/menuRowWrite';/);
+  assert.match(STORE, /\nexport \{ MENU_WAIT_MS \};\n/);
 });
 
 test('instruction groups: a push lays this window\'s changes onto the latest push, never its whole memory', () => {
@@ -229,7 +246,7 @@ test('a product\'s sizes and modifier groups follow its save only once it landed
 });
 
 test('menu rows made in this tab carry their venue from birth, and their first save goes only there', () => {
-  assert.match(STORE, /const venueAtBirth = \(\) => \{\s*const loc = getActiveLocationSync\(\);\s*return loc && loc !== 'loc-demo' \? \{ location_id: loc \} : \{\};/);
+  assert.match(STORE, /const venueAtBirth = \(\) => \{\s*const loc = tabVenue\(\);\s*return loc && loc !== 'loc-demo' \? \{ location_id: loc \} : \{\};/);
   assert.match(between(STORE, 'addMenu: menu => {', 'updateMenu:'), /\.\.\.menu, \.\.\.venueAtBirth\(\) \};[\s\S]*locationId: rowVenue\(newMenu\)/);
   assert.match(between(STORE, 'addCategory: cat => {', 'updateCategory:'), /\.\.\.cat, \.\.\.venueAtBirth\(\) \};/);
   assert.match(STORE, /\{ label: cat\.label, locationId: rowVenue\(cat\) \}\);/);
@@ -239,8 +256,130 @@ test('menu rows made in this tab carry their venue from birth, and their first s
   assert.match(between(STORE, 'addModifierGroupDef: g => {', 'updateModifierGroupDef:'), /\.\.\.g, \.\.\.venueAtBirth\(\) \};/);
   // A reload drops rows kept for another venue: the venue goes into every merge.
   const vmr = read('./venueMenuRead.js');
-  assert.match(vmr, /mergeReadRows\(state\?\.menuItems, read\.menuItems, \{ keep: k\('items'\), keepArchived: true, locationId \}\)/);
+  assert.match(vmr, /mergeReadRows\(state\?\.menuItems, read\.menuItems, \{ keep: k\('items'\), keepArchived: true, locationId, extras: ITEM_EXTRA_KEYS \}\)/);
   assert.match(vmr, /mergeReadRows\(state\?\.modifierGroupDefs, read\.modifierGroupDefs, \{ keep: k\('groups'\), locationId \}\)/);
   const w = read('./menuWriters.js');
   assert.match(w, /if \(job\.locationId && job\.locationId !== loc\) \{/);
+});
+
+// ── Review round 4 (27 Sep 2026) ────────────────────────────────────────────────────────────
+
+test('the tills take the menu and tax rates from Push to POS only; Back Office windows hear each other', () => {
+  const rt = read('./realtime.js');
+  const items = between(rt, 'const menuItemsChannel = supabase', 'channels.push(menuItemsChannel);');
+  const handler = between(items, '}, ({ eventType, new: row, old }) => {', "if (eventType === 'DELETE') {");
+  assert.match(handler, /=> \{\s*if \(!isBackOfficeMode\(\)\) return;\s*$/, 'the first line of the handler');
+  const tax = between(rt, 'const taxChannel = supabase', '.subscribe();');
+  assert.ok(tax.indexOf('if (!isBackOfficeMode()) return;') > 0, 'the tax channel too');
+  assert.ok(tax.indexOf('if (!isBackOfficeMode()) return;') < tax.indexOf(".from('tax_rates')"), 'before it reads anything');
+  const sql = readFileSync(new URL('../../supabase/migrations/20260927_OPS_menu_rows_server_time.sql', import.meta.url), 'utf8');
+  assert.match(sql, /It reaches the TILLS on Push to POS/);
+  assert.doesNotMatch(sql, /reaches the tills live/);
+});
+
+test('Push to POS offers back only rows whose first save failed here, and a reload keeps them', () => {
+  const w = read('./menuWriters.js');
+  assert.match(w, /if \(job\.kind === 'create'\) \{\s*if \(o === 'created' \|\| o === 'exists'\) failedCreates\.delete\(id\);\s*else if \(o === 'error'\) failedCreates\.add\(id\);/);
+  assert.match(STORE, /export const failedCreateIds = \(\) => \(\{\s*menus: menuWriters\.menus\.failedCreateIds\(\),\s*categories: menuWriters\.categories\.failedCreateIds\(\),\s*items: menuWriters\.items\.failedCreateIds\(\),\s*groups: new Set\(_groupCreateFailed\),/);
+  const apply = between(STORE, 'export function applyVenueMenuRead(', '\n}\n');
+  assert.match(apply, /for \(const id of menuWriters\[kind\]\.failedCreateIds\(\)\) keep\.add\(id\);/, 'kept through a reload');
+  assert.match(apply, /for \(const kind of \['items', 'categories', 'menus'\]\) settleFailed\(kind\);/);
+  assert.match(apply, /\.\.\._groupCreates\.keys\(\), \.\.\._groupCreateFailed\]\);/, 'groups too');
+  // A delete here forgets it.
+  assert.match(between(STORE, 'removeMenu: id => {', 'menuCategories:'), /menuWriters\.menus\.forgetCreate\(id\);/);
+  assert.match(between(STORE, 'removeCategory: id => {', 'modifierLibrary:'), /menuWriters\.categories\.forgetCreate\(id\);/);
+  assert.match(between(STORE, 'const sbDeleteMenu = ', '\n}));'), /menuWriters\.menus\.forgetCreate\(id\);/);
+  assert.match(between(STORE, 'const sbDeleteCategory = ', '\n}));'), /menuWriters\.categories\.forgetCreate\(id\);/);
+});
+
+test('the product fields with no column ride Push to POS and survive a reload and a push applied in Back Office', () => {
+  const bo = read('../backoffice/BackOfficeApp.jsx');
+  const handle = between(bo, 'const handlePush = async () => {', '\n  };\n');
+  assert.match(handle, /const menuPart = menuRead \? menuSnapshotFromRead\(menuRead, \{ extrasFrom: useStore\.getState\(\)\.menuItems \}\)/);
+  const vmr = read('./venueMenuRead.js');
+  assert.match(vmr, /mergeReadRows\(state\?\.menuItems, read\.menuItems, \{ keep: k\('items'\), keepArchived: true, locationId, extras: ITEM_EXTRA_KEYS \}\)/);
+  const cfg = between(STORE, 'applyConfigUpdate: () => {', '\n  },\n');
+  assert.match(cfg, /const boExtras = boMenuFromDb && snap\.menuItems\?\.length \? withItemExtras\(useStore\.getState\(\)\.menuItems, snap\.menuItems\) : null;/);
+  // A boot read of the products (every device) keeps them from the rows it replaces.
+  assert.match(read('./useSupabaseInit.js'), /useStore\.setState\(\(s\) => \(\{ menuItems: withItemExtras\(items\.map\(mapMenuItemRow\), s\.menuItems\) \}\)\);/);
+  const mm = read('../backoffice/sections/MenuManager.jsx');
+  assert.doesNotMatch(mm, /Not saved yet: this label stays on this screen only/, 'the label reaches the tills again');
+});
+
+test('every menu write has a time limit, and every save Push to POS must wait for is in the chain it waits on', () => {
+  const w = read('./menuWriters.js');
+  assert.match(w, /return writeWithin\(insertRowOnce\(\{ client, table: t\.table,/);
+  assert.match(w, /const once = \(\) => writeWithin\(writeRowChecked\(\{/);
+  assert.doesNotMatch(w, /return insertRowOnce\(|= \(\) => writeRowChecked\(/, 'no call without a limit');
+  assert.match(read('./modifierGroupWrite.js'), /return writeWithin\(insertRowOnce\(\{\s*client, table: 'modifier_groups',/);
+  assert.match(read('./menuRowWrite.js'), /return withTimeout\(promise, ms, label\)\.catch\(\(error\) => \(\{ ok: false, outcome: 'error', error \}\)\);/);
+  assert.match(STORE, /const r = await writeWithin\(saveModifierGroupChecked\(\{ client: supabase, locationId: loc, base, mine \}\), `saving modifier group \$\{id\}`\);/);
+  assert.match(STORE, /const write = withTimeout\(upsertModifierGroup\(group\), MENU_WAIT_MS,/);
+  assert.match(STORE, /writeWithin\(deleteRowChecked\(\{ client: supabase, table: 'menus', id, locationId \}\)/);
+  assert.match(STORE, /writeWithin\(deleteRowChecked\(\{ client: supabase, table: 'menu_categories', id, locationId \}\)/);
+  assert.match(between(STORE, 'archiveMenuItem: async id => {', '// ── Editable floor plan'), /return await withTimeout\(supabase\.from\('menu_items'\)/);
+  // A modifier group delete runs in the menu write chain, so whenMenuWritesIdle covers it.
+  const del = between(STORE, 'removeModifierGroupDef: id => {', 'reorderModifierGroupDefs:');
+  assert.match(del, /runInMenuWriteQueue\(\(\) => withTimeout\(deleteModifierGroup\(id\), MENU_WAIT_MS, `deleting modifier group \$\{id\}`\)\)/);
+  assert.match(between(STORE, 'export async function whenMenuWritesIdle() {', '\n}\n'), /runInMenuWriteQueue\(\(\) => null\)/);
+});
+
+// ── 27 Sep 2026: the venue is THIS tab's ────────────────────────────────────────────────────
+// rpos-bo-location (getActiveLocationSync) is shared by every tab of the browser: a venue switch
+// in another Back Office tab sent this tab's new products to that venue and had its edits
+// refused. The behaviour is proved in menuWriters.test.js with the real functions; these pin
+// that every Back Office menu, category, modifier group, tax and discount write uses them.
+test('Back Office menu, tax and discount writes take the venue THIS tab resolved, never the shared key', () => {
+  const SUPA = read('./supabase.js');
+  assert.match(SUPA, /^let _resolvedLocationId = null;$/m, 'a module variable: one per tab (page load)');
+  assert.match(SUPA, /export const getResolvedLocationIdSync = \(\) => _resolvedLocationId;/);
+  assert.match(STORE, /export const tabVenue = \(\) => \(isBackOfficeMode\(\) && getResolvedLocationIdSync\(\)\) \|\| getActiveLocationSync\(\);/);
+  assert.match(STORE, /resolveLocation: async \(\) => tabVenue\(\) \|\| await getLocationId\(\),/, 'every item, category and menu writer');
+  assert.match(between(STORE, 'const modifierGroupSaves = createLatestQueue(', 'export const isMenuRowPending'), /try \{ loc = tabVenue\(\) \|\| await getLocationId\(\); \} catch \{ loc = null; \}/);
+  assert.match(between(STORE, 'async function saveGroupFirstTime(group) {', '\n}\n'), /try \{ loc = tabVenue\(\) \|\| await getLocationId\(\); \} catch \{ loc = null; \}/);
+  assert.match(between(STORE, 'const sbDeleteMenu = (id) =>', '}));'), /const locationId = tabVenue\(\) \|\| await getLocationId\(\)/);
+  assert.match(between(STORE, 'const sbDeleteCategory = (id) =>', '}));'), /const locationId = tabVenue\(\) \|\| await getLocationId\(\)/);
+  assert.match(between(STORE, 'const _scopedPropagator = createScopedPropagator({', 'const loc = tabVenue()'), /readRow: async \(id\) => \{/);
+  assert.match(between(STORE, 'archiveMenuItem: async id => {', 'updateTableLayout: (id, patch) => {'), /const locId = tabVenue\(\) \|\| await getLocationId\(\)/);
+  assert.match(between(STORE, 'applyConfigUpdate: () => {', 'const snapTaxRates'), /const pushVenue = tabVenue\(\) \|\| snap\.locationId \|\| null;/);
+  // Nothing else in the store's menu writers reads the shared key (the session tag is a till's).
+  const menuPart = between(STORE, 'const MENU_TOAST_MS = 9000;', 'export const useStore = create(')
+    .replace(/export const tabVenue = [^\n]*\n/, '')
+    .replace(/const venueTag = [^\n]*\n/, '')
+    .replace(/^\s*\/\/[^\n]*$/gm, '');
+  assert.doesNotMatch(menuPart, /getActiveLocationSync\(\)/);
+  // db.js: the Back Office writers that fall back to a venue of their own.
+  const DB = read('./db.js');
+  assert.match(DB, /const tabVenue = \(\) => \(isBackOfficeMode\(\) && getResolvedLocationIdSync\(\)\) \|\| getActiveLocationSync\(\);/);
+  for (const fn of ['export const fetchArchivedMenuItems = async', 'export const upsertModifierGroup = async', 'export const deleteModifierGroup = async',
+    'export const propagateModifierGroupEdit = async', 'export const deleteDiscount = async', 'export const deleteDiscountRule = async']) {
+    const body = between(DB, fn, '\n};\n');
+    assert.match(body, /tabVenue\(\)/, fn);
+    assert.doesNotMatch(body, /getActiveLocationSync/, fn);
+  }
+  // The Menu Manager: this tab's venue everywhere (rates offered, Apply to all, archives, pulls).
+  const mm = read('../backoffice/sections/MenuManager.jsx');
+  assert.doesNotMatch(mm, /getActiveLocationSync/);
+  assert.match(mm, /import \{[^}]*\btabVenue \} from '\.\.\/\.\.\/store';/);
+  assert.match(between(mm, 'async function archiveVariantRow(id) {', '\n}\n'), /const locId = tabVenue\(\) \|\| await getLocationId\(\)/);
+});
+
+// 27 Sep 2026: the Quick Screen MODE save used to run outside the menu write chain, so Push to
+// POS, which reads quick_screen_mode once the chain is idle, could read the mode from before it.
+test('the Quick Screen mode save runs in the menu write chain, with the list save\'s time limit', () => {
+  const mm = read('../backoffice/sections/MenuManager.jsx');
+  const smart = between(mm, 'const saveSmart = async (mode, auto) => {', 'const recompute = async');
+  assert.match(smart, /err = await runInMenuWriteQueue\(\(\) => withTimeout\(\(async \(\) => \{/);
+  assert.match(smart, /\}\)\(\), MENU_WAIT_MS, 'Quick Screen mode save'\)\);/);
+  const job = between(smart, 'runInMenuWriteQueue(', "'Quick Screen mode save'");
+  assert.match(job, /const locId = await getLocationId\(\);/);
+  assert.match(job, /await supabase\.from\('locations'\)\.update\(patch\)\.eq\('id', locId\)\.select\('id'\);/);
+  assert.equal((smart.match(/supabase\.from\(/g) || []).length, 1, 'no write outside the chain');
+  // The list save keeps the same limit, and Push reads the mode only after the chain is idle.
+  assert.match(mm, /return await withTimeout\(saveQuickScreenIds\(filtered, \{ base \}\), MENU_WAIT_MS, 'Quick Screen save'\);/);
+  const bo = read('../backoffice/BackOfficeApp.jsx');
+  const push = between(bo, 'const handlePush = async () => {', 'if (justPushed)');
+  const idle = push.indexOf("await waitFor(whenMenuWritesIdle(), 'menu saves');");
+  const readMode = push.indexOf("select('pos_settings, quick_screen_mode, quick_screen_ids')");
+  assert.ok(idle > 0 && readMode > idle, 'the mode is read after every menu save landed');
 });

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { propagatedFields, isMasterRow } from '../lib/shareCopy';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, getResolvedLocationIdSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, readLocalDevice } from '../lib/supabase';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -10,6 +10,9 @@ import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, o
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
+import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs } from '../lib/venueTaxRates';
+import { venueRowsOnly } from '../lib/boVenueBoot';
+import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
 import { creditDiscountsFromPayment, chargedAddedOnTax } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
@@ -17,9 +20,9 @@ import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates } from '../lib/rowMapping';
 import { createMenuWriters, categoryInsertRetry, runItemEditWrites, putBackFollowers } from '../lib/menuWriters';
-import { deleteRowChecked } from '../lib/menuRowWrite';
+import { deleteRowChecked, writeWithin, MENU_WAIT_MS } from '../lib/menuRowWrite';
 import { menuItemRow, categoryRow, menuRow } from '../lib/menuItemWrite';
-import { readVenueMenu, menuPatchFromRead, parentsFirst, rowVenue, emptyItemsReadSuspect, venueItemCount, suspectReadWords } from '../lib/venueMenuRead';
+import { readVenueMenu, menuPatchFromRead, parentsFirst, rowVenue, emptyItemsReadSuspect, venueItemCount, suspectReadWords, readIdsOf, withItemExtras } from '../lib/venueMenuRead';
 import { saveModifierGroupChecked, createLatestQueue, insertModifierGroupOnce } from '../lib/modifierGroupWrite';
 import { runBulkEdits, bulkSummaryWords } from '../lib/menuBulk';
 import { scheduleMenuTranslate } from '../lib/menuTranslateTrigger';
@@ -354,9 +357,17 @@ export const runInMenuWriteQueue = (job) => {
 const MENU_SLICE = { items: 'menuItems', categories: 'menuCategories', menus: 'menus' };
 // A refusal is a long sentence: it stays up long enough to read (the red bar stays too).
 const MENU_TOAST_MS = 9000;
+// 27 Sep 2026: the venue a Back Office menu, category, modifier group, tax or discount write
+// takes, and the venue a row made here is stamped with. getActiveLocationSync reads
+// rpos-bo-location, which EVERY tab of the browser shares: switching venue in another Back
+// Office tab rewrote it, and this tab's new products were inserted at that other venue while
+// its edits were refused as "belongs to another venue". In Back Office the venue is the one
+// THIS tab resolved (lib/supabase.js getResolvedLocationIdSync, kept per tab). Tills, kiosks
+// and every other surface keep getActiveLocationSync (their paired venue), unchanged.
+export const tabVenue = () => (isBackOfficeMode() && getResolvedLocationIdSync()) || getActiveLocationSync();
 const menuWriters = createMenuWriters({
   getClient: () => (isMock ? null : supabase),
-  resolveLocation: async () => getActiveLocationSync() || await getLocationId(),
+  resolveLocation: async () => tabVenue() || await getLocationId(),
   getRow: (kind, id) => (useStore.getState()[MENU_SLICE[kind]] || []).find((r) => r.id === id),
   updateRow: (kind, id, fn) => useStore.setState((s) => {
     const key = MENU_SLICE[kind];
@@ -381,13 +392,21 @@ const _groupCreates = new Map();
 // offers exactly these, insert only (lib/venueMenuRead.js unsavedMenuRows), never a group that
 // is only missing from the read (that one was deleted in another window and stays deleted).
 const _groupCreateFailed = new Set();
-export const unsavedGroupIds = () => new Set(_groupCreateFailed);
+// 27 Sep 2026: the same rule for every kind. The menu writers remember each product, category
+// and menu whose first save failed in this window (lib/menuWriters.js failedCreateIds); a
+// category or menu deleted in another window used to be offered back by Push to POS.
+export const failedCreateIds = () => ({
+  menus: menuWriters.menus.failedCreateIds(),
+  categories: menuWriters.categories.failedCreateIds(),
+  items: menuWriters.items.failedCreateIds(),
+  groups: new Set(_groupCreateFailed),
+});
 
 // 27 Sep 2026 (review round 3): a menu row made in this tab carries its venue from birth, so a
 // reload after a venue switch never carries it into another venue, its first save is never
 // inserted at another venue, and Push to POS offers it only to its own (lib/venueMenuRead.js).
 const venueAtBirth = () => {
-  const loc = getActiveLocationSync();
+  const loc = tabVenue();
   return loc && loc !== 'loc-demo' ? { location_id: loc } : {};
 };
 // Modifier groups: a save re-reads the group and lays only this tab's change onto it
@@ -398,8 +417,10 @@ const modifierGroupSaves = createLatestQueue(async (id, { base, mine }) => {
   const creating = _groupCreates.get(id);
   if (creating) await creating;
   let loc = null;
-  try { loc = getActiveLocationSync() || await getLocationId(); } catch { loc = null; }
-  const r = await saveModifierGroupChecked({ client: supabase, locationId: loc, base, mine });
+  try { loc = tabVenue() || await getLocationId(); } catch { loc = null; }
+  // 27 Sep 2026: with a time limit (writeWithin, MENU_WAIT_MS). A save that never answered held
+  // this group's queue, and Push to POS waits for every group save, so no push went out.
+  const r = await writeWithin(saveModifierGroupChecked({ client: supabase, locationId: loc, base, mine }), `saving modifier group ${id}`);
   if (r.ok && r.group && !modifierGroupSaves.hasQueued(id)) {
     // Show what was saved (another tab's option changes included), unless a newer edit of
     // ours is already waiting: its save will show the result.
@@ -481,11 +502,24 @@ export function applyVenueMenuRead(read, { seq = null, mark = null, locationId =
     _lastAppliedRead = seq;
   }
   const since = mark == null ? Infinity : mark;
+  // 27 Sep 2026: a row whose first save FAILED in this window is kept on screen through a reload
+  // (the read cannot have it), so Push to POS can still offer it (failedCreateIds). One the read
+  // DOES have landed after all (an insert that answered too late): it is no longer offered, and
+  // the database's copy is shown.
+  const settleFailed = (kind) => {
+    const inRead = readIdsOf(read, kind);
+    if (!inRead) return;
+    for (const id of menuWriters[kind].failedCreateIds()) if (inRead.has(id)) menuWriters[kind].forgetCreate(id);
+  };
   const keepOf = (kind) => {
     const keep = new Set(menuWriters[kind].pendingIds());
     for (const id of menuWriters[kind].landedSince(since)) keep.add(id);
+    for (const id of menuWriters[kind].failedCreateIds()) keep.add(id);
     return keep;
   };
+  for (const kind of ['items', 'categories', 'menus']) settleFailed(kind);
+  const groupsInRead = readIdsOf(read, 'groups');
+  if (groupsInRead) for (const id of [..._groupCreateFailed]) if (groupsInRead.has(id)) _groupCreateFailed.delete(id);
   // 27 Sep 2026 (review round 3): an EMPTY product read while this screen holds this venue's
   // products is suspect (a narrowed read answers with no rows and no error): nothing is applied,
   // the menu stays on screen and the person is told (lib/venueMenuRead.js emptyItemsReadSuspect).
@@ -496,7 +530,7 @@ export function applyVenueMenuRead(read, { seq = null, mark = null, locationId =
     now.showToast?.(suspectReadWords(venueItemCount(now, locationId)), 'warning', MENU_TOAST_MS);
     return false;
   }
-  const groups = new Set([...modifierGroupSaves.pendingKeys(), ..._groupCreates.keys()]);
+  const groups = new Set([...modifierGroupSaves.pendingKeys(), ..._groupCreates.keys(), ..._groupCreateFailed]);
   useStore.setState((s) => menuPatchFromRead(s, read, {
     keep: { items, categories: keepOf('categories'), menus: keepOf('menus'), groups },
     locationId,
@@ -512,7 +546,9 @@ export function applyVenueMenuRead(read, { seq = null, mark = null, locationId =
 // A menu read or a wait for one has a time limit. A read that hangs (a stale socket just after
 // Safari resumes a tab, the exact moment the reload runs) used to leave menuLoading on, so Push
 // to POS stayed disabled with a wait cursor and the bulk strips waited forever, with no word.
-export const MENU_WAIT_MS = 15000;
+// 27 Sep 2026: every menu write has it too; the value lives in lib/menuRowWrite.js (MENU_WAIT_MS,
+// 15 s), where the writers use it, and is re exported here for Back Office.
+export { MENU_WAIT_MS };
 export async function loadVenueMenu(locationId) {
   if (isMock || !supabase || !locationId || locationId === 'loc-demo') return { ok: false, read: null };
   beginMenuLoad();
@@ -520,8 +556,10 @@ export async function loadVenueMenu(locationId) {
     const ticket = beginMenuRead();
     const read = await withTimeout(readVenueMenu(supabase, locationId), MENU_WAIT_MS, 'menu read');
     if (!read.ok) console.warn('[menu] venue read incomplete (the parts that did read are shown):', read.failed.join(', '), read.error?.message || '');
-    applyVenueMenuRead(read, { ...ticket, locationId });
-    return { ok: read.ok, read };
+    // 27 Sep 2026: `applied` says the screen now shows this read (false: a newer read was shown,
+    // or an empty product read looked suspect). The bulk tax apply plans only from a shown read.
+    const applied = applyVenueMenuRead(read, { ...ticket, locationId });
+    return { ok: read.ok, read, applied };
   } catch (e) {
     console.warn('[menu] venue read failed:', e?.message || e);
     return { ok: false, read: null, error: e };
@@ -534,10 +572,14 @@ export async function loadVenueMenu(locationId) {
  * Save rows that are on this screen but not in the database (Push to POS lists them first),
  * INSERT ONLY: an id that exists is never overwritten. Menus, then categories parents first
  * (the serial chain keeps that order), then products parents first.
- * Resolves { ok, saved, failed: [{ kind, name, error }] }.
+ * Resolves { ok, saved, failed: [{ kind, name, error }], toTopLevel: [category names] }.
+ * toTopLevel (27 Sep 2026): sub categories saved at the TOP level because their parent category
+ * is not in the database any more (deleted in another window: lib/menuWriters.js
+ * categoryParentRetry). Push to POS says so.
  */
 export async function saveUnsavedMenuRows(unsaved) {
   const failed = [];
+  const toTopLevel = [];
   let saved = 0;
   const live = (key, id) => (useStore.getState()[key] || []).find((r) => r.id === id);
   const note = (kind, name) => (r) => {
@@ -551,7 +593,9 @@ export async function saveUnsavedMenuRows(unsaved) {
     // v5.9.22: a category is never lost over a menu that is not there (the link is dropped).
     ...parentsFirst(unsaved.menuCategories || []).map((c) => menuWriters.categories.create(c.id,
       () => categoryRow(live('menuCategories', c.id) || c, live('menuCategories', c.id)),
-      { label: c.label, quiet: true, retryWithout: categoryInsertRetry, locationId: rowVenue(c) }).then(note('category', c.label))),
+      { label: c.label, quiet: true, retryWithout: categoryInsertRetry, locationId: rowVenue(c) })
+      .then((r) => { if (r?.parentDropped) toTopLevel.push(c.label || 'A category'); return r; })
+      .then(note('category', c.label))),
     // 27 Sep 2026 (review round 3): modifier groups whose first save failed, insert only.
     ...(unsaved.modifierGroupDefs || []).map((g) => saveGroupFirstTime(live('modifierGroupDefs', g.id) || g).then(note('modifier group', g.name))),
   ];
@@ -560,7 +604,7 @@ export async function saveUnsavedMenuRows(unsaved) {
   await Promise.all(items.map((i) => menuWriters.items.create(i.id,
     () => menuItemRow(live('menuItems', i.id) || i), { label: i.menuName || i.name, quiet: true, locationId: rowVenue(i) })
     .then(note('product', i.menuName || i.name))));
-  return { ok: failed.length === 0, saved, failed };
+  return { ok: failed.length === 0, saved, failed, toTopLevel };
 }
 
 // A modifier group whose first save failed, saved INSERT ONLY (Push to POS lists it first). It
@@ -568,7 +612,7 @@ export async function saveUnsavedMenuRows(unsaved) {
 async function saveGroupFirstTime(group) {
   if (isMock || !supabase) return { ok: true, outcome: 'noop' };
   let loc = null;
-  try { loc = getActiveLocationSync() || await getLocationId(); } catch { loc = null; }
+  try { loc = tabVenue() || await getLocationId(); } catch { loc = null; }
   const write = insertModifierGroupOnce({ client: supabase, locationId: loc, group });
   _groupCreates.set(group.id, write.catch(() => null));
   let r;
@@ -603,9 +647,12 @@ export { bulkSummaryWords };
 // save queue, after a creation or edit of it that is still on its way (a menu deleted a moment
 // after it was made used to come back when its first save landed after the delete).
 // v5.5.279: scoped to the venue, never across tenants.
+// 27 Sep 2026: a deleted row is never offered back by Push to POS (forgetCreate), and the delete
+// has a time limit (it runs in the categories and menus chain, which every later save waits on).
 const sbDeleteMenu = (id) => (isMock ? Promise.resolve({ ok: true, outcome: 'noop' }) : menuWriters.menus.task(id, async () => {
-  const locationId = getActiveLocationSync() || await getLocationId().catch(() => null);
-  const r = await deleteRowChecked({ client: supabase, table: 'menus', id, locationId });
+  menuWriters.menus.forgetCreate(id);
+  const locationId = tabVenue() || await getLocationId().catch(() => null);
+  const r = await writeWithin(deleteRowChecked({ client: supabase, table: 'menus', id, locationId }), `deleting menu ${id}`);
   reportSave('menu delete', r.ok ? null : r.error);   // v5.5.954
   return r;
 }));
@@ -618,8 +665,9 @@ const sbCreateCategory = (cat) => menuWriters.categories.create(cat.id,
   () => categoryRow(cat, useStore.getState().menuCategories?.find((c) => c.id === cat.id)),
   { label: cat.label, locationId: rowVenue(cat) });
 const sbDeleteCategory = (id) => (isMock ? Promise.resolve({ ok: true, outcome: 'noop' }) : menuWriters.categories.task(id, async () => {
-  const locationId = getActiveLocationSync() || await getLocationId().catch(() => null);
-  const r = await deleteRowChecked({ client: supabase, table: 'menu_categories', id, locationId });
+  menuWriters.categories.forgetCreate(id);
+  const locationId = tabVenue() || await getLocationId().catch(() => null);
+  const r = await writeWithin(deleteRowChecked({ client: supabase, table: 'menu_categories', id, locationId }), `deleting category ${id}`);
   reportSave('category delete', r.ok ? null : r.error);   // v5.5.951
   return r;
 }));
@@ -894,7 +942,7 @@ const _snake = (k) => k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
 const _scopedPropagator = createScopedPropagator({
   readRow: async (id) => {
     if (isMock || !supabase) return { row: null, error: null };
-    const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+    const loc = tabVenue() || await getLocationId().catch(() => null);
     if (!loc || loc === 'loc-demo') return { row: null, error: new Error('Shared product edit: no venue to read the product from') };
     const { data, error } = await supabase.from('menu_items').select('*').eq('id', id).eq('location_id', loc).maybeSingle();
     return { row: data || null, error: error || null };
@@ -1123,6 +1171,32 @@ export const useStore = create((set, get) => ({
   configUpdateAvailable: false,
   configUpdateSnapshot: null,
   markBOChange: () => set(s => ({ pendingBOChanges: s.pendingBOChanges + 1 })),
+  // 27 Sep 2026, the Items "Apply to all" tax (lib/bulkTax.js). Peter: "I have re applied Tax to
+  // all products but thats wrong please chase". Each assignment writes ONLY that product's tax
+  // rate, through the compare and set writer every Back Office edit uses (menuWriters.items),
+  // checked against the rate the plan started from (`expect`): a row given another rate somewhere
+  // else since this page read it is refused, left as the database has it and shown so. No size
+  // cascade here (the plan sends each size itself, after its product: runBulkTax), every save is
+  // awaited and counted, and the screen changes only for rows that saved. A Shared or Global
+  // master that saved sends the rate on to its copies (tax_rate_id follows the master).
+  applyBulkTaxRates: async ({ assign, onProgress, shouldStop, ownRateIds = [] } = {}) => {
+    await whenMenuLoadIdle();
+    let landed = 0;
+    const save = bulkTaxSaver({
+      getRow: (id) => (get().menuItems || []).find(i => i.id === id),
+      // 27 Sep 2026: checked against the row as the plan saw it (opened = a.item: its updated_at
+      // is the token, its rate the base), never this page's newer copy (lib/bulkTax.js).
+      edit: (id, patch, prev, next, opened) => menuWriters.items.edit(id, patch, prev, next, { quiet: true, opened }),
+      onSaved: (a, r) => {
+        landed += 1;
+        set(s => ({ menuItems: s.menuItems.map(i => (i.id === a.id ? { ...i, taxRateId: a.taxRateId, tax_rate_id: a.taxRateId } : i)) }));
+        if (savedForPropagation(r)) scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), a.id, ['taxRateId'], r.row || null);
+      },
+    });
+    const result = await runBulkTax({ assign, onProgress, shouldStop, ownRateIds, save });
+    if (landed) get().markBOChange();
+    return result;
+  },
   clearBOChanges: () => set({ pendingBOChanges: 0 }),
   setConfigUpdate: (snapshot) => {
     // v5.9.4 table plan: remember when THIS machine first saw this push (a counter, never a
@@ -1185,6 +1259,22 @@ export const useStore = create((set, get) => ({
     // non-empty-object guard — `{}` is truthy too and would wipe the routing table.
     const hasEntries = (o) => !!o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length > 0;
 
+    // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"): only THIS
+    // venue's tax rates, discount presets, auto discount rules and packages are taken from a push
+    // (lib/venueTaxRates.js, lib/boVenueBoot.js). Every Leeds push since 26 Sep 06:47 carried Train
+    // Station's rates and presets and Provo's rules and packages (another organisation), and the
+    // Leeds tills booked Leeds VAT against Train Station's rate. A push for another venue gives
+    // nothing; a row tagged for another venue is dropped; an untagged row (Back Office code older
+    // than this) only while the till holds none of its own (get().taxRates and the rest).
+    // (tabVenue: in Back Office the venue THIS tab resolved, never one another tab switched to.)
+    const pushVenue = tabVenue() || snap.locationId || null;
+    const snapTaxRates = ratesFromSnapshot(snap, pushVenue, get().taxRates);
+    const snapPresets = venueRowsFromSnapshot(snap.discountPresets, snap, pushVenue, get().discountPresets);
+    const snapRules = venueRowsFromSnapshot(snap.discountRules, snap, pushVenue, get().discountRules);
+    const snapPackages = venueRowsOnly(snap.packages, pushVenue);
+    // Tax profiles carry no venue on each row: a push labelled for ANOTHER venue gives none.
+    const snapIsHere = !snap.locationId || !pushVenue || String(snap.locationId) === String(pushVenue);
+
     // Sections (lib/sectionPlan.js, 18 Sep 2026): the venue's SAVED list (public.sections, this
     // device's copy of the last read) wins over the pushed one; the pushed list applies only when
     // the venue has none saved, and an absent or EMPTY pushed list is a no-op (it used to replace
@@ -1206,7 +1296,12 @@ export const useStore = create((set, get) => ({
     // The tills are unchanged: they run from the push.
     const boMenuFromDb = isBackOfficeMode() && !!useStore.getState().menuReadLocationId
       && useStore.getState().menuReadLocationId === (snap.locationId || getActiveLocationSync() || null);
-    const menuSlices = boMenuFromDb ? {} : {
+    // 27 Sep 2026: the product fields with no database column (variantLabel, the pizza fields:
+    // lib/menuItemWrite.js ITEM_EXTRA_KEYS) live only in pushes. The menu on screen keeps its
+    // database rows, but takes those fields from the push where a row lacks them, so the next
+    // Push to POS still sends them (it copies them from this window's rows).
+    const boExtras = boMenuFromDb && snap.menuItems?.length ? withItemExtras(useStore.getState().menuItems, snap.menuItems) : null;
+    const menuSlices = boMenuFromDb ? (boExtras && boExtras !== useStore.getState().menuItems ? { menuItems: boExtras } : {}) : {
       // Menu items — full replace with pushed version
       ...(snap.menuItems?.length ? { menuItems: snap.menuItems } : {}),
       // Menus list
@@ -1223,15 +1318,15 @@ export const useStore = create((set, get) => ({
         taxProfileId: c.taxProfileId ?? c.tax_profile_id ?? null,
         image: c.image ?? null,   // v5.8.65: category photo rides the push (display only on tills)
       })) } : {}),
-      // Tax rates — full replace
-      ...(snap.taxRates?.length ? { taxRates: snap.taxRates } : {}),
+      // Tax rates: full replace, with this venue's own rates only (snapTaxRates above).
+      ...(snapTaxRates.length ? { taxRates: snapTaxRates } : {}),
       // v5.7.33: tax profiles ride the push (same non-empty no-clear guard —
       // a partial snapshot must never wipe a till's profiles). Normalised via
       // the one shared assembler so raw-ish rows and store-shaped rows both land
       // in the store shape. venueDefaultTaxProfileId only applies when SET —
       // absent/null is a no-op, never a clear.
-      ...(snap.taxProfiles?.length ? { taxProfiles: assembleTaxProfiles(snap.taxProfiles, null) } : {}),
-      ...('venueDefaultTaxProfileId' in snap ? { venueDefaultTaxProfileId: snap.venueDefaultTaxProfileId ?? null } : {}),
+      ...(snapIsHere && snap.taxProfiles?.length ? { taxProfiles: assembleTaxProfiles(snap.taxProfiles, null) } : {}),
+      ...(snapIsHere && 'venueDefaultTaxProfileId' in snap ? { venueDefaultTaxProfileId: snap.venueDefaultTaxProfileId ?? null } : {}),
       // Modifier groups: full replace
       ...(snap.modifierGroupDefs?.length ? { modifierGroupDefs: snap.modifierGroupDefs } : {}),
     };
@@ -1242,9 +1337,9 @@ export const useStore = create((set, get) => ({
       tables: updatedTables,
       ...sectionsPatch,
       ...menuSlices,
-      // Discount presets + rules — full replace
-      ...(snap.discountPresets?.length ? { discountPresets: snap.discountPresets } : {}),
-      ...(snap.discountRules?.length ? { discountRules: snap.discountRules } : {}),
+      // Discount presets + rules: full replace, with this venue's own only (snapPresets above).
+      ...(snapPresets ? { discountPresets: snapPresets } : {}),
+      ...(snapRules ? { discountRules: snapRules } : {}),
       // Instruction groups: full replace (modifier groups are in menuSlices above)
       ...(snap.instructionGroupDefs?.length ? { instructionGroupDefs: snap.instructionGroupDefs } : {}),
 
@@ -1265,7 +1360,8 @@ export const useStore = create((set, get) => ({
 
       // v5.6.25 Table Bookings — packages + rules ride the push (same non-empty
       // guards: a push can never CLEAR a till's packages, only replace them).
-      ...(snap.packages?.length ? { packages: snap.packages } : {}),
+      // 27 Sep 2026: only this venue's packages (snapPackages above); Leeds pushed Provo's.
+      ...(snapPackages.length ? { packages: snapPackages } : {}),
       ...(hasEntries(snap.bookingRules) ? { bookingRules: snap.bookingRules } : {}),
 
       configVersion: snap.version,
@@ -1510,6 +1606,7 @@ export const useStore = create((set, get) => ({
   removeMenu: id => {
     const removed = useStore.getState().menus.find(m => m.id===id);
     set(s => ({ menus: s.menus.filter(m => m.id!==id) }));
+    menuWriters.menus.forgetCreate(id);   // 27 Sep 2026: never offered back by Push to POS
     return sbDeleteMenu(id).then(putBackIfRefused('menus', removed,
       `"${removed?.name || 'Menu'}" was NOT deleted: it will come back on refresh. Check you're signed in, then try again`));
   },
@@ -1563,6 +1660,7 @@ export const useStore = create((set, get) => ({
   removeCategory: id => {
     const removed = useStore.getState().menuCategories.find(c => c.id===id);
     set(s => ({ menuCategories: s.menuCategories.filter(c => c.id!==id) }));
+    menuWriters.categories.forgetCreate(id);   // 27 Sep 2026: never offered back by Push to POS
     return sbDeleteCategory(id).then(putBackIfRefused('menuCategories', removed,
       `"${removed?.label || 'Category'}" was NOT deleted: it will come back on refresh. Check you're signed in, then try again`));
   },
@@ -1657,7 +1755,10 @@ export const useStore = create((set, get) => ({
       } else {
         // A new group, written whole. An edit made before this lands waits for it
         // (modifierGroupSaves), and a reload keeps it on screen meanwhile.
-        const write = upsertModifierGroup(group);
+        // 27 Sep 2026: with a time limit, so a hung first save never holds this group's later
+        // saves (they wait for it) or Push to POS. Out of time counts as a failed first save.
+        const write = withTimeout(upsertModifierGroup(group), MENU_WAIT_MS, `saving new modifier group ${group.id}`)
+          .catch((e) => ({ data: null, error: e }));
         _groupCreates.set(group.id, write.catch(() => null));
         let error = null;
         try { ({ error } = await write); } finally { _groupCreates.delete(group.id); }
@@ -1718,7 +1819,10 @@ export const useStore = create((set, get) => ({
     // .catch(() => {}) meant a 403'd delete looked done until the group came
     // straight back on the next refresh.
     const warn = () => useStore.getState().showToast?.(`"${removed?.name || 'Modifier group'}" was NOT deleted — it will come back on refresh. Check you're signed in, then try again`, 'error');
-    deleteModifierGroup(id)
+    // 27 Sep 2026: in the menu write chain (runInMenuWriteQueue), so Push to POS waits for it
+    // (whenMenuWritesIdle) and never sends the tills a group this window has just deleted. With
+    // a time limit, as it now sits in the chain every later category and menu save waits on.
+    runInMenuWriteQueue(() => withTimeout(deleteModifierGroup(id), MENU_WAIT_MS, `deleting modifier group ${id}`))
       .then(({ error }) => {
         reportSave('modifier group delete', error);   // v5.5.971
         if (error) {
@@ -2106,9 +2210,10 @@ export const useStore = create((set, get) => ({
     // (same resolution as lib/tax.js), so pricing before/after setting up tax rates
     // never leaves items untaxed. An explicit taxRateId from the caller wins.
     // 27 Sep 2026: in Back Office only THIS venue's rates count (Leeds had none of its own
-    // and every new product took Train Station's default from the last push).
+    // and every new product took Train Station's default from the last push). THIS venue is the
+    // one this tab resolved (tabVenue), whatever another tab switched rpos-bo-location to.
     if (!newItem.taxRateId && newItem.type !== 'spacer') {
-      const rates = isBackOfficeMode() ? venueTaxRates(useStore.getState().taxRates, getActiveLocationSync()) : (useStore.getState().taxRates || []);
+      const rates = isBackOfficeMode() ? venueTaxRates(useStore.getState().taxRates, tabVenue()) : (useStore.getState().taxRates || []);
       const def = rates.find(r => (r.isDefault || r.is_default) && r.active !== false);
       if (def) newItem.taxRateId = def.id;
     }
@@ -2227,7 +2332,8 @@ export const useStore = create((set, get) => ({
     // v5.5.279: location_id guard on archive operations. Fall back to the async
     // resolve (same as archiveVariantRow) — with the 0-row check below, an
     // unresolved sync cache would otherwise read as a refused archive.
-    const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+    // 27 Sep 2026: this tab's venue (tabVenue), never one another Back Office tab switched to.
+    const locId = tabVenue() || await getLocationId().catch(() => null);
     const patch = { archived: true, parent_id: null, updated_at: new Date().toISOString() };
     // 27 Sep 2026: the narrow write runs in this product's save queue (after any edit of it
     // still on its way), and the row's new updated_at becomes this tab's compare and set token,
@@ -2238,13 +2344,16 @@ export const useStore = create((set, get) => ({
       for (const rid of at.keys()) menuWriters.items.markLanded(rid);
       set(s => ({ menuItems: s.menuItems.map(it => at.has(it.id) ? { ...it, srvAt: at.get(it.id), updated_at: at.get(it.id) } : it) }));
     };
+    // 27 Sep 2026: with a time limit (MENU_WAIT_MS), so an archive that never answers does not
+    // hold this product's later saves and every Push to POS. Out of time is put back below as
+    // not archived; if it lands later the next venue read shows it archived.
     const { data, error } = await menuWriters.items.task(id, async () => {
       try {
-        return await supabase.from('menu_items')
+        return await withTimeout(supabase.from('menu_items')
           .update(patch)
           .eq('id', id)
           .eq('location_id', locId)
-          .select('id, updated_at');
+          .select('id, updated_at'), MENU_WAIT_MS, 'item archive');
       } catch (e) { return { data: null, error: e }; }
     });
     // An update that matched NO rows comes back as a plain success with an empty body —
@@ -2870,7 +2979,13 @@ export const useStore = create((set, get) => ({
             if (!txRate) txRate = parent.taxRateId || parent.tax_rate_id || null;
           }
         }
-        return { taxRateId: txRate, taxOverrides: txOv };
+        // 27 Sep 2026 (review of the Leeds tax fix): a rate id this till does not hold (another
+        // venue's, or a deleted rate) resolved to NO rate and the line booked no VAT, silently.
+        // It is dropped here, so the line takes this venue's default rate like any product with no
+        // rate, on every till (lib/venueTaxRates.js lineTaxRefs), and the till says so in its log.
+        const refs = lineTaxRefs(txRate, txOv, useStore.getState().taxRates);
+        if (refs.dropped.length) console.warn('[tax] product', item.id, 'names rate id(s)', refs.dropped.join(', '), 'that this venue does not have: charged at the venue default instead');
+        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides };
       })(),
       seat: 'shared',
       course: (() => {

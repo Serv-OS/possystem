@@ -53,7 +53,9 @@ test('handlePush holds no render time menu data (the old closure)', () => {
   }
   assert.ok(!/useStore\.getState\(\)\.(menuItems|menuCategories|taxRates|modifierGroupDefs)\b/.test(between(HANDLE, 'const snapshot = {', '\n      };\n')),
     'the snapshot never takes the menu from memory');
-  assert.match(HANDLE, /const menuPart = menuRead \? menuSnapshotFromRead\(menuRead\)/, 'the menu part is the fresh read');
+  // 27 Sep 2026 (review round 4): plus only the product fields that have no column, from this
+  // window's rows (lib/venueMenuRead.js withItemExtras): every column is the read's.
+  assert.match(HANDLE, /const menuPart = menuRead \? menuSnapshotFromRead\(menuRead, \{ extrasFrom: useStore\.getState\(\)\.menuItems \}\)/, 'the menu part is the fresh read');
   assert.match(HANDLE, /\.\.\.menuPart,/);
 });
 
@@ -120,6 +122,19 @@ test('menus land before the categories that name them, and a category is kept ov
   assert.match(guard, /menu_id\|menu_categories_menu_id_fkey/, 'and only THIS foreign key');
 });
 
+// 27 Sep 2026: a sub category whose parent category was deleted in another window stopped every
+// Push to POS (menu_categories_parent_id_fkey). The push saves it at the top level and says so;
+// the rule is proved in menuWriters.test.js, this pins that the push uses it and tells the person.
+test('a sub category whose parent is gone is saved at the top level by Push to POS, and the person is told', () => {
+  const save = between(STORE, 'export async function saveUnsavedMenuRows(unsaved) {', '\n}\n');
+  assert.match(save, /retryWithout: categoryInsertRetry, locationId: rowVenue\(c\) \}\)\n\s+\.then\(\(r\) => \{ if \(r\?\.parentDropped\) toTopLevel\.push\(c\.label \|\| 'A category'\); return r; \}\)/);
+  assert.match(save, /return \{ ok: failed\.length === 0, saved, failed, toTopLevel \};/);
+  assert.match(WRITERS, /export const categoryInsertRetry = \(error, cols\) => categoryImageRetry\(error, cols\) \|\| categoryMenuLinkRetry\(error, cols\) \|\| categoryParentRetry\(error, cols\);/);
+  assert.match(BO, /import \{ toTopLevelWords \} from '\.\.\/lib\/menuWriters';/);
+  assert.match(HANDLE, /if \(saved\.toTopLevel\?\.length\) useStore\.getState\(\)\.showToast\?\.\(toTopLevelWords\(saved\.toTopLevel\), 'warning', 12000\);/);
+  assert.match(HANDLE, /const moved = saved\.toTopLevel\?\.length \? ` \$\{toTopLevelWords\(saved\.toTopLevel\)\}` : '';/, 'and in the words when the push stops');
+});
+
 // ── Review round 3 (27 Sep 2026) ────────────────────────────────────────────────────────────
 
 test('the button is always given back, and the send has a time limit that says the push may still land', () => {
@@ -152,8 +167,9 @@ test('an empty product read that looks suspect stops the push before anything is
   assert.match(apply, /if \(emptyItemsReadSuspect\(now, read, locationId, \{ keep: items \}\)\) \{[\s\S]*showToast\?\.\(suspectReadWords\(venueItemCount\(now, locationId\)\), 'warning', MENU_TOAST_MS\);\s*return false;/);
 });
 
-test('Push to POS offers only this venue\'s unsaved rows, and modifier groups whose first save failed', () => {
-  assert.match(HANDLE, /const unsaved = unsavedMenuRows\(useStore\.getState\(\), menuRead, snapshotLocationId, \{ failedGroupIds: unsavedGroupIds\(\) \}\);/);
+test('Push to POS offers only this venue\'s unsaved rows, and only rows whose first save failed', () => {
+  // 27 Sep 2026 (review round 4): every kind, not only modifier groups (store failedCreateIds).
+  assert.match(HANDLE, /const unsaved = unsavedMenuRows\(useStore\.getState\(\), menuRead, snapshotLocationId, \{ failed: failedCreateIds\(\) \}\);/);
   const save = between(STORE, 'export async function saveUnsavedMenuRows(unsaved) {', '\n}\n');
   assert.match(save, /saveGroupFirstTime\(live\('modifierGroupDefs', g\.id\) \|\| g\)/);
   for (const kind of ['menus', 'categories', 'items']) {

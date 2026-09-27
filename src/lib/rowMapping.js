@@ -223,6 +223,9 @@ export const mapTaxRateRow = (r) => {
 };
 
 // Only the rates that belong to `locationId`. A rate with no venue on it (an old push
-// snapshot) is not offered: nobody can tell which venue it came from.
+// snapshot) is not offered: nobody can tell which venue it came from. 27 Sep 2026 (the tax
+// root cause port): nor is one a till took unchecked from an old style push (`unverified`,
+// lib/venueTaxRates.js ratesFromSnapshot): it is used to charge until the venue's own read
+// answers, never offered, stamped on a new product or counted as this venue's.
 export const venueTaxRates = (rates, locationId) =>
-  (Array.isArray(rates) ? rates : []).filter((r) => r && locationId && (r.locationId ?? r.location_id) === locationId);
+  (Array.isArray(rates) ? rates : []).filter((r) => r && locationId && !r.unverified && (r.locationId ?? r.location_id) === locationId);
