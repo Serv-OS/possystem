@@ -1,3 +1,8 @@
+# Session, 27 Sep 2026, v5.9.83, pairing code label shows the year (branch fix/pairing-expiry-label)
+
+- Peter: "when does this code actually expire, Apple are saying they cannot pair the KDS". Apple Review KDS (Provo, fe4b4470) code valid to 2027-09-27 08:32 UTC, issued this morning; the BO label had no year. Claim log: one refused_not_found on 25 Sep 06:45 UTC from a fresh anonymous install 14 s old = the reviewer's stale code (replaced 22 Sep 00:34 during pairing debugging, and again 27 Sep 08:32).
+- pairingCodeState label adds the year + "works once"; replaceCodeWarning + confirm in DeviceRegistry regenerateCode.
+
 # Session, 26 Sep 2026, v5.9.82, waste without stock (branch feat/waste-without-stock)
 
 - Peter: "waste isn't showing cause they don't have any stock, but people still like to waste things". Leeds: 0 stock items, 0 recipes, 454 products. The till modal dead ended on "No recipes are linked yet"; logMenuItemWaste refused "Nothing to deduct from stock".
