@@ -452,3 +452,20 @@ export function headerBasePx(w, h) {
   const m = Math.min(Number(w) || 0, Number(h) || 0);
   return m > 0 ? Math.max(6, Math.round((m * HEADER_VMIN) / 100)) : 0;
 }
+
+// ── Line spacing (v5.9.92) ───────────────────────────────────────────────────────────────────
+// Peter, 27 Sep 2026: "can we reduce the padding between each line on the menu boards". The gaps
+// were fixed (between lines 0.35 of the text size, between size runs 0.7, under a heading 0.55,
+// between categories 1.4). Design > Line spacing now picks them; Tight is the default, and since
+// the board grows its type to fill the screen, tighter lines also mean bigger text.
+export const LINE_SPACING = {
+  tight:   { row: 0.15, run: 0.45, head: 0.35, section: 1.0, list: 0.35, listAddOn: 0.18 },
+  normal:  { row: 0.35, run: 0.7,  head: 0.55, section: 1.4, list: 0.65, listAddOn: 0.3 },
+  relaxed: { row: 0.55, run: 0.9,  head: 0.7,  section: 1.7, list: 0.85, listAddOn: 0.4 },
+};
+export const LINE_SPACING_OPTS = [['tight', 'Tight'], ['normal', 'Normal'], ['relaxed', 'Relaxed']];
+export const LINE_SPACING_DEFAULT = 'tight';
+/** The gaps a board uses, in em of its fitted text size. */
+export function boardSpacing(theme = {}) {
+  return LINE_SPACING[theme && theme.lineSpacing] || LINE_SPACING[LINE_SPACING_DEFAULT];
+}

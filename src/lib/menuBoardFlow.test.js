@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { packBoard, boardKeepsWhole, headerBasePx, HEADER_VMIN } from './menuBoardSections.js';
+import { packBoard, boardKeepsWhole, headerBasePx, HEADER_VMIN, boardSpacing, LINE_SPACING, LINE_SPACING_DEFAULT } from './menuBoardSections.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -105,4 +105,21 @@ test('the header is sized by the screen, so two boards with the same settings we
   assert.match(src, /\.\.\.\(basePx > 0 \? \{ fontSize: `\$\{basePx\}px` \} : \{\}\),/, 'the header root takes the screen base');
   assert.match(src, /export function BoardFooter\(\{ theme = \{\}, live = false, pages = 1, page = 0, basePx = 0 \}\)/);
   assert.match(src, /fontSize: `\$\{basePx \* 0\.32\}px`/, 'the footer keeps its 0.32 ratio against the screen base');
+});
+
+test('line spacing: Tight by default, Normal is the old look, every gap comes from the setting (v5.9.92)', () => {
+  // Peter, 27 Sep 2026: "can we reduce the padding between each line on the menu boards".
+  assert.equal(LINE_SPACING_DEFAULT, 'tight');
+  assert.deepEqual(boardSpacing({}), LINE_SPACING.tight);
+  assert.deepEqual(boardSpacing({ lineSpacing: 'normal' }), { row: 0.35, run: 0.7, head: 0.55, section: 1.4, list: 0.65, listAddOn: 0.3 }, 'Normal keeps the values before this change');
+  assert.deepEqual(boardSpacing({ lineSpacing: 'nonsense' }), LINE_SPACING.tight);
+  assert.ok(LINE_SPACING.tight.row < LINE_SPACING.normal.row && LINE_SPACING.normal.row < LINE_SPACING.relaxed.row);
+  const src = read('../surfaces/menuboard/BoardParts.jsx');
+  assert.match(src, /rowGap: `\$\{sp\.row\}em`/);
+  assert.match(src, /marginBottom: `\$\{sp\.run\}em`/);
+  assert.match(src, /marginBottom: `\$\{ctx\.sp\.head\}em`/);
+  assert.match(src, /runs: \[\], sp: boardSpacing\(theme\)/);
+  assert.doesNotMatch(src, /ROW_GAP_EM|RUN_GAP_EM|HEAD_GAP_EM/);
+  const bo = read('../backoffice/sections/MenuBoards.jsx');
+  assert.match(bo, /label="Line spacing"><Pills opts=\{LINE_SPACING_OPTS\}/);
 });

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.92',
+    date: '27 Sep 2026',
+    items: [
+      'Menu boards: Design > Line spacing (Tight, Normal, Relaxed). Tight is the new default and roughly halves the gaps between lines, size groups, headings and categories; the board grows its text to fill the freed space. Normal is the spacing boards had before.',
+    ],
+  },
+  {
     v: '5.9.91',
     date: '27 Sep 2026',
     items: [
