@@ -213,7 +213,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
+      <div style={S.note}>VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota). Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
     </div>
   );
 }
