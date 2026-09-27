@@ -1,0 +1,737 @@
+{
+ "generated": "2026-09-26",
+ "project": "tbetcegmszzotrwdtqhi (production, read only, begin/rollback)",
+ "half": "2 of 2 (odd indexes); the 6 largest tables in this half by row count",
+ "how": "Default role (postgres, RLS bypassed) with request.jwt.claims set, inside begin/rollback. Each variant run 3 times, median reported. old = live policy text; new_inline = migration text with each helper call replaced by its body; new_inline_rls_shape = coalesce((new_inline), false), which stops Postgres pulling the IN into a join, so it runs as a hashed SubPlan the way an RLS policy qual does. Owner = neil (Coffee Boy owner, 9 venues). Device = Leeds POS 1 till (5a130365) with the claims a paired till really sends (anonymous sign in).",
+ "caveat": "Measured as postgres with the claims set, so only the predicate cost is timed. In the real policy the helper is a SECURITY DEFINER set returning function, run once per statement (hashed SubPlan); the rls_shape column reproduces that plan shape with the inline body.",
+ "worst_owner": {
+  "table": "menu_items",
+  "old_ms": 2219.027,
+  "new_ms": 4.893,
+  "rows": 3267
+ },
+ "tables": [
+  {
+   "table": "menu_items",
+   "rows_in_table": 3267,
+   "policy": "menu_items_write_tenant",
+   "clause": "USING",
+   "old_predicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "new_predicate_inline": "((location_id in (SELECT s.k FROM (SELECT public.user_accessible_locations() AS k UNION SELECT d.location_id::text FROM public.devices d WHERE d.device_uid = auth.uid() AND d.bound_via IS NOT NULL AND d.status IN ('active', 'online') UNION SELECT o.location_id::text FROM public.ops_devices o WHERE o.device_uid = auth.uid() AND o.active) s WHERE s.k IS NOT NULL)) OR (select public.is_super_admin()))",
+   "owner_neil": {
+    "old_ms": 2219.027,
+    "new_ms": 4.893,
+    "new_ms_rls_shape": 4.997,
+    "speedup_x": 453.5,
+    "speedup_rls_shape_x": 444.1,
+    "old_ms_per_row": 0.6792,
+    "old_runs_ms": [
+     2216.167,
+     2224.05,
+     2219.027
+    ],
+    "new_runs_ms": [
+     4.893,
+     6.29,
+     4.838
+    ],
+    "new_rls_shape_runs_ms": [
+     5.061,
+     4.997,
+     4.948
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [menu_items]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [menu_items]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [menu_items]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 3064,
+     "new_inline": 3064,
+     "rows_that_differ": 0,
+     "rows_scanned": 3267
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 1971.268,
+    "new_ms": 4.25,
+    "new_ms_rls_shape": 4.204,
+    "speedup_x": 463.8,
+    "speedup_rls_shape_x": 468.9,
+    "old_ms_per_row": 0.6034,
+    "old_runs_ms": [
+     1971.268,
+     1993.19,
+     1964.868
+    ],
+    "new_runs_ms": [
+     4.269,
+     4.25,
+     4.226
+    ],
+    "new_rls_shape_runs_ms": [
+     4.23,
+     4.204,
+     4.18
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [menu_items]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [menu_items]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [menu_items]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 454,
+     "new_inline": 454,
+     "rows_that_differ": 0,
+     "rows_scanned": 3267
+    },
+    "same_rows": true
+   }
+  },
+  {
+   "table": "staff_auth_events",
+   "rows_in_table": 710,
+   "policy": "staff_auth_events_read",
+   "clause": "USING",
+   "old_predicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "new_predicate_inline": "((location_id in (SELECT s.k FROM (SELECT public.user_accessible_locations() AS k UNION SELECT d.location_id::text FROM public.devices d WHERE d.device_uid = auth.uid() AND d.bound_via IS NOT NULL AND d.status IN ('active', 'online') UNION SELECT o.location_id::text FROM public.ops_devices o WHERE o.device_uid = auth.uid() AND o.active) s WHERE s.k IS NOT NULL)) OR (select public.is_super_admin()))",
+   "owner_neil": {
+    "old_ms": 491.709,
+    "new_ms": 3.305,
+    "new_ms_rls_shape": 3.301,
+    "speedup_x": 148.8,
+    "speedup_rls_shape_x": 149.0,
+    "old_ms_per_row": 0.6935,
+    "old_runs_ms": [
+     491.709,
+     484.115,
+     491.79
+    ],
+    "new_runs_ms": [
+     3.361,
+     3.305,
+     3.242
+    ],
+    "new_rls_shape_runs_ms": [
+     3.357,
+     3.301,
+     3.269
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [staff_auth_events]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [staff_auth_events]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [staff_auth_events]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 665,
+     "new_inline": 665,
+     "rows_that_differ": 0,
+     "rows_scanned": 710
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 439.699,
+    "new_ms": 2.918,
+    "new_ms_rls_shape": 2.999,
+    "speedup_x": 150.7,
+    "speedup_rls_shape_x": 146.6,
+    "old_ms_per_row": 0.6202,
+    "old_runs_ms": [
+     439.699,
+     436.716,
+     440.763
+    ],
+    "new_runs_ms": [
+     2.914,
+     2.918,
+     2.964
+    ],
+    "new_rls_shape_runs_ms": [
+     2.999,
+     2.925,
+     3.009
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [staff_auth_events]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [staff_auth_events]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [staff_auth_events]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 30,
+     "new_inline": 30,
+     "rows_that_differ": 0,
+     "rows_scanned": 710
+    },
+    "same_rows": true
+   }
+  },
+  {
+   "table": "user_profiles",
+   "rows_in_table": 702,
+   "policy": "up_delete_super_admin_only",
+   "clause": "USING",
+   "old_predicate": "is_super_admin()",
+   "new_predicate_inline": "(select public.is_super_admin())",
+   "owner_neil": {
+    "old_ms": 0.803,
+    "new_ms": 0.775,
+    "new_ms_rls_shape": 0.829,
+    "speedup_x": 1.0,
+    "speedup_rls_shape_x": 1.0,
+    "old_ms_per_row": 0.0011,
+    "old_runs_ms": [
+     0.793,
+     0.803,
+     0.805
+    ],
+    "new_runs_ms": [
+     0.775,
+     0.782,
+     0.711
+    ],
+    "new_rls_shape_runs_ms": [
+     0.829,
+     0.682,
+     1.404
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 1)",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 1)",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "rows_passing": {
+     "old": 0,
+     "new_inline": 0,
+     "rows_that_differ": 0,
+     "rows_scanned": 702
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 0.753,
+    "new_ms": 0.689,
+    "new_ms_rls_shape": 0.681,
+    "speedup_x": 1.1,
+    "speedup_rls_shape_x": 1.1,
+    "old_ms_per_row": 0.0011,
+    "old_runs_ms": [
+     0.843,
+     0.707,
+     0.753
+    ],
+    "new_runs_ms": [
+     0.663,
+     0.75,
+     0.689
+    ],
+    "new_rls_shape_runs_ms": [
+     0.681,
+     0.67,
+     0.703
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 1)",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 1)",
+     "Result",
+     "Seq Scan [user_profiles]"
+    ],
+    "rows_passing": {
+     "old": 0,
+     "new_inline": 0,
+     "rows_that_differ": 0,
+     "rows_scanned": 702
+    },
+    "same_rows": true
+   }
+  },
+  {
+   "table": "closed_checks",
+   "rows_in_table": 676,
+   "policy": "closed_checks_read",
+   "clause": "USING",
+   "old_predicate": "pos_can_access(location_id)",
+   "new_predicate_inline": "(location_id in (SELECT s.k FROM (SELECT public.user_accessible_locations() AS k UNION SELECT d.location_id::text FROM public.devices d WHERE d.device_uid = auth.uid() AND d.bound_via IS NOT NULL AND d.status IN ('active', 'online') UNION SELECT o.location_id::text FROM public.ops_devices o WHERE o.device_uid = auth.uid() AND o.active) s WHERE s.k IS NOT NULL))",
+   "owner_neil": {
+    "old_ms": 492.932,
+    "new_ms": 3.473,
+    "new_ms_rls_shape": 3.295,
+    "speedup_x": 141.9,
+    "speedup_rls_shape_x": 149.6,
+    "old_ms_per_row": 0.7368,
+    "old_runs_ms": [
+     498.729,
+     492.932,
+     492.819
+    ],
+    "new_runs_ms": [
+     3.4,
+     3.473,
+     4.163
+    ],
+    "new_rls_shape_runs_ms": [
+     3.462,
+     3.295,
+     3.271
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Index Only Scan [closed_checks]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Hash Join",
+     "Index Only Scan [closed_checks]",
+     "Hash",
+     "Subquery Scan",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Index Only Scan [closed_checks]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 658,
+     "new_inline": 658,
+     "rows_that_differ": 0,
+     "rows_scanned": 676
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 401.322,
+    "new_ms": 3.13,
+    "new_ms_rls_shape": 3.022,
+    "speedup_x": 128.2,
+    "speedup_rls_shape_x": 132.8,
+    "old_ms_per_row": 0.5999,
+    "old_runs_ms": [
+     401.322,
+     403.405,
+     400.586
+    ],
+    "new_runs_ms": [
+     3.13,
+     3.184,
+     2.981
+    ],
+    "new_rls_shape_runs_ms": [
+     2.997,
+     3.022,
+     3.037
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Index Only Scan [closed_checks]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Hash Join",
+     "Index Only Scan [closed_checks]",
+     "Hash",
+     "Subquery Scan",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Index Only Scan [closed_checks]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 147,
+     "new_inline": 147,
+     "rows_that_differ": 0,
+     "rows_scanned": 676
+    },
+    "same_rows": true
+   }
+  },
+  {
+   "table": "shifts",
+   "rows_in_table": 526,
+   "policy": "shifts_tenant",
+   "clause": "USING",
+   "old_predicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "new_predicate_inline": "((location_id in (SELECT s2.k::uuid FROM (SELECT s.k FROM (SELECT public.user_accessible_locations() AS k UNION SELECT d.location_id::text FROM public.devices d WHERE d.device_uid = auth.uid() AND d.bound_via IS NOT NULL AND d.status IN ('active', 'online') UNION SELECT o.location_id::text FROM public.ops_devices o WHERE o.device_uid = auth.uid() AND o.active) s WHERE s.k IS NOT NULL) s2(k) WHERE s2.k ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) OR (select public.is_super_admin()))",
+   "owner_neil": {
+    "old_ms": 365.341,
+    "new_ms": 3.196,
+    "new_ms_rls_shape": 3.204,
+    "speedup_x": 114.3,
+    "speedup_rls_shape_x": 114.0,
+    "old_ms_per_row": 0.6946,
+    "old_runs_ms": [
+     366.523,
+     363.563,
+     365.341
+    ],
+    "new_runs_ms": [
+     3.196,
+     3.297,
+     3.142
+    ],
+    "new_rls_shape_runs_ms": [
+     3.189,
+     3.205,
+     3.204
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [shifts]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [shifts]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [shifts]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 430,
+     "new_inline": 430,
+     "rows_that_differ": 0,
+     "rows_scanned": 526
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 333.24,
+    "new_ms": 2.862,
+    "new_ms_rls_shape": 2.904,
+    "speedup_x": 116.4,
+    "speedup_rls_shape_x": 114.8,
+    "old_ms_per_row": 0.6335,
+    "old_runs_ms": [
+     333.24,
+     336.049,
+     331.163
+    ],
+    "new_runs_ms": [
+     2.862,
+     2.935,
+     2.831
+    ],
+    "new_rls_shape_runs_ms": [
+     3.092,
+     2.904,
+     2.801
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [shifts]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [shifts]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [shifts]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 8,
+     "new_inline": 8,
+     "rows_that_differ": 0,
+     "rows_scanned": 526
+    },
+    "same_rows": true
+   }
+  },
+  {
+   "table": "modifier_groups",
+   "rows_in_table": 207,
+   "policy": "modifier_groups_delete",
+   "clause": "USING",
+   "old_predicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "new_predicate_inline": "((location_id in (SELECT s.k FROM (SELECT public.user_accessible_locations() AS k UNION SELECT d.location_id::text FROM public.devices d WHERE d.device_uid = auth.uid() AND d.bound_via IS NOT NULL AND d.status IN ('active', 'online') UNION SELECT o.location_id::text FROM public.ops_devices o WHERE o.device_uid = auth.uid() AND o.active) s WHERE s.k IS NOT NULL)) OR (select public.is_super_admin()))",
+   "owner_neil": {
+    "old_ms": 146.715,
+    "new_ms": 3.21,
+    "new_ms_rls_shape": 3.228,
+    "speedup_x": 45.7,
+    "speedup_rls_shape_x": 45.5,
+    "old_ms_per_row": 0.7088,
+    "old_runs_ms": [
+     146.715,
+     146.478,
+     147.484
+    ],
+    "new_runs_ms": [
+     5.343,
+     3.066,
+     3.21
+    ],
+    "new_rls_shape_runs_ms": [
+     3.229,
+     3.228,
+     3.181
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [modifier_groups]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [modifier_groups]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [modifier_groups]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 191,
+     "new_inline": 191,
+     "rows_that_differ": 0,
+     "rows_scanned": 207
+    },
+    "same_rows": true
+   },
+   "device_till_leeds": {
+    "old_ms": 129.906,
+    "new_ms": 2.883,
+    "new_ms_rls_shape": 2.882,
+    "speedup_x": 45.1,
+    "speedup_rls_shape_x": 45.1,
+    "old_ms_per_row": 0.6276,
+    "old_runs_ms": [
+     130.569,
+     129.906,
+     129.872
+    ],
+    "new_runs_ms": [
+     2.939,
+     2.883,
+     2.878
+    ],
+    "new_rls_shape_runs_ms": [
+     2.871,
+     2.882,
+     2.948
+    ],
+    "old_plan": [
+     "Aggregate",
+     "Seq Scan [modifier_groups]"
+    ],
+    "new_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [modifier_groups]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "new_rls_shape_plan": [
+     "Aggregate",
+     "Result (InitPlan 2)",
+     "Seq Scan [modifier_groups]",
+     "Subquery Scan (SubPlan 1)",
+     "Aggregate",
+     "Append",
+     "ProjectSet",
+     "Result",
+     "Index Scan [devices]",
+     "Seq Scan [ops_devices]"
+    ],
+    "rows_passing": {
+     "old": 30,
+     "new_inline": 30,
+     "rows_that_differ": 0,
+     "rows_scanned": 207
+    },
+    "same_rows": true
+   }
+  }
+ ]
+}

@@ -1,0 +1,459 @@
+{
+ "generated": "2026-09-26",
+ "project": "tbetcegmszzotrwdtqhi",
+ "half": 1,
+ "method": "EXPLAIN (ANALYZE, FORMAT JSON) select count(*) from public.<table> where <predicate>; default role postgres (RLS bypassed so only the predicate is timed) inside begin/rollback with request.jwt.claims set for the login; 1 warm-up then median of 3 runs. live_rls_now = plain count(*) as the real role (authenticated) under today's live policies, for context.",
+ "logins": {
+  "owner": {
+   "name": "owner_neil",
+   "sub": "45e27b2b-9bfe-4d35-9a5a-a3d5f6789da6",
+   "desc": "Coffee Boy owner, profile org differs (neil test org), user_locations at 6 Coffee Boy + Provo, San Mateo 1, The Cabin"
+  },
+  "device": {
+   "name": "till_leeds_pos1",
+   "sub": "5a130365-5d3d-4571-bb5b-92bb824148a3",
+   "desc": "paired till: devices row at Coffee Boy Leeds, bound_via code, status active"
+  }
+ },
+ "tables": [
+  {
+   "table": "menu_translations",
+   "rows": 750,
+   "policies": [
+    "menu_translations_write_tenant"
+   ],
+   "clause_timed": "USING",
+   "oldPredicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "newPredicate": "((location_id in (select public.accessible_location_ids())) OR (select public.is_super_admin()))",
+   "owner": {
+    "old_ms": 506.923,
+    "new_ms": 3.022,
+    "speedup_x": 167.7,
+    "old_runs_ms": [
+     562.962,
+     505.355,
+     506.923
+    ],
+    "new_runs_ms": [
+     2.953,
+     3.023,
+     3.022
+    ],
+    "rows_matched_old": 750,
+    "rows_matched_new": 750,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 1.123,
+    "live_rows_visible_now": 750
+   },
+   "device": {
+    "old_ms": 480.499,
+    "new_ms": 2.906,
+    "speedup_x": 165.3,
+    "old_runs_ms": [
+     478.326,
+     480.499,
+     481.341
+    ],
+    "new_runs_ms": [
+     2.881,
+     2.906,
+     2.998
+    ],
+    "rows_matched_old": 0,
+    "rows_matched_new": 0,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 1.088,
+    "live_rows_visible_now": 750
+   }
+  },
+  {
+   "table": "staff_auth_events",
+   "rows": 709,
+   "policies": [
+    "staff_auth_events_insert"
+   ],
+   "clause_timed": "WITH CHECK",
+   "oldPredicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "newPredicate": "((location_id in (select public.accessible_location_ids())) OR (select public.is_super_admin()))",
+   "owner": {
+    "old_ms": 486.546,
+    "new_ms": 3.333,
+    "speedup_x": 146.0,
+    "old_runs_ms": [
+     484.019,
+     486.546,
+     490.733
+    ],
+    "new_runs_ms": [
+     3.333,
+     3.358,
+     3.293
+    ],
+    "rows_matched_old": 665,
+    "rows_matched_new": 665,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 485.28,
+    "live_rows_visible_now": 665
+   },
+   "device": {
+    "old_ms": 457.473,
+    "new_ms": 3.043,
+    "speedup_x": 150.3,
+    "old_runs_ms": [
+     455.43,
+     458.017,
+     457.473
+    ],
+    "new_runs_ms": [
+     3.043,
+     2.992,
+     3.055
+    ],
+    "rows_matched_old": 30,
+    "rows_matched_new": 30,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 453.837,
+    "live_rows_visible_now": 30
+   }
+  },
+  {
+   "table": "user_profiles",
+   "rows": 702,
+   "policies": [
+    "up_insert_super_admin_only"
+   ],
+   "clause_timed": "WITH CHECK",
+   "oldPredicate": "is_super_admin()",
+   "newPredicate": "(select public.is_super_admin())",
+   "owner": {
+    "old_ms": 0.757,
+    "new_ms": 0.807,
+    "speedup_x": 0.9,
+    "old_runs_ms": [
+     0.747,
+     0.785,
+     0.757
+    ],
+    "new_runs_ms": [
+     0.774,
+     0.807,
+     0.82
+    ],
+    "rows_matched_old": 0,
+    "rows_matched_new": 0,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 1",
+     "InitPlan",
+     "Outer",
+     "Outer"
+    ],
+    "live_rls_now_ms_as_authenticated": 4.163,
+    "live_rows_visible_now": 11
+   },
+   "device": {
+    "old_ms": 0.754,
+    "new_ms": 0.778,
+    "speedup_x": 1.0,
+    "old_runs_ms": [
+     0.747,
+     0.765,
+     0.754
+    ],
+    "new_runs_ms": [
+     0.778,
+     0.754,
+     0.865
+    ],
+    "rows_matched_old": 0,
+    "rows_matched_new": 0,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 1",
+     "InitPlan",
+     "Outer",
+     "Outer"
+    ],
+    "live_rls_now_ms_as_authenticated": 3.849,
+    "live_rows_visible_now": 1
+   }
+  },
+  {
+   "table": "closed_checks",
+   "rows": 669,
+   "policies": [
+    "closed_checks_delete",
+    "closed_checks_update"
+   ],
+   "clause_timed": "USING",
+   "oldPredicate": "pos_can_access(location_id)",
+   "newPredicate": "(location_id in (select public.accessible_location_ids()))",
+   "owner": {
+    "old_ms": 494.135,
+    "new_ms": 3.314,
+    "speedup_x": 149.1,
+    "old_runs_ms": [
+     493.083,
+     494.135,
+     495.768
+    ],
+    "new_runs_ms": [
+     3.395,
+     3.3,
+     3.314
+    ],
+    "rows_matched_old": 658,
+    "rows_matched_new": 658,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "Outer",
+     "Outer",
+     "Inner",
+     "Outer",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 492.954,
+    "live_rows_visible_now": 658
+   },
+   "device": {
+    "old_ms": 418.219,
+    "new_ms": 3.152,
+    "speedup_x": 132.7,
+    "old_runs_ms": [
+     418.219,
+     418.791,
+     415.496
+    ],
+    "new_runs_ms": [
+     3.191,
+     3.152,
+     3.146
+    ],
+    "rows_matched_old": 147,
+    "rows_matched_new": 147,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "Outer",
+     "Outer",
+     "Inner",
+     "Outer",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 413.565,
+    "live_rows_visible_now": 147
+   }
+  },
+  {
+   "table": "cash_movements",
+   "rows": 223,
+   "policies": [
+    "cash_movements_tenant"
+   ],
+   "clause_timed": "USING",
+   "oldPredicate": "pos_can_access(location_id)",
+   "newPredicate": "(location_id in (select public.accessible_location_uuids()))",
+   "owner": {
+    "old_ms": 166.483,
+    "new_ms": 2.787,
+    "speedup_x": 59.7,
+    "old_runs_ms": [
+     165.315,
+     166.483,
+     168.674
+    ],
+    "new_runs_ms": [
+     2.787,
+     2.779,
+     2.895
+    ],
+    "rows_matched_old": 224,
+    "rows_matched_new": 224,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "Outer",
+     "Outer",
+     "Inner",
+     "Outer",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 154.944,
+    "live_rows_visible_now": 224
+   },
+   "device": {
+    "old_ms": 141.017,
+    "new_ms": 2.422,
+    "speedup_x": 58.2,
+    "old_runs_ms": [
+     141.737,
+     140.272,
+     141.017
+    ],
+    "new_runs_ms": [
+     2.433,
+     2.416,
+     2.422
+    ],
+    "rows_matched_old": 16,
+    "rows_matched_new": 16,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "Outer",
+     "Outer",
+     "Inner",
+     "Outer",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 142.961,
+    "live_rows_visible_now": 16
+   }
+  },
+  {
+   "table": "modifier_groups",
+   "rows": 207,
+   "policies": [
+    "modifier_groups_update"
+   ],
+   "clause_timed": "USING",
+   "oldPredicate": "(pos_can_access(location_id) OR is_super_admin())",
+   "newPredicate": "((location_id in (select public.accessible_location_ids())) OR (select public.is_super_admin()))",
+   "owner": {
+    "old_ms": 146.746,
+    "new_ms": 3.089,
+    "speedup_x": 47.5,
+    "old_runs_ms": [
+     146.746,
+     147.068,
+     145.826
+    ],
+    "new_runs_ms": [
+     3.089,
+     3.105,
+     3.052
+    ],
+    "rows_matched_old": 191,
+    "rows_matched_new": 191,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 1.077,
+    "live_rows_visible_now": 207
+   },
+   "device": {
+    "old_ms": 134.97,
+    "new_ms": 2.893,
+    "speedup_x": 46.7,
+    "old_runs_ms": [
+     135.258,
+     134.818,
+     134.97
+    ],
+    "new_runs_ms": [
+     2.893,
+     2.856,
+     2.932
+    ],
+    "rows_matched_old": 30,
+    "rows_matched_new": 30,
+    "same_rows": true,
+    "new_plan_subplans": [
+     "InitPlan 2",
+     "InitPlan",
+     "Outer",
+     "SubPlan 1",
+     "SubPlan",
+     "Subquery",
+     "Outer",
+     "Member",
+     "Outer",
+     "Member",
+     "Member"
+    ],
+    "live_rls_now_ms_as_authenticated": 1.015,
+    "live_rows_visible_now": 207
+   }
+  }
+ ]
+}
