@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.88 HOTFIX, till crash on a new number from the customer display (branch hotfix/display-new-number-crash)
+
+- Regression from v5.9.85: captureLoyaltyByPhone now succeeds for a new number, and POSSurface onCustomerPhone set customer.name undefined; the order chip ran customer.name.split. lib/customerInitials.js (customerInitials/customerLabel/firstNameOf) used by the chip, the CustomerModal results, the portal greeting; setCustomer name defaults to ''.
+
 # Session, 27 Sep 2026, v5.9.87, Back Office customer merge (branch feat/customer-merge-tool)
 
 - Merge core (core-r2-v1.patch, adversarial review passed round 2): customer-merge edge function (DEPLOYED 27 Sep, answers 400 on a bad body), _shared/customerMergePlan.js + customerMergeRun.js (two databases, every step idempotent, crash tested), src/lib/customerMerge.js, Customers.jsx merge panel (owner/manager/super admin).

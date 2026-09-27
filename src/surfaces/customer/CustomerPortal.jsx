@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { buildGiftTheme, fetchGiftBranding, formatAmount } from '../gift/giftHelpers';
+import { firstNameOf } from '../../lib/customerInitials';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -943,9 +944,9 @@ function PointsHero({ t, loyalty, customer }) {
       borderRadius: t.radius + 4, padding: '28px 24px', marginBottom: 20,
       color: t.accentText, textAlign: 'center',
     }}>
-      {customer?.name && (
+      {firstNameOf(customer?.name) && (
         <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.85, marginBottom: 4 }}>
-          Welcome back, {customer.name.split(' ')[0]}
+          Welcome back, {firstNameOf(customer?.name)}
         </div>
       )}
       <div style={{ fontSize: 48, fontWeight: 900, lineHeight: 1 }}>

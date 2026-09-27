@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.88',
+    date: '27 Sep 2026',
+    items: [
+      'FIX (till crash): a new customer typing their number on the customer display crashed the till. Since 5.9.85 the new number is saved and attached to the order with no name yet, and the customer chip on the order drew initials from the missing name. The chip now shows "New customer" with the last two digits of the phone, and the customer search list and the customer portal greeting are guarded the same way.',
+    ],
+  },
+  {
     v: '5.9.87',
     date: '27 Sep 2026',
     items: [
