@@ -1,3 +1,7 @@
+# Session, 27 Sep 2026, v5.9.95, KDS: no auto bump on the last tick (branch fix/kds-no-auto-bump)
+
+- Peter: "don't auto bump the check, leave it there until they click bump". kdsSettings autoBumpWhenAllTicked (default false) + shouldBumpAfterTick; KDSSurface bumpItem uses it via settingsRef; settings sheet toggle under BUMPING.
+
 # Session, 27 Sep 2026, v5.9.94, board packer: no small splits, keep 2 rows (branch fix/board-no-small-splits)
 
 - Peter's photo (Cold Drinks): Coolers split 1/1. menuBoardSections MIN_SPLIT_ROWS 6 (smaller sections whole), KEEP_ROWS 2 (heading keeps 2 rows, the last 2 rows travel together).

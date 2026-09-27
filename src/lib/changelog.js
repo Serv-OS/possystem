@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.95',
+    date: '27 Sep 2026',
+    items: [
+      'Kitchen screen: ticking off every item no longer bumps the ticket. It stays up until someone presses Bump. A screen that wants the old behaviour can switch "Bump when every item is ticked" on in its settings (manager PIN).',
+    ],
+  },
+  {
     v: '5.9.94',
     date: '27 Sep 2026',
     items: [

@@ -31,7 +31,7 @@ import {
   ticketMeta, ticketView, needsTypeLookup, minutesSince, sortTickets, typeCounts, rollUp, venueBusinessDayStart,
 } from '../../lib/kds/kdsTicket';
 import {
-  normaliseKdsSettings, kdsSettingsStorageKey, isMissingColumnError,
+  normaliseKdsSettings, kdsSettingsStorageKey, isMissingColumnError, shouldBumpAfterTick,
 } from '../../lib/kds/kdsSettings';
 import { gridColumnWidth, cardScale } from '../../lib/kds/kdsFit';
 import { KdsTicketCard, KdsTicketModal } from './KdsTicketCard';
@@ -132,6 +132,8 @@ export function KDSSurface() {
   // ── settings (per screen) ───────────────────────────────────────────────────
   const storageKey = kdsSettingsStorageKey(device.id);
   const [settings, setSettings] = useState(() => normaliseKdsSettings(readJson(storageKey)));
+  const settingsRef = useRef(settings);   // v5.9.95: the tick handler reads the live setting
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   const [settingsDb, setSettingsDb] = useState(() => (live && device.id ? 'loading' : 'local'));   // 'loading' | 'ok' | 'missing' | 'local'
   const saveTimer = useRef(null);
   const changedHere = useRef(false);     // a manager changed something since this screen opened
@@ -456,8 +458,9 @@ export function KDSSurface() {
     const t = ticketsRef.current.find(x => x.id === id);
     if (!t) return;
     const items = t.items.map((it, i) => (i === index ? { ...it, _bumped: true } : it));
-    // Ticking the last item bumps the whole ticket (voided lines do not count).
-    if (items.filter(i => !i.voided).every(i => i._bumped)) { bump(id); return; }
+    // v5.9.95: ticking the last item leaves the ticket up until someone presses Bump, unless this
+    // screen switched "Bump when every item is ticked" on (voided lines do not count).
+    if (shouldBumpAfterTick(items, settingsRef.current)) { bump(id); return; }
     patchRow(id, { items });
     if (live) {
       const { error } = await tracked(() => ticketWrite(id, { items }, 'Kitchen item ticked'));

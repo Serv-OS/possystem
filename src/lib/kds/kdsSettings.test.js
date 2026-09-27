@@ -75,3 +75,21 @@ test('storage key is per device', () => {
   assert.notEqual(kdsSettingsStorageKey('a'), kdsSettingsStorageKey('b'));
   assert.equal(kdsSettingsStorageKey(null), 'rpos-kds-settings-local');
 });
+
+test('ticking the last item does not bump unless the screen asks (v5.9.95)', async () => {
+  // Peter, 27 Sep 2026: "don't auto bump the check, leave it there until they click bump".
+  const { shouldBumpAfterTick } = await import('./kdsSettings.js');
+  const all = [{ _bumped: true }, { _bumped: true }, { voided: true }];
+  assert.equal(normaliseKdsSettings(null).autoBumpWhenAllTicked, false, 'off by default');
+  assert.equal(shouldBumpAfterTick(all, normaliseKdsSettings(null)), false);
+  assert.equal(shouldBumpAfterTick(all, normaliseKdsSettings({ autoBumpWhenAllTicked: true })), true, 'a screen can switch it back on');
+  assert.equal(shouldBumpAfterTick([{ _bumped: true }, {}], { autoBumpWhenAllTicked: true }), false, 'not while a line is open');
+  assert.equal(shouldBumpAfterTick([{ voided: true }], { autoBumpWhenAllTicked: true }), false, 'a ticket of only voided lines is not bumped by a tick');
+  assert.equal(normaliseKdsSettings({ autoBumpWhenAllTicked: 'yes' }).autoBumpWhenAllTicked, false);
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../../surfaces/kds/KDSSurface.jsx', import.meta.url), 'utf8');
+  assert.match(src, /if \(shouldBumpAfterTick\(items, settingsRef\.current\)\) \{ bump\(id\); return; \}/);
+  assert.doesNotMatch(src, /every\(i => i\._bumped\)\) \{ bump\(id\)/);
+  const sheet = fs.readFileSync(new URL('../../surfaces/kds/KdsSettingsSheet.jsx', import.meta.url), 'utf8');
+  assert.match(sheet, /label="Bump when every item is ticked"/);
+});
