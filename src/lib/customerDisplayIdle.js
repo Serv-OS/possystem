@@ -14,3 +14,16 @@ export function displayHoldMs(state) {
   if (state === 'active' || state === 'paying') return OPEN_ORDER_SAFETY_MS;
   return 0;
 }
+
+// ── The member's loyalty panel (v5.9.91) ──────────────────────────────────────────────────────
+// Peter, 27 Sep 2026: "the stamp cards do display on the customer display but only last 15 seconds
+// then logs out, it needs to stay on until the end of transaction". The panel cleared after 9 s
+// (25 s with a reward). It now stays until the order ends (the till sends idle when the basket is
+// cleared or paid, and the display's own safety net above turns an abandoned order idle); only the
+// "please try again" message clears itself.
+export const LOYALTY_ERROR_HOLD_MS = 8000;
+
+/** ms before the loyalty panel clears on its own; 0 = hold until the order ends. */
+export function loyaltyResultHoldMs(result) {
+  return result && result.error ? LOYALTY_ERROR_HOLD_MS : 0;
+}
