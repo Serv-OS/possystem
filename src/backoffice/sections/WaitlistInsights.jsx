@@ -19,6 +19,7 @@ import { actualWaitMin, rowToWaitlist } from '../../lib/waitlist/waitlist';
 import { quoteAccuracy } from '../../lib/waitlist/learning';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { PERIODS, getPeriodRange, periodLabel } from './reports/_filters';
+import { getLocationConfig } from '../../lib/locationTime';
 
 const FD = 'var(--font-display)';
 const FM = 'var(--font-mono)';
@@ -72,11 +73,23 @@ export default function WaitlistInsights() {
   const [custom, setCustom] = useState({ from: '', to: '' });
   const [metric, setMetric] = useState('waits'); // 'waits' | 'covers'
 
-  // Resolved [from,to] for the chosen period. No location config here — Insights
-  // follows the simple calendar periods; business-day shifts live in the sales suite.
-  const range = useMemo(() => getPeriodRange(periodId, custom), [periodId, custom]);
+  // The venue's time zone. Insights keeps simple calendar periods (business-day shifts
+  // live in the sales suite), but they are the VENUE's calendar days, never the browser's
+  // (v5.10.2). undefined until read; nothing loads before it.
+  const [venueTz, setVenueTz] = useState(undefined);
+  useEffect(() => {
+    let alive = true;
+    getLocationConfig()
+      .then((cfg) => { if (alive) setVenueTz(cfg?.timezone || null); })
+      .catch(() => { if (alive) setVenueTz(null); });
+    return () => { alive = false; };
+  }, []);
+
+  // Resolved [from,to] for the chosen period.
+  const range = useMemo(() => getPeriodRange(periodId, custom, { timezone: venueTz }), [periodId, custom, venueTz]);
 
   const load = useCallback(async () => {
+    if (venueTz === undefined) return;
     setLoading(true);
     setTableMissing(false);
     try {
@@ -110,7 +123,7 @@ export default function WaitlistInsights() {
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, venueTz]);
 
   useEffect(() => { load(); }, [load]);
 

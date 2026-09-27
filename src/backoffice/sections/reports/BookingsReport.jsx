@@ -1,7 +1,7 @@
 // Bookings report — Back Office → Reports → Order reports → Bookings.
 //
 // Self-fetching module (same pattern as CashDrawer / LoyaltyReport): the hub
-// passes rangeFrom/rangeTo Dates, this module resolves the location itself and
+// passes the period's venue business days (fromDay/toDay), this module resolves the location itself and
 // loads camelCase booking rows via loadBookingsRange (table-absent-safe — a
 // venue without migration 20260811b just sees the empty state).
 //
@@ -47,13 +47,15 @@ const fmtDateShort = (iso) => {
   return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' });
 };
 
-export default function BookingsReport({ rangeFrom, rangeTo, fmtN = (n) => (n || 0).toLocaleString() }) {
+// fromDay/toDay are the venue business days of the period (getPeriodRange), never the
+// range's instants read on the browser's clock (v5.10.2).
+export default function BookingsReport({ fromDay, toDay, fmtN = (n) => (n || 0).toLocaleString() }) {
   const floorTables = useStore(s => s.tables) || [];
   const [bookings, setBookings] = useState(null);   // null = loading
   const [loading, setLoading]   = useState(true);
 
-  const fromISO = useMemo(() => (rangeFrom ? fmtDayKey(new Date(rangeFrom)) : null), [rangeFrom]);
-  const toISO   = useMemo(() => (rangeTo   ? fmtDayKey(new Date(rangeTo))   : null), [rangeTo]);
+  const fromISO = fromDay || null;
+  const toISO   = toDay || null;
 
   useEffect(() => {
     if (!fromISO || !toISO) { setBookings([]); setLoading(false); return; }
