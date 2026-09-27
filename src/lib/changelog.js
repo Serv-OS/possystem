@@ -33,6 +33,11 @@ export const CHANGELOG = [
     items: [
       'Owner app and Manager app: net sales are now what customers paid for the goods, after discounts and comps, with the VAT taken out. They showed shelf prices with the VAT still in and before every discount: Coffee Boy Leeds on 27 Sep showed £1,097.70 net, the right figure is £881.89 (£177.55 of it was VAT). Loyalty rewards and promo codes count as discounts. Tips are still shown on their own and are never sales. The figures now match the Daily trading report.',
       'Owner app and Manager app: a busy venue now counts every sale. Each read stopped at the first 1,000 sales without saying so, which a two week window at a busy venue passes. If the figures cannot be read the Owner app now says so instead of showing £0.',
+    v: '5.10.0',
+    date: '28 Sep 2026',
+    items: [
+      'Discounts a manager approves now record only the manager\'s name and role on the bill. They used to record the manager\'s whole staff record, PIN included, on the open table and the closed check.',
+      'Exceptions report: a discount a manager approved at the till now shows who approved it.',
     ],
   },
   {

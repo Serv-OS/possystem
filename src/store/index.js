@@ -43,6 +43,7 @@ import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage } from '../lib/giftCommit';
 import { tendersFromPaymentInfo, channelTenders, finishTenders, tender, giftTenders, bookingTenders } from '../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
+import { scrubDiscount } from '../lib/discountApprover';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
@@ -7341,8 +7342,12 @@ export const useStore = create((set, get) => ({
   },
 
   // ── Discounts ──────────────────────────────
-  // Check-level discounts stored on the session
+  // Check-level discounts stored on the session.
+  // v5.10.0: every add* scrubs the approving manager to { id, name, role } (lib/discountApprover.js).
+  // The session is published to active_sessions and closed into closed_checks, so a staff record
+  // here put the manager's PIN on both.
   addCheckDiscount: (tableId, discount) => {
+    discount = scrubDiscount(discount);
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
@@ -7363,7 +7368,7 @@ export const useStore = create((set, get) => ({
   },
 
   addWalkInDiscount: (discount) => set(s => ({
-    walkInOrder: { ...s.walkInOrder, discounts:[...(s.walkInOrder?.discounts||[]), discount] },
+    walkInOrder: { ...s.walkInOrder, discounts:[...(s.walkInOrder?.discounts||[]), scrubDiscount(discount)] },
   })),
 
   removeWalkInDiscount: (discountId) => set(s => ({
@@ -7372,6 +7377,7 @@ export const useStore = create((set, get) => ({
 
   // Item-level discount
   addItemDiscount: (tableId, itemUid, discount) => {
+    discount = scrubDiscount(discount);
     if (tableId) {
       set(s => ({ tables:s.tables.map(t => {
         if (t.id!==tableId||!t.session) return t;

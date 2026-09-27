@@ -14,6 +14,8 @@
 // Pure apart from the client passed in (no import of the supabase module), so it is tested
 // under `npm test` with a fake client.
 
+import { scrubDiscounts, scrubItemDiscounts } from './discountApprover.js';
+
 const MISSING_TTL_MS = 10 * 60 * 1000;
 const _missing = new Map();   // column -> until (ms)
 
@@ -40,6 +42,9 @@ export function resetMissingColumns() { _missing.clear(); }
 export async function writeClosedCheckRow(client, row, opts = {}) {
   const { upsert = false, select = null, tag = 'closed_checks', now = () => Date.now() } = opts;
   const payload = { ...row };
+  // v5.10.0: never a staff record (with its PIN) on a discount, whichever writer built the row.
+  if ('discounts' in payload) payload.discounts = scrubDiscounts(payload.discounts);
+  if ('items' in payload) payload.items = scrubItemDiscounts(payload.items);
   const dropped = [];
   const t = now();
   for (const [col, until] of _missing) {
