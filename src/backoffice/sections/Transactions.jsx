@@ -15,7 +15,8 @@ import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getLocationId } from '../../lib/supabase';
 import { loadLocationBranding } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
-import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
+import { refundBreakdown, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
+import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 const fmtDate = ts => {
@@ -218,7 +219,9 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   );
   const refundAmount = bd?.amount || 0;
 
-  const legs = useMemo(() => (refundTarget ? cardLegsOf(refundTarget) : []), [refundTarget]);
+  // 28 Sep 2026: the same legs the store will refund (this copy, else the sale's row), so the
+  // panel never says "no card linked" while the store then refunds the card.
+  const { legs, checking: legsChecking, failed: legsFailed } = useRefundCardLegs(refundTarget);
   const legDone = useMemo(() => (refundTarget ? legRefundedMinor(refundTarget) : {}), [refundTarget]);
   const legRoom = (l) => (l.amountMinor == null ? null : Math.max(0, l.amountMinor - (legDone[l.id] || 0)));
   const defaultPicks = useMemo(() => {
@@ -796,7 +799,17 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                   Items {fmt(bd.itemsAmount)}{bd.service > 0 ? ` · service ${fmt(bd.service)}` : ''}{bd.tax > 0 ? ` · sales tax ${fmt(bd.tax)}` : ''}{bd.tip > 0 ? ` · tip ${fmt(bd.tip)}` : ''}
                 </div>
               )}
-              {legs.length === 0 && (
+              {legsChecking && (
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.5 }}>
+                  Checking which card paid for this sale…
+                </div>
+              )}
+              {!legsChecking && legsFailed && (
+                <div style={{ fontSize: 12, color: '#dc2626', marginTop: 8, lineHeight: 1.5 }}>
+                  Could not reach this sale's record to find its card. Try again in a moment. Nothing is recorded until the card is found.
+                </div>
+              )}
+              {!legsChecking && !legsFailed && legs.length === 0 && (
                 <div style={{ fontSize: 12, color: '#dc2626', marginTop: 8, lineHeight: 1.5 }}>
                   No card payment is linked to this check — nothing can be reversed automatically. Return the money in the processor dashboard.
                 </div>
@@ -821,7 +834,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
               <button onClick={() => setRefundTarget(null)} disabled={refundBusy} style={{ ...btnOutline, flex: 1 }}>Cancel</button>
               <button
                 onClick={executeRefund}
-                disabled={refundBusy || !refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
+                disabled={refundBusy || legsChecking || !refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
                 style={{
                   ...btnPrimary, flex: 1, background: '#dc2626',
                   opacity: (refundBusy || !refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 0.4 : 1,

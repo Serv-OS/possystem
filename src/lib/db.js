@@ -19,6 +19,8 @@ import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
+import { closedCheckRefundFields } from './closedCheckRefundFields';
+import { withTimeout } from './withTimeout';
 import { bookedTaxRecord } from './taxShare';
 import { describeMenuChange } from './menuDiff';
 import { normaliseMenuRow } from './rowMapping';
@@ -894,6 +896,33 @@ export const updateClosedCheckRefunds = async (checkId, refunds, status) => {
   }
 };
 
+/**
+ * The card columns of one closed check, read fresh for a refund (28 Sep 2026, Leeds R6404).
+ * refundCheck asks only when its own copy of a card paid check has no card leg: the row is
+ * the record (lib/payments/refundCardLegs.js). Resolves the row (null only in mock mode).
+ * THROWS when the read fails, takes over 5 s, or finds NO row, so the refund is refused and
+ * can be tried again, never recorded as "issue the card refund manually" because a read
+ * failed. No row is a failure too: every copy of a sale came from this table or from this
+ * till's own close (which carries its card), so an invisible row means this till cannot see
+ * it right now (row level security while it is not linked), not that no card paid.
+ * Same venue as the card reversal itself (getActiveLocationSync), and filtered by it.
+ */
+export const fetchClosedCheckCardRow = async (checkId) => {
+  if (isMock || !supabase || !checkId) return null;
+  const locationId = getActiveLocationSync();
+  if (!locationId || locationId === 'loc-demo') throw new Error('this device has no venue');
+  const { data, error } = await withTimeout(
+    supabase.from('closed_checks')
+      .select('processor, stripe_payment_intent_id, payment_intents, tenders')
+      .eq('id', checkId)
+      .eq('location_id', locationId)
+      .maybeSingle(),
+    5000, 'Card payment lookup');
+  if (error) throw new Error(error.message || String(error));
+  if (!data) throw new Error('the sale is not visible in the database from this till');
+  return data;
+};
+
 // How far back a till loads sales history at boot. The POS history panel offers
 // Today / Week / 30 days, so the boot load has to cover the widest of those or the
 // filter silently shows nothing.
@@ -950,15 +979,10 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
-      giftCard: c.gift_card || null,
-      stripePaymentIntentId: c.stripe_payment_intent_id || null,
-      paymentIntents: c.payment_intents || null,  // v5.5.323: multi-card refund source
-      processor: c.processor || 'stripe',         // refund routes by this
-      loyalty: c.loyalty || null,
-      source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
-      // 27 Sep 2026: what paid the check (v5.9.11). A refund pro rates the VAT against it
-      // (refundMath.refundTaxBasis): a reader close's total is the card part only.
-      tenders: Array.isArray(c.tenders) ? c.tenders : null,
+      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
+      // the fields a refund reads, through the one row map realtime and MasterSync use too
+      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
+      ...closedCheckRefundFields(c),
     }));
   }
   return result;
@@ -1002,15 +1026,10 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
       status: c.status, refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
-      giftCard: c.gift_card || null,
-      stripePaymentIntentId: c.stripe_payment_intent_id || null,
-      paymentIntents: c.payment_intents || null,  // v5.5.323: multi-card refund source
-      processor: c.processor || 'stripe',         // refund routes by this
-      loyalty: c.loyalty || null,
-      source: c.source || 'pos', // v5.5.140: surface source for report filters (online / kiosk / qr / pos)
-      // 27 Sep 2026: what paid the check (v5.9.11). A refund pro rates the VAT against it
-      // (refundMath.refundTaxBasis): a reader close's total is the card part only.
-      tenders: Array.isArray(c.tenders) ? c.tenders : null,
+      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
+      // the fields a refund reads, through the one row map realtime and MasterSync use too
+      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
+      ...closedCheckRefundFields(c),
     }));
   }
   return result;

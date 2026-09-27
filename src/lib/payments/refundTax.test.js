@@ -95,6 +95,9 @@ test('refundCheck uses refundTaxAmount; the History loaders carry tenders', () =
   assert.match(store, /const taxRefunded = refundTaxAmount\(chkBefore, bd\);/);
   assert.match(store, /toMinor as toMinorAmt, refundTaxAmount,\n\} from '\.\.\/lib\/payments\/refundMath';/);
   assert.doesNotMatch(store, /amount \/ Number\(chkBefore\.total\)/);
+  // 28 Sep 2026: both loaders map tenders through the shared row map (closedCheckRefundFields).
   const db = fs.readFileSync(path.join(here, '../db.js'), 'utf8');
-  assert.equal((db.match(/tenders: Array\.isArray\(c\.tenders\) \? c\.tenders : null,/g) || []).length, 2);
+  assert.equal((db.match(/\.\.\.closedCheckRefundFields\(c\),/g) || []).length, 2);
+  const map = fs.readFileSync(path.join(here, '../closedCheckRefundFields.js'), 'utf8');
+  assert.match(map, /tenders: Array\.isArray\(row\?\.tenders\) \? row\.tenders : null,/);
 });

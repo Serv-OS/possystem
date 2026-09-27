@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.3',
+    date: '28 Sep 2026',
+    items: [
+      'Refunds: a card sale taken on the reader now always refunds to the card. When another screen at the venue had recorded the sale (a kitchen screen can close a reader payment), the till did not know which card paid and said "issue the card refund manually", so the money never went back (Coffee Boy Leeds, 3.80 on 27 Sep). The till now reads the sale\'s card payment from the sale record, from the card payment reference or from the payment line. A QR tab closed from Orders now refunds to the card too (it always said to refund by hand).',
+      'Refunds: the refund screen (till History and Back Office) now shows the card the refund will go to. It could say "No card payment is linked" while the refund then went back to the card anyway, and staff who also refunded in the dashboard would have refunded twice.',
+      'Refunds: if the till cannot reach the sale record to find its card, it now says so and records nothing, so the refund can simply be tried again. It used to record the refund with no card and could never send it later.',
+      'Sales that reach a till from another device (live updates and Force sync) now carry their card, gift card and loyalty details, the same as sales loaded when the till starts. A full refund of a gift card sale from such a copy now puts the balance back on the gift card.',
+    ],
+  },
+  {
     v: '5.10.1',
     date: '28 Sep 2026',
     items: [

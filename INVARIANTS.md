@@ -18,6 +18,7 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 - `eighty_six` uses `(location_id, item_id)` — one row per 86'd item per location. INSERT = out of stock, DELETE = back in stock.
 - `locations.currency` exists on BOTH Ops and Platform DBs (GBP/USD/EUR, default GBP). **Platform is authoritative** for the running app; Ops is only the creation seed. `provision-location` copies Ops→Platform on INSERT only. Supported set is exactly the keys of `CURRENCIES` in `lib/currency.js`.
 - `closed_checks.payment_intents` (jsonb `[{id, amountMinor}]`) is the source of truth for auto-refundable card legs (split portions, bar-tab holds). `stripe_payment_intent_id` is kept for back-compat / single-card.
+- **Every closed_checks row that becomes a till's copy carries the refund fields through `closedCheckRefundFields`** (`src/lib/closedCheckRefundFields.js`, 28 Sep 2026): the boot loaders, the realtime INSERT and UPDATE copies and MasterSync. A hand built copy without the card reference is how Leeds R6404 could not be refunded to the card. `refundMath.cardLegsOf` reads legs, then the single id, then card `tenders[].psp_ref`; `refundCheck` reads the row itself when its copy of a card paid check has no leg, and REFUSES (records nothing) when that read fails.
 
 ---
 
