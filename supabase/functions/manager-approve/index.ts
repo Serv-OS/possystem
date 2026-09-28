@@ -10,6 +10,8 @@
 // The PIN binds the approval to an accountable person on a shared device. Every action records that
 // person as approver + appends a wf_audit row. Financial compute (tronc/accrual/payroll) stays in
 // workforce-compute; this only flips approval state.
+// v5.10.3: the audit row goes through the hash chain writer workforce-compute uses
+// (_shared/wfAudit.js), and a row that did not save is answered, never dropped.
 //
 //   POST { action, ops_location_id, pin, target_id, decision?, heal? }   (token in Authorization)
 //   actions: 'timesheet.approve' | 'timeoff.decide' (decision: 'approved' | 'denied')
@@ -20,6 +22,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { writeWfAudit } from '../_shared/wfAudit.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -78,12 +81,23 @@ function canApprove(op: { role?: string; permissions?: string[] }): boolean {
   return role === 'manager' || role === 'owner' || perms.includes('manager_approvals');
 }
 
-async function audit(loc: string, orgId: string | null, operatorId: string, name: string | undefined, action: string, entity: string, entityId: string, before: unknown, after: unknown) {
-  await sb.from('wf_audit').insert({
-    location_id: loc, org_id: orgId, actor_id: operatorId, actor_name: name || null,
-    action, entity, entity_id: entityId, before, after,
+// v5.10.3: every row goes through the ONE chain writer (_shared/wfAudit.js). This used to insert
+// with no prev_hash/row_hash and never read the insert error, so a row that did not save was
+// silent. Returns the error, null when the row landed.
+async function audit(loc: string, orgId: string | null, op: { id: string; name?: string }, action: string, entity: string, entityId: string, before: unknown, after: unknown): Promise<string | null> {
+  const { error } = await writeWfAudit(sb, loc, orgId, action, {
+    actorId: op.id, actorName: op.name || null, entity, entityId, before, after,
   });
+  if (error) console.error(`[manager-approve] ${action} ${entityId}: ${error}`);
+  return error;
 }
+
+// The action landed but its audit row did not. Answered as an error so the screen shows it (a 2xx
+// with a flag reads as plain success), with done: true so a caller can tell it from a refusal.
+// The words avoid "PIN", "approve" and "not allowed": the Manager app asks for the PIN again on
+// those (ManagerTeam onResult, ManagerKitchen submitPO).
+const auditFailed = (what: string, extra: Record<string, unknown> = {}) =>
+  json({ error: `${what} stands, but its audit record did not save. Tell the owner.`, done: true, audit_failed: true, ...extra }, 500);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -113,15 +127,25 @@ Deno.serve(async (req) => {
         .select('id, org_id, staff_id, clock_in, clock_out, location_id').eq('id', target_id).eq('location_id', loc).maybeSingle();
       if (!ts) return json({ error: 'timesheet not found' }, 404);
       if (ts.clock_out) return json({ error: 'already clocked out' }, 409);
+      // v5.10.3: name the sheet. On its own workforce-clock closes the person's NEWEST open sheet,
+      // so with two open (Back Office can save one with no clock out) a tap on sheet A closed
+      // sheet B and the audit named A. With timesheet_id it closes this one or refuses.
       const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/workforce-clock`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
-        body: JSON.stringify({ location_id: loc, staff_id: ts.staff_id, action: 'out' }),
+        body: JSON.stringify({ location_id: loc, staff_id: ts.staff_id, timesheet_id: ts.id, action: 'out' }),
       });
       const out = await res.json().catch(() => ({}));
       if (!res.ok || out?.error) return json({ error: out?.error || `clock-out failed (${res.status})` }, res.status >= 500 ? 502 : 400);
-      await audit(loc, ts.org_id, op.id, op.name, 'timesheet.manager_clock_out', 'wf_timesheets', target_id,
-        { clock_in: ts.clock_in, clock_out: null }, { clock_out: nowIso(), actual_hours: out.actualHours ?? null, by: op.name ?? op.id });
+      // Read the sheet back: the audit records what was written, and a sheet still open here means
+      // the clock out landed on another one (a workforce-clock older than v5.10.3 ignores the id).
+      const { data: closed, error: backErr } = await sb.from('wf_timesheets')
+        .select('clock_out, break_taken, actual_hours').eq('id', ts.id).eq('location_id', loc).maybeSingle();
+      if (!backErr && !closed?.clock_out) return json({ error: 'the clock out did not close this timesheet; check this person\'s timesheets' }, 502);
+      const auditErr = await audit(loc, ts.org_id, op, 'timesheet.manager_clock_out', 'wf_timesheets', ts.id,
+        { clock_in: ts.clock_in, clock_out: null },
+        { clock_out: closed?.clock_out ?? nowIso(), actual_hours: closed?.actual_hours ?? out.actualHours ?? null, break_taken: closed?.break_taken ?? out.breakMins ?? null, by: op.name ?? op.id });
+      if (auditErr) return auditFailed('The clock out', { actualHours: out.actualHours ?? null, staff: out.staff ?? null });
       return json({ ok: true, actualHours: out.actualHours ?? null, staff: out.staff ?? null });
     }
 
@@ -152,7 +176,8 @@ Deno.serve(async (req) => {
       const { error } = await sb.from('wf_timesheets').update(patch).eq('id', target_id).eq('location_id', loc);
       if (error) return json({ error: error.message }, 400);
       const after = { status: 'approved', clock_in: patch.clock_in ?? ts.clock_in, clock_out: patch.clock_out ?? ts.clock_out, break_taken: patch.break_taken ?? ts.break_taken };
-      await audit(loc, ts.org_id, op.id, op.name, edit ? 'timesheet.edit_approve' : 'timesheet.approve', 'wf_timesheets', target_id, before, after);
+      const auditErr = await audit(loc, ts.org_id, op, edit ? 'timesheet.edit_approve' : 'timesheet.approve', 'wf_timesheets', target_id, before, after);
+      if (auditErr) return auditFailed('The timesheet sign off');
       return json({ ok: true });
     }
 
@@ -163,7 +188,8 @@ Deno.serve(async (req) => {
       if (!lv || lv.location_id !== loc) return json({ error: 'time-off request not found for this location' }, 404);
       const { error } = await sb.from('wf_time_off').update({ status, decided_by: op.id, decided_at: nowIso() }).eq('id', target_id).eq('location_id', loc);
       if (error) return json({ error: error.message }, 400);
-      await audit(loc, lv.org_id, op.id, op.name, `timeoff.${status}`, 'wf_time_off', target_id, { status: lv.status }, { status });
+      const auditErr = await audit(loc, lv.org_id, op, `timeoff.${status}`, 'wf_time_off', target_id, { status: lv.status }, { status });
+      if (auditErr) return auditFailed('The time off decision');
       return json({ ok: true });
     }
 
@@ -192,6 +218,13 @@ Deno.serve(async (req) => {
         if (itemIds.some((id) => !ownedSet.has(id))) return json({ error: 'one or more items are not from this location' }, 400);
       }
 
+      // wf_audit's (location_id, org_id) must be a real pair from locations (INVARIANTS), so the org
+      // comes from the venue, before anything is written. (It came from the operator's staff row,
+      // and the audit was skipped without a word when neither was found.)
+      const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle();
+      const orgId = locRow?.org_id || null;
+      if (!orgId) return json({ error: 'could not raise the order' }, 400);
+
       const reference = 'MGR-' + Date.now().toString(36).toUpperCase();
       const { data: po, error: poErr } = await sb.from('purchase_orders').insert({
         location_id: loc, supplier_id: supplierId, reference, status: 'SENT',
@@ -209,12 +242,17 @@ Deno.serve(async (req) => {
       }));
       const { error: lErr } = await sb.from('po_lines').insert(lrows);
       if (lErr) { await sb.from('purchase_orders').delete().eq('id', po.id); console.error('[po.raise] lines insert', lErr.message); return json({ error: 'could not raise the order' }, 400); }
-      // wf_audit.org_id is NOT NULL — resolve it from the operator's staff row (fallback: locations).
-      let orgId = (op as any).org_id || null;
-      if (!orgId) { const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle(); orgId = locRow?.org_id || null; }
-      if (orgId) {
-        await audit(loc, orgId, op.id, op.name, 'po.raise', 'purchase_orders', po.id, null,
-          { reference, supplier_id: supplierId, supplier_name: body.supplier_name || null, lines: lrows.length });
+      const auditErr = await audit(loc, orgId, op, 'po.raise', 'purchase_orders', po.id, null,
+        { reference, supplier_id: supplierId, supplier_name: body.supplier_name || null, lines: lrows.length });
+      if (auditErr) {
+        // Unlike the approvals, raising again is not harmless (it makes a second order), so an
+        // order with no record of who raised it is taken back (its lines go too, ON DELETE CASCADE).
+        const { error: undoErr } = await sb.from('purchase_orders').delete().eq('id', po.id);
+        if (undoErr) {
+          console.error('[po.raise] undo after audit failure', undoErr.message);
+          return json({ error: `Order ${reference} was raised, but its audit record did not save. Check Purchasing before raising it again, and tell the owner.`, done: true, audit_failed: true, po_id: po.id, reference }, 500);
+        }
+        return json({ error: 'could not raise the order: its audit record did not save' }, 500);
       }
       return json({ ok: true, po_id: po.id, reference });
     }

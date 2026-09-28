@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.10.3',
+    date: '28 Sep 2026',
+    items: [
+      'Manager app and Back Office: Clock out now ends the timesheet you tapped. If someone had two open timesheets (one saved in Back Office with no clock out time), it ended the newer one instead, worked out the hours and pay on that one, and recorded the one you tapped. The Time Clock, the till and the staff app are unchanged: they still end the person\'s latest open timesheet.',
+      'Manager app: approvals, time off decisions, clock outs and purchase orders now go into the tamper evident audit log the same way as tronc and payroll (each record is linked to the one before it, so an edited record shows). They were saved without that link, and if one failed to save nobody was told. Now the app says so, and a purchase order is not raised without its audit record.',
+    ],
+  },
+  {
     v: '5.10.2',
     date: '28 Sep 2026',
     items: [
