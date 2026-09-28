@@ -11,12 +11,15 @@
 //
 // Roles come from staffMembers (already captured — Manager/Server/Bartender/Cashier/Kitchen).
 // Hours are derived from shift session (first-check-to-last-check per day, summed).
+// v5.11.1: days, hours and "now" are the venue's (workedTime, sumByVenueHour, venueHour),
+// never the browser's.
 // Export CSV for payroll with net tips per person.
 
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { reportClock, workedTime, sumByVenueHour, venueHour } from './_filters';
 import { currencySymbol } from '../../../lib/currency';
 import { loadSettings, saveSettings } from '../../../staff/wfData';
 import { getLocationId } from '../../../lib/supabase';
@@ -37,7 +40,7 @@ const MODE_TO_POLICY = { shared: 'pool', none: 'direct', tipout: 'hybrid' };
 // that always feeds the pool (contributes 100%, never receives).
 const HOUSE_SOURCES = new Set(['kiosk', 'online', 'qr', 'catering']);
 
-function serverTips(checks) {
+function serverTips(checks, clock) {
   const map = {};
   const house = { tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0 };
   checks.filter(c => c.status !== 'voided').forEach(c => {
@@ -58,26 +61,20 @@ function serverTips(checks) {
       return;
     }
     const s = c.server || c.staff || 'Unknown';
-    if (!map[s]) map[s] = { server: s, staffId: c.staffId || null, tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0, byDay: {} };
+    if (!map[s]) map[s] = { server: s, staffId: c.staffId || null, tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0, closes: [] };
     if (!map[s].staffId && c.staffId) map[s].staffId = c.staffId;
     if (isCash) map[s].tipsCash += tip;
     else        map[s].tipsCard += tip;
     if (tip > 0) map[s].tipCount += 1;
     map[s].revenue    += c.total || 0;
     map[s].checkCount += 1;
-    if (c.closedAt) {
-      const d = new Date(c.closedAt);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      if (!map[s].byDay[key]) map[s].byDay[key] = { first: c.closedAt, last: c.closedAt };
-      if (c.closedAt < map[s].byDay[key].first) map[s].byDay[key].first = c.closedAt;
-      if (c.closedAt > map[s].byDay[key].last)  map[s].byDay[key].last  = c.closedAt;
-    }
+    if (c.closedAt) map[s].closes.push(c.closedAt);
   });
   const servers = Object.values(map).map(r => ({
     ...r,
     tips: r.tipsCash + r.tipsCard,
-    hoursMs: Object.values(r.byDay).reduce((s, d) => s + Math.max(0, d.last - d.first), 0),
-    byDay: undefined,
+    hoursMs: workedTime(r.closes, clock).ms,   // per venue business day
+    closes: undefined,
   })).sort((a, b) => b.tips - a.tips);
   return { servers, house: { ...house, tips: house.tipsCash + house.tipsCard } };
 }
@@ -95,10 +92,11 @@ const POOL_MODES = [
   { id:'shared', label:'Shared pool', blurb:'Pooled roles combine all their tips and split by hours worked.' },
 ];
 
-export default function Tips({ checks, fmt, fmtN }) {
+export default function Tips({ checks, fmt, fmtN, locationConfig }) {
   const { staffMembers = [] } = useStore();
 
-  const { servers, house } = useMemo(() => serverTips(checks), [checks]);
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
+  const { servers, house } = useMemo(() => serverTips(checks, clock), [checks, clock]);
 
   // Role lookup: prefer staff_id FK match (v4.6.19), fall back to name match
   // for legacy checks closed before the schema hardening.
@@ -117,13 +115,9 @@ export default function Tips({ checks, fmt, fmtN }) {
     const cashTips = servers.reduce((s, r) => s + r.tipsCash, 0) + house.tipsCash;
     const cardTips = servers.reduce((s, r) => s + r.tipsCard, 0) + house.tipsCard;
     const revenue  = servers.reduce((s, r) => s + r.revenue, 0) + house.revenue;
-    const byHour = Array(24).fill(0);
-    checks.filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
-      const h = new Date(c.closedAt).getHours();
-      byHour[h] += c.tip || 0;
-    });
+    const byHour = sumByVenueHour(checks.filter(c => c.status !== 'voided'), c => c.closedAt, c => c.tip || 0, clock.timeZone);
     return { cashTips, cardTips, total: cashTips + cardTips, revenue, byHour };
-  }, [servers, house, checks]);
+  }, [servers, house, checks, clock]);
 
   // -------- Pool state --------
   const [mode, setMode]            = useState('none');
@@ -277,7 +271,7 @@ export default function Tips({ checks, fmt, fmtN }) {
   };
 
   const peakHour = headline.byHour.indexOf(Math.max(...headline.byHour));
-  const nowHour  = new Date().getHours();
+  const nowHour  = venueHour(new Date(), clock.timeZone); // the venue's hour now, not the browser's
 
   if (servers.length === 0 && house.tips === 0) return <EmptyState icon="🙏" message="No tips captured in this period."/>;
 

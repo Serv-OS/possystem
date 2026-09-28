@@ -11,6 +11,9 @@
 //          rangeDays, daypartGrid, groupChecksByDay/ByService. The day or service a sale
 //          belongs to is business time (venue zone + business_day_start), never the browser.
 //
+// v5.11.1: and the rest: mixSeries (Order types, Order sources), daySlot (Product mix),
+//          workedTime (Servers, Tips), sumByVenueHour (Tips, KDS performance).
+//
 // Used by every report in the reporting suite.
 
 import {
@@ -344,4 +347,87 @@ export function groupChecksByService(checks, shifts, clock) {
     if (a.dayKey !== b.dayKey) return a.dayKey < b.dayKey ? 1 : -1;
     return (a.shift.start || '') < (b.shift.start || '') ? -1 : 1;
   });
+}
+
+// v5.11.1: the rest of the reports onto the venue's clock (Order types, Order sources,
+// Product mix, Servers, Tips, KDS performance, the Bookings chart's "today").
+
+// A Date, an ISO string or epoch ms as epoch ms; null when it is not an instant.
+function instantMs(ts) {
+  if (ts == null || ts === '') return null;
+  const ms = ts instanceof Date ? ts.getTime() : typeof ts === 'number' ? ts : Date.parse(ts);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Totals per hour of the venue's wall clock: out[h] (0 to 23) sums valueOf(row) over the
+// rows whose instant, tsOf(row), falls in hour h there. A row with no instant is left out.
+// Tips by hour, KDS bump times by hour.
+export function sumByVenueHour(rows, tsOf, valueOf, timeZone) {
+  const out = Array(24).fill(0);
+  for (const r of rows || []) {
+    const h = venueHour(instantMs(tsOf(r)), timeZone);
+    if (h != null) out[h] += valueOf(r);
+  }
+  return out;
+}
+
+// The part of the day a sale was made in, on the venue's wall clock (Product mix): morning
+// before 11:00, lunch to 15:00, afternoon to 17:00, dinner to 22:00, then late. No close
+// time reads as 12:00, as it always has.
+export function daySlot(ts, timeZone) {
+  const h = venueHour(instantMs(ts), timeZone) ?? 12;
+  return h < 11 ? 'morning' : h < 15 ? 'lunch' : h < 17 ? 'afternoon' : h < 22 ? 'dinner' : 'late';
+}
+
+// The time someone was seen working (Servers, Tips): first to last close on each business
+// day, summed, and how many business days that is. A shift that runs past midnight is one
+// day; the calendar split it in two and lost the time either side of midnight.
+export function workedTime(closedAts, clock) {
+  const spans = {};
+  for (const ts of closedAts || []) {
+    const ms = instantMs(ts);
+    const day = ms == null ? null : dayOfCheck(ms, clock);
+    if (!day) continue;
+    const s = spans[day];
+    if (!s) spans[day] = { first: ms, last: ms };
+    else { s.first = Math.min(s.first, ms); s.last = Math.max(s.last, ms); }
+  }
+  const days = Object.values(spans);
+  return { ms: days.reduce((t, s) => t + (s.last - s.first), 0), days: days.length };
+}
+
+// The time axis of a mix chart (Order types, Order sources). One bucket per venue business
+// day; when every sale is on ONE business day, one per hour of the venue's wall clock, in
+// the order the day runs (from the day start's hour, so a 01:30 late bar sale comes after
+// 23:00, not before breakfast). A bucket is { key, total, [keyOf(check)]: revenue }; voided
+// checks and checks with no close time are left out. Returns { series, xKeys, isHourly,
+// types } (types = every keyOf seen). A day key is 'YYYY-MM-DD'; label it with dayText.
+export function mixSeries(checks, keyOf, clock) {
+  const live = [];
+  for (const c of checks || []) {
+    if (c?.status === 'voided' || !c?.closedAt) continue;
+    const day = dayOfCheck(c.closedAt, clock);
+    if (day) live.push({ c, day });
+  }
+  const isHourly = live.length > 0 && live.every(x => x.day === live[0].day);
+  const series = {};
+  const types = new Set();
+  for (const { c, day } of live) {
+    const key = isHourly ? String(venueHour(instantMs(c.closedAt), clock?.timeZone)) : day;
+    const t = keyOf(c);
+    types.add(t);
+    const b = (series[key] ||= { key, total: 0 });
+    b[t] = (b[t] || 0) + (c.total || 0);
+    b.total += c.total || 0;
+  }
+  const startHour = Math.floor((clockMinutes(clock?.dayStart) ?? 0) / 60);
+  const hourOfDay = (k) => (Number(k) - startHour + 24) % 24;
+  const xKeys = Object.keys(series).sort((a, b) => (isHourly ? hourOfDay(a) - hourOfDay(b) : a < b ? -1 : a > b ? 1 : 0));
+  return { series, xKeys, isHourly, types: [...types] };
+}
+
+// A mixSeries key as axis text: '13:00', or '27 Sep' (was new Date('2026-09-27') on the
+// browser's clock, which reads 26 Sep anywhere west of London).
+export function mixLabel(key, isHourly) {
+  return isHourly ? `${key}:00` : dayText(key, { day:'numeric', month:'short' });
 }

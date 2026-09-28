@@ -15,6 +15,7 @@ import { getLocationId } from '../../../lib/supabase';
 import { loadBookingsRange } from '../../../lib/bookings/bookingsData';
 import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { reportClock, dayOfCheck, rangeDays, weekdayOf } from './_filters';
 
 const STATUS_META = {
   confirmed: { label:'Confirmed', bg:'var(--acc-d)',                 color:'var(--acc)' },
@@ -39,17 +40,15 @@ const SOURCE_LABELS = {
 // Statuses still ahead of (or on) the floor — everything not yet resolved.
 const UPCOMING = new Set(['confirmed', 'prepaid', 'due', 'late']);
 
-const fmtDayKey = (d) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
 const fmtDateShort = (iso) => {
   const d = new Date(`${iso}T12:00:00`);
   return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' });
 };
 
 // fromDay/toDay are the venue business days of the period (getPeriodRange), never the
-// range's instants read on the browser's clock (v5.10.2).
-export default function BookingsReport({ fromDay, toDay, fmtN = (n) => (n || 0).toLocaleString() }) {
+// range's instants read on the browser's clock (v5.10.2). locationConfig gives the venue's
+// clock for the chart's "today" (v5.11.1).
+export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = (n) => (n || 0).toLocaleString() }) {
   const floorTables = useStore(s => s.tables) || [];
   const [bookings, setBookings] = useState(null);   // null = loading
   const [loading, setLoading]   = useState(true);
@@ -102,16 +101,7 @@ export default function BookingsReport({ fromDay, toDay, fmtN = (n) => (n || 0).
   }, [rows]);
 
   // ── Covers by day ─────────────────────────────────────────────────────────
-  const days = useMemo(() => {
-    if (!fromISO || !toISO) return [];
-    const start = new Date(`${fromISO}T12:00:00`);
-    const end   = new Date(`${toISO}T12:00:00`);
-    const out = [];
-    for (let t = start.getTime(); t <= end.getTime(); t += 24 * 60 * 60 * 1000) {
-      out.push(fmtDayKey(new Date(t)));
-    }
-    return out;
-  }, [fromISO, toISO]);
+  const days = useMemo(() => rangeDays({ fromDay: fromISO, toDay: toISO }), [fromISO, toISO]);
 
   const coversByDay = useMemo(() => {
     const map = Object.fromEntries(days.map(k => [k, 0]));
@@ -219,7 +209,7 @@ export default function BookingsReport({ fromDay, toDay, fmtN = (n) => (n || 0).
       {/* Covers by day */}
       <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px', marginBottom:14 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:12 }}>Covers by day</div>
-        <DayBars days={days} values={coversByDay}/>
+        <DayBars days={days} values={coversByDay} todayKey={dayOfCheck(Date.now(), reportClock(locationConfig))}/>
       </div>
 
       {/* Status breakdown (compact) */}
@@ -306,9 +296,11 @@ export default function BookingsReport({ fromDay, toDay, fmtN = (n) => (n || 0).
 }
 
 // ── Covers-by-day plain-div bar chart (HourBar idiom, day-keyed) ─────────────
-function DayBars({ days, values }) {
+// todayKey is the venue's business day now, the day the Today period shows (v5.11.1: was
+// the browser's date, a day ahead of London every evening in Tokyo). Days are 'YYYY-MM-DD'
+// and are labelled from the date itself, never a clock.
+function DayBars({ days, values, todayKey }) {
   const max = Math.max(1, ...values);
-  const todayKey  = fmtDayKey(new Date());
   const accentIdx = days.includes(todayKey) ? days.indexOf(todayKey) : days.length - 1;
   const many = days.length > 21;
   // Sparse x labels for long ranges — first / quarter points / last.
@@ -322,8 +314,8 @@ function DayBars({ days, values }) {
         const val = values[i];
         const barPx = Math.max(Math.round((val / max) * BAR_H), val > 0 ? 4 : 2);
         const isAccent = i === accentIdx;
-        const d = new Date(`${k}T12:00:00`);
-        const short = `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`;
+        const dm = `${Number(k.slice(8, 10))}/${Number(k.slice(5, 7))}`;
+        const short = `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekdayOf(k)]} ${dm}`;
         return (
           <div key={k} title={`${short}: ${val} covers`} style={{ flex:1, display:'flex', flexDirection:'column', justifyContent:'flex-end', alignItems:'center', gap:3, minWidth:0 }}>
             <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)', whiteSpace:'nowrap' }}>
@@ -339,7 +331,7 @@ function DayBars({ days, values }) {
               boxSizing:'border-box',
             }}/>
             <div style={{ fontSize:8, color: isAccent ? 'var(--acc)' : 'var(--t4)', fontWeight: isAccent ? 700 : 400, whiteSpace:'nowrap' }}>
-              {labelIdx.has(i) ? (days.length <= 7 ? short : `${d.getDate()}/${d.getMonth() + 1}`) : ''}
+              {labelIdx.has(i) ? (days.length <= 7 ? short : dm) : ''}
             </div>
           </div>
         );

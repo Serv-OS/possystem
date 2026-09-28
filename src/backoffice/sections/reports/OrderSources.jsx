@@ -8,7 +8,7 @@
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
-import { pctDelta } from './_filters';
+import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { aggregate, StackedBarChart } from './OrderTypes';
 
@@ -32,7 +32,7 @@ export const srcKey = (c) => c.source === 'hubrise'
   ? (c.customer?.channel || 'Delivery channel')
   : (CUSTOMER_SOURCES.has(c.source) ? c.source : 'pos');
 
-export default function OrderSources({ checks, prevChecks, fmt, fmtN }) {
+export default function OrderSources({ checks, prevChecks, fmt, fmtN, locationConfig }) {
   const cur  = useMemo(() => aggregate(checks,     srcKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, srcKey), [prevChecks]);
 
@@ -63,26 +63,10 @@ export default function OrderSources({ checks, prevChecks, fmt, fmtN }) {
     }).sort((a, b) => b.revenue - a.revenue);
   }, [cur, prev, totalRev]);
 
-  // Time series — by day, or by hour for a single-day range (same rule as Order types).
-  const { series, xKeys, isHourly, allKeys } = useMemo(() => {
-    const live = checks.filter(c => c.status !== 'voided' && c.closedAt);
-    if (!live.length) return { series: {}, xKeys: [], isHourly: false, allKeys: [] };
-    const times = live.map(c => c.closedAt);
-    const hourly = (Math.max(...times) - Math.min(...times)) / 86400000 < 1.5;
-    const buckets = {};
-    const seen = new Set();
-    live.forEach(c => {
-      const d = new Date(c.closedAt);
-      const key = hourly ? `${d.getHours()}` : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if (!buckets[key]) buckets[key] = { key, total: 0 };
-      const s = srcKey(c);
-      seen.add(s);
-      buckets[key][s] = (buckets[key][s] || 0) + (c.total || 0);
-      buckets[key].total += (c.total || 0);
-    });
-    const keys = Object.keys(buckets).sort((a, b) => hourly ? parseInt(a) - parseInt(b) : a.localeCompare(b));
-    return { series: buckets, xKeys: keys, isHourly: hourly, allKeys: [...seen] };
-  }, [checks]);
+  // Time series: by venue business day, or by venue hour when every sale is on one business
+  // day (same rule as Order types; v5.11.1: was the browser's midnights and hours).
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
+  const { series, xKeys, isHourly, types: allKeys } = useMemo(() => mixSeries(checks, srcKey, clock), [checks, clock]);
 
   const onExport = () => {
     const csv = toCsv(rows, [
@@ -133,7 +117,7 @@ export default function OrderSources({ checks, prevChecks, fmt, fmtN }) {
           <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t4)', fontSize:12 }}>No time-series data.</div>
         ) : (
           <StackedBarChart series={series} xKeys={xKeys}
-            xLabels={xKeys.map(k => isHourly ? `${k}:00` : new Date(k).toLocaleDateString('en-GB', { day:'numeric', month:'short' }))}
+            xLabels={xKeys.map(k => mixLabel(k, isHourly))}
             types={allKeys} fmt={fmt} styleFor={styleFor}/>
         )}
       </div>

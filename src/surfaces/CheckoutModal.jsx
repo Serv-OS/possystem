@@ -12,6 +12,7 @@ import {
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
@@ -27,6 +28,8 @@ import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
   fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
+import { checkoutOrderRef } from '../lib/payments/terminalJobCloser';
+import { getNextOrderRefLocal } from '../lib/db';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1196,6 +1199,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     blockSignout?.();
     return () => unblockSignout?.();
   }, []);
+  // v5.11.1: and hold the update guard (lib/paymentBusy.js) for as long as checkout is open. A
+  // release reloaded Leeds POS 1 three seconds after this modal sent a card machine job (27 Sep).
+  usePaymentBusy(true, 'checkout');
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has
   // no drawer configured at all, cash payments shouldn't be offered —
   // nowhere to put the cash. Drawer status (open/idle) is not gated here.
@@ -1368,6 +1374,24 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     }
     return checkIdRef.current;
   }, []);
+  // 28 Sep 2026: the ORDER REF, frozen the same way, once per checkout, at the first send to a card
+  // machine. It rides in the job's draft, so whichever device books the job books this ref, and
+  // out on paymentInfo.orderRef, so this checkout's own close books it too (the kitchen ticket and
+  // the receipt show it). Before, every writer took the next number from its OWN lease: at Coffee
+  // Boy Leeds a kitchen screen booked R6577 for a sale whose ticket and receipt said 53.
+  // Unset (and never sent) on a checkout that sent nothing to a card machine: no change there.
+  const orderRefRef = useRef(null);
+  const getOrderRef = useCallback(() => {
+    if (!orderRefRef.current) {
+      orderRefRef.current = checkoutOrderRef({
+        isBarTab: orderType === 'bar-tab',
+        // A walk in already sent to the kitchen keeps the number its ticket shows.
+        walkInRef: !tableId && orderType !== 'bar-tab' ? (useStore.getState().walkInOrder?.ref || null) : null,
+        mint: getNextOrderRefLocal,
+      });
+    }
+    return orderRefRef.current;
+  }, [orderType, tableId]);
   useEffect(() => {
     let alive = true;
     // A training till never even looks — it must not learn about, or reach, a
@@ -1754,6 +1778,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // v5.5.902: the store adopts this as the closed_check id, so it matches the id the
       // gift debit above was keyed to (and the id the PAX job pre-minted).
       closedCheckId: checkId,
+      // 28 Sep 2026: the ref frozen into the card machine job, when this checkout sent one.
+      ...(orderRefRef.current ? { orderRef: orderRefRef.current } : {}),
       giftCard: giftRecord || undefined,
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
@@ -1890,6 +1916,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // table:session key (two tills on one table MUST collide); counter sales get
       // a per-sale leg so they never share a key with a previous customer.
       const checkId = getCheckId();
+      const orderRef = getOrderRef();   // 28 Sep 2026: frozen into the draft below
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
         leg: tableId ? undefined : checkId,
@@ -2020,6 +2047,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // (dueMinor above already reflects it), so a reconciler-driven close
           // books the same tax. Absent when nothing lowered it (every UK check).
           ...(taxRelief > 0 ? { taxCredits } : {}),
+          // 28 Sep 2026: the order ref this checkout will book (getOrderRef). The reconciler on any
+          // device books it too (store.closeApprovedTerminalJob), so the record carries the number
+          // on the receipt and the kitchen ticket whoever books it.
+          orderRef,
           source: 'pos_send_to_terminal',
           // ── v5.6.76: this job is the FINAL leg of a reader split ────────────
           // The modal normally books the check itself when the terminal approves.

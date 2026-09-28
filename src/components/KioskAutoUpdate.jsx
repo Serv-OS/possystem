@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { canApplyUpdate } from '../lib/paymentBusy';
 
 // Auto-update for UNATTENDED kiosk surfaces (host stand / waitlist, KDS, menu board, ops, clock).
 //
@@ -14,6 +15,9 @@ import { useEffect } from 'react';
 // Safety: only reloads when BOTH the running and deployed entry filenames parse AND differ; a
 // sessionStorage gate caps reloads to once per 10 min so a CDN/caching hiccup can't loop. In dev
 // (no hashed bundle) it self-disables.
+//
+// v5.11.1: never while this device is payment busy (lib/paymentBusy.js, the same rule as
+// UpdateGuard); it simply tries again on the next tick.
 
 const CHECK_MS = 10 * 60 * 1000;          // poll every 10 min
 const MIN_RELOAD_GAP_MS = 10 * 60 * 1000; // never auto-reload more than once per 10 min (loop guard)
@@ -49,6 +53,7 @@ export default function KioskAutoUpdate() {
       try {
         const live = await deployedEntryFile();
         if (stopped || !live || live === mine) return;
+        if (!canApplyUpdate()) return;                      // a payment is live, or just ended
         const last = Number(sessionStorage.getItem('kiosk-au-last') || 0);
         if (Date.now() - last < MIN_RELOAD_GAP_MS) return; // loop guard
         sessionStorage.setItem('kiosk-au-last', String(Date.now()));

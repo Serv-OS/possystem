@@ -9,7 +9,7 @@
  * Filters: order type tabs + My orders quick filter + search
  * Each section keeps its own functionality (advance status, open order, etc.)
  */
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import { supabase } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -42,6 +42,7 @@ import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
 import { qrCloseTax } from '../lib/headlessTax';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { holdPaymentBusy } from '../lib/paymentBusy';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -145,7 +146,21 @@ export default function OrdersHub() {
   const [myOrders, setMyOrders] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [tick, setTick]         = useState(0);
-  const [closingTabRef, setClosingTabRef] = useState(null); // ref currently being captured
+  const [closingTabRef, setClosingTabRefState] = useState(null); // ref currently being captured
+  // v5.11.1: a tab capture is payment busy (lib/paymentBusy.js) from the moment it is marked
+  // closing until its finally clears it. Taken here, in the same tick as the capture request,
+  // not in an effect a render later.
+  const closingBusyRef = useRef(null);
+  const setClosingTabRef = useCallback((ref) => {
+    if (ref) {
+      if (!closingBusyRef.current) closingBusyRef.current = holdPaymentBusy('tab close');
+    } else {
+      closingBusyRef.current?.();
+      closingBusyRef.current = null;
+    }
+    setClosingTabRefState(ref);
+  }, []);
+  useEffect(() => () => { closingBusyRef.current?.(); closingBusyRef.current = null; }, []);
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
   const [paymentCheckOrder, setPaymentCheckOrder] = useState(null); // fence S3: "Payment being checked"
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder

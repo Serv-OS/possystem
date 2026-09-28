@@ -30,8 +30,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader, abortTerminalJob } from '../lib/payments/terminalJobs';
+import { watchTerminalJob } from '../lib/payments/terminalJobCloser';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 
 const STATUS_COPY = {
   pending:         { icon: '📲', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
@@ -76,6 +78,16 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const unmountedRef = useRef(false);
   useEffect(() => { onCompleteRef.current = onComplete; onFailedRef.current = onFailed; });
   useEffect(() => () => { unmountedRef.current = true; }, []);
+  // v5.11.1: payment busy while this screen is up (lib/paymentBusy.js). The watch below holds it
+  // too; this also covers 'unknown', where the watch has returned and staff check the machine.
+  usePaymentBusy(true, 'card machine screen');
+
+  // 28 Sep 2026: while this screen is up, THIS till's TerminalJobReconciler leaves the booking
+  // to it (lib/payments/terminalJobCloser.js): the checkout books the full record (its ref,
+  // loyalty and promo tenders, the customer), where the reconciler books the job's bare draft.
+  // Other devices wait anyway. After 30 s approved the reconciler books it regardless, so a
+  // screen stuck on Approved can never strand the sale.
+  useEffect(() => watchTerminalJob(initialJob?.id), [initialJob?.id]);
 
   // ── watch the job row ──────────────────────────────────────────────────────
   useEffect(() => {

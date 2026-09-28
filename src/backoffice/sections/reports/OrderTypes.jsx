@@ -4,11 +4,12 @@
 // Layout:
 //   - Top tiles: total revenue, dominant channel, fastest-growing vs previous period
 //   - Stacked bar chart by day (or by hour if single-day) showing channel composition
+//     (v5.11.1: the venue's business days and hours, mixSeries in _filters.js)
 //   - Per-channel table with check count, revenue, avg check, share %, and period compare
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
-import { pctDelta } from './_filters';
+import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { currencySymbol } from '../../../lib/currency';
 
@@ -38,7 +39,7 @@ export function aggregate(checks, keyFn) {
   return byType;
 }
 
-export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
+export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConfig }) {
   const typeKey = (c) => c.orderType || 'dine-in';
   const cur  = useMemo(() => aggregate(checks,     typeKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, typeKey), [prevChecks]);
@@ -62,41 +63,10 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
     };
   }).sort((a, b) => b.revenue - a.revenue), [allTypes, cur, prev, totalRev]);
 
-  // Time series — group by day; if the range is a single day, group by hour
-  const { series, xLabels, isHourly } = useMemo(() => {
-    const times = checks.filter(c => c.status !== 'voided' && c.closedAt).map(c => c.closedAt);
-    if (times.length === 0) return { series: {}, xLabels: [], isHourly: false };
-    const min = Math.min(...times);
-    const max = Math.max(...times);
-    const rangeDays = (max - min) / 86400000;
-    const hourly = rangeDays < 1.5;
-    const buckets = {};
-    checks.filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
-      const d = new Date(c.closedAt);
-      const key = hourly
-        ? `${d.getHours()}`
-        : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      if (!buckets[key]) buckets[key] = { key, total: 0 };
-      const t = c.orderType || 'dine-in';
-      buckets[key][t] = (buckets[key][t] || 0) + (c.total || 0);
-      buckets[key].total += (c.total || 0);
-    });
-    const keys = Object.keys(buckets).sort((a, b) => {
-      if (hourly) return parseInt(a) - parseInt(b);
-      return a.localeCompare(b);
-    });
-    return {
-      series: buckets,
-      xLabels: keys.map(k => hourly ? `${k}:00` : new Date(k).toLocaleDateString('en-GB', { day:'numeric', month:'short' })),
-      xKeys: keys,
-      isHourly: hourly,
-    };
-  }, [checks]);
-
-  const xKeys = useMemo(() => Object.keys(series).sort((a, b) => {
-    if (isHourly) return parseInt(a) - parseInt(b);
-    return a.localeCompare(b);
-  }), [series, isHourly]);
+  // Time series: one bar per venue business day, or per venue hour when every sale is on
+  // one business day (v5.11.1: was the browser's midnights and hours).
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
+  const { series, xKeys, isHourly } = useMemo(() => mixSeries(checks, typeKey, clock), [checks, clock]);
 
   const onExport = () => {
     const csv = toCsv(rows, [
@@ -147,7 +117,7 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN }) {
         {xKeys.length === 0 ? (
           <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t4)', fontSize:12 }}>No time-series data.</div>
         ) : (
-          <StackedBarChart series={series} xKeys={xKeys} xLabels={xKeys.map(k => isHourly ? `${k}:00` : new Date(k).toLocaleDateString('en-GB', { day:'numeric', month:'short' }))} types={allTypes} fmt={fmt}/>
+          <StackedBarChart series={series} xKeys={xKeys} xLabels={xKeys.map(k => mixLabel(k, isHourly))} types={allTypes} fmt={fmt}/>
         )}
       </div>
 

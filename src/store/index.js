@@ -40,8 +40,9 @@ import { persistTransfer } from '../sync/SessionSync';
 // Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
 // change a row count the rows they changed and are kept while this device is not linked.
 import { mustChangeRow } from '../lib/rowWrites';
-import { patchPendingCheck } from '../sync/DataSafe';
+import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
+import { usableOrderRef } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -6293,7 +6294,9 @@ export const useStore = create((set, get) => ({
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
 
-    const ref = getNextOrderRefLocal();
+    // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
+    // getOrderRef); the checkout's close and the reconciler's both book that one.
+    const ref = usableOrderRef(paymentInfo.orderRef) || getNextOrderRefLocal();
     // v5.5.279: stamp locationId on in-memory record so the cross-location
     // merge filter in BOReports can exclude checks from other locations.
     // v5.5.311: fall back to the durable rpos-active-location tag if the sync
@@ -6458,7 +6461,17 @@ export const useStore = create((set, get) => ({
     ] : null;
 
     const { tables, closedChecks } = get();
-    if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device
+    // already closed on this device. 28 Sep 2026 (v5.11.1 review): with the sending till booking its
+    // own reader sales, no other device marks the job reconciled any more, so the job would stay
+    // 'approved' for ever. Once this device's sale has LANDED (not in the unsent list) and is at
+    // least 30 s old, mark it. The RPC only moves approved to reconciled, so repeating is harmless.
+    const localClose = closedChecks.find(c => c.id === job.closed_check_id);
+    if (localClose) {
+      if (!isPendingCheck(job.closed_check_id) && Date.now() - (Number(localClose.closedAt) || 0) > 30000) {
+        markJobReconciled(job.id).catch(() => {});
+      }
+      return;
+    }
     const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
 
@@ -6524,7 +6537,12 @@ export const useStore = create((set, get) => ({
         { pspRef: l.transactionId, processor: job.processor || 'ryft' })),
     ]);
 
+    // 28 Sep 2026: the ref the till froze into the job when it sent it (null from an older till,
+    // or a job no till sent, like Pay at table on the reader: those mint one here, as before).
+    const frozenRef = usableOrderRef(d.orderRef);
+
     const termPay = {
+      ...(frozenRef ? { orderRef: frozenRef } : {}),
       tenders: jobTenders,
       // v5.9.12 — promo / loyalty credits that lowered the added-on tax on the
       // charged amount (CheckoutModal froze them into the draft); buildCloseRecord
@@ -6579,7 +6597,7 @@ export const useStore = create((set, get) => ({
       } catch { headlessTax = null; }
       record = {
         id: job.closed_check_id,
-        ref: getNextOrderRefLocal(),
+        ref: frozenRef || getNextOrderRefLocal(),
         tableId, tableLabel: d.tableLabel || tableId,
         locationId: d.locationId || null,
         server: d.server || 'Staff', staffId: d.staffId || null,
@@ -6978,6 +6996,15 @@ export const useStore = create((set, get) => ({
       // path would double-book; just clear the cart state and stop.
       return null;
     }
+    // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
+    // getOrderRef), and any device that books the job books that ref. Give it to the walk in
+    // BEFORE the kitchen send below, so the ticket, the receipt and the record all carry it.
+    // A walk in that already has a ref (sent earlier, or reopened) froze that same ref.
+    const frozenRef = usableOrderRef(paymentInfo.orderRef);
+    if (frozenRef && !walkInOrder.ref && walkInOrder === get().walkInOrder) {
+      set({ walkInOrder: { ...walkInOrder, ref: frozenRef } });
+      walkInOrder = get().walkInOrder;
+    }
     // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. Counter/walk-up staff often take
     // payment without ever tapping Send — the check used to close paid with NO KDS
     // ticket and no kitchen print. If any line was never fired (never sent, or
@@ -7028,7 +7055,7 @@ export const useStore = create((set, get) => ({
     const record = {
       // v5.5.902: adopt CheckoutModal's pre-minted id (see buildCloseRecord).
       id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
-      ref: existingRef || getNextOrderRefLocal(),
+      ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
       tableLabel: null,
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
@@ -7087,7 +7114,10 @@ export const useStore = create((set, get) => ({
       closedChecks: capClosedChecks([record, ...s.closedChecks]),
       orderQueue: !existingRef ? s.orderQueue
         : keepQueued ? s.orderQueue.map(o => (o.ref === existingRef ? markQueueEntryPaid(o) : o))
-        : s.orderQueue.filter(o => o.ref !== existingRef),
+        // 28 Sep 2026 (v5.11.1 review): a Collection timed later and paid on the reader without Send
+        // is queued 'scheduled' under the frozen ref by the sendToKitchen above; dropping it here lost
+        // the order (paid, never fired). A scheduled entry stays, marked paid.
+        : s.orderQueue.flatMap(o => (o.ref !== existingRef ? [o] : (o.status === 'scheduled' ? [markQueueEntryPaid(o)] : []))),
     }));
     // v4.6.30: cash drawer auto-fire on cash payment
     // v4.6.62: attribute to customer DB (fire-and-forget)
