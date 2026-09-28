@@ -282,7 +282,10 @@ export function productsWithoutOwnRate(items, rates, locationId) {
  */
 export function lineTaxRefs(taxRateId, taxOverrides, rates) {
   // An inactive rate charges nothing (resolveTaxRate), so it is not a rate this till holds.
-  const list = Array.isArray(rates) ? rates.filter((r) => r && r.id != null && r.active !== false) : [];
+  // 28 Sep 2026 (release review): nor is an `unverified` one (taken unchecked from an old style
+  // push that may carry another venue's rates). Until this venue's own read answers, nothing is
+  // judged, the same as with no rates loaded yet.
+  const list = Array.isArray(rates) ? rates.filter((r) => r && r.id != null && r.active !== false && !r.unverified) : [];
   const ov = taxOverrides && typeof taxOverrides === 'object' ? taxOverrides : {};
   if (!list.length) return { taxRateId: taxRateId || null, taxOverrides: ov, dropped: [] };
   const known = new Set(list.map((r) => String(r.id)));

@@ -10,6 +10,8 @@ export const CHANGELOG = [
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
+      "Till: tapping What's new no longer crashes the till to App Error.",
+      "Till: while a till is starting up it never swaps a product's own tax rate for one from an old copy of another venue's rates.",
       "Refunds: a card sale taken on the reader now always refunds to the card. When another screen at the venue had recorded the sale (a kitchen screen can close a reader payment), the till did not know which card paid and said \"issue the card refund manually\", so the money never went back (Coffee Boy Leeds, 3.80 on 27 Sep). The till now reads the sale's card payment from the sale record, from the card payment reference or from the payment line. A QR tab closed from Orders, and a reader sale paid partly by a booking deposit, now refund to the card too (both said to refund by hand).",
       "Refunds: the refund screen (till History and Back Office) now shows the card the refund will go to. It could say \"No card payment is linked\" while the refund then went back to the card anyway, and staff who also refunded in the dashboard would have refunded twice. If the card cannot be found yet, the screen says so and offers Try again. A refund that sends nothing to the card (already fully refunded) now says so instead of \"returned to the card\".",
       "Refunds: if the till cannot reach the sale record to find its card, it now says so and records nothing, so the refund can simply be tried again. It used to record the refund with no card and could never send it later.",

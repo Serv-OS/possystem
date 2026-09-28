@@ -1,4 +1,6 @@
 -- 20260927_OPS_menu_rows_server_time.sql  (Ops DB, Peter runs; Claude cannot apply DDL)
+-- RUN ONLY after every till shows 5.11.0 and outside service: it publishes menu_items and
+-- tax_rates to realtime, and a till still on 5.10.1 would take live menu edits without a push.
 --
 -- Peter, 27 Sep 2026: "I archived choc babychino but its still on the menu board".
 -- Two Back Office windows were open on Coffee Boy Leeds. The one loaded at 13:52 pressed Push to
