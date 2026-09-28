@@ -6874,7 +6874,7 @@ export const useStore = create((set, get) => ({
     });
     if (legLookup.lookupFailed) {
       console.warn('[refundCheck] card leg lookup failed:', legLookup.error);
-      const message = 'Could not find the card payment for this sale. Nothing has been refunded. Check the till is online and try again.';
+      const message = 'Could not find the card payment for this sale. Nothing has been refunded. Check the till is online and linked (no red banner), then try again.';
       get().showToast(message, 'error');
       return { ok: false, amount: 0, cardStatus: 'none', legs: [], message };
     }
@@ -7178,6 +7178,10 @@ export const useStore = create((set, get) => ({
       message = cardInMethod
         ? `Refund of ${money(amount)} recorded — issue the card refund manually (no linked card payment found)`
         : `Refund of ${money(amount)} recorded via ${tenderMethod || 'cash'}`;
+    } else if (cardStatus === 'none') {
+      // 28 Sep 2026: card legs exist but nothing was sent (every leg already fully refunded,
+      // or no card amount chosen in the picker). It used to fall through to "returned to the card".
+      message = `Refund of ${money(amount)} recorded. Nothing was sent to the card: its payment is already fully refunded, or no card amount was chosen.`;
     } else if (cardStatus === 'failed') {
       ok = false;
       message = `Refund of ${money(amount)} recorded but the card reversal FAILED — no money has been returned. Retry it from the refund history.`;

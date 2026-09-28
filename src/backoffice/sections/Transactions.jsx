@@ -221,7 +221,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
 
   // 28 Sep 2026: the same legs the store will refund (this copy, else the sale's row), so the
   // panel never says "no card linked" while the store then refunds the card.
-  const { legs, checking: legsChecking, failed: legsFailed } = useRefundCardLegs(refundTarget);
+  const { legs, checking: legsChecking, failed: legsFailed, retry: retryLegs } = useRefundCardLegs(refundTarget);
   const legDone = useMemo(() => (refundTarget ? legRefundedMinor(refundTarget) : {}), [refundTarget]);
   const legRoom = (l) => (l.amountMinor == null ? null : Math.max(0, l.amountMinor - (legDone[l.id] || 0)));
   const defaultPicks = useMemo(() => {
@@ -806,7 +806,8 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
               )}
               {!legsChecking && legsFailed && (
                 <div style={{ fontSize: 12, color: '#dc2626', marginTop: 8, lineHeight: 1.5 }}>
-                  Could not reach this sale's record to find its card. Try again in a moment. Nothing is recorded until the card is found.
+                  Could not reach this sale's record to find its card. Nothing is recorded until the card is found.{' '}
+                  <button onClick={retryLegs} style={{ ...btnOutline, padding: '2px 10px', fontSize: 12 }}>Try again</button>
                 </div>
               )}
               {!legsChecking && !legsFailed && legs.length === 0 && (
@@ -834,10 +835,10 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
               <button onClick={() => setRefundTarget(null)} disabled={refundBusy} style={{ ...btnOutline, flex: 1 }}>Cancel</button>
               <button
                 onClick={executeRefund}
-                disabled={refundBusy || legsChecking || !refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
+                disabled={refundBusy || legsChecking || legsFailed || !refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
                 style={{
                   ...btnPrimary, flex: 1, background: '#dc2626',
-                  opacity: (refundBusy || !refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 0.4 : 1,
+                  opacity: (refundBusy || legsChecking || legsFailed || !refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 0.4 : 1,
                   cursor: refundBusy ? 'wait' : (!refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 'not-allowed' : 'pointer',
                 }}
               >{refundBusy ? 'Reversing on the card…' : 'Process refund'}</button>

@@ -119,10 +119,28 @@ test('existing precedence is unchanged: legs list, then the single id, then tend
   assert.deepEqual(withList.map((l) => l.id), ['LIST']);
   const withId = cardLegsOf({ total: 9.9, processor: 'adyen', stripePaymentIntentId: 'ID', tenders });
   assert.deepEqual(withId.map((l) => [l.id, l.amountMinor]), [['ID', 990]]);
-  // A legs list whose only entries have no id (booking credit) still has no card leg.
-  assert.deepEqual(cardLegsOf({ total: 5, paymentIntents: [{ id: null, amountMinor: 500, method: 'booking_prepaid' }], tenders }), []);
+  // A legs list whose only entries have no id (booking credit, or an amount only capture leg)
+  // names no card: nothing from it becomes a leg, and nothing else is there either.
+  assert.deepEqual(cardLegsOf({ total: 5, paymentIntents: [{ id: null, amountMinor: 500, method: 'booking_prepaid' }] }), []);
+  assert.deepEqual(cardLegsOf({ total: 5, paymentIntents: [{ id: null, amountMinor: 500, capture: 'pending' }] }), []);
   // The check's own processor still wins over a tender for the single id leg.
   assert.equal(cardLegsOf({ total: 1, processor: 'ryft', stripePaymentIntentId: 'ps_1', tenders: [{ method: 'card', amount: 1, psp_ref: 'ps_1', processor: 'adyen' }] })[0].processor, 'ryft');
+});
+
+test('a reader sale with a booking deposit refunds its card (list holds only the booking legs)', () => {
+  // store.closeApprovedTerminalJob: single leg, legIntents null, then the booking legs appended.
+  const reconcilerClose = {
+    total: 9.9, processor: 'adyen', method: 'booking+card', stripePaymentIntentId: PSP,
+    paymentIntents: [{ id: null, amountMinor: 1000, method: 'booking_deposit' }],
+    tenders: [{ method: 'booking_deposit', amount: 10, tip: 0 }, { method: 'card', amount: 9.9, tip: 0, psp_ref: PSP, processor: 'adyen' }],
+  };
+  assert.deepEqual(cardLegsOf(reconcilerClose).map((l) => [l.id, l.amountMinor, l.processor]), [[PSP, 990, 'adyen']]);
+  // Same row with no single id: the card tender.
+  const tendersOnly = { ...reconcilerClose, stripePaymentIntentId: null };
+  assert.deepEqual(cardLegsOf(tendersOnly).map((l) => [l.id, l.amountMinor]), [[PSP, 990]]);
+  // The till's own close lists the card with the booking legs: unchanged, the list is used.
+  const tillClose = { ...reconcilerClose, paymentIntents: [{ id: 'TILL', amountMinor: 990 }, { id: null, amountMinor: 1000, method: 'booking_deposit' }] };
+  assert.deepEqual(cardLegsOf(tillClose).map((l) => l.id), ['TILL']);
 });
 
 test('a cash sale has no card leg', () => {
@@ -230,6 +248,7 @@ test('refundCheck finds the card before it records the refund, and refuses on a 
   assert.ok(body.indexOf('if (!chkBefore) {', reread) > reread && body.indexOf('if (!chkBefore) {', reread) < body.indexOf('const bd = refundBreakdown(chkBefore'), 'a check gone during the wait stops the refund');
   assert.ok(body.includes('const legs = legLookup.legs;'), 'the reversal uses the resolved legs');
   assert.ok(!body.includes('cardLegsOf(check)'), 'no second, copy only lookup');
+  assert.ok(body.includes("} else if (cardStatus === 'none') {") && body.indexOf("cardStatus === 'none'") < body.indexOf('returned to the card`'), 'legs but nothing sent never says "returned to the card"');
 });
 
 test('both refund screens show the legs the store will refund (never "no card" while it refunds)', () => {
@@ -246,5 +265,14 @@ test('both refund screens show the legs the store will refund (never "no card" w
   const hook = read('./useRefundCardLegs.js');
   assert.ok(hook.includes('resolveRefundCardLegs(check') && hook.includes('fetchClosedCheckCardRow(checkId)'), 'the hook makes the store\'s own lookup');
   assert.ok(hook.includes('!isTrainingMode()'), 'training never reads, like the store');
-  assert.ok(read('../../components/CheckHistory.jsx').includes("if(step==='card_terminal'&&isSplitCard)setStep('legs')"), 'a split found late still goes through the picker');
+  // Round 2: the effect must react ONLY to the split flag. Watching `step` sent Continue on the
+  // picker (legs -> card_terminal) straight back to the picker: split refunds could never finish.
+  const ch = read('../../components/CheckHistory.jsx');
+  assert.ok(ch.includes("useEffect(()=>{ if(isSplitCard)setStep(s=>s==='card_terminal'?'legs':s); },[isSplitCard]);"), 'a split found late still goes through the picker, once');
+  assert.ok(!/useEffect\(\(\)=>\{[^}]*card_terminal[^}]*\},\[step/.test(ch), 'no effect on card_terminal watches step');
+  assert.ok(ch.includes('disabled={busy||legsChecking||legsFailed} onClick={handleComplete}>'), 'no card refund until the card is found');
+  assert.ok(ch.includes('onClick={retryLegs}'), 'a failed lookup can be tried again');
+  const tx = read('../../backoffice/sections/Transactions.jsx');
+  assert.ok(tx.includes('onClick={retryLegs}') && tx.includes('refundBusy || legsChecking || legsFailed || !refundConfirm'), 'Back Office: retry, and no refund until the card is found');
+  assert.ok(hook.includes('if (key !== seenKey)') && hook.includes('setRead(NO_READ)'), 'reopening a sale reads again, never shows the last answer');
 });

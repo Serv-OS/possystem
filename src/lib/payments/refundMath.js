@@ -281,8 +281,11 @@ export function cardLegsOf(check) {
   const cardTenders = cardTendersOf(check);
   const tenderProcessor = (id) =>
     cardTenders.find((t) => String(t.psp_ref) === String(id) && t.processor)?.processor || null;
+  // A list counts only when it names a card (an id). One holding only booking credit legs
+  // (id null) is what a reader close with a booking deposit writes, and its card is then the
+  // single id or the tender: skipping them left that sale "manual" (28 Sep review).
   const intents = [check?.paymentIntents, check?.payment_intents]
-    .find((list) => Array.isArray(list) && list.length);
+    .find((list) => Array.isArray(list) && list.some((p) => p && p.id));
   const singleId = check?.stripePaymentIntentId || check?.stripe_payment_intent_id || null;
   const arr = intents
     || (singleId
