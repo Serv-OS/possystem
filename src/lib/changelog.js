@@ -10,6 +10,8 @@ export const CHANGELOG = [
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
+      "Manager app and Back Office: Clock out now ends the timesheet you tapped. If someone had two open timesheets (one saved in Back Office with no clock out time), it ended the newer one instead, worked out the hours and pay on that one, and recorded the one you tapped. The Time Clock, the till and the staff app are unchanged: they still end the person's latest open timesheet.",
+      "Manager app: approvals, time off decisions, clock outs and purchase orders now go into the tamper evident audit log the same way as tronc and payroll (each record is linked to the one before it, so an edited record shows). They were saved without that link, and if one failed to save nobody was told. Now the app says so, and a purchase order is not raised without its audit record.",
       "Back Office reports: every period (Today, Yesterday, This week, Last week, This month, Last month, Last 7 and 30 days, Custom and the service periods) now runs on the venue's own clock and business day start, wherever the person looking is. Viewed from California, Leeds \"Yesterday\" was 14:30 to 14:29 London time; it is now 06:30 to 06:29 London time. DST nights give the right 23 or 25 hour day.",
       "Reports open on the right range. \"Today\" was loaded before the venue's settings arrived, so it used the device's midnight until another period was picked.",
       "Daily trading (P&L) and Bookings ask for the venue's dates. After 4pm in California they asked for a day behind London, and a 06:30 day start made \"Yesterday\" include today as well.",

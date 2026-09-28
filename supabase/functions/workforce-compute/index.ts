@@ -17,6 +17,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { writeWfAudit } from '../_shared/wfAudit.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -34,24 +35,13 @@ const admin = createClient(
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-async function sha256(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** Append a tamper-evident audit row (prev_hash/row_hash chain per location). */
+/** Append a tamper-evident audit row (prev_hash/row_hash chain per location). v5.10.3: the chain
+ *  writer lives in _shared/wfAudit.js (same read, hash and columns as the copy that was here) so
+ *  manager-approve writes the same chain. The action has already landed when this runs, so a
+ *  failed audit is logged, not answered, exactly as before (it used to be dropped silently). */
 async function writeAudit(loc: string, org: string | null, action: string, d: Record<string, unknown> = {}) {
-  const { data: last } = await admin.from('wf_audit')
-    .select('row_hash').eq('location_id', loc).order('at', { ascending: false }).limit(1).maybeSingle();
-  const prev = last?.row_hash ?? '';
-  const row_hash = await sha256(JSON.stringify({ loc, org, action, ...d, prev }));
-  await admin.from('wf_audit').insert({
-    location_id: loc, org_id: org, action,
-    actor_id: d.actorId ?? null, actor_name: d.actorName ?? null,
-    amount: d.amount ?? null, currency: d.currency ?? null, reason: d.reason ?? null,
-    entity: d.entity ?? null, entity_id: d.entityId ?? null,
-    before: d.before ?? null, after: d.after ?? null, prev_hash: prev, row_hash,
-  });
+  const { error } = await writeWfAudit(admin, loc, org, action, d);
+  if (error) console.error(`[workforce-compute] ${action}: ${error}`);
 }
 
 /** Largest-remainder allocation of a pool (£) across weighted units → pennies. */
