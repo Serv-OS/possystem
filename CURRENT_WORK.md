@@ -1,3 +1,12 @@
+# Release 28 Sep 2026 ~02:00 UK: v5.11.0, combined overnight batch (branch release/2026-09-28)
+
+Peter: "everything ASAP", then "Put it live, I test first thing" (he tests on the real tills and reader before Coffee Boy Leeds opens at 08:00). One release instead of eight, coordinated from the ServOS Build chat.
+- PRs combined: 177 report periods on the venue clock; 180 report service and day buckets (stacked on 177); 178 Manager app Clock out; 431879eb (PR 181) manager clock out closes the tapped sheet + wf_audit hash chain; 173 discount approver { id, name, role } (no PIN in sales); 175 bar tab close VAT + guest QR tab VAT (needs 20260927c); 179 reader refund finds its card (split card + booking deposit); 171 Back Office stale tab fix + tax per venue.
+- Merge notes: store/index.js imports resolved by hand (171 imports + main's chargedTaxOf + 173 scrubDiscount + 179 fetchClosedCheckCardRow; no upsertMenuItem, no categoryPhoto import). Docs union merged. changelog rebuilt as ONE 5.11.0 entry (a union merge of changelog.js breaks the array: never union merge that file).
+- After live, in order: deploy manager-snapshot; workforce-clock, then manager-approve, then workforce-compute. Peter's SQL, one at a time: 20260928a discount manager scrub; 20260927_OPS_menu_rows_server_time; 20260927d_OPS_tax_rates_seed; 20260927c settle_qr_tab VAT.
+- Peter owes: change PINs of "Test" (Leeds) and "Peter" (Provo) after 20260928a; the R6404 £3.80 was refunded in Adyen at ~01:00.
+- Later, not in this batch: leave approved in the Manager app never comes off the holiday balance (manager-approve timeoff.decide); Stripe CardTerminal undefined tipBasis (task filed).
+
 # Session, 28 Sep 2026, v5.10.3 (placeholder, assigned at merge), report buckets on the venue clock (branch fix/bo-report-day-buckets, stacked on PR 177)
 
 - Peter's rule (28 Sep, confirmed by the ServOS Build coordinator): the day, service or hour a sale is COUNTED in is business time (venue zone + business_day_start). Only the text of a time is display. The old memory exemption "report histograms are display" is gone.
