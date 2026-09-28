@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.1',
+    date: '28 Sep 2026',
+    items: [
+      'Card machine sales: the till that sent the payment now records the sale itself. Kitchen screens and other devices used to record it first about half the time, under an order number from their own run of numbers, so the receipt and kitchen ticket said 53 while History and reports said R6577. Other devices now wait (another till 30 seconds, a kitchen screen or Back Office 90 seconds) and only record the sale if the till has not, so a paid sale is still never left unrecorded when the till is off or reloading.',
+      'Card machine sales: the order number is fixed when the payment is sent to the card machine, so the receipt, the kitchen ticket, History and reports show the same number whichever device records the sale. Because the till now records its own sales, they also keep the loyalty and promo details the till took, which were lost when another device got there first.',
+      'Table Bookings host stands no longer try to record card machine sales. They cannot, and were asking the server every 8 seconds.',
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
