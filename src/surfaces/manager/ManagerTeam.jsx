@@ -3,7 +3,7 @@
 // (device authorised for the venue + the PIN'd operator is approval-capable) and append to wf_audit.
 // Pure flags come from timesheets.js; the approvals inbox comes from the shared snapshot.
 import { useState } from 'react';
-import { onShiftNow, noShows, breaksDue, liveLabourMinor } from '../../lib/manager/team';
+import { onShiftNow, noShows, breaksDue, liveLabourMinor, canClockOut } from '../../lib/manager/team';
 import { venueBreakPolicy } from '../../staff/breaks.js';
 import { timesheetWorkedMins, timesheetBreakShortfall } from '../../lib/manager/timesheets';
 import { managerApprove } from '../../lib/manager/data';
@@ -55,6 +55,12 @@ export default function ManagerTeam({ ctx }) {
   const [pinErr, setPinErr] = useState('');
   const [editId, setEditId] = useState(null);   // timesheet id open in the inline editor
   const [eform, setEform] = useState({ start: '', end: '', breakMins: '' });
+  // v5.10.2: Clock out has its own PIN step and answer on the row. The approvals PIN box and its
+  // errors only render when something is pending, so without these a tap with no cached PIN
+  // came back "PIN required" and showed nothing.
+  const [outFor, setOutFor] = useState(null);   // timesheet id waiting for a manager PIN
+  const [outEntry, setOutEntry] = useState('');
+  const [outErr, setOutErr] = useState({ id: null, msg: '' });
 
   const team = snap?.team;
   const tz = snap?.tz || TZ_DEFAULT;   // render + rebuild timesheet times in the VENUE tz, not the viewer's
@@ -108,6 +114,28 @@ export default function ManagerTeam({ ctx }) {
     const r = await managerApprove(loc, pin, 'timeoff.decide', id, { decision });
     setActing(null);
     if (onResult(r)) { setDone((d) => ({ ...d, [id]: true })); refreshSnap?.(); }
+  };
+  // v5.8.21: a manager ends this person's shift. Server-side clock-out (same maths as the Time
+  // Clock, via workforce-clock), recorded against the manager's PIN. A PIN typed here is cached
+  // for the session only once the server has accepted it.
+  const clockOut = async (p, usePin) => {
+    setActing(p.id); setOutErr({ id: null, msg: '' });
+    const r = await managerApprove(loc, usePin, 'timesheet.clock_out', p.id);
+    setActing(null);
+    if (r?.ok) { setOutFor(null); setOutEntry(''); if (usePin !== pin) setPin(usePin); refreshSnap?.(); return; }
+    if (/pin|not allowed|approve/i.test(r?.error || '')) {
+      setPin(''); setEntry(''); setOutEntry(''); setOutFor(p.id);
+      setOutErr({ id: p.id, msg: r?.error || 'PIN not recognised' });
+      return;
+    }
+    setOutFor(null);
+    setOutErr({ id: p.id, msg: r?.error || 'Could not clock out' });
+  };
+  const askClockOut = (p) => {
+    if (!confirm(`Clock ${nameOf[p.staffId] || 'this person'} out now?`)) return;
+    setOutErr({ id: null, msg: '' });
+    if (pin) clockOut(p, pin);
+    else { setOutEntry(''); setOutFor(p.id); }
   };
 
   return (
@@ -288,28 +316,39 @@ export default function ManagerTeam({ ctx }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {on.length === 0 && <div className="sv-glass" style={{ padding: 14, color: 'var(--t3)', fontSize: 13 }}>Nobody clocked in.</div>}
             {on.map((p) => (
-              <div key={p.staffId} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14 }}>
-                <Icon name="user" size={18} style={{ color: 'var(--acc)' }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700 }}>{nameOf[p.staffId] || 'Staff'}</div>
-                  <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>on {Math.floor(p.onForMins / 60)}h{p.onForMins % 60}m{p.onBreak ? ' · on break' : ''}</div>
+              <div key={p.id || p.staffId} className="sv-glass" style={{ padding: '12px 14px', borderRadius: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <Icon name="user" size={18} style={{ color: 'var(--acc)' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{nameOf[p.staffId] || 'Staff'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>on {Math.floor(p.onForMins / 60)}h{p.onForMins % 60}m{p.onBreak ? ' · on break' : ''}</div>
+                  </div>
+                  {p.onBreak && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--orn)', ...mono }}>BREAK</span>}
+                  {canClockOut(p, flags) && outFor !== p.id && (
+                    <button className="sv-glass" disabled={acting === p.id} onClick={() => askClockOut(p)}
+                      style={{ flexShrink: 0, padding: '8px 12px', borderRadius: 999, border: '1px solid var(--bdr)', cursor: acting === p.id ? 'default' : 'pointer', color: 'var(--t1)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>
+                      {acting === p.id ? '…' : 'Clock out'}
+                    </button>
+                  )}
                 </div>
-                {p.onBreak && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--orn)', ...mono }}>BREAK</span>}
-                {p.id && (
-                  <button className="sv-btn sv-btn-ghost" disabled={acting === p.id}
-                    onClick={async () => {
-                      // v5.8.21: a manager ends this person's shift. Server-side clock-out (same
-                      // maths as the Time Clock), recorded against the manager's PIN.
-                      if (!confirm(`Clock ${nameOf[p.staffId] || 'this person'} out now?`)) return;
-                      setActing(p.id);
-                      const r = await managerApprove(loc, pin, 'timesheet.clock_out', p.id);
-                      setActing(null);
-                      if (onResult(r)) refreshSnap?.();
-                    }}
-                    style={{ fontSize: 12, fontWeight: 700, padding: '6px 10px' }}>
-                    {acting === p.id ? '…' : 'Clock out'}
-                  </button>
+                {canClockOut(p, flags) && outFor === p.id && (
+                  <div style={{ marginTop: 10, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>Manager PIN to clock out</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input type="password" inputMode="numeric" autoComplete="off" autoFocus value={outEntry} placeholder="PIN"
+                        onChange={(e) => { setOutErr({ id: null, msg: '' }); setOutEntry(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && outEntry.length >= 4 && acting !== p.id) clockOut(p, outEntry); }}
+                        style={{ flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none' }} />
+                      <button onClick={() => { setOutFor(null); setOutEntry(''); setOutErr({ id: null, msg: '' }); }} disabled={acting === p.id} className="sv-glass"
+                        style={{ padding: '0 12px', borderRadius: 11, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>Cancel</button>
+                      <button onClick={() => clockOut(p, outEntry)} disabled={outEntry.length < 4 || acting === p.id} className="sv-glass"
+                        style={{ padding: '0 14px', borderRadius: 11, border: '1px solid var(--grn-b)', cursor: outEntry.length >= 4 ? 'pointer' : 'default', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', opacity: outEntry.length >= 4 ? 1 : 0.5 }}>
+                        {acting === p.id ? '…' : 'Clock out'}
+                      </button>
+                    </div>
+                  </div>
                 )}
+                {outErr.id === p.id && outErr.msg && <div style={{ color: 'var(--red)', fontSize: 12.5, marginTop: 8 }}>{outErr.msg}</div>}
               </div>
             ))}
           </div>

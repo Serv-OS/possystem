@@ -7,6 +7,8 @@
 // v5.9.11: moved here out of db.js (it was module-private, so DataSafe and MPOS each kept a
 // hand copy that had already drifted: the replay dropped tax_breakdown and seated_at), and it
 // maps `tenders` (lib/accounting/tenders.js). Pure: no supabase import, testable in Node.
+import { scrubDiscounts, scrubItemDiscounts } from './discountApprover.js';
+
 export function closedCheckRow(check, locationId) {
   const row = {
     id:           check.id,
@@ -17,8 +19,10 @@ export function closedCheckRow(check, locationId) {
     covers:       check.covers,
     order_type:   check.orderType,
     customer:     check.customer,
-    items:        check.items,
-    discounts:    check.discounts,
+    // v5.10.0: a discount's approving manager leaves the till as { id, name, role } only, never
+    // the staff record with its PIN (lib/discountApprover.js). Covers open tables loaded from before.
+    items:        scrubItemDiscounts(check.items),
+    discounts:    scrubDiscounts(check.discounts),
     subtotal:     check.subtotal,
     service:      check.service,
     tip:          check.tip,

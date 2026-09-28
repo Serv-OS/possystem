@@ -9,7 +9,8 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode, isBackOfficeMode } from '../lib/supabase';
+import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { fetchMenuCategoryLinks } from '../lib/db';
@@ -20,7 +21,7 @@ import { startTerminalJobReconciler, stopTerminalJobReconciler } from './Termina
 // fail in production bundles and have caused multiple data-loss bugs.
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
-import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, mapCategoryRow, mapModifierGroupRow, mapTaxRateRow } from '../lib/rowMapping';
 import { mergeBroadcastTables, bootTables, normaliseFloorRow, loadPlanState, savePlanState, mergeTombs, tombstonesFromRows, nextSeq, pushSeqFor } from '../lib/tablePlan';
 import { isSessionClosed } from './sessionClosure';
 import { startTablePlanSync } from './TablePlanSync';
@@ -275,6 +276,16 @@ export default function SyncBridge({ onSyncPulse }) {
               _sectionsLocationId: null,
               _sectionsBase: null,
               closedChecks: [],
+              // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"):
+              // the other venue's tax set up, discounts and packages go too. They were kept, so a
+              // browser that had been at Train Station (or Provo, another organisation) carried its
+              // tax rates, discount presets, auto discount rules and packages into every Leeds push.
+              taxRates: [],
+              taxProfiles: [],
+              venueDefaultTaxProfileId: null,
+              discountPresets: [],
+              discountRules: [],
+              packages: [],
               _dataLocationId: null,
             });
           }
@@ -445,31 +456,10 @@ export default function SyncBridge({ onSyncPulse }) {
             stampLocalSessionsFor(locationId);
           }
           const bootTombRows = tombsRes?.data || null;
-          if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
-            ...item,
-            price: item.pricing?.base ?? item.price ?? 0,
-            menuName: item.menu_name ?? item.menuName ?? item.name ?? 'Item',
-            receiptName: item.receipt_name ?? item.receiptName ?? item.name,
-            kitchenName: item.kitchen_name ?? item.kitchenName ?? item.name,
-            sortOrder: item.sort_order ?? item.sortOrder ?? 0,
-            parentId: item.parent_id ?? item.parentId ?? null,
-            soldAlone: item.sold_alone ?? item.soldAlone,
-            centreId: item.centre_id ?? item.centreId ?? null,
-            taxRateId: item.tax_rate_id ?? item.taxRateId ?? null,
-            taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
-            taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-            // Must map snake_case → camelCase for modifier and instruction groups
-            assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
-            assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
-            optionGroupOrder: item.option_group_order ?? item.optionGroupOrder ?? null,   // v5.5.948 combined flow order
-            image: item.image ?? null,
-            tags: Array.isArray(item.tags) ? item.tags : [],   // dietary tags (V/VG/GF/DF)
-            // v5.8.100: the partner portal code (menu_items.item_code). CONDITIONAL:
-            // before 20260917_OPS_menu_item_code.sql runs the column is not in the
-            // row at all, and the item must then carry no field, so upsertMenuItem
-            // leaves the column alone instead of failing every menu save on it.
-            ...(item.item_code !== undefined ? { itemCode: item.item_code ?? null } : {}),
-          }));
+          // 27 Sep 2026: the one mapper (lib/rowMapping.js mapMenuItemRow), which also keeps the
+          // row's database updated_at as srvAt: the compare and set token of every Back Office
+          // edit (lib/menuWriters.js). item_code stays CONDITIONAL there (v5.8.100).
+          if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(mapMenuItemRow);
 
           // Sync any local-only items that failed to save previously (e.g. before schema was ready)
           // This ensures items created offline or before column fixes are never lost.
@@ -482,7 +472,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // Fetch a lightweight id-only list without the archived filter for the comparison.
           if (sb && locationId && itemsRes.data?.length) {
             try {
-              const { upsertMenuItem } = await import('../lib/db.js');
+              const { insertMenuItem } = await import('../lib/db.js');
               const { data: allRows } = await sb.from('menu_items').select('id').eq('location_id', locationId);
               const remoteIds = new Set((allRows || []).map(i => i.id));
               const localItems = useStore.getState().menuItems || [];
@@ -491,41 +481,60 @@ export default function SyncBridge({ onSyncPulse }) {
               );
               if (localOnly.length > 0) {
                 console.log(`[SyncBridge] Syncing ${localOnly.length} local-only items to Supabase`);
-                localOnly.forEach(item => upsertMenuItem({ ...item, location_id: locationId }));
+                // 27 Sep 2026: INSERT ONLY (db.insertMenuItem). This used to be a whole row upsert,
+                // so a row created by another device between the id read above and this write was
+                // overwritten with this device's copy.
+                localOnly.forEach(item => insertMenuItem({ ...item, location_id: locationId }, locationId));
               }
             } catch (e) { console.warn('[SyncBridge] local-only sync failed', e); }
           }
 
-          // Load tax rates directly from Supabase (source of truth)
+          // Load tax rates directly from Supabase (source of truth).
+          // 27 Sep 2026 (Peter: "every products tax rate has been removed ... please chase"): rows
+          // replace the rates, tagged with this venue (mapTaxRateRow), and another venue's rates are
+          // never kept, whatever the read says (lib/venueTaxRates.js ratesAfterRead). In Back Office
+          // a successful read of NO rates is the answer (Leeds had none of its own, the store kept
+          // Train Station's, and "Apply to all" wrote them into 430 Leeds products). A till keeps
+          // this venue's own rates on an empty read: it charges with them.
+          // APPLIED HERE, at once, against the store as it is NOW, never in the boot patch below:
+          // that lands seconds later and would put this answer over rates a push loaded meanwhile.
+          // In Back Office the Back Office's own read (store loadVenueMenu) wins once it has landed.
           if (sb && locationId) {
+            let taxRes = null;
             try {
-              const { data: taxData } = await sb.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
-              if (taxData?.length) patch.taxRates = taxData.map(r => ({
-                id: r.id, name: r.name, code: r.code,
-                rate: parseFloat(r.rate), type: r.type,
-                appliesTo: r.applies_to || ['all'],
-                isDefault: r.is_default, active: r.active,
-              }));
-            } catch {}
+              taxRes = await sb.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
+            } catch (e) { taxRes = { data: null, error: e }; }
+            if (!(isBackOfficeMode() && useStore.getState().menuReadLocationId === locationId)) {
+              const taxRows = taxRes && !taxRes.error && Array.isArray(taxRes.data) ? { data: taxRes.data.map(mapTaxRateRow), error: null } : taxRes;
+              useStore.setState(s => ({ taxRates: ratesAfterRead(taxRows, locationId, s.taxRates, { trusted: isBackOfficeMode() }) }));
+            }
           }
 
           // Load discount presets + auto-discount rules
           if (sb && locationId) {
             try {
+              // 27 Sep 2026: an EMPTY answer replaces what the store held only when it is believed:
+              // always in Back Office, and on a till when read with a session the database answers
+              // truthfully (a device's anonymous session: clientTrustsEmpty, asked BEFORE the read).
+              // Train Station's presets and Provo's rules rode every Leeds push, and stayed on the
+              // Leeds tills, because an empty Leeds read changed nothing. A failed read changes nothing.
+              const discTrusted = isBackOfficeMode() || await clientTrustsEmpty(sb);
               const [discRes, rulesRes] = await Promise.all([
                 sb.from('discounts').select('*').eq('location_id', locationId).eq('active', true).order('sort_order'),
                 sb.from('discount_rules').select('*').eq('location_id', locationId).eq('active', true).order('priority', { ascending: false }),
               ]);
-              if (discRes.data?.length) patch.discountPresets = discRes.data.map(d => ({
-                id: d.id, name: d.name, label: d.name,
+              // Each row carries its venue, so a push carries only this venue's (taggedVenueRows)
+              // and a till takes only its own (venueRowsFromSnapshot).
+              if (readMayReplace(discRes, { trusted: discTrusted })) patch.discountPresets = discRes.data.map(d => ({
+                id: d.id, name: d.name, label: d.name, locationId,
                 type: d.type, value: parseFloat(d.value),
                 scope: d.scope,
                 categoryIds: d.category_ids || [],
                 requiresManager: d.requires_manager ?? false,
                 active: d.active, sortOrder: d.sort_order ?? 0,
               }));
-              if (rulesRes.data?.length) patch.discountRules = rulesRes.data.map(r => ({
-                id: r.id, name: r.name, active: r.active,
+              if (readMayReplace(rulesRes, { trusted: discTrusted })) patch.discountRules = rulesRes.data.map(r => ({
+                id: r.id, name: r.name, active: r.active, locationId,
                 triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
                 triggerQty: r.trigger_qty,
                 triggerGroups: r.trigger_groups || null,
@@ -538,21 +547,8 @@ export default function SyncBridge({ onSyncPulse }) {
               }));
             } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }
           }
-          if (catsRes.data?.length && !snapHas('menuCategories')) patch.menuCategories = catsRes.data.map(cat => ({
-            ...cat,
-            parentId: cat.parent_id ?? cat.parentId ?? null,
-            menuId: cat.menu_id ?? cat.menuId,
-            sortOrder: cat.sort_order ?? cat.sortOrder ?? 0,
-            accountingGroup: cat.accounting_group ?? cat.accountingGroup ?? '',
-            label: cat.label ?? cat.name ?? 'Category',
-            icon: cat.icon ?? '🍽',
-            color: cat.color ?? '#3b82f6',
-            defaultCourse: cat.default_course ?? cat.defaultCourse ?? 1,
-            spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
-            isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
-            taxProfileId: cat.tax_profile_id ?? cat.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
-            image: cat.image ?? null,   // v5.8.65: category photo (display only on tills)
-          }));
+          // 27 Sep 2026: the one mapper (lib/rowMapping.js mapCategoryRow), with srvAt.
+          if (catsRes.data?.length && !snapHas('menuCategories')) patch.menuCategories = catsRes.data.map(mapCategoryRow);
           // v5.7.11: normalise to camelCase WITH the snake originals kept — raw DB rows
           // carried is_default/is_active only, and MenuManager reads isDefault, so the
           // default star vanished on every reload (save worked, display lost it).
@@ -573,13 +569,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // deleting your LAST group makes it immortal on every till.
           // Do NOT copy this to menuItems / menus / menuCategories: the snapHas guard
           // there is the deliberate v5.5.734 anti-reflow fix.
-          if (modGroupsRes.data) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
-            id: g.id, name: g.name,
-            min: g.min ?? 0, max: g.max ?? 1,
-            selectionType: g.selection_type ?? 'single',
-            options: g.options ?? [],
-            sortOrder: g.sort_order ?? 0,
-          }));
+          if (modGroupsRes.data) patch.modifierGroupDefs = modGroupsRes.data.map(mapModifierGroupRow);
 
           // v5.7.33: tax profiles (delivery only — no calculation reads them yet).
           // A SUCCESSFUL read wins INCLUDING empty (a venue with no profiles is a
@@ -657,6 +647,12 @@ export default function SyncBridge({ onSyncPulse }) {
             }
           } catch(e) { console.warn('[SyncBridge] closed checks load error:', e.message); }
 
+          // 27 Sep 2026: in Back Office the menu on screen comes from the Back Office's own read
+          // (store loadVenueMenu), which also knows which rows have a save of this tab on its way.
+          // When that read has already landed, this boot read (older, or no newer) leaves it alone.
+          if (isBackOfficeMode() && useStore.getState().menuReadLocationId === locationId) {
+            for (const k of ['menuItems', 'menuCategories', 'menus', 'modifierGroupDefs', 'taxProfiles', 'venueDefaultTaxProfileId']) delete patch[k];
+          }
           if (Object.keys(patch).length) useStore.setState(patch);
 
           // v5.9.4 tables, at apply time (closed checks are in the store now). bootTables:

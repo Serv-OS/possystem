@@ -17,11 +17,16 @@
 //   out          → close the open break if any, set clock_out, compute
 //                  actual_hours (minus breaks), variance vs scheduled, pay_amount
 //
+// Service role callers (staff-portal, manager-approve) send { location_id,
+// staff_id, action } instead of a PIN. manager-approve also names the sheet
+// for 'out' (timesheet_id, v5.10.3): see _shared/clockSheet.js.
+//
 // A POS user with no wf_staff record yet is auto-given a minimal HR record on
 // first clock-in (so they appear in Workforce → Staff), keeping it seamless.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { namedSheetId, openSheetFor } from '../_shared/clockSheet.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -115,6 +120,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const { location_id, pin, action } = body;
   const staffIdIn = isService ? body.staff_id : null;   // never honoured from a client
+  const sheetIdIn = namedSheetId(body, isService);     // never honoured from a client
 
   if (!isService) {
     const { data: { user } } = await admin.auth.getUser(bearer);
@@ -149,11 +155,11 @@ Deno.serve(async (req) => {
       staff = await ensureWfStaff(member, location_id, org);
     }
 
-    // Current open timesheet (no clock_out), latest first.
-    const { data: openRows } = await admin.from('wf_timesheets')
-      .select('*').eq('location_id', location_id).eq('staff_id', staff.id).is('clock_out', null)
-      .order('clock_in', { ascending: false }).limit(1);
-    const open = openRows?.[0] ?? null;
+    // Current open timesheet (no clock_out), latest first; or, for a manager's
+    // clock out, the sheet they tapped (fenced to this person at this venue).
+    const sheet = await openSheetFor(admin, { locationId: location_id, staffId: staff.id, sheetId: sheetIdIn, action });
+    if (sheet.refusal) return json({ error: sheet.refusal.error }, sheet.refusal.status);
+    const open = sheet.open;
 
     const who = { name: member.name, initials: member.initials || initialsOf(member.name), color: member.color || '#15C26A', role: member.role };
     const now = new Date();

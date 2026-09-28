@@ -70,9 +70,13 @@ export default function BOReports({ setSection } = {}) {
 
   // v4.6.24: Load location timezone + businessDayStart + service periods so reports
   // can honour real business-day boundaries and service-period grouping.
+  // v5.10.2: the ranges are built on the venue's clock from this config, so nothing is
+  // fetched until it is here (a failed read falls back to getLocationConfig's defaults).
   useEffect(() => {
     let alive = true;
-    getLocationConfig().then(cfg => { if (alive) setLocationConfig(cfg); }).catch(() => {});
+    getLocationConfig()
+      .then(cfg => { if (alive) setLocationConfig(cfg); })
+      .catch(() => { if (alive) setLocationConfig({ timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] }); });
     return () => { alive = false; };
   }, []);
 
@@ -93,6 +97,9 @@ export default function BOReports({ setSection } = {}) {
     if (period === 'custom' && (!customRange.from || !customRange.to)) {
       setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); return;
     }
+    // Until v5.10.2 this fired on mount with the range built before the config arrived
+    // (browser midnight) and never again, so "Today" read the wrong window.
+    if (!locationConfig) return;
     setLoadingRange(true);
     (async () => {
       try {
@@ -125,7 +132,7 @@ export default function BOReports({ setSection } = {}) {
       }
       setLoadingRange(false);
     })();
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, locationConfig, range]);
 
   // Merge in any live closed_checks that landed via realtime AFTER the initial
   // range fetch. Without this, a sale completed while the report is open never
@@ -264,7 +271,7 @@ export default function BOReports({ setSection } = {}) {
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>
           Pick a start and end date to load the custom range.
         </div>
-      ) : loadingRange ? (
+      ) : (loadingRange || !locationConfig) ? (
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading…</div>
       ) : (
         <>
@@ -275,20 +282,20 @@ export default function BOReports({ setSection } = {}) {
           {view === 'shifts'      && <Shifts       checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
           {view === 'payroll'     && <PayrollReport fmt={fmt}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
-          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to}/>}
-          {view === 'daily_trading' && <DailyTrading rangeFrom={range.from} rangeTo={range.to} fmt={fmt}/>}
+          {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} range={range}/>}
+          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={range}/>}
+          {view === 'daily_trading' && <DailyTrading fromDay={range.fromDay} toDay={range.toDay} fmt={fmt}/>}
           {view === 'menu_eng'    && <MenuEngineering checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tips'        && <Tips         checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'bookings'    && <BookingsReport rangeFrom={range.from} rangeTo={range.to} fmtN={fmtN}/>}
+          {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} fmtN={fmtN}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} timeZone={range.timeZone} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'location_compare' && <LocationCompare rangeFrom={range.from} rangeTo={range.to} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'location_compare' && <LocationCompare range={range} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
           {view === 'cash_drawer' && <CashDrawer   fromMs={range.from} toMs={range.to}/>}
           {view === 'transactions' && <Transactions checks={filtered} fmt={fmt}/>}
           {view === 'open'       && <LegacyOpen   openOrders={openOrders} fmt={fmt}/>}

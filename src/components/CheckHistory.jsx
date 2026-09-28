@@ -6,7 +6,8 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
 import { bookedTaxRecord } from '../lib/taxShare';
 import { shortOrderRef } from '../lib/db';
-import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
+import { refundBreakdown, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
+import { useRefundCardLegs } from '../lib/payments/useRefundCardLegs';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -111,10 +112,16 @@ function RefundModal({check, onConfirm, onCancel}){
   const hasTipOrService=(check.tip||0)>0||(check.service||0)>0;
 
   // Card legs, for the per-leg picker on a split check.
-  const legs=useMemo(()=>cardLegsOf(check),[check]);
+  // 28 Sep 2026: the same legs the store will refund (this till's copy, else the sale's row),
+  // so this screen never says "no card linked" while the store then refunds the card.
+  const {legs,checking:legsChecking,failed:legsFailed,retry:retryLegs}=useRefundCardLegs(check);
   const legDone=useMemo(()=>legRefundedMinor(check),[check]);
   const legRoom=(l)=>l.amountMinor==null?null:Math.max(0,l.amountMinor-(legDone[l.id]||0));
   const isSplitCard=legs.length>1;
+  // Legs read from the row AFTER staff chose Card: a split still goes through the picker.
+  // Only when the split flag changes, never on a step change, or Continue on the picker
+  // (legs -> card_terminal) would be sent straight back to the picker.
+  useEffect(()=>{ if(isSplitCard)setStep(s=>s==='card_terminal'?'legs':s); },[isSplitCard]);
   // Default allocation: fill the legs from the front, exactly as the store would
   // if the operator never opens the picker.
   const defaultPicks=useMemo(()=>{
@@ -513,7 +520,18 @@ function RefundModal({check, onConfirm, onCancel}){
                     NOTHING was doing, next to a button that recorded the refund
                     and never reversed a card. The button now sends the reversal
                     and waits; the result is reported honestly by the store. */}
-                {legs.length===0&&(
+                {legsChecking&&(
+                  <div style={{padding:'10px 12px',borderRadius:10,background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t2)',fontSize:12,textAlign:'left',marginBottom:16,lineHeight:1.5}}>
+                    Checking which card paid for this sale…
+                  </div>
+                )}
+                {!legsChecking&&legsFailed&&(
+                  <div style={{padding:'10px 12px',borderRadius:10,background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:12,textAlign:'left',marginBottom:16,lineHeight:1.5}}>
+                    Could not reach this sale's record to find its card. Check the till is online and linked, then try again. Nothing is recorded until the card is found.
+                    <div style={{marginTop:8}}><button className="btn btn-ghost" style={{height:32,fontSize:12}} onClick={retryLegs}>Try again</button></div>
+                  </div>
+                )}
+                {!legsChecking&&!legsFailed&&legs.length===0&&(
                   <div style={{padding:'10px 12px',borderRadius:10,background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:12,textAlign:'left',marginBottom:16,lineHeight:1.5}}>
                     No card payment is linked to this check, so nothing can be reversed automatically.
                     Record the refund here, then return the money in the {PROCESSOR_NAME[(check.processor||'').toLowerCase()]||'processor'} dashboard.
@@ -521,7 +539,7 @@ function RefundModal({check, onConfirm, onCancel}){
                 )}
                 <div style={{display:'flex',gap:8,marginTop:8}}>
                   <button className="btn btn-ghost" style={{flex:1}} disabled={busy} onClick={()=>setStep(isSplitCard?'legs':'tender')}>← Back</button>
-                  <button className="btn btn-grn" style={{flex:2,height:44}} disabled={busy} onClick={handleComplete}>
+                  <button className="btn btn-grn" style={{flex:2,height:44}} disabled={busy||legsChecking||legsFailed} onClick={handleComplete}>
                     {busy?'Reversing…':`Refund ${money(refundTotal)} to card`}
                   </button>
                 </div>

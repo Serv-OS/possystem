@@ -109,6 +109,31 @@ export function clearLocationConfigCache() {
   _locationConfigCache.clear();
 }
 
+// v5.10.3: ANOTHER venue's report clock, { timezone, businessDayStart }, read the way
+// getLocationConfig reads it (platform locations by ops_location_id, then id; no row =
+// London, 06:00) but with no side effects. getLocationConfig sets the Back Office currency
+// from the row it reads and caches it, so calling it for every venue in Location compare
+// would switch £ to $ whenever a US venue came last. A failed read throws.
+export async function getVenueClock(locationId) {
+  const fallback = { timezone: 'Europe/London', businessDayStart: '06:00' };
+  if (!locationId || locationId === 'loc-demo') return fallback;
+  const cached = _locationConfigCache.get(locationId);
+  if (cached) return { timezone: cached.timezone, businessDayStart: cached.businessDayStart };
+  if (!platformSupabase) return fallback;
+  const select = 'timezone, business_day_start';
+  const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locationId).maybeSingle();
+  if (r1.error) throw r1.error;
+  let row = r1.data;
+  if (!row) {
+    // Legacy rows where id == ops_location_id. Like getLocationConfig, a miss here
+    // (including an id that is not a uuid) is "no row", not a failure.
+    const r2 = await platformSupabase.from('locations').select(select).eq('id', locationId).maybeSingle();
+    row = r2.data;
+  }
+  if (!row) return fallback;
+  return { timezone: row.timezone || 'Europe/London', businessDayStart: row.business_day_start || '06:00' };
+}
+
 /**
  * Get the start of the current business day in the location's timezone.
  * 

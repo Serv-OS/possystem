@@ -9,25 +9,18 @@
 //
 // When we add real clock-in/out events (Wave 5+ staff management), this file swaps the
 // derivation for real session records. Everything downstream stays the same.
+//
+// v5.10.3: days, services and the First/Last times are the VENUE's (locationConfig.timezone
+// + businessDayStart, via _filters groupChecksByDay / groupChecksByService). Until then the
+// day view split days at the browser's midnight and the service view read the browser's
+// hours, so from California a London day started at 16:00 and lunch checks fell outside
+// every service.
 
 import { useMemo, useState } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
-import { classifyShift } from './_filters';
+import { classifyShift, dayText, groupChecksByDay, groupChecksByService, reportClock } from './_filters';
 import { money } from '../../../lib/currency';
-
-// Group checks into business days. Business day starts at 00:00 local by default;
-// locationConfig.businessDayStart could override but that's not piped down yet.
-function groupByBusinessDay(checks) {
-  const map = {};
-  (checks || []).filter(c => c.closedAt).forEach(c => {
-    const d = new Date(c.closedAt);
-    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    if (!map[key]) map[key] = { key, date: new Date(d.getFullYear(), d.getMonth(), d.getDate()), checks: [] };
-    map[key].checks.push(c);
-  });
-  return Object.values(map).sort((a, b) => b.date - a.date);
-}
 
 // Aggregate a check bundle into shift stats. Reused for both business-day and server session.
 function aggregate(checks) {
@@ -57,21 +50,25 @@ function formatDuration(ms) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function formatTime(ts) {
+// A check's time on the venue's wall clock (the row's day is the venue's, so its times are too).
+function formatTime(ts, timeZone) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone });
 }
 
-function formatDate(d) {
-  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+// A business day ('YYYY-MM-DD') as "Sun 27 Sep".
+function formatDate(ymd) {
+  return dayText(ymd, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
 // v4.6.16 day-based shifts — first-check-to-last-check per business day.
 // Used as fallback when locationConfig.shifts is empty.
-function DayBasedShifts({ checks, fmt, fmtN }) {
+function DayBasedShifts({ checks, fmt, fmtN, locationConfig }) {
   const [expanded, setExpanded] = useState(null); // which day is drilled into
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
+  const tz = clock.timeZone;
 
-  const days = useMemo(() => groupByBusinessDay(checks), [checks]);
+  const days = useMemo(() => groupChecksByDay(checks, clock), [checks, clock]);
 
   // Per-server sessions for the expanded day
   const serverSessions = useMemo(() => {
@@ -90,7 +87,7 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
   }, [expanded, days]);
 
   // Roll up stats per day
-  const rollups = useMemo(() => days.map(d => ({ key: d.key, date: d.date, ...aggregate(d.checks) })), [days]);
+  const rollups = useMemo(() => days.map(d => ({ key: d.key, ...aggregate(d.checks) })), [days]);
 
   // Headline tiles — aggregates across all displayed shifts
   const headline = useMemo(() => {
@@ -111,9 +108,9 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
   const onExport = () => {
     const rows = rollups.map(r => ({
       date: r.key,
-      dow: r.date.toLocaleDateString('en-GB', { weekday: 'short' }),
-      first: formatTime(r.firstAt),
-      last: formatTime(r.lastAt),
+      dow: dayText(r.key, { weekday: 'short' }),
+      first: formatTime(r.firstAt, tz),
+      last: formatTime(r.lastAt, tz),
       duration: formatDuration(r.durationMs),
       checks: r.checkCount,
       covers: r.covers,
@@ -192,9 +189,9 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
                 }}
               >
                 <span style={{ color:'var(--t4)', fontSize:11, transition:'transform .2s', display:'inline-block', transform: isOpen ? 'rotate(90deg)' : 'none' }}>▶</span>
-                <span style={{ color:'var(--t1)', fontWeight:600 }}>{formatDate(r.date)}</span>
-                <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.firstAt)}</span>
-                <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.lastAt)}</span>
+                <span style={{ color:'var(--t1)', fontWeight:600 }}>{formatDate(r.key)}</span>
+                <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.firstAt, tz)}</span>
+                <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.lastAt, tz)}</span>
                 <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatDuration(r.durationMs)}</span>
                 <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checkCount}</span>
                 <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.covers}</span>
@@ -228,8 +225,8 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
                       {serverSessions.map(s => (
                         <div key={s.server} style={{ display:'grid', gridTemplateColumns:'1.2fr 80px 80px 80px 70px 70px 110px 90px', padding:'9px 12px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center' }}>
                           <span style={{ color:'var(--t1)', fontWeight:600 }}>{s.server}</span>
-                          <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(s.firstAt)}</span>
-                          <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(s.lastAt)}</span>
+                          <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(s.firstAt, tz)}</span>
+                          <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(s.lastAt, tz)}</span>
                           <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatDuration(s.durationMs)}</span>
                           <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{s.checkCount}</span>
                           <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{s.covers}</span>
@@ -263,34 +260,12 @@ function DayBasedShifts({ checks, fmt, fmtN }) {
 // day start from locationConfig.businessDayStart is honoured so a check
 // closed at 02:00 belongs to the previous business day's last service.
 // Falls back to DayBasedShifts when no services are configured.
+// v5.10.3: grouping lives in _filters groupChecksByService, on the venue's clock.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function groupByService(checks, shifts, businessDayStart) {
-  const [bh, bm] = (businessDayStart || '00:00').split(':').map(Number);
-  const bizStart = bh * 60 + bm;
-  const map = {};
-  (checks || []).filter(c => c.closedAt).forEach(c => {
-    const shift = classifyShift(c.closedAt, shifts, businessDayStart);
-    if (!shift) return;
-    const d = new Date(c.closedAt);
-    const minutesOfDay = d.getHours() * 60 + d.getMinutes();
-    const dayDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    if (minutesOfDay < bizStart) dayDate.setDate(dayDate.getDate() - 1);
-    const dayKey = `${dayDate.getFullYear()}-${String(dayDate.getMonth()+1).padStart(2,'0')}-${String(dayDate.getDate()).padStart(2,'0')}`;
-    const key = `${dayKey}__${shift.id || shift.name}`;
-    if (!map[key]) map[key] = { key, dayKey, dayDate, shift, checks: [] };
-    map[key].checks.push(c);
-  });
-  return Object.values(map).sort((a, b) => {
-    if (a.dayDate.getTime() !== b.dayDate.getTime()) return b.dayDate - a.dayDate;
-    // Same day — order by shift start time, earliest first
-    return (a.shift.start || '') < (b.shift.start || '') ? -1 : 1;
-  });
-}
-
-function unclassifiedCheckCount(checks, shifts, businessDayStart) {
+function unclassifiedCheckCount(checks, shifts, timeZone) {
   if (!shifts?.length) return 0;
-  return (checks || []).filter(c => c.closedAt && !classifyShift(c.closedAt, shifts, businessDayStart)).length;
+  return (checks || []).filter(c => c.closedAt && !classifyShift(c.closedAt, shifts, timeZone)).length;
 }
 
 function serviceAggregate(checks) {
@@ -304,14 +279,14 @@ function serviceAggregate(checks) {
 
 function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
   const shifts = locationConfig?.shifts || [];
-  const bds    = locationConfig?.businessDayStart || '00:00';
+  const clock  = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const groups = useMemo(
-    () => groupByService(checks, shifts, bds),
-    [checks, shifts, bds]
+    () => groupChecksByService(checks, shifts, clock),
+    [checks, shifts, clock]
   );
   const unclassified = useMemo(
-    () => unclassifiedCheckCount(checks, shifts, bds),
-    [checks, shifts, bds]
+    () => unclassifiedCheckCount(checks, shifts, clock.timeZone),
+    [checks, shifts, clock]
   );
 
   // Portfolio totals across all classified checks
@@ -325,7 +300,7 @@ function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
       const a = serviceAggregate(g.checks);
       const servers = [...new Set(g.checks.map(c => c.server || 'Unknown'))];
       return {
-        date:      `${g.dayDate.getFullYear()}-${String(g.dayDate.getMonth()+1).padStart(2,'0')}-${String(g.dayDate.getDate()).padStart(2,'0')}`,
+        date:      g.dayKey,
         service:   g.shift.name,
         window:    `${g.shift.start}-${g.shift.end}`,
         revenue:   a.revenue.toFixed(2),
@@ -336,7 +311,20 @@ function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
         servers:   servers.join('; '),
       };
     });
-    downloadCsv(toCsv(rows), `shifts-by-service-${new Date().toISOString().slice(0,10)}.csv`);
+    // v5.10.3: was downloadCsv(toCsv(rows), name): no headers (toCsv threw) and the
+    // arguments the wrong way round, so this Export never downloaded anything.
+    const csv = toCsv(rows, [
+      { label:'Date',      key:'date' },
+      { label:'Service',   key:'service' },
+      { label:'Window',    key:'window' },
+      { label:'Revenue',   key:'revenue' },
+      { label:'Covers',    key:'covers' },
+      { label:'Checks',    key:'checks' },
+      { label:'Tips',      key:'tips' },
+      { label:'Avg check', key:'avg_check' },
+      { label:'Servers',   key:'servers' },
+    ]);
+    downloadCsv(`shifts-by-service-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
   if (!groups.length) {
@@ -378,7 +366,7 @@ function ServicePeriodShifts({ checks, fmt, fmtN, locationConfig }) {
       {groups.map(g => {
         const a = serviceAggregate(g.checks);
         const servers = [...new Set(g.checks.map(c => c.server || 'Unknown'))].sort();
-        const dayLabel = g.dayDate.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' });
+        const dayLabel = formatDate(g.dayKey);
         return (
           <div key={g.key} style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px', marginBottom:10 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, flexWrap:'wrap', gap:8 }}>

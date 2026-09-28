@@ -9,9 +9,10 @@
 // through MUST use it:
 //   - SyncBridge boot load (raw Supabase rows)
 //   - store applyConfigUpdate (push snapshots carry raw snake rows)
-//   - BackOfficeApp.loadLocationData (the Back Office's own loader)
-//   - _sbUpsertMenuNow (a stale tab may hold snake-only rows; reading only
-//     the camel spelling silently un-starred the default on ANY save)
+//   - BackOfficeApp.loadLocationData (the Back Office's own loader, since 27 Sep 2026
+//     through lib/venueMenuRead.js and mapMenuRow below)
+//   - lib/menuItemWrite.js menuRow, the menus writer (a stale tab may hold snake-only
+//     rows; reading only the camel spelling silently un-starred the default on ANY save)
 // If you add a new menus loader or writer, call this, never re-type the chain.
 
 // Normalise one `menus` row to the camelCase shape the app reads (MenuManager,
@@ -91,3 +92,140 @@ export const assembleTaxProfiles = (profileRows, lineRows) => {
     lines: (linesByProfile[p.id] || (Array.isArray(p.lines) ? p.lines.map(normaliseTaxProfileLineRow) : [])).sort(bySort),
   })).sort(bySort);
 };
+
+// ── Menu rows with their database time (27 Sep 2026) ────────────────────────
+//
+// Peter, 27 Sep 2026: "I archived choc babychino but its still on the menu board".
+// A second Back Office, loaded before the archive, wrote its whole in memory menu back
+// over the database (Push to POS), and nothing could tell that the row had changed since
+// that tab read it. Every door a menu row enters through now keeps the row's database
+// updated_at as `srvAt`: the compare and set token every Back Office write sends back
+// (lib/menuRowWrite.js, `... where updated_at = srvAt`). It is the RAW string exactly as
+// the database returned it, never a Date, so the equality test matches to the digit.
+// null means "not known", and a row without it is re-read before any write.
+export const srvAtOf = (row) => {
+  if (!row || typeof row !== 'object') return null;
+  const v = row.srvAt ?? row.updated_at ?? null;
+  return v == null || v === '' ? null : String(v);
+};
+
+// A database time as a number, for ordering two copies of the same row (newer wins).
+// Accepts the Data API form (2026-09-27T14:05:44.964+00:00) and the realtime form
+// (2026-09-27 14:05:44.964+00). NaN when unknown, so every comparison with it is false.
+export const srvTimeOf = (v) => {
+  if (v == null || v === '') return NaN;
+  if (typeof v === 'number') return v;
+  let s = String(v).trim().replace(' ', 'T');
+  if (/[+-]\d\d$/.test(s)) s += ':00';
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : NaN;
+};
+
+// Is copy `a` NEWER than copy `b` by the database clock? Unknown on either side: no.
+export const srvNewer = (a, b) => {
+  const x = srvTimeOf(srvAtOf(a)), y = srvTimeOf(srvAtOf(b));
+  return Number.isFinite(x) && Number.isFinite(y) && x > y;
+};
+
+// ONE mapper for a menu_items row (raw database row, snake_case) into the camelCase
+// shape the app reads: the union of what the Back Office loader, SyncBridge,
+// useSupabaseInit and realtime each mapped by hand. The snake originals are kept
+// (spread), and srvAt carries the row's database time.
+export const mapMenuItemRow = (item) => {
+  if (!item || typeof item !== 'object') return item;
+  return {
+    ...item,
+    price:        item.pricing?.base ?? item.price ?? 0,
+    menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
+    receiptName:  item.receipt_name ?? item.receiptName ?? item.name ?? 'Item',
+    kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name ?? 'Item',
+    sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
+    isDefault:    item.is_default   ?? item.isDefault,
+    parentId:     item.parent_id    ?? item.parentId    ?? null,
+    soldAlone:    item.sold_alone   ?? item.soldAlone,
+    centreId:     item.centre_id    ?? item.centreId    ?? null,
+    taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
+    taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+    taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,
+    assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
+    assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+    optionGroupOrder: item.option_group_order ?? item.optionGroupOrder ?? null,
+    image:        item.image ?? null,
+    tags:         Array.isArray(item.tags) ? item.tags : [],
+    // item_code is CONDITIONAL: before 20260917_OPS_menu_item_code.sql the column is not in
+    // the row, and the item must then carry no field (the write leaves the column alone).
+    ...(item.item_code !== undefined ? { itemCode: item.item_code ?? null } : {}),
+    scope:        item.scope         ?? 'local',
+    orgId:        item.org_id        ?? item.orgId        ?? null,
+    masterId:     item.master_id     ?? item.masterId     ?? null,
+    lockPricing:  item.lock_pricing  ?? item.lockPricing  ?? false,
+    lockedFields: item.locked_fields ?? item.lockedFields ?? [],
+    srvAt:        item.updated_at    ?? item.srvAt        ?? null,
+  };
+};
+
+// ONE mapper for a menu_categories row (the Back Office loader's and SyncBridge's, joined).
+export const mapCategoryRow = (c) => {
+  if (!c || typeof c !== 'object') return c;
+  return {
+    ...c,
+    menuId:          c.menu_id ?? c.menuId ?? null,
+    parentId:        c.parent_id ?? c.parentId ?? null,
+    accountingGroup: c.accounting_group ?? c.accountingGroup ?? '',
+    sortOrder:       c.sort_order ?? c.sortOrder ?? 0,
+    label:           c.label ?? c.name ?? 'Category',
+    icon:            c.icon ?? '🍽',
+    color:           c.color ?? '#3b82f6',
+    defaultCourse:   c.default_course ?? c.defaultCourse ?? 1,
+    spacerSlots:     c.spacer_slots ?? c.spacerSlots ?? [],
+    isSpecial:       c.is_special ?? c.isSpecial ?? false,
+    taxProfileId:    c.tax_profile_id ?? c.taxProfileId ?? null,
+    image:           c.image ?? null,
+    srvAt:           c.updated_at ?? c.srvAt ?? null,
+  };
+};
+
+// A menus row: the shared normaliser plus its database time.
+export const mapMenuRow = (m) => {
+  if (!m || typeof m !== 'object') return m;
+  return { ...normaliseMenuRow(m), srvAt: m.updated_at ?? m.srvAt ?? null };
+};
+
+// A modifier_groups row. updated_at only exists once 20260927_OPS_menu_rows_server_time.sql
+// has run; before that srvAt is null and every save re-reads the row first.
+// 27 Sep 2026 (review round 3): it carries its venue, so a group kept on screen while its save
+// was on its way never follows the person into another venue (venueMenuRead mergeReadRows).
+export const mapModifierGroupRow = (g) => {
+  if (!g || typeof g !== 'object') return g;
+  return {
+    id: g.id, name: g.name,
+    min: g.min ?? 0, max: g.max ?? 1,
+    selectionType: g.selection_type ?? g.selectionType ?? 'single',
+    options: Array.isArray(g.options) ? g.options : [],
+    sortOrder: g.sort_order ?? g.sortOrder ?? 0,
+    srvAt: g.updated_at ?? g.srvAt ?? null,
+    locationId: g.location_id ?? g.locationId ?? null,
+  };
+};
+
+// A tax_rates row. It carries its VENUE: on 27 Sep 2026 Leeds had no rates of its own, the
+// Back Office kept Train Station's from the last push, and "Apply to all" wrote Train
+// Station's rate ids into 430 Leeds products. Screens list only the active venue's rates.
+export const mapTaxRateRow = (r) => {
+  if (!r || typeof r !== 'object') return r;
+  return {
+    id: r.id, name: r.name, code: r.code,
+    rate: parseFloat(r.rate), type: r.type,
+    appliesTo: r.applies_to || r.appliesTo || ['all'],
+    isDefault: r.is_default ?? r.isDefault, active: r.active,
+    locationId: r.location_id ?? r.locationId ?? null,
+  };
+};
+
+// Only the rates that belong to `locationId`. A rate with no venue on it (an old push
+// snapshot) is not offered: nobody can tell which venue it came from. 27 Sep 2026 (the tax
+// root cause port): nor is one a till took unchecked from an old style push (`unverified`,
+// lib/venueTaxRates.js ratesFromSnapshot): it is used to charge until the venue's own read
+// answers, never offered, stamped on a new product or counted as this venue's.
+export const venueTaxRates = (rates, locationId) =>
+  (Array.isArray(rates) ? rates : []).filter((r) => r && locationId && !r.unverified && (r.locationId ?? r.location_id) === locationId);

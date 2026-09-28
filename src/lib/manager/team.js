@@ -26,6 +26,16 @@ export function onShiftNow(punches, nowMs = Date.now()) {
   }));
 }
 
+/**
+ * v5.10.2: may this person see Clock out on someone who is on shift? Only when the punch carries
+ * its timesheet id (manager-snapshot sends it from v5.10.2) and the signed-in person can approve
+ * (team_approvals: Manager, Owner or the manager_approvals permission), the same rule
+ * manager-approve's canApprove applies. A supervisor would only ever get "not allowed to approve".
+ */
+export function canClockOut(onShiftRow, flags) {
+  return !!(onShiftRow?.id && flags?.team_approvals);
+}
+
 /** Scheduled shifts whose start is past the grace window with no clock-in for that person. */
 export function noShows(shifts, punches, opts = {}, nowMs = Date.now()) {
   const o = { ...DEFAULT_TEAM_OPTS, ...opts };

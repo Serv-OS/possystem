@@ -1,7 +1,21 @@
 // v4.6.15: Period computation, check filters, and compare-period math.
 // v4.6.24: Business-day-start + service-period support for reports.
+// v5.10.2: every period is built on the VENUE's clock (config.timezone + businessDayStart),
+//          never the browser's. Until then a manager in California looking at a London
+//          venue got "Yesterday" = 06:30 to 06:29 Pacific, i.e. 14:30 to 14:29 London.
+//          The day maths is the accounting layer's (supabase/functions/_shared/businessDay.js),
+//          so the reports and the Xero day agree and DST nights come out right.
+//
+// v5.10.3: and every BUCKET a sale is counted in (its day, its service, its hour on the
+//          Daypart grid) is read on the venue's clock too: classifyShift, dayOfCheck,
+//          rangeDays, daypartGrid, groupChecksByDay/ByService. The day or service a sale
+//          belongs to is business time (venue zone + business_day_start), never the browser.
 //
 // Used by every report in the reporting suite.
+
+import {
+  venueZone, businessDayOf, businessDayStartMs, wallTimeToInstant, wallClock, addDays, isYmd,
+} from '../../../../supabase/functions/_shared/businessDay.js';
 
 export const PERIODS = [
   { id:'today',      label:'Today'        },
@@ -32,136 +46,176 @@ export function buildPeriods(config) {
   return [...serviceToday, ...PERIODS];
 }
 
-const startOfDay = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-const endOfDay   = (d) => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
-
-// v4.6.24: Start of the business day that 'd' belongs to. If bds is '04:00'
-// and d is 02:00 Thursday, this returns 04:00 Wednesday.
-function businessDayStartFor(d, bds) {
-  const [bh, bm] = (bds || '00:00').split(':').map(Number);
-  const x = new Date(d);
-  x.setHours(bh, bm, 0, 0);
-  if (d.getTime() < x.getTime()) x.setDate(x.getDate() - 1);
-  return x;
+// 'HH:MM' (or 'HH:MM:SS') to minutes after midnight; null when it is not a time.
+function clockMinutes(hhmm) {
+  const m = /^\s*(\d{1,2}):(\d{2})(?::\d{2})?\s*$/.exec(String(hhmm ?? ''));
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
 }
 
-function businessDayEndFor(d, bds) {
-  const start = businessDayStartFor(d, bds);
-  const nextStart = new Date(start);
-  nextStart.setDate(nextStart.getDate() + 1);
-  return new Date(nextStart.getTime() - 1);
+// 0 = Monday … 6 = Sunday, for a calendar date (no clock involved).
+function mondayIndex(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
 }
 
-// Returns { from, to, prevFrom, prevTo } — prev period is same length, immediately preceding.
-// v4.6.24: config = { businessDayStart: 'HH:MM', shifts: [{id,name,start,end}], timezone }
-// config is optional — when absent, behaviour matches pre-v4.6.24 (midnight local).
-export function getPeriodRange(periodId, custom, config = {}) {
-  const now = new Date();
-  const bds = config?.businessDayStart || '00:00';
-  const hasBusinessDay = bds !== '00:00';
+// A calendar date as words, whatever the browser's zone ('2026-09-27' is Sun 27 Sep everywhere).
+export function dayText(ymd, opts) {
+  if (!isYmd(ymd)) return '';
+  return new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-GB', { ...opts, timeZone: 'UTC' });
+}
 
-  // Service-period range: pick today's instance of a named service.
+// 0 = Sunday … 6 = Saturday, for a calendar date (no clock involved).
+export function weekdayOf(ymd) {
+  return (mondayIndex(ymd) + 1) % 7;
+}
+
+// The clock a venue's reports run on: { timeZone, dayStart } from its config
+// (getLocationConfig). No timezone = Europe/London, never the browser's zone; no
+// businessDayStart = the venue's midnight. A range from getPeriodRange has the same two
+// keys, so either can be passed wherever a clock is asked for.
+export function reportClock(config) {
+  return { timeZone: venueZone(config?.timezone), dayStart: config?.businessDayStart || '00:00' };
+}
+
+// The venue business day ('YYYY-MM-DD') a check's instant belongs to; null when it has none.
+export function dayOfCheck(ts, clock) {
+  if (ts == null || ts === '') return null;
+  return businessDayOf(ts, venueZone(clock?.timeZone), clock?.dayStart || '00:00');
+}
+
+// The hour (0 to 23) on the venue's wall clock at an instant; null when it is not one.
+export function venueHour(ts, timeZone) {
+  const ms = ts instanceof Date ? ts.getTime() : typeof ts === 'number' ? ts : Date.parse(ts);
+  if (!Number.isFinite(ms)) return null;
+  return Math.floor(wallClock(ms, timeZone).minutes / 60);
+}
+
+// Every business day of a range, fromDay..toDay inclusive: the day axis of a trend report.
+export function rangeDays(range) {
+  const out = [];
+  if (!isYmd(range?.fromDay) || !isYmd(range?.toDay)) return out;
+  for (let d = range.fromDay; d <= range.toDay && out.length < 3660; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+// The same number of business days immediately before the range: the compare axis.
+export function prevRangeDays(range) {
+  const days = rangeDays(range);
+  return days.map((_, i) => addDays(range.fromDay, i - days.length));
+}
+
+// Instants of whole business days fromDay..toDay (to is the last ms before the next day).
+function dayWindow(fromDay, toDay, tz, bds) {
+  return [businessDayStartMs(fromDay, tz, bds), businessDayStartMs(addDays(toDay, 1), tz, bds) - 1];
+}
+
+// Instants of one service on `day`'s wall clock. The end minute is included (15:00 means
+// up to 15:00:59.999), and a service that ends before it starts runs past midnight.
+function serviceWindow(day, sMin, eMin, tz) {
+  const from = wallTimeToInstant(day, sMin, tz);
+  let to = wallTimeToInstant(day, eMin, tz) + 59999;
+  if (to <= from) to = wallTimeToInstant(addDays(day, 1), eMin, tz) + 59999;
+  return [from, to];
+}
+
+// Returns { from, to, prevFrom, prevTo, fromDay, toDay, timeZone, dayStart }. from/to are real instants
+// (to is inclusive, the last ms before the next day starts); prev period is same length,
+// immediately preceding. fromDay/toDay are the venue business days the range covers
+// ('YYYY-MM-DD'): pass THOSE to anything that asks for dates, never format from/to.
+// config = { businessDayStart: 'HH:MM', shifts: [{id,name,start,end}], timezone }
+// (getLocationConfig). No timezone = Europe/London, the venue default, never the browser's
+// zone. No businessDayStart = days start at the venue's midnight. nowMs is for tests.
+export function getPeriodRange(periodId, custom, config = {}, nowMs = Date.now()) {
+  const { timeZone: tz, dayStart: bds } = reportClock(config);
+  const today = businessDayOf(nowMs, tz, bds);
+  const withPrev = ([fromMs, toMs], extra) => {
+    const lengthMs = toMs - fromMs;
+    const prevTo   = new Date(fromMs - 1);
+    const prevFrom = new Date(prevTo.getTime() - lengthMs);
+    return { from: new Date(fromMs), to: new Date(toMs), prevFrom, prevTo, timeZone: tz, dayStart: bds, ...extra };
+  };
+  // Whole business days fromDay..toDay (inclusive).
+  const days = (fromDay, toDay) => withPrev(dayWindow(fromDay, toDay, tz, bds), { fromDay, toDay });
+
+  // Service-period range: pick today's instance of a named service, on the venue's wall clock.
   if (typeof periodId === 'string' && periodId.startsWith('service:today:')) {
     const key = periodId.slice('service:today:'.length);
     const shifts = config?.shifts || [];
     const shift  = shifts.find(s => s.id === key || s.name === key);
-    if (shift) {
-      const [sh, sm] = shift.start.split(':').map(Number);
-      const [eh, em] = shift.end.split(':').map(Number);
-      const dayStart = hasBusinessDay ? businessDayStartFor(now, bds) : startOfDay(now);
-      const from = new Date(dayStart);
-      from.setHours(sh, sm, 0, 0);
-      const to = new Date(dayStart);
-      to.setHours(eh, em, 59, 999);
-      if (from.getTime() > now.getTime()) {
-        from.setDate(from.getDate() - 1);
-        to.setDate(to.getDate() - 1);
-      }
-      if (to.getTime() <= from.getTime()) {
-        to.setDate(to.getDate() + 1);
-      }
-      const lengthMs = to.getTime() - from.getTime();
-      const prevTo   = new Date(from.getTime() - 1);
-      const prevFrom = new Date(prevTo.getTime() - lengthMs);
-      return { from, to, prevFrom, prevTo, kind:'service', shiftName: shift.name };
+    const sMin = clockMinutes(shift?.start);
+    const eMin = clockMinutes(shift?.end);
+    if (shift && sMin != null && eMin != null) {
+      let day = today;
+      if (wallTimeToInstant(day, sMin, tz) > nowMs) day = addDays(day, -1);
+      return withPrev(serviceWindow(day, sMin, eMin, tz), {
+        fromDay: day, toDay: day, kind:'service', shiftName: shift.name, serviceStart: sMin, serviceEnd: eMin,
+      });
     }
   }
 
-  const refStart = hasBusinessDay ? businessDayStartFor(now, bds) : startOfDay(now);
-  const refEnd   = hasBusinessDay ? businessDayEndFor(now, bds)   : endOfDay(now);
+  // Custom dates are venue business days too, so "27 Sep" matches Yesterday on the 28th.
+  const customDay = (v) => (isYmd(v) ? v : v ? businessDayOf(v, tz, bds) : null);
 
-  let from, to;
   switch (periodId) {
     case 'today':
-      from = refStart; to = refEnd; break;
+      return days(today, today);
     case 'yesterday': {
-      const y = new Date(refStart); y.setDate(refStart.getDate() - 1);
-      from = y;
-      to   = new Date(refStart.getTime() - 1);
-      break;
+      const y = addDays(today, -1);
+      return days(y, y);
     }
-    case 'this-week': {
-      const d = new Date(refStart); const dow = (d.getDay()+6)%7;
-      d.setDate(d.getDate() - dow);
-      from = d; to = refEnd; break;
-    }
+    case 'this-week':
+      return days(addDays(today, -mondayIndex(today)), today);
     case 'last-week': {
-      const d = new Date(refStart); const dow = (d.getDay()+6)%7;
-      d.setDate(d.getDate() - dow - 7);
-      const t = new Date(d); t.setDate(d.getDate() + 6);
-      from = d;
-      to   = hasBusinessDay ? businessDayEndFor(t, bds) : endOfDay(t);
-      break;
+      const monday = addDays(today, -mondayIndex(today) - 7);
+      return days(monday, addDays(monday, 6));
     }
     case 'this-month':
-      from = hasBusinessDay
-        ? businessDayStartFor(new Date(now.getFullYear(), now.getMonth(), 1, 12), bds)
-        : startOfDay(new Date(now.getFullYear(), now.getMonth(), 1));
-      to = refEnd;
-      break;
-    case 'last-month':
-      from = hasBusinessDay
-        ? businessDayStartFor(new Date(now.getFullYear(), now.getMonth()-1, 1, 12), bds)
-        : startOfDay(new Date(now.getFullYear(), now.getMonth()-1, 1));
-      to = hasBusinessDay
-        ? businessDayEndFor(new Date(now.getFullYear(), now.getMonth(), 0, 12), bds)
-        : endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
-      break;
-    case 'last-7': {
-      const d = new Date(refStart); d.setDate(refStart.getDate() - 6);
-      from = d; to = refEnd; break;
+      return days(`${today.slice(0, 7)}-01`, today);
+    case 'last-month': {
+      const lastDay = addDays(`${today.slice(0, 7)}-01`, -1);
+      return days(`${lastDay.slice(0, 7)}-01`, lastDay);
     }
-    case 'last-30': {
-      const d = new Date(refStart); d.setDate(refStart.getDate() - 29);
-      from = d; to = refEnd; break;
-    }
+    case 'last-7':
+      return days(addDays(today, -6), today);
+    case 'last-30':
+      return days(addDays(today, -29), today);
     case 'custom':
-      from = custom?.from ? startOfDay(new Date(custom.from)) : refStart;
-      to   = custom?.to   ? endOfDay(new Date(custom.to))     : refEnd;
-      break;
+      return days(customDay(custom?.from) || today, customDay(custom?.to) || today);
     default:
-      from = refStart; to = refEnd;
+      return days(today, today);
   }
-  const lengthMs = to.getTime() - from.getTime();
-  const prevTo   = new Date(from.getTime() - 1);
-  const prevFrom = new Date(prevTo.getTime() - lengthMs);
-  return { from, to, prevFrom, prevTo };
 }
 
+// The same period read on ANOTHER venue's clock (config from getVenueClock): the same
+// business days in that venue's own zone and day start, or for a service the same wall
+// clock times on the same day there. Location compare reads every venue with it, so
+// Leeds and Provo are each read over their own 27 Sep, never over the active venue's
+// window. Returns { from, to, fromDay, toDay, timeZone, dayStart }, or null for no range.
+export function venueRange(range, config) {
+  if (!isYmd(range?.fromDay) || !isYmd(range?.toDay)) return null;
+  const { timeZone, dayStart } = reportClock(config);
+  const [from, to] = range.kind === 'service' && range.serviceStart != null && range.serviceEnd != null
+    ? serviceWindow(range.fromDay, range.serviceStart, range.serviceEnd, timeZone)
+    : dayWindow(range.fromDay, range.toDay, timeZone, dayStart);
+  return { from: new Date(from), to: new Date(to), fromDay: range.fromDay, toDay: range.toDay, timeZone, dayStart };
+}
+
+// The header text for a range, in the VENUE's dates and times (range from getPeriodRange).
 export function periodLabel(periodId, custom, range) {
   if (typeof periodId === 'string' && periodId.startsWith('service:today:')) {
     if (!range) return '';
-    const fmtTime = (d) => d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
-    return `${range.from.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })} \u00b7 ${fmtTime(range.from)}\u2013${fmtTime(range.to)}`;
+    const tz = venueZone(range.timeZone);
+    const fmtTime = (d) => d.toLocaleTimeString('en-GB', { timeZone: tz, hour:'2-digit', minute:'2-digit' });
+    return `${dayText(range.fromDay, { weekday:'short', day:'numeric', month:'short' })} \u00b7 ${fmtTime(range.from)}\u2013${fmtTime(range.to)}`;
   }
   if (periodId === 'custom' && custom?.from && custom?.to) {
-    return `${new Date(custom.from).toLocaleDateString('en-GB')} \u2192 ${new Date(custom.to).toLocaleDateString('en-GB')}`;
+    return `${dayText(range?.fromDay ?? custom.from)} \u2192 ${dayText(range?.toDay ?? custom.to)}`;
   }
   if (!range) return '';
-  const sameDay = range.from.toDateString() === range.to.toDateString();
-  return sameDay
-    ? range.from.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })
-    : `${range.from.toLocaleDateString('en-GB', { day:'numeric', month:'short' })} \u2192 ${range.to.toLocaleDateString('en-GB', { day:'numeric', month:'short' })}`;
+  return range.fromDay === range.toDay
+    ? dayText(range.fromDay, { weekday:'short', day:'numeric', month:'short' })
+    : `${dayText(range.fromDay, { day:'numeric', month:'short' })} \u2192 ${dayText(range.toDay, { day:'numeric', month:'short' })}`;
 }
 
 // Apply server + order type + source filters (global filters live on the shell).
@@ -218,20 +272,76 @@ export const SOURCE_LABEL = {
 // v4.6.24: Classify a check timestamp into one of the configured service
 // periods. Returns the shift object (or null for "outside any service").
 // Honors overnight services where end < start (e.g. late bar 22:00-02:00).
-export function classifyShift(timestamp, shifts, businessDayStart = '00:00') {
+// v5.10.3: on the VENUE's wall clock (timeZone = locationConfig.timezone; none = London).
+// Until then it read the browser's getHours(), so Peter in California saw a London
+// 12:30 lunch check as 04:30, outside every service. The business day start plays no
+// part: a service is a wall clock window, whichever business day it falls in.
+export function classifyShift(timestamp, shifts, timeZone) {
   if (!timestamp || !shifts?.length) return null;
-  const d = new Date(timestamp);
-  const minutes = d.getHours() * 60 + d.getMinutes();
+  const ms = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : Date.parse(timestamp);
+  if (!Number.isFinite(ms)) return null;
+  const minutes = wallClock(ms, timeZone).minutes;
   for (const s of shifts) {
-    if (!s.start || !s.end) continue;
-    const [sh, sm] = s.start.split(':').map(Number);
-    const [eh, em] = s.end.split(':').map(Number);
-    const start = sh * 60 + sm;
-    const end   = eh * 60 + em;
+    const start = clockMinutes(s?.start);
+    const end   = clockMinutes(s?.end);
+    if (start == null || end == null) continue;
     const inside = end > start
       ? (minutes >= start && minutes < end)
       : (minutes >= start || minutes < end);
     if (inside) return s;
   }
   return null;
+}
+
+// Daypart grid: revenue by weekday x hour, each check on the venue's clock. The hour is
+// the venue's wall clock hour; the weekday is its BUSINESS day's, so with a 06:00 start a
+// Saturday 01:30 sale counts in Friday's row at 1:00 (Friday night's trade).
+// grid[dow][h] and byDow use Mon = 0. Voided checks do not count.
+export function daypartGrid(checks, clock) {
+  const grid   = Array.from({ length:7 }, () => Array(24).fill(0));
+  const byHour = Array(24).fill(0);
+  const byDow  = Array(7).fill(0);
+  for (const c of checks || []) {
+    if (c?.status === 'voided' || !c?.closedAt) continue;
+    const day = dayOfCheck(c.closedAt, clock);
+    const h   = venueHour(c.closedAt, clock?.timeZone);
+    if (!day || h == null) continue;
+    const dow = mondayIndex(day);
+    const amt = c.total || 0;
+    grid[dow][h] += amt;
+    byHour[h]    += amt;
+    byDow[dow]   += amt;
+  }
+  return { grid, byHour, byDow };
+}
+
+// Checks grouped by the business day they belong to, newest day first: [{ key, checks }].
+export function groupChecksByDay(checks, clock) {
+  const map = {};
+  for (const c of checks || []) {
+    const key = c?.closedAt ? dayOfCheck(c.closedAt, clock) : null;
+    if (!key) continue;
+    (map[key] ||= { key, checks: [] }).checks.push(c);
+  }
+  return Object.values(map).sort((a, b) => (a.key < b.key ? 1 : a.key > b.key ? -1 : 0));
+}
+
+// Checks grouped by (business day x service), newest day first and, within a day, the
+// earliest service first: [{ key, dayKey, shift, checks }]. A check outside every service
+// is left out (count those with classifyShift). A late bar check at 01:30 with a 06:00
+// day start belongs to the previous business day's late bar.
+export function groupChecksByService(checks, shifts, clock) {
+  const map = {};
+  for (const c of checks || []) {
+    if (!c?.closedAt) continue;
+    const shift = classifyShift(c.closedAt, shifts, clock?.timeZone);
+    const dayKey = shift ? dayOfCheck(c.closedAt, clock) : null;
+    if (!dayKey) continue;
+    const key = `${dayKey}__${shift.id || shift.name}`;
+    (map[key] ||= { key, dayKey, shift, checks: [] }).checks.push(c);
+  }
+  return Object.values(map).sort((a, b) => {
+    if (a.dayKey !== b.dayKey) return a.dayKey < b.dayKey ? 1 : -1;
+    return (a.shift.start || '') < (b.shift.start || '') ? -1 : 1;
+  });
 }

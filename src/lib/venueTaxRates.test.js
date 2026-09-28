@@ -318,3 +318,13 @@ test('with its own rates, a product with no rate books the VENUE\'s default VAT'
   assert.equal(Math.round(t.totalTax * 100), 60, '£3.60 inclusive of 20% VAT is 60p');
   assert.equal(t.breakdown[0].rate.locationId, LEEDS);
 });
+
+test('28 Sep 2026: an unverified rate (old style push) never makes a line drop its own rate', async () => {
+  const { lineTaxRefs } = await import('./venueTaxRates.js');
+  const foreign = [{ id: 'ts-std', active: true, unverified: true }];
+  const r = lineTaxRefs('leeds-std', { takeaway: 'leeds-zero' }, foreign);
+  assert.equal(r.taxRateId, 'leeds-std', 'kept until the venue own read answers');
+  assert.deepEqual(r.dropped, []);
+  const own = [{ id: 'leeds-std', active: true }];
+  assert.equal(lineTaxRefs('ts-std', {}, own).taxRateId, null, 'a verified own list still drops a foreign id');
+});

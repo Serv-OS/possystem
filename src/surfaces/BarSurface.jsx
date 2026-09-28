@@ -16,8 +16,8 @@ import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { giftRecordFrom } from '../lib/giftCommit';
 import { singleTender } from '../lib/accounting/tenders';
-import { computeOrderTaxUnified } from '../lib/taxCompute';
 import { creditDiscountsFromPayment } from '../lib/taxBasis';
+import { tabBill, tabCloseTax } from '../lib/barTabTax';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -391,40 +391,28 @@ export default function BarSurface() {
   // every fresh-tender tab close. The bill now computes through the unified
   // seam (order type 'bar-tab', same as the record). GATED on the bill actually
   // carrying an exclusive component: on inclusive-only venues (every UK site)
-  // exclusiveTax is exactly 0, this returns the tab total unchanged and stamps
-  // nothing, so UK bar tabs are byte-identical to before.
+  // exclusiveTax is exactly 0 and this returns the tab total unchanged. (27 Sep
+  // 2026: the RECORD now books UK VAT too, lib/barTabTax.js; the bill is unchanged.)
   //
   // v5.9.12: a tab has no discounts or service charge of its own; the only
   // store discounts are the promo / loyalty credits taken at checkout, and they
   // now lower the added-on tax (creditDiscounts, taxBasis.js). No credits = the
   // exact pre-v5.9.12 call. `tax` is the full breakdown (even inclusive-only,
   // for the checkout screen's VAT lines) under the name CheckoutModal's taxFor reads.
-  const tabBillWithTax = (tab, creditDiscounts = []) => {
-    const items = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
-    let bd = null;
-    try {
-      bd = computeOrderTaxUnified(items, useStore.getState().getTaxContext(), 'bar-tab',
-        creditDiscounts.length ? { discounts: creditDiscounts } : null);
-    }
-    catch { bd = null; }   // fail toward the old behaviour, never a guessed charge
-    const exclusiveTax = Number(bd?.exclusiveTax) || 0;
-    const active = exclusiveTax > 0;
-    return {
-      taxBreakdown: active ? bd : null,
-      tax: bd,                          // always: CheckoutModal shows UK "of which VAT" from it
-      exclusiveTax: active ? exclusiveTax : 0,
-      total: active ? +(((tab.total || 0) + exclusiveTax).toFixed(2)) : (tab.total || 0),
-    };
-  };
+  // (27 Sep 2026: the maths moved, unchanged, to lib/barTabTax.js tabBill so it is tested.)
+  const tabBillWithTax = (tab, creditDiscounts = []) =>
+    tabBill(tab, useStore.getState().getTaxContext(), creditDiscounts);
 
   // Build + record a bar-tab closed check. Shared by the fresh-tender checkout
   // AND the held-card capture so the row shape is identical either way.
   const recordTabClosedCheck = (tab, payInfo) => {
     const allItems = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
     const subtotal = tab.total || 0;
-    // v5.7.34: tax on the record (null on inclusive-only venues). v5.9.12: with
-    // the checkout's promo / loyalty credits, so it books the tax it charged.
+    // v5.7.34: tax on the record. v5.9.12: with the checkout's promo / loyalty
+    // credits, so it books the tax it charged. 27 Sep 2026: UK inclusive VAT too
+    // (a UK tab booked tax_amount null), through computeCheckTotals like every till close.
     const bill = tabBillWithTax(tab, creditDiscountsFromPayment(payInfo));
+    const recTax = tabCloseTax(allItems, useStore.getState().getTaxContext(), { bill, paymentInfo: payInfo });
     recordWalkInClosedCheck({
       // v5.5.902: adopt CheckoutModal's pre-minted check id when it sent one — it is the
       // id the gift-card debit was keyed to, so a later refund can find the ledger row.
@@ -442,8 +430,8 @@ export default function BarSurface() {
       tip: payInfo?.tip || 0,
       total: payInfo?.grand != null ? payInfo.grand : bill.total,
       // v5.7.34: bar-tab records finally carry tax (previously always absent).
-      // Only stamped when the bill has an exclusive component - see tabBillWithTax.
-      ...(bill.taxBreakdown ? { taxAmount: bill.taxBreakdown.totalTax ?? null, taxBreakdown: bill.taxBreakdown } : {}),
+      // 27 Sep 2026: UK VAT as well as added-on tax; nothing only when the venue has no tax set up.
+      ...(recTax ? { taxAmount: recTax.taxAmount, taxBreakdown: recTax.taxBreakdown } : {}),
       method: payInfo?.method || 'card',
       // v5.9.11: what paid the tab, per tender. CheckoutModal hands over the exact list;
       // the held-card capture passes the card amount it actually captured.

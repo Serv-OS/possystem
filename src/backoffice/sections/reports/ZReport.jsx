@@ -10,10 +10,16 @@
 //
 // Integrates with the existing shift state — reads shift.zNumber for the
 // sequence if available, otherwise shows "—" and the user can log it manually.
+//
+// v5.10.3: From, To and Printed are the VENUE's dates and times (range.timeZone), with
+// the zone named on the slip. Until then they were the browser's, so from California a
+// London day printed "From 26 Sep 22:30".
 
 import { useRef, useMemo } from 'react';
 import { useStore } from '../../../store';
 import { recordedCheckTax } from '../../../lib/taxCompute';
+import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js';
+import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { ExportBtn } from './_charts';
 
@@ -21,15 +27,17 @@ const ROW = { display:'flex', justifyContent:'space-between', padding:'3px 0', f
 const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
 const BOLD = { fontWeight:700 };
 
-function formatDate(ts) {
-  return new Date(ts).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+function formatDate(ts, timeZone) {
+  return new Date(ts).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', timeZone });
 }
-function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+function formatTime(ts, timeZone) {
+  return new Date(ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', timeZone });
 }
 
-export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, fmt, fmtN }) {
+// timeZone = range.timeZone (the venue's; none = London, never the browser's).
+export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN }) {
   const { locationProfile, taxRates = [], shift } = useStore();
+  const tz = venueZone(timeZone);
   const receiptRef = useRef(null);
 
   const stats = useMemo(() => computeSalesStats(checks), [checks]);
@@ -135,9 +143,10 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, f
 
         <div style={ROW}><span>Z number</span><span style={BOLD}>{zNumber}</span></div>
         <div style={ROW}><span>Period</span><span>{periodLabelText || 'today'}</span></div>
-        {rangeFrom && <div style={ROW}><span>From</span><span>{formatDate(rangeFrom)} {formatTime(rangeFrom)}</span></div>}
-        {rangeTo   && <div style={ROW}><span>To</span><span>{formatDate(rangeTo)} {formatTime(rangeTo)}</span></div>}
-        <div style={ROW}><span>Printed</span><span>{formatDate(printedAt)} {formatTime(printedAt)}</span></div>
+        {rangeFrom && <div style={ROW}><span>From</span><span>{formatDate(rangeFrom, tz)} {formatTime(rangeFrom, tz)}</span></div>}
+        {rangeTo   && <div style={ROW}><span>To</span><span>{formatDate(rangeTo, tz)} {formatTime(rangeTo, tz)}</span></div>}
+        <div style={ROW}><span>Printed</span><span>{formatDate(printedAt, tz)} {formatTime(printedAt, tz)}</span></div>
+        <div style={ROW}><span>Times</span><span>{venueZoneLabel(tz)}</span></div>
 
         <div style={DIV}/>
 

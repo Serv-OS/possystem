@@ -258,14 +258,43 @@ export function refundBreakdown(check, {
  * check's. That inheritance is what makes an Adyen check route to Adyen instead of
  * falling into the old `!== 'ryft' ? stripe` trap, which aimed every Adyen refund
  * at Stripe where it landed nowhere at all.
+ *
+ * WHERE THE LEGS COME FROM (28 Sep 2026, Leeds R6404). First the leg list, then the
+ * single id, each under its camelCase name and then the row's own snake_case name (a
+ * MasterSync copy or a raw row carries only those). Last, the card TENDERS: every reader
+ * sale since v5.9.11 records its psp_ref there, so a copy that lost the other two can
+ * still refund to the card instead of "issue the card refund manually". A check with
+ * none of the three has no card leg, exactly as before. A leg built from a tender routes
+ * by the processor that tender names (written where the card was taken). A copy with no
+ * processor at all takes its matching tender's, never a guessed 'stripe'; copies made by
+ * closedCheckRefundFields always carry the row's processor, so they route exactly as the
+ * boot loaders always have. No row in the Ops DB on 28 Sep had a card tender as its only
+ * card record, so this changes no existing sale; it is the fallback for short copies and
+ * for writers that record only tenders (the QR force close in Orders).
  */
+function cardTendersOf(check) {
+  return (Array.isArray(check?.tenders) ? check.tenders : [])
+    .filter((t) => t && t.method === 'card' && t.psp_ref);
+}
+
 export function cardLegsOf(check) {
-  const fallbackProcessor = String(check?.processor || 'stripe').toLowerCase();
-  const arr = (Array.isArray(check?.paymentIntents) && check.paymentIntents.length)
-    ? check.paymentIntents
-    : (check?.stripePaymentIntentId
-        ? [{ id: check.stripePaymentIntentId, amountMinor: toMinor(check?.total) }]
-        : []);
+  const cardTenders = cardTendersOf(check);
+  const tenderProcessor = (id) =>
+    cardTenders.find((t) => String(t.psp_ref) === String(id) && t.processor)?.processor || null;
+  // A list counts only when it names a card (an id). One holding only booking credit legs
+  // (id null) is what a reader close with a booking deposit writes, and its card is then the
+  // single id or the tender: skipping them left that sale "manual" (28 Sep review).
+  const intents = [check?.paymentIntents, check?.payment_intents]
+    .find((list) => Array.isArray(list) && list.some((p) => p && p.id));
+  const singleId = check?.stripePaymentIntentId || check?.stripe_payment_intent_id || null;
+  const arr = intents
+    || (singleId
+      ? [{ id: singleId, amountMinor: toMinor(check?.total) }]
+      : cardTenders.map((t) => ({
+        id: t.psp_ref,
+        amountMinor: toMinor((Number(t.amount) || 0) + (Number(t.tip) || 0)),
+        processor: t.processor || null,
+      })));
   return arr
     .filter((p) => p && p.id)
     .map((p, index) => ({
@@ -273,7 +302,7 @@ export function cardLegsOf(check) {
       id: String(p.id),
       amountMinor: Number.isFinite(Number(p.amountMinor)) && Number(p.amountMinor) > 0
         ? Math.round(Number(p.amountMinor)) : null,
-      processor: String(p.processor || fallbackProcessor).toLowerCase(),
+      processor: String(p.processor || check?.processor || tenderProcessor(p.id) || 'stripe').toLowerCase(),
       card: p.card || null,
       brand: p.card?.brand || null,
       last4: p.card?.last4 || null,

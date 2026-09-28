@@ -9,11 +9,10 @@
 // 28 Sep 2026: refunds come off on the day they were made and show as their own line, and a
 // day is the venue's business day (business_day_start), like Sales summary and Xero.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { loadSettings as loadWfSettings } from '../../../staff/wfData';
 
-const toYmd = (v) => { try { return new Intl.DateTimeFormat('en-CA').format(new Date(v)); } catch { return null; } };
 const dow = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' });
 
 const S = {
@@ -48,7 +47,11 @@ const S = {
   mono:  { fontVariantNumeric: 'tabular-nums' },
 };
 
-export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
+// fromDay/toDay are the venue business days the period covers (getPeriodRange). Until
+// v5.10.2 this formatted the range's instants on the BROWSER's calendar: after 16:00 in
+// California (midnight in London) it asked for a day behind London's, and a 06:30 day
+// start made "Yesterday" ask for yesterday AND today.
+export default function DailyTrading({ fromDay, toDay, fmt }) {
   const money = fmt || ((n) => `£${(Number(n) || 0).toFixed(2)}`);
   const [locId, setLocId] = useState(null);
   const [data, setData] = useState(null);   // { rows, totals, settings }
@@ -59,8 +62,8 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   const [ovh, setOvh] = useState('');
   const [basis, setBasis] = useState('estimate'); // 'estimate' (%) | 'recipe' (actual from stock)
 
-  const from = useMemo(() => toYmd(rangeFrom), [rangeFrom]);
-  const to = useMemo(() => toYmd(rangeTo), [rangeTo]);
+  const from = fromDay || null;
+  const to = toDay || null;
 
   const call = async (action, extra = {}) => {
     const { data: d, error } = await supabase.functions.invoke('trading-report', { body: { action, ops_location_id: locId, ...extra } });

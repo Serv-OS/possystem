@@ -6,11 +6,15 @@
 // v4.6.25: When locationConfig.shifts is defined, a service-period breakdown
 // (Breakfast / Lunch / Dinner with revenue + covers + share) sits at the top
 // so Peter's configured service periods drive the reading, not just fixed hours.
+//
+// v5.10.3: every hour, weekday and service is the VENUE's (locationConfig.timezone +
+// businessDayStart, via _filters daypartGrid / classifyShift). Until then they were the
+// browser's, so a London lunch rush showed at 04:00 to Peter in California.
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, Heatmap, HourBar } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
-import { classifyShift } from './_filters';
+import { classifyShift, daypartGrid, reportClock, venueHour } from './_filters';
 import { currencySymbol } from '../../../lib/currency';
 
 const DOW_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -19,31 +23,20 @@ const tileSt = { padding:'14px 16px', background:'var(--bg1)', border:'1px solid
 const lblSt  = { fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 };
 
 export default function Daypart({ checks, fmt, locationConfig }) {
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const { grid, byHour, byDow, peakCell, totalRev } = useMemo(() => {
-    const grid   = Array.from({ length:7 }, () => Array(24).fill(0));
-    const byHour = Array(24).fill(0);
-    const byDow  = Array(7).fill(0);
-    (checks || []).filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
-      const d   = new Date(c.closedAt);
-      const dow = (d.getDay() + 6) % 7; // Mon = 0
-      const h   = d.getHours();
-      const amt = c.total || 0;
-      grid[dow][h] += amt;
-      byHour[h]    += amt;
-      byDow[dow]   += amt;
-    });
+    const { grid, byHour, byDow } = daypartGrid(checks, clock);
     let peakCell = { dow:0, h:0, value:0 };
     for (let d = 0; d < 7; d++) for (let h = 0; h < 24; h++) {
       if (grid[d][h] > peakCell.value) peakCell = { dow:d, h, value: grid[d][h] };
     }
     const totalRev = byHour.reduce((s, v) => s + v, 0);
     return { grid, byHour, byDow, peakCell, totalRev };
-  }, [checks]);
+  }, [checks, clock]);
 
   // v4.6.25: per-service aggregates when shifts are configured.
   const serviceStats = useMemo(() => {
     const shifts = locationConfig?.shifts || [];
-    const bds    = locationConfig?.businessDayStart || '00:00';
     if (!shifts.length) return null;
     const stats = shifts.map(s => ({
       shift: s,
@@ -53,7 +46,7 @@ export default function Daypart({ checks, fmt, locationConfig }) {
     stats.forEach((st, i) => { statIdx[st.shift.id || st.shift.name] = i; });
     let unclassified = { revenue: 0, covers: 0, count: 0 };
     (checks || []).filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
-      const s = classifyShift(c.closedAt, shifts, bds);
+      const s = classifyShift(c.closedAt, shifts, clock.timeZone);
       const tot = c.total || 0;
       const cov = c.covers || 1;
       if (s) {
@@ -66,11 +59,11 @@ export default function Daypart({ checks, fmt, locationConfig }) {
     const totalClassified = stats.reduce((s, st) => s + st.revenue, 0);
     const grand = totalClassified + unclassified.revenue;
     return { stats, unclassified, total: grand };
-  }, [checks, locationConfig]);
+  }, [checks, locationConfig, clock]);
 
   const peakHour = byHour.indexOf(Math.max(...byHour));
   const peakDow  = byDow.indexOf(Math.max(...byDow));
-  const nowHour  = new Date().getHours();
+  const nowHour  = venueHour(new Date(), clock.timeZone); // the venue's hour now, not the browser's
 
   const onExport = () => {
     const rows = [];

@@ -3,9 +3,15 @@
 import { useState } from 'react';
 import { CHANGELOG } from '../lib/changelog';
 
+// 28 Sep 2026 (release review): every entry since 5.8.5 is { v, items }; the older ones are
+// { version, changes }. Reading only the old shape threw on .map and the whole till showed
+// App Error the moment anyone tapped What's new.
+const ver = (c) => (c && (c.version ?? c.v)) || '';
+const changesOf = (e) => (e && (e.changes ?? e.items)) || [];
+
 export default function WhatsNewModal({ onClose }) {
-  const [selected, setSelected] = useState(CHANGELOG[0].version);
-  const entry = CHANGELOG.find(c => c.version === selected) || CHANGELOG[0];
+  const [selected, setSelected] = useState(ver(CHANGELOG[0]));
+  const entry = CHANGELOG.find(c => ver(c) === selected) || CHANGELOG[0];
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{
@@ -26,14 +32,14 @@ export default function WhatsNewModal({ onClose }) {
           {/* Version list */}
           <div style={{ width:160, flexShrink:0, borderRight:'1px solid var(--bdr)', overflowY:'auto', padding:'8px 0' }}>
             {CHANGELOG.map((c, i) => (
-              <button key={c.version} onClick={()=>setSelected(c.version)} style={{
+              <button key={`${ver(c)}-${i}`} onClick={()=>setSelected(ver(c))} style={{
                 width:'100%', padding:'10px 14px', textAlign:'left', cursor:'pointer',
                 fontFamily:'inherit', border:'none', transition:'background .1s',
-                background: selected===c.version ? 'var(--bg3)' : 'transparent',
-                borderLeft: `2px solid ${selected===c.version ? 'var(--acc)' : 'transparent'}`,
+                background: selected===ver(c) ? 'var(--bg3)' : 'transparent',
+                borderLeft: `2px solid ${selected===ver(c) ? 'var(--acc)' : 'transparent'}`,
               }}>
                 <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color: selected===c.version?'var(--acc)':'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{c.version}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color: selected===ver(c)?'var(--acc)':'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{ver(c)}</span>
                   {i===0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:20, background:'var(--acc)', color:'#0e0f14' }}>LATEST</span>}
                 </div>
                 <div style={{ fontSize:11, color:'var(--t3)' }}>{c.label}</div>
@@ -45,12 +51,12 @@ export default function WhatsNewModal({ onClose }) {
           {/* Changes detail */}
           <div style={{ flex:1, overflowY:'auto', padding:'18px 20px' }}>
             <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:4 }}>
-              <span style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{entry.version}</span>
+              <span style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{ver(entry)}</span>
               <span style={{ fontSize:13, color:'var(--acc)', fontWeight:600 }}>{entry.label}</span>
             </div>
             <div style={{ fontSize:11, color:'var(--t4)', marginBottom:16 }}>{entry.date}</div>
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {entry.changes.map((change, i) => (
+              {changesOf(entry).map((change, i) => (
                 <div key={i} style={{ display:'flex', gap:10, padding:'8px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
                   <span style={{ color:'var(--acc)', fontWeight:700, flexShrink:0, marginTop:1 }}>✓</span>
                   <span style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{change}</span>

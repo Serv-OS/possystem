@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
+import { mergeById, mergeKeys } from '../../lib/threeWayMerge';
 import PrintAgentKeys from './PrintAgentKeys';
 import { money } from '../../lib/currency';
 import { ORDER_TYPES } from '../../lib/orderScreen/orderScreenStatus';
@@ -43,23 +44,37 @@ async function loadRoutingFromDB() {
   return load();
 }
 
-// Returns { error } — the caller reverts the screen (and this localStorage mirror, which
+// Returns { error, saved }: the caller reverts the screen (and this localStorage mirror, which
 // the POS reads at print time) when the row never landed. A swallowed failure here routed
 // tickets by a rule set that only ever existed on one browser.
+// 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board", the same
+// stale window class): the whole centres list and routing map were written from this screen's
+// copy, so a screen left open put back centres and rules changed in another window since. The
+// row is read again now and only what THIS screen changed since its last save (`previous`) is
+// laid over it: centres merged by id, routing by centre id (lib/threeWayMerge.js). `saved` is
+// what the database now holds, and the screen shows it. A failed read writes nothing.
 async function saveRoutingToDB(data, previous) {
   const mirror = (cfg) => { if (cfg) { try { save(cfg); } catch {} } };
   mirror(data); // update local cache immediately — printing must feel instant
-  if (isMock || !supabase) return { error: null };
+  if (isMock || !supabase) return { error: null, saved: data };
   const rollback = (err) => { mirror(previous); return { error: err }; };
   const locationId = await getLocationId().catch(() => null);
   if (!locationId) return rollback(new Error('Could not resolve the location for this venue'));
+  const { data: cur, error: readErr } = await supabase.from('print_routing').select('centres,routing').eq('location_id', locationId).maybeSingle();
+  if (readErr) return rollback(readErr);
+  const base = previous || { centres: [], routing: {} };
+  const merged = {
+    centres: mergeById(base.centres || [], data.centres || [], cur?.centres || []),
+    routing: mergeKeys(base.routing || {}, data.routing || {}, cur?.routing || {}),
+  };
   const { data: rows, error } = await supabase
     .from('print_routing')
-    .upsert({ location_id:locationId, centres:data.centres, routing:data.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' })
+    .upsert({ location_id:locationId, centres:merged.centres, routing:merged.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' })
     .select('location_id');
   if (error) return rollback(error);
   if (!rows || rows.length === 0) return rollback(new Error('Print routing write matched 0 rows — RLS blocked it'));
-  return { error: null };
+  mirror(merged);
+  return { error: null, saved: merged };
 }
 
 // v5.5.835: VENUE DEFAULT RECEIPT PRINTER.
@@ -426,7 +441,7 @@ export default function PrintRouting() {
     // this effect — skip that pass (same references) or a rejected write would loop forever.
     if (previous && previous.centres === saved.centres && previous.routing === saved.routing) return;
     (async () => {
-      const { error } = await saveRoutingToDB(saved, previous);
+      const { error, saved: stored } = await saveRoutingToDB(saved, previous);
       reportSave('print routing', error);
       if (error) {
         if (previous) {
@@ -436,7 +451,16 @@ export default function PrintRouting() {
         showToast?.('Print routing NOT saved — reverted to the last saved version', 'error');
         return;
       }
-      lastGoodRouting.current = saved;
+      // 27 Sep 2026: another window's changes came back with the save: show them. The last good
+      // copy is set FIRST (the same objects), so the effect this state change re-runs skips.
+      const landed = stored || saved;
+      lastGoodRouting.current = landed;
+      if (landed !== saved) {
+        if (JSON.stringify(landed.centres) !== JSON.stringify(saved.centres)) setData(d => ({ ...d, centres: landed.centres }));
+        else lastGoodRouting.current = { ...landed, centres: saved.centres };
+        if (JSON.stringify(landed.routing) !== JSON.stringify(saved.routing)) setRouting(landed.routing);
+        else lastGoodRouting.current = { ...lastGoodRouting.current, routing: saved.routing };
+      }
       markBOChange?.();
     })();
   }, [data.centres, routing]);

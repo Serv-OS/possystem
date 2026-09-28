@@ -1,0 +1,26 @@
+// src/lib/closedCheckRefundFields.js
+//
+// The closed_checks columns a REFUND reads, mapped onto the in-memory (camelCase) check.
+// The reverse of the payment half of closedCheckRow, shared by every place that turns a
+// closed_checks row into a till's copy: the boot loaders (db.fetchClosedChecks and
+// fetchClosedChecksRange), the realtime INSERT and UPDATE handlers and MasterSync.
+//
+// 28 Sep 2026 (Leeds R6404, 27 Sep): a kitchen screen's terminal job reconciler booked a
+// reader sale, so POS 1 only knew the check from the realtime INSERT. That copy was built
+// by hand and carried no card reference, no processor and no tenders, so refundCheck found
+// no card leg and told staff to refund 3.80 by hand. The boot loaders had these fields all
+// along; realtime and MasterSync never did. One map, so no copy can drop them again.
+// Pure: no supabase import, testable in Node.
+export function closedCheckRefundFields(row) {
+  return {
+    giftCard: row?.gift_card || null,                        // v5.5.217: gift card reversal on refund
+    stripePaymentIntentId: row?.stripe_payment_intent_id || null,
+    paymentIntents: row?.payment_intents || null,            // v5.5.323: multi-card refund source
+    processor: row?.processor || 'stripe',                   // refund routes by this
+    loyalty: row?.loyalty || null,
+    source: row?.source || 'pos',                            // v5.5.140: report filters
+    // v5.9.11: what paid the check. A reader sale's card tender carries its psp_ref, which
+    // is the last record of the card leg when nothing else is (refundMath.cardLegsOf).
+    tenders: Array.isArray(row?.tenders) ? row.tenders : null,
+  };
+}

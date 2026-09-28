@@ -23,6 +23,7 @@
 
 import { supabase, ensureAuthToken, getActiveLocationSync, isMock } from '../supabase';
 import { isTrainingMode } from '../trainingMode';
+import { scrubCheckApprovers } from '../discountApprover';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const LS_KEY = 'rpos-terminal-jobs';
@@ -408,7 +409,8 @@ export async function dispatchTerminalJob(p) {
       // suppression flag, not as a config: it can only make the job less tippable.
       suppress_tip: !!p.suppressTip,
       closed_check_id: useClosedCheckId,
-      check_draft: p.checkDraft ?? {},
+      // v5.10.0: a discount's manager rides as { id, name, role }, never the staff record (its PIN).
+      check_draft: scrubCheckApprovers(p.checkDraft ?? {}),
       // v5.7.5 - TIP ON PRINTED RECEIPT. surface:'pos' means "this create came
       // from the MAIN POS checkout". terminal-job-create only stamps
       // capture_mode='manual' (authorise now, capture after the written tip)
