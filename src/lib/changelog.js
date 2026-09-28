@@ -10,6 +10,7 @@ export const CHANGELOG = [
     v: '5.11.3',
     date: '28 Sep 2026',
     items: [
+      'Till: a dine-in order always goes to the kitchen when sent or paid. A customer added with a later collection time made the till hold two paid dine-in orders back as pre-orders, so they never reached the kitchen screen and could not be cleared from Orders.',
       'Till: an X report button in the drawer menu prints the business day so far (nothing is reset), and a Z report prints by itself at every cash up, with expected cash, counted cash and the variance. The figures are the Back Office Sales summary\'s.',
       'Receipts: the footer QR code prints again. It is now sent as a picture, the way the logo prints, because the Sunmi NT311 printed nothing for the plain QR command.',
       'Loyalty report: members, stamp cards and the period\'s transactions are all counted (they stopped at 1,000, and transactions at the newest 500).',

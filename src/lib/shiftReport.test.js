@@ -48,3 +48,8 @@ test('wiring: X report button in the drawer menu, Z report at a successful cash 
   const pr = fs.readFileSync(new URL('./printer.js', import.meta.url), 'utf8');
   assert.match(pr, /async printShiftReport\(report, printerId = null, opts = \{\}\)/);
 });
+
+test('28 Sep 2026: a dine-in order is never held back as a scheduled pre-order', () => {
+  const store = fs.readFileSync(new URL('../store/index.js', import.meta.url), 'utf8');
+  assert.match(store, /if \(!bypassSchedule && orderType !== 'dine-in' && customer\?\.collectionTime && !customer\?\.isASAP\) \{/);
+});
