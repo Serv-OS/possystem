@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.4',
+    date: '28 Sep 2026',
+    items: [
+      "Operations: new Documents. Upload a venue's documents (food safety records, certificates, policies, anything up to 20 MB) in Back Office, under Operations, Documents, or on the Operations tablet, and tap one to open it any time. Each has a title and a category (Food safety, Health and safety, Certificates, Policies, Other). Files are private to the venue and open through a link that lasts 5 minutes; in the iPhone and iPad apps they open inside the app with a Close button. Old documents are archived, never deleted, and can be brought back.",
+      "Operations: new Forms. The venue builds and names its own forms in Back Office, under Operations, Forms, Edit forms (for example one called Accident book), from short text, long text, number, date, time, yes or no, single choice, multiple choice, photo and signature questions, each with a required tick and a help line. There are no ready made forms.",
+      "Forms on the Operations tablet: staff find a form by its name, with a search box over the list, and fill it in, signed as the staff member logged in on it.",
+      "Forms: one Completed forms list in Back Office, under Operations, Forms, shows every form completed at the venue, newest first. Filter it by form to find each type of form completed, search the answers and who submitted, and pick a date range on the venue's clock. Open one to see every answer with its photos and signature, and print it. Export CSV downloads exactly the rows shown: one form gives that form's own columns, every form gives one sheet with each form's questions in their own columns.",
+      "Forms: completed forms can hold personal data, so only Back Office shows them. The tablet can add one but never read one back. Each keeps the questions it was made with, and is never changed or deleted.",
+      "Documents and Forms need the database update 20260928c. Until it has run, both say they are not set up yet and nothing else changes.",
+    ],
+  },
+  {
     v: '5.11.3',
     date: '28 Sep 2026',
     items: [
