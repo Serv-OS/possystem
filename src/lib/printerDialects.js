@@ -23,7 +23,7 @@
  *   112mm paper  832 dots, 69 columns (TSP800II)
  */
 
-import { buildGsV0, qrTextToEscPosBytes } from './receiptRaster.js';
+import { buildGsV0, qrTextToEscPosBytes, qrTextToGsV0 } from './receiptRaster.js';
 
 // ─── Character transliteration (shared by every dialect) ──────────────────────
 // v4.6.5 follow-up: transliterate common Unicode punctuation to ASCII so em
@@ -351,7 +351,13 @@ function walkOps(doc, b, spec) {
         else b.bitmap(op);
         break;
       case 'qr':
-        if (b instanceof EscPosBuilder) b.raw(qrTextToEscPosBytes(op.text, op.moduleSize, op.ec));
+        // 28 Sep 2026: as a raster picture (qrTextToGsV0); the native QR command printed nothing on
+        // the Sunmi NT311. Falls back to the native command if the picture cannot be built.
+        if (b instanceof EscPosBuilder) {
+          let qrBytes;
+          try { qrBytes = qrTextToGsV0(op.text, op.moduleSize, op.ec); } catch { qrBytes = qrTextToEscPosBytes(op.text, op.moduleSize, op.ec); }
+          b.raw(qrBytes);
+        }
         else b.qr(op.text, op.moduleSize, op.ec);
         break;
       default: break;

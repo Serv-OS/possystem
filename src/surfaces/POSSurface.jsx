@@ -33,6 +33,8 @@ import VoidModal from '../components/VoidModal';
 import DiscountModal from '../components/DiscountModal';
 import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
 import { printService } from '../lib/printer';
+import { checksForBusinessDay, summariseShift } from '../lib/shiftReport';
+import { businessDayOf } from '../../supabase/functions/_shared/businessDay.js';
 import { isTrainingMode } from '../lib/trainingMode';
 import CheckHistory from '../components/CheckHistory';
 import DeliveriesPanel from '../components/DeliveriesPanel';
@@ -107,6 +109,29 @@ export default function POSSurface() {
   const [showWaste, setShowWaste] = useState(false);
   const [showCashIn, setShowCashIn]         = useState(false);
   const [showCashOut, setShowCashOut]       = useState(false);
+  // 28 Sep 2026 (Peter: "there is nowhere in the POS to actually print [the Z report] and it
+  // doesn't print when closing the cash drawer"): X report on demand, Z report at cash up.
+  const printShiftReportNow = async (kind, drawer = null) => {
+    const st = useStore.getState();
+    const cfg = st.locationConfig || {};
+    const timezone = cfg.timezone || 'Europe/London';
+    const dayStart = cfg.businessDayStart || '06:00';
+    const now = Date.now();
+    const checks = checksForBusinessDay(st.closedChecks, { now, timezone, dayStart });
+    const { stats, byMethod } = summariseShift(checks);
+    let printedAtText = '';
+    try { printedAtText = new Date(now).toLocaleString('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { /* optional */ }
+    try {
+      const res = await printService.printShiftReport({
+        kind, venueName: cfg.name || st.locationProfile?.name || '', dayLabel: businessDayOf(now, timezone, dayStart) || '',
+        printedAtText, printedBy: st.staff?.name || '', stats, byMethod, drawer, currency: cfg.currency,
+      });
+      if (res && res.ok === false) st.showToast?.(`${kind} report did not print: ${res.error || 'no receipt printer'}`, 'error');
+      else st.showToast?.(`${kind} report sent to the printer`, 'success');
+    } catch (e) {
+      st.showToast?.(`${kind} report did not print: ${e?.message || e}`, 'error');
+    }
+  };
   const [expectedForCashOut, setExpectedForCashOut] = useState(0);
   const [cashAction, setCashAction] = useState(null);
   const [cashActionAmount, setCashActionAmount] = useState('');
@@ -1128,6 +1153,10 @@ export default function POSSurface() {
                       style={{ padding:'14px 8px', borderRadius:10, border:`1.5px solid ${_mCan?'var(--red,#cc5959)':'var(--bdr)'}`, background:_mCan?'var(--red-d, rgba(235,97,97,0.12))':'var(--bg3)', color:_mCan?'var(--red,#cc5959)':'var(--t4)', fontFamily:'inherit', fontWeight:800, fontSize:13, cursor:_mCan?'pointer':'not-allowed', display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
                       <span>Cash up</span><span style={{ fontSize:10, fontWeight:500, opacity:.75 }}>close drawer</span>
                     </button>
+                    <button onClick={() => { if (!requirePerm()) return; setShowDrawerMenu(false); printShiftReportNow('X'); }}
+                      style={{ padding:'14px 8px', borderRadius:10, border:'1.5px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t2)', fontFamily:'inherit', fontWeight:800, fontSize:13, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+                      <span>X report</span><span style={{ fontSize:10, fontWeight:500, opacity:.75 }}>print shift so far</span>
+                    </button>
                   </div>
                 </div>
               )}
@@ -1262,7 +1291,11 @@ export default function POSSurface() {
               // variance was not written to the cash ledger. They would walk away believing it was
               // done. On success the sign-out is delayed past the toast lifetime by
               // signOutAfterCashUp, so the variance figure is always read first.
-              if (result) signOutAfterCashUp?.();
+              // 28 Sep 2026: the Z report prints at every successful cash up, with the drawer figures.
+              if (result) {
+                printShiftReportNow('Z', { expected: result.expected, declared: result.declared, variance: result.variance });
+                signOutAfterCashUp?.();
+              }
             }} />
         );
       })()}

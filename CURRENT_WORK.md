@@ -6,6 +6,10 @@
 - Test: src/lib/ops/opsEvidenceDeviceFix.test.js (9 tests, mutation checked). npm test 4323 pass, vite build exit 0.
 - No app change, no version bump (DB only, like PR 156). Merge only after Peter has run the migration, outside UK service (changing a storage rule briefly locks storage.objects).
 
+# 28 Sep 2026 ~09:00 UK: v5.11.3 (branch fix/receipt-qr-bitmap), HELD until Peter says (Leeds trading)
+
+- Receipt footer QR as GS v 0 raster (receiptRaster.qrTextToGsV0; native GS ( k printed nothing on the Sunmi NT311), native command kept as fallback. LoyaltyReport readAllRows (members, stamp cards, both transaction reads; was 1,000 / 500). Customers total via count exact head query. Dine-in never scheduled (sendToKitchen hold-back skips orderType 'dine-in'; Leeds R9001/R8674 cleared by Peter SQL). X report button (drawer menu, cashup permission) and Z report printed at every successful cash up: lib/shiftReport.js (checksForBusinessDay, summariseShift, buildShiftReportDoc), printService.printShiftReport, figures from lib/salesStats.js (moved out of SalesSummary.jsx, re-exported there). Marketing audience paging is separate: edge functions deployed from PR 191 (merge needs review).
+
 # Release 28 Sep 2026 ~02:45 UK: v5.11.1 (branch release/2026-09-28b)
 
 - PRs 184 (the till that sent a reader payment books it, frozen ref), 183 (no update reload during a payment), 182 (last reports on the venue clock), 186 (old kiosk venueRow). Review fixes: a later Collection paid on the reader keeps its scheduled entry (paid); landed reader jobs are marked reconciled after 30 s; monotonic payment pause clock.
