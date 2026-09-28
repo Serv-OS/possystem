@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.6',
+    date: '28 Sep 2026',
+    items: [
+      "Back Office Exceptions report: no longer crashes with an App Error (React error 31). A void, discount or refund on a collection order with no table showed the order's whole customer record (name, phone, collection time) where the table goes, and the page refused to draw it. It now shows the customer's name, or their phone number when there is no name.",
+    ],
+  },
+  {
     v: '5.11.5',
     date: '28 Sep 2026',
     items: [
