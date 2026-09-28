@@ -24,6 +24,7 @@ declare
   v_force boolean := false;   -- true drops the tables even when they hold records
   v_docs  bigint := 0;
   v_subs  bigint := 0;
+  v_forms bigint := 0;   -- 28 Sep 2026 review: forms a venue built count too
 begin
   if to_regclass('public.ops_documents') is not null then
     execute 'select count(*) from public.ops_documents' into v_docs;
@@ -31,8 +32,11 @@ begin
   if to_regclass('public.ops_form_submissions') is not null then
     execute 'select count(*) from public.ops_form_submissions' into v_subs;
   end if;
-  if (v_docs > 0 or v_subs > 0) and not v_force then
-    raise exception 'Rollback stopped, NOTHING changed: % document(s) and % form submission(s) exist. Export them, then set v_force to true to drop them.', v_docs, v_subs;
+  if to_regclass('public.ops_forms') is not null then
+    execute 'select count(*) from public.ops_forms' into v_forms;
+  end if;
+  if (v_docs > 0 or v_subs > 0 or v_forms > 0) and not v_force then
+    raise exception 'Rollback stopped, NOTHING changed: % document(s), % form(s) and % form submission(s) exist. Export them, then set v_force to true to drop them.', v_docs, v_forms, v_subs;
   end if;
 end
 $guard$;
