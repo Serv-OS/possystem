@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.6',
+    date: '28 Sep 2026',
+    items: [
+      "Back Office Exceptions report: no longer crashes with an App Error (React error 31). A void, discount or refund on a collection order with no table showed the order's whole customer record (name, phone, collection time) where the table goes, and the page refused to draw it. It now shows the customer's name, or their phone number when there is no name.",
+      "Phone till (MPOS) Orders tab: opening Recently closed no longer crashes when one of the last 30 sales was a collection or takeaway order with a customer. It shows the customer's name.",
+      "Back Office Transactions: an item's modifiers show their names (for example Side: Chips, Oat milk) in the sale's item list and in the refund item picker, instead of \"[object Object]\".",
+    ],
+  },
+  {
     v: '5.11.5',
     date: '28 Sep 2026',
     items: [

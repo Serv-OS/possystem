@@ -4,6 +4,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { plainText, checkCustomerText } from '../../lib/reportText';
 
 const FILTERS = [
   { id:'all',       label:'All' },
@@ -82,8 +83,9 @@ export default function MOrdersList({ onOpenOrder }) {
     .slice(0, 30)
     .map(c => ({
       _kind:'closed', id:`c-${c.id}`,
-      ref:c.ref || c.id?.slice(0, 6), displayName:c.customer || c.ref,
-      server:c.server, customer:{ name:c.customer, phone:c.customerPhone },
+      // 28 Sep 2026: a collection order's customer is an OBJECT; rendering it crashed this list (React #31).
+      ref:c.ref || c.id?.slice(0, 6), displayName:checkCustomerText(c.customer) || c.ref,
+      server:c.server, customer:{ name:checkCustomerText(c.customer), phone:c.customerPhone || plainText(c.customer?.phone) },
       status:c.status || 'paid', items:c.items || [], total:c.total || 0,
       createdAt:c.closedAt, _source:c.source,
     }))

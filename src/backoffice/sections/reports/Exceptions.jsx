@@ -6,17 +6,22 @@
 import { useMemo, useState } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { plainText, checkCustomerText } from '../../../lib/reportText';
 
 // Flatten closed checks into a single event list sorted by time (newest first).
 // A single check can produce multiple events (one void + two discounts, for example).
+// 28 Sep 2026: every name goes through plainText. A collection order's customer is an OBJECT
+// ({ name, phone, collectionTime, ... }) and printing it crashed the whole report (React #31).
 function flattenEvents(checks) {
   const events = [];
   (checks||[]).forEach(c => {
+    const server = plainText(c.server) || '—';
+    const tableLabel = plainText(c.tableLabel) || checkCustomerText(c.customer) || '—';
+    const ref = plainText(c.ref) || plainText(c.id);
     if (c.status === 'voided') {
       events.push({
-        type:'void', amount: c.total || 0, ts: c.closedAt, ref: c.ref || c.id,
-        server: c.server || '—', tableLabel: c.tableLabel || c.customer || '—',
-        reason: c.voidReason || null, approvedBy: c.voidedBy || null,
+        type:'void', amount: c.total || 0, ts: c.closedAt, ref, server, tableLabel,
+        reason: plainText(c.voidReason) || null, approvedBy: plainText(c.voidedBy) || null,
       });
     }
     (c.discounts||[]).forEach(d => {
@@ -24,16 +29,15 @@ function flattenEvents(checks) {
         // v5.5.853: label first — POS manual/auto discounts and channel promos all carry
         // `label` (name was only ever set on channel entries), so the real discount name
         // shows instead of the generic 'Discount'.
-        type:'discount', amount: d.amount || d.value || 0, ts: c.closedAt, ref: c.ref || c.id,
-        server: c.server || '—', tableLabel: c.tableLabel || c.customer || '—',
-        reason: d.label || d.name || d.reason || 'Discount', approvedBy: d.appliedBy || d.by || d.manager?.name || null,
+        type:'discount', amount: d.amount || d.value || 0, ts: c.closedAt, ref, server, tableLabel,
+        reason: plainText(d.label) || plainText(d.name) || plainText(d.reason) || 'Discount',
+        approvedBy: plainText(d.appliedBy) || plainText(d.by) || plainText(d.manager) || null,
       });
     });
     (c.refunds||[]).forEach(r => {
       events.push({
-        type:'refund', amount: r.amount || 0, ts: r.at || c.closedAt, ref: c.ref || c.id,
-        server: c.server || '—', tableLabel: c.tableLabel || c.customer || '—',
-        reason: r.reason || 'Refund', approvedBy: r.by || null,
+        type:'refund', amount: r.amount || 0, ts: r.at || c.closedAt, ref, server, tableLabel,
+        reason: plainText(r.reason) || 'Refund', approvedBy: plainText(r.by) || null,
       });
     });
   });

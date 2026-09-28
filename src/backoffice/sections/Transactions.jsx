@@ -17,6 +17,7 @@ import { loadLocationBranding } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
 import { refundBreakdown, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
 import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
+import { modsText } from '../../lib/reportText';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 const fmtDate = ts => {
@@ -411,7 +412,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                   <tr key={item.uid || item.id || idx}>
                                     <td style={{ padding: '6px 8px', fontSize: 13 }}>
                                       {item.name}
-                                      {item.mods && <span style={{ color: 'var(--t4)', fontSize: 11, display: 'block' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</span>}
+                                      {modsText(item.mods) && <span style={{ color: 'var(--t4)', fontSize: 11, display: 'block' }}>{modsText(item.mods)}</span>}
                                     </td>
                                     <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'center' }}>{item.qty || 1}</td>
                                     <td style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{fmt(item.price)}</td>
@@ -699,7 +700,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                       }}>{selectedQty > 0 ? selectedQty : ''}</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600 }}>{item.name}</div>
-                        {item.mods && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{typeof item.mods === 'string' ? item.mods : Array.isArray(item.mods) ? item.mods.join(', ') : ''}</div>}
+                        {modsText(item.mods) && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{modsText(item.mods)}</div>}
                       </div>
                       <div style={{ fontSize: 13, color: 'var(--t4)', flexShrink: 0 }}>x{maxQty}</div>
                       <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)', flexShrink: 0 }}>{fmt(item.price)}</div>
