@@ -162,7 +162,9 @@ test('db.js and the store use these rules, and global edits actually propagate n
   assert.match(read('./scopedPropagation.js'), /const r = await propagate\(row, keys\.size \? \[\.\.\.keys\] : null\);/, 'and only the keys that changed');
   assert.match(store, /if \(!isMasterRow\(row\)\) return;/, 'a copy never propagates; a master whose master_id is its own id DOES (round-2 blocker)');
   assert.match(store, /pagehide/, 'leaving the page inside the debounce still sends the edit');
-  assert.match(db, /peerCatIdAt = \(catMasterId, catMasterLocId, peerLocId\)/, 'the owning venue holds the bare master category id');
+  // 28 Sep 2026: the rule moved to lib/shareCategory.js (tested there with Coffee Boy's ids).
+  assert.match(read('./shareCategory.js'), /export const peerCatIdAt = \(catMasterId, catMasterLocId, peerLocId\)/, 'the owning venue holds the bare master category id');
+  assert.match(db, /import \{ peerCatIdAt, [^}]*\} from '\.\/shareCategory'/, 'and db.js uses that one rule');
   assert.match(db, /if \(masterRow\?\.archived\) return \{ ok: false/, 'sharing from a copy of a retired product is refused');
   assert.match(db, /if \(failed\) throw new Error\(`could not read the venue's tax/, 'a failed venue lookup is never memoised as empty');
   assert.match(db, /\.update\(patch\)\.eq\('id', sib\.id\)\.select\('id'\)[\s\S]{0,900}if \(error \|\| !wrote\?\.length\)/, 'a refused peer update (no rows) counts as a failure');

@@ -17,5 +17,7 @@ test('What\'s new reads both changelog shapes and never calls .map on undefined'
     assert.ok(ver(c), 'every entry has a version');
     assert.ok(Array.isArray(changesOf(c)), `entry ${ver(c)} has a list of changes`);
   }
-  assert.equal(ver(CHANGELOG[0]), '5.11.0');
+  // The top entry is the version this build says it is (never a hand typed number).
+  const { VERSION } = await import('../lib/version.js');
+  assert.equal(ver(CHANGELOG[0]), VERSION);
 });

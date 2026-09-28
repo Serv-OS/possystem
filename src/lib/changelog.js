@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.2',
+    date: '28 Sep 2026',
+    items: [
+      "Back Office sharing: a shared product's copy at another venue now always goes into that venue's copy of its category. Each category is checked at that venue before the copy is saved, and a missing one is made there first.",
+      "If a category still cannot be made at a venue, the copy is saved with no category and the share says which venue and category. It used to be saved pointing at a category that was not there, which Back Office shows as \"No category\".",
+      "A copy saved before its category arrived at a venue now gets the category as soon as the category lands there. A category the venue chose itself is never replaced.",
+      "Sold alone sub items shared inside a deal follow the same rule: a shared category missing at a venue is made there first.",
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
