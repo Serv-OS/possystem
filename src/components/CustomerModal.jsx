@@ -5,6 +5,7 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime';
 import AddressAutocomplete from './AddressAutocomplete';
 import { customerInitials } from '../lib/customerInitials';
+import { formStartsAsap } from '../lib/customerFormAsap';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, showDelayedToast, takeawayCustomerDetails, autoJoinCustomerByEmail } = useStore();
@@ -66,7 +67,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const [addrGeo, setAddrGeo]   = useState(existing?.address?.lat != null ? { lat: existing.address.lat, lng: existing.address.lng } : null);
   // v4.6.61: when editing, default to non-ASAP if a collectionTime is already set,
   // so the user sees their existing time pre-selected on the slot grid.
-  const [isASAP, setIsASAP]   = useState(existing ? !!existing.isASAP : true);
+  // 28 Sep 2026: a customer with no isASAP field (the display's phone join, Link to existing member)
+  // opened on "Later" and Confirm saved a pre-order for the first slot (Leeds R9001, R8674, "11:00").
+  // Later only when the customer really chose a later time (lib/customerFormAsap.js).
+  const [isASAP, setIsASAP]   = useState(() => formStartsAsap(existing));
   // v4.6.61: preselect the slot matching existing.collectionTime when editing
   const [slotIdx, setSlotIdx] = useState(() => {
     if (!existing?.collectionTime) return 0;

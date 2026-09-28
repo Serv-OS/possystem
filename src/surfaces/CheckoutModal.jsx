@@ -17,6 +17,7 @@ import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } 
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
+import { checkoutLoyaltyView } from '../lib/orderCustomerLoyalty';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
 import { tillTenders, splitTenders } from '../lib/accounting/tenders';
 import { declineLine } from '../lib/declineMessage';
@@ -1056,7 +1057,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{customer?.name || 'Customer'}</div>
           <div style={{ fontSize: 12, color: 'var(--acc)' }}>
-            {loyaltyData.credit} points available
+            {checkoutLoyaltyView(loyaltyData)?.line || ''}
             {loyaltyData.tier && <span style={{ marginLeft: 6, color: loyaltyData.tier.color || 'var(--t3)' }}>· {loyaltyData.tier.name}</span>}
           </div>
         </div>
@@ -1304,19 +1305,22 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     redeemLoyaltyReward(pendingLoyaltyReward, {
       customerId: loyaltyData.customerId || customer?.customerId, items, total,
       menuItems: useStore.getState().menuItems || [],
+      // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
+      // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
+      categories: useStore.getState().menuCategories || [],
     })
       .then(r => { if (alive) { setLoyaltyApplied(r); setPendingLoyaltyReward?.(null); } })
       .catch(() => { /* leave for manual apply */ });
     return () => { alive = false; };
   }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied]);
 
-  // Loyalty now supports points and stamp cards independently. The lookup
-  // returns points_enabled / stamps_enabled; treat a missing flag as enabled
-  // (older data / unaffected venues still render points). Only hide when the
-  // flag is EXPLICITLY false. This surface has no stamp-card UI, so we only
-  // need the points gate here (hides the points banner + rewards redeem screen
-  // for a stamps-only venue).
-  const pointsEnabled = loyaltyData?.points_enabled !== false;
+  // The member's loyalty line (lib/orderCustomerLoyalty.js checkoutLoyaltyView). 28 Sep 2026, Peter at
+  // Coffee Boy Leeds: "where the loyalty loads so you can redeem, it's not loading". It loaded, but
+  // this line only showed with points above 0 or a reward, so a stamps only member with no free drink
+  // ready got nothing at all; and it read points_enabled, which the lookup never returns (it says
+  // pointsEnabled). Now every loyalty member the lookup found shows: points where the venue runs
+  // points, each stamp card where it runs stamps, then the rewards to redeem or "Nothing to redeem yet".
+  const loyaltyView = checkoutLoyaltyView(loyaltyData);
 
   const isBarTab = orderType==='bar-tab';
   // Drive thru (16 Sep 2026) skips the tip prompt like takeaway.
@@ -2288,8 +2292,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               {/* v5.5.218: Loyalty banner. v5.5.895: ALSO shows when the member has redeemable
                   rewards with zero points — a completed STAMP card was invisible here (the panel
                   required credit > 0 and the rewards screen was points-gated), so stamp rewards
-                  could never be redeemed at the POS. Same gate bug fixed on the kiosk in v5.5.886. */}
-              {loyaltyData && ((pointsEnabled && loyaltyData.credit > 0) || loyaltyData.rewards?.length > 0) && (
+                  could never be redeemed at the POS. Same gate bug fixed on the kiosk in v5.5.886.
+                  28 Sep 2026: shows for every loyalty member, with nothing to redeem too (the stamps). */}
+              {loyaltyView && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
                   padding: '10px 14px', borderRadius: 10,
@@ -2302,8 +2307,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                       {loyaltyData.tier && <span style={{ marginLeft: 8, fontSize: 11, color: loyaltyData.tier.color || 'var(--t3)' }}>({loyaltyData.tier.name})</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
-                      {pointsEnabled && loyaltyData.credit > 0 ? `${loyaltyData.credit} points` : ''}
-                      {loyaltyData.rewards?.length > 0 && `${pointsEnabled && loyaltyData.credit > 0 ? ' · ' : ''}${loyaltyData.rewards.length} reward${loyaltyData.rewards.length !== 1 ? 's' : ''} available`}
+                      {loyaltyView.line}
                     </div>
                   </div>
                   {loyaltyData.rewards?.length > 0 && !loyaltyApplied && (
