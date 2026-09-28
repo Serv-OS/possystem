@@ -3,15 +3,22 @@
 // Read/write the Xero posting MAPPING for a venue, and fetch the org's accounts + tax
 // rates + payment methods so the back office can populate the mapping dropdowns.
 //   POST { action }:
-//     options { locationId } -> { accounts:[{code,name,type,bank}], taxRates:[{taxType,name,rate}], paymentMethods:[...] }
+//     options { locationId } -> { accounts:[{code,name,type,bank}], taxRates:[{taxType,name,rate,revenue,expense}],
+//                                 salesTaxRates, purchaseTaxRates, servosTaxRates:[{id,name,code,pct,mode,isDefault,active}],
+//                                 autoTax:{ [ServOS rate id | 'none']: taxType|null }, addedOnTax,
+//                                 unmatchedTaxBuckets:[{key,name,pct}], taxRatesError, servosRatesError, paymentMethods:[...] }
 //     get     { locationId } -> { mapping, detail, autoDaily, venue:{ timezone, dayStart, currency, currentDay, lastCompletedDay } }
 //     save    { locationId, mapping } -> { ok, mapping }
+// 28 Sep 2026: VAT on sales is chosen per ServOS tax rate (mapping.taxRateMap), from Xero's
+// SALES rates only (the old list mixed in expense rates such as INPUT2); save refuses an
+// expense rate for sales. Save never writes `detail` (xero-sales owns it).
 // Location-fenced like xero-connect. Deploy --no-verify-jwt.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
-import { venueClock } from '../_shared/accountingData.ts';
-import { checkTenders, MONEY_KINDS } from '../_shared/accountingDay.js';
+import { venueClock, venueTaxRates } from '../_shared/accountingData.ts';
+import { checkTenders, MONEY_KINDS, taxContext } from '../_shared/accountingDay.js';
+import { revenueTaxRates, expenseTaxRates, canApplyToRevenue, canApplyToExpenses, pickSalesTaxType, validateTaxMapping } from '../_shared/xeroTax.js';
 import { currentBusinessDay, lastCompletedBusinessDay } from '../_shared/businessDay.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
@@ -58,6 +65,31 @@ async function paymentMethods(locationId: string): Promise<{ methods: string[]; 
   return { methods, kinds: Object.fromEntries(methods.map((m) => [m, kinds[m]])) };
 }
 
+// 28 Sep 2026: percentages a recent push was refused for that no ServOS rate of this venue
+// has (a 'pct:' bucket: another venue's rate id, or a deleted rate). The mapping screen shows
+// a row for each, so the refusal can be cleared there. Read from the days still not posted;
+// best effort, since it only adds rows.
+async function refusedPctBuckets(locationId: string): Promise<{ key: string; name: string; pct: number | null }[]> {
+  try {
+    const { data } = await sb.from('xero_sync_log').select('ref_date,warnings:detail->warnings')
+      .eq('location_id', locationId).eq('kind', 'daily_sales').neq('status', 'ok')
+      .order('ref_date', { ascending: false }).limit(14);
+    const out = new Map<string, { key: string; name: string; pct: number | null }>();
+    for (const row of (data || []) as any[]) {
+      for (const w of (Array.isArray(row?.warnings) ? row.warnings : [])) {
+        if (w?.code !== 'tax_rate_unmapped' || !Array.isArray(w.blocked)) continue;
+        for (const b of w.blocked) {
+          const key = String(b?.key || '');
+          if (!key.startsWith('pct:') || key.length > 80 || out.has(key)) continue;
+          const pct = Number.isFinite(Number(b.pct)) && b.pct !== null ? Number(b.pct) : null;
+          out.set(key, { key, name: String(b.name || key).slice(0, 80), pct });
+        }
+      }
+    }
+    return [...out.values()];
+  } catch { return []; }
+}
+
 // The venue's business day, for the Back Office date picker (never the browser's clock).
 async function venueDay(locationId: string) {
   try {
@@ -89,7 +121,11 @@ Deno.serve(async (req) => {
 
     if (action === 'save') {
       const patch: Record<string, unknown> = { location_id: locationId, updated_at: new Date().toISOString() };
-      if (body.mapping !== undefined) patch.mapping = body.mapping || {};
+      if (body.mapping !== undefined) {
+        const bad = validateTaxMapping(body.mapping);
+        if (bad) return json({ error: bad }, 400);
+        patch.mapping = body.mapping || {};
+      }
       if (body.autoDaily !== undefined) patch.auto_daily = !!body.autoDaily;
       await sb.from('xero_config').upsert(patch, { onConflict: 'location_id' });
       return json({ ok: true });
@@ -98,18 +134,39 @@ Deno.serve(async (req) => {
     if (action === 'options') {
       if (!CLIENT_ID) return json({ error: 'Xero not configured' }, 400);
       const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
-      const [accRes, taxRes, methods] = await Promise.all([
+      // A failed tax rate read is SAID (the flags), never shown as "no rates": the screen would
+      // otherwise call a correct choice wrong, or say the venue has no VAT rates.
+      let taxRatesError = false, servosRatesError = false;
+      const [accRes, taxRes, methods, servos, unmatchedTaxBuckets] = await Promise.all([
         xeroApi(accessToken, tenantId, '/Accounts'),
-        xeroApi(accessToken, tenantId, '/TaxRates').catch(() => ({ TaxRates: [] })),
+        xeroApi(accessToken, tenantId, '/TaxRates').catch(() => { taxRatesError = true; return { TaxRates: [] }; }),
         paymentMethods(locationId),
+        venueTaxRates(sb, locationId).catch(() => { servosRatesError = true; return []; }),
+        refusedPctBuckets(locationId),
       ]);
       const accounts = (accRes?.Accounts || [])
         .filter((a: any) => String(a.Status || 'ACTIVE').toUpperCase() === 'ACTIVE')
         .map((a: any) => ({ id: a.AccountID, code: a.Code || '', name: a.Name, type: a.Type, bank: String(a.Type).toUpperCase() === 'BANK' }));
-      const taxRates = (taxRes?.TaxRates || [])
+      const list = Array.isArray(taxRes?.TaxRates) ? taxRes.TaxRates : [];
+      if (!list.length) taxRatesError = true;
+      const taxRates = list
         .filter((r: any) => String(r.Status || 'ACTIVE').toUpperCase() === 'ACTIVE')
-        .map((r: any) => ({ taxType: r.TaxType, name: r.Name, rate: Number(r.EffectiveRate) }));
-      return json({ accounts, taxRates, paymentMethods: methods.methods, paymentMethodKinds: methods.kinds });
+        .map((r: any) => ({ taxType: r.TaxType, name: r.Name, rate: Number(r.EffectiveRate), revenue: canApplyToRevenue(r), expense: canApplyToExpenses(r) }));
+      // 28 Sep 2026: sales dropdowns list only rates Xero allows on sales, purchases only
+      // purchase rates; each ServOS rate shows what Auto would pick for it.
+      const salesTaxRates = revenueTaxRates(list);
+      const purchaseTaxRates = expenseTaxRates(list);
+      const ctx = taxContext(servos);
+      const servosTaxRates = ctx.rates.map((r: any) => ({ id: r.id, name: r.name, code: r.code, pct: r.pct, mode: r.mode, isDefault: r.isDefault, active: r.active }));
+      const autoTax: Record<string, string | null> = {};
+      if (list.length) {
+        for (const r of ctx.rates) if (r.mode === 'inclusive') autoTax[r.id] = pickSalesTaxType(salesTaxRates, { pct: r.pct, zeroKind: r.zeroKind });
+        autoTax.none = pickSalesTaxType(salesTaxRates, { pct: 0 });
+      }
+      return json({
+        accounts, taxRates, salesTaxRates, purchaseTaxRates, servosTaxRates, autoTax, addedOnTax: ctx.addedOn,
+        unmatchedTaxBuckets, taxRatesError, servosRatesError, paymentMethods: methods.methods, paymentMethodKinds: methods.kinds,
+      });
     }
 
     return json({ error: 'Unknown action' }, 400);

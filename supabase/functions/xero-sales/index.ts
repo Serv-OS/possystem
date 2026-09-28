@@ -20,6 +20,12 @@
 //                               a half posted day finishes without re-posting what worked.
 // Tokens refresh under a compare and set (_shared/xero.ts), so two runs cannot break them.
 //
+// VAT per rate (28 Sep 2026): each sale posts one goods line per VAT rate (the day split by
+// closed_checks.tax_breakdown, _shared/accountingDay.js), at a Xero SALES rate chosen by
+// _shared/xeroTax.js. Xero's tax rates are read on every real run, so a cached expense rate
+// (INPUT2, which Xero refused for Leeds on 26 Sep) heals itself; a ServOS rate with no Xero
+// sales rate stops the day before anything is sent. Service charge posts No VAT by default.
+//
 //   POST { locationId, date? (YYYY-MM-DD business day), auto?, dryRun?, sample? }
 //     auto     the nightly post: ignores `date` and books the venue's last business day that
 //              ended at least 4 hours ago (the cron's UTC date is not the venue's day; the
@@ -35,7 +41,8 @@ import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
 import { venueClock, loadAccountingDay } from '../_shared/accountingData.ts';
 import { businessDayWindow, isYmd, isBusinessDayOver, lastCompletedBusinessDay, currentBusinessDay, wallClock, addDays } from '../_shared/businessDay.js';
 import { buildAccountingDay } from '../_shared/accountingDay.js';
-import { planXeroDay, requiredDefaults, DEFAULT_ACCOUNTS, shortHash } from '../_shared/xeroPostingPlan.js';
+import { planXeroDay, requiredDefaults, DEFAULT_ACCOUNTS, postingStep, idempotencyKey, postingVat, blockedMessage, sampleSaleRows, SAMPLE_TAX_NOTES } from '../_shared/xeroPostingPlan.js';
+import { revenueTaxRates, expenseTaxRates, healedTaxType } from '../_shared/xeroTax.js';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
@@ -84,57 +91,60 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
 const byName = (accounts: any[], name: string) => (accounts || []).find((a) => String(a.Name || '').toLowerCase() === name.toLowerCase());
 const byCode = (accounts: any[], code: string) => (accounts || []).find((a) => String(a.Code || '').toUpperCase() === code.toUpperCase());
 
-// Auto-provision + cache the baseline wiring (contact, sales account, tax rate) and the
-// default accounts THIS day needs (clearing accounts per tender kind, tips and service
-// liability accounts), in xero_config.detail. Only what is needed is ever created.
+// Auto-provision + cache the baseline wiring (contact, sales account) and the default accounts
+// THIS day needs (clearing accounts per tender kind, tips and service liability accounts), in
+// xero_config.detail. Only what is needed is ever created. The org's tax rates are read on
+// every call (28 Sep 2026): the old one time pick cached INPUT2 for good.
 async function ensureDetail(token: string, tenantId: string, locationId: string, needed: string[]) {
   const { data: cfg } = await sb.from('xero_config').select('detail').eq('location_id', locationId).maybeSingle();
   const detail: Record<string, any> = { ...(cfg?.detail || {}) };
   const missing = needed.filter((k) => !detail[(DEFAULT_ACCOUNTS as any)[k].detailKey]);
-  const baseDone = detail.contactId && detail.salesAccountCode && ('taxType' in detail);
-  if (baseDone && !missing.length) return detail;
+  const baseDone = detail.contactId && detail.salesAccountCode;
 
-  const accRes = await xeroApi(token, tenantId, '/Accounts');
-  const accounts: any[] = accRes?.Accounts || [];
-  for (const k of missing) {
-    const d = (DEFAULT_ACCOUNTS as any)[k];
-    let acct = byName(accounts, d.name) || byCode(accounts, d.code);
-    if (!acct) {
-      const body = d.type === 'BANK'
-        ? { Name: d.name, Type: 'BANK', BankAccountNumber: d.number, Code: d.code }
-        : { Name: d.name, Type: d.type, Code: d.code };
-      const created = await xeroApi(token, tenantId, '/Accounts', { method: 'PUT', body: JSON.stringify(body) });
-      acct = created?.Accounts?.[0];
-      if (acct) accounts.push(acct);
+  if (!baseDone || missing.length) {
+    const accRes = await xeroApi(token, tenantId, '/Accounts');
+    const accounts: any[] = accRes?.Accounts || [];
+    for (const k of missing) {
+      const d = (DEFAULT_ACCOUNTS as any)[k];
+      let acct = byName(accounts, d.name) || byCode(accounts, d.code);
+      if (!acct) {
+        const body = d.type === 'BANK'
+          ? { Name: d.name, Type: 'BANK', BankAccountNumber: d.number, Code: d.code }
+          : { Name: d.name, Type: d.type, Code: d.code };
+        const created = await xeroApi(token, tenantId, '/Accounts', { method: 'PUT', body: JSON.stringify(body) });
+        acct = created?.Accounts?.[0];
+        if (acct) accounts.push(acct);
+      }
+      if (!acct) throw new Error(`Could not set up the ${d.name} account in Xero`);
+      // Bank accounts are referenced by id, line accounts by code (by id when it has no code).
+      detail[d.detailKey] = d.type === 'BANK' ? acct.AccountID : (acct.Code || acct.AccountID);
     }
-    if (!acct) throw new Error(`Could not set up the ${d.name} account in Xero`);
-    // Bank accounts are referenced by id, line accounts by code (by id when it has no code).
-    detail[d.detailKey] = d.type === 'BANK' ? acct.AccountID : (acct.Code || acct.AccountID);
-  }
 
-  if (!detail.salesAccountCode) {
-    const revenue = accounts.find((a: any) => a.Code === '200' && String(a.Type).toUpperCase() === 'REVENUE')
-      || accounts.find((a: any) => String(a.Type).toUpperCase() === 'REVENUE' && String(a.Status || 'ACTIVE').toUpperCase() === 'ACTIVE');
-    detail.salesAccountCode = revenue?.Code || '200';
-  }
-  if (!detail.contactId) {
-    const cRes = await xeroApi(token, tenantId, `/Contacts?where=${encodeURIComponent('Name=="ServOS POS Sales"')}`);
-    detail.contactId = cRes?.Contacts?.[0]?.ContactID || null;
+    if (!detail.salesAccountCode) {
+      const revenue = accounts.find((a: any) => a.Code === '200' && String(a.Type).toUpperCase() === 'REVENUE')
+        || accounts.find((a: any) => String(a.Type).toUpperCase() === 'REVENUE' && String(a.Status || 'ACTIVE').toUpperCase() === 'ACTIVE');
+      detail.salesAccountCode = revenue?.Code || '200';
+    }
     if (!detail.contactId) {
-      const created = await xeroApi(token, tenantId, '/Contacts', { method: 'PUT', body: JSON.stringify({ Name: 'ServOS POS Sales' }) });
-      detail.contactId = created?.Contacts?.[0]?.ContactID || null;
+      const cRes = await xeroApi(token, tenantId, `/Contacts?where=${encodeURIComponent('Name=="ServOS POS Sales"')}`);
+      detail.contactId = cRes?.Contacts?.[0]?.ContactID || null;
+      if (!detail.contactId) {
+        const created = await xeroApi(token, tenantId, '/Contacts', { method: 'PUT', body: JSON.stringify({ Name: 'ServOS POS Sales' }) });
+        detail.contactId = created?.Contacts?.[0]?.ContactID || null;
+      }
     }
   }
-  if (!('taxType' in detail)) {
-    let taxType = 'NONE';
-    try {
-      const tRes = await xeroApi(token, tenantId, '/TaxRates');
-      const active = (tRes?.TaxRates || []).filter((r: any) => String(r.Status || 'ACTIVE').toUpperCase() === 'ACTIVE');
-      const twenty = active.find((r: any) => Math.round(Number(r.EffectiveRate)) === 20);
-      taxType = twenty?.TaxType || (active.find((r: any) => r.TaxType === 'OUTPUT2') ? 'OUTPUT2' : 'NONE');
-    } catch { taxType = 'NONE'; }
-    detail.taxType = taxType;
-  }
+
+  // 28 Sep 2026: one GET per venue day. A failure stops the post (xeroApi throws): before, it
+  // silently fell back to NONE. Only rates Xero allows on sales are kept for sales lines.
+  const tRes = await xeroApi(token, tenantId, '/TaxRates');
+  const list = tRes?.TaxRates;
+  if (!Array.isArray(list) || !list.length) throw new Error('Xero sent no tax rates, so the VAT rate for each sale cannot be chosen. Nothing was posted.');
+  const rev = revenueTaxRates(list);
+  detail.salesTaxRates = rev;
+  detail.purchaseTaxRates = expenseTaxRates(list);
+  detail.taxRatesAt = new Date().toISOString();
+  detail.taxType = healedTaxType(detail, rev);   // a cached expense rate (INPUT2) becomes the sales rate (OUTPUT2)
   await sb.from('xero_config').upsert({ location_id: locationId, sales_account_code: detail.salesAccountCode, tax_type: detail.taxType, detail, updated_at: new Date().toISOString() }, { onConflict: 'location_id' });
   return detail;
 }
@@ -148,9 +158,12 @@ async function findPosted(token: string, tenantId: string, reference: string) {
 
 const xeroLink = (id?: string | null) => (id ? `https://go.xero.com/Bank/ViewTransaction.aspx?bankTransactionID=${id}` : null);
 
-// A planned transaction as the Back Office shows it (major units).
+// A planned transaction as the Back Office shows it (major units). `rates` is one row per
+// goods line: its VAT as Xero will work it out and as ServOS booked it (null where the line
+// is not checked: added-on tax, not VAT registered, or the venue's rates unknown).
 function lineView(tx: any, extra: Record<string, unknown> = {}) {
   const def = tx.accountDefault ? (DEFAULT_ACCOUNTS as any)[tx.accountDefault]?.name : null;
+  const vat = tx.vat || null;
   return {
     key: tx.key,
     direction: tx.direction === 'SPEND' ? 'refunds' : 'takings',
@@ -160,33 +173,38 @@ function lineView(tx: any, extra: Record<string, unknown> = {}) {
     sales: major(tx.totals.sales),
     tip: major(tx.totals.tip),
     service: major(tx.totals.service),
+    rates: (vat?.lines || []).map((l: any) => ({ label: l.label, taxType: l.taxType, amount: major(l.amount), vat: l.compare ? major(l.taxXero) : null, vatBooked: l.compare ? major(l.taxBooked) : null })),
+    vat: vat ? major(vat.xero) : null,
+    vatBooked: vat ? major(vat.booked) : null,
     reference: tx.reference,
     ...extra,
   };
 }
 
-// The day's summary in major units for the screen.
+// The day's summary in major units for the screen, with each direction split by tax rate.
 function summaryView(s: any) {
+  const buckets = new Map((s.taxBuckets || []).map((b: any) => [b.key, b]));
   const t = (x: any) => ({ count: x.count, total: major(x.gross), sales: major(x.sales), tip: major(x.tip), service: major(x.service), tax: major(x.tax) });
   const rows = (list: any[]) => list.map((g) => ({ method: g.method, kind: g.kind, ...t(g) }));
+  const byRate = (x: any) => Object.entries(x?.byRate || {}).map(([key, v]: [string, any]) => {
+    const b: any = buckets.get(key);
+    return { key, name: b?.name || key, pct: b?.pct ?? null, sales: major(v.sales), tax: major(v.tax) };
+  });
   return {
     date: s.date, from: s.fromIso, to: s.toIso,
-    sales: { ...t(s.sales.totals), credits: major(s.sales.credits?.gross || 0), byMethod: rows(s.sales.byMethod) },
-    refunds: { ...t(s.refunds.totals), credits: major(s.refunds.credits?.gross || 0), byMethod: rows(s.refunds.byMethod) },
+    sales: { ...t(s.sales.totals), credits: major(s.sales.credits?.gross || 0), byMethod: rows(s.sales.byMethod), byRate: byRate(s.sales.totals) },
+    refunds: { ...t(s.refunds.totals), credits: major(s.refunds.credits?.gross || 0), byMethod: rows(s.refunds.byMethod), byRate: byRate(s.refunds.totals) },
   };
 }
 
-function sampleSummary(day: any, venue: any) {
-  const at = day.fromIso;
-  return buildAccountingDay({
-    day,
-    saleRows: [
-      { id: 'sample-1', closed_at: at, total: 120, tip: 12, service: 6, tax_amount: 0, tenders: [{ method: 'card', amount: 108, tip: 12 }] },
-      { id: 'sample-2', closed_at: at, total: 30, tip: 0, service: 0, tax_amount: 0, tenders: [{ method: 'cash', amount: 30, tip: 0 }] },
-    ],
-    refundRows: [],
-    venue,
-  });
+// Test figures, only when explicitly asked for on an empty day, built from the venue's own tax
+// rates (sampleSaleRows, 28 Sep 2026). The rows are made up, so notes on how their VAT was
+// recorded are left out.
+function sampleSummary(day: any, venue: any, taxRates: any[] | null) {
+  const rates = Array.isArray(taxRates) ? taxRates : [];
+  const summary = buildAccountingDay({ day, saleRows: sampleSaleRows(day.fromIso, rates), refundRows: [], venue, taxRates: rates });
+  summary.warnings = summary.warnings.filter((w: any) => !SAMPLE_TAX_NOTES.has(w.code));
+  return summary;
 }
 
 // A day already in Xero. Asked by a person, it also compares what was posted with what the
@@ -201,10 +219,25 @@ async function alreadyAnswer(prior: any, base: any, locationId: string, date: st
     const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
     const plan = planXeroDay(summary, { mapping: cfgRow?.mapping || {}, detail: cfgRow?.detail || {} });
     const changed: string[] = [];
+    const single: string[] = [];
+    const fmtVat = (v: Record<string, number>) => Object.entries(v).map(([k, a]) => `${k.replace('|', ' ').trim()} ${Number(a).toFixed(2)}`).join(', ');
     for (const tx of plan.transactions) {
-      const was = postings[tx.key]?.status === 'posted' ? Number(postings[tx.key].total) : 0;
+      const p = postings[tx.key];
+      const was = p?.status === 'posted' ? Number(p.total) : 0;
       const now = major(tx.totals.gross);
       if (Math.abs(now - (Number.isFinite(was) ? was : 0)) > 0.005) changed.push(`${tx.reference}: posted ${(was || 0).toFixed(2)}, now ${now.toFixed(2)}`);
+      if (p?.status !== 'posted') continue;
+      // 28 Sep 2026: the VAT lines too. A posting from before the split has none recorded.
+      const vatNow = postingVat(tx);
+      if (p.vat && typeof p.vat === 'object') {
+        const keys = new Set([...Object.keys(p.vat), ...Object.keys(vatNow)]);
+        if ([...keys].some((k) => Math.abs(Number(p.vat[k] || 0) - Number(vatNow[k] || 0)) > 0.005)) changed.push(`${tx.reference}: VAT lines posted ${fmtVat(p.vat)}, now ${fmtVat(vatNow)}`);
+      } else if (tx.vat.lines.length > 1) {
+        single.push(`${tx.reference} holds ${tx.vat.lines.map((l: any) => `${l.label || 'sales'} ${major(l.amount).toFixed(2)}`).join(', ')}`);
+      }
+    }
+    if (single.length) {
+      out.warnings.push({ code: 'posted_single_rate', message: `Posted before VAT was split per rate, so all of it went at one VAT rate. Correct it in Xero: ${single.join('; ')}.` });
     }
     for (const [k, p] of Object.entries(postings) as [string, any][]) {
       if (p?.status === 'posted' && !plan.transactions.some((tx: any) => tx.key === k)) changed.push(`${p.reference}: posted ${Number(p.total || 0).toFixed(2)}, now nothing`);
@@ -261,13 +294,13 @@ Deno.serve(async (req) => {
     }
 
     const fromMs = await switchoverFromMs(locationId, date);
-    let { summary } = await loadAccountingDay(sb, platform, locationId, date, venue, { fromMs });
+    let { summary, taxRates } = await loadAccountingDay(sb, platform, locationId, date, venue, { fromMs });
     if (fromMs != null) {
       base.from = summary.fromIso;
       summary.warnings.unshift({ code: 'switchover', message: `The first day posted on the venue business day. It starts at ${summary.fromIso.slice(11, 16)} UTC, where the day before (posted the old way, as a UTC day) ended, so nothing is missed or posted twice.` });
     }
     const sample = !!body.sample && !auto && summary.empty;   // test figures ONLY when explicitly asked for
-    if (sample) summary = sampleSummary(day, venue);
+    if (sample) summary = sampleSummary(day, venue, taxRates);
     // A day with no sales and no refunds posts nothing: the nightly post must never write
     // test figures or empty transactions into a live ledger.
     if (summary.empty) return json({ ok: true, empty: true, ...base, lines: [], warnings: summary.warnings, summary: summaryView(summary) });
@@ -277,7 +310,13 @@ Deno.serve(async (req) => {
 
     if (dryRun) {
       const plan = planXeroDay(summary, { mapping, detail: cfgRow?.detail || {}, sample });
-      return json({ ok: true, dryRun: true, sample, ...base, summary: summaryView(summary), lines: plan.transactions.map((tx: any) => lineView(tx)), warnings: [...summary.warnings, ...plan.warnings] });
+      const warnings = [...summary.warnings, ...plan.warnings];
+      // No real push has read this org's tax rates yet: the rates shown are Xero's UK codes,
+      // assumed. Say so, since the push may choose differently or stop.
+      if (!Array.isArray(cfgRow?.detail?.salesTaxRates)) {
+        warnings.push({ code: 'tax_rates_unknown', message: "Xero's tax rates have not been read for this venue yet, so these VAT rates assume a UK organisation. The push reads them from Xero first, and may choose other rates or stop if a ServOS rate has no match." });
+      }
+      return json({ ok: true, dryRun: true, sample, ...base, summary: summaryView(summary), lines: plan.transactions.map((tx: any) => lineView(tx)), warnings, blocked: plan.blocked });
     }
 
     if (!CLIENT_ID || !CLIENT_SECRET) return json({ error: 'Xero is not configured.' }, 400);
@@ -295,13 +334,16 @@ Deno.serve(async (req) => {
       const plan = planXeroDay(summary, { mapping, detail, sample });
       const warnings = [...summary.warnings, ...plan.warnings];
       await run.save({ detail: { date, venue: clock, window: { from: summary.fromIso, to: summary.toIso }, warnings, summary: summaryView(summary) } });
+      // A ServOS rate with no Xero sales rate: refused before anything is sent (no guessing).
+      if (plan.blocked.length) throw Object.assign(new Error(blockedMessage(plan.blocked)), { blocked: plan.blocked });
 
       for (const tx of plan.transactions) {
         const prev = run.postings[tx.key];
+        const step = postingStep(prev);
         let found: any = null;
-        if (prev?.status === 'posted') {
+        if (step === 'skip') {
           found = { BankTransactionID: prev.id, Status: prev.xeroStatus, Total: prev.total };
-        } else if (prev?.status === 'sending') {
+        } else if (step === 'lookup') {
           // The last run sent this and never heard back. Xero may have it.
           found = await findPosted(accessToken, tenantId, prev.reference || tx.reference);
         }
@@ -311,16 +353,18 @@ Deno.serve(async (req) => {
           if (Number.isFinite(was) && Math.abs(was - major(tx.totals.gross)) > 0.005) {
             extraWarnings.push({ code: 'posted_amount_differs', message: `${tx.reference} is already in Xero for ${was.toFixed(2)}; the day now comes to ${major(tx.totals.gross).toFixed(2)} (checks or refunds arrived after it was posted). Adjust it in Xero.` });
           }
-          if (prev?.status !== 'posted') await run.setPosting(tx.key, { status: 'posted', id: found.BankTransactionID, reference: tx.reference, total: Number(found.Total ?? major(tx.totals.gross)), xeroStatus: found.Status || null });
+          // The VAT lines recorded when it was sent, so a later check does not take a split
+          // posting for one made before the split (a 'sending' record from before has none).
+          if (prev?.status !== 'posted') await run.setPosting(tx.key, { status: 'posted', id: found.BankTransactionID, reference: tx.reference, total: Number(found.Total ?? major(tx.totals.gross)), xeroStatus: found.Status || null, ...(prev?.vat ? { vat: prev.vat } : {}) });
           lines.push(lineView(tx, { bankTransactionID: found.BankTransactionID, status: found.Status || prev?.xeroStatus || null, link: xeroLink(found.BankTransactionID), already: true }));
           continue;
         }
-        const idem = `servos-${locationId}-${date}-${tx.key}-${shortHash(JSON.stringify(tx.payload))}`;
-        await run.setPosting(tx.key, { status: 'sending', reference: tx.reference, idem });
+        const idem = idempotencyKey(locationId, date, tx);
+        await run.setPosting(tx.key, { status: 'sending', reference: tx.reference, idem, vat: postingVat(tx) });
         const res = await xeroApi(accessToken, tenantId, '/BankTransactions', { method: 'PUT', body: JSON.stringify({ BankTransactions: [tx.payload] }), idempotencyKey: idem });
         const bt = res?.BankTransactions?.[0];
         if (!bt?.BankTransactionID) throw new Error(`Xero did not return a transaction for ${tx.reference}`);
-        await run.setPosting(tx.key, { status: 'posted', id: bt.BankTransactionID, reference: tx.reference, total: major(tx.totals.gross), xeroStatus: bt.Status || null });
+        await run.setPosting(tx.key, { status: 'posted', id: bt.BankTransactionID, reference: tx.reference, total: major(tx.totals.gross), xeroStatus: bt.Status || null, vat: postingVat(tx) });
         posted += 1;
         lines.push(lineView(tx, { account: bt?.BankAccount?.Name || lineView(tx).account, bankTransactionID: bt.BankTransactionID, status: bt.Status, link: xeroLink(bt.BankTransactionID) }));
       }
@@ -342,8 +386,13 @@ Deno.serve(async (req) => {
       console.error('[xero-sales]', msg);
       const done = Object.values(run.postings).filter((p: any) => p?.status === 'posted').length;
       const status = done ? 'partial' : 'error';
-      if (!run.lost) await run.finish(status, { detail: { lines, error: msg } }, { ok: false, auto, error: msg, posted, skipped }).catch(() => {});
-      return json({ ...base, error: done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg, partial: !!done, lines }, 500);
+      // A refused rate stops the run before anything is sent: its own message, not "press again".
+      const blocked = (e as any)?.blocked || null;
+      const error = blocked ? blockedMessage(blocked, { partial: !!done })
+        : done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg;
+      const logged = blocked ? error : msg;
+      if (!run.lost) await run.finish(status, { detail: { lines, error: logged } }, { ok: false, auto, error: logged, posted, skipped }).catch(() => {});
+      return json({ ...base, error, partial: !!done, lines, ...(blocked ? { blocked } : {}) }, 500);
     }
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
