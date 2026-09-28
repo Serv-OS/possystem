@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.3',
+    date: '28 Sep 2026',
+    items: [
+      'Receipts: the footer QR code prints again. It is now sent as a picture, the way the logo prints, because the Sunmi NT311 printed nothing for the plain QR command.',
+      'Loyalty report: members, stamp cards and the period\'s transactions are all counted (they stopped at 1,000, and transactions at the newest 500).',
+      'Customers: the total shows every customer (it said 1,000). The list still opens with the newest 1,000, and search finds everyone.',
+    ],
+  },
+  {
     v: '5.11.2',
     date: '28 Sep 2026',
     items: [

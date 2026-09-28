@@ -9,6 +9,21 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../../lib/supabase';
 import { money } from '../../../lib/currency';
 
+// 28 Sep 2026 (Peter: "its also capped to 1000 in the loyalty reports"): the API returns at most
+// 1,000 rows per request, so members and stamp cards stopped at 1,000 and the period's
+// transactions at the newest 500. Read every page, in a fixed order.
+async function readAllRows(makeQuery, page = 1000) {
+  const out = [];
+  for (let from = 0; ; from += page) {
+    const { data, error } = await makeQuery().range(from, from + page - 1);
+    if (error) return { data: out.length ? out : null, error };
+    const rows = data || [];
+    out.push(...rows);
+    if (rows.length < page) break;
+  }
+  return { data: out, error: null };
+}
+
 const S = {
   tile: { padding: '14px 16px', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12 },
   lbl: { fontSize: 10, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 },
@@ -42,33 +57,31 @@ export default function LoyaltyReport({ rangeFrom, rangeTo, initialTab }) {
 
         // Fetch all data in parallel
         const [membersRes, tiersRes, stampProgsRes, stampCardsRes, txRes, stampTxRes] = await Promise.all([
-          platformSupabase.from('customer_loyalty')
+          readAllRows(() => platformSupabase.from('customer_loyalty')
             .select('customer_id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, tier_id, enrolled_at, last_earn_at')
-            .eq('company_id', companyId),
+            .eq('company_id', companyId).order('customer_id', { ascending: true })),
           platformSupabase.from('loyalty_tiers')
             .select('id, name, color, icon')
             .eq('company_id', companyId),
           platformSupabase.from('stamp_card_programs')
             .select('id, name, icon, stamps_required, reward_description, active')
             .eq('company_id', companyId),
-          platformSupabase.from('customer_stamp_cards')
+          readAllRows(() => platformSupabase.from('customer_stamp_cards')
             .select('id, customer_id, program_id, stamps_collected, completed_count, last_stamp_at')
-            .eq('company_id', companyId),
+            .eq('company_id', companyId).order('id', { ascending: true })),
           // Loyalty transactions in date range
-          supabase.from('loyalty_transactions')
+          readAllRows(() => supabase.from('loyalty_transactions')
             .select('id, customer_id, type, points, created_at, source')
             .eq('company_id', companyId)
             .gte('created_at', new Date(rangeFrom).toISOString())
             .lte('created_at', new Date(rangeTo).toISOString())
-            .order('created_at', { ascending: false })
-            .limit(500),
+            .order('created_at', { ascending: false }).order('id', { ascending: true })),
           // Stamp transactions in date range
-          supabase.from('stamp_transactions')
+          readAllRows(() => supabase.from('stamp_transactions')
             .select('id, customer_id, program_id, stamps, order_ref, trigger_item_name, created_at')
             .gte('created_at', new Date(rangeFrom).toISOString())
             .lte('created_at', new Date(rangeTo).toISOString())
-            .order('created_at', { ascending: false })
-            .limit(500),
+            .order('created_at', { ascending: false }).order('id', { ascending: true })),
         ]);
 
         // Fetch customer names for display

@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 /**
  * Receipt rasterisation helpers — turn URLs and strings into ESC/POS bytes.
  *
@@ -33,6 +34,33 @@ const GS = 0x1d;
  * @param {number} heightDots
  * @returns {Uint8Array}
  */
+/**
+ * 28 Sep 2026 (Peter, Leeds: "the receipt settings are taking effect but the QR code is just not
+ * printing"): the Sunmi NT311 prints the footer text but draws nothing for the native QR command
+ * (GS ( k). A QR sent as a raster picture (GS v 0, the way the logo prints) works on every ESC/POS
+ * printer. Same module size as before, with the standard 4 module white border.
+ */
+export function qrTextToGsV0(text, moduleSize = 6, errorCorrection = 'M') {
+  const code = QRCode.create(String(text), { errorCorrectionLevel: errorCorrection || 'M' });
+  const n = code.modules.size;
+  const data = code.modules.data;
+  const scale = Math.max(1, Math.min(16, moduleSize | 0));
+  const quiet = 4;
+  const dots = (n + quiet * 2) * scale;
+  const widthBytes = (dots + 7) >> 3;
+  const bits = new Uint8Array(widthBytes * dots);
+  for (let y = 0; y < dots; y++) {
+    const my = Math.floor(y / scale) - quiet;
+    if (my < 0 || my >= n) continue;
+    for (let x = 0; x < dots; x++) {
+      const mx = Math.floor(x / scale) - quiet;
+      if (mx < 0 || mx >= n) continue;
+      if (data[my * n + mx]) bits[y * widthBytes + (x >> 3)] |= (0x80 >> (x & 7));
+    }
+  }
+  return buildGsV0(bits, dots, dots);
+}
+
 export function buildGsV0(bits, widthDots, heightDots) {
   const widthBytes = (widthDots + 7) >> 3;
   const xL = widthBytes & 0xff, xH = (widthBytes >> 8) & 0xff;

@@ -75,6 +75,7 @@ const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('en-GB', { day:'2-di
 
 export default function Customers() {
   const [customers, setCustomers] = useState([]);
+  const [totalCount, setTotalCount] = useState(null);  // 28 Sep 2026: the real total (the list holds the newest page only)
   const [allLocations, setAllLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -189,6 +190,9 @@ export default function Customers() {
           .order('updated_at', { ascending: false })
           .limit(CUSTOMER_PAGE_SIZE);
         if (custErr) { setLoadError(custErr.message || 'The customer list could not be read.'); return; }
+        // 28 Sep 2026 (Peter: "1000 total" when there are 8,030): count every customer, not the page.
+        supabase.from('customers').select('id', { count: 'exact', head: true }).eq('org_id', orgId).is('deleted_at', null)
+          .then(({ count, error }) => { if (!error && typeof count === 'number') setTotalCount(count); }, () => {});
         const ids = (customerRows || []).map(c => c.id);
 
         // Per venue stats, by VENUE: the old read listed 1,000 customer ids in the URL (37 KB).
@@ -418,7 +422,7 @@ export default function Customers() {
           <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between' }}>
             <div>
               <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)' }}>Customers</div>
-              <div style={{ fontSize:13, color:'var(--t3)', marginTop:4 }}>{customers.length} total · {filtered.length} matching filter</div>
+              <div style={{ fontSize:13, color:'var(--t3)', marginTop:4 }}>{(totalCount ?? customers.length).toLocaleString('en-GB')} total · {filtered.length.toLocaleString('en-GB')} matching filter{totalCount != null && totalCount > customers.length ? ` (newest ${customers.length.toLocaleString('en-GB')} listed, search finds everyone)` : ''}</div>
             </div>
             <button onClick={exportCSV} disabled={!filtered.length}
               style={{ padding:'8px 14px', borderRadius:8, border:'1px solid var(--bdr2)', background: filtered.length ? 'var(--bg3)' : 'var(--bg2)', color: filtered.length ? 'var(--t1)' : 'var(--t4)', fontFamily:'inherit', fontWeight:700, fontSize:12, cursor: filtered.length ? 'pointer' : 'not-allowed' }}>
