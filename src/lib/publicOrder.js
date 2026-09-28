@@ -157,6 +157,24 @@ export function chooseTrackKey({ trackToken, paymentIntentId, phone } = {}) {
   return digits.length >= 4 ? digits.slice(-4) : null;
 }
 
+/**
+ * Runs one piece of best effort work after an order is placed (the customer record today). By
+ * then the order is saved and the money taken, so this never throws and never rejects: a fault
+ * would reach the checkout's own catch, which tells the guest the order was NOT saved and skips
+ * the confirmation. It also catches a throw while fn builds its arguments, which a .catch() on
+ * the returned promise cannot. From v5.9.16 to 28 Sep 2026 the QR and gift card checkouts named
+ * a payment id that did not exist in the attribution call and threw exactly there.
+ */
+export function afterPlaced(tag, fn) {
+  const warn = (e) => console.warn(`[${tag}] failed:`, e?.message || e);
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') r.then(undefined, warn);
+  } catch (e) {
+    warn(e);
+  }
+}
+
 /** Tracker link query string: ?track=REF&t=TOKEN (new) or ?track=REF&p=LAST4 (old links). */
 export function trackLinkParams({ ref, trackToken, phone } = {}) {
   const q = new URLSearchParams();

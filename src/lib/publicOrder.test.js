@@ -18,7 +18,7 @@ import {
   openTabsFromResult, qrSessionWriteAction, UNVERIFIED_MESSAGE,
   onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs, publicOrderRefusalMessage,
   tabRoundJoinCode, mergeResumeTab, verifyPaymentInBackground, VERIFY_DELAYS_MS, trackerPaymentChecking,
-  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage, mergeTrackerRow,
+  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage, mergeTrackerRow, afterPlaced,
 } from './publicOrder.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -169,6 +169,27 @@ test('tracker key: token, else the QR card payment id, else the last 4 digits', 
   assert.equal(chooseTrackKey({}), null);
   assert.equal(trackLinkParams({ ref: 'OL-1', trackToken: 'abc' }), 'track=OL-1&t=abc');
   assert.equal(trackLinkParams({ ref: 'OL-1', phone: '07700900123' }), 'track=OL-1&p=0123');
+});
+
+// ── after the order is placed ────────────────────────────────────────────────
+
+test('afterPlaced: a throw while the arguments are built never reaches the checkout', (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  // the v5.9.16 fault: a name that does not exist, read while building the call's arguments
+  const ret = afterPlaced('QrCheckout attribute', () => { throw new ReferenceError('tabPi is not defined'); });
+  assert.equal(ret, undefined);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.deepEqual(warn.mock.calls[0].arguments, ['[QrCheckout attribute] failed:', 'tabPi is not defined']);
+});
+
+test('afterPlaced: a rejected promise is caught, a resolved one is left alone', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  afterPlaced('OnlineCheckout attribute', () => Promise.reject(new Error('rpc down')));
+  afterPlaced('OnlineCheckout attribute', () => Promise.resolve('cust-1'));
+  afterPlaced('OnlineCheckout attribute', () => undefined);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(warn.mock.callCount(), 1);
+  assert.deepEqual(warn.mock.calls[0].arguments, ['[OnlineCheckout attribute] failed:', 'rpc down']);
 });
 
 test('the tracker reads order_track_row and no longer listens to every order of the venue', () => {
