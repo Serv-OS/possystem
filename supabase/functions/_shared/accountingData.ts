@@ -4,7 +4,8 @@
 // the pure rules (businessDay.js, accountingDay.js) so those stay testable under `npm test`.
 //
 //   venueClock(platform, opsLocationId)   the venue's zone, business day start and currency
-//   loadAccountingDay(ops, platform, id, ymd)  -> { venue, day, summary }
+//   venueTaxRates(ops, opsLocationId)      the venue's tax_rates rows (28 Sep 2026)
+//   loadAccountingDay(ops, platform, id, ymd)  -> { venue, day, summary, taxRates }
 //
 // Reads are PAGED: PostgREST returns at most 1000 rows per request, and until v5.9.11
 // xero-sales read one unpaged request, so a venue with more than 1000 checks in a day
@@ -17,7 +18,8 @@ const PAGE = 1000;
 // How far back a refunded check can have closed and still have a refund dated today.
 const REFUND_LOOKBACK_DAYS = 400;
 
-const BASE_COLS = 'id,closed_at,total,subtotal,tip,service,tax_amount,method,payment_method,status,voided,refunds,gift_card,payment_intents,processor,source,loyalty';
+// tax_breakdown (28 Sep 2026): the per rate VAT a till close saved, for one Xero line per rate.
+const BASE_COLS = 'id,closed_at,total,subtotal,tip,service,tax_amount,tax_breakdown,method,payment_method,status,voided,refunds,gift_card,payment_intents,processor,source,loyalty';
 // Newer columns: read when the database has them. tenders arrives with migration 20260919n;
 // promo (the kiosk's promo credit) is missing on a venue database that never got it.
 const OPTIONAL_COLS = ['tenders', 'promo'];
@@ -91,6 +93,20 @@ export function refundRows(ops: any, locationId: string, fromIso: string, toIso:
   return pagedChecks(ops, (q) => q.eq('location_id', locationId).gte('closed_at', since).lt('closed_at', toIso).neq('refunds', '[]'));
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The venue's tax rates, inactive ones included (older checks point at them), so each sale can
+ * post at its own VAT rate. [] for a location id that is not a uuid (tax_rates.location_id is
+ * one; a demo id would fail the read). Throws when the read fails: no VAT is booked on a guess.
+ */
+export async function venueTaxRates(ops: any, locationId: string): Promise<any[]> {
+  if (!UUID.test(String(locationId || ''))) return [];
+  const { data, error } = await ops.from('tax_rates').select('id,name,code,rate,type,is_default,active').eq('location_id', locationId);
+  if (error) throw new Error(`Could not read the venue's tax rates: ${error.message}`);
+  return data || [];
+}
+
 /**
  * One venue business day, read and summed. `venue` may be passed in when already known.
  * `fromMs` moves the start of the window (only the hand over from the old UTC days uses it:
@@ -102,10 +118,11 @@ export async function loadAccountingDay(ops: any, platform: any, locationId: str
   if (opts.fromMs != null && Number.isFinite(opts.fromMs) && opts.fromMs < day.toMs) {
     day = { ...day, fromMs: opts.fromMs, fromIso: new Date(opts.fromMs).toISOString() };
   }
-  const [sale, refund] = await Promise.all([
+  const [sale, refund, taxRates] = await Promise.all([
     salesRows(ops, locationId, day.fromIso, day.toIso),
     refundRows(ops, locationId, day.fromIso, day.toIso),
+    venueTaxRates(ops, locationId),
   ]);
-  const summary = buildAccountingDay({ day, saleRows: sale, refundRows: refund, venue: v });
-  return { venue: v, day, summary };
+  const summary = buildAccountingDay({ day, saleRows: sale, refundRows: refund, venue: v, taxRates });
+  return { venue: v, day, summary, taxRates };
 }

@@ -10,10 +10,13 @@ async function call(fn, body) {
   const { data, error } = await supabase.functions.invoke(fn, { body });
   if (error) {
     let msg = error.message;
-    try { const ctx = await error.context?.json?.(); if (ctx?.error) msg = ctx.error; } catch { /* ignore */ }
-    throw new Error(msg || 'request failed');
+    let blocked = null;
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) msg = ctx.error; if (Array.isArray(ctx?.blocked)) blocked = ctx.blocked; } catch { /* ignore */ }
+    // 28 Sep 2026: a Xero push refused for a VAT rate with no match names the rates, so the
+    // mapping screen can offer a row for each.
+    throw Object.assign(new Error(msg || 'request failed'), blocked ? { blocked } : {});
   }
-  if (data?.error) throw new Error(data.error);
+  if (data?.error) throw Object.assign(new Error(data.error), Array.isArray(data.blocked) ? { blocked: data.blocked } : {});
   return data;
 }
 
