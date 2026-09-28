@@ -11,6 +11,7 @@ import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInA
 import { getActiveLocationSync, ensureAuthToken, isMock } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
+import { usableOrderRef } from '../lib/payments/terminalJobCloser';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
@@ -418,7 +419,9 @@ export default function BarSurface() {
       // id the gift-card debit was keyed to, so a later refund can find the ledger row.
       // (The held-card capture path at line ~461 sends none and keeps the store's chk-<ts>.)
       ...(payInfo?.closedCheckId ? { id: payInfo.closedCheckId } : {}),
-      ref: 'TAB-' + getNextOrderRefLocal().slice(1),  // 'TAB-' + numeric portion of R<n>
+      // 28 Sep 2026: a tab sent to a card machine froze its TAB- ref into the job, and whichever
+      // device books the job books it (CheckoutModal getOrderRef); otherwise mint one as before.
+      ref: usableOrderRef(payInfo?.orderRef) || ('TAB-' + getNextOrderRefLocal().slice(1)),  // 'TAB-' + numeric portion of R<n>
       server: staff?.name || 'Staff',
       covers: 1,
       orderType: 'bar-tab',

@@ -9,22 +9,49 @@
  * closeApprovedTerminalJob, which elects a single closer via the job's pre-minted
  * closed_check_id and writes the check + clears the table exactly once across all devices.
  *
- * Mode 3 (pos_send_to_terminal) is deliberately NOT handled here — the till already
- * closes it. The source filter in fetchApprovedTablePayJobs keeps the two disjoint.
+ * Since v5.5.862 it is also the durable close for Mode 3 (pos_send_to_terminal): the till's
+ * checkout screen books those itself, but a closed screen, a crash or a reload left them
+ * approved forever (RECONCILABLE_SOURCES in lib/payments/terminalJobs.js).
+ *
+ * 28 Sep 2026: WHICH device books, and when, is lib/payments/terminalJobCloser.js. The till
+ * that sent the job books it (after its own checkout screen, which books the full record);
+ * another till waits 30 s, a kitchen screen or a Back Office tab 90 s, a host stand never.
+ * Before this every device booked at once, and at Coffee Boy Leeds a kitchen screen booked
+ * half the reader sales under a ref from its own lease.
  */
 
-import { getLocationId, supabase } from '../lib/supabase';
+import { getLocationId, supabase, getDeviceMode } from '../lib/supabase';
 import { useStore } from '../store';
-import { fetchApprovedTablePayJobs } from '../lib/payments/terminalJobs';
+import { fetchApprovedTablePayJobs, getPosDeviceId } from '../lib/payments/terminalJobs';
 import { getLocationProcessor } from '../lib/payments/processor';
+import { closerRole, closeWaitMs, isDue, createSightings, isWatchedHere } from '../lib/payments/terminalJobCloser';
 
 let _timer = null;
 let _adyenWarm = null;
 let _locationId = null;
 let _running = false;
+// When THIS device first saw each approved job (its own clock, see terminalJobCloser).
+const _sightings = createSightings();
+
+// Monotonic where the webview has it, so a clock correction cannot shorten a wait.
+const clockNow = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
+  ? performance.now() : Date.now();
+
+// Read every tick: the device profile (deviceConfig) can land after the reconciler starts.
+function thisCloser() {
+  let pairedType = null;
+  try { pairedType = JSON.parse(localStorage.getItem('rpos-device') || 'null')?.type || null; } catch { /* unpaired */ }
+  return {
+    role: closerRole({ mode: getDeviceMode(), pairedType, deviceConfig: useStore.getState().deviceConfig }),
+    myDeviceId: getPosDeviceId(),
+  };
+}
 
 export async function startTerminalJobReconciler() {
   if (_running) return;
+  // A host stand (Tables Ready, Table Bookings) never books a sale: it cannot write closed_checks
+  // and cannot read terminal jobs, so it only ever logged a refusal every 8 s.
+  if (closerRole({ mode: getDeviceMode() }) === 'host') return;
   _running = true;
 
   _locationId = await getLocationId().catch(() => null);
@@ -52,8 +79,14 @@ export async function startTerminalJobReconciler() {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     try {
       const jobs = await fetchApprovedTablePayJobs(_locationId);
+      _sightings.keepOnly(jobs.map(j => j.id));
+      const me = thisCloser();
+      const now = clockNow();
       // Sequential, not parallel: calmer on the DB, and closes are independent.
       for (const job of jobs) {
+        const firstSeen = _sightings.see(job.id, now);
+        const wait = closeWaitMs(job, { ...me, watchedHere: isWatchedHere(job.id) });
+        if (!isDue(wait, firstSeen, now)) continue;   // the till that sent it books it first
         await useStore.getState().closeApprovedTerminalJob(job);
       }
     } catch (e) {

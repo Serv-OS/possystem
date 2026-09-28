@@ -42,6 +42,7 @@ import { persistTransfer } from '../sync/SessionSync';
 import { mustChangeRow } from '../lib/rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
+import { usableOrderRef } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -6293,7 +6294,9 @@ export const useStore = create((set, get) => ({
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
 
-    const ref = getNextOrderRefLocal();
+    // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
+    // getOrderRef); the checkout's close and the reconciler's both book that one.
+    const ref = usableOrderRef(paymentInfo.orderRef) || getNextOrderRefLocal();
     // v5.5.279: stamp locationId on in-memory record so the cross-location
     // merge filter in BOReports can exclude checks from other locations.
     // v5.5.311: fall back to the durable rpos-active-location tag if the sync
@@ -6524,7 +6527,12 @@ export const useStore = create((set, get) => ({
         { pspRef: l.transactionId, processor: job.processor || 'ryft' })),
     ]);
 
+    // 28 Sep 2026: the ref the till froze into the job when it sent it (null from an older till,
+    // or a job no till sent, like Pay at table on the reader: those mint one here, as before).
+    const frozenRef = usableOrderRef(d.orderRef);
+
     const termPay = {
+      ...(frozenRef ? { orderRef: frozenRef } : {}),
       tenders: jobTenders,
       // v5.9.12 — promo / loyalty credits that lowered the added-on tax on the
       // charged amount (CheckoutModal froze them into the draft); buildCloseRecord
@@ -6579,7 +6587,7 @@ export const useStore = create((set, get) => ({
       } catch { headlessTax = null; }
       record = {
         id: job.closed_check_id,
-        ref: getNextOrderRefLocal(),
+        ref: frozenRef || getNextOrderRefLocal(),
         tableId, tableLabel: d.tableLabel || tableId,
         locationId: d.locationId || null,
         server: d.server || 'Staff', staffId: d.staffId || null,
@@ -6978,6 +6986,15 @@ export const useStore = create((set, get) => ({
       // path would double-book; just clear the cart state and stop.
       return null;
     }
+    // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
+    // getOrderRef), and any device that books the job books that ref. Give it to the walk in
+    // BEFORE the kitchen send below, so the ticket, the receipt and the record all carry it.
+    // A walk in that already has a ref (sent earlier, or reopened) froze that same ref.
+    const frozenRef = usableOrderRef(paymentInfo.orderRef);
+    if (frozenRef && !walkInOrder.ref && walkInOrder === get().walkInOrder) {
+      set({ walkInOrder: { ...walkInOrder, ref: frozenRef } });
+      walkInOrder = get().walkInOrder;
+    }
     // v5.5.792: PAYING MUST GUARANTEE PRODUCTION. Counter/walk-up staff often take
     // payment without ever tapping Send — the check used to close paid with NO KDS
     // ticket and no kitchen print. If any line was never fired (never sent, or
@@ -7028,7 +7045,7 @@ export const useStore = create((set, get) => ({
     const record = {
       // v5.5.902: adopt CheckoutModal's pre-minted id (see buildCloseRecord).
       id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
-      ref: existingRef || getNextOrderRefLocal(),
+      ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
       tableLabel: null,
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter

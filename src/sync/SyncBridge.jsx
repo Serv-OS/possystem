@@ -731,7 +731,9 @@ export default function SyncBridge({ onSyncPulse }) {
     if (!isMock && getDeviceMode() !== 'kds') startSessionReconciler();
     // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
     if (!isMock) startTablePlanSync();
-    if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX
+    // v5.5.846 — close tables paid on the PAX. 28 Sep 2026: on every device that mounts this
+    // bridge, but the reconciler itself decides who books first (lib/payments/terminalJobCloser.js).
+    if (!isMock) startTerminalJobReconciler();
 
 
     // Load location-level settings from Supabase on boot
