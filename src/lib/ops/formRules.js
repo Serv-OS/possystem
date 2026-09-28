@@ -4,8 +4,10 @@
 // NO imports, so node:test loads it, and the tablet, Back Office and the data layer share it.
 //
 //   Documents: categories, the 20 MB limit, file type and name checks, bucket paths, opening.
-//   Forms: field types, form and question checks, answer checks, the Accident book template,
-//   answer text, CSV export and the print page.
+//   Forms: field types, form and question checks, answer checks, answer text, finding a form
+//   by name, searching and paging completed forms, CSV export and the print page.
+//   (28 Sep 2026: no ready made forms. Every form is built and named by the venue, an
+//   "Accident book" included; Peter's call.)
 //
 // MIRRORS supabase/migrations/20260928c_OPS_documents_forms.sql: the category keys, the
 // 20 MB limit, the private 'ops-files' bucket and its paths
@@ -413,43 +415,9 @@ export function dataUrlToBytes(dataUrl) {
 const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic', 'image/heif': 'heif' };
 export const extForMime = (mime) => MIME_EXT[String(mime || '').toLowerCase()] || '';
 
-// ── The Accident book (ready made, added in one tap) ──────────────────────────
-export const ACCIDENT_BOOK_TEMPLATE = Object.freeze({
-  key: 'accident_book',
-  name: 'Accident book',
-  description: 'Record every accident or injury at the venue, to staff, customers, contractors or anyone else. Keep each entry for at least 3 years.',
-  fields: Object.freeze([
-    { id: 'injured_name', type: 'short_text', label: "Injured person's name", help: 'Full name of the person who was hurt.', required: true, options: [] },
-    { id: 'injured_role', type: 'single_choice', label: 'Their role', help: 'Who they are at the venue.', required: true, options: ['Staff', 'Customer', 'Contractor', 'Other'] },
-    { id: 'injured_contact', type: 'long_text', label: 'Their contact details', help: 'Address, phone number or email, so the venue can follow up.', required: false, options: [] },
-    { id: 'incident_date', type: 'date', label: 'Date of the accident', help: '', required: true, options: [] },
-    { id: 'incident_time', type: 'time', label: 'Time of the accident', help: '', required: true, options: [] },
-    { id: 'location', type: 'short_text', label: 'Where it happened', help: 'For example: kitchen, next to the fryer.', required: true, options: [] },
-    { id: 'what_happened', type: 'long_text', label: 'What happened', help: 'Describe how the accident happened, in plain words.', required: true, options: [] },
-    { id: 'injury', type: 'long_text', label: 'The injury', help: 'For example: burn, cut, sprain, bump to the head.', required: true, options: [] },
-    { id: 'body_part', type: 'short_text', label: 'Part of the body injured', help: 'For example: left hand.', required: true, options: [] },
-    { id: 'first_aid_given', type: 'long_text', label: 'First aid given', help: 'What was done. Write None if no first aid was given.', required: true, options: [] },
-    { id: 'first_aid_by', type: 'short_text', label: 'First aid given by', help: 'Name of the first aider.', required: false, options: [] },
-    { id: 'witnesses', type: 'long_text', label: 'Witnesses', help: 'Names and contact details of anyone who saw it.', required: false, options: [] },
-    { id: 'riddor', type: 'yes_no', label: 'Reportable under RIDDOR', help: 'Yes if it caused a death, a specified injury to a worker (such as a broken bone other than a finger, thumb or toe), a worker off work or unable to do their normal work for more than 7 days, or a member of the public taken straight to hospital for treatment. Report it to the HSE at hse.gov.uk/riddor. If unsure, ask a manager.', required: true, options: [] },
-    { id: 'reported_by', type: 'short_text', label: 'Who is reporting', help: 'Your full name.', required: true, options: [] },
-    { id: 'signature', type: 'signature', label: 'Signature', help: 'The person reporting signs here.', required: true, options: [] },
-  ].map((f) => Object.freeze({ ...f, options: Object.freeze([...f.options]) }))),
-});
-export const FORM_TEMPLATES = [ACCIDENT_BOOK_TEMPLATE];
-
-/** A fresh, editable form from a template key (deep copy), or null. */
-export function formFromTemplate(key) {
-  const t = FORM_TEMPLATES.find((x) => x.key === key);
-  if (!t) return null;
-  return {
-    name: t.name, description: t.description, templateKey: t.key,
-    fields: t.fields.map((f) => ({ ...f, options: [...f.options] })),
-  };
-}
-
 // ── Showing answers ──────────────────────────────────────────────────────────
-function ukDate(s) {
+/** '2026-09-28' gives '28/09/2026'; anything else comes back as it is. */
+export function ukDate(s) {
   const m = DATE_RE.exec(String(s || ''));
   return m ? `${m[3]}/${m[2]}/${m[1]}` : String(s ?? '');
 }
@@ -517,13 +485,164 @@ export function submissionsToCsv(form, submissions, { timeZone } = {}) {
   return [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
 }
 
+const fileDate = (now) => {
+  const d = new Date(now);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 /** 'accident-book-submissions-2026-09-28.csv'. */
 export function csvFileName(formName, now = new Date()) {
   const slug = String(formName || 'form').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'form';
-  const d = new Date(now);
-  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return `${slug}-submissions-${ymd}.csv`;
+  return `${slug}-submissions-${fileDate(now)}.csv`;
+}
+
+/** 'completed-forms-2026-09-28.csv': every kind of form in one file. */
+export const completedCsvFileName = (now = new Date()) => `completed-forms-${fileDate(now)}.csv`;
+
+// \u2500\u2500 Finding a form, and finding completed forms (28 Sep 2026) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Peter: "we don't want an accident book [template]. We will have a form called accident book,
+// but [we need] the ability to pull forms up so we can name each form, then find the
+// different types of forms completed." The tablet finds a form by its name. Back Office,
+// Operations, Forms, Completed forms lists every submission at the venue, filtered by form,
+// by a search over the answers and who submitted, and by a date range.
+
+/** The API returns at most 1,000 rows per request, so completed forms are read in pages. */
+export const PAGE_ROWS = 1000;
+/** The most completed forms one list holds; narrow the dates to reach older ones. */
+export const MAX_COMPLETED_ROWS = 20000;
+
+/** The words of a search, lower case: '  Accident  BOOK ' gives ['accident', 'book']. */
+export const searchWords = (query) => String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+
+/** Does this (lower case) text hold every word? */
+export const textHasWords = (text, words) => (words || []).every((w) => String(text || '').includes(w));
+
+/** Forms whose name holds every word typed, in any order and any case (the tablet's search). */
+export function filterFormsByName(forms, query) {
+  const list = Array.isArray(forms) ? forms : [];
+  const words = searchWords(query);
+  if (!words.length) return list;
+  return list.filter((f) => textHasWords(String(f?.name || '').toLowerCase(), words));
+}
+
+/** What a completed form is searched by, lower case: who submitted it and every answer as
+ *  words (a date both as 28/09/2026 and 2026-09-28). Never a stored file path. */
+export function submissionSearchText(submission) {
+  const fields = Array.isArray(submission?.fields) ? submission.fields : [];
+  const ans = submission?.answers || {};
+  const parts = [String(submission?.submittedByName || '')];
+  fields.forEach((raw) => {
+    const f = normaliseField(raw);
+    const v = ans[f.id];
+    const t = answerText(f, v);
+    if (t) parts.push(t);
+    if (f.type === 'date' && typeof v === 'string' && t !== v) parts.push(v);
+  });
+  return parts.join('\n').toLowerCase();
+}
+
+/** Does a completed form match the search? An empty search matches everything. */
+export function submissionMatches(submission, query) {
+  const words = searchWords(query);
+  return !words.length || textHasWords(submissionSearchText(submission), words);
+}
+
+/** A date range filter in venue calendar days, either end optional. '' when it is fine. */
+export function dateRangeProblem(fromYmd, toYmd) {
+  if (fromYmd && !realDate(fromYmd)) return 'The From date is not a real date.';
+  if (toYmd && !realDate(toYmd)) return 'The To date is not a real date.';
+  if (fromYmd && toYmd && fromYmd > toYmd) return 'The From date is after the To date.';
+  return '';
+}
+
+/** How a date range reads: 'all dates', 'on 28/09/2026', 'from 01/09/2026',
+ *  'up to 28/09/2026' or '01/09/2026 to 28/09/2026'. */
+export function dateRangeText(fromYmd, toYmd) {
+  if (fromYmd && toYmd) return fromYmd === toYmd ? `on ${ukDate(fromYmd)}` : `${ukDate(fromYmd)} to ${ukDate(toYmd)}`;
+  if (fromYmd) return `from ${ukDate(fromYmd)}`;
+  if (toYmd) return `up to ${ukDate(toYmd)}`;
+  return 'all dates';
+}
+
+/**
+ * Read every row of one query in range pages of PAGE_ROWS. `fetchPage(from, to)` asks for
+ * rows from..to (inclusive) in ONE fixed order (submitted_at, then id, newest first) and
+ * returns { data, error }. Stops at a short page, an error, or `max` rows.
+ * Each row is kept once, by id: a submission that lands while the pages are read goes to the
+ * top (the database stamps its time) and pushes the rest down one place, so a page can
+ * repeat the row before it but never skip one. Submissions are never deleted.
+ * `onPage(rowsSoFar)` runs after each full page, so a list can show the first rows early.
+ * @returns {Promise<{ data: object[], error: any, capped: boolean }>} capped: there may be more.
+ */
+export async function readAllPages(fetchPage, { pageSize = PAGE_ROWS, max = MAX_COMPLETED_ROWS, onPage = null } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = (await fetchPage(from, from + pageSize - 1)) || {};
+    if (error) return { data: out, error, capped: false };
+    const rows = Array.isArray(data) ? data : [];
+    for (const r of rows) {
+      const id = r?.id;
+      if (id != null && seen.has(id)) continue;
+      if (id != null) seen.add(id);
+      out.push(r);
+    }
+    if (rows.length < pageSize) return { data: out, error: null, capped: false };
+    if (out.length >= max) return { data: out.slice(0, max), error: null, capped: true };
+    if (onPage) onPage(out.slice());
+  }
+}
+
+/** A one line preview of a completed form: its first answered text or choice question. */
+export function submissionPreview(submission) {
+  const ans = submission?.answers || {};
+  for (const raw of (Array.isArray(submission?.fields) ? submission.fields : [])) {
+    const f = normaliseField(raw);
+    if (!['short_text', 'long_text', 'single_choice'].includes(f.type)) continue;
+    const t = answerText(f, ans[f.id]);
+    if (t) return { label: f.label || '', text: t.replace(/\s+/g, ' ').trim() };
+  }
+  return null;
+}
+
+/**
+ * Completed forms of every kind as one CSV (CRLF lines): Submitted at, Form, Submitted by,
+ * then each form's questions headed "Form name: question", forms in name order. A row fills
+ * only its own form's columns. `forms` (the venue's forms) gives each form's current name and
+ * question order; questions a submission was made with that the form no longer has follow,
+ * as in submissionsToCsv.
+ */
+export function completedFormsToCsv(submissions, { forms = [], timeZone } = {}) {
+  const list = Array.isArray(submissions) ? submissions : [];
+  const byId = new Map((forms || []).filter((f) => f && f.id).map((f) => [f.id, f]));
+  const keyOf = (s) => String(s?.formId || s?.formName || '');
+  const nameOf = (s) => byId.get(s?.formId)?.name || s?.formName || 'Form';
+  const groups = new Map();
+  list.forEach((s) => {
+    const k = keyOf(s);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  });
+  const keys = [...groups.keys()].sort((a, b) => (
+    nameOf(groups.get(a)[0]).localeCompare(nameOf(groups.get(b)[0]), 'en', { sensitivity: 'base' }) || a.localeCompare(b)
+  ));
+  const cols = [];
+  keys.forEach((k) => {
+    const rows = groups.get(k);
+    const name = nameOf(rows[0]);
+    submissionFields(byId.get(rows[0]?.formId) || null, rows)
+      .forEach((f) => cols.push({ k, f, head: `${name}: ${f.label || f.id}` }));
+  });
+  const head = ['Submitted at', 'Form', 'Submitted by', ...cols.map((c) => c.head)];
+  const body = list.map((s) => {
+    const k = keyOf(s);
+    return [
+      formatWhen(s.submittedAt, timeZone), nameOf(s), s.submittedByName || '',
+      ...cols.map((c) => (c.k === k ? answerText(c.f, (s.answers || {})[c.f.id]) : '')),
+    ];
+  });
+  return [head, ...body].map((r) => r.map(csvCell).join(',')).join('\r\n');
 }
 
 export const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

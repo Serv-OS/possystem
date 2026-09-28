@@ -45,7 +45,7 @@ test('Operations tablet: Home tiles open Documents and Forms (also the Manager a
 });
 
 test('the tablet never reads a submission; it adds one as the signed in staff member', () => {
-  assert.doesNotMatch(tablet, /fetchSubmissions|signSubmissionFiles/);
+  assert.doesNotMatch(tablet, /fetchCompletedForms|fetchSubmissions|signSubmissionFiles|ops_form_submissions/);
   assert.match(tablet, /submitForm\(\{ form, answers, operator, source: 'tablet', submissionId \}, loc\)/);
   assert.match(tablet, /byName: operator\?\.name \|\| null, byStaffId: operator\?\.id \|\| null, source: 'tablet'/);
   // A photo input asks the shell whether it may open the camera (cameraCapture.test.js rule).
@@ -63,6 +63,56 @@ test('submissions: inserted without reading back, never in training mode, times 
   assert.match(formsLib, /String\(error\.code\) === '23505'\) return \{ data: \{ id \}, error: null, duplicate: true \}/);
   // Forms are compare and set on version.
   assert.match(formsLib, /\.eq\('location_id', locationId\)\.eq\('id', form\.id\)\.eq\('version', base\)\.select\('\*'\)/);
+});
+
+// 28 Sep 2026, Peter: "we don't want an accident book [template]. We will have a form called
+// accident book, but [we need] the ability to pull forms up so we can name each form, then
+// find the different types of forms completed."
+test('no ready made forms anywhere: no template in the app, the SQL or the screens', () => {
+  for (const [name, src] of [['forms.js', formsLib], ['formRules.js', rules], ['OpsForms', boForms], ['tablet', tablet]]) {
+    assert.doesNotMatch(src, /template_key|templateKey|ACCIDENT_BOOK|FORM_TEMPLATES|formFromTemplate|addFormFromTemplate/, name);
+    assert.doesNotMatch(src, /Add Accident book|ready made form\./i, name);
+  }
+  assert.doesNotMatch(stmts, /template_key|ops_forms_template_once/);
+  assert.doesNotMatch(surface, /Accident book and more/);
+});
+
+test('tablet: staff find a form by name, then fill it in', () => {
+  assert.match(tablet, /const shown = filterFormsByName\(list, find\);/);
+  assert.match(tablet, /<input type="search" value=\{find\} onChange=\{\(e\) => setFind\(e\.target\.value\)\} placeholder="Find a form by name"/);
+  assert.match(tablet, /\{shown\.map\(\(f\) => \(\s*<button key=\{f\.id\} onClick=\{\(\) => setActive\(f\)\}/);
+});
+
+test('Back Office Completed forms: every form, filter, search, dates, range pages in a fixed order', () => {
+  // The data layer: one venue, optional form and dates, 1,000 row range pages, a fixed order.
+  const fn = formsLib.slice(formsLib.indexOf('export async function fetchCompletedForms'));
+  assert.match(fn, /supabase\.from\('ops_form_submissions'\)\.select\('\*'\)\.eq\('location_id', locationId\);/);
+  assert.match(fn, /if \(formId\) q = q\.eq\('form_id', formId\);/);
+  assert.match(fn, /if \(fromIso\) q = q\.gte\('submitted_at', fromIso\);/);
+  assert.match(fn, /if \(toIso\) q = q\.lt\('submitted_at', toIso\);/);
+  assert.match(fn, /\.order\('submitted_at', \{ ascending: false \}\)\.order\('id', \{ ascending: false \}\)\.range\(from, to\)/);
+  assert.match(fn, /await readAllPages\(/);
+  assert.doesNotMatch(formsLib, /\.limit\(|\.lt\('submitted_at', before\)/, 'no keyset or single page reads left');
+  assert.match(sql, /create index if not exists ops_form_submissions_loc_idx\s+on public\.ops_form_submissions \(location_id, submitted_at desc, id desc\);/);
+  // The screen: the view, its filters, and the export of what the filters show.
+  assert.match(boForms, /\[\['completed', 'Completed forms'\], \['edit', 'Edit forms'\]\]/);
+  assert.match(boForms, /fetchCompletedForms\(\{\s*formId: formId \|\| null, fromIso, toIso,/);
+  assert.match(boForms, /<option value="">Every form<\/option>/);
+  assert.match(boForms, /type="search" value=\{query\}/);
+  assert.match(boForms, /type="date" value=\{fromYmd\}/);
+  assert.match(boForms, /type="date" value=\{toYmd\}/);
+  assert.match(boForms, /venueDayBoundsIso\(fromYmd, tz\)\.fromIso/);
+  assert.match(boForms, /venueDayBoundsIso\(toYmd, tz\)\.toIso/);
+  assert.match(boForms, /textHasWords\(hay\.get\(s\.id\), words\)/);
+  assert.match(boForms, /if \(selForm\) downloadCsv\(csvFileName\(selForm\.name\), submissionsToCsv\(selForm, filtered, \{ timeZone: tz \}\)\);/);
+  assert.match(boForms, /else downloadCsv\(completedCsvFileName\(\), completedFormsToCsv\(filtered, \{ forms, timeZone: tz \}\)\);/);
+  // Never export a list that did not finish loading.
+  assert.match(boForms, /const canExport = current && res\.done && !res\.err && filtered\.length > 0;/);
+  // The detail view, with print, stays.
+  assert.match(boForms, /<SubmissionDetail submission=\{openSub\}/);
+  assert.match(boForms, /buildSubmissionPrintHtml\(\{/);
+  // A result for older filters is never shown.
+  assert.match(boForms, /const current = !!key && res\.key === key;/);
 });
 
 test('documents: never overwrite a file, open the tab before the await, archive only', () => {

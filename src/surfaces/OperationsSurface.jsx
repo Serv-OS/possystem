@@ -299,7 +299,7 @@ function Home({ loc, operator, onOpen, onBell }) {
     { key: 'delivery', label: 'Deliveries', icon: 'inventory', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
     { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openMaint ? `${openMaint} open` : 'All clear', state: openMaint ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
     { key: 'documents', label: 'Documents', icon: 'note', sub: 'Open or upload', state: 'idle', hue: AREA_HUE.Documents, onClick: () => onOpen('documents') },
-    { key: 'forms', label: 'Forms', icon: 'edit', sub: 'Accident book and more', state: 'idle', hue: AREA_HUE.Forms, onClick: () => onOpen('forms') },
+    { key: 'forms', label: 'Forms', icon: 'edit', sub: 'Find one and fill it in', state: 'idle', hue: AREA_HUE.Forms, onClick: () => onOpen('forms') },
   ];
   // Overall today progress = temperature checks done + checklist tasks done, over everything due today.
   const tempReq = summary.done + summary.due + summary.missed;

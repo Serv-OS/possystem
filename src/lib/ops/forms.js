@@ -7,10 +7,11 @@
 //
 // Who may do what (row level security, the module's existing rule):
 //   * forms (the questions): read by Back Office and the venue's tablets; written by Back
-//     Office only, like checklist templates. Archived, never deleted.
+//     Office only, like checklist templates. Archived, never deleted. Every form is built and
+//     named by the venue (28 Sep 2026: no ready made forms, Peter's call).
 //   * submissions: ADDED by the venue's tablets and Back Office; READ by Back Office only,
-//     because they hold personal data (the Accident book). Never changed, never deleted.
-//     A tablet cannot read a submission back, so its insert asks for nothing back.
+//     because they can hold personal data (an accident book, say). Never changed, never
+//     deleted. A tablet cannot read a submission back, so its insert asks for nothing back.
 //   * photos and signatures: under <venue>/forms/<submission>/ in 'ops-files'; Back Office
 //     reads them through short lived signed links.
 //
@@ -19,10 +20,10 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { isTrainingMode } from '../trainingMode';
 import {
-  OPS_FILES_BUCKET, VIEW_URL_SECONDS, NOT_SET_UP, FILE_TYPES,
-  normaliseField, normaliseForm, validateFormDef, validateAnswers, cleanAnswers, formFromTemplate,
+  OPS_FILES_BUCKET, VIEW_URL_SECONDS, NOT_SET_UP, FILE_TYPES, MAX_COMPLETED_ROWS,
+  normaliseField, normaliseForm, validateFormDef, validateAnswers, cleanAnswers,
   dataUrlToBytes, extForMime, contentTypeFor, fileExtension, formFilePath, shortTag,
-  submissionFilePaths, isAbsentError, isUuid, newId,
+  submissionFilePaths, isAbsentError, isUuid, newId, readAllPages,
 } from './formRules';
 
 async function ensureLoc(locationId) {
@@ -38,7 +39,7 @@ const NO_VENUE = 'The venue is not resolved yet. Reopen this screen and try agai
 const formFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, description: r.description || '',
   fields: Array.isArray(r.fields) ? r.fields.map(normaliseField) : [],
-  templateKey: r.template_key || null, version: Number(r.version) || 1,
+  version: Number(r.version) || 1,
   createdAt: r.created_at, updatedAt: r.updated_at, updatedByName: r.updated_by_name || null,
   archivedAt: r.archived_at,
 });
@@ -71,7 +72,6 @@ export async function fetchForms(locationId = null, { includeArchived = false } 
 
 const saveFail = (error) => {
   if (isAbsentError(error)) return new Error(NOT_SET_UP.forms);
-  if (String(error?.code) === '23505') return new Error('This venue already has that ready made form. Archive the old one first.');
   return error instanceof Error ? error : new Error(error?.message || String(error));
 };
 
@@ -98,7 +98,7 @@ export async function saveForm(form, locationId = null, byName = null) {
       return { data: formFromRow(data[0]), error: null };
     }
     const { data, error } = await supabase.from('ops_forms').insert({
-      ...row, location_id: locationId, template_key: form.templateKey || null, version: 1, created_by_name: byName || null,
+      ...row, location_id: locationId, version: 1, created_by_name: byName || null,
     }).select('*');
     if (error) return { data: null, error: saveFail(error) };
     if (!data || !data.length) return { data: null, error: new Error('NOT saved. This login may not have access to this venue.') };
@@ -106,13 +106,6 @@ export async function saveForm(form, locationId = null, byName = null) {
   } catch (e) {
     return { data: null, error: saveFail(e) };
   }
-}
-
-/** Add a ready made form (the Accident book) in one tap. */
-export async function addFormFromTemplate(key, locationId = null, byName = null) {
-  const t = formFromTemplate(key);
-  if (!t) return { data: null, error: new Error('Unknown template') };
-  return saveForm(t, locationId, byName);
 }
 
 async function setFormArchived(id, locationId, archivedAt) {
@@ -137,7 +130,7 @@ export const restoreForm = (id, locationId = null) => setFormArchived(id, locati
  */
 export async function submitForm({ form, answers, operator = null, source = 'tablet', submissionId = null } = {}, locationId = null) {
   if (isMock || !supabase) return { data: null, error: new Error(NOT_LIVE) };
-  // TRAINING MODE never writes a real record (an Accident book entry above all).
+  // TRAINING MODE never writes a real record (an accident book entry above all).
   if (isTrainingMode()) return { data: null, error: new Error('Training mode: this form was not saved.') };
   if (!form?.id) return { data: null, error: new Error('No form') };
   const fields = (form.fields || []).map(normaliseField);
@@ -189,21 +182,34 @@ export async function submitForm({ form, answers, operator = null, source = 'tab
   }
 }
 
-/** Submissions of one form, newest first (Back Office only). Pass `before` (an ISO time) for
- *  the next page. { data, error, absent, message, more }. */
-export async function fetchSubmissions(formId, locationId = null, { limit = 200, before = null } = {}) {
-  if (isMock || !supabase) return { data: [], error: null, absent: false, message: '', more: false };
+/**
+ * Completed forms at the venue, newest first (Back Office only): every form, or one form
+ * (`formId`), optionally between two instants (`fromIso` inclusive, `toIso` exclusive; the
+ * screen turns venue calendar days into these).
+ * The API returns at most 1,000 rows per request, so this reads range pages (readAllPages)
+ * in one fixed order, submitted_at then id, both newest first, up to MAX_COMPLETED_ROWS.
+ * `onPage(rowsSoFar)` lets the list show the first rows while the rest load.
+ * @returns {{ data, error, absent, message, capped }} On an error `data` holds the rows read
+ *   before it, and the screen says the list is incomplete.
+ */
+export async function fetchCompletedForms({ formId = null, fromIso = null, toIso = null, max = MAX_COMPLETED_ROWS, onPage = null } = {}, locationId = null) {
+  const none = { data: [], error: null, absent: false, message: '', capped: false };
+  if (isMock || !supabase) return none;
   locationId = await ensureLoc(locationId);
-  if (!locationId || !formId) return { data: [], error: null, absent: false, message: '', more: false };
+  if (!locationId) return none;
   try {
-    let q = supabase.from('ops_form_submissions').select('*').eq('location_id', locationId).eq('form_id', formId);
-    if (before) q = q.lt('submitted_at', before);
-    const { data, error } = await q.order('submitted_at', { ascending: false }).limit(limit + 1);
-    if (error) return { ...loadFail(error, 'submissions'), more: false };
-    const rows = (data || []).map(subFromRow);
-    return { data: rows.slice(0, limit), error: null, absent: false, message: '', more: rows.length > limit };
+    const r = await readAllPages((from, to) => {
+      let q = supabase.from('ops_form_submissions').select('*').eq('location_id', locationId);
+      if (formId) q = q.eq('form_id', formId);
+      if (fromIso) q = q.gte('submitted_at', fromIso);
+      if (toIso) q = q.lt('submitted_at', toIso);
+      return q.order('submitted_at', { ascending: false }).order('id', { ascending: false }).range(from, to);
+    }, { max, onPage: onPage ? (rows) => onPage(rows.map(subFromRow)) : null });
+    const data = (r.data || []).map(subFromRow);
+    if (r.error) return { ...loadFail(r.error, 'every completed form'), data, capped: false };
+    return { data, error: null, absent: false, message: '', capped: r.capped };
   } catch (e) {
-    return { ...loadFail(e, 'submissions'), more: false };
+    return { ...loadFail(e, 'every completed form'), capped: false };
   }
 }
 

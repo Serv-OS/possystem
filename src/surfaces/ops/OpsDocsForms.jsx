@@ -8,9 +8,11 @@
 //   phone's own viewer in the app shells). Staff may upload one too: adding a record is what
 //   the module lets a paired tablet do, the same as raising maintenance. Archiving is Back
 //   Office only.
-//   Forms: fill in a venue's form (the Accident book). The submitter is the staff member
-//   signed in on the tablet. Submissions are manager only: they are read in Back Office, and
-//   the database never lets a tablet read one back.
+//   Forms: the venue names its own forms in Back Office (an "Accident book" is one it builds;
+//   there are no ready made forms). Staff find a form by name (a search box over the list)
+//   and fill it in. The submitter is the staff member signed in on the tablet. Completed
+//   forms are manager only: they are read in Back Office, and the database never lets a
+//   tablet read one back.
 //
 // Before migration 20260928c runs both say "not set up yet".
 
@@ -24,7 +26,7 @@ import { fetchDocuments, uploadDocument, openDocument } from '../../lib/ops/docu
 import { fetchForms, submitForm } from '../../lib/ops/forms';
 import {
   DOC_CATEGORIES, docCategoryLabel, checkDocumentDraft, titleFromFileName, formatBytes,
-  fileKind, fileKindWord, validateAnswers, validateAnswer, newId,
+  fileKind, fileKindWord, validateAnswers, validateAnswer, newId, filterFormsByName,
 } from '../../lib/ops/formRules';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -175,6 +177,7 @@ export function OpsForms({ loc, operator, onBack }) {
   const [absent, setAbsent] = useState('');
   const [err, setErr] = useState('');
   const [active, setActive] = useState(null);
+  const [find, setFind] = useState('');   // the name search; kept while a form is being filled in
 
   const reload = useCallback(() => fetchForms(loc).then((r) => {
     setAbsent(r.absent ? r.message : '');
@@ -185,16 +188,25 @@ export function OpsForms({ loc, operator, onBack }) {
 
   if (active) return <FormFill loc={loc} operator={operator} form={active} onDone={() => setActive(null)} />;
 
+  const list = forms || [];
+  const shown = filterFormsByName(list, find);
   return (
     <div>
-      <Header title="Forms" sub={forms == null ? '' : `${forms.length} form${forms.length === 1 ? '' : 's'}`} onBack={onBack} />
+      <Header title="Forms" sub={forms == null ? '' : `${list.length} form${list.length === 1 ? '' : 's'}`} onBack={onBack} />
       {absent ? <Note>{absent}</Note> : (
         <>
           {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</div>}
           {forms == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading...</div>}
-          {forms && forms.length === 0 && !err && <Note>No forms yet. A manager adds them in Back Office, under Operations, Forms.</Note>}
+          {forms && list.length === 0 && !err && <Note>No forms yet. A manager builds and names them in Back Office, under Operations, Forms.</Note>}
+          {list.length > 0 && (
+            <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a form by name"
+              aria-label="Find a form by name" autoComplete="off" style={{ ...fieldStyle, marginBottom: 12 }} />
+          )}
+          {list.length > 0 && shown.length === 0 && (
+            <Note>No form called &quot;{find.trim()}&quot;. Check the spelling, or ask a manager to add it in Back Office.</Note>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(forms || []).map((f) => (
+            {shown.map((f) => (
               <button key={f.id} onClick={() => setActive(f)} className="sv-tile" style={{ '--h': HUE.forms, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
                 <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${HUE.forms} / 0.18)`, color: `oklch(0.85 0.14 ${HUE.forms})`, flexShrink: 0 }}><Icon name="edit" size={19} /></div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -290,7 +302,7 @@ export function FormFill({ loc, operator, form, onDone }) {
         <div className="sv-glass" style={{ padding: 24, textAlign: 'center', marginBottom: 14 }}>
           <div style={{ width: 48, height: 48, borderRadius: 999, margin: '0 auto 10px', display: 'grid', placeItems: 'center', background: 'var(--grn-d)', color: 'var(--grn)' }}><Icon name="check" size={26} /></div>
           <div style={{ fontSize: 17, fontWeight: 800 }}>Form saved</div>
-          <div style={{ fontSize: 13, color: 'var(--t2)', marginTop: 6, lineHeight: 1.5 }}>Managers can read it in Back Office, under Operations, Forms.</div>
+          <div style={{ fontSize: 13, color: 'var(--t2)', marginTop: 6, lineHeight: 1.5 }}>Managers can read it in Back Office, under Operations, Forms, Completed forms.</div>
         </div>
         <button onClick={another} className="btn btn-acc" style={{ width: '100%', padding: 14, fontSize: 15, fontWeight: 800, borderRadius: 14 }}>Fill in another</button>
         <button onClick={onDone} className="btn btn-ghost" style={{ width: '100%', padding: 14, marginTop: 10, fontSize: 15, borderRadius: 14 }}>Back to forms</button>

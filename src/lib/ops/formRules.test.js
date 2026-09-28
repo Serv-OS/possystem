@@ -1,16 +1,20 @@
 // 28 Sep 2026 (v5.11.4): Operations Documents and Forms, the pure rules.
-// Form and answer checks, the Accident book template, CSV export, document size and type
-// checks, bucket paths and the print page.
+// Form and answer checks, finding forms by name, searching and paging completed forms, CSV
+// export, document size and type checks, bucket paths and the print page.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as rules from './formRules.js';
 import {
   MAX_FILE_BYTES, DOC_CATEGORIES, docCategoryLabel, isDocCategory, formatBytes, fileExtension,
   contentTypeFor, fileKind, checkDocumentFile, checkPhotoFile, checkDocumentDraft, safeFileName,
   titleFromFileName, documentPath, formFilePath, pathInVenue, docOpenMode, isAbsentError, isUuid,
   newId, newFieldId, blankField, FIELD_TYPES, normaliseField, normaliseForm, validateFieldDef,
   validateFormDef, isAnswered, validateAnswer, validateAnswers, cleanAnswers, dataUrlToBytes,
-  extForMime, ACCIDENT_BOOK_TEMPLATE, formFromTemplate, answerText, submissionFields, formatWhen,
+  extForMime, answerText, submissionFields, formatWhen,
   csvCell, submissionsToCsv, csvFileName, escapeHtml, submissionFilePaths, buildSubmissionPrintHtml,
+  ukDate, searchWords, textHasWords, filterFormsByName, submissionSearchText, submissionMatches,
+  dateRangeProblem, dateRangeText, readAllPages, PAGE_ROWS, MAX_COMPLETED_ROWS, submissionPreview,
+  completedFormsToCsv, completedCsvFileName,
 } from './formRules.js';
 
 const LOC = '7218c716-eeb4-4f96-b284-f3500823595c';
@@ -260,66 +264,6 @@ test('a signature data URL turns into PNG bytes', () => {
   assert.equal(extForMime('application/pdf'), '');
 });
 
-// ── The Accident book ────────────────────────────────────────────────────────
-test('Accident book template: every question Peter listed, in order, with the right types', () => {
-  assert.equal(ACCIDENT_BOOK_TEMPLATE.key, 'accident_book');
-  assert.equal(ACCIDENT_BOOK_TEMPLATE.name, 'Accident book');
-  const shape = ACCIDENT_BOOK_TEMPLATE.fields.map((f) => [f.id, f.type, f.required]);
-  assert.deepEqual(shape, [
-    ['injured_name', 'short_text', true],
-    ['injured_role', 'single_choice', true],
-    ['injured_contact', 'long_text', false],
-    ['incident_date', 'date', true],
-    ['incident_time', 'time', true],
-    ['location', 'short_text', true],
-    ['what_happened', 'long_text', true],
-    ['injury', 'long_text', true],
-    ['body_part', 'short_text', true],
-    ['first_aid_given', 'long_text', true],
-    ['first_aid_by', 'short_text', false],
-    ['witnesses', 'long_text', false],
-    ['riddor', 'yes_no', true],
-    ['reported_by', 'short_text', true],
-    ['signature', 'signature', true],
-  ]);
-  const role = ACCIDENT_BOOK_TEMPLATE.fields.find((f) => f.id === 'injured_role');
-  assert.deepEqual([...role.options], ['Staff', 'Customer', 'Contractor', 'Other']);
-  const riddor = ACCIDENT_BOOK_TEMPLATE.fields.find((f) => f.id === 'riddor');
-  assert.match(riddor.label, /RIDDOR/);
-  assert.match(riddor.help, /7 days/);
-  assert.match(riddor.help, /hospital/);
-  assert.match(riddor.help, /hse\.gov\.uk\/riddor/);
-});
-
-test('Accident book is a valid form, copied fresh each time, and the template cannot be changed', () => {
-  const a = formFromTemplate('accident_book');
-  assert.equal(validateFormDef(a).ok, true);
-  assert.equal(a.templateKey, 'accident_book');
-  a.fields[1].options.push('Visitor');
-  a.fields[0].label = 'changed';
-  assert.deepEqual([...ACCIDENT_BOOK_TEMPLATE.fields[1].options], ['Staff', 'Customer', 'Contractor', 'Other']);
-  assert.equal(ACCIDENT_BOOK_TEMPLATE.fields[0].label, "Injured person's name");
-  assert.equal(Object.isFrozen(ACCIDENT_BOOK_TEMPLATE.fields[0]), true);
-  assert.equal(formFromTemplate('nope'), null);
-  for (const f of ACCIDENT_BOOK_TEMPLATE.fields) {
-    assert.doesNotMatch(`${f.label} ${f.help}`, /[\u2013\u2014]/, `${f.id}: no en or em dashes`);
-  }
-});
-
-test('an Accident book entry: a filled one passes, a half filled one names each missing answer', () => {
-  const a = formFromTemplate('accident_book');
-  const good = {
-    injured_name: 'Sam Jones', injured_role: 'Customer', incident_date: '2026-09-28', incident_time: '13:05',
-    location: 'Front door step', what_happened: 'Slipped on a wet step', injury: 'Sprain', body_part: 'Left ankle',
-    first_aid_given: 'Ice pack', riddor: 'no', reported_by: 'Alex', signature: 'data:image/png;base64,iVBORw0KGgo=',
-  };
-  assert.equal(validateAnswers(a.fields, good).ok, true);
-  const half = validateAnswers(a.fields, { injured_name: 'Sam' });
-  assert.equal(half.ok, false);
-  assert.ok(half.errors.signature && half.errors.riddor && half.errors.incident_date);
-  assert.equal(half.errors.witnesses, undefined, 'witnesses are optional');
-});
-
 // ── Showing and exporting ────────────────────────────────────────────────────
 test('answerText', () => {
   assert.equal(answerText(F('yes_no'), 'yes'), 'Yes');
@@ -420,4 +364,198 @@ test('submissionFilePaths: only stored photo and signature paths', () => {
     answers: { p: 'loc/forms/1/p.jpg', s: 'data:image/png;base64,xx', t: 'loc/forms/not/a/file', q: null },
   };
   assert.deepEqual(submissionFilePaths(s), ['loc/forms/1/p.jpg']);
+});
+
+// ── A form the venue builds and names (28 Sep 2026: no ready made forms) ──────
+// Peter: "we don't want an accident book [template]. We will have a form called accident book".
+const ACCIDENT = {
+  id: 'form-accident', name: 'Accident book',
+  fields: [
+    { id: 'injured_name', type: 'short_text', label: "Injured person's name", required: true },
+    { id: 'injured_role', type: 'single_choice', label: 'Their role', required: true, options: ['Staff', 'Customer'] },
+    { id: 'incident_date', type: 'date', label: 'Date of the accident', required: true },
+    { id: 'what_happened', type: 'long_text', label: 'What happened', required: true },
+    { id: 'riddor', type: 'yes_no', label: 'Reportable under RIDDOR', required: true },
+    { id: 'witnesses', type: 'long_text', label: 'Witnesses' },
+    { id: 'photo', type: 'photo', label: 'Photo' },
+    { id: 'signature', type: 'signature', label: 'Signature', required: true },
+  ],
+};
+const TEMP = {
+  id: 'form-temp', name: 'Fridge temperature log',
+  fields: [
+    { id: 'unit', type: 'single_choice', label: 'Unit', required: true, options: ['Walk in', 'Bar fridge'] },
+    { id: 'temp', type: 'number', label: 'Temperature', required: true },
+  ],
+};
+
+test('no ready made forms: nothing called a template is left in the rules', () => {
+  for (const name of ['ACCIDENT_BOOK_TEMPLATE', 'FORM_TEMPLATES', 'formFromTemplate']) {
+    assert.equal(rules[name], undefined, name);
+  }
+  assert.equal(validateFormDef(ACCIDENT).ok, true, 'a venue can still build a form called Accident book');
+});
+
+test('a venue built Accident book entry: a filled one passes, a half filled one names each missing answer', () => {
+  const good = {
+    injured_name: 'Sam Jones', injured_role: 'Customer', incident_date: '2026-09-28',
+    what_happened: 'Slipped on a wet step', riddor: 'no', signature: 'data:image/png;base64,iVBORw0KGgo=',
+  };
+  assert.equal(validateAnswers(ACCIDENT.fields, good).ok, true);
+  const half = validateAnswers(ACCIDENT.fields, { injured_name: 'Sam' });
+  assert.equal(half.ok, false);
+  assert.ok(half.errors.signature && half.errors.riddor && half.errors.incident_date);
+  assert.equal(half.errors.witnesses, undefined, 'witnesses are optional');
+});
+
+// ── Finding a form by name (the tablet) ──────────────────────────────────────
+test('filterFormsByName: every word, any order, any case; an empty search shows every form', () => {
+  const forms = [ACCIDENT, TEMP, { id: 'x', name: 'Accident follow up' }, { id: 'y', name: null }];
+  assert.deepEqual(filterFormsByName(forms, '').map((f) => f.id), ['form-accident', 'form-temp', 'x', 'y']);
+  assert.equal(filterFormsByName(forms, '   ').length, 4);
+  assert.deepEqual(filterFormsByName(forms, 'accident').map((f) => f.id), ['form-accident', 'x']);
+  assert.deepEqual(filterFormsByName(forms, 'BOOK accident').map((f) => f.id), ['form-accident']);
+  assert.deepEqual(filterFormsByName(forms, 'fridge log').map((f) => f.id), ['form-temp']);
+  assert.deepEqual(filterFormsByName(forms, 'rota'), []);
+  assert.deepEqual(filterFormsByName(null, 'x'), []);
+  assert.deepEqual(searchWords('  Accident  BOOK '), ['accident', 'book']);
+  assert.equal(textHasWords('accident book', ['book', 'acc']), true);
+  assert.equal(textHasWords('accident book', ['log']), false);
+});
+
+// ── Completed forms: search, dates, paging, preview, CSV ─────────────────────
+const SUB_A = {
+  id: 's1', formId: 'form-accident', formName: 'Accident book', submittedAt: '2026-09-28T13:05:00Z', submittedByName: 'Alex Green',
+  fields: ACCIDENT.fields,
+  answers: {
+    injured_name: 'Sam Jones', injured_role: 'Customer', incident_date: '2026-09-27', what_happened: 'Slipped on the\nwet step',
+    riddor: 'no', photo: '7218c716/forms/s1/photo-abc123.jpg', signature: '7218c716/forms/s1/signature-def456.png',
+  },
+};
+const SUB_T = {
+  id: 's2', formId: 'form-temp', formName: 'Fridge log', submittedAt: '2026-09-27T08:00:00Z', submittedByName: 'Kim',
+  fields: TEMP.fields, answers: { unit: 'Walk in', temp: 3 },
+};
+
+test('completed form search: answers as words and who submitted, never a file path', () => {
+  const text = submissionSearchText(SUB_A);
+  assert.match(text, /alex green/);
+  assert.match(text, /sam jones/);
+  assert.match(text, /27\/09\/2026/);
+  assert.match(text, /2026-09-27/, 'a date is found either way');
+  assert.match(text, /\bno\b/, 'yes or no reads as a word');
+  assert.match(text, /photo attached/);
+  assert.doesNotMatch(text, /7218c716|abc123|\.png|\.jpg/, 'a stored path is never searched');
+  assert.equal(submissionMatches(SUB_A, ''), true);
+  assert.equal(submissionMatches(SUB_A, 'SAM wet'), true);
+  assert.equal(submissionMatches(SUB_A, 'alex'), true, 'the submitter');
+  assert.equal(submissionMatches(SUB_A, 'sam kim'), false, 'every word must match');
+  assert.equal(submissionMatches(SUB_T, 'walk 3'), true, 'numbers and choices');
+  assert.equal(submissionMatches({ id: 'z' }, 'x'), false);
+});
+
+test('date range: either end optional, real dates, From not after To, and how it reads', () => {
+  assert.equal(dateRangeProblem('', ''), '');
+  assert.equal(dateRangeProblem('2026-09-01', ''), '');
+  assert.equal(dateRangeProblem('', '2026-09-28'), '');
+  assert.equal(dateRangeProblem('2026-09-28', '2026-09-28'), '');
+  assert.match(dateRangeProblem('2026-09-29', '2026-09-28'), /after the To date/);
+  assert.match(dateRangeProblem('2026-02-30', ''), /From date is not a real date/);
+  assert.match(dateRangeProblem('', '2026-13-01'), /To date is not a real date/);
+  assert.equal(dateRangeText('', ''), 'all dates');
+  assert.equal(dateRangeText('2026-09-01', ''), 'from 01/09/2026');
+  assert.equal(dateRangeText('', '2026-09-28'), 'up to 28/09/2026');
+  assert.equal(dateRangeText('2026-09-01', '2026-09-28'), '01/09/2026 to 28/09/2026');
+  assert.equal(dateRangeText('2026-09-28', '2026-09-28'), 'on 28/09/2026');
+  assert.equal(ukDate('2026-09-28'), '28/09/2026');
+});
+
+// A fake API: at most PAGE_ROWS rows per request, newest first.
+function pager(total, { failAt = null, insertBeforePage = null } = {}) {
+  let rows = Array.from({ length: total }, (_, i) => ({ id: `r${String(total - i).padStart(6, '0')}` }));
+  const calls = [];
+  const fetchPage = async (from, to) => {
+    calls.push([from, to]);
+    if (failAt != null && calls.length === failAt) return { data: null, error: { message: 'network' } };
+    if (insertBeforePage != null && calls.length === insertBeforePage) rows = [{ id: 'new' }, ...rows];
+    return { data: rows.slice(from, Math.min(to + 1, from + PAGE_ROWS)), error: null };
+  };
+  return { fetchPage, calls };
+}
+
+test('readAllPages: 1,000 row range pages in order until a short page, every row once', async () => {
+  assert.equal(PAGE_ROWS, 1000);
+  const p = pager(2500);
+  const seen = [];
+  const r = await readAllPages(p.fetchPage, { onPage: (rows) => seen.push(rows.length) });
+  assert.deepEqual(p.calls, [[0, 999], [1000, 1999], [2000, 2999]]);
+  assert.equal(r.data.length, 2500);
+  assert.equal(new Set(r.data.map((x) => x.id)).size, 2500);
+  assert.equal(r.data[0].id, 'r002500', 'newest first, as the query ordered them');
+  assert.equal(r.error, null);
+  assert.equal(r.capped, false);
+  assert.deepEqual(seen, [1000, 2000], 'the list can show the first rows early');
+
+  const exact = pager(2000);
+  const r2 = await readAllPages(exact.fetchPage);
+  assert.deepEqual(exact.calls, [[0, 999], [1000, 1999], [2000, 2999]], 'a full last page asks once more');
+  assert.equal(r2.data.length, 2000);
+
+  const none = pager(0);
+  assert.deepEqual((await readAllPages(none.fetchPage)).data, []);
+  assert.deepEqual(none.calls, [[0, 999]]);
+});
+
+test('readAllPages: a form submitted while paging repeats a row, never skips one', async () => {
+  const p = pager(1500, { insertBeforePage: 2 });
+  const r = await readAllPages(p.fetchPage);
+  const ids = r.data.map((x) => x.id);
+  assert.equal(new Set(ids).size, ids.length, 'no row twice');
+  for (let i = 1; i <= 1500; i++) assert.ok(ids.includes(`r${String(i).padStart(6, '0')}`), `r${i} kept`);
+});
+
+test('readAllPages: an error stops with the rows so far; a cap says there may be more', async () => {
+  const bad = pager(3000, { failAt: 2 });
+  const r = await readAllPages(bad.fetchPage);
+  assert.ok(r.error);
+  assert.equal(r.data.length, 1000);
+  const big = pager(5000);
+  const c = await readAllPages(big.fetchPage, { max: 2000 });
+  assert.equal(c.capped, true);
+  assert.equal(c.data.length, 2000);
+  assert.equal(big.calls.length, 2);
+  assert.equal(MAX_COMPLETED_ROWS, 20000);
+});
+
+test('submissionPreview: the first answered text or choice question', () => {
+  assert.deepEqual(submissionPreview(SUB_A), { label: "Injured person's name", text: 'Sam Jones' });
+  assert.deepEqual(submissionPreview(SUB_T), { label: 'Unit', text: 'Walk in' });
+  assert.deepEqual(submissionPreview({ fields: [{ id: 'w', type: 'long_text', label: 'W' }], answers: { w: 'a\n  b' } }), { label: 'W', text: 'a b' });
+  assert.equal(submissionPreview({ fields: [{ id: 'n', type: 'number', label: 'N' }], answers: { n: 4 } }), null);
+});
+
+test('completedFormsToCsv: every kind of form in one sheet, each form in its own columns', () => {
+  const csv = completedFormsToCsv([SUB_A, SUB_T], { forms: [ACCIDENT, TEMP], timeZone: 'Europe/London' });
+  const lines = csv.split('\r\n');
+  assert.equal(lines.length, 3);
+  assert.equal(lines[0], [
+    'Submitted at', 'Form', 'Submitted by',
+    "Accident book: Injured person's name", 'Accident book: Their role', 'Accident book: Date of the accident',
+    'Accident book: What happened', 'Accident book: Reportable under RIDDOR', 'Accident book: Witnesses',
+    'Accident book: Photo', 'Accident book: Signature',
+    'Fridge temperature log: Unit', 'Fridge temperature log: Temperature',
+  ].join(','));
+  assert.equal(lines[1], '28/09/2026 14:05,Accident book,Alex Green,Sam Jones,Customer,27/09/2026,"Slipped on the\nwet step",No,,Photo attached,Signed,,');
+  assert.equal(lines[2], '27/09/2026 09:00,Fridge temperature log,Kim,,,,,,,,,Walk in,3', 'the current form name, then its own answers');
+  // A form that is gone from the list keeps the name it was submitted with.
+  const orphan = completedFormsToCsv([SUB_T], { forms: [], timeZone: 'Europe/London' });
+  assert.equal(orphan.split('\r\n')[0], 'Submitted at,Form,Submitted by,Fridge log: Unit,Fridge log: Temperature');
+  assert.equal(completedFormsToCsv([], {}), 'Submitted at,Form,Submitted by');
+  assert.equal(completedCsvFileName(new Date(2026, 8, 28, 12)), 'completed-forms-2026-09-28.csv');
+});
+
+test('one form filtered: the CSV is that form on its own, exactly as before', () => {
+  const csv = submissionsToCsv(ACCIDENT, [SUB_A], { timeZone: 'Europe/London' });
+  assert.equal(csv.split('\r\n')[0], "Submitted at,Submitted by,Injured person's name,Their role,Date of the accident,What happened,Reportable under RIDDOR,Witnesses,Photo,Signature");
+  assert.equal(csvFileName(ACCIDENT.name, new Date(2026, 8, 28, 12)), 'accident-book-submissions-2026-09-28.csv');
 });

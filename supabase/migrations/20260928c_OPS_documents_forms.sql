@@ -5,8 +5,9 @@
 -- "not set up yet" and nothing else changes.
 --
 --   1. public.ops_documents          a venue's documents (title, category, the stored file)
---   2. public.ops_forms              a venue's forms (the questions, as a jsonb list)
---   3. public.ops_form_submissions   completed forms (the Accident book), one row each
+--   2. public.ops_forms              a venue's forms, each named by the venue (the questions,
+--                                    as a jsonb list). No ready made forms (28 Sep 2026).
+--   3. public.ops_form_submissions   completed forms (an accident book entry, say), one row each
 --   4. the private bucket 'ops-files' (20 MB per file, any file type) and its storage rules
 --
 -- WHO MAY DO WHAT (the Operations module's existing rule: a paired tablet may ADD a record at
@@ -120,8 +121,7 @@ create table if not exists public.ops_forms (
   name             text not null check (char_length(btrim(name)) between 1 and 200),
   description      text,
   fields           jsonb not null default '[]'::jsonb check (jsonb_typeof(fields) = 'array'),
-  template_key     text,                                              -- 'accident_book' when added from the ready made one
-  version          integer not null default 1 check (version >= 1),  -- compare and set on every edit
+  version         integer not null default 1 check (version >= 1),  -- compare and set on every edit
   created_by_name  text,
   updated_by_name  text,
   created_at       timestamptz not null default now(),
@@ -130,9 +130,6 @@ create table if not exists public.ops_forms (
   constraint ops_forms_id_location_key unique (id, location_id)      -- target of the submissions' venue safe key
 );
 create index if not exists ops_forms_loc_idx on public.ops_forms (location_id) where archived_at is null;
--- one live copy of each ready made form per venue
-create unique index if not exists ops_forms_template_once
-  on public.ops_forms (location_id, template_key) where template_key is not null and archived_at is null;
 
 
 -- ============================================================================
@@ -157,6 +154,10 @@ create table if not exists public.ops_form_submissions (
 );
 create index if not exists ops_form_submissions_form_idx
   on public.ops_form_submissions (location_id, form_id, submitted_at desc);
+-- Back Office, Completed forms: every form at a venue, newest first, read in 1,000 row range
+-- pages in this exact order (submitted_at, then id).
+create index if not exists ops_form_submissions_loc_idx
+  on public.ops_form_submissions (location_id, submitted_at desc, id desc);
 
 create or replace function public.ops_form_submissions_stamp()
 returns trigger

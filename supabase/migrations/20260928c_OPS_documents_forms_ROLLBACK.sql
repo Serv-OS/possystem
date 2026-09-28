@@ -9,8 +9,9 @@
 --   The 'ops-files' bucket itself is left in place: remove it from the dashboard (Storage) once
 --   it is empty, if it is not wanted.
 --
--- IT REFUSES while any document or form submission exists: those are the venue's records (the
--- Accident book above all). Export them first (Back Office, Operations, Forms, Export CSV).
+-- IT REFUSES while any document or form submission exists: those are the venue's records (an
+-- accident book above all). Export them first (Back Office, Operations, Forms, Completed
+-- forms, Every form, Export CSV).
 -- To drop them anyway, change v_force to true below, knowing the rows are gone for good.
 --
 -- The app needs nothing: once the tables are gone, Documents and Forms say "not set up yet".
