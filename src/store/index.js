@@ -3549,7 +3549,11 @@ export const useStore = create((set, get) => ({
         if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1);
         return d.getTime();
       };
-      if (!bypassSchedule && customer?.collectionTime && !customer?.isASAP) {
+      // 28 Sep 2026 (Leeds, R9001 and R8674): a DINE-IN order is never held back. Staff added a
+      // loyalty customer with the "Later" 11:00 slot picked, the till parked two paid dine-in
+      // orders as 'scheduled', nothing reached the kitchen and nothing in Orders could clear them.
+      // Only collection, takeaway and delivery pre-orders wait for their time.
+      if (!bypassSchedule && orderType !== 'dine-in' && customer?.collectionTime && !customer?.isASAP) {
         const collectAt = _parseCollectionTimeToMs(customer.collectionTime);
         // v4.6.60: lead time configurable via Location settings (default 30min, 5-min increments)
       const _leadMin = (typeof get().locationConfig?.collectionLeadMinutes === 'number') ? get().locationConfig.collectionLeadMinutes : 30;

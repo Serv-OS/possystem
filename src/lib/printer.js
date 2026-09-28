@@ -17,6 +17,7 @@ import { mustChangeRow } from './rowWrites';
 import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation } from './receiptBranding';
 import { money } from './currency.js';
+import { buildShiftReportDoc } from './shiftReport.js';
 import { breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
@@ -881,6 +882,26 @@ class PrintService {
       idempotencyKey: opts.idempotencyKey || (check?.ref ? `tipslip-${check.ref}-${Date.now()}` : undefined),
       metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, type: 'merchant-tip-slip', routedBy: src },
       label: `Tip slip ${check?.ref || ''} - ${money(totals?.grand || 0)}`.trim(),
+    });
+  }
+
+  /**
+   * 28 Sep 2026: the X report (the shift so far) or Z report (at cash up) on this till's receipt
+   * printer. `report` is the buildShiftReportDoc input (lib/shiftReport.js).
+   */
+  async printShiftReport(report, printerId = null, opts = {}) {
+    const { printer, src } = this._receiptTarget(printerId, opts);
+    if (!printer?.address) {
+      return { ok: false, error: 'No receipt printer configured for this device', reason: 'no-printer' };
+    }
+    const spec = resolvePrinterSpec(printer);
+    const doc = buildShiftReportDoc(report, { cols: spec.cols });
+    const bytes = await encodeDocForPrinter(doc, printer);
+    const kind = report?.kind === 'Z' ? 'Z' : 'X';
+    return this._submitJob(printer, 'receipt', bytes, {
+      idempotencyKey: opts.idempotencyKey || `shift-report-${kind}-${Date.now()}`,
+      metadata: { type: `${kind.toLowerCase()}-report`, routedBy: src },
+      label: `${kind} report`,
     });
   }
 
