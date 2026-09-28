@@ -8,9 +8,12 @@
  * All queries are scoped to a location_id for multi-tenancy.
  */
 
-import { supabase, isMock, getLocationId, getActiveLocationSync, sendDeviceHeartbeat } from './supabase';
+import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
+import { copiesNeedingMasterRate } from './venueTaxRates';
+import { saveCopyTaxRates } from './bulkTax';
+import { readAllRows } from './venueMenuRead';
 import { reportWriteRefused } from './deviceLink';
 import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
@@ -21,16 +24,26 @@ import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
 import { bookedTaxRecord } from './taxShare';
 import { describeMenuChange } from './menuDiff';
-import { normaliseMenuRow } from './rowMapping';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
-import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
+import { isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
+import { menuItemRow } from './menuItemWrite';
+import { insertRowOnce, deleteRowChecked, updateScopeChecked } from './menuRowWrite';
+import { itemCodeRetry } from './menuWriters';
+import { decideWholeSave } from './threeWayMerge';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
 import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 import { saveSectionsChecked } from './sectionPlan';
 import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
+
+// 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
+// the caller passes none: the one THIS tab resolved (the same rule as store/index.js tabVenue).
+// rpos-bo-location (getActiveLocationSync) is shared by every tab of the browser, so a venue
+// switch in another Back Office tab used to send this tab's writes to that venue. Tills and every
+// other surface keep getActiveLocationSync, unchanged.
+const tabVenue = () => (isBackOfficeMode() && getResolvedLocationIdSync()) || getActiveLocationSync();
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -188,101 +201,17 @@ export const fetchMenuCategories = async (locationId = null) => {
   return supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order').order('label').order('id');
 };
 
-// ── Menus ─────────────────────────────────────────────────────────────────────
-// WHY THIS EXISTS (21 Sep 2026, live): Push to POS wrote items and categories
-// and NOT the menus they belong to. menu_categories.menu_id references
-// menus(id), so at a venue whose menus row was never in the database EVERY
-// category upsert died on
-//   23503 ... violates foreign key constraint "menu_categories_menu_id_fkey"
-// Huddersfield lost all four of its categories that way, from April until
-// today: the tills were fine (they run from the push snapshot, which carries
-// the categories) while the database had none, so menu boards, online ordering
-// and the kiosk had nothing to show and nobody could see why.
-//
-// KEEP IN SYNC with _sbUpsertMenuNow in store/index.js (the CLAUDE.md
-// two-paths gotcha): this is the PUSH's writer, that one is the editor's.
-export const upsertMenu = async (menu, locationId = null) => {
-  if (isMock) return { data: null, error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
-  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
-  const m = normaliseMenuRow(menu);
-  if (!m?.id) return { data: null, error: null };
-  const result = await supabase.from('menus').upsert({
-    id: m.id,
-    location_id: locationId,
-    name: m.name || 'Menu',
-    description: m.description || '',
-    is_default: m.isDefault || false,
-    is_active: m.isActive !== false,
-    sort_order: m.sortOrder || 0,
-    schedule: m.schedule ?? null,
-    priority: m.priority ?? 0,
-    scope: m.scope || 'local',
-    org_id: m.orgId ?? m.org_id ?? null,
-    updated_at: new Date().toISOString(),
-  });
-  reportSave('menu', result.error);
-  return result;
-};
-
-/** Adyen-style self heal: is this the menu_id foreign key, and nothing else? */
-const isMissingMenuRow = (error) =>
-  String(error?.code || '') === '23503' && /menu_id|menu_categories_menu_id_fkey/i.test(String(error?.message || ''));
-
-export const upsertMenuCategory = async (cat, locationId = null) => {
-  if (isMock) return { data: null, error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
-  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
-  // v5.5.316: build a CLEAN snake_case row. Previously this spread `...cat`
-  // (the camelCase store shape) alongside snake_case keys, so the payload
-  // carried unknown columns (menuId, parentId, sortOrder, defaultCourse,
-  // spacerSlots, accountingGroup, isSpecial) and PostgREST rejected the whole
-  // upsert (PGRST204) — silently, since the only caller .catch()es it. The push
-  // therefore never wrote categories to menu_categories, so kiosk/online (which
-  // query that table directly) saw stale categories. Mirror sbUpsertCategory.
-  const row = {
-    id: cat.id,
-    location_id: locationId,
-    menu_id: cat.menuId ?? cat.menu_id ?? null,
-    parent_id: cat.parentId ?? cat.parent_id ?? null,
-    label: cat.label ?? cat.name ?? 'Category',
-    icon: cat.icon ?? '🍽',
-    color: cat.color ?? '#3b82f6',
-    accounting_group: cat.accountingGroup ?? cat.accounting_group ?? '',
-    sort_order: cat.sortOrder ?? cat.sort_order ?? 0,
-    default_course: cat.defaultCourse ?? cat.default_course ?? 1,
-    spacer_slots: cat.spacerSlots ?? cat.spacer_slots ?? [],
-    is_special: cat.isSpecial ?? cat.is_special ?? false,
-    // v5.7.33: tax profile assignment — CONDITIONAL (touched-fields discipline):
-    // only written when the row carries the field, so a caller holding a
-    // pre-profile row can never null a saved assignment. Mirror of
-    // _sbUpsertCategoryNow in store/index.js — the CLAUDE.md two-paths gotcha.
-    ...(cat.taxProfileId !== undefined || cat.tax_profile_id !== undefined
-      ? { tax_profile_id: cat.taxProfileId ?? cat.tax_profile_id ?? null } : {}),
-    // v5.8.65: category photo, ONLY when a real category photo URL is present, so a
-    // Push from a stale tab can never wipe it. Mirror of _sbUpsertCategoryNow.
-    ...categoryImageField(cat),
-    updated_at: new Date().toISOString(),
-  };
-  let result = await supabase.from('menu_categories').upsert(row);
-  // v5.8.65: the image column is missing (migration rolled back while this tab still
-  // holds photo URLs): save the category without the photo instead of losing the edit.
-  if (result.error && row.image && isMissingImageColumn(result.error)) {
-    delete row.image;
-    result = await supabase.from('menu_categories').upsert(row);
-  }
-  // v5.9.22: the menu this category names is not in the database, so the
-  // foreign key refuses the whole row. Keep the CATEGORY rather than lose it
-  // over the link: a category with no menu still shows on every surface, and a
-  // lost one shows on none. Loud, because it means the menus row needs saving.
-  if (result.error && row.menu_id && isMissingMenuRow(result.error)) {
-    console.warn('[DB] category', row.id, 'names a menu that is not saved (', row.menu_id, ') — saving it without the menu link');
-    result = await supabase.from('menu_categories').upsert({ ...row, menu_id: null });
-  }
-  reportSave('category', result.error);   // v5.5.951 — loud, not console-only
-  if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
-  return result;
-};
+// ── Menus and categories: no writers here any more (27 Sep 2026) ───────────────
+// upsertMenu and upsertMenuCategory were Push to POS's writers: every push wrote every menu
+// and category from the Back Office tab's memory. Peter, 27 Sep 2026: "I archived choc
+// babychino but its still on the menu board". A push from a tab loaded before another
+// window's changes put its old copy back over them. The push now writes no menu rows at all
+// (it reads the menu fresh and sends the tills what the database holds). A creation the
+// database never received is listed and saved INSERT ONLY by the store (saveUnsavedMenuRows),
+// and every edit is a compare and set of the columns it changed (lib/menuWriters.js).
+// v5.9.22's rules live on there: menus before the categories that name them (the serial
+// chain), and a category is kept without its menu link rather than lost over it
+// (menuWriters.categoryMenuLinkRetry).
 
 
 export const fetchMenuItems = async (locationId = null) => {
@@ -305,131 +234,44 @@ export const fetchMenuItems = async (locationId = null) => {
  */
 export const fetchArchivedMenuItems = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   if (!locationId) return { data: [], error: null };
   return supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', true).order('updated_at', { ascending: false });
 };
 
-export const upsertMenuItem = async (item, locationId = null) => {
-  if (isMock) return { data: null, error: null };
-  // Always resolve real location — 'loc-demo' is the mock fallback, not a real location
+/**
+ * Save a NEW menu item: an INSERT that never overwrites (27 Sep 2026).
+ *
+ * This was upsertMenuItem, which built the whole row from memory and overwrote every column,
+ * archived included (`archived ?? false`). Peter, 27 Sep 2026: "I archived choc babychino but
+ * its still on the menu board": Push to POS ran it for every product from a Back Office tab
+ * loaded before the archive, and put the product back. Edits now go through the store's
+ * writer (lib/menuWriters.js: only the changed columns, compare and set on updated_at). This
+ * is for rows the database does not have yet (SyncBridge's local only items): an id that
+ * exists is left exactly as it is, and the result says so (outcome 'exists').
+ * The column mapping is lib/menuItemWrite.js menuItemRow, the one every writer uses; the
+ * v5.8.100 item code rule stands (a code the database refuses is dropped and the rest saved).
+ * Resolves { ok, outcome, row?, error? }.
+ */
+export const insertMenuItem = async (item, locationId = null) => {
+  if (isMock) return { ok: true, outcome: 'noop' };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
-  if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
-
-  // Build pricing jsonb — preserve existing or derive from scalar price
-  const pricing = item.pricing || { base: item.price || 0 };
-
-  // RENAME CASCADE — when BO renames an item, it patches `menuName` (display).
-  // The canonical `name` column previously held the original because `name`
-  // here read item.name directly without falling through to menuName. Result:
-  // menu_items.name went stale on every rename, breaking any report / query
-  // that looks up by name. Now name + menu_name + receipt_name + kitchen_name
-  // all cascade through the same chain so a rename updates them together.
-  const _displayName = item.menuName || item.menu_name || item.name || 'Item';
-  // v5.5.797: AUTO-MODIFIABLE SAFETY NET — a top-level product with modifier
-  // groups attached must never be written as plain 'simple': the till
-  // hard-skips the options screen for type='simple' (POSSurface needsModal),
-  // so the attached groups would never show. Mirrors the store-side flip in
-  // updateMenuItem/addMenuItem so both write paths agree.
-  const _parentId = item.parentId !== undefined ? item.parentId : (item.parent_id !== undefined ? item.parent_id : null);
-  const _assignedMods = item.assignedModifierGroups || item.assigned_modifier_groups || [];
-  let _type = item.type || 'simple';
-  if (_type === 'simple' && !_parentId && Array.isArray(_assignedMods) && _assignedMods.length > 0) _type = 'modifiable';
-  const dbItem = {
-    id:           item.id,
-    location_id:  locationId,
-    name:         _displayName,
-    menu_name:    _displayName,
-    receipt_name: item.receiptName || item.receipt_name || _displayName,
-    kitchen_name: item.kitchenName || item.kitchen_name || _displayName,
-    description:  item.description || '',
-    type:         _type,
-    cat:          item.cat         || null,
-    cats:         item.cats        || [],
-    parent_id:    _parentId,
-    sort_order:   item.sortOrder   ?? item.sort_order   ?? 0,
-    pricing,
-    allergens:    item.allergens   || [],
-    tags:         item.tags        || [],
-    assigned_modifier_groups:    item.assignedModifierGroups    || item.assigned_modifier_groups    || [],
-    assigned_instruction_groups: item.assignedInstructionGroups || item.assigned_instruction_groups || [],
-    // v5.5.948: combined mod+instruction flow order (see lib/optionFlow.js). Only
-    // written when the caller carries the field — an upsert from a path that never
-    // loaded it must not null out a saved drag order.
-    ...(item.optionGroupOrder !== undefined || item.option_group_order !== undefined
-      ? { option_group_order: item.optionGroupOrder ?? item.option_group_order ?? null } : {}),
-    visibility:   item.visibility  || { pos: true, kiosk: true, online: true },
-    // A real choice is kept. When nobody chose: a sub item is NOT sold alone, every other type is
-    // (lib/menuRules.js rule 6). This used to be "?? true", which switched Sold alone ON for
-    // every new sub item on its next save. _type is passed so the rule sees the type we write.
-    sold_alone:   resolveSoldAlone({ ...item, type: _type }),
-    archived:     item.archived    ?? false,
-    centre_id:    item.centreId    || item.centre_id    || null,
-    tax_rate_id:  item.taxRateId   || item.tax_rate_id  || null,
-    tax_overrides: item.taxOverrides || item.tax_overrides || {},
-    // v5.7.33: tax profile override — CONDITIONAL (touched-fields discipline):
-    // only written when the row carries the field. v5.7.33+ loaders stamp
-    // taxProfileId on every item row, so normal saves round-trip the real DB
-    // value; a caller holding a pre-profile row leaves the column alone.
-    ...(item.taxProfileId !== undefined || item.tax_profile_id !== undefined
-      ? { tax_profile_id: item.taxProfileId ?? item.tax_profile_id ?? null } : {}),
-    // v5.8.100: the short code we give ezCater and other partners for this
-    // product (menu_items.item_code, 20260917_OPS_menu_item_code.sql).
-    // CONDITIONAL, the same touched-fields discipline as tax_profile_id: an
-    // item loaded before the column existed carries no field, and a save from
-    // that path must leave the column alone rather than null a venue's code.
-    ...(item.itemCode !== undefined || item.item_code !== undefined
-      ? { item_code: itemCodeForSave(item.itemCode ?? item.item_code) } : {}),
-    image:        item.image || null,
-    // v4.6.3: ownership / sharing fields (added by v4.6.0 schema migration)
-    scope:           item.scope          || item.ownership_scope || 'local',
-    org_id:          item.orgId          ?? item.org_id          ?? null,
-    master_id:       item.masterId       ?? item.master_id       ?? null,
-    lock_pricing:    item.lockPricing    ?? item.lock_pricing    ?? false,
-    locked_fields:   item.lockedFields   ?? item.locked_fields   ?? [],
-    updated_at:   new Date().toISOString(),
-  };
-
-  let result = await supabase.from('menu_items').upsert(dbItem, { onConflict: 'id' });
-
-  // v5.8.100: NEVER LOSE A MENU SAVE OVER THE ITEM CODE. Two ways the code
-  // alone can be refused, and both end the same way: write the item again
-  // without it, so the name, price and everything else the person just typed is
-  // saved. The code is the only thing lost, and the caller is told.
-  //
-  //   1. the column is not there yet (the migration is run by hand)
-  //   2. another product at this venue already holds that code. The editor
-  //      checks first, so this is the race, or a clash with an ARCHIVED product
-  if (result.error && 'item_code' in dbItem
-      && (isMissingItemCodeColumn(result.error) || isDuplicateItemCodeError(result.error))) {
-    const duplicate = isDuplicateItemCodeError(result.error);
-    const retry = { ...dbItem };
-    delete retry.item_code;
-    result = await supabase.from('menu_items').upsert(retry, { onConflict: 'id' });
-    if (!result.error) result = { ...result, itemCodeRejected: duplicate ? 'duplicate' : 'missing-column' };
-  }
-
-  if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
-  reportSave('item', result.error);   // v5.5.951
-  return result;
+  if (!locationId || locationId === 'loc-demo') return { ok: false, outcome: 'error', error: new Error('No location') };
+  if (!item?.id) return { ok: false, outcome: 'error', error: new Error('No item id') };
+  const r = await insertRowOnce({
+    client: supabase, table: 'menu_items',
+    row: { ...menuItemRow(item), id: item.id, location_id: locationId },
+    retryWithout: itemCodeRetry,
+  });
+  if (r.outcome === 'created') scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
+  reportSave('item', r.outcome === 'error' ? r.error : null);   // v5.5.951; an existing row is not a failure
+  return r;
 };
 
-export const archiveMenuItem = async (id) => {
-  if (isMock) return { data: null, error: null };
-  // v5.5.279: location_id guard — never archive across tenants
-  const locationId = getActiveLocationSync() || await getLocationId();
-  return supabase.from('menu_items').update({ archived: true, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
-};
-
-// v5.5.801: flip ONLY the archived flag. Never route an archive/restore through
-// upsertMenuItem with a partial object — it builds a full row and defaults every
-// missing field (name→'Item', pricing→{base:0}, cat/parent_id→null, mods→[]),
-// wiping the item's real data.
-export const setMenuItemArchived = async (id, archived) => {
-  if (isMock) return { data: null, error: null };
-  const locationId = getActiveLocationSync() || await getLocationId();
-  return supabase.from('menu_items').update({ archived: !!archived, updated_at: new Date().toISOString() }).eq('id', id).eq('location_id', locationId);
-};
+// v5.5.801: an archive or restore flips ONLY the archived flag. The two helpers that did it
+// here (archiveMenuItem, setMenuItemArchived) had no callers and no row count check; they
+// were deleted on 27 Sep 2026. The one archive is the store's archiveMenuItem (a narrow
+// update scoped to the venue, 0 rows is a failure, run in the product's save queue).
 
 // ── Modifier groups ───────────────────────────────────────────────────────────
 // v5.5.834: modifier_groups was the ONLY table in the app written by raw fetch()
@@ -446,7 +288,7 @@ export const upsertModifierGroup = async (group, locationId = null) => {
   // 'loc-demo'`, so omitting it does NOT fail — the row silently lands on
   // 'loc-demo' and is invisible to every real venue. 'loc-demo' is also truthy,
   // so both checks below must test the literal as well as null/undefined/''.
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
   // COLUMN NOTES (schema read from the live DB, 21 Jul 2026 — this table predates
   // the migrations folder so there is no CREATE TABLE in the repo to check):
@@ -474,14 +316,16 @@ export const upsertModifierGroup = async (group, locationId = null) => {
 
 export const deleteModifierGroup = async (id, locationId = null) => {
   if (isMock) return { data: null, error: null };
-  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync() || await getLocationId();
+  if (!locationId || locationId === 'loc-demo') locationId = tabVenue() || await getLocationId();
   // v5.5.834: refuse an unscoped delete. The old raw fetch filtered on id ALONE
   // (`?id=eq.<id>`) — a cross-tenant hazard the moment two venues share a group id.
   // Same loc-demo trap as the upsert: the literal must be rejected, not just null.
   if (!locationId || locationId === 'loc-demo') return { data: null, error: new Error('No location') };
-  const result = await supabase.from('modifier_groups').delete().eq('id', id).eq('location_id', locationId);
-  if (result.error) console.error('[DB] modifier_groups delete failed:', result.error.message, 'group:', id);
-  return result;
+  // 27 Sep 2026: a delete the database refused (0 rows, the group still there) is a failure,
+  // never a success: the caller puts the group back and says so.
+  const r = await deleteRowChecked({ client: supabase, table: 'modifier_groups', id, locationId });
+  if (!r.ok) console.error('[DB] modifier_groups delete failed:', r.error?.message, 'group:', id);
+  return { data: null, error: r.ok ? null : r.error };
 };
 
 // ── Floor plan ────────────────────────────────────────────────────────────────
@@ -1208,11 +1052,44 @@ export const categoryPhotosReady = async () => {
 // v3.9.0 — image field in upsert
 
 // ── Quick Screen ───────────────────────────────────────────────────────────────
-export const saveQuickScreenIds = async (ids, locationId = null) => {
-  if (isMock) return;
-  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
-  if (!locationId || locationId === 'loc-demo') return;
-  await supabase.from('locations').update({ quick_screen_ids: ids }).eq('id', locationId);
+// 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board"): the grid is
+// saved WHOLE, so a Back Office window left open put back the grid it loaded over one saved in
+// another window since. An ordered grid cannot be merged safely, so it is compare and set by
+// value (lib/threeWayMerge.js decideWholeSave): the list is read at save time and written only
+// if it still holds what this window loaded (`base`). Resolves { ok, outcome, ids?, error? }:
+//   saved     written (0 rows back is a failure, never a save)
+//   noop      the database already holds this list
+//   conflict  changed in another window since: NOT written; `ids` is the list it holds now
+//   error     not written
+export const saveQuickScreenIds = async (ids, { base = null, locationId = null } = {}) => {
+  if (isMock) return { ok: true, outcome: 'noop' };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo' || !supabase) return { ok: false, outcome: 'error', error: new Error('Could not resolve location') };
+  const read = await supabase.from('locations').select('quick_screen_ids').eq('id', locationId).maybeSingle();
+  if (read.error) return { ok: false, outcome: 'error', error: read.error };
+  if (!read.data) return { ok: false, outcome: 'error', error: new Error('Quick Screen: this venue could not be read') };
+  const fresh = Array.isArray(read.data.quick_screen_ids) ? read.data.quick_screen_ids : [];
+  const decision = base == null ? 'write' : decideWholeSave(base, ids, fresh);
+  if (decision === 'noop') return { ok: true, outcome: 'noop', ids: fresh };
+  if (decision === 'conflict') return { ok: false, outcome: 'conflict', ids: fresh };
+  const { data, error } = await supabase.from('locations').update({ quick_screen_ids: ids }).eq('id', locationId).select('id');
+  // 0 rows is a plain success with an empty body: a policy matching nothing reads exactly like
+  // a save. Ask for the id back and treat nothing as the failure it is.
+  const err = error || (!data?.length ? new Error('Quick Screen update matched 0 rows') : null);
+  return err ? { ok: false, outcome: 'error', error: err } : { ok: true, outcome: 'saved', ids };
+};
+
+// 27 Sep 2026: the Quick Screen as the DATABASE holds it, saying whether the read worked (the
+// Quick Screen section's compare and set base: the store's list can be the last push's).
+// Resolves { ok, ids, error? }.
+export const readQuickScreenIds = async (locationId = null) => {
+  if (isMock || !supabase) return { ok: false, ids: null };
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return { ok: false, ids: null, error: new Error('Could not resolve location') };
+  const { data, error } = await supabase.from('locations').select('quick_screen_ids').eq('id', locationId).maybeSingle();
+  if (error) return { ok: false, ids: null, error };
+  if (!data) return { ok: false, ids: null, error: new Error('Quick Screen: this venue could not be read') };
+  return { ok: true, ids: Array.isArray(data.quick_screen_ids) ? data.quick_screen_ids : [] };
 };
 
 export const loadQuickScreenIds = async (locationId = null) => {
@@ -1492,6 +1369,86 @@ const memo60 = async (key, fn) => {
 export const clearShareMemos = () => { _memo60.clear(); _peerIdMapsMemo.clear(); };
 
 /**
+ * The tax rate each shared COPY at this venue should have: its master's rate,
+ * translated to this venue's own rate by name (and percentage), exactly as a
+ * share or a master edit writes it (27 Sep 2026). A copy's tax_rate_id is not
+ * the venue's own field (lib/shareCopy.js SHARED_OVERRIDABLE); every master edit
+ * rewrites it, so the only lasting answer is the master's.
+ *
+ * Returns Map(copy id -> { taxRateId, reason, ownerName }). Throws when the
+ * masters or a venue's rates could not be read, so nothing is written on a guess.
+ */
+export const masterTaxRatesForCopies = async (copies, locationId) => {
+  const out = new Map();
+  if (isMock || !supabase || !locationId || !Array.isArray(copies) || !copies.length) return out;
+  const masterIds = [...new Set(copies.map((c) => fieldOf(c, 'master_id')).filter(Boolean))];
+  const masters = new Map();
+  for (let i = 0; i < masterIds.length; i += 150) {
+    const { data, error } = await supabase.from('menu_items').select('id, location_id, tax_rate_id').in('id', masterIds.slice(i, i + 150));
+    if (error) throw new Error(`could not read the shared products' masters: ${error.message || error}`);
+    for (const m of data || []) masters.set(m.id, m);
+  }
+  const owners = [...new Set([...masters.values()].map((m) => m.location_id).filter((l) => l && String(l) !== String(locationId)))];
+  const names = new Map();
+  if (owners.length) {
+    try { const { data } = await supabase.from('locations').select('id,name').in('id', owners); for (const l of data || []) names.set(String(l.id), l.name); } catch { /* names are a courtesy */ }
+  }
+  const maps = new Map();
+  for (const owner of owners) {
+    // Never a remembered answer: this venue's rates may have been created a moment ago.
+    _peerIdMapsMemo.delete(`${owner}|${locationId}`);
+    maps.set(String(owner), await peerIdMapsFor(owner, locationId));
+  }
+  for (const c of copies) {
+    const m = masters.get(fieldOf(c, 'master_id'));
+    const ownerName = m ? (names.get(String(m.location_id)) || null) : null;
+    if (!m) { out.set(c.id, { taxRateId: null, reason: 'its master was not found', ownerName }); continue; }
+    if (String(m.location_id) === String(locationId)) { out.set(c.id, { taxRateId: null, reason: 'its master is at this venue', ownerName }); continue; }
+    if (!m.tax_rate_id) { out.set(c.id, { taxRateId: null, reason: 'the master has no tax rate', ownerName }); continue; }
+    const ids = maps.get(String(m.location_id));
+    const mapped = ids ? ids.taxRateIdFor(m.tax_rate_id) : null;
+    out.set(c.id, mapped
+      ? { taxRateId: mapped, reason: null, ownerName }
+      : { taxRateId: null, reason: `no rate here matches the master's ${ids ? ids.nameOf(`tax_rate_id:${m.tax_rate_id}`) : 'tax rate'}`, ownerName });
+  }
+  return out;
+};
+
+/**
+ * When a venue gains tax rates, give every shared copy there that has none its
+ * master's rate (27 Sep 2026). A copy made while the venue had no rates arrived
+ * with none (the name match had nothing to match), and nothing mapped it again
+ * when the rates were added: at Leeds, Preston, Headingly and Huddersfield every
+ * copy sat on no rate until a fix by hand. A copy holding ANOTHER venue's rate
+ * id (the Leeds bulk apply wrote Train Station's) is mapped the same way
+ * (lib/venueTaxRates.js copiesNeedingMasterRate picks the rows).
+ *
+ * Every write goes through the compare and set writer (lib/bulkTax.js
+ * saveCopyTaxRates, lib/menuRowWrite.js writeRowChecked): the tax column only,
+ * on the updated_at it was read with, so a rate set meanwhile is never replaced.
+ *
+ * Returns { ok, mapped: [{ id, taxRateId, row }], unmapped: [{ id, name, reason, ownerName }],
+ *   changed: [{ id, name, current }], failed: [{ id, name, error }], error }.
+ */
+export const mapCopiesTaxFromMasters = async (locationId) => {
+  const empty = { ok: true, mapped: [], unmapped: [], changed: [], failed: [] };
+  if (isMock || !supabase || !locationId || locationId === 'loc-demo') return empty;
+  const [rowsRes, ratesRes] = await Promise.all([
+    readAllRows(() => supabase.from('menu_items')
+      .select('id, master_id, name, menu_name, tax_rate_id, archived, updated_at')
+      .eq('location_id', locationId).not('master_id', 'is', null).order('id')),
+    readAllRows(() => supabase.from('tax_rates').select('id, active').eq('location_id', locationId).order('id')),
+  ]);
+  if (!rowsRes.rows || !ratesRes.rows) return { ...empty, ok: false, error: rowsRes.error || ratesRes.error };
+  const copies = copiesNeedingMasterRate(rowsRes.rows, ratesRes.rows.filter((r) => r.active !== false).map((r) => r.id));
+  if (!copies.length) return empty;
+  let answers;
+  try { answers = await masterTaxRatesForCopies(copies, locationId); }
+  catch (e) { return { ...empty, ok: false, error: e }; }
+  return saveCopyTaxRates({ client: supabase, locationId, copies, answers });
+};
+
+/**
  * Where a category's copy lives at a venue: the bare master id at the venue
  * that OWNS it, `<master>_<suffix>` everywhere else. Addressing the owner with a
  * suffixed id created a duplicate category there (round-2 review, 23 Sep).
@@ -1714,12 +1671,30 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
   }
 
   // ── DEMOTE → local ──
+  // 27 Sep 2026: scoped to the row's venue and checked (updateScopeChecked): a demote the
+  // database refused used to read as done.
   if (newScope === 'local') {
-    const { error } = await supabase.from('menu_items')
-      .update({ scope: 'local', org_id: null, master_id: null, updated_at: new Date().toISOString() })
-      .eq('id', item.id);
-    if (error) { console.error('[setMenuItemScope] demote error:', error); return { ok: false, error }; }
+    const r = await updateScopeChecked({ client: supabase, table: 'menu_items', id: item.id, locationId: sourceLocId,
+      patch: { scope: 'local', org_id: null, master_id: null, updated_at: new Date().toISOString() } });
+    if (!r.ok) { console.error('[setMenuItemScope] demote error:', r.error); return { ok: false, error: r.error }; }
     return { ok: true, action: 'demoted', affected: 1 };
+  }
+
+  // ── THE PRODUCT AS THE DATABASE HOLDS IT (27 Sep 2026) ──
+  // Peter: "I archived choc babychino but its still on the menu board". A share copies the WHOLE
+  // product to every venue, and a re-share writes archived:false onto the copies of a live
+  // source. It used to copy the row it was handed, this tab's memory, so a window loaded before
+  // another window's edit or archive spread its old copy to every venue and brought back copies
+  // the owner had retired. Now the product is read fresh and THAT is what travels; a product
+  // archived meanwhile is not shared at all. (currentScope above stays the caller's: it only
+  // words the result, and the caller may have just saved the new scope itself.)
+  {
+    const { data: freshRow, error: fErr } = await supabase.from('menu_items').select('*')
+      .eq('id', item.id).eq('location_id', sourceLocId).maybeSingle();
+    if (fErr) return { ok: false, error: fErr };
+    if (!freshRow) return { ok: false, error: 'this product is not in this venue\'s menu any more (deleted in another window?). Reload to see the latest' };
+    if (freshRow.archived) return { ok: false, error: 'this product was archived (in another window?), so it was not shared. Reload to see the latest' };
+    item = freshRow;
   }
 
   // ── PROMOTE / RE-SCOPE among shared/global ──
@@ -1738,8 +1713,12 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     master_id: masterId,
     updated_at: new Date().toISOString(),
   };
-  const { error: e1 } = await supabase.from('menu_items').update(sourcePatch).eq('id', item.id);
-  if (e1) { console.error('[setMenuItemScope] source update error:', e1); return { ok: false, error: e1 }; }
+  // 27 Sep 2026: scoped to the venue and checked (a refused write used to read as saved). A row
+  // that already holds these values is fine: pulling another venue's product here re-sends it
+  // from its owner, whose row this Back Office may not be allowed to write.
+  const s1 = await updateScopeChecked({ client: supabase, table: 'menu_items', id: item.id, locationId: sourceLocId,
+    patch: sourcePatch, want: { scope: newScope, org_id, master_id: masterId } });
+  if (!s1.ok) { console.error('[setMenuItemScope] source update error:', s1.error); return { ok: false, error: s1.error }; }
 
   // v5.5.12: AUTO-PROMOTE CATEGORY FIRST so peer item rows can reference the
   // deterministic peer category IDs that get created here. The pre-v5.5.12 code
@@ -2027,10 +2006,11 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
     // shared — breaking propagateGlobalEdit and confusing the BO list view.
     for (const v of variants) {
       const vMasterId = v.master_id || v.id;
-      const { error: vsErr } = await supabase.from('menu_items')
-        .update({ scope: newScope, org_id, master_id: vMasterId, updated_at: new Date().toISOString() })
-        .eq('id', v.id);
-      if (vsErr) console.warn('[setMenuItemScope] source variant scope update error for', v.id, vsErr);
+      // 27 Sep 2026: scoped to the venue and checked, like the product's own row above.
+      const vs = await updateScopeChecked({ client: supabase, table: 'menu_items', id: v.id, locationId: sourceLocId,
+        patch: { scope: newScope, org_id, master_id: vMasterId, updated_at: new Date().toISOString() },
+        want: { scope: newScope, org_id, master_id: vMasterId } });
+      if (!vs.ok) console.warn('[setMenuItemScope] source variant scope update error for', v.id, vs.error);
     }
   }
 
@@ -2215,7 +2195,7 @@ export const pullSharedProductsTo = async (locationId, { onProgress, shouldStop 
  */
 export const propagateModifierGroupEdit = async (group) => {
   if (isMock || !supabase || !group?.id) return { ok: true, propagated: 0 };
-  const sourceLocId = group.location_id || group.locationId || getActiveLocationSync() || (await getLocationId());
+  const sourceLocId = group.location_id || group.locationId || tabVenue() || (await getLocationId());
   if (!sourceLocId) return { ok: true, propagated: 0 };
   const { org_id, otherLocationIds } = await getOrgPeerLocations(sourceLocId);
   if (!org_id || !otherLocationIds.length) return { ok: true, propagated: 0 };
@@ -2264,11 +2244,12 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
   const sourceLocId = cat.location_id || (await getLocationId());
   if (!sourceLocId) return { ok: false, error: 'no location id' };
 
+  // 27 Sep 2026: the sharing columns are written scoped to the venue and checked
+  // (updateScopeChecked); a write the database refused used to read as done.
   if (newScope === 'local') {
-    const { error } = await supabase.from('menu_categories')
-      .update({ scope: 'local', org_id: null, master_id: null, updated_at: new Date().toISOString() })
-      .eq('id', cat.id);
-    if (error) { console.error('[setMenuCategoryScope] demote error:', error); return { ok: false, error }; }
+    const r = await updateScopeChecked({ client: supabase, table: 'menu_categories', id: cat.id, locationId: sourceLocId,
+      patch: { scope: 'local', org_id: null, master_id: null, updated_at: new Date().toISOString() } });
+    if (!r.ok) { console.error('[setMenuCategoryScope] demote error:', r.error); return { ok: false, error: r.error }; }
     return { ok: true, action: 'demoted', affected: 1 };
   }
 
@@ -2279,8 +2260,9 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
   const isFirstPromotion = currentScope === 'local';
 
   const sourcePatch = { scope: newScope, org_id, master_id: masterId, updated_at: new Date().toISOString() };
-  const { error: e1 } = await supabase.from('menu_categories').update(sourcePatch).eq('id', cat.id);
-  if (e1) { console.error('[setMenuCategoryScope] source update error:', e1); return { ok: false, error: e1 }; }
+  const s1 = await updateScopeChecked({ client: supabase, table: 'menu_categories', id: cat.id, locationId: sourceLocId,
+    patch: sourcePatch, want: { scope: newScope, org_id, master_id: masterId } });
+  if (!s1.ok) { console.error('[setMenuCategoryScope] source update error:', s1.error); return { ok: false, error: s1.error }; }
 
   let createdCount = 0;
   let updatedSiblings = 0;
@@ -2502,7 +2484,7 @@ export const upsertDiscount = async (discount, locationId = null) => {
 export const deleteDiscount = async (id) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard — never delete across tenants
-  const locationId = getActiveLocationSync() || await getLocationId();
+  const locationId = tabVenue() || await getLocationId();
   return supabase.from('discounts').delete().eq('id', id).eq('location_id', locationId);
 };
 
@@ -2562,7 +2544,7 @@ export const upsertDiscountRule = async (rule, locationId = null) => {
 export const deleteDiscountRule = async (id) => {
   if (isMock) return { data: null, error: null };
   // v5.5.279: location_id guard — never delete across tenants
-  const locationId = getActiveLocationSync() || await getLocationId();
+  const locationId = tabVenue() || await getLocationId();
   return supabase.from('discount_rules').delete().eq('id', id).eq('location_id', locationId);
 };
 

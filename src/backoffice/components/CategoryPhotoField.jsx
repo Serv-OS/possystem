@@ -15,8 +15,9 @@
  * Before the 20260914 migration runs, only a plain "needs a database update" line shows.
  */
 import { useEffect, useState } from 'react';
-import { useStore, runInMenuWriteQueue } from '../../store';
+import { useStore, runInMenuWriteQueue, MENU_WAIT_MS } from '../../store';
 import { getLocationId } from '../../lib/supabase';
+import { withTimeout } from '../../lib/withTimeout';
 import { uploadCategoryPhoto, saveCategoryImage, categoryPhotosReady } from '../../lib/db';
 import { CATEGORY_PHOTO_COPY as COPY, categoryPhotoUrl, checkPhotoFile, photoSizeWarning } from '../../lib/categoryPhoto';
 
@@ -64,12 +65,16 @@ export default function CategoryPhotoField({ cat }) {
 
   // The save runs in the menu write queue. prev and the sharing fields come from the LIVE
   // store row at that moment, and the store row takes the new value only on success.
+  // 27 Sep 2026: with a time limit (MENU_WAIT_MS), as every other job in that chain has. A photo
+  // save that never answered held the chain, so every later category and menu save, and every
+  // Push to POS (it waits for the chain), waited on it for good. Out of time is a failed save.
   const saveInQueue = async (locId, nextUrl) => {
     try {
       return await runInMenuWriteQueue(async () => {
         const live = liveRow(cat.id) || cat;
         const prev = categoryPhotoUrl(live);
-        const r = await saveCategoryImage(live, locId, nextUrl, prev);
+        const r = await withTimeout(saveCategoryImage(live, locId, nextUrl, prev), MENU_WAIT_MS, 'category photo save')
+          .catch((error) => ({ error, needsMigration: false, peersFailed: false }));
         if (!r.error) setStoreImage(cat.id, nextUrl);
         return r;
       });

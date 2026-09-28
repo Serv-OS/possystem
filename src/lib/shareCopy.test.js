@@ -156,7 +156,10 @@ test('db.js and the store use these rules, and global edits actually propagate n
   assert.match(db, /!isMasterRow\(item\) && _depth < 4/, 'sharing from a copy redirects to the master');
   const store = read('../store/index.js');
   assert.match(store, /scheduleScopedPropagation\(\(iid\) => useStore\.getState\(\)\.menuItems\.find/, 'every item edit is offered to its siblings');
-  assert.match(store, /propagateScopedEdit\(latest, keys\.size \? \[\.\.\.keys\] : null\)/, 'always with the LATEST row, and only the keys that changed');
+  // 27 Sep 2026: the copy runs once the save has LANDED, from the row as the database holds it
+  // when the copy runs (lib/scopedPropagation.js), with only the keys that changed.
+  assert.match(store, /propagate: \(row, keys\) => propagateScopedEdit\(row, keys\),/, 'always with the LATEST row, read from the database');
+  assert.match(read('./scopedPropagation.js'), /const r = await propagate\(row, keys\.size \? \[\.\.\.keys\] : null\);/, 'and only the keys that changed');
   assert.match(store, /if \(!isMasterRow\(row\)\) return;/, 'a copy never propagates; a master whose master_id is its own id DOES (round-2 blocker)');
   assert.match(store, /pagehide/, 'leaving the page inside the debounce still sends the edit');
   assert.match(db, /peerCatIdAt = \(catMasterId, catMasterLocId, peerLocId\)/, 'the owning venue holds the bare master category id');

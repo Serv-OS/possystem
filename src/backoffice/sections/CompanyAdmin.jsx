@@ -3,6 +3,7 @@ import { pullSharedProductsTo } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { supabase } from '../../lib/supabase';
 import { CURRENCIES } from '../../lib/currency';
+import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -142,8 +143,24 @@ export default function CompanyAdmin() {
       plan: 'free', gmv_this_month: 0, billing_period_start: new Date().toISOString().slice(0,10),
     });
 
+    // 27 Sep 2026 (Peter: "for some reason every products tax rate has been removed ... please
+    // chase"): a new venue gets its country's standard tax rates NOW. No creation path did this;
+    // Train Station and Barnsley only had rates because someone pressed Seed UK rates, and Leeds,
+    // Preston, Headingly and Huddersfield traded for days with none (their VAT fell back to
+    // another venue's rates, or to nothing). UK: Standard 20% (default), Reduced 5%, Zero, the
+    // same rows as that button, in ONE insert. US venues keep the tax profile flow. BEFORE the
+    // shared products are pulled below, so every copy can map its tax rate by name as it arrives.
+    const taxSeed = await seedVenueTaxRates({
+      locationId: loc.id, currency: loc.currency || form.locCurrency || 'GBP',
+      readExisting: (id) => supabase.from('tax_rates').select('id').eq('location_id', id),
+      insertRows: (rows) => supabase.from('tax_rates').insert(rows).select('id'),
+    });
+    if (!taxSeed.ok) reportSave('tax rates for the new venue', new Error(taxSeed.error));
+    const taxWords = seedWords(taxSeed, `"${loc.name}"`);
+
     setWorking(false);
-    setSuccess(`✓ Location "${loc.name}" created`);
+    setSuccess(`✓ Location "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}`);
+    if (!taxSeed.ok) setError(taxWords);
     setForm(f => ({ ...f, locName: '', locAddress: '' }));
     await loadLocations(selectedOrg.id);
     // v5.9.58: the new venue is a peer from this moment, so every Shared and Global

@@ -11,6 +11,7 @@ import AdminRevenue from './sections/AdminRevenue';
 import AdminReseller from './sections/AdminReseller';
 import AdminCustomerImport from './sections/AdminCustomerImport';
 import { money, CURRENCIES } from '../lib/currency';
+import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 const S = {
@@ -379,8 +380,19 @@ function AdminPanel({ authUser }) {
     const maxDevices = parseInt(form.maxDevices) || 3;
     await sbFetch('subscriptions', { method:'POST', body:{ org_id:selectedOrg.id, location_id:loc.id, plan:'free', gmv_this_month:0, billing_period_start:new Date().toISOString().slice(0,10) } });
     await sbFetch('location_features', { method:'POST', body:{ location_id:loc.id, feature:'max_devices', enabled:true, price_per_month:maxDevices } });
+    // 27 Sep 2026 (Peter: "for some reason every products tax rate has been removed ... please
+    // chase"): the new venue gets its country's standard tax rates now (lib/venueTaxRates.js;
+    // UK: Standard 20% default, Reduced 5%, Zero, in one insert; US venues keep the tax profile
+    // flow). No creation path did this, and four Coffee Boy venues traded for days without any.
+    const taxSeed = await seedVenueTaxRates({
+      locationId: loc.id, currency: loc.currency || form.locCurrency || 'GBP',
+      readExisting: (id) => sbFetch(`tax_rates?select=id&location_id=eq.${encodeURIComponent(id)}`),
+      insertRows: (rows) => sbFetch('tax_rates', { method:'POST', body: rows }),
+    });
+    const taxWords = seedWords(taxSeed, `"${loc.name}"`);
     setWorking(false);
-    ok(`✓ "${loc.name}" created`);
+    if (!taxSeed.ok) err(`✓ "${loc.name}" created, but ${taxWords}`);
+    else ok(`✓ "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}`);
     setForm(p => ({ ...p, locName:'', locAddress:'', maxDevices:'' }));
     setSection('org-detail');
     await loadLocations(selectedOrg.id);

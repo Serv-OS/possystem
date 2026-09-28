@@ -180,6 +180,12 @@ export const setResolvedLocationId = (id) => {
   _resolvedLocationId = id;
 };
 export const clearResolvedLocationId = () => { _resolvedLocationId = null; };
+// 27 Sep 2026: the venue THIS tab resolved, read without waiting (null until it has one).
+// _resolvedLocationId lives in this module, so every tab (every page load) has its own; the
+// rpos-bo-location key getActiveLocationSync reads is shared by every tab of the browser. A
+// Back Office tab switched to another venue in ANOTHER tab rewrites that key, never this. The
+// Back Office menu, tax and discount writers take their venue from here (store tabVenue).
+export const getResolvedLocationIdSync = () => _resolvedLocationId;
 export const LOCATION_ID = 'loc-demo';
 
 /**

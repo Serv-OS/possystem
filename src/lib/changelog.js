@@ -75,6 +75,18 @@ export const CHANGELOG = [
       'QR tabs and QR orders closed in Orders now record their VAT, including modifier prices and each product\'s own rate. A tab whose card capture came up short records only the VAT on what the card took.',
       'Refunds on a reader sale paid partly by gift card give back the right VAT. A £2 refund on a £10 bill (paid £8 gift card and £2 card) used to reverse all £1.67 of the VAT; it now reverses £0.33.',
       'Daily trading (P&L): gross takings at a UK venue no longer add the VAT on top of prices that already include it. Net sales now take the VAT out.',
+    v: '5.9.98',
+    date: '27 Sep 2026',
+    items: [
+      'Back Office: an old tab can no longer overwrite newer menu changes. Push to POS writes no product at all: it waits for saves still on their way, reads the menu fresh from the database and sends the tills exactly that.',
+      'Back Office: every product, category and menu edit saves only what you changed. If someone changed the same thing in another window you get a red message instead of an overwrite, and the latest shows.',
+      'Back Office: Shared and Global products copy to other venues only after the save has landed, and from what the database holds.',
+      'Back Office: each tab keeps its own venue. Switching venue in another tab no longer moves this tab, so a tax rate, discount or new product can never save to the wrong venue.',
+      'Tax: new venues get their UK tax rates (Standard 20%, Reduced 5%, Zero) when they are created, before shared products are pulled in.',
+      'Tax: each venue keeps only its own tax rates, discounts, offers and packages. Another venue\'s (or another company\'s) never reach this venue\'s tills.',
+      'Tax: "Apply to all" offers only this venue\'s rates, re-reads the products first, never overwrites a rate set elsewhere, and says "saved on X of N".',
+      'Tax settings: Seed UK rates shows again when a venue really has no rates.',
+      'Till: a product naming a tax rate this venue does not have is charged at the venue default rate (never no VAT).',
     ],
   },
   {

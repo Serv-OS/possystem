@@ -528,14 +528,16 @@ export default function DiscountManager() {
           console.error('[DiscountManager] load error:', discRes.error?.message || rulesRes.error?.message);
           showToast?.('Discounts could not be loaded — this list may be incomplete. Reload before editing.', 'error');
         }
+        // 27 Sep 2026: each row carries its venue, so Push to POS sends only this venue's
+        // (lib/venueTaxRates.js taggedVenueRows). Leeds pushed Train Station's presets.
         setDiscounts((discRes.data || []).map(d => ({
-          id: d.id, name: d.name, type: d.type, value: parseFloat(d.value),
+          id: d.id, name: d.name, type: d.type, value: parseFloat(d.value), locationId: d.location_id ?? null,
           scope: d.scope, categoryIds: d.category_ids || [],
           requiresManager: d.requires_manager, active: d.active,
           sortOrder: d.sort_order ?? 0,
         })));
         setRules((rulesRes.data || []).map(r => ({
-          id: r.id, name: r.name, active: r.active,
+          id: r.id, name: r.name, active: r.active, locationId: r.location_id ?? null,
           triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
           triggerQty: r.trigger_qty, rewardType: r.reward_type,
           rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,
@@ -593,7 +595,7 @@ export default function DiscountManager() {
       return;
     }
     const mapped = (data || []).map(d => ({
-      id: d.id, name: d.name, type: d.type, value: parseFloat(d.value),
+      id: d.id, name: d.name, type: d.type, value: parseFloat(d.value), locationId: d.location_id ?? null,
       scope: d.scope, categoryIds: d.category_ids || [],
       requiresManager: d.requires_manager, active: d.active, sortOrder: d.sort_order ?? 0,
     }));
@@ -649,7 +651,7 @@ export default function DiscountManager() {
       return;
     }
     const mapped = (data || []).map(r => ({
-      id: r.id, name: r.name, active: r.active,
+      id: r.id, name: r.name, active: r.active, locationId: r.location_id ?? null,
       triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
       triggerQty: r.trigger_qty, rewardType: r.reward_type,
       rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,

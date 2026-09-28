@@ -97,15 +97,22 @@ test('no writer defaults Sold alone by itself: they call resolveSoldAlone', () =
   }
   assert.deepEqual(offenders, []);
 
-  // db.js: upsertMenuItem (every item save, Push to POS, SyncBridge local items) and the shared
-  // sub item copy. Every sold_alone it writes comes from the rule, with the type it writes.
+  // db.js: the shared sub item copy and setMenuItemScope base and variant rows (v5.8.95). Every
+  // sold_alone it writes comes from the rule.
   const db = read('lib/db.js');
   const dbWrites = db.split('\n').filter(l => /^\s*sold_alone\s*:/.test(l));
-  // upsertMenuItem, the shared sub item copy, and setMenuItemScope base and variant rows (v5.8.95)
-  assert.equal(dbWrites.length, 4);
+  assert.equal(dbWrites.length, 3);
   for (const l of dbWrites) assert.match(l, /sold_alone:\s+resolveSoldAlone\(/, l);
-  assert.ok(/sold_alone:\s+resolveSoldAlone\(\{ \.\.\.item, type: _type \}\)/.test(db), 'upsertMenuItem passes the type it writes');
   assert.ok(db.includes("import { resolveSoldAlone } from './menuRules'"), 'db.js imports the rule with a static import');
+  // 27 Sep 2026: every item save (an edit, a creation, db.insertMenuItem for SyncBridge's local
+  // items) builds its columns in ONE place, lib/menuItemWrite.js menuItemRow, with the type it
+  // writes. (db.js upsertMenuItem, which had its own copy, is gone.)
+  const rowLib = read('lib/menuItemWrite.js');
+  const libWrites = rowLib.split('\n').filter(l => /^\s*sold_alone\s*:/.test(l) && !/\{ keys:/.test(l));   // not the column list
+  assert.equal(libWrites.length, 1);
+  assert.ok(/sold_alone:\s+resolveSoldAlone\(\{ \.\.\.item, type: _type \}\)/.test(rowLib), 'menuItemRow passes the type it writes');
+  assert.ok(rowLib.includes("import { resolveSoldAlone } from './menuRules.js'"), 'menuItemWrite.js imports the rule with a static import');
+  assert.ok(db.includes('...menuItemRow(item)'), 'db.insertMenuItem uses the one mapping');
 
   // The store has no menu item writer of its own (the unused sbUpsertMenuItem wrote
   // soldAlone || false), and a new item is stamped before its first save.
@@ -114,7 +121,7 @@ test('no writer defaults Sold alone by itself: they call resolveSoldAlone', () =
   assert.ok(!/const\s+sbUpsertMenuItem\b/.test(store), 'the unused second item writer stays deleted');
   const add = store.slice(store.indexOf('addMenuItem: item => {'));
   const stamp = add.indexOf('newItem.soldAlone = resolveSoldAlone(newItem);');
-  const save = add.indexOf('upsertMenuItem(newItem);');
+  const save = add.indexOf('menuWriters.items.create(newItem.id,');
   assert.ok(stamp > 0 && save > stamp, 'addMenuItem stamps soldAlone before it saves');
 
   // Clone keeps the source's choice and uses the same default.
@@ -123,7 +130,8 @@ test('no writer defaults Sold alone by itself: they call resolveSoldAlone', () =
 
 test('the store applies the Sold alone type change rule, and Back Office shows the plain note', () => {
   const store = read('store/index.js');
-  const upd = store.slice(store.indexOf('updateMenuItem: (id, patch) => {'), store.indexOf('addMenuItem: item => {'));
+  const upd = store.slice(store.indexOf('updateMenuItem: (id, patch, opts = {}) => {'), store.indexOf('addMenuItem: item => {'));
+  assert.ok(upd.length > 1000, 'found updateMenuItem');
   // The exact merge menuRules.test.js rule 7 exercises.
   assert.ok(upd.includes('const updated = { ...item, ...patch, ...soldAlonePatchForTypeChange(item, patch) };'));
   // Visibility is never rewritten on a type change (no screen can put it back).
