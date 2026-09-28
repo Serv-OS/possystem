@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.7',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. The ServOS KDS iPad app has a fresh TestFlight build (build 5) so testers can install it.',
+    ],
+  },
+  {
     v: '5.11.6',
     date: '28 Sep 2026',
     items: [

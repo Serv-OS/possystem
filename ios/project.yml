@@ -106,7 +106,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.kds
         PRODUCT_NAME: ServOS KDS
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "4"
+        CURRENT_PROJECT_VERSION: "5"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "2"  # iPad only for the App Store (16 Sep 2026), same rule as POS.
