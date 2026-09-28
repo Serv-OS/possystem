@@ -28,7 +28,10 @@ const holds = new Map();          // token -> { reason, since }
 const listeners = new Set();
 let nextToken = 1;
 let lastReleasedAt = 0;
-let clock = () => Date.now();
+// 28 Sep 2026 (v5.11.1 review): a monotonic clock, so a till whose wall clock jumps back (an NTP
+// fix) never sits in the quiet window for that long. Only this module compares these numbers.
+const monotonic = () => ((typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now());
+let clock = monotonic;
 
 function publish() {
   const n = holds.size;
@@ -120,6 +123,6 @@ export function _resetPaymentBusyForTests({ now } = {}) {
   listeners.clear();
   nextToken = 1;
   lastReleasedAt = 0;
-  clock = typeof now === 'function' ? now : () => Date.now();
+  clock = typeof now === 'function' ? now : monotonic;
   publish();
 }

@@ -40,7 +40,7 @@ import { persistTransfer } from '../sync/SessionSync';
 // Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
 // change a row count the rows they changed and are kept while this device is not linked.
 import { mustChangeRow } from '../lib/rowWrites';
-import { patchPendingCheck } from '../sync/DataSafe';
+import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
@@ -6461,7 +6461,17 @@ export const useStore = create((set, get) => ({
     ] : null;
 
     const { tables, closedChecks } = get();
-    if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device
+    // already closed on this device. 28 Sep 2026 (v5.11.1 review): with the sending till booking its
+    // own reader sales, no other device marks the job reconciled any more, so the job would stay
+    // 'approved' for ever. Once this device's sale has LANDED (not in the unsent list) and is at
+    // least 30 s old, mark it. The RPC only moves approved to reconciled, so repeating is harmless.
+    const localClose = closedChecks.find(c => c.id === job.closed_check_id);
+    if (localClose) {
+      if (!isPendingCheck(job.closed_check_id) && Date.now() - (Number(localClose.closedAt) || 0) > 30000) {
+        markJobReconciled(job.id).catch(() => {});
+      }
+      return;
+    }
     const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
 
@@ -7104,7 +7114,10 @@ export const useStore = create((set, get) => ({
       closedChecks: capClosedChecks([record, ...s.closedChecks]),
       orderQueue: !existingRef ? s.orderQueue
         : keepQueued ? s.orderQueue.map(o => (o.ref === existingRef ? markQueueEntryPaid(o) : o))
-        : s.orderQueue.filter(o => o.ref !== existingRef),
+        // 28 Sep 2026 (v5.11.1 review): a Collection timed later and paid on the reader without Send
+        // is queued 'scheduled' under the frozen ref by the sendToKitchen above; dropping it here lost
+        // the order (paid, never fired). A scheduled entry stays, marked paid.
+        : s.orderQueue.flatMap(o => (o.ref !== existingRef ? [o] : (o.status === 'scheduled' ? [markQueueEntryPaid(o)] : []))),
     }));
     // v4.6.30: cash drawer auto-fire on cash payment
     // v4.6.62: attribute to customer DB (fire-and-forget)

@@ -101,6 +101,12 @@ export async function safeUpsertClosedCheck(check, row) {
   }
 }
 
+/** 28 Sep 2026: true while this till still holds the sale unsent (it has not landed on the server). */
+export function isPendingCheck(checkId) {
+  if (!checkId) return false;
+  return getPendingChecks().some(c => c && c.id === checkId);
+}
+
 function removePendingCheck(checkId) {
   const pending = getPendingChecks().filter(c => c.id !== checkId);
   setPendingChecks(pending);
