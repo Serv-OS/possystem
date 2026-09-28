@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.8',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. Only the ServOS Staff app now carries the location code for geofenced clock in. Every other iPad and iPhone app was shipping it unused and with no permission wording, which Apple refuses on upload, so new builds of the kitchen screen and the rest could not reach testers.',
+    ],
+  },
+  {
     v: '5.11.7',
     date: '28 Sep 2026',
     items: [
