@@ -1242,7 +1242,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} tableMode={tableMode} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} venueRow={venueRow} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           defaultImage={resolveDefaultProductImage(venueRow?.pos_settings)}
@@ -1961,7 +1961,7 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
 //   - TOP BAR simplified to back button + allergen icon button
 // All customer-facing strings translated via t().
 // ============================================================
-function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPhotoOrigin = null, railCategories = null, categories, items, allItems = [], selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
+function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPhotoOrigin = null, railCategories = null, categories, items, allItems = [], selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, venueRow = null, onBack, onCancel }) {
   const hasCart = cartItemCount > 0;
   const hasAllergenFilter = allergenFilter && allergenFilter.size > 0;
   // Child rows bucketed by parent so a variant parent's card can show
