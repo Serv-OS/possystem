@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.x',
+    date: '28 Sep 2026',
+    items: [
+      'Back Office reports: the last reports still on the device\'s clock now count on the venue\'s. Viewed from California, a London lunch showed at 04:00 and a London breakfast landed on the day before.',
+      'Order types and Order sources: one bar per venue business day (06:30 to 06:30 at Coffee Boy), or per venue hour for a single day, in the order the day runs, so a 01:30 late bar sale comes after 23:00. Day labels read the right date (they were a day behind in the Americas).',
+      'Product mix: morning, lunch, afternoon, dinner and late are the venue\'s hours.',
+      'Server scorecard and Tips: hours worked are first to last check on each business day, so a shift that runs past midnight counts as one day and keeps the time either side of midnight.',
+      'Tips by hour and KDS performance by hour are the venue\'s hours, and the highlighted hour is the hour now at the venue.',
+      'Bookings: the highlighted day on the covers chart is the venue\'s business day now, the day the Today period shows.',
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
