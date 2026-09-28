@@ -24,6 +24,7 @@
 import { supabase, ensureAuthToken, getActiveLocationSync, isMock } from '../supabase';
 import { isTrainingMode } from '../trainingMode';
 import { scrubCheckApprovers } from '../discountApprover';
+import { withPaymentBusy } from '../paymentBusy';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const LS_KEY = 'rpos-terminal-jobs';
@@ -270,8 +271,15 @@ export async function findPaxTerminal({ posDeviceId, locationId: explicitLocatio
  * @param {boolean} p.localBridge    THIS device will drive the reader itself — do not
  *                                   fire the cloud 'start' kick (see the block below)
  * @returns {{job: object, existing: boolean}}
+ *
+ * v5.11.x: the till is payment busy (lib/paymentBusy.js) for the whole send, so a release
+ * cannot reload it between the job being written and the answer (Leeds POS 1, 27 Sep 2026).
  */
-export async function dispatchTerminalJob(p) {
+export function dispatchTerminalJob(p) {
+  return withPaymentBusy('card machine job send', () => sendTerminalJob(p));
+}
+
+async function sendTerminalJob(p) {
   // TRAINING MODE — the hard stop. A job row would dispatch a REAL charge to a
   // REAL terminal, and the server-side close path bypasses the client-side
   // training gates entirely. Never reach the network from a training till.
@@ -694,8 +702,15 @@ export async function fetchJobs(jobIds) {
  * A poll error is NOT a payment failure — the card may well be being charged. We
  * keep polling and let the caller's own timeout decide, because inferring failure
  * from a network blip is how a charged sale gets recorded as declined.
+ *
+ * v5.11.x: while this till watches a live job it is payment busy (lib/paymentBusy.js), however
+ * the watch ends (settled, timed out or aborted on unmount).
  */
-export async function pollTerminalJob(jobId, { onUpdate, intervalMs = 1000, timeoutMs = 5 * 60_000, signal } = {}) {
+export function pollTerminalJob(jobId, opts) {
+  return withPaymentBusy('card machine job live', () => watchTerminalJob(jobId, opts));
+}
+
+async function watchTerminalJob(jobId, { onUpdate, intervalMs = 1000, timeoutMs = 5 * 60_000, signal } = {}) {
   const started = Date.now();
   let last = null;
   for (;;) {

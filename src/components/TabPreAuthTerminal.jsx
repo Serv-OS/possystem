@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { findPaxTerminal, getPosDeviceId } from '../lib/payments/terminalJobs';
@@ -48,6 +49,9 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
     blockSignout?.();
     return () => unblockSignout?.();
   }, []);
+  // v5.11.x: and payment busy (lib/paymentBusy.js), taken before the effect below starts the
+  // reader, so a release never reloads the till under a card hold.
+  usePaymentBusy(true, 'bar tab card hold');
 
   const pounds = (m) => `${money(((m || 0) / 100))}`;
 

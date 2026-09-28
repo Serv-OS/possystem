@@ -33,6 +33,7 @@ import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader, abort
 import { watchTerminalJob } from '../lib/payments/terminalJobCloser';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 
 const STATUS_COPY = {
   pending:         { icon: '📲', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
@@ -77,6 +78,9 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const unmountedRef = useRef(false);
   useEffect(() => { onCompleteRef.current = onComplete; onFailedRef.current = onFailed; });
   useEffect(() => () => { unmountedRef.current = true; }, []);
+  // v5.11.x: payment busy while this screen is up (lib/paymentBusy.js). The watch below holds it
+  // too; this also covers 'unknown', where the watch has returned and staff check the machine.
+  usePaymentBusy(true, 'card machine screen');
 
   // 28 Sep 2026: while this screen is up, THIS till's TerminalJobReconciler leaves the booking
   // to it (lib/payments/terminalJobCloser.js): the checkout books the full record (its ref,

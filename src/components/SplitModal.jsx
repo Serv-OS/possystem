@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { supabase, isMock } from '../lib/supabase';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
@@ -51,6 +52,9 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const tipNonceRef = useRef(0);
   const portionTipRef = useRef(0);   // gratuity for THIS portion, chosen on the display
   const tipSkipRef = useRef(null);   // staff override while waiting on the customer
+  // v5.11.x: payment busy while this leg's card screen is up (lib/paymentBusy.js), taken before
+  // the effect below starts the card.
+  usePaymentBusy(true, 'split card leg');
 
   // Ask this payer for a gratuity on the customer display, then continue.
   // Resolves to the tip (0 if declined, skipped, or nothing is listening).
@@ -789,6 +793,9 @@ export default function SplitModal({ items, total, covers, canTakeCash = true, o
   const [portions, setPortions] = useState([]);       // built split portions
   const [numWays, setNumWays]   = useState(Math.max(2, covers));
   const [tenderingIdx, setTenderingIdx] = useState(null); // which portion we're tendering
+  // v5.11.x: payment busy while the split is open (lib/paymentBusy.js): a reload part way through
+  // loses which legs are already paid.
+  usePaymentBusy(true, 'split bill');
 
   const nonVoided = items.filter(i => !i.voided);
   const seats = [...new Set(nonVoided.map(i => i.seat).filter(Boolean))].sort();

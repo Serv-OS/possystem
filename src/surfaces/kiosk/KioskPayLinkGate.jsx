@@ -12,9 +12,14 @@
  *
  * CARD PATH RULE (owner, non negotiable): this file never touches ScreenPay's logic or submitOrder
  * (kioskCardPathGuard.test.js fingerprints them). It only decides WHETHER ScreenPay mounts.
+ *
+ * v5.11.x: while the pay screen is up (this gate and the ScreenPay inside it) the kiosk is payment
+ * busy (lib/paymentBusy.js), so a release never reloads it under a card payment. The hold is
+ * taken when the gate mounts, before ScreenPay can start the reader.
  */
 import { useEffect, useState } from 'react';
 import { confirmLinkBeforeCard } from '../../lib/deviceLink';
+import { usePaymentBusy } from '../../lib/usePaymentBusy';
 
 const screen = { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(14px, 2.2vh, 24px)', padding: '6vh 6vw', textAlign: 'center' };
 const btn = (primary, brandColor) => ({
@@ -28,6 +33,7 @@ const btn = (primary, brandColor) => ({
 
 export default function KioskPayLinkGate({ children, brandColor, onBack, onCancel }) {
   const [gate, setGate] = useState({ phase: 'checking', message: null });
+  usePaymentBusy(true, 'kiosk pay');
 
   useEffect(() => {
     let alive = true;

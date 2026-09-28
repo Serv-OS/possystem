@@ -10,13 +10,19 @@
 // banner with a short countdown, then apply the update — clearing caches and reloading, which pulls
 // the fresh index.html through the network-first service worker and beats the WebView's stale cache.
 //
-// SAFETY: the countdown pauses while a payment/checkout is in progress (window.__RPOS_BUSY), so a
-// till mid-sale is never yanked out from under staff. Customer-facing routes (/online, /qr, …) are
-// skipped entirely — those are short-lived sessions served fresh each visit, and we never want to
-// reload a customer mid-payment.
+// SAFETY: the countdown pauses while a payment is in progress, so a till mid sale is never yanked
+// out from under staff. Customer-facing routes (/online, /qr, …) are skipped entirely — those are
+// short-lived sessions served fresh each visit, and we never want to reload a customer mid-payment.
+//
+// v5.11.x: the pause is real. Until now it read window.__RPOS_BUSY, which nothing ever set, so a
+// release reloaded Leeds POS 1 three seconds after its checkout sent a card machine job (27 Sep
+// 2026). Every pay flow now holds lib/paymentBusy.js. The countdown stops while anything holds
+// and for 15 s after, the busy check is repeated right before the reload, and Update now is
+// refused while a payment is live.
 
 import { useEffect, useRef, useState } from 'react';
 import { VERSION } from '../lib/version';
+import { canApplyUpdate, isPaymentBusy, subscribePaymentBusy, updateCountdownStep } from '../lib/paymentBusy';
 
 const POLL_MS = 3 * 60 * 1000;   // check every 3 minutes
 const FIRST_CHECK_MS = 20 * 1000; // and once ~20s after boot
@@ -33,6 +39,8 @@ function cmpVersion(a, b) {
   return 0;
 }
 
+// Returns true once the reload is under way. It looks at the busy flag again right before the
+// reload, because a payment can start while the caches clear; false means wait and try again.
 async function applyUpdate() {
   // Activate a waiting service worker, then wipe caches so the reload can't be served stale.
   try {
@@ -47,7 +55,9 @@ async function applyUpdate() {
       await Promise.all(keys.map(k => caches.delete(k)));
     }
   } catch { /* best-effort */ }
+  if (!canApplyUpdate()) return false;
   window.location.reload();
+  return true;
 }
 
 // Customer-facing surfaces are path-routed (/online/:slug, /qr/*, …); operator surfaces are served
@@ -60,7 +70,9 @@ function isCustomerRoute() {
 export default function UpdateGuard() {
   const [pending, setPending] = useState(null);   // deployed version string, once an update is found
   const [count, setCount] = useState(COUNTDOWN_S);
-  const tick = useRef(null);
+  const [waiting, setWaiting] = useState(false);  // countdown paused for a payment
+  const [busyNow, setBusyNow] = useState(isPaymentBusy);   // a payment holds now: Update now refuses
+  const nowRef = useRef(false);                   // staff pressed Update now
 
   // ── poll /version.json ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -83,24 +95,39 @@ export default function UpdateGuard() {
   }, []);
 
   // ── countdown → auto-apply (paused during an active payment) ─────────────────
+  // The side effects live in the interval, never inside a setState updater (React may run an
+  // updater twice, or ahead of time).
   useEffect(() => {
-    if (!pending) return;
-    setCount(COUNTDOWN_S);
-    tick.current = setInterval(() => {
-      setCount(c => {
-        if (c <= 1) {
-          if (window.__RPOS_BUSY) return COUNTDOWN_S;       // mid-sale: hold, re-arm the countdown
-          clearInterval(tick.current);
-          applyUpdate();
-          return 0;
-        }
-        return c - 1;
-      });
+    if (!pending) return undefined;
+    let left = COUNTDOWN_S;
+    let applying = false;
+    const iv = setInterval(() => {
+      if (applying) return;
+      // Paused while a payment holds or has just ended; resumes where it was once the till is quiet.
+      const step = updateCountdownStep({ left, mayApply: canApplyUpdate(), nowRequested: nowRef.current });
+      left = step.left;
+      setWaiting(step.waiting);
+      setCount(left);
+      if (!step.apply) return;
+      applying = true;
+      applyUpdate()
+        .then((reloading) => { if (!reloading) applying = false; })   // a payment started: wait again
+        .catch(() => { applying = false; });
     }, 1000);
-    return () => clearInterval(tick.current);
+    return () => clearInterval(iv);
   }, [pending]);
 
+  // ── follow the busy flag, for the button ─────────────────────────────────────
+  useEffect(() => subscribePaymentBusy((n) => setBusyNow(n > 0)), []);
+
   if (!pending) return null;
+
+  // Refused while a payment holds. Otherwise the countdown applies it on its next tick, or, in the
+  // quiet seconds just after a payment, the moment those end.
+  const updateNow = () => {
+    if (isPaymentBusy()) { setBusyNow(true); return; }
+    nowRef.current = true;
+  };
 
   return (
     <div role="alert" style={{
@@ -109,14 +136,20 @@ export default function UpdateGuard() {
       padding: '12px 16px', background: '#1f6feb', color: '#fff', fontFamily: 'inherit',
       fontSize: 15, fontWeight: 600, boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
     }}>
-      <span>🔄 New version {pending} available — updating in {count}s to keep this till current.</span>
+      <span>
+        {waiting
+          ? `🔄 New version ${pending} is ready. This till updates once the payment is finished.`
+          : `🔄 New version ${pending} is ready. This till updates in ${count}s.`}
+      </span>
       <button
-        onClick={applyUpdate}
+        onClick={updateNow}
+        disabled={busyNow}
         style={{
-          padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
+          padding: '8px 16px', borderRadius: 8, border: 'none', cursor: busyNow ? 'default' : 'pointer',
           background: '#fff', color: '#1f6feb', fontWeight: 700, fontFamily: 'inherit', fontSize: 15,
+          opacity: busyNow ? 0.6 : 1,
         }}
-      >Update now</button>
+      >{busyNow ? 'After the payment' : 'Update now'}</button>
     </div>
   );
 }
