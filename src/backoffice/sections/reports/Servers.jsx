@@ -8,10 +8,11 @@
 //   - CSV export of everything
 //
 // As with Shifts, hours are derived until clock-in/out data lands.
+// v5.11.x: per venue BUSINESS day (workedTime), never the browser's calendar day.
 
 import { useMemo, useState } from 'react';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';
-import { pctDelta } from './_filters';
+import { pctDelta, reportClock, workedTime } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 
 const SORT_COLS = [
@@ -25,8 +26,8 @@ const SORT_COLS = [
   { id:'hours',    label:'Hours',    fmt: r => r.hoursMs },
 ];
 
-// Aggregate checks into per-server rollup
-function rollUp(checks) {
+// Aggregate checks into per-server rollup. clock = reportClock(locationConfig).
+function rollUp(checks, clock) {
   const map = {};
   checks.forEach(c => {
     // Catering has no real server (server:'Catering' is a channel label) — exclude it
@@ -36,8 +37,7 @@ function rollUp(checks) {
     if (!map[s]) map[s] = {
       server: s, checks: 0, covers: 0, revenue: 0, tips: 0,
       discounts: 0, discountCount: 0, voidCount: 0, voidValue: 0,
-      byDay: {},
-      orderTimes: [],
+      closes: [],
     };
     const isVoid = c.status === 'voided';
     if (isVoid) {
@@ -53,29 +53,21 @@ function rollUp(checks) {
         map[s].discountCount += 1;
       });
     }
-    if (c.closedAt) {
-      const d = new Date(c.closedAt);
-      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      if (!map[s].byDay[dayKey]) map[s].byDay[dayKey] = { first: c.closedAt, last: c.closedAt };
-      else {
-        if (c.closedAt < map[s].byDay[dayKey].first) map[s].byDay[dayKey].first = c.closedAt;
-        if (c.closedAt > map[s].byDay[dayKey].last)  map[s].byDay[dayKey].last  = c.closedAt;
-      }
-    }
+    if (c.closedAt) map[s].closes.push(c.closedAt);
   });
 
   Object.values(map).forEach(r => {
-    // hoursMs = sum of (lastAt - firstAt) across each day worked
-    r.hoursMs  = Object.values(r.byDay).reduce((s, d) => s + Math.max(0, d.last - d.first), 0);
-    r.daysWorked = Object.keys(r.byDay).length;
+    // hoursMs = sum of (lastAt - firstAt) across each business day worked
+    const worked = workedTime(r.closes, clock);
+    r.hoursMs  = worked.ms;
+    r.daysWorked = worked.days;
     r.avgCheck = r.checks ? r.revenue / r.checks : 0;
     r.avgCover = r.covers ? r.revenue / r.covers : 0;
     r.tipPct   = r.revenue ? (r.tips / r.revenue) * 100 : 0;
     const totalEvents = r.checks + r.voidCount;
     r.discPct  = totalEvents ? (r.discountCount / totalEvents) * 100 : 0;
     r.voidPct  = totalEvents ? (r.voidCount / totalEvents) * 100 : 0;
-    delete r.byDay;
-    delete r.orderTimes;
+    delete r.closes;
   });
 
   return Object.values(map);
@@ -88,12 +80,13 @@ function formatHours(ms) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export default function Servers({ checks, prevChecks, fmt, fmtN }) {
+export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig }) {
   const [sortBy, setSortBy] = useState('revenue');
   const [sortDir, setSortDir] = useState('desc');
 
-  const rows    = useMemo(() => rollUp(checks),     [checks]);
-  const prevRows = useMemo(() => rollUp(prevChecks), [prevChecks]);
+  const clock    = useMemo(() => reportClock(locationConfig), [locationConfig]);
+  const rows     = useMemo(() => rollUp(checks, clock),     [checks, clock]);
+  const prevRows = useMemo(() => rollUp(prevChecks, clock), [prevChecks, clock]);
 
   const sorted = useMemo(() => {
     const col = SORT_COLS.find(c => c.id === sortBy) || SORT_COLS[0];
@@ -201,7 +194,7 @@ export default function Servers({ checks, prevChecks, fmt, fmtN }) {
       </div>
 
       <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ Hours are derived from first-check-to-last-check per day, summed across the period. Disc % and Void % are events per 100 check events (voids counted). Values above 5% are highlighted as a soft flag.
+        ⓘ Hours are derived from first-check-to-last-check per venue business day, summed across the period. Disc % and Void % are events per 100 check events (voids counted). Values above 5% are highlighted as a soft flag.
       </div>
     </div>
   );

@@ -16,6 +16,14 @@
 - Tests: paymentBusy.test.js (ref count, quiet period, Leeds timeline, countdown) + paymentBusyWiring.test.js (each surface holds, hold before card start, every confirmLinkBeforeCard file holds, nothing reads __RPOS_BUSY). Mutation checked.
 - CARD PATH CHANGE: needs Peter's hardware test before merge (a till card sale on the Adyen reader with a release pending: the banner must say it is waiting and the page must not reload until 15 s after the sale). Never merge or promote during UK service.
 - Seen, not fixed (pre-existing no-undef on develop): CheckoutModal.jsx:307 CardTerminal reads tipBasis/subtotal that are not in scope (Stripe network reader path would throw; since v5.8.19); KioskApp.jsx:2171 venueRow undefined in the old kiosk ScreenMenu.
+# Session, 28 Sep 2026, v5.11.x, assigned at merge, the last reports onto the venue clock (branch fix/bo-report-device-clock-followups, PR 182, on main fb85db0a v5.11.0)
+
+- Peter's rule (28 Sep): the business day, service or hour a sale is COUNTED in is business time. This moves the reports PR 180 left on the device clock. Built stacked on PR 180, then rebased onto main fb85db0a once 177 and 180 shipped in v5.11.0. ServOS Build: waits for after close with Peter's go; do not merge, promote or deploy before that.
+- _filters.js: mixSeries(checks, keyOf, clock) + mixLabel (Order types, Order sources: business days, or venue hours when every sale is on one business day, ordered from the day start's hour), daySlot(ts, tz) (Product mix), workedTime(closedAts, clock) (Servers, Tips: first to last close per business day, summed), sumByVenueHour(rows, tsOf, valueOf, tz) (Tips by hour, KDS bump time by hour).
+- BOReports passes locationConfig to ProductMix, Servers, Tips, OrderTypes, OrderSources, BookingsReport, KDSPerformance. "Now" on the hour bars is venueHour(new Date(), tz). Bookings: todayKey = dayOfCheck(Date.now(), reportClock(locationConfig)); days from rangeDays; labels from the date string (no clock).
+- Also fixed on the way: the Order types / Order sources day labels were new Date('YYYY-MM-DD') on the browser's clock, a day behind in the Americas (now dayText). A late shift past midnight was two calendar days in Servers/Tips and lost the time either side of midnight.
+- Tests: reports/venueHoursAndDays.test.js, 14 tests, each case run with the process clock in LA, London, Tokyo and UTC; one of them fails if any file in reports/ or BOReports.jsx calls getHours/getDay/getDate/getMonth/getFullYear/setHours/setDate. npm test 4024 pass, 0 fail. ESLint ran (exit 1), no new findings, no no-undef, one old unused-var gone. vite build exit 0. Mock preview: all 7 reports render, no console errors.
+- Not changed: Product mix slots are fixed wall clock hours (a 01:30 sale is "morning", as before). Location compare still adds revenue across currencies.
 
 # Release 28 Sep 2026 ~02:00 UK: v5.11.0, combined overnight batch (branch release/2026-09-28)
 

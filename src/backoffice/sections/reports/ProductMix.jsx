@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { daySlot } from './_filters';
 
 const SUB_TABS = [
   { id:'items',      label:'Items',      icon:'🍽' },
@@ -17,7 +18,7 @@ const SUB_TABS = [
   { id:'eighty_six', label:"86'd",       icon:'🚫' },
 ];
 
-export default function ProductMix({ checks, fmt, fmtN }) {
+export default function ProductMix({ checks, fmt, fmtN, locationConfig }) {
   const { menuCategories = [], menuItems = [], eightySixIds = [] } = useStore();
   const [sub, setSub] = useState('items');
 
@@ -30,13 +31,14 @@ export default function ProductMix({ checks, fmt, fmtN }) {
 
   // -------------- Aggregations --------------
 
-  // Per-item totals with qty, revenue, share and time-of-day slots (lunch/dinner/other)
+  // Per-item totals with qty, revenue, share and time-of-day slots (lunch/dinner/other).
+  // v5.11.x: the slot is the venue's hour (daySlot), never the browser's.
+  const timeZone = locationConfig?.timezone;
   const itemRows = useMemo(() => {
     const map = {};
     let totalRev = 0;
     checks.filter(c => c.status !== 'voided').forEach(c => {
-      const hour = c.closedAt ? new Date(c.closedAt).getHours() : 12;
-      const slot = hour < 11 ? 'morning' : hour < 15 ? 'lunch' : hour < 17 ? 'afternoon' : hour < 22 ? 'dinner' : 'late';
+      const slot = daySlot(c.closedAt, timeZone);
       (c.items || []).forEach(i => {
         if (i.voided) return;
         const key = i.name || 'Unknown';
@@ -52,7 +54,7 @@ export default function ProductMix({ checks, fmt, fmtN }) {
     const rows = Object.values(map).sort((a, b) => b.rev - a.rev);
     rows.forEach(r => { r.share = totalRev > 0 ? (r.rev / totalRev) * 100 : 0; r.avgPrice = r.qty ? r.rev / r.qty : 0; });
     return { rows, totalRev };
-  }, [checks]);
+  }, [checks, timeZone]);
 
   // Per-category totals
   const categoryRows = useMemo(() => {

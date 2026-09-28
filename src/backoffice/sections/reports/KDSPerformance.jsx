@@ -5,6 +5,7 @@
 //   - Headline tiles: total tickets, avg bump time, p90, currently open tickets
 //   - Per-station breakdown: centre_id -> ticket count, avg, p50, p90
 //   - Bump time by hour of day (spot kitchen pressure windows)
+//     (v5.11.x: the venue's hour the ticket was sent, sumByVenueHour; was the browser's)
 //
 // Centre ids resolve to station names via the menuCategories store if the centre
 // id happens to be a category id; falls back to the raw id label otherwise.
@@ -16,6 +17,7 @@ import { useMemo } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { reportClock, sumByVenueHour, venueHour } from './_filters';
 
 function percentile(sortedMs, p) {
   if (sortedMs.length === 0) return 0;
@@ -31,8 +33,9 @@ function formatMs(ms) {
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
-export default function KDSPerformance({ kdsTickets = [], fmt, fmtN }) {
+export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationConfig }) {
   const { menuCategories = [] } = useStore();
+  const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
 
   const stationLabel = useMemo(() => {
     const m = {};
@@ -68,17 +71,10 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN }) {
       };
     }).sort((a, b) => b.count - a.count);
 
-    // Per hour of day
-    const byHour = Array.from({ length: 24 }, () => ({ count: 0, sumMs: 0 }));
-    bumped.forEach(t => {
-      const h = new Date(t.sentAt).getHours();
-      byHour[h].count++;
-      byHour[h].sumMs += Math.max(0, t.bumpedAt - t.sentAt);
-    });
-    const avgByHour = byHour.map(b => b.count ? b.sumMs / b.count : 0);
-
-    // Ticket counts by hour (volume view)
-    const countByHour = byHour.map(b => b.count);
+    // Per hour of day, on the venue's clock. Ticket counts by hour (volume view) too.
+    const countByHour = sumByVenueHour(bumped, t => t.sentAt, () => 1, clock.timeZone);
+    const sumMsByHour = sumByVenueHour(bumped, t => t.sentAt, t => Math.max(0, t.bumpedAt - t.sentAt), clock.timeZone);
+    const avgByHour = countByHour.map((n, h) => n ? sumMsByHour[h] / n : 0);
 
     return {
       totalCount,
@@ -91,7 +87,7 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN }) {
       avgByHour,
       countByHour,
     };
-  }, [kdsTickets, stationLabel]);
+  }, [kdsTickets, stationLabel, clock]);
 
   const onExport = () => {
     const csv = toCsv(analysis.stations, [
@@ -109,7 +105,7 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN }) {
   }
 
   const maxCount = Math.max(1, ...analysis.stations.map(s => s.count));
-  const nowHour  = new Date().getHours();
+  const nowHour  = venueHour(new Date(), clock.timeZone); // the venue's hour now, not the browser's
 
   return (
     <div>
