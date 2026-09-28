@@ -21,3 +21,12 @@ export function checkCustomerText(customer) {
   }
   return plainText(customer).trim();
 }
+
+/** A line's modifiers as one line of text. Lines store mods as { label, price, ... } objects, and
+ *  joining those printed "[object Object], [object Object]" under every modified item. */
+export function modsText(mods) {
+  if (typeof mods === 'string') return mods;
+  if (!Array.isArray(mods)) return '';
+  return mods.map((m) => (m && typeof m === 'object' ? plainText(m.label ?? m.name) : plainText(m)))
+    .filter(Boolean).join(', ');
+}

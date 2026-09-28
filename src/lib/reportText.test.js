@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { plainText, checkCustomerText } from './reportText.js';
+import { plainText, checkCustomerText, modsText } from './reportText.js';
 
 test('plainText keeps strings and numbers', () => {
   assert.equal(plainText('Table 4'), 'Table 4');
@@ -30,4 +30,13 @@ test('checkCustomerText reads the collection customer object (Leeds crash)', () 
   assert.equal(checkCustomerText({ ...customer, name: '  ', phone: '' }), '');
   assert.equal(checkCustomerText('Walk in Jo'), 'Walk in Jo');
   assert.equal(checkCustomerText(null), '');
+});
+
+test('modsText prints each modifier label, never [object Object]', () => {
+  assert.equal(modsText([{ label: 'Side: Chips', price: 0 }, { label: 'Oat milk', price: 0.5 }]), 'Side: Chips, Oat milk');
+  assert.equal(modsText([{ name: 'Extra shot' }, 'No ice', { price: 1 }]), 'Extra shot, No ice');
+  assert.equal(modsText('Oat milk'), 'Oat milk');
+  assert.equal(modsText([]), '');
+  assert.equal(modsText(null), '');
+  assert.equal(modsText({ label: 'x' }), '');
 });
