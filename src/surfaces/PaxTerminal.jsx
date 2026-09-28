@@ -78,7 +78,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const unmountedRef = useRef(false);
   useEffect(() => { onCompleteRef.current = onComplete; onFailedRef.current = onFailed; });
   useEffect(() => () => { unmountedRef.current = true; }, []);
-  // v5.11.x: payment busy while this screen is up (lib/paymentBusy.js). The watch below holds it
+  // v5.11.1: payment busy while this screen is up (lib/paymentBusy.js). The watch below holds it
   // too; this also covers 'unknown', where the watch has returned and staff check the machine.
   usePaymentBusy(true, 'card machine screen');
 

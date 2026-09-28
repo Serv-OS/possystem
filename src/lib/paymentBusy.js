@@ -1,4 +1,4 @@
-// src/lib/paymentBusy.js (v5.11.x): is this device in the middle of taking money?
+// src/lib/paymentBusy.js (v5.11.1): is this device in the middle of taking money?
 //
 // UpdateGuard applies a new release by reloading the page. Since v5.5.870 it said it paused
 // "while a payment/checkout is in progress (window.__RPOS_BUSY)", but nothing ever set that

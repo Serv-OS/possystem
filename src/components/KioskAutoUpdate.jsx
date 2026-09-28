@@ -16,7 +16,7 @@ import { canApplyUpdate } from '../lib/paymentBusy';
 // sessionStorage gate caps reloads to once per 10 min so a CDN/caching hiccup can't loop. In dev
 // (no hashed bundle) it self-disables.
 //
-// v5.11.x: never while this device is payment busy (lib/paymentBusy.js, the same rule as
+// v5.11.1: never while this device is payment busy (lib/paymentBusy.js, the same rule as
 // UpdateGuard); it simply tries again on the next tick.
 
 const CHECK_MS = 10 * 60 * 1000;          // poll every 10 min

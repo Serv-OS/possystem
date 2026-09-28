@@ -32,7 +32,7 @@ export default function ProductMix({ checks, fmt, fmtN, locationConfig }) {
   // -------------- Aggregations --------------
 
   // Per-item totals with qty, revenue, share and time-of-day slots (lunch/dinner/other).
-  // v5.11.x: the slot is the venue's hour (daySlot), never the browser's.
+  // v5.11.1: the slot is the venue's hour (daySlot), never the browser's.
   const timeZone = locationConfig?.timezone;
   const itemRows = useMemo(() => {
     const map = {};

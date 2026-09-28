@@ -388,7 +388,7 @@ export default function BarSurface() {
   const [holdClose, setHoldClose] = useState(null);          // { tab } | null
   const [holdCloseState, setHoldCloseState] = useState('idle'); // idle | capturing | error
   const [holdCloseErr, setHoldCloseErr] = useState(null);
-  // v5.11.x: payment busy (lib/paymentBusy.js) while the held card close sheet is up, so a
+  // v5.11.1: payment busy (lib/paymentBusy.js) while the held card close sheet is up, so a
   // release never reloads the till between the capture and its closed check.
   usePaymentBusy(!!holdClose, 'bar tab close');
 
@@ -525,7 +525,7 @@ export default function BarSurface() {
     const newAmt = parseFloat(String(input).replace(/[^0-9.]/g, ''));
     if (!(newAmt > cap)) { showToast(`New hold must be more than ${money(cap)}`, 'error'); return; }
     setHoldBusy(true);
-    const releaseBusy = holdPaymentBusy('bar tab hold increase');   // v5.11.x (lib/paymentBusy.js)
+    const releaseBusy = holdPaymentBusy('bar tab hold increase');   // v5.11.1 (lib/paymentBusy.js)
     try {
       const token = await ensureAuthToken();
       if (tab.preAuthProcessor === 'adyen') {

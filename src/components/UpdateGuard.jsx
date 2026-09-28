@@ -14,7 +14,7 @@
 // out from under staff. Customer-facing routes (/online, /qr, …) are skipped entirely — those are
 // short-lived sessions served fresh each visit, and we never want to reload a customer mid-payment.
 //
-// v5.11.x: the pause is real. Until now it read window.__RPOS_BUSY, which nothing ever set, so a
+// v5.11.1: the pause is real. Until now it read window.__RPOS_BUSY, which nothing ever set, so a
 // release reloaded Leeds POS 1 three seconds after its checkout sent a card machine job (27 Sep
 // 2026). Every pay flow now holds lib/paymentBusy.js. The countdown stops while anything holds
 // and for 15 s after, the busy check is repeated right before the reload, and Update now is

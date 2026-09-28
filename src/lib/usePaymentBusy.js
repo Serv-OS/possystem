@@ -1,4 +1,4 @@
-// src/lib/usePaymentBusy.js (v5.11.x): hold lib/paymentBusy.js while `active` is true and the
+// src/lib/usePaymentBusy.js (v5.11.1): hold lib/paymentBusy.js while `active` is true and the
 // component is mounted, so a release never reloads the page under a payment.
 //
 // Effects run in the order they are declared: call this ABOVE any effect that starts a card,

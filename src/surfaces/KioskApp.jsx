@@ -490,7 +490,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [orderNumber, setOrderNumber] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
-  // v5.11.x: payment busy (lib/paymentBusy.js) while the paid order is being booked, in both
+  // v5.11.1: payment busy (lib/paymentBusy.js) while the paid order is being booked, in both
   // designs. The pay screen's own gate holds it too; submitOrder itself is untouched.
   usePaymentBusy(submitting, 'kiosk order');
 

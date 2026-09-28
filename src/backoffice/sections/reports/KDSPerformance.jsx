@@ -5,7 +5,7 @@
 //   - Headline tiles: total tickets, avg bump time, p90, currently open tickets
 //   - Per-station breakdown: centre_id -> ticket count, avg, p50, p90
 //   - Bump time by hour of day (spot kitchen pressure windows)
-//     (v5.11.x: the venue's hour the ticket was sent, sumByVenueHour; was the browser's)
+//     (v5.11.1: the venue's hour the ticket was sent, sumByVenueHour; was the browser's)
 //
 // Centre ids resolve to station names via the menuCategories store if the centre
 // id happens to be a category id; falls back to the raw id label otherwise.

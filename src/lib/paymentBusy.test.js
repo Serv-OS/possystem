@@ -1,4 +1,4 @@
-// src/lib/paymentBusy.test.js (v5.11.x): the payment busy flag that holds a release back.
+// src/lib/paymentBusy.test.js (v5.11.1): the payment busy flag that holds a release back.
 //
 // UpdateGuard claimed to pause "while a payment/checkout is in progress (window.__RPOS_BUSY)",
 // and nothing ever set that flag. Leeds POS 1, 27 Sep 2026: check minted 13:11:44 UTC, card

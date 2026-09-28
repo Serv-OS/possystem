@@ -4,7 +4,7 @@
 // Layout:
 //   - Top tiles: total revenue, dominant channel, fastest-growing vs previous period
 //   - Stacked bar chart by day (or by hour if single-day) showing channel composition
-//     (v5.11.x: the venue's business days and hours, mixSeries in _filters.js)
+//     (v5.11.1: the venue's business days and hours, mixSeries in _filters.js)
 //   - Per-channel table with check count, revenue, avg check, share %, and period compare
 
 import { useMemo } from 'react';
@@ -64,7 +64,7 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConf
   }).sort((a, b) => b.revenue - a.revenue), [allTypes, cur, prev, totalRev]);
 
   // Time series: one bar per venue business day, or per venue hour when every sale is on
-  // one business day (v5.11.x: was the browser's midnights and hours).
+  // one business day (v5.11.1: was the browser's midnights and hours).
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const { series, xKeys, isHourly } = useMemo(() => mixSeries(checks, typeKey, clock), [checks, clock]);
 

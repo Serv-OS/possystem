@@ -47,7 +47,7 @@ const fmtDateShort = (iso) => {
 
 // fromDay/toDay are the venue business days of the period (getPeriodRange), never the
 // range's instants read on the browser's clock (v5.10.2). locationConfig gives the venue's
-// clock for the chart's "today" (v5.11.x).
+// clock for the chart's "today" (v5.11.1).
 export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = (n) => (n || 0).toLocaleString() }) {
   const floorTables = useStore(s => s.tables) || [];
   const [bookings, setBookings] = useState(null);   // null = loading
@@ -296,7 +296,7 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = 
 }
 
 // ── Covers-by-day plain-div bar chart (HourBar idiom, day-keyed) ─────────────
-// todayKey is the venue's business day now, the day the Today period shows (v5.11.x: was
+// todayKey is the venue's business day now, the day the Today period shows (v5.11.1: was
 // the browser's date, a day ahead of London every evening in Tokyo). Days are 'YYYY-MM-DD'
 // and are labelled from the date itself, never a clock.
 function DayBars({ days, values, todayKey }) {

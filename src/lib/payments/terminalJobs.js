@@ -272,7 +272,7 @@ export async function findPaxTerminal({ posDeviceId, locationId: explicitLocatio
  *                                   fire the cloud 'start' kick (see the block below)
  * @returns {{job: object, existing: boolean}}
  *
- * v5.11.x: the till is payment busy (lib/paymentBusy.js) for the whole send, so a release
+ * v5.11.1: the till is payment busy (lib/paymentBusy.js) for the whole send, so a release
  * cannot reload it between the job being written and the answer (Leeds POS 1, 27 Sep 2026).
  */
 export function dispatchTerminalJob(p) {
@@ -703,7 +703,7 @@ export async function fetchJobs(jobIds) {
  * keep polling and let the caller's own timeout decide, because inferring failure
  * from a network blip is how a charged sale gets recorded as declined.
  *
- * v5.11.x: while this till watches a live job it is payment busy (lib/paymentBusy.js), however
+ * v5.11.1: while this till watches a live job it is payment busy (lib/paymentBusy.js), however
  * the watch ends (settled, timed out or aborted on unmount).
  */
 export function pollTerminalJob(jobId, opts) {

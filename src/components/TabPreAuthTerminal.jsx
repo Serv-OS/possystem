@@ -49,7 +49,7 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
     blockSignout?.();
     return () => unblockSignout?.();
   }, []);
-  // v5.11.x: and payment busy (lib/paymentBusy.js), taken before the effect below starts the
+  // v5.11.1: and payment busy (lib/paymentBusy.js), taken before the effect below starts the
   // reader, so a release never reloads the till under a card hold.
   usePaymentBusy(true, 'bar tab card hold');
 

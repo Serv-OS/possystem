@@ -8,7 +8,7 @@
 //   - CSV export of everything
 //
 // As with Shifts, hours are derived until clock-in/out data lands.
-// v5.11.x: per venue BUSINESS day (workedTime), never the browser's calendar day.
+// v5.11.1: per venue BUSINESS day (workedTime), never the browser's calendar day.
 
 import { useMemo, useState } from 'react';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';

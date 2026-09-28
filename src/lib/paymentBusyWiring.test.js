@@ -1,4 +1,4 @@
-// src/lib/paymentBusyWiring.test.js (v5.11.x): every pay surface takes the busy flag and
+// src/lib/paymentBusyWiring.test.js (v5.11.1): every pay surface takes the busy flag and
 // gives it back, and the update guards read it.
 //
 // The flag existed only as a reader: UpdateGuard checked window.__RPOS_BUSY and no file ever set

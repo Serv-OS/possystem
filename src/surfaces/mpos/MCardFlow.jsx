@@ -87,7 +87,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
   const grand = payment?.grand ?? 0;
 
-  // v5.11.x: payment busy while the card flow is up (lib/paymentBusy.js), taken before the
+  // v5.11.1: payment busy while the card flow is up (lib/paymentBusy.js), taken before the
   // effect below starts the card, so a release never reloads the handset mid tender.
   usePaymentBusy(true, 'mpos card');
 

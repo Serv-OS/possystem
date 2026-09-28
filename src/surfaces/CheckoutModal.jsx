@@ -1199,7 +1199,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     blockSignout?.();
     return () => unblockSignout?.();
   }, []);
-  // v5.11.x: and hold the update guard (lib/paymentBusy.js) for as long as checkout is open. A
+  // v5.11.1: and hold the update guard (lib/paymentBusy.js) for as long as checkout is open. A
   // release reloaded Leeds POS 1 three seconds after this modal sent a card machine job (27 Sep).
   usePaymentBusy(true, 'checkout');
   // v4.6.50: resolve the drawer bound to this POS terminal. If the POS has

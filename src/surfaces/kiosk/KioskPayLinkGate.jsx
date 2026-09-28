@@ -13,7 +13,7 @@
  * CARD PATH RULE (owner, non negotiable): this file never touches ScreenPay's logic or submitOrder
  * (kioskCardPathGuard.test.js fingerprints them). It only decides WHETHER ScreenPay mounts.
  *
- * v5.11.x: while the pay screen is up (this gate and the ScreenPay inside it) the kiosk is payment
+ * v5.11.1: while the pay screen is up (this gate and the ScreenPay inside it) the kiosk is payment
  * busy (lib/paymentBusy.js), so a release never reloads it under a card payment. The hold is
  * taken when the gate mounts, before ScreenPay can start the reader.
  */

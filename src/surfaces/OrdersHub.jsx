@@ -147,7 +147,7 @@ export default function OrdersHub() {
   const [showDone, setShowDone] = useState(false);
   const [tick, setTick]         = useState(0);
   const [closingTabRef, setClosingTabRefState] = useState(null); // ref currently being captured
-  // v5.11.x: a tab capture is payment busy (lib/paymentBusy.js) from the moment it is marked
+  // v5.11.1: a tab capture is payment busy (lib/paymentBusy.js) from the moment it is marked
   // closing until its finally clears it. Taken here, in the same tick as the capture request,
   // not in an effect a render later.
   const closingBusyRef = useRef(null);

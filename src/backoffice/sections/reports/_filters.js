@@ -11,7 +11,7 @@
 //          rangeDays, daypartGrid, groupChecksByDay/ByService. The day or service a sale
 //          belongs to is business time (venue zone + business_day_start), never the browser.
 //
-// v5.11.x: and the rest: mixSeries (Order types, Order sources), daySlot (Product mix),
+// v5.11.1: and the rest: mixSeries (Order types, Order sources), daySlot (Product mix),
 //          workedTime (Servers, Tips), sumByVenueHour (Tips, KDS performance).
 //
 // Used by every report in the reporting suite.
@@ -349,7 +349,7 @@ export function groupChecksByService(checks, shifts, clock) {
   });
 }
 
-// v5.11.x: the rest of the reports onto the venue's clock (Order types, Order sources,
+// v5.11.1: the rest of the reports onto the venue's clock (Order types, Order sources,
 // Product mix, Servers, Tips, KDS performance, the Bookings chart's "today").
 
 // A Date, an ISO string or epoch ms as epoch ms; null when it is not an instant.

@@ -64,7 +64,7 @@ export default function OrderSources({ checks, prevChecks, fmt, fmtN, locationCo
   }, [cur, prev, totalRev]);
 
   // Time series: by venue business day, or by venue hour when every sale is on one business
-  // day (same rule as Order types; v5.11.x: was the browser's midnights and hours).
+  // day (same rule as Order types; v5.11.1: was the browser's midnights and hours).
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const { series, xKeys, isHourly, types: allKeys } = useMemo(() => mixSeries(checks, srcKey, clock), [checks, clock]);
 

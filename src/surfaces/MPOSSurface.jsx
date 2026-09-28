@@ -220,7 +220,7 @@ function MPOSRouter() {
     useStore.setState({ tillCustomerFacing: customerHoldsPhone });
     return () => { useStore.setState({ tillCustomerFacing: false }); };
   }, [customerHoldsPhone]);
-  // v5.11.x: the tip pass and the card screen are payment busy (lib/paymentBusy.js), so a release
+  // v5.11.1: the tip pass and the card screen are payment busy (lib/paymentBusy.js), so a release
   // never reloads the handset while the customer is paying on it. MCardFlow holds its own too.
   usePaymentBusy(flow.screen === 'tender' || flow.screen === 'card', 'mpos pay');
 

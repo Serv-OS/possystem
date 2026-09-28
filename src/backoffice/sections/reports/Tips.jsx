@@ -11,7 +11,7 @@
 //
 // Roles come from staffMembers (already captured — Manager/Server/Bartender/Cashier/Kitchen).
 // Hours are derived from shift session (first-check-to-last-check per day, summed).
-// v5.11.x: days, hours and "now" are the venue's (workedTime, sumByVenueHour, venueHour),
+// v5.11.1: days, hours and "now" are the venue's (workedTime, sumByVenueHour, venueHour),
 // never the browser's.
 // Export CSV for payroll with net tips per person.
 
