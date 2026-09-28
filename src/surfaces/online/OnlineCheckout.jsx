@@ -33,7 +33,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
-import { onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs , chooseTrackKey } from '../../lib/publicOrder';
+import { onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs , chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
 import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
@@ -1267,7 +1267,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         console.warn('[OnlineCheckout] after order work threw:', e?.message);
       }
 
-      attributeOnlineOrder({
+      // afterPlaced: the order is saved and the gift card debited, so nothing here may throw
+      // into the catch below. From v5.9.16 the key below named paymentIntent, which only exists
+      // in onPaymentSuccess, so EVERY gift card only order threw here once it was saved.
+      afterPlaced('OnlineCheckout attribute', () => attributeOnlineOrder({
         phone: customer.phone,
         name: customer.name,
         email: customer.email,
@@ -1278,9 +1281,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // loyalty-earn's proof that this browser is the member (database fence stage 1).
         memberToken: loyalty?.token || null,
         memberCustomerId,
-        // Database fence stage 2: this order's own key proves the page placed it.
-        trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: paymentIntent?.id || null, phone: customer.phone }),
-      }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
+        // Database fence stage 2: this order's own key proves the page placed it. No card on
+        // this path, so no payment id: the token, else the phone's last 4.
+        trackKey: chooseTrackKey({ trackToken: placed?.trackToken, phone: customer.phone }),
+      }));
 
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
@@ -1495,8 +1499,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       // Customer profile: every online order/visit flows into the same CRM
       // the operator UI uses (customers + customer_locations + customer_orders).
-      // Fire-and-forget — a CRM blip never blocks the confirmation flow.
-      attributeOnlineOrder({
+      // Fire-and-forget — a CRM blip never blocks the confirmation flow (afterPlaced: nor
+      // throws into the catch below, which says the order was not saved).
+      afterPlaced('OnlineCheckout attribute', () => attributeOnlineOrder({
         phone: customer.phone,
         name: customer.name,
         email: customer.email,
@@ -1509,7 +1514,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         memberCustomerId,
         // Database fence stage 2: this order's own key proves the page placed it.
         trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: paymentIntent?.id || null, phone: customer.phone }),
-      }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
+      }));
 
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
