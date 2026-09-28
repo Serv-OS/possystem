@@ -24,6 +24,7 @@ import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } f
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
+import { OpsDocuments, OpsForms } from './ops/OpsDocsForms';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
@@ -31,7 +32,7 @@ const TYPE_META = {
   hot_hold:  { glyph: '🔥', h: 38 }, cooking: { glyph: '🔥', h: 32 }, chill_down: { glyph: '❄', h: 220 },
   delivery:  { glyph: '📦', h: 48 },
 };
-const AREA_HUE = { Temperature: 200, Deliveries: 48, Checklists: 150, Cleaning: 285, Maintenance: 28 };
+const AREA_HUE = { Temperature: 200, Deliveries: 48, Checklists: 150, Cleaning: 285, Maintenance: 28, Documents: 260, Forms: 330 };
 const CORRECTIVE_OPTIONS = [
   { key: 'moved_stock', label: 'Moved stock to spare unit' },
   { key: 'adjusted_thermostat', label: 'Adjusted thermostat' },
@@ -100,7 +101,7 @@ export default function OperationsSurface() {
 // alerts are reached via a bell on the Ops Home card instead. Same writes either way (the data layer
 // is location-fenced server-side); pass {loc, operator} from whichever surface hosts it.
 export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, jump = null }) {
-  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
+  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts | documents | forms
   const [unitView, setUnitView] = useState(null);  // a unit being logged
   const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
   const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
@@ -108,7 +109,7 @@ export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, 
   // Host-surface deep-link (Manager Home "needs you now" → straight to Alerts). jump.k changes per
   // request so the same view can be jumped to twice; unknown views are ignored.
   useEffect(() => {
-    if (jump?.view && ['home', 'temperature', 'delivery', 'checklists', 'maintenance', 'alerts'].includes(jump.view)) { setUnitView(null); setView(jump.view); }
+    if (jump?.view && ['home', 'temperature', 'delivery', 'checklists', 'maintenance', 'alerts', 'documents', 'forms'].includes(jump.view)) { setUnitView(null); setView(jump.view); }
   }, [jump?.k]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const body = unitView ? (
@@ -124,6 +125,11 @@ export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, 
       onBack={() => { setMaintPrefill(null); setView('home'); }} />
   ) : view === 'alerts' ? (
     <Alerts loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : view === 'documents' ? (
+    // 28 Sep 2026 (v5.11.4): Documents and Forms, lib/ops/documents.js + forms.js
+    <OpsDocuments loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : view === 'forms' ? (
+    <OpsForms loc={loc} operator={operator} onBack={() => setView('home')} />
   ) : (
     <Home loc={loc} venueName={venueName} operator={operator} onOpen={openView}
       onBell={chrome ? null : () => setView('alerts')} />
@@ -292,6 +298,8 @@ function Home({ loc, operator, onOpen, onBell }) {
     ...clTiles,
     { key: 'delivery', label: 'Deliveries', icon: 'inventory', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
     { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openMaint ? `${openMaint} open` : 'All clear', state: openMaint ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
+    { key: 'documents', label: 'Documents', icon: 'note', sub: 'Open or upload', state: 'idle', hue: AREA_HUE.Documents, onClick: () => onOpen('documents') },
+    { key: 'forms', label: 'Forms', icon: 'edit', sub: 'Find one and fill it in', state: 'idle', hue: AREA_HUE.Forms, onClick: () => onOpen('forms') },
   ];
   // Overall today progress = temperature checks done + checklist tasks done, over everything due today.
   const tempReq = summary.done + summary.due + summary.missed;
