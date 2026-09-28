@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.x',
+    date: '28 Sep 2026',
+    items: [
+      "Kiosk: the menu opens again on kiosks using the current design (the new kiosk design switched off in the kiosk's profile). Since 5.9.55 on 23 Sep, the product list crashed to an error screen as soon as it opened, so customers could not order. The logo standing in for a missing product photo read the venue's settings from a place the menu screen could not reach. The menu now gets them, and products without a photo show the logo there too. Kiosks on the new design were not affected.",
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [
