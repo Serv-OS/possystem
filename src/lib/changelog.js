@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.4',
+    date: '28 Sep 2026',
+    items: [
+      "Operations: new Documents. Upload a venue's documents (food safety records, certificates, policies, anything up to 20 MB) in Back Office, under Operations, Documents, or on the Operations tablet, and tap one to open it any time. Each has a title and a category (Food safety, Health and safety, Certificates, Policies, Other). Files are private to the venue and open through a link that lasts 5 minutes; in the iPhone and iPad apps they open inside the app with a Close button. Old documents are archived, never deleted, and can be brought back.",
+      "Operations: new Forms. Build a form in Back Office, under Operations, Forms, from short text, long text, number, date, time, yes or no, single choice, multiple choice, photo and signature questions, each with a required tick and a help line. Staff fill it in on the Operations tablet, signed as the staff member logged in on it.",
+      "Forms: a ready made Accident book, added in one tap: the injured person, their role and contact details, date and time, where it happened, what happened, the injury and body part, first aid and who gave it, witnesses, whether it is reportable under RIDDOR, who is reporting, and a signature.",
+      "Forms: submissions can hold personal data, so only Back Office shows them: date and time, who submitted it, every answer with its photos and signature, a print view and a CSV export. The tablet can add a submission but never read one back. A submission keeps the questions it was made with, and is never changed or deleted.",
+      "Documents and Forms need the database update 20260928c. Until it has run, both say they are not set up yet and nothing else changes.",
+    ],
+  },
+  {
     v: '5.11.2',
     date: '28 Sep 2026',
     items: [
