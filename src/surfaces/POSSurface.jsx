@@ -15,7 +15,7 @@ import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInA
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
 import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
-import { captureLoyaltyByPhone } from '../lib/customerLookup';
+import { captureLoyaltyByPhone, fetchCustomerByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
@@ -49,6 +49,7 @@ import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
 import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
+import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -244,6 +245,26 @@ export default function POSSurface() {
     if (tblId && (st.tables || []).find(x => x.id === tblId)?.session) st.setSessionCustomer(tblId, res.customer);
     if (res.loyalty && displayUsesScreen()) { try { publishLoyalty(res.loyalty); } catch { /* the display is best effort */ } }
   };
+
+  // 28 Sep 2026 (Peter, Coffee Boy Leeds: "If you search for the customer and add them to the order,
+  // it doesn't show up on the customer display"): the display's member panel follows only the till's
+  // loyalty broadcast, which the display join and Link to existing member send and the customer form
+  // never did. The form's customer is now looked up like the display join looks one up (read only,
+  // nobody is created here: payment does that); the display greets them with their stamps and the
+  // chip shows them. Nothing changes when the order moved on meanwhile (lib/orderCustomerLoyalty.js).
+  const announceFormCustomer = (c) => announceOrderCustomer({
+    customer: c,
+    displayOn: displayUsesScreen(),
+    lookup: fetchCustomerByPhone,
+    current: () => useStore.getState().customer,
+    apply: (next) => {
+      setCustomer(next);
+      const st = useStore.getState();
+      const tblId = st.activeTableId;
+      if (tblId && (st.tables || []).find(x => x.id === tblId)?.session?.customer) st.setSessionCustomer(tblId, next);
+    },
+    publish: publishLoyalty,
+  }).catch(() => { /* never throws; belt and braces */ });
 
   // v4.7.6: load menu_category_links on mount — a menu owns a category via the
   // category's PRIMARY menuId OR a menu_category_links row ("assign categories
@@ -2058,7 +2079,7 @@ export default function POSSurface() {
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
       {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {linkMemberFor&&<LinkMemberModal customer={linkMemberFor} onLinked={applyMemberLink} onClose={()=>setLinkMemberFor(null)}/>}
-      {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
+      {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');announceFormCustomer(c);}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
 
       {/* Void modal */}
       {voidTarget&&(

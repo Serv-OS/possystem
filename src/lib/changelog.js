@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.5',
+    date: '28 Sep 2026',
+    items: [
+      "Till: a customer found with the customer search and added to the order now shows on the customer display, with their stamps, and their stamps show on the till's customer chip. Only a number typed on the display itself, or Link to existing member, reached the display before.",
+      "Till checkout: the loyalty line shows for every loyalty member, with their stamp card (for example Free Drink 5/10) and \"Nothing to redeem yet\" when no reward is ready. It showed only when there were points or a reward to redeem, so at a stamps only venue a member with no free drink ready looked as if loyalty had not loaded. A reward the customer taps on the display now applies with the venue's categories too, like the Redeem button.",
+      "Till: the customer form opens on ASAP for a customer added from the customer display or by Link to existing member. It opened on Later, so adding a name and pressing Confirm saved the order as a pre-order for the next slot (Leeds R9001 and R8674, both 11:00).",
+    ],
+  },
+  {
     v: '5.11.4',
     date: '28 Sep 2026',
     items: [
