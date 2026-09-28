@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.x',
+    date: '28 Sep 2026',
+    items: [
+      "Online ordering: an order paid only with a gift card now shows its confirmation and order tracker. Since 5.9.16 on 20 Sep, the page said \"Could not save the order. Contact the venue.\" after the order had been saved and the gift card debited. The guest's customer record and loyalty points for that order were skipped, and the online stock count was not taken down.",
+      "QR ordering: saving the guest's customer record after a QR order can no longer tell the guest the order was not saved. A guest who left a phone number, on a payment that came back without a payment id, saw \"Payment succeeded but we could not save the order\" about a saved order. Rare: card payments normally carry an id.",
+      "Till: card payments on a Stripe card reader work again. Since 5.8.19 on 2 Sep, the card screen stopped with \"tipBasis is not defined\" before the reader was asked for anything (nothing was charged). The reader's tip suggestions are worked out on the food and drink after discounts, as on the other card machines. Adyen and Ryft card machines were not affected.",
+      "Checks: every QR, online and till checkout file is now checked on each change for names that do not exist. Neither the tests nor the build caught these three.",
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [

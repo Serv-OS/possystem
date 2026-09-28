@@ -19,7 +19,7 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { supabase } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
-import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey } from '../../lib/publicOrder';
+import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -618,15 +618,19 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // 3. Customer CRM (fire-and-forget — phone optional for QR, only
       // attributes when phone provided so we don't clutter the customer
       // table with anonymous one-shot scans).
+      // afterPlaced: the order is saved, so nothing here may throw into the catch below.
       if (customer.phone) {
-        attributeOnlineOrder({
+        afterPlaced('QrCheckout attribute', () => attributeOnlineOrder({
           phone: customer.phone, name: customer.name, email: customer.email,
           marketingOptIn: false,
           locationId: opsLocationId,
           orderRecord: { ref, total, items, type: 'dine-in', channel: 'qr' },
-          // Database fence stage 2: this order's own key proves the page placed it.
-          trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: payId || tabPi || null, phone: customer.phone }),
-        }).catch(e => console.warn('[QrCheckout] attribute failed:', e?.message));
+          // Database fence stage 2: this order's own key proves the page placed it. payId is the
+          // payment id this order's row carries (a new tab's hold, or the pay now charge). It
+          // named tabPi from v5.9.16, which only exists in addToTab, so a guest who left a phone
+          // number and had no payment id got "could not save the order" on a saved order.
+          trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: payId || null, phone: customer.phone }),
+        }));
       }
 
       // v5.5.155: stash for silent resume on next scan from this device.

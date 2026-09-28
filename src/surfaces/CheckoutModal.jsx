@@ -39,7 +39,10 @@ import {
 //   2. BLUETOOTH M2 (Sunmi APK with bridge) — bridge flow. Cashier-facing only.
 //      Kept as a fallback for mobile checkout scenarios.
 //   3. SIMULATED — browser dev / non-Sunmi devices. Click-to-approve UI.
-function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
+// tipBasis and subtotal: CheckoutModal's, for the Stripe reader's tip_basis_minor. v5.8.19 read
+// them here without passing them, so every Stripe network reader payment (runRestFlow) failed
+// "tipBasis is not defined" before the reader was asked for anything (nothing was charged).
+function CardTerminal({ items, grand, tipAmt, tipBasis, subtotal, onComplete, onBack }) {
   const compact = useCompact();
 
   // REST flow state (network reader)
@@ -2579,6 +2582,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               items={items}
               grand={grand}
               tipAmt={tipAmt}
+              tipBasis={tipBasis}
+              subtotal={subtotal}
               onComplete={(pi)=>{
                 // v5.5.172: derive the real reader-collected tip from the
                 // captured PaymentIntent. amountReceived = (base + tip).
