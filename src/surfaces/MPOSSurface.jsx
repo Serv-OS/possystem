@@ -48,6 +48,7 @@ import MCartSheet from './mpos/MCartSheet';
 import MSentConfirm from './mpos/MSentConfirm';
 import MTender from './mpos/MTender';
 import MCardFlow from './mpos/MCardFlow';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
 import MOrderHistory from './mpos/MOrderHistory';
@@ -219,6 +220,9 @@ function MPOSRouter() {
     useStore.setState({ tillCustomerFacing: customerHoldsPhone });
     return () => { useStore.setState({ tillCustomerFacing: false }); };
   }, [customerHoldsPhone]);
+  // v5.11.x: the tip pass and the card screen are payment busy (lib/paymentBusy.js), so a release
+  // never reloads the handset while the customer is paying on it. MCardFlow holds its own too.
+  usePaymentBusy(flow.screen === 'tender' || flow.screen === 'card', 'mpos pay');
 
   // v5.5.977 — the two failures the server must never be able to walk past.
   // closeFailure: the card was APPROVED and the sale did not record (money gone,

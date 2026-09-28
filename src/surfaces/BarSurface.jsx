@@ -10,6 +10,8 @@ import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { getActiveLocationSync, ensureAuthToken, isMock } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
+import { holdPaymentBusy } from '../lib/paymentBusy';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
@@ -385,6 +387,9 @@ export default function BarSurface() {
   const [holdClose, setHoldClose] = useState(null);          // { tab } | null
   const [holdCloseState, setHoldCloseState] = useState('idle'); // idle | capturing | error
   const [holdCloseErr, setHoldCloseErr] = useState(null);
+  // v5.11.x: payment busy (lib/paymentBusy.js) while the held card close sheet is up, so a
+  // release never reloads the till between the capture and its closed check.
+  usePaymentBusy(!!holdClose, 'bar tab close');
 
   // v5.7.34 — the documented v5.7.31 gap: bar tabs passed UNTAXED totals into
   // CheckoutModal, so venues with added-on (exclusive) sales tax undercharged
@@ -517,6 +522,7 @@ export default function BarSurface() {
     const newAmt = parseFloat(String(input).replace(/[^0-9.]/g, ''));
     if (!(newAmt > cap)) { showToast(`New hold must be more than ${money(cap)}`, 'error'); return; }
     setHoldBusy(true);
+    const releaseBusy = holdPaymentBusy('bar tab hold increase');   // v5.11.x (lib/paymentBusy.js)
     try {
       const token = await ensureAuthToken();
       if (tab.preAuthProcessor === 'adyen') {
@@ -540,7 +546,7 @@ export default function BarSurface() {
       }
     } catch (e) {
       showToast('Could not reach the card processor — try again.', 'error');
-    } finally { setHoldBusy(false); }
+    } finally { setHoldBusy(false); releaseBusy(); }
   };
 
   // v5.5.324: capture the held card for (up to) the running total, then close.

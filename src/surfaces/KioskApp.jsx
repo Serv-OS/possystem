@@ -52,6 +52,7 @@ import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
 import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
@@ -489,6 +490,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const [orderNumber, setOrderNumber] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // v5.11.x: payment busy (lib/paymentBusy.js) while the paid order is being booked, in both
+  // designs. The pay screen's own gate holds it too; submitOrder itself is untouched.
+  usePaymentBusy(submitting, 'kiosk order');
 
   // v5.5.18: kiosk language (i18n). Subscribes via useKioskLang() so any
   // setLang() call from the picker re-renders this component + children.

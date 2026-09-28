@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.x',   // 5.11.x, assigned at merge (fix/payment-busy-guard)
+    date: '28 Sep 2026',
+    items: [
+      'Updates never reload a till, kiosk or handset in the middle of a payment. The update banner said it waited for payments, but nothing ever told it a payment was running, so a release could reload a till seconds after it sent a card to the card machine (Coffee Boy Leeds POS 1, 27 Sep). Checkout, the card machine screen, split bills, bar tab card holds and closes, Orders tab closes, the MPOS tip and card screens and the kiosk pay screen now all hold the update back.',
+      'The update countdown now pauses while a payment is running and for 15 seconds after it ends, then carries on where it stopped. The banner says it is waiting for the payment, and Update now is greyed out until the payment is finished.',
+    ],
+  },
+  {
     v: '5.11.0',
     date: '28 Sep 2026',
     items: [

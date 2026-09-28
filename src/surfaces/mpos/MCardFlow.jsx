@@ -24,6 +24,7 @@ import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
 import { confirmLinkBeforeCard } from '../../lib/deviceLink';
+import { usePaymentBusy } from '../../lib/usePaymentBusy';
 import { Sx, money } from './MShellStyles';
 import { stripeCurrency, getActiveCurrencyCode } from '../../lib/currency';
 import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
@@ -85,6 +86,10 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
 
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
   const grand = payment?.grand ?? 0;
+
+  // v5.11.x: payment busy while the card flow is up (lib/paymentBusy.js), taken before the
+  // effect below starts the card, so a release never reloads the handset mid tender.
+  usePaymentBusy(true, 'mpos card');
 
   useEffect(() => {
     if (startedRef.current) return;

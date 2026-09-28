@@ -32,6 +32,7 @@ import { useEffect, useRef, useState } from 'react';
 import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader, abortTerminalJob } from '../lib/payments/terminalJobs';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { usePaymentBusy } from '../lib/usePaymentBusy';
 
 const STATUS_COPY = {
   pending:         { icon: '📲', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
@@ -76,6 +77,9 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const unmountedRef = useRef(false);
   useEffect(() => { onCompleteRef.current = onComplete; onFailedRef.current = onFailed; });
   useEffect(() => () => { unmountedRef.current = true; }, []);
+  // v5.11.x: payment busy while this screen is up (lib/paymentBusy.js). The watch below holds it
+  // too; this also covers 'unknown', where the watch has returned and staff check the machine.
+  usePaymentBusy(true, 'card machine screen');
 
   // ── watch the job row ──────────────────────────────────────────────────────
   useEffect(() => {
