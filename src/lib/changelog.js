@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.9',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. Fresh TestFlight builds of every iPad and iPhone app, built without the unused location code Apple was refusing: KDS 6, Time Clock 4, Waitlist 4, Bookings 4, Manager 5, Owner 4, Staff 4.',
+    ],
+  },
+  {
     v: '5.11.8',
     date: '28 Sep 2026',
     items: [
