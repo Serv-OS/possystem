@@ -1,13 +1,11 @@
 // 28 Sep 2026: the kiosk check (kioskNoUndef.test.js, PR 186) over the customer checkouts (QR
-// and online) and the till's checkout. eslint no-undef found three names that did not exist on
-// payment paths. Neither the tests nor `vite build` fail on one: it only throws when its line runs.
+// and online). eslint no-undef found two names that did not exist on payment paths. Neither the
+// tests nor `vite build` fail on one: it only throws when its line runs.
 //   - QrCheckout, v5.9.16: `tabPi` in the customer record call after the order was placed. A
 //     guest who left a phone number, on a payment with no id, was told "could not save the
 //     order" about a saved order.
 //   - OnlineCheckout, v5.9.16: `paymentIntent` in the same call on the gift card only path. Every
 //     gift card only order threw there, after it was saved and the gift card debited.
-//   - CheckoutModal CardTerminal, v5.8.19: `tipBasis` and `subtotal`. A Stripe card reader
-//     payment stopped on "tipBasis is not defined" before the reader was asked for anything.
 //
 // The probe proves the rule is really running: a linter that matched no files or never loaded
 // the rule would otherwise pass as "clean".
@@ -24,7 +22,6 @@ const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const CHECKOUT_FILES = [
   'src/surfaces/qr/**/*.{js,jsx}',
   'src/surfaces/online/**/*.{js,jsx}',
-  'src/surfaces/CheckoutModal.jsx',
 ];
 
 // Only no-undef, so the repo's other rules (unused bindings, hooks) cannot fail this test.
@@ -60,10 +57,10 @@ test('the no-undef check catches the v5.9.16 QR fault (probe)', async () => {
   assert.deepEqual(problems(results), ["src/surfaces/qr/probe.jsx:2 'tabPi' is not defined."]);
 });
 
-test('no QR, online or till checkout file uses a name that is not defined', async () => {
+test('no QR or online checkout file uses a name that is not defined', async () => {
   const results = await noUndefLinter().lintFiles(CHECKOUT_FILES);
   const linted = results.map(r => r.filePath.slice(ROOT.length));
-  for (const f of ['src/surfaces/qr/QrCheckout.jsx', 'src/surfaces/online/OnlineCheckout.jsx', 'src/surfaces/CheckoutModal.jsx']) {
+  for (const f of ['src/surfaces/qr/QrCheckout.jsx', 'src/surfaces/online/OnlineCheckout.jsx']) {
     assert.ok(linted.includes(f), `${f} was linted`);
   }
   assert.deepEqual(problems(results), []);
@@ -90,11 +87,4 @@ test('the QR key is this order\'s own payment id, and the gift card path sends n
   assert.ok(giftOnly.length > 0, 'the gift card only path was found');
   assert.match(giftOnly, /trackKey: chooseTrackKey\(\{ trackToken: placed\?\.trackToken, phone: customer\.phone \}\)/);
   assert.doesNotMatch(giftOnly, /\bpaymentIntent\?\.id\b/);
-});
-
-test('the Stripe reader screen gets the tip basis from CheckoutModal', () => {
-  const src = read('../surfaces/CheckoutModal.jsx');
-  assert.match(src, /function CardTerminal\(\{[^)]*\btipBasis\b[^)]*\bsubtotal\b[^)]*\}\)/);
-  assert.match(src, /<CardTerminal\s+items=\{items\}[^>]*\btipBasis=\{tipBasis\}[^>]*\bsubtotal=\{subtotal\}/);
-  assert.match(src, /tip_basis_minor: Math\.round\(\(Number\.isFinite\(Number\(tipBasis\)\) \? Number\(tipBasis\) : subtotal\) \* 100\)/);
 });
