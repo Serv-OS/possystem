@@ -30,7 +30,7 @@ import { createScopedPropagator, savedForPropagation } from '../lib/scopedPropag
 import { withTimeout } from '../lib/withTimeout';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
-import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, fetchArchivedMenuItems, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
+import { propagateScopedEdit, propagateModifierGroupEdit, setMenuItemScope, fetchArchivedMenuItems, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, fetchClosedCheckCardRow, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
 import { defaultSections, loadSavedSections, storeSavedSections, pickPushedSections, resolveSections, normaliseSections, sectionsSignature } from '../lib/sectionPlan';
@@ -57,9 +57,10 @@ import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { scrubDiscount } from '../lib/discountApprover';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
-  refundBreakdown, cardLegsOf, legRefundedMinor, allocateToLegs,
+  refundBreakdown, legRefundedMinor, allocateToLegs,
   rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount,
 } from '../lib/payments/refundMath';
+import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
 import { memberTokenFor } from '../lib/memberSession.js';
@@ -7301,14 +7302,41 @@ export const useStore = create((set, get) => ({
       items: refundItems = [], isFullRefund, manager, reason, tenderMethod,
       tipAmount = null, serviceAmount = null, legRefunds = null,
     } = opts;
-    const chkBefore = get().closedChecks.find(c => c.id === checkId);
-    if (!chkBefore) {
+    const chkFound = get().closedChecks.find(c => c.id === checkId);
+    if (!chkFound) {
       console.warn('[refundCheck] no such check', checkId);
       return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Check not found' };
     }
     // ezCater collected this money, so it is never refunded through our processors.
-    if (!mayTakeOrRefundMoney(chkBefore)) {
+    if (!mayTakeOrRefundMoney(chkFound)) {
       return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Paid through ezCater: refund it on ezCater' };
+    }
+
+    // ⚠️ A CASH PAYOUT MUST NOT ALSO REVERSE THE CARD (see the card reversal below).
+    const cashPayout = tenderMethod === 'cash';
+    // 28 Sep 2026 (Leeds R6404): find the card BEFORE anything is recorded. This till's copy
+    // first; when it has no card leg although a card paid (a sale another device booked,
+    // known here only from a copy that dropped the card), the closed_checks row itself. If
+    // that read fails, refuse: a refund recorded with no card leg can never be sent later.
+    const legLookup = await resolveRefundCardLegs(chkFound, {
+      cashPayout,
+      readRow: isTrainingMode() ? null : () => fetchClosedCheckCardRow(checkId),
+    });
+    if (legLookup.lookupFailed) {
+      console.warn('[refundCheck] card leg lookup failed:', legLookup.error);
+      const message = 'Could not find the card payment for this sale. Nothing has been refunded. Check the till is online and linked (no red banner), then try again.';
+      get().showToast(message, 'error');
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message };
+    }
+    if (legLookup.from === 'database') console.info('[refundCheck] card leg read from the check row:', checkId);
+    // The lookup may have waited on the network: take the check as it is NOW, so a refund
+    // recorded meanwhile counts and the money below is only what is still left on it. Gone
+    // meanwhile (the history cap, a venue switch): stop here, nothing recorded, nothing sent.
+    const chkBefore = get().closedChecks.find(c => c.id === checkId);
+    if (!chkBefore) {
+      const message = 'This sale is no longer on this till. Open it again from History and retry. Nothing has been refunded.';
+      get().showToast(message, 'error');
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message };
     }
 
     // THE STORE COMPUTES THE MONEY, NOT THE CALLER. `opts.amount` used to decide
@@ -7505,8 +7533,9 @@ export const useStore = create((set, get) => ({
     //      what earlier refunds already took off it), so one card can't be
     //      refunded with another card's money — and a full refund of a part-gift
     //      -paid check no longer asks the card for the gift's share.
-    const legs = cardLegsOf(check);
-    // ⚠️ A CASH PAYOUT MUST NOT ALSO REVERSE THE CARD.
+    // 28 Sep 2026: resolved above, before the refund was recorded (resolveRefundCardLegs).
+    const legs = legLookup.legs;
+    // ⚠️ A CASH PAYOUT MUST NOT ALSO REVERSE THE CARD (`cashPayout`, set above).
     //
     // The refund screen offers "Cash payout" — money handed back from the drawer.
     // Reversing the card as well would refund the customer TWICE, once in notes
@@ -7514,7 +7543,6 @@ export const useStore = create((set, get) => ({
     // away with it on Adyen only because the reversal silently did nothing. Now
     // that reversals actually work on all three processors, the gate is load-
     // bearing rather than theoretical.
-    const cashPayout = tenderMethod === 'cash';
     const alreadyByLeg = legRefundedMinor(chkBefore);   // BEFORE this refund's own entry
     const cardCapMinor = legs.reduce(
       (s, l) => s + (l.amountMinor == null ? Infinity : Math.max(0, l.amountMinor - (alreadyByLeg[l.id] || 0))),
@@ -7600,6 +7628,10 @@ export const useStore = create((set, get) => ({
       message = cardInMethod
         ? `Refund of ${money(amount)} recorded — issue the card refund manually (no linked card payment found)`
         : `Refund of ${money(amount)} recorded via ${tenderMethod || 'cash'}`;
+    } else if (cardStatus === 'none') {
+      // 28 Sep 2026: card legs exist but nothing was sent (every leg already fully refunded,
+      // or no card amount chosen in the picker). It used to fall through to "returned to the card".
+      message = `Refund of ${money(amount)} recorded. Nothing was sent to the card: its payment is already fully refunded, or no card amount was chosen.`;
     } else if (cardStatus === 'failed') {
       ok = false;
       message = `Refund of ${money(amount)} recorded but the card reversal FAILED — no money has been returned. Retry it from the refund history.`;

@@ -22,6 +22,7 @@ import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { checkClosesOccupation } from '../lib/rowWriteFence';
 import { bookedTaxRecord } from '../lib/taxShare';
+import { closedCheckRefundFields } from '../lib/closedCheckRefundFields';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -242,6 +243,10 @@ export async function forceSyncFromSupabase() {
         // Inclusive rows get no new keys, as before.
         // 27 Sep 2026: a scaled UK record too (taxShare.bookedTaxRecord), so reports read its booked VAT.
         ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxAmount: c.tax_amount ?? null, taxBreakdown: c.tax_breakdown } : {}),
+        // 28 Sep 2026: the raw row only has snake_case names, and the refund reads
+        // stripePaymentIntentId / paymentIntents / giftCard, so a force sync used to leave
+        // every one of today's card sales with no card leg to refund.
+        ...closedCheckRefundFields(c),
       }));
       const supabaseIds = new Set(supabaseChecks.map(c => c.id));
       const localOnly = (store.closedChecks || []).filter(c => !supabaseIds.has(c.id));

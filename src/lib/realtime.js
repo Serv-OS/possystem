@@ -18,6 +18,7 @@ import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeSt
 import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
 import { bookedTaxRecord } from './taxShare';
+import { closedCheckRefundFields } from './closedCheckRefundFields';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -386,6 +387,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         seatedAt: check.seated_at ? new Date(check.seated_at).getTime() : (check.seatedAt || null),
         status: check.status, refunds: check.refunds || [],
         tableId: check.table_id, tableLabel: check.table_label,
+        // 28 Sep 2026: the card reference, processor, gift card and tenders. This copy had
+        // none, so a sale another device booked could never be refunded to the card from
+        // this till (Leeds R6404: "issue the card refund manually").
+        ...closedCheckRefundFields(check),
       };
       const current = store.getState().closedChecks || [];
       if (!current.find(c => c.id === normalised.id)) {
@@ -474,6 +479,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],
             tableId: check.table_id, tableLabel: check.table_label,
+            ...closedCheckRefundFields(check),   // 28 Sep 2026: see the INSERT branch
           }, ...s.closedChecks]),
         };
       });

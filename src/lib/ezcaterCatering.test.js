@@ -406,7 +406,9 @@ test('exclusion: money, never unpaid and never refunded through our processors',
   assert.match(hub, /\['online', 'kiosk'\]\.includes\(o\.source\) \|\| isPrepaidByChannel\(o\) \|\| isPaymentChecking\(o\)\) \{ setViewOrder\(o\); \}/);
   const store = read('../store/index.js');
   const refund = store.slice(store.indexOf('refundCheck: async (checkId'), store.indexOf('const bd = refundBreakdown(chkBefore'));
-  assert.match(refund, /if \(!mayTakeOrRefundMoney\(chkBefore\)\)/);
+  // 28 Sep 2026: the gate reads the check as found (chkFound), before the card leg lookup.
+  assert.match(refund, /if \(!mayTakeOrRefundMoney\(chkFound\)\)/);
+  assert.ok(refund.indexOf('mayTakeOrRefundMoney(chkFound)') < refund.indexOf('resolveRefundCardLegs('), 'ezCater is refused before any card lookup');
   const bo = read('../backoffice/sections/CateringOrders.jsx');
   assert.match(bo, /isPrepaidByChannel\(o\) \? \{ \.\.\.o, paid: true \} : o/);
 });
