@@ -7,13 +7,20 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.9',
+    v: '5.11.10',
     date: '28 Sep 2026',
     items: [
       "Xero: pushing sales no longer fails with \"The TaxType code 'INPUT2' cannot be used with account code '200'\". When a venue connected, ServOS picked the first 20% tax rate in Xero, which is VAT on Expenses. It now only ever picks sales rates (20% VAT on Income, 5% Reduced rate, Zero rated), and a venue that saved the wrong one is corrected on its next push. Leeds: press Push once for 26 Sep.",
       "Xero: sales now post one line per VAT rate, for example Sales (card) 20% and Sales (card) zero rated, split exactly from the VAT the till recorded on each sale. Before, a whole day posted at one rate, so zero rated and 5% sales would have shown 20% VAT in Xero. Sales with no saved VAT breakdown (kiosk, online, QR) are estimated from the VAT they recorded and flagged.",
       "Back Office, Xero, Account mapping: new VAT on sales section. Each of the venue's tax rates can be matched to a Xero sales rate (Auto matches by percentage), with a Not VAT registered tick, Items with no tax rate, and Service charge VAT. Only sales rates are listed, and VAT on purchases lists only purchase rates.",
       "Xero: service charge now posts with No VAT by default, because the till records no VAT on it. Choose a rate under Service charge VAT for a compulsory service charge. US venues with added on sales tax post exactly as before.",
+    ],
+  },
+  {
+    v: '5.11.9',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. Fresh TestFlight builds of every iPad and iPhone app, built without the unused location code Apple was refusing: KDS 6, Time Clock 4, Waitlist 4, Bookings 4, Manager 5, Owner 4, Staff 4.',
     ],
   },
   {
