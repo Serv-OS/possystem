@@ -18,6 +18,8 @@
 //      it becomes one 'unallocated' tender and is flagged for the accountant.
 //   3. REFUNDS belong to the business day of the refund itself (refunds[].timestamp), not the
 //      day the check closed, and carry their own tip, service and tax portions.
+// And since 28 Sep 2026, given the venue's tax rates, every figure is also split BY TAX RATE
+// (byRate), so Xero gets one sales line per VAT rate (see "tax rates" below).
 
 // ── money ────────────────────────────────────────────────────────────────────
 
@@ -239,25 +241,211 @@ export function checkTenders(row) {
   return { tenders: legacyTenders(row, flags), legacy: true, flags };
 }
 
+// ── tax rates ────────────────────────────────────────────────────────────────
+//
+// 28 Sep 2026: Xero needs each sale split by VAT rate (one line per rate), or zero rated food
+// posts with 20% VAT. A check's split is read from closed_checks.tax_breakdown (till, MPOS and
+// bar closes save it) and used only as WEIGHTS: each tender's goods and tax are split with
+// allocate(), so every total stays exact to the penny. Checks with no breakdown (kiosk,
+// online, QR, catering) are split by what their booked tax implies, and flagged.
+//
+// A bucket is { key, pct, mode, rateId, name, code, zeroKind, isDefault }:
+//   rate:<id>  a venue tax_rates row (inclusive)
+//   pct:<p>    a percentage no venue rate has (another venue's rate, a deleted one)
+//   none       goods with no rate at all
+//   excl       all added-on (US) sales tax, one bucket so stacked lines never count twice
+//   default    the venue's rates are unknown: today's single line
+
+const pctOf = (rate) => Math.round(Number(rate) * 1e6) / 1e4;   // 0.2 -> 20, 0.08875 -> 8.875
+
+/** What a 0% rate means for VAT, from its name or code: 'exempt', 'outside' the scope, or 'zero' rated. */
+export function zeroKindOf(name, code) {
+  const s = `${name || ''} ${code || ''}`;
+  if (/exempt/i.test(s)) return 'exempt';
+  if (/outside|out of scope|no\s*vat|non[- ]?vat/i.test(s)) return 'outside';
+  return 'zero';
+}
+
+export const NONE_TAX_BUCKET = Object.freeze({ key: 'none', pct: 0, mode: 'none', rateId: null, name: 'No tax rate', code: '', zeroKind: null, isDefault: false });
+export const EXCL_TAX_BUCKET = Object.freeze({ key: 'excl', pct: null, mode: 'exclusive', rateId: null, name: 'Added-on sales tax', code: '', zeroKind: null, isDefault: false });
+export const DEFAULT_TAX_BUCKET = Object.freeze({ key: 'default', pct: null, mode: 'default', rateId: null, name: 'Default rate', code: '', zeroKind: null, isDefault: true });
+
+const MODE_RANK = { inclusive: 0, default: 0, none: 1, exclusive: 2 };
 /**
- * Split one check's service and tax across its tenders in proportion to the bill money each
- * took, so a split check's service charge and VAT land with the tenders that paid them.
- * Returns per tender { ...tender, gross, service, tax, sales } where gross = amount + tip and
- * sales = amount - service (goods, tax included).
+ * The one order buckets are listed and posted in: inclusive rates by percentage, highest
+ * first, then goods with no rate, then added-on tax; ties by key. allocate() gives ties to the
+ * earlier slot, so this order also fixes every split.
  */
-export function checkTenderParts(row) {
-  const { tenders, legacy, flags } = checkTenders(row);
+export function compareTaxBuckets(a, b) {
+  return (MODE_RANK[a.mode] ?? 0) - (MODE_RANK[b.mode] ?? 0)
+    || (b.pct ?? -1) - (a.pct ?? -1)
+    || String(a.key).localeCompare(String(b.key));
+}
+
+function rateBucket(r) {
+  return { key: `rate:${r.id}`, pct: r.pct, mode: 'inclusive', rateId: r.id, name: r.name || `${r.pct}%`, code: r.code, zeroKind: r.pct === 0 ? r.zeroKind : null, isDefault: r.isDefault };
+}
+
+/**
+ * The venue's tax_rates rows (inactive ones too: older checks point at them) made ready to
+ * match: { rates[], byId, defaultRate, zeroRate, known, addedOn }. Rates are ordered active
+ * first, then the default, then by id, so "the first rate at this percentage" is the same on
+ * every run. `addedOn` marks a venue whose tax is added on top of prices (US): its default rate
+ * is added-on, or, with no default, it has added-on rates and no inclusive rate above 0%.
+ */
+export function taxContext(taxRates) {
+  const known = Array.isArray(taxRates);
+  const rates = (known ? taxRates : [])
+    .filter((r) => r && r.id != null && r.rate != null && r.rate !== '' && Number.isFinite(Number(r.rate)))
+    .map((r) => {
+      const pct = pctOf(r.rate);
+      return {
+        id: String(r.id), name: String(r.name || ''), code: String(r.code || ''), pct,
+        mode: String(r.type || 'inclusive').toLowerCase() === 'exclusive' ? 'exclusive' : 'inclusive',
+        isDefault: !!(r.is_default ?? r.isDefault), active: r.active !== false,
+        zeroKind: pct === 0 ? zeroKindOf(r.name, r.code) : null,
+      };
+    })
+    .sort((a, b) => (+b.active - +a.active) || (+b.isDefault - +a.isDefault) || a.id.localeCompare(b.id));
+  const byId = new Map(rates.map((r) => [r.id, r]));
+  const defaultRate = rates.find((r) => r.active && r.isDefault) || null;
+  const zeroRate = rates.find((r) => r.active && r.mode === 'inclusive' && r.pct === 0 && r.zeroKind === 'zero') || null;
+  const addedOn = defaultRate ? defaultRate.mode === 'exclusive'
+    : rates.some((r) => r.active && r.mode === 'exclusive') && !rates.some((r) => r.active && r.mode === 'inclusive' && r.pct > 0);
+  return { rates, byId, defaultRate, zeroRate, known, addedOn };
+}
+
+// The venue's bucket for one tax_breakdown entry. The entry's own rate id counts only when this
+// venue has it at the SAME percentage: Leeds booked another venue's rate id for a while
+// (unverified snapshot rates), and TaxManager hard deletes rates. Otherwise the first local rate
+// with that percentage (a 0% one of the same kind first), else a bucket for the percentage.
+function entryBucket(entry, ctx) {
+  const r = entry?.rate;
+  if (!r || typeof r !== 'object') return EXCL_TAX_BUCKET;   // a per unit levy (rate: null) is added-on tax
+  if (String(r.type || 'inclusive').toLowerCase() === 'exclusive') return EXCL_TAX_BUCKET;
+  const own = r.id != null ? ctx.byId.get(String(r.id)) : null;
+  const pct = r.rate != null && r.rate !== '' && Number.isFinite(Number(r.rate)) ? pctOf(r.rate) : (own ? own.pct : null);
+  if (pct == null) return { key: 'pct:unknown', pct: null, mode: 'inclusive', rateId: null, name: String(r.name || 'Unknown rate'), code: '', zeroKind: null, isDefault: false };
+  if (own && own.mode === 'inclusive' && own.pct === pct) return rateBucket(own);
+  const kind = pct === 0 ? zeroKindOf(r.name, r.code) : null;
+  const same = ctx.rates.filter((x) => x.mode === 'inclusive' && x.pct === pct);
+  const match = (kind && same.find((x) => x.zeroKind === kind)) || same[0];
+  if (match) return rateBucket(match);
+  return { key: `pct:${pct}`, pct, mode: 'inclusive', rateId: null, name: `${pct}%`, code: '', zeroKind: kind, isDefault: false };
+}
+
+// Copied from src/lib/taxShare.js (edge functions cannot import src): a frozen breakdown is
+// usable when it carries a real number for the total tax.
+function isUsableBreakdown(b) {
+  return !!b && typeof b === 'object' && b.totalTax != null && Number.isFinite(Number(b.totalTax));
+}
+
+// A check with no usable breakdown: its booked tax taken at the venue default rate, the rest
+// of the goods zero rated (or no rate when the venue has no 0% rate).
+function impliedWeights(row, ctx, goods, tax) {
+  const one = (bucket, flags, source = 'implied') => ({ weights: [{ bucket, gross: goods, tax }], source, flags });
+  if (!ctx.known) return one(DEFAULT_TAX_BUCKET, [], 'default');                 // no rates loaded: exactly today
+  const def = ctx.defaultRate;
+  if (!def) return one(DEFAULT_TAX_BUCKET, ['tax_no_rates'], 'default');
+  if (row?.tax_amount == null || row.tax_amount === '') return one(rateBucket(def), ['tax_not_recorded']);   // VAT unknown: the default rate, as before
+  const zero = ctx.zeroRate ? rateBucket(ctx.zeroRate) : NONE_TAX_BUCKET;
+  if (tax <= 0) return { weights: [{ bucket: zero, gross: goods, tax: 0 }], source: 'implied', flags: ['tax_split_estimated'] };
+  const taxed = def.pct > 0 ? def
+    : ctx.rates.filter((r) => r.active && r.mode === 'inclusive' && r.pct > 0).sort((a, b) => b.pct - a.pct)[0];
+  if (!taxed) return one(rateBucket(def), ['tax_split_estimated']);
+  const p = taxed.pct;
+  let g = Math.min(goods, Math.round((tax * (100 + p)) / p));
+  if (goods - g <= Math.ceil((100 + p) / (2 * p)) + 1) g = goods;   // rounding slop: 4p at 20%, 12p at 5%
+  const weights = [{ bucket: rateBucket(taxed), gross: g, tax }];
+  if (goods - g > 0) weights.push({ bucket: zero, gross: goods - g, tax: 0 });
+  return { weights, source: 'implied', flags: ['tax_split_estimated'] };
+}
+
+/**
+ * How one check's goods and tax divide between tax rates: { weights:[{bucket, gross, tax}],
+ * source:'breakdown'|'implied'|'default', flags[] }. `goods` (bill money less service) and
+ * `tax` (the booked tax, clamped) are in minor units; the weights are proportions only.
+ */
+export function checkRateWeights(row, ctx, goods, tax) {
+  // 28 Sep 2026: a venue that adds tax on top (US) keeps today's ONE sales line, whatever its
+  // checks' breakdowns say (a 0% rate made in TaxManager is 'inclusive' by default, and must
+  // not split a US sale into a second line). Nothing is estimated, so nothing is flagged.
+  if (ctx?.addedOn) return { weights: [{ bucket: EXCL_TAX_BUCKET, gross: goods, tax }], source: 'default', flags: [] };
+  const t = row?.tax_breakdown;
+  if (isUsableBreakdown(t) && Array.isArray(t.breakdown) && t.breakdown.length) {
+    const acc = new Map();
+    const put = (bucket, gross, tx) => {
+      const w = acc.get(bucket.key) || { bucket, gross: 0, tax: 0 };
+      w.gross += gross; w.tax += tx;
+      acc.set(bucket.key, w);
+    };
+    let inclusiveGross = 0, taxSum = 0;
+    for (const b of t.breakdown) {
+      if (!b || typeof b !== 'object') continue;
+      const bk = entryBucket(b, ctx);
+      const x = Math.max(0, Number(b.tax) || 0) * 100;
+      taxSum += x;
+      // Stacked US lines each carry the full gross: added-on tax takes its goods from the remainder.
+      if (bk.mode === 'exclusive') { put(bk, 0, x); continue; }
+      const g = Math.max(0, Number(b.gross) || 0) * 100;
+      inclusiveGross += g;
+      put(bk, g, x);
+    }
+    const rest = Math.max(0, (Number(t.total) || 0) * 100 - inclusiveGross);
+    const addedOn = !!t.hasExclusiveTax || acc.has('excl');
+    if (rest >= 0.5) put(addedOn ? EXCL_TAX_BUCKET : NONE_TAX_BUCKET, rest, 0);
+    const weights = [...acc.values()].sort((a, b) => compareTaxBuckets(a.bucket, b.bucket));
+    if (weights.some((w) => w.gross > 0) || goods <= 0) {
+      const off = Math.abs(Math.round(taxSum) - tax) > Math.max(2, Math.round(tax * 0.01));
+      return { weights, source: 'breakdown', flags: off ? ['tax_breakdown_mismatch'] : [] };
+    }
+  }
+  return impliedWeights(row, ctx, goods, tax);
+}
+
+/** Split `sales` and `tax` (minor units) by the weights: { [bucket key]: { sales, tax } }, each adding up exactly. */
+export function splitByRate(sales, tax, weights) {
+  const out = {};
+  if (!Array.isArray(weights) || !weights.length) return out;
+  const s = allocate(sales, weights.map((w) => w.gross));
+  let tw = weights.map((w) => w.tax);
+  // No tax on any weight but tax to place: on the taxed buckets by their goods.
+  if (!tw.some((x) => x > 0)) tw = weights.map((w) => (w.bucket.pct > 0 || w.bucket.key === 'excl' || w.bucket.key === 'default' ? w.gross : 0));
+  const t = allocate(tax, tw);
+  weights.forEach((w, i) => {
+    if (!s[i] && !t[i]) return;
+    const e = out[w.bucket.key] || (out[w.bucket.key] = { sales: 0, tax: 0 });
+    e.sales += s[i]; e.tax += t[i];
+  });
+  return out;
+}
+
+// A check's bill money, service and clamped tax in minor units, as its tenders took them.
+function checkMoney(row, tenders) {
   const amounts = tenders.map((t) => t.amount);
   const billTotal = amounts.reduce((a, b) => a + b, 0);
   const service = Math.min(Math.max(0, toMinor(row?.service)), billTotal);
   const tax = Math.min(checkTaxMinor(row), Math.max(0, billTotal - service));
+  return { amounts, billTotal, service, tax };
+}
+
+/**
+ * Split one check's service and tax across its tenders in proportion to the bill money each
+ * took, so a split check's service charge and VAT land with the tenders that paid them.
+ * Returns per tender { ...tender, gross, service, tax, sales } where gross = amount + tip and
+ * sales = amount - service (goods, tax included). Given a taxContext, each part also carries
+ * byRate { [bucket key]: { sales, tax } } and the result the check's `buckets` and `rateSource`.
+ */
+export function checkTenderParts(row, taxCtx) {
+  const { tenders, legacy, flags } = checkTenders(row);
+  const { amounts, billTotal, service, tax } = checkMoney(row, tenders);
   const svc = allocate(service, amounts);
   const tx = allocate(tax, amounts);
-  return {
-    legacy,
-    flags,
-    parts: tenders.map((t, i) => ({ ...t, gross: t.amount + t.tip, service: svc[i], tax: tx[i], sales: t.amount - svc[i] })),
-  };
+  const parts = tenders.map((t, i) => ({ ...t, gross: t.amount + t.tip, service: svc[i], tax: tx[i], sales: t.amount - svc[i] }));
+  if (!taxCtx) return { legacy, flags, parts };
+  const w = checkRateWeights(row, taxCtx, billTotal - service, tax);
+  for (const p of parts) p.byRate = splitByRate(p.sales, p.tax, w.weights);
+  return { legacy, flags: [...flags, ...w.flags], parts, buckets: w.weights.map((x) => x.bucket), rateSource: w.source };
 }
 
 // ── refunds ──────────────────────────────────────────────────────────────────
@@ -298,7 +486,7 @@ const OK_LEG = new Set(['succeeded', 'accepted']);
  * tip and service missing on an entry with no item list (a processor side refund) are the
  * check's pro rata too, flagged as estimated. An old item refund with no split is all goods.
  */
-export function refundParts(entry, row) {
+export function refundParts(entry, row, taxCtx) {
   const flags = [];
   const atMs = refundAtMs(entry);
   let amount = Math.max(0, toMinor(entry?.amount));
@@ -414,7 +602,14 @@ export function refundParts(entry, row) {
       amount += e.gross;
     }
   }
-  return { atMs, amount, parts, flags, skipped: false };
+  if (!taxCtx) return { atMs, amount, parts, flags, skipped: false };
+  // 28 Sep 2026: goods and tax given back split by the check's own tax rates, pro rata (the
+  // same rule refundMath uses for UK VAT), the credit put back on top included.
+  const money = checkMoney(row, tenders);
+  const rw = checkRateWeights(row, taxCtx, money.billTotal - money.service, money.tax);
+  for (const p of parts) p.byRate = splitByRate(p.sales, p.tax, rw.weights);
+  flags.push(...rw.flags);
+  return { atMs, amount, parts, flags, skipped: false, buckets: rw.weights.map((x) => x.bucket), rateSource: rw.source };
 }
 
 // ── the day ──────────────────────────────────────────────────────────────────
@@ -430,12 +625,23 @@ const WARN_TEXT = {
   refund_unallocated: 'Refunds we could not place on a tender. They are posted to Unallocated.',
   refund_no_time: 'Refunds with no time recorded. They are dated by the check close time.',
   voided_checks: 'Cancelled checks left out of the day.',
+  tax_split_estimated: 'Checks with no VAT breakdown saved (kiosk, online, QR and catering orders). Their VAT is taken to be at the venue default rate and the rest of the sale zero rated.',
+  tax_not_recorded: 'Checks with no VAT amount recorded. They post at the venue default VAT rate.',
+  tax_breakdown_mismatch: 'Checks whose saved VAT breakdown does not add up to the VAT recorded on the check. The breakdown is still used to split the sale by rate.',
+  tax_no_rates: 'Checks with no VAT breakdown at a venue with no default tax rate. They post at the Xero rate chosen for "Sales with no VAT breakdown" under Account mapping, as before.',
 };
 
 const MAX_IDS = 25;
 
 function blankTotals() { return { count: 0, gross: 0, tip: 0, service: 0, tax: 0, sales: 0 }; }
-function addTo(t, p) { t.gross += p.gross; t.tip += p.tip; t.service += p.service; t.tax += p.tax; t.sales += p.sales; }
+function addRates(t, p) {
+  if (!t.byRate || !p.byRate) return;
+  for (const [k, v] of Object.entries(p.byRate)) {
+    const e = t.byRate[k] || (t.byRate[k] = { sales: 0, tax: 0 });
+    e.sales += v.sales; e.tax += v.tax;
+  }
+}
+function addTo(t, p) { t.gross += p.gross; t.tip += p.tip; t.service += p.service; t.tax += p.tax; t.sales += p.sales; addRates(t, p); }
 
 /**
  * Build one business day.
@@ -443,16 +649,22 @@ function addTo(t, p) { t.gross += p.gross; t.tip += p.tip; t.service += p.servic
  *   saleRows    closed_checks rows that CLOSED inside the window
  *   refundRows  closed_checks rows with any refunds, closed before the window ended
  *   venue       { timezone, dayStart } for placing refunds on their own day
+ *   taxRates    the venue's tax_rates rows (28 Sep 2026); null leaves every figure unsplit
  * Returns { date, fromIso, toIso, sales:{totals, credits, byMethod[]}, refunds:{...same},
  * warnings[], empty } — every figure in minor units. `totals` is money only; `credits` sums the
  * loyalty and promo rows (discounts, never takings). byMethod rows are
- * { method, kind, processor, count, gross, tip, service, tax, sales }.
+ * { method, kind, processor, count, gross, tip, service, tax, sales }. Given taxRates, rows
+ * and totals also carry byRate { [bucket key]: { sales, tax } }, and the day `taxBuckets`
+ * (every bucket used, in posting order) and `defaultTaxBucket` (the venue default rate's).
+ * A rate bucket only checks with no saved breakdown fed is marked `estimated`: the Xero plan
+ * posts it at the default rate, as before, when it has no Xero match, instead of refusing
+ * the day on a guess.
  */
 /**
- * @param {{ day: { ymd: string, fromMs: number, toMs: number }, saleRows?: any[], refundRows?: any[], venue?: { timezone?: string, dayStart?: string } }} args
+ * @param {{ day: { ymd: string, fromMs: number, toMs: number }, saleRows?: any[], refundRows?: any[], venue?: { timezone?: string, dayStart?: string }, taxRates?: any[] | null }} args
  * @returns {any}
  */
-export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue = {} }) {
+export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue = {}, taxRates = null }) {
   const warn = new Map();
   const flag = (code, id) => {
     const w = warn.get(code) || { code, message: WARN_TEXT[code] || code, count: 0, checkIds: [] };
@@ -462,8 +674,16 @@ export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue 
   };
   // The method as the till wrote it stays apart, so an older mapping keyed by it still applies.
   const keyOf = (p) => `${p.method}|${p.processor || ''}|${p.rawMethod || ''}`;
+  const taxCtx = Array.isArray(taxRates) ? taxContext(taxRates) : null;
+  const buckets = new Map();
+  const fromBreakdown = new Set();   // bucket keys a saved tax_breakdown fed (real, not estimated)
+  const noteBuckets = (list, source) => (list || []).forEach((b) => {
+    if (!buckets.has(b.key)) buckets.set(b.key, b);
+    if (source === 'breakdown') fromBreakdown.add(b.key);
+  });
+  const blank = () => (taxCtx ? { ...blankTotals(), byRate: {} } : blankTotals());
 
-  const sales = { totals: blankTotals(), credits: blankTotals(), byMethod: new Map() };
+  const sales = { totals: blank(), credits: blank(), byMethod: new Map() };
   const seen = new Set();
   for (const row of saleRows) {
     if (!row || seen.has(row.id)) continue;
@@ -471,20 +691,21 @@ export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue 
     const at = Date.parse(row.closed_at);
     if (!(at >= day.fromMs && at < day.toMs)) continue;
     if (isVoidedCheck(row)) { flag('voided_checks', row.id); continue; }
-    const { parts, flags } = checkTenderParts(row);
+    const { parts, flags, buckets: used, rateSource } = checkTenderParts(row, taxCtx);
     flags.forEach((f) => flag(f, row.id));
+    noteBuckets(used, rateSource);
     sales.totals.count += 1;
     for (const p of parts) {
       if (!p.gross && !p.amount) continue;
       const k = keyOf(p);
-      const g = sales.byMethod.get(k) || { method: p.method, kind: p.kind, processor: p.processor || null, rawMethods: [], ...blankTotals() };
+      const g = sales.byMethod.get(k) || { method: p.method, kind: p.kind, processor: p.processor || null, rawMethods: [], ...blank() };
       g.count += 1; addTo(g, p); addTo(MONEY_KINDS.has(p.kind) ? sales.totals : sales.credits, p);
       if (p.rawMethod && !g.rawMethods.includes(p.rawMethod)) g.rawMethods.push(p.rawMethod);
       sales.byMethod.set(k, g);
     }
   }
 
-  const refunds = { totals: blankTotals(), credits: blankTotals(), byMethod: new Map() };
+  const refunds = { totals: blank(), credits: blank(), byMethod: new Map() };
   const seenRefund = new Set();
   for (const row of refundRows) {
     if (!row || isVoidedCheck(row)) continue;
@@ -494,17 +715,18 @@ export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue 
       const rid = `${row.id}:${entry.id || i}`;
       if (seenRefund.has(rid)) return;
       seenRefund.add(rid);
-      const r = refundParts(entry, row);
+      const r = refundParts(entry, row, taxCtx);
       let at = r.atMs;
       if (at == null) { at = Date.parse(row.closed_at); if (Number.isFinite(at) && at >= day.fromMs && at < day.toMs) flag('refund_no_time', row.id); }
       if (!(at >= day.fromMs && at < day.toMs)) return;
       r.flags.forEach((f) => flag(f, row.id));
       if (r.skipped) return;
+      noteBuckets(r.buckets, r.rateSource);
       refunds.totals.count += 1;
       for (const p of r.parts) {
         if (!p.gross) continue;
         const k = keyOf(p);
-        const g = refunds.byMethod.get(k) || { method: p.method, kind: p.kind, processor: p.processor || null, rawMethods: [], ...blankTotals() };
+        const g = refunds.byMethod.get(k) || { method: p.method, kind: p.kind, processor: p.processor || null, rawMethods: [], ...blank() };
         g.count += 1; addTo(g, p); addTo(MONEY_KINDS.has(p.kind) ? refunds.totals : refunds.credits, p);
         refunds.byMethod.set(k, g);
       }
@@ -525,5 +747,16 @@ export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue 
   };
   const money = (g) => g.gross && MONEY_KINDS.has(g.kind);
   out.empty = !out.sales.byMethod.some(money) && !out.refunds.byMethod.some(money);
+  if (taxCtx) {
+    const list = [...buckets.values()].sort(compareTaxBuckets)
+      .map((b) => (b.mode === 'inclusive' && !fromBreakdown.has(b.key) ? { ...b, estimated: true } : b));
+    const rank = new Map(list.map((b, i) => [b.key, i]));
+    // byRate keys in posting order, so the summary reads the same whatever order rows came in.
+    const tidy = (t) => { t.byRate = Object.fromEntries(Object.entries(t.byRate).sort(([a], [b]) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9) || a.localeCompare(b))); };
+    for (const side of [out.sales, out.refunds]) { tidy(side.totals); tidy(side.credits); side.byMethod.forEach(tidy); }
+    out.taxBuckets = list;
+    const def = taxCtx.defaultRate;
+    out.defaultTaxBucket = taxCtx.addedOn ? EXCL_TAX_BUCKET : !def ? DEFAULT_TAX_BUCKET : rateBucket(def);
+  }
   return out;
 }

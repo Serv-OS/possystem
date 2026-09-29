@@ -18,6 +18,11 @@
  *   6. The Xero plan: one Receive Money per clearing account for takings, one Spend Money
  *      for refunds; tips never revenue (Tips Payable by default); gift card, deposits and
  *      unallocated have their own clearing accounts; a method with no mapping is flagged.
+ *   7. VAT per rate (28 Sep 2026): given the venue's tax rates, every figure splits by rate
+ *      (closed_checks.tax_breakdown, else implied from the booked tax), to the penny; the
+ *      plan posts one goods line per Xero sales rate inside the SAME transaction (keys and
+ *      references unchanged), never an expense rate, never 20% on zero rated goods; a rate
+ *      with no Xero match blocks the day; service charge is No VAT unless opted in.
  */
 
 import { test } from 'node:test';
@@ -29,9 +34,13 @@ import { fileURLToPath } from 'node:url';
 import { businessDayWindow } from '../../../supabase/functions/_shared/businessDay.js';
 import {
   buildAccountingDay, checkTenders, checkTenderParts, refundParts, allocate, toMinor,
-  canonicalMethod, tenderKind, isVoidedCheck, checkTaxMinor,
+  canonicalMethod, tenderKind, isVoidedCheck, checkTaxMinor, taxContext, checkRateWeights, splitByRate,
 } from '../../../supabase/functions/_shared/accountingDay.js';
-import { planXeroDay, requiredDefaults, accountRef, DEFAULT_ACCOUNTS, KIND_ACCOUNT, shortHash } from '../../../supabase/functions/_shared/xeroPostingPlan.js';
+import {
+  planXeroDay, requiredDefaults, accountRef, DEFAULT_ACCOUNTS, KIND_ACCOUNT, shortHash,
+  postingStep, idempotencyKey, postingVat, blockedMessage, sampleSaleRows, SAMPLE_TAX_NOTES,
+} from '../../../supabase/functions/_shared/xeroPostingPlan.js';
+import { revenueTaxRates, healedTaxType } from '../../../supabase/functions/_shared/xeroTax.js';
 import { sharedDepsOf } from '../../../scripts/edgeFnDeps.mjs';
 
 const UK = { timezone: 'Europe/London', dayStart: '06:00' };
@@ -404,7 +413,8 @@ test('Xero: takings per clearing account (Receive), refunds per account (Spend),
     assert.equal(tx.payload.Contact.ContactID, 'CONTACT');
   }
   const card = transactions[0].payload.LineItems;
-  assert.deepEqual(card.map((l) => [l.UnitAmount, l.AccountCode, l.TaxType]), [[18, '200', 'OUTPUT2'], [3, 'SOSTIPS', 'NONE'], [2, 'SOSSVCCHG', 'OUTPUT2']]);
+  // 28 Sep 2026: service charge is No VAT unless the operator opts in (ServOS books no VAT on it).
+  assert.deepEqual(card.map((l) => [l.UnitAmount, l.AccountCode, l.TaxType]), [[18, '200', 'OUTPUT2'], [3, 'SOSTIPS', 'NONE'], [2, 'SOSSVCCHG', 'NONE']]);
   const spend = transactions[3].payload.LineItems;
   assert.deepEqual(spend.map((l) => [l.UnitAmount, l.AccountCode]), [[10, '200'], [1, 'SOSTIPS']]);
   assert.ok(spend[0].Description.startsWith('Refunded sales 2026-09-18'));
@@ -466,6 +476,459 @@ test('Xero: odd data (tips and service at or above the money) posts one line for
   assert.equal(tx.payload.LineItems[0].UnitAmount, 5);
 });
 
+// ── VAT per rate (28 Sep 2026) ───────────────────────────────────────────────
+
+// Leeds's own rates; Train Station's Standard id is what some Leeds checks booked (25-27 Sep).
+const STD = '6368f6fb-5c1e-4a7e-9d0e-3f1f4b2a0001';
+const RED = '8b2c1d3e-5c1e-4a7e-9d0e-3f1f4b2a0002';
+const ZERO = '9c3d2e4f-5c1e-4a7e-9d0e-3f1f4b2a0003';
+const TRAIN_STD = '6a159b5e-7d2f-4c1a-8e3b-5a6b7c8d0004';
+const GONE = 'deadbeef-0000-4000-8000-000000000005';   // a rate TaxManager hard deleted
+const RATES = [
+  { id: STD, name: 'Standard Rate', code: 'VAT20', rate: 0.2, type: 'inclusive', is_default: true, active: true },
+  { id: RED, name: 'Reduced Rate', code: 'VAT5', rate: 0.05, type: 'inclusive', is_default: false, active: true },
+  { id: ZERO, name: 'Zero Rate', code: 'ZERO', rate: 0, type: 'inclusive', is_default: false, active: true },
+];
+const K = (id) => `rate:${id}`;
+const rday = (saleRows, refundRows = [], taxRates = RATES, d = DAY) => buildAccountingDay({ day: d, saleRows, refundRows, venue: UK, taxRates });
+// A till's tax_breakdown record: entries [rateId, rate, gross, tax] in major units.
+const breakdown = (entries, extra = {}) => ({
+  subtotal: entries.reduce((s, e) => s + e[2] - e[3], 0),
+  totalTax: entries.reduce((s, e) => s + e[3], 0),
+  total: entries.reduce((s, e) => s + e[2], 0),
+  exclusiveTax: 0, hasExclusiveTax: false, source: 'legacy',
+  breakdown: entries.map(([id, rate, gross, tax]) => ({ rate: { id, name: 'r', rate, type: 'inclusive' }, tax, net: gross - tax, gross, items: 1 })),
+  ...extra,
+});
+const sumRates = (byRate, k) => Object.values(byRate || {}).reduce((s, v) => s + v[k], 0);
+
+// Xero's /TaxRates for a UK org, as its own example sends it (string flags), INPUT2 FIRST.
+const xr = (TaxType, Name, rate, revenue, expense, extra = {}) => ({
+  Name, TaxType, Status: 'ACTIVE', CanApplyToAssets: 'true', CanApplyToEquity: 'true', CanApplyToExpenses: String(expense),
+  CanApplyToLiabilities: 'true', CanApplyToRevenue: String(revenue), DisplayTaxRate: rate.toFixed(4), EffectiveRate: rate.toFixed(4), ...extra,
+});
+const UK_TAX_RATES = [
+  xr('INPUT2', '20% (VAT on Expenses)', 20, false, true),
+  xr('OUTPUT2', '20% (VAT on Income)', 20, true, false),
+  xr('RRINPUT', '5% (VAT on Expenses)', 5, false, true),
+  xr('RROUTPUT', '5% (VAT on Income)', 5, true, false),
+  xr('ZERORATEDINPUT', 'Zero Rated Expenses', 0, false, true),
+  xr('ZERORATEDOUTPUT', 'Zero Rated Income', 0, true, false),
+  xr('EXEMPTOUTPUT', 'Exempt Income', 0, true, false),
+  xr('NONE', 'No VAT', 0, true, true),
+];
+const UK_DETAIL = { ...DETAIL, salesTaxRates: revenueTaxRates(UK_TAX_RATES) };
+
+// A 30.00 bill: 24.00 at 20% (VAT 4.00) and 6.00 zero rated, paid 20 card and 10 cash.
+const mixed = {
+  id: 'mix', closed_at: '2026-09-18T19:00:00Z', method: 'split', subtotal: 26, tax_amount: 4, service: 0, tip: 0, total: 30,
+  tax_breakdown: breakdown([[STD, 0.2, 24, 4], [ZERO, 0, 6, 0]]),
+  tenders: [{ method: 'card', amount: 20, tip: 0 }, { method: 'cash', amount: 10, tip: 0 }],
+};
+
+test('per-rate: a 20% + 0% check split card and cash adds up per tender and per rate, 0% tax is 0', () => {
+  const { parts, buckets, rateSource } = checkTenderParts(mixed, taxContext(RATES));
+  assert.equal(rateSource, 'breakdown');
+  assert.deepEqual(buckets.map((b) => b.key), [K(STD), K(ZERO)]);
+  const card = parts.find((p) => p.method === 'card'), cash = parts.find((p) => p.method === 'cash');
+  assert.deepEqual(card.byRate, { [K(STD)]: { sales: 1600, tax: 267 }, [K(ZERO)]: { sales: 400, tax: 0 } });
+  assert.deepEqual(cash.byRate, { [K(STD)]: { sales: 800, tax: 133 }, [K(ZERO)]: { sales: 200, tax: 0 } });
+  for (const p of parts) {
+    assert.equal(sumRates(p.byRate, 'sales'), p.sales);
+    assert.equal(sumRates(p.byRate, 'tax'), p.tax);
+  }
+  const s = rday([mixed]);
+  assert.deepEqual(s.sales.totals.byRate, { [K(STD)]: { sales: 2400, tax: 400 }, [K(ZERO)]: { sales: 600, tax: 0 } });
+  assert.deepEqual(byMethod(s.sales.byMethod, 'cash').byRate, cash.byRate);
+  assert.deepEqual(s.taxBuckets.map((b) => [b.key, b.pct, b.name]), [[K(STD), 20, 'Standard Rate'], [K(ZERO), 0, 'Zero Rate']]);
+  assert.equal(s.defaultTaxBucket.key, K(STD));
+  assert.deepEqual(s.warnings, []);
+});
+
+test('per-rate: a foreign or deleted rate id folds onto the venue rate with the same percentage', () => {
+  const row = (id, entries, total) => ({ id, closed_at: '2026-09-18T12:00:00Z', method: 'card', total, tip: 0, service: 0,
+    tax_amount: entries.reduce((s, e) => s + e[3], 0), tax_breakdown: breakdown(entries) });
+  const s = rday([
+    row('train', [[TRAIN_STD, 0.2, 12, 2]], 12),       // Train Station's id at 20%: Leeds's Standard
+    row('edited', [[RED, 0.2, 6, 1]], 6),              // Reduced's id, but booked at 20% before an edit: not Reduced
+    row('gone', [[GONE, 0.125, 11.25, 1.25]], 11.25),  // a deleted rate at a % Leeds has none of
+  ]);
+  assert.deepEqual(s.sales.totals.byRate, { [K(STD)]: { sales: 1800, tax: 300 }, 'pct:12.5': { sales: 1125, tax: 125 } });
+  assert.deepEqual(s.taxBuckets.map((b) => [b.key, b.pct]), [[K(STD), 20], ['pct:12.5', 12.5]]);   // highest % first
+  // the weights themselves: 0.08875 is 8.875%, never rounded to a whole percent
+  const w = checkRateWeights({ tax_breakdown: breakdown([[GONE, 0.08875, 10.8875, 0.8875]]) }, taxContext([]), 1089, 89);
+  assert.equal(w.weights[0].bucket.key, 'pct:8.875');
+});
+
+test('per-rate: goods with no rate land in none', () => {
+  // 8.00 of goods at 20%; a 2.00 item with no rate (no default, unknown SKU) is in no entry
+  const row = { id: 'n', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10, tip: 0, tax_amount: 1.33,
+    tax_breakdown: breakdown([[STD, 0.2, 8, 1.3333]], { total: 10 }) };
+  const s = rday([row]);
+  assert.deepEqual(s.sales.totals.byRate, { [K(STD)]: { sales: 800, tax: 133 }, none: { sales: 200, tax: 0 } });
+  assert.equal(s.taxBuckets.at(-1).key, 'none');
+});
+
+test('per-rate: a scaled record (share) splits by proportion; a 100% comp splits nothing', () => {
+  // half price bill: every rate scaled by 0.5 (taxShare.scaleTaxRecord)
+  const half = { id: 'h', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 15, tip: 0, tax_amount: 2,
+    tax_breakdown: breakdown([[STD, 0.2, 12, 2], [ZERO, 0, 3, 0]], { share: 0.5 }) };
+  assert.deepEqual(rday([half]).sales.totals.byRate, { [K(STD)]: { sales: 1200, tax: 200 }, [K(ZERO)]: { sales: 300, tax: 0 } });
+  const comp = { id: 'c', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 0, tip: 0, tax_amount: 0,
+    tax_breakdown: breakdown([[STD, 0.2, 0, 0], [ZERO, 0, 0, 0]], { share: 0 }) };
+  const s = rday([comp]);
+  assert.deepEqual(s.sales.totals.byRate, {});
+  assert.deepEqual(s.warnings, []);
+});
+
+test('per-rate: no breakdown implies tax at the default rate, rest zero rated, flagged', () => {
+  const kiosk = (id, total, tax) => ({ id, source: 'kiosk', closed_at: '2026-09-18T12:00:00Z', method: 'card', payment_method: 'card-external', total, tip: 0, tax_amount: tax });
+  const a = rday([kiosk('k1', 15, 2)]);
+  assert.deepEqual(a.sales.totals.byRate, { [K(STD)]: { sales: 1200, tax: 200 }, [K(ZERO)]: { sales: 300, tax: 0 } });
+  assert.deepEqual(a.warnings.map((w) => [w.code, w.checkIds]), [['tax_split_estimated', ['k1']]]);
+  // 1.67 on 10.00 is 20% on all of it, give or take the rounding: no 2p zero rated line
+  assert.deepEqual(rday([kiosk('k2', 10, 1.67)]).sales.totals.byRate, { [K(STD)]: { sales: 1000, tax: 167 } });
+  // online and QR rows store '[]' (the RPC keeps only an array): the same implied split
+  assert.deepEqual(rday([{ ...kiosk('o1', 15, 2), source: 'online', tax_breakdown: [] }]).sales.totals.byRate, a.sales.totals.byRate);
+});
+
+test('per-rate: tax_amount null keeps the single default-rate treatment, flagged tax_not_recorded', () => {
+  const s = rday([{ id: 'r', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10, subtotal: 10, tip: 0, tax_amount: null }]);
+  assert.deepEqual(s.sales.totals.byRate, { [K(STD)]: { sales: 1000, tax: 0 } });
+  assert.deepEqual(s.warnings.map((w) => w.code), ['tax_not_recorded']);
+});
+
+test('per-rate: explicit zero tax is all zero rated (none when the venue has no 0% rate)', () => {
+  const row = { id: 'z', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10, tip: 0, tax_amount: 0 };
+  assert.deepEqual(rday([row]).sales.totals.byRate, { [K(ZERO)]: { sales: 1000, tax: 0 } });
+  assert.deepEqual(rday([row], [], RATES.filter((r) => r.id !== ZERO)).sales.totals.byRate, { none: { sales: 1000, tax: 0 } });
+  // a venue with no default rate: the default bucket, as before, flagged
+  const nodef = rday([{ ...row, tax_amount: 1 }], [], RATES.map((r) => ({ ...r, is_default: false })));
+  assert.deepEqual(nodef.sales.totals.byRate, { default: { sales: 1000, tax: 100 } });
+  assert.deepEqual(nodef.warnings.map((w) => w.code), ['tax_no_rates']);
+});
+
+// A US venue: 6% state + 2.875% city, both added on; stacked lines each carry the full gross.
+const US_RATES = [
+  { id: 'a1b2c3d4-0000-4000-8000-00000000000a', name: 'State', rate: 0.06, type: 'exclusive', is_default: true, active: true },
+  { id: 'a1b2c3d4-0000-4000-8000-00000000000b', name: 'City', rate: 0.02875, type: 'exclusive', is_default: false, active: true },
+];
+const usCheck = {
+  id: 'us', closed_at: '2026-09-18T19:00:00Z', method: 'card', subtotal: 100, tax_amount: 8.88, service: 0, tip: 0, total: 108.88,
+  tax_breakdown: { subtotal: 100, totalTax: 8.875, total: 108.875, exclusiveTax: 8.88, hasExclusiveTax: true, source: 'profiles', breakdown: [
+    { rate: { id: 'state', name: 'State', rate: 0.06, type: 'exclusive' }, tax: 6, net: 100, gross: 106, items: 2 },
+    { rate: { id: 'city', name: 'City', rate: 0.02875, type: 'exclusive' }, tax: 2.875, net: 100, gross: 102.875, items: 2 },
+  ] },
+  tenders: [{ method: 'card', amount: 108.88, tip: 0 }],
+};
+
+test('per-rate: US added-on tax and stacked lines collapse into excl with the booked tax', () => {
+  const s = rday([usCheck], [], US_RATES);
+  assert.deepEqual(s.sales.totals.byRate, { excl: { sales: 10888, tax: 888 } });
+  assert.deepEqual(s.warnings, []);
+  // a kiosk row with no breakdown at a US venue: all added-on, one line as before, nothing estimated
+  const k = rday([{ id: 'k', source: 'kiosk', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10.89, tip: 0, tax_amount: 0.89 }], [], US_RATES);
+  assert.deepEqual(k.sales.totals.byRate, { excl: { sales: 1089, tax: 89 } });
+  assert.deepEqual(k.warnings, []);
+  assert.equal(k.defaultTaxBucket.key, 'excl');
+  assert.equal(taxContext(US_RATES).addedOn, true);
+  // no default rate marked, but only added-on rates (and a 0% one): still an added-on venue
+  assert.equal(taxContext([{ ...US_RATES[0], is_default: false }, { id: 'nt', name: 'No tax', rate: 0, type: 'inclusive', active: true }]).addedOn, true);
+  assert.equal(taxContext(RATES).addedOn, false);
+});
+
+test("per-rate: a refund on a mixed check splits goods and tax by the check's rates, extra credit included", () => {
+  // kiosk: bill 30 (24 at 20%, 6 zero rated), gift card 20, card 10; total = the card
+  const row = {
+    id: 'kr', source: 'kiosk', closed_at: '2026-09-10T12:00:00Z', method: 'split', total: 10, tip: 0, service: 0, tax_amount: 4,
+    gift_card: { card_id: 'G', applied: 2000 }, tax_breakdown: breakdown([[STD, 0.2, 24, 4], [ZERO, 0, 6, 0]]),
+  };
+  const entry = { timestamp: Date.parse('2026-09-18T12:00:00Z'), amount: 10, tipAmount: 0, serviceAmount: 0, taxAmount: 1.33, tenderMethod: 'card', isFullRefund: true,
+    legs: [{ amountMinor: 1000, status: 'succeeded', processor: 'adyen' }] };
+  const r = refundParts(entry, row, taxContext(RATES));
+  assert.deepEqual(r.parts.map((p) => [p.method, p.sales, p.tax]), [['card', 1000, 133], ['gift_card', 2000, 267]]);
+  assert.deepEqual(r.parts[0].byRate, { [K(STD)]: { sales: 800, tax: 133 }, [K(ZERO)]: { sales: 200, tax: 0 } });
+  assert.deepEqual(r.parts[1].byRate, { [K(STD)]: { sales: 1600, tax: 267 }, [K(ZERO)]: { sales: 400, tax: 0 } });
+  const s = rday([], [{ ...row, refunds: [entry] }]);
+  assert.deepEqual(s.refunds.totals.byRate, { [K(STD)]: { sales: 2400, tax: 400 }, [K(ZERO)]: { sales: 600, tax: 0 } });
+});
+
+const shuffleRows = [
+  mixed,
+  { id: 'k1', source: 'kiosk', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 15, tip: 1, tax_amount: 2 },
+  { id: 'r5', closed_at: '2026-09-18T13:00:00Z', method: 'card', total: 21, tip: 0, tax_amount: 2.5,
+    tax_breakdown: breakdown([[STD, 0.2, 10.5, 1.75], [RED, 0.05, 10.5, 0.5]]), tenders: [{ method: 'card', amount: 21 }] },
+  { id: 'c9', closed_at: '2026-09-18T14:00:00Z', method: 'cash', total: 7.2, tip: 0, tax_amount: 1.2, tax_breakdown: breakdown([[TRAIN_STD, 0.2, 7.2, 1.2]]) },
+];
+
+test('per-rate: shuffled rows give the same byRate and the same payload hash', () => {
+  const a = rday(shuffleRows);
+  const b = rday([...shuffleRows].reverse());
+  const c = rday([shuffleRows[2], shuffleRows[0], shuffleRows[3], shuffleRows[1]]);
+  for (const x of [b, c]) {
+    assert.deepEqual(x.sales.totals.byRate, a.sales.totals.byRate);
+    assert.deepEqual(Object.keys(x.sales.totals.byRate), Object.keys(a.sales.totals.byRate));
+    const pa = planXeroDay(a, { detail: UK_DETAIL }).transactions, px = planXeroDay(x, { detail: UK_DETAIL }).transactions;
+    assert.deepEqual(px.map((t) => shortHash(JSON.stringify(t.payload))), pa.map((t) => shortHash(JSON.stringify(t.payload))));
+  }
+});
+
+test('per-rate: no taxRates passed means no byRate and no new warnings', () => {
+  const s = day(shuffleRows);
+  assert.equal('byRate' in s.sales.totals, false);
+  assert.ok(s.sales.byMethod.every((r) => !('byRate' in r)));
+  assert.equal(s.taxBuckets, undefined);
+  assert.deepEqual(s.warnings, []);
+  assert.equal('byRate' in checkTenderParts(mixed).parts[0], false);
+  assert.equal('byRate' in refundParts({ timestamp: 1, amount: 5, tipAmount: 0, serviceAmount: 0, tenderMethod: 'cash' }, mixed).parts[0], false);
+  // the split never changes the unsplit figures
+  const r = rday(shuffleRows);
+  for (const k of ['gross', 'tip', 'service', 'tax', 'sales', 'count']) assert.equal(r.sales.totals[k], s.sales.totals[k], k);
+  assert.equal(splitByRate(0, 0, []).constructor, Object);
+});
+
+test('Xero: one sales line per VAT rate in the same transaction; keys and references unchanged', () => {
+  const plain = planXeroDay(day([mixed]), { detail: UK_DETAIL });
+  const plan = planXeroDay(rday([mixed]), { detail: UK_DETAIL });
+  assert.deepEqual(plan.transactions.map((t) => [t.key, t.reference]), plain.transactions.map((t) => [t.key, t.reference]));
+  assert.deepEqual(plan.transactions.map((t) => t.key), ['RECEIVE:CARD', 'RECEIVE:CASH']);
+  const card = plan.transactions[0];
+  assert.deepEqual(card.payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.AccountCode, l.TaxType]), [
+    ['Sales 2026-09-18 (card) 20%', 16, '200', 'OUTPUT2'],
+    ['Sales 2026-09-18 (card) zero rated', 4, '200', 'ZERORATEDOUTPUT'],
+  ]);
+  for (const tx of plan.transactions) {
+    assert.equal(tx.payload.LineItems.reduce((a, l) => a + Math.round(l.UnitAmount * 100), 0), tx.totals.gross, tx.key);
+  }
+  assert.deepEqual(card.vat, {
+    lines: [
+      { taxType: 'OUTPUT2', label: '20%', amount: 1600, taxBooked: 267, taxXero: 267, compare: true },
+      { taxType: 'ZERORATEDOUTPUT', label: 'zero rated', amount: 400, taxBooked: 0, taxXero: 0, compare: true },
+    ],
+    booked: 267, xero: 267,
+  });
+  assert.deepEqual(postingVat(card), { 'OUTPUT2|20%': 16, 'ZERORATEDOUTPUT|zero rated': 4 });
+  assert.deepEqual(plan.blocked, []);
+  assert.deepEqual(plan.warnings, []);
+  // a summary built without rates is today's single line, at the default rate
+  assert.deepEqual(plain.transactions[0].payload.LineItems.map((l) => [l.Description, l.TaxType]), [['Sales 2026-09-18 (card)', 'OUTPUT2']]);
+});
+
+test('Xero: an unmapped zero rate never takes 20%, even with taxDefault OUTPUT2', () => {
+  const rows = [mixed, { id: 'n', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10, tip: 0, tax_amount: 1.33,
+    tax_breakdown: breakdown([[STD, 0.2, 8, 1.3333]], { total: 10 }), tenders: [{ method: 'card', amount: 10 }] }];
+  for (const detail of [UK_DETAIL, DETAIL]) {   // with the org's list, and a dry run with none cached
+    const plan = planXeroDay(rday(rows), { detail, mapping: { taxDefault: 'OUTPUT2' } });
+    const lines = plan.transactions[0].payload.LineItems.map((l) => [l.Description.replace('Sales 2026-09-18 (card) ', ''), l.UnitAmount, l.TaxType]);
+    assert.deepEqual(lines, [['20%', 24, 'OUTPUT2'], ['zero rated', 4, 'ZERORATEDOUTPUT'], ['no tax rate', 2, 'ZERORATEDOUTPUT']]);
+    assert.deepEqual(plan.warnings.map((w) => w.code), ['tax_unrated_goods']);
+  }
+  // not VAT registered: one No VAT line, exactly as the older taxDefault 'NONE' posted
+  for (const mapping of [{ salesNoVat: true }, { taxDefault: 'NONE' }]) {
+    const tx = planXeroDay(rday(rows), { detail: UK_DETAIL, mapping }).transactions[0];
+    assert.deepEqual(tx.payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.TaxType]), [['Sales 2026-09-18 (card)', 30, 'NONE']]);
+  }
+});
+
+test('Xero: a rate with no Xero match blocks the day', () => {
+  const odd = { id: 'o', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 11.25, tip: 0, tax_amount: 1.25, tax_breakdown: breakdown([[GONE, 0.125, 11.25, 1.25]]) };
+  const plan = planXeroDay(rday([odd]), { detail: UK_DETAIL });
+  assert.deepEqual(plan.blocked, [{ key: 'pct:12.5', name: '12.5%', pct: 12.5 }]);
+  assert.equal(plan.warnings.find((w) => w.code === 'tax_rate_unmapped').blocked.length, 1);
+  assert.equal(blockedMessage(plan.blocked), 'No Xero sales tax rate for ServOS rate(s) 12.5% (a rate this venue does not have). Choose one under Account mapping, VAT on sales, then push again. Nothing was posted.');
+  // part of the day reached Xero on an earlier attempt: nothing MORE was posted this time
+  assert.match(blockedMessage(plan.blocked, { partial: true }), /then push again\. Nothing more was posted\.$/);
+  // the pct bucket can be chosen under Account mapping (the screen shows a row for it once refused)
+  assert.deepEqual(planXeroDay(rday([odd]), { detail: UK_DETAIL, mapping: { taxRateMap: { 'pct:12.5': 'OUTPUT2' } } }).blocked, []);
+  // an org with no 5% sales rate blocks Reduced Rate until it is mapped
+  const noFive = { ...DETAIL, salesTaxRates: revenueTaxRates([...UK_TAX_RATES.filter((r) => r.TaxType !== 'RROUTPUT'), xr('TAX002', 'Special sales', 4, true, false)]) };
+  const five = { id: 'f', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10.5, tip: 0, tax_amount: 0.5, tax_breakdown: breakdown([[RED, 0.05, 10.5, 0.5]]) };
+  const blocked = planXeroDay(rday([five]), { detail: noFive });
+  assert.deepEqual(blocked.blocked, [{ key: K(RED), name: 'Reduced Rate', pct: 5 }]);
+  assert.match(blockedMessage(blocked.blocked), /Reduced Rate \(5%\)/);
+  const mapped = planXeroDay(rday([five]), { detail: noFive, mapping: { taxRateMap: { [RED]: 'TAX002' } } });
+  assert.deepEqual(mapped.blocked, []);
+  assert.equal(mapped.transactions[0].payload.LineItems[0].TaxType, 'TAX002');
+});
+
+test('Xero: service charge is No VAT by default; serviceTax and serviceTaxable opt in', () => {
+  const row = { ...mixed, total: 33, service: 3, tenders: [{ method: 'card', amount: 33, tip: 0 }] };
+  const svc = (mapping) => {
+    const plan = planXeroDay(rday([row]), { detail: UK_DETAIL, mapping });
+    return [plan.transactions[0].payload.LineItems.find((l) => l.Description.startsWith('Service charge')).TaxType, plan.warnings.map((w) => w.code)];
+  };
+  assert.deepEqual(svc({}), ['NONE', ['service_unmapped']]);
+  assert.deepEqual(svc({ serviceTax: 'OUTPUT2' }), ['OUTPUT2', ['service_unmapped', 'vat_differs']]);   // ServOS booked no VAT on it
+  assert.equal(svc({ serviceTaxable: true })[0], 'OUTPUT2');                      // the venue default rate
+  assert.equal(svc({ serviceTaxable: false, serviceTax: 'OUTPUT2' })[0], 'NONE');
+  assert.deepEqual(svc({ serviceTax: 'INPUT2' }), ['NONE', ['service_unmapped', 'tax_mapping_invalid']]);
+  assert.equal(svc({ salesNoVat: true, serviceTax: 'OUTPUT2' })[0], 'NONE');
+});
+
+test('Xero: US added-on tax posts as today, one sales line at the default rate; lines add to gross', () => {
+  const US_DETAIL = { ...DETAIL, taxType: 'NONE' };
+  const kiosk = { id: 'k', source: 'kiosk', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 10.89, tip: 0.5, tax_amount: 0.89 };
+  for (const mapping of [{}, { taxDefault: 'TAX001' }]) {
+    const today = planXeroDay(day([usCheck, kiosk]), { detail: US_DETAIL, mapping }).transactions;
+    const now = planXeroDay(rday([usCheck, kiosk], [], US_RATES), { detail: US_DETAIL, mapping });
+    assert.deepEqual(now.transactions.map((t) => t.payload), today.map((t) => t.payload));
+    assert.deepEqual(now.blocked, []);
+    assert.ok(!now.warnings.some((w) => w.code === 'vat_differs'));
+  }
+  const tx = planXeroDay(rday([usCheck, kiosk], [], US_RATES), { detail: US_DETAIL }).transactions[0];
+  // 108.88 + the kiosk's 10.39 (its total 10.89 includes the 0.50 tip)
+  assert.deepEqual(tx.payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.TaxType]), [['Sales 2026-09-18 (card)', 119.27, 'NONE'], ['Tips and gratuities 2026-09-18', 0.5, 'NONE']]);
+  assert.equal(tx.payload.LineItems.reduce((a, l) => a + Math.round(l.UnitAmount * 100), 0), tx.totals.gross);
+});
+
+test('Xero: vat_differs warning', () => {
+  // the breakdown says 16.67 of VAT at 20%, the check booked 10.00 (before 27 Sep a discount never lowered it)
+  const row = { id: 'd', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 100, tip: 0, tax_amount: 10, tax_breakdown: breakdown([[STD, 0.2, 100, 16.6667]]) };
+  const s = rday([row]);
+  assert.deepEqual(s.warnings.map((w) => w.code), ['tax_breakdown_mismatch']);
+  const plan = planXeroDay(s, { detail: UK_DETAIL });
+  assert.deepEqual([plan.transactions[0].vat.booked, plan.transactions[0].vat.xero], [1000, 1667]);
+  const w = plan.warnings.find((x) => x.code === 'vat_differs');
+  assert.match(w.message, /ServOS takings 2026-09-18 \(CARD\): Xero 16\.67, ServOS 10\.00/);
+  // pennies of per line rounding are not worth a warning
+  assert.ok(!planXeroDay(rday([mixed]), { detail: UK_DETAIL }).warnings.some((x) => x.code === 'vat_differs'));
+});
+
+test('Xero: the Leeds 26 Sep retry', () => {
+  // xero_sync_log 26 Sep: the card posting was left 'sending' after Xero refused INPUT2 on 200.
+  const CARD_BANK = '6026f133-3895-4787-9b7a-31497b0d8fc9', CASH_BANK = '1f0e2d3c-4b5a-4968-8776-655443322110';
+  const LEEDS = '1e252e7c-c875-4971-b91d-1e945c26956b';
+  const d26 = businessDayWindow('2026-09-26', UK.timezone, UK.dayStart);
+  const at = (h) => `2026-09-26T${h}:00:00Z`;
+  const rows = [
+    { id: 'l1', closed_at: at('12'), method: 'card', total: 1005, tip: 5, tax_amount: 166.67, source: 'pos', tax_breakdown: breakdown([[STD, 0.2, 1000, 166.6667]]), tenders: [{ method: 'card', amount: 1000, tip: 5 }] },
+    { id: 'l2', closed_at: at('18'), method: 'card', total: 236.53, tip: 3.44, tax_amount: 38.85, source: 'pos_send_to_terminal', tax_breakdown: breakdown([[TRAIN_STD, 0.2, 233.09, 38.8483]]), tenders: [{ method: 'card', amount: 233.09, tip: 3.44 }] },
+    { id: 'l3', closed_at: at('19'), method: 'cash', total: 50, tip: 0, tax_amount: 8.33, source: 'pos', tax_breakdown: breakdown([[TRAIN_STD, 0.2, 50, 8.3333]]) },
+    { id: 'l4', closed_at: at('20'), method: 'card', total: 99, tip: 0, tax_amount: 16.5, status: 'voided', tax_breakdown: breakdown([[STD, 0.2, 99, 16.5]]) },
+  ];
+  const summary = buildAccountingDay({ day: d26, saleRows: rows, venue: UK, taxRates: RATES });
+  const mapping = { paymentMap: { card: CARD_BANK, cash: CASH_BANK }, revenueAccount: '200', tipsAccount: '825', serviceAccount: '825', purchaseTax: 'INPUT2' };
+  const cached = { ...DETAIL, taxType: 'INPUT2' };
+  // the real run re-reads Xero's rates and heals the cached expense rate
+  const rev = revenueTaxRates(UK_TAX_RATES);
+  const detail = { ...cached, salesTaxRates: rev, taxType: healedTaxType(cached, rev) };
+  assert.equal(detail.taxType, 'OUTPUT2');
+  const plan = planXeroDay(summary, { mapping, detail });
+  const card = plan.transactions.find((t) => t.methods.includes('card'));
+  assert.equal(card.key, `RECEIVE:${CARD_BANK}`);
+  assert.equal(card.reference, 'ServOS takings 2026-09-26 (6026f133)');
+  assert.deepEqual(card.payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.AccountCode, l.TaxType]), [
+    ['Sales 2026-09-26 (card) 20%', 1233.09, '200', 'OUTPUT2'],
+    ['Tips and gratuities 2026-09-26', 8.44, '825', 'NONE'],
+  ]);
+  assert.equal(card.vat.xero, 20551);   // what Xero itself worked out on the refused payload
+  assert.deepEqual(plan.blocked, []);
+  assert.ok(!plan.warnings.some((w) => w.code === 'vat_differs'));
+  // the cash transaction posts for the first time
+  assert.deepEqual(plan.transactions.map((t) => t.key).sort(), [`RECEIVE:${CARD_BANK}`, `RECEIVE:${CASH_BANK}`].sort());
+  assert.deepEqual(plan.transactions.find((t) => t.key === `RECEIVE:${CASH_BANK}`).payload.LineItems.map((l) => [l.UnitAmount, l.TaxType]), [[50, 'OUTPUT2']]);
+  // no expense rate anywhere, even on a dry run with only the old cached detail
+  for (const d of [detail, cached]) assert.doesNotMatch(JSON.stringify(planXeroDay(summary, { mapping, detail: d }).transactions.map((t) => t.payload)), /INPUT/);
+  // retry: the 'sending' posting is looked up by its reference, then sent under a NEW key
+  const prev = { status: 'sending', reference: 'ServOS takings 2026-09-26 (6026f133)', idem: `servos-${LEEDS}-2026-09-26-RECEIVE:${CARD_BANK}-0598cad5` };
+  assert.equal(postingStep(prev), 'lookup');
+  assert.equal(prev.reference, card.reference);
+  const idem = idempotencyKey(LEEDS, '2026-09-26', card);
+  assert.ok(idem.startsWith(`servos-${LEEDS}-2026-09-26-RECEIVE:${CARD_BANK}-`));
+  assert.notEqual(idem, prev.idem);
+  assert.equal(postingStep({ status: 'posted' }), 'skip');
+  assert.equal(postingStep(undefined), 'send');
+});
+
+test('Xero: a rate only checks with no VAT breakdown fed posts at the default rate as before when Xero has no match; a saved breakdown blocks', () => {
+  // Provo's pattern: UK style ServOS rates (Standard 20% default), a Xero org with no 20% sales rate.
+  const US_ORG = [
+    { Name: 'Tax Exempt', TaxType: 'NONE', Status: 'ACTIVE', CanApplyToRevenue: true, CanApplyToExpenses: true, EffectiveRate: 0 },
+    { Name: 'NYC Sales Tax', TaxType: 'TAX001', Status: 'ACTIVE', CanApplyToRevenue: true, CanApplyToExpenses: false, EffectiveRate: 8.875 },
+  ];
+  const detail = { ...DETAIL, taxType: 'NONE', salesTaxRates: revenueTaxRates(US_ORG) };
+  const kiosk = { id: 'k', source: 'kiosk', closed_at: '2026-09-18T12:00:00Z', method: 'card', total: 12, tip: 0, tax_amount: 2 };
+  const online = { id: 'o', source: 'online', closed_at: '2026-09-18T13:00:00Z', method: 'card', total: 8, subtotal: 8, tip: 0, tax_amount: null, tax_breakdown: [] };
+  const s = rday([kiosk, online]);
+  assert.deepEqual(s.taxBuckets.map((b) => [b.key, !!b.estimated]), [[K(STD), true]]);
+  // exactly what the code before 28 Sep posted: one line at detail.taxType
+  const today = planXeroDay(day([kiosk, online]), { detail: { ...DETAIL, taxType: 'NONE' } });
+  const plan = planXeroDay(s, { detail });
+  assert.deepEqual(plan.blocked, []);
+  assert.deepEqual(plan.transactions.map((t) => t.payload), today.transactions.map((t) => t.payload));
+  assert.deepEqual(plan.transactions[0].payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.TaxType]), [['Sales 2026-09-18 (card)', 20, 'NONE']]);
+  assert.match(plan.warnings.find((w) => w.code === 'tax_rate_estimated_default').message, /at Standard Rate \(20%\), which has no Xero sales rate, so they post at No VAT, as before/);
+  // mapped under Account mapping: its own line at the chosen rate, no warning
+  const mapped = planXeroDay(s, { detail, mapping: { taxRateMap: { [STD]: 'NONE' } } });
+  assert.deepEqual(mapped.transactions[0].payload.LineItems.map((l) => [l.Description, l.TaxType]), [['Sales 2026-09-18 (card) 20%', 'NONE']]);
+  assert.ok(!mapped.warnings.some((w) => w.code === 'tax_rate_estimated_default'));
+  // a till check with a saved 20% breakdown the same day: real, so the day is refused
+  const pos = { id: 'p', closed_at: '2026-09-18T14:00:00Z', method: 'card', total: 12, tip: 0, tax_amount: 2, tax_breakdown: breakdown([[STD, 0.2, 12, 2]]) };
+  const real = rday([kiosk, pos]);
+  assert.equal(real.taxBuckets[0].estimated, undefined);
+  assert.deepEqual(planXeroDay(real, { detail }).blocked, [{ key: K(STD), name: 'Standard Rate', pct: 20 }]);
+  // a refund's breakdown counts as real too
+  const refunded = rday([], [{ ...pos, closed_at: '2026-09-10T12:00:00Z', refunds: [{ timestamp: Date.parse('2026-09-18T15:00:00Z'), amount: 12, tipAmount: 0, serviceAmount: 0, tenderMethod: 'card' }] }]);
+  assert.equal(refunded.taxBuckets[0].estimated, undefined);
+});
+
+test('Xero: a US venue keeps one sales line and its service charge rate, whatever the breakdown says', () => {
+  // TaxManager makes new rates 'inclusive' by default: a US venue's "No tax" 0% rate is one.
+  const rates = [...US_RATES, { id: 'a1b2c3d4-0000-4000-8000-00000000000c', name: 'No tax', rate: 0, type: 'inclusive', is_default: false, active: true }];
+  // 20.00 taxed at 6% (1.20) and 10.00 on the 0% item, a 10.00 service charge and a 5.00 tip
+  const row = { id: 'u', closed_at: '2026-09-18T19:00:00Z', method: 'card', subtotal: 30, tax_amount: 1.2, service: 10, tip: 5, total: 46.2,
+    tax_breakdown: { subtotal: 30, totalTax: 1.2, total: 31.2, exclusiveTax: 1.2, hasExclusiveTax: true, source: 'profiles', breakdown: [
+      { rate: { id: 'a1b2c3d4-0000-4000-8000-00000000000a', name: 'State', rate: 0.06, type: 'exclusive' }, tax: 1.2, net: 20, gross: 21.2 },
+      { rate: { id: 'a1b2c3d4-0000-4000-8000-00000000000c', name: 'No tax', rate: 0, type: 'inclusive' }, tax: 0, net: 10, gross: 10 },
+    ] },
+    tenders: [{ method: 'card', amount: 41.2, tip: 5 }] };
+  const s = rday([row], [], rates);
+  assert.deepEqual(s.sales.totals.byRate, { excl: { sales: 3120, tax: 120 } });
+  const US_DETAIL = { ...DETAIL, taxType: 'NONE', salesTaxRates: revenueTaxRates([
+    { Name: 'Tax Exempt', TaxType: 'NONE', Status: 'ACTIVE', CanApplyToRevenue: true, EffectiveRate: 0 },
+    { Name: 'NYC Sales Tax', TaxType: 'TAX001', Status: 'ACTIVE', CanApplyToRevenue: true, EffectiveRate: 8.875 },
+  ]) };
+  // the lines the code before 28 Sep sent (sales and service at taxDefault, else detail.taxType)
+  const lines = (mapping) => planXeroDay(s, { detail: US_DETAIL, mapping }).transactions[0].payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.TaxType]);
+  assert.deepEqual(lines({ taxDefault: 'TAX001' }), [['Sales 2026-09-18 (card)', 31.2, 'TAX001'], ['Tips and gratuities 2026-09-18', 5, 'NONE'], ['Service charge 2026-09-18', 10, 'TAX001']]);
+  assert.deepEqual(lines({}), [['Sales 2026-09-18 (card)', 31.2, 'NONE'], ['Tips and gratuities 2026-09-18', 5, 'NONE'], ['Service charge 2026-09-18', 10, 'NONE']]);
+  assert.deepEqual(lines({ taxDefault: 'TAX001', serviceTax: 'NONE' })[2], ['Service charge 2026-09-18', 10, 'NONE']);
+  assert.deepEqual(lines({ taxDefault: 'TAX001', serviceTaxable: false })[2], ['Service charge 2026-09-18', 10, 'NONE']);
+});
+
+test('Xero: test figures use the venue\'s own rates and never refuse on a rate the venue does not have', () => {
+  const US_ORG = { ...DETAIL, taxType: 'NONE', salesTaxRates: revenueTaxRates([
+    { Name: 'Tax Exempt', TaxType: 'NONE', Status: 'ACTIVE', CanApplyToRevenue: true, EffectiveRate: 0 },
+    { Name: 'Tax on Sales', TaxType: 'OUTPUT', Status: 'ACTIVE', CanApplyToRevenue: true, EffectiveRate: 0 },
+  ]) };
+  const sample = (taxRates, detail) => {
+    const summary = buildAccountingDay({ day: DAY, saleRows: sampleSaleRows(DAY.fromIso, taxRates), venue: UK, taxRates });
+    summary.warnings = summary.warnings.filter((w) => !SAMPLE_TAX_NOTES.has(w.code));
+    return { summary, plan: planXeroDay(summary, { detail, sample: true }) };
+  };
+  // a UK venue: 20% and zero rated on its own rate ids, one line per rate
+  const uk = sample(RATES, UK_DETAIL);
+  assert.deepEqual(uk.summary.taxBuckets.map((b) => b.key), [K(STD), K(ZERO)]);
+  assert.deepEqual(uk.plan.blocked, []);
+  assert.deepEqual(uk.plan.transactions[0].payload.LineItems.map((l) => [l.Description, l.UnitAmount, l.TaxType]), [
+    ['Sales 2026-09-18 (card) 20%', 90, 'OUTPUT2'], ['Sales 2026-09-18 (card) zero rated', 12, 'ZERORATEDOUTPUT'],
+    ['Tips and gratuities 2026-09-18', 12, 'NONE'], ['Service charge 2026-09-18', 6, 'NONE'],
+  ]);
+  assert.equal(uk.summary.sales.totals.tax, 1500);
+  assert.deepEqual(uk.summary.warnings, []);
+  // a US venue (added-on tax), and venues with no rates or no default: no breakdown, never a
+  // 20% the venue does not have, so a US org posts the test as it always did
+  for (const rates of [US_RATES, [], RATES.map((r) => ({ ...r, is_default: false }))]) {
+    const x = sample(rates, US_ORG);
+    assert.ok(!x.summary.taxBuckets.some((b) => b.key.startsWith('pct:')));
+    assert.deepEqual(x.plan.blocked, [], JSON.stringify(rates));
+    assert.deepEqual(x.summary.warnings, []);
+    assert.ok(sampleSaleRows(DAY.fromIso, rates).every((r) => !r.tax_breakdown));
+  }
+  // a venue with no 0% rate: all of it at the default rate
+  assert.deepEqual(sample(RATES.filter((r) => r.id !== ZERO), UK_DETAIL).summary.taxBuckets.map((b) => b.key), [K(STD)]);
+});
+
 // ── deploy: each function ships the shared accounting files it imports ─────────
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -477,16 +940,16 @@ const repoIo = {
 
 test('deploy: xero-sales, xero-config and xero-bills ship the shared files they need', () => {
   const sales = sharedDepsOf('xero-sales', repoIo);
-  for (const f of ['businessDay.js', 'accountingDay.js', 'xeroPostingPlan.js', 'accountingData.ts', 'syncRun.ts', 'xero.ts']) {
+  for (const f of ['businessDay.js', 'accountingDay.js', 'xeroPostingPlan.js', 'xeroTax.js', 'accountingData.ts', 'syncRun.ts', 'xero.ts']) {
     assert.ok(sales.includes(`supabase/functions/_shared/${f}`), `xero-sales ships ${f}`);
   }
   const config = sharedDepsOf('xero-config', repoIo);
-  for (const f of ['businessDay.js', 'accountingDay.js', 'accountingData.ts', 'xero.ts']) {
+  for (const f of ['businessDay.js', 'accountingDay.js', 'xeroTax.js', 'accountingData.ts', 'xero.ts']) {
     assert.ok(config.includes(`supabase/functions/_shared/${f}`), `xero-config ships ${f}`);
   }
   assert.ok(sharedDepsOf('xero-bills', repoIo).includes('supabase/functions/_shared/syncRun.ts'));
   // The pure rules import nothing but each other, so `npm test` loads exactly what ships.
-  for (const f of ['businessDay.js', 'accountingDay.js', 'xeroPostingPlan.js']) {
+  for (const f of ['businessDay.js', 'accountingDay.js', 'xeroPostingPlan.js', 'xeroTax.js']) {
     const src = repoIo.read(`supabase/functions/_shared/${f}`);
     assert.doesNotMatch(src, /from\s+['"](?!\.\/)/, `${f} has no outside imports`);
   }
