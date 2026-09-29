@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.15',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi setup guide: now matches the settings that got Huddersfield working. Untick Encrypted URL (it hid the phone's ID so guests could not be put online), leave Secure Portal unticked, and use the Add button directly under Pre-Authorization Allowances; the Add button further down fills Post-Authorization Restrictions, which blocks addresses.",
+    ],
+  },
+  {
     v: '5.11.14',
     date: '29 Sep 2026',
     items: [
