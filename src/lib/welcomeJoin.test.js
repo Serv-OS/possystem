@@ -40,7 +40,7 @@ test('pins: send-welcome reads the slug from Platform and trims empty link lines
 test('pins: a new number on the customer display is created with a name and no marketing consent', () => {
   // Leeds, 27 Sep: "the customer just typed his number in, came up with an error".
   const src = read('./customerLookup.js');
-  assert.match(src, /\.insert\(\{ org_id: orgId, phone: phoneN, phone_raw: rawPhone, name: '', marketing_opt_in: false \}\)/);
+  assert.match(src, /\.insert\(\{ org_id: orgId, phone: phoneN, phone_raw: phoneRawText\(rawPhone\), name: '', marketing_opt_in: false \}\)/);
   assert.doesNotMatch(src, /marketing_opt_in: true \}\)/, 'typing a number is not marketing consent');
   assert.match(src, /if \(lookupErr\) \{/, 'a failed read is not a new number');
   assert.match(src, /error\.code === '23505'/, 'a race with another till uses the existing row');

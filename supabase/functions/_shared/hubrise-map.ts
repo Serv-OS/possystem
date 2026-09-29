@@ -10,16 +10,25 @@
 // means an inbound order's sku_ref IS our menu_item id — no reverse lookup table.
 
 import { toMoney, parseMoney } from './hubrise.ts';
+import { phoneMatchKey } from './phoneKey.js';
 
 const displayName = (it: any) => it?.menu_name || it?.name || 'Item';
 
 // Defensive E.164 normalisation for inbound phone numbers. HubRise recommends E.164 and will make
-// it mandatory; some channels still send local format. Conservative: keep already-+ numbers, map a
-// UK national 0-prefix to +44 (ServOS is UK-primary), and otherwise pass through unchanged rather
-// than guess a country code. Never throws.
-function toE164(raw: unknown): string {
+// it mandatory; some channels still send local format. 29 Sep 2026: in a venue whose region is
+// known (its currency) this IS the one phone match key (_shared/phoneKey.js), the key the till,
+// the online orders and the database find customers by: '07931 129015' in a UK venue is
+// '+447931129015', '(650) 555-1234' in a US venue is '+16505551234', and a number the region
+// cannot read is its digits. With no region, or fewer than 7 digits, the old conservative
+// reading: keep already-+ numbers, map a UK national 0-prefix to +44 (ServOS is UK-primary), and
+// otherwise pass through unchanged rather than guess a country code. Never throws.
+export function toE164(raw: unknown, region = ''): string {
   const s = String(raw || '').trim();
   if (!s) return '';
+  if (region) {
+    const key = phoneMatchKey(s, region);
+    if (key) return key;
+  }
   if (s.startsWith('+')) return '+' + s.slice(1).replace(/[^\d]/g, '');
   const digits = s.replace(/[^\d]/g, '');
   if (!digits) return '';
@@ -378,7 +387,7 @@ export function hrToQueueStatus(hr: string): string {
   }
 }
 
-export function orderToQueueRow(order: any, opts: { locationId: string }): { row: any; link: any } {
+export function orderToQueueRow(order: any, opts: { locationId: string; phoneRegion?: string }): { row: any; link: any } {
   const c = order.customer || {};
   const serviceType = order.service_type || 'collection';
   const type = SERVICE_TYPE_TO_QUEUE[serviceType] || 'collection';
@@ -477,7 +486,7 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
 
   const customer: any = {
     name,
-    phone: toE164(c.phone),                              // E.164-normalised (verbatim kept if unknown format)
+    phone: toE164(c.phone, opts.phoneRegion || ''),      // the phone match key in the venue's region (verbatim kept if unknown format and no region)
     phoneRaw: c.phone || '',                             // original, for reference
     phoneAccessCode: c.phone_access_code || c.access_code || null,
     email: c.email || '',

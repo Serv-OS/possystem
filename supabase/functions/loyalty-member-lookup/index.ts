@@ -29,6 +29,8 @@ import {
 } from '../_shared/loyalty-utils.ts';
 import { giftCardRecipientFilter, cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
 import { limitedMemberReply } from '../_shared/memberReply.ts';
+import { phoneRegionFromCurrency } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -66,7 +68,7 @@ Deno.serve(async (req) => {
     .limit(1)
     .maybeSingle();
   const { data: opsLoc } = locData?.ops_location_id
-    ? await opsAdmin.from('locations').select('org_id').eq('id', uuidOr0(locData.ops_location_id)).maybeSingle()
+    ? await opsAdmin.from('locations').select('org_id, currency').eq('id', uuidOr0(locData.ops_location_id)).maybeSingle()
     : { data: null as any };
 
   const orgId = opsLoc?.org_id;
@@ -89,18 +91,11 @@ Deno.serve(async (req) => {
   }
 
   if (phone && !custId && orgId) {
-    // Look up by phone in ops DB
-    const phoneN = normalisePhone(phone);
-    if (phoneN) {
-      const { data: customer } = await opsAdmin
-        .from('customers')
-        .select('id')
-        .eq('org_id', orgId)
-        .eq('phone', phoneN)
-        .is('deleted_at', null)
-        .maybeSingle();
-      custId = customer?.id || null;
-    }
+    // Look up by phone in ops DB, by the one phone match key in this venue's region (29 Sep 2026)
+    const { data: customer } = await readCustomerByPhone(opsAdmin, {
+      orgId, phone: String(phone), region: phoneRegionFromCurrency(opsLoc?.currency),
+    });
+    custId = customer?.id || null;
   }
 
   if (!custId) {
@@ -261,13 +256,3 @@ Deno.serve(async (req) => {
   });
 });
 
-// ── Phone normalisation ──────────────────────────────────────────────────
-function normalisePhone(raw: string): string | null {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits;
-}

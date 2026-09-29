@@ -9,8 +9,10 @@
 // the loyalty-balance edge function. The kiosk UI in ScreenDetails renders
 // "Welcome back, NAME" + rewards/credit when these are non-empty.
 //
-// Phone normalization matches store/index.js _normalisePhone exactly so the
-// same key resolves whether saved via POS or kiosk.
+// 29 Sep 2026: every phone is keyed with the ONE phone match key
+// (supabase/functions/_shared/phoneKey.js), the same key the database uses
+// (public.phone_match_key), in the region of this venue (its currency). The
+// till's store._normalisePhone is this function.
 // ============================================================
 
 import { supabase, platformSupabase, getLocationId, ensureAuthToken, whenDeviceClaimed } from './supabase';
@@ -19,18 +21,22 @@ export { isMissingFn } from './customerFenceRules';
 import { isMissingFn } from './customerFenceRules';
 import { displayNumberAccepted } from './ukMobile';
 import { getActiveCurrencyCode } from './currency';
+import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../../supabase/functions/_shared/phoneKey.js';
+import { readCustomerByPhone } from '../../supabase/functions/_shared/customerPhoneRead.js';
 
-// Mirror of store._normalisePhone — kept local so this util can be used
-// without depending on the Zustand store (the kiosk's customer-details
-// screen runs without store hydration in some flows).
-export function normalisePhone(raw) {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits;
+/** The phone region of the venue this device runs: its currency (GBP until config loads). */
+export function activePhoneRegion() {
+  return phoneRegionFromCurrency(getActiveCurrencyCode());
+}
+
+/**
+ * The phone match key (29 Sep 2026): E.164 when the number can be read in this venue
+ * ('07931 129015' is '+447931129015'), its digits otherwise, null under 7 digits. Kept local so
+ * this util can be used without the Zustand store (the kiosk's customer details screen runs
+ * without store hydration in some flows); store._normalisePhone calls it.
+ */
+export function normalisePhone(raw, region = activePhoneRegion()) {
+  return phoneMatchKey(raw, region);
 }
 
 // Cache the org_id for the active location so we don't refetch on every keystroke.
@@ -92,15 +98,14 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
     // server answers instead, and only for a till, kiosk or Back Office of THIS venue.
     // FENCE STAGE 2 FALLBACK: while the function does not exist we read the table as before.
     let data = null;
+    // The key goes, as it always has (so a database that has not had 20260929a yet answers as
+    // today). 20260929a keys it again in the venue's own region, and the key of a key is the key;
+    // its digits rule applies only to a number it cannot read, whose key IS the digits as typed.
     const rpc = await supabase.rpc('customer_by_phone', { p_location_id: String(locId), p_phone: phoneN });
     if (isMissingFn(rpc.error)) {
-      const legacy = await supabase
-        .from('customers')
-        .select('id, name, email, marketing_opt_in')
-        .eq('org_id', orgId)
-        .eq('phone', phoneN)
-        .is('deleted_at', null)
-        .maybeSingle();
+      const legacy = await readCustomerByPhone(supabase, {
+        orgId, phone: phoneN, typed: rawPhone, region: activePhoneRegion(), cols: 'id, name, email, marketing_opt_in',
+      });
       if (legacy.error) {
         console.warn('[customerLookup] query failed:', legacy.error.message);
         return null;
@@ -232,13 +237,10 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
   const phoneN = normalisePhone(rawPhone);
   if (!phoneN || !supabase || !orgId) return { ok: false };
   try {
-    const { data: existing, error: lookupErr } = await supabase
-      .from('customers')
-      .select('id, name')
-      .eq('org_id', orgId)
-      .eq('phone', phoneN)
-      .is('deleted_at', null)
-      .maybeSingle();
+    // 29 Sep 2026: by the phone match key, and under the shapes older builds stored it
+    const { data: existing, error: lookupErr } = await readCustomerByPhone(supabase, {
+      orgId, phone: phoneN, typed: rawPhone, region: activePhoneRegion(), cols: 'id, name',
+    });
     // A failed read is not "a new number" (v5.9.85): creating a customer on a read error only fails
     // again on the unique phone index.
     if (lookupErr) { console.warn('[captureLoyaltyByPhone] lookup failed:', lookupErr.message); return { ok: false }; }
@@ -270,12 +272,11 @@ export async function captureLoyaltyByPhone(rawPhone, locationId, orgId) {
     // NOT opted in to marketing: typing a number to join loyalty is not marketing consent.
     let { data: ins, error } = await supabase
       .from('customers')
-      .insert({ org_id: orgId, phone: phoneN, phone_raw: rawPhone, name: '', marketing_opt_in: false })
+      .insert({ org_id: orgId, phone: phoneN, phone_raw: phoneRawText(rawPhone), name: '', marketing_opt_in: false })
       .select('id').maybeSingle();
     if (error && error.code === '23505') {
       // Another till or tab created the same number a moment ago: use it.
-      ({ data: ins, error } = await supabase.from('customers').select('id')
-        .eq('org_id', orgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle());
+      ({ data: ins, error } = await readCustomerByPhone(supabase, { orgId, phone: phoneN, typed: rawPhone, region: activePhoneRegion() }));
     }
     if (error || !ins?.id) { if (error) console.warn('[captureLoyaltyByPhone] create failed:', error.message); return { ok: false }; }
 
@@ -368,13 +369,10 @@ export async function attributeOnlineOrder({
     }
     // 1. Upsert customers row. Use lookup-then-insert/update — same pattern
     // as store.upsertCustomer to avoid relying on a unique constraint.
-    const { data: existing } = await supabase
-      .from('customers')
-      .select('id, name, email, marketing_opt_in')
-      .eq('org_id', orgId)
-      .eq('phone', phoneN)
-      .is('deleted_at', null)
-      .maybeSingle();
+    // 29 Sep 2026: by the phone match key (the same person however the number was typed)
+    const { data: existing } = await readCustomerByPhone(supabase, {
+      orgId, phone: phoneN, typed: phone, region: activePhoneRegion(), cols: 'id, name, email, marketing_opt_in',
+    });
 
     if (existing) {
       customerId = existing.id;
@@ -393,20 +391,14 @@ export async function attributeOnlineOrder({
       const { data: ins, error: insErr } = await supabase
         .from('customers')
         .insert({
-          org_id: orgId, phone: phoneN, phone_raw: phone,
+          org_id: orgId, phone: phoneN, phone_raw: phoneRawText(phone),
           name: typeof name === 'string' ? name.trim() : '', email: email || null,
           marketing_opt_in: !!marketingOptIn,
         })
         .select('id').maybeSingle();
       if (insErr) {
         // Lost a race with another tab or device creating the same phone: use the winner's row.
-        const { data: again } = await supabase
-          .from('customers')
-          .select('id')
-          .eq('org_id', orgId)
-          .eq('phone', phoneN)
-          .is('deleted_at', null)
-          .maybeSingle();
+        const { data: again } = await readCustomerByPhone(supabase, { orgId, phone: phoneN, typed: phone, region: activePhoneRegion() });
         if (!again?.id) {
           console.warn('[attributeOnlineOrder] customer insert:', insErr.code, insErr.message);
           return null;

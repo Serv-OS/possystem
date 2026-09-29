@@ -21,6 +21,7 @@ import fs from 'node:fs';
 
 import * as js from './customerImport.js';
 import * as ts from '../../supabase/functions/_shared/customerImport.ts';
+import { phoneMatchKey, legacyAppPhone } from '../../supabase/functions/_shared/phoneKey.js';
 
 // The day is pinned, so a clock read creeping into either file shows up here.
 const OPTS = { today: '2026-09-17', country: 'GB' };
@@ -309,49 +310,41 @@ test('one module can finish what the other started', () => {
   assert.deepEqual(mixedOne, js.summarise(js.readCsv(text).rows, null, OPTS));
 });
 
-// ── the app's own phone rule, the three live copies ─────────────────────────
+// ── the till's phone key, and the rule every writer used before it ──────────
+//
+// 29 Sep 2026: the till, the kiosk, the online and QR orders, the loyalty login
+// and the database key a customer's phone with ONE rule, phoneMatchKey in
+// supabase/functions/_shared/phoneKey.js (and its SQL twin public.phone_match_key).
+// What the importer writes is that key. The rule every writer used before
+// (appPhone here, legacyAppPhone there) is kept only as a key to look under.
 
-/**
- * The body of one live copy of the till's phone rule, as a function. Read from
- * the file itself, so a change to any of the three shows up here.
- */
-function liveRule(rel, start) {
-  const src = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
-  const at = src.indexOf(start);
-  assert.ok(at >= 0, 'found the rule in ' + rel);
-  const open = src.indexOf('{', at);
-  let depth = 0;
-  let end = open;
-  for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
-  }
-  return new Function('raw', src.slice(open + 1, end));
-}
-
-test('A: appPhone IS the till, the kiosk and the loyalty login, cell for cell', () => {
-  // The invariant is shape parity: customers.phone is looked up with .eq(), so
-  // what we write must be exactly what these three produce for the same cell.
-  const copies = [
-    liveRule('./customerLookup.js', 'export function normalisePhone(raw)'),
-    liveRule('../store/index.js', '_normalisePhone: (raw) =>'),
-    liveRule('../../supabase/functions/loyalty-otp/index.ts', 'function normalisePhone(raw: string): string | null'),
-  ];
+test('A: appPhone IS the rule the till, the kiosk and the loyalty login wrote until 29 Sep 2026, cell for cell', () => {
   const cells = PHONES.concat(['7700900123', '447700900123', '4405551234', '+14155551234', '07700900123', '0161 496 0000']);
   for (const cell of cells) {
-    for (const rule of copies) {
-      assert.equal(js.appPhone(cell), rule(cell), 'appPhone disagrees with a live copy for ' + String(cell));
-      assert.equal(ts.appPhone(cell), rule(cell));
-    }
+    assert.equal(js.appPhone(cell), legacyAppPhone(cell), 'appPhone disagrees with legacyAppPhone for ' + String(cell));
+    assert.equal(ts.appPhone(cell), legacyAppPhone(cell));
   }
+  // and the till, the kiosk and the loyalty login key with phoneMatchKey now
+  const lookup = fs.readFileSync(new URL('./customerLookup.js', import.meta.url), 'utf8');
+  assert.ok(lookup.includes('return phoneMatchKey(raw, region);'), 'customerLookup.normalisePhone is the key');
+  const store = fs.readFileSync(new URL('../store/index.js', import.meta.url), 'utf8');
+  assert.ok(store.includes('_normalisePhone: (raw) => phoneKeyOfVenue(raw),'), 'store._normalisePhone is the key');
+  const otp = fs.readFileSync(new URL('../../supabase/functions/loyalty-otp/index.ts', import.meta.url), 'utf8');
+  assert.ok(otp.includes('return smsPhoneKey(raw, region);'), 'the loyalty login is the key (smsPhoneKey)');
 });
 
-test('A: for a cell with nothing to repair, what we write is what the till writes', () => {
-  const till = liveRule('./customerLookup.js', 'export function normalisePhone(raw)');
+test('A: for a cell with nothing to repair, what we write is what the till keys', () => {
   for (const cell of ['07954 412324', '0161 496 0000', '447954412324', '+44 7954 412324', '+1 415 555 1234', '+353 86 123 4567']) {
-    assert.equal(js.writtenPhone(cell, { country: 'GB' }), till(cell), cell);
+    assert.equal(js.writtenPhone(cell, { country: 'GB' }), phoneMatchKey(cell, 'GB'), cell);
+    assert.equal(ts.writtenPhone(cell, { country: 'GB' }), phoneMatchKey(cell, 'GB'), cell);
   }
   for (const cell of ['4155551234', '7001234567', '4405551234', '07954 412324', '+1 415 555 1234']) {
-    for (const c of [{ country: 'US' }, {}]) assert.equal(js.writtenPhone(cell, c), till(cell), cell + ' ' + JSON.stringify(c));
+    for (const c of [{ country: 'US' }, {}]) {
+      assert.equal(js.writtenPhone(cell, c), phoneMatchKey(cell, c.country || ''), cell + ' ' + JSON.stringify(c));
+      assert.equal(ts.writtenPhone(cell, c), phoneMatchKey(cell, c.country || ''), cell + ' ' + JSON.stringify(c));
+    }
   }
+  // what an earlier import wrote for the same cell is still looked under
+  assert.ok(js.phoneKeys('0161 496 0000', { country: 'GB' }).includes(legacyAppPhone('0161 496 0000')));
+  assert.ok(ts.phoneKeys('4155551234', { country: 'US' }).includes(legacyAppPhone('4155551234')));
 });

@@ -65,7 +65,7 @@ test('ONLY the two interactive customer forms call the join by email', () => {
 test('(d) order close, every save and the background paths stay phone only', () => {
   const store = code(read('store/index.js'));
   const upsert = action(store, 'upsertCustomer');
-  assert.match(upsert, /return await upsertCustomerRow\(\{ db: supabase, orgId, c, phoneN \}\)/);
+  assert.match(upsert, /return await upsertCustomerRow\(\{ db: supabase, orgId, c, phoneN, region: activePhoneRegion\(\) \}\)/);
   assert.doesNotMatch(upsert, /autoJoin|ilike|'email'/);
   const close = action(store, 'attributeOrderToCustomer');
   assert.match(close, /await get\(\)\.upsertCustomer\(customer\)/);
@@ -73,7 +73,8 @@ test('(d) order close, every save and the background paths stay phone only', () 
   // the phone only save never reads by email
   const row = fn(read('lib/customerAutoJoinRun.js'), 'upsertCustomerRow');
   assert.doesNotMatch(code(row), /ilike|eq\('email'|or\(/);
-  assert.match(code(row), /\.eq\('org_id', orgId\)\.eq\('phone', phoneN\)\.is\('deleted_at', null\)/);
+  // 29 Sep 2026: by the one phone match key, under every shape the number is stored in
+  assert.match(code(row), /readProfileByPhone\(\{\s*db, orgId, phoneN, typed: c\.phone, region, cols: 'id, name, email, marketing_opt_in, allergens',\s*\}\)/);
 });
 
 test('(d) the Orders Hub reopen, the kiosk and the customer display never join by email', () => {
@@ -84,7 +85,7 @@ test('(d) the Orders Hub reopen, the kiosk and the customer display never join b
   const lookup = code(read('lib/customerLookup.js'));
   const start = lookup.indexOf('export async function captureLoyaltyByPhone(');
   const body = lookup.slice(start, lookup.indexOf('\nexport async function', start + 10));
-  assert.match(body, /\.insert\(\{ org_id: orgId, phone: phoneN, phone_raw: rawPhone, name: '', marketing_opt_in: false \}\)/);
+  assert.match(body, /\.insert\(\{ org_id: orgId, phone: phoneN, phone_raw: phoneRawText\(rawPhone\), name: '', marketing_opt_in: false \}\)/);
   assert.match(body, /functions\/v1\/send-welcome/);
   assert.doesNotMatch(body, /email/i);
 });
