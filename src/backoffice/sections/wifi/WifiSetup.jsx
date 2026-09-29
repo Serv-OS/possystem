@@ -83,7 +83,8 @@ export default function WifiSetup() {
       const { data } = await supabase.functions.invoke('wifi-admin', { body: { action: 'test', ops_location_id: id } });
       const r = data?.result || {};
       if (r.authorized) setConn({ state: 'connected' });
-      else setConn({ state: 'down', msg: r.message || 'Could not reach your console — check the key and Console ID.' });
+      // 29 Sep 2026: show UniFi's own reply too (Huddersfield's 403 said nothing about why).
+      else setConn({ state: 'down', msg: r.message || 'Could not reach your console — check the key and Console ID.', said: typeof r.detail === 'string' ? r.detail.trim().slice(0, 300) : '' });
     } catch (e) { setConn({ state: 'down', msg: e.message || 'Connection test failed.' }); }
   };
 
@@ -151,6 +152,7 @@ export default function WifiSetup() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>{b.text}</div>
             {conn.state === 'down' && conn.msg && <div style={S.err}>{conn.msg}</div>}
+            {conn.state === 'down' && conn.said && <div style={{ ...S.hint, fontFamily: 'var(--font-mono,monospace)', wordBreak: 'break-word' }}>UniFi said: {conn.said}</div>}
             {conn.state === 'connected' && status?.last_authorize_at && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>Last guest online {new Date(status.last_authorize_at).toLocaleString('en-GB')}</div>}
           </div>
         </div>
