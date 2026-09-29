@@ -11,7 +11,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../../lib/supabase';
-import { customerUrl } from '../../../lib/env';
+import { APP_TIER } from '../../../lib/env';
+import { WIFI_FRONT_DOOR_IP, WIFI_PREAUTH_ALLOWANCES, wifiPortalDomain, wifiPortalZone } from '../../../lib/wifiPortal';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -32,12 +33,37 @@ const S = {
   num: { flexShrink: 0, width: 20, height: 20, borderRadius: 99, background: 'var(--acc)', color: '#0b0c10', fontSize: 11, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   code: { fontFamily: 'var(--font-mono,monospace)', background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 6, padding: '1px 6px', fontSize: 11.5, color: 'var(--t1)', marginRight: 4, display: 'inline-block', marginTop: 3 },
   set: { fontSize: 11, color: 'var(--grn)', fontWeight: 700, marginLeft: 6 },
+  part: { fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '16px 0 6px' },
+  hint2: { fontSize: 12, color: 'var(--t3)', marginBottom: 10, lineHeight: 1.45 },
+  warn: { fontSize: 12, color: 'var(--t2)', lineHeight: 1.45, margin: '0 0 10px 30px', padding: '8px 10px', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 45%, var(--bdr2))', background: 'color-mix(in srgb, var(--red) 8%, transparent)' },
+  copy: { display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 5, marginRight: 6, padding: '3px 4px 3px 8px', borderRadius: 7, border: '1px solid var(--bdr2)', background: 'var(--bg2)' },
+  copyBtn: { padding: '2px 8px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', background: 'var(--acc)', color: '#0b0c10' },
 };
 
-// Our web host's IPv4 (Vercel), which every <venue>.serv-os.app resolves to on 29 Sep 2026.
-// If guests stop reaching the portal, check `dig +short A <venue>.serv-os.app` against this.
-const WEB_HOST_IP = '216.150.16.129';
-const PREAUTH_HOSTS = [WEB_HOST_IP, '216.150.16.193', 'tbetcegmszzotrwdtqhi.supabase.co', 'yhzjgyrkyjabvhblqxzu.supabase.co', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+// A value to type into UniFi, with a Copy button (so nobody has to retype an address).
+function Copy({ text }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch { /* clipboard blocked: the text is still there to select */ }
+  };
+  return (
+    <span style={S.copy}>
+      <span style={{ fontFamily: 'var(--font-mono,monospace)', fontSize: 12, color: 'var(--t1)', userSelect: 'all' }}>{text}</span>
+      <button type="button" style={S.copyBtn} onClick={copy}>{done ? 'Copied' : 'Copy'}</button>
+    </span>
+  );
+}
+
+// The WiFi FRONT DOOR (29 Sep 2026). The venue host (<venue>.serv-os.app, Vercel) resolves to a
+// DIFFERENT address per resolver and per lookup (216.150.1.x and 216.150.16.x seen at Huddersfield),
+// so UniFi's IP-only External Portal Server and its pre-auth allow-list failed at random: iOS showed
+// "Cannot verify server identity", and after allowing whole /24s nothing popped up at all.
+// Guests now land on <venue>.wifi.serv-os.app, which ALWAYS resolves to one fixed IPv4 (our Fly app
+// servos-wifi-relay, see wifi-relay/README.md). It serves the page and both Supabase projects from
+// that one address, so UniFi needs that IP plus Google Fonts and nothing else.
+// If guests stop reaching the portal: `dig +short A <venue>.wifi.serv-os.app` must print this IP.
+const FRONT_DOOR_IP = WIFI_FRONT_DOOR_IP;
+const PREAUTH_HOSTS = WIFI_PREAUTH_ALLOWANCES;
 
 const connectorUrl = (consoleId) => `https://api.ui.com/v1/connector/consoles/${String(consoleId || '').trim()}`;
 
@@ -60,12 +86,16 @@ export default function WifiSetup() {
   const [save, setSave] = useState({});
   const [conn, setConn] = useState({ state: 'unset' }); // unset | checking | connected | down
 
-  const portalUrl = useMemo(() => (slug ? customerUrl(slug, '/wifi') : 'https://<your-venue>.serv-os.app/wifi'), [slug]);
   // UniFi's External Portal Server box takes an IPv4 ONLY, and its allow-list takes no wildcards
-  // (29 Sep 2026, Huddersfield). The venue host answers UniFi's /guest/s/<site>/ redirect itself
-  // (customerUrl.js routes /guest/* to the WiFi page), so UniFi gets our web host's IP plus
-  // "Redirect using hostname" = the venue host. No bridge server.
-  const portalHost = useMemo(() => { try { return new URL(portalUrl).host; } catch { return '<your-venue>.serv-os.app'; } }, [portalUrl]);
+  // (29 Sep 2026, Huddersfield). UniFi gets the front door's IP plus Domain = this venue's front door
+  // host. The relay turns UniFi's /guest/s/<site>/ redirect into /wifi on the same host and serves
+  // the venue's page from it. Every tier shows the LIVE front door for now: the dev one
+  // (<venue>.wifi.dev.serv-os.app) has no DNS or certificate yet, and real venues appear in the dev
+  // Back Office too (WIFI_DEV_FRONT_DOOR_READY in lib/wifiPortal.js).
+  const portalHost = useMemo(
+    () => wifiPortalDomain(slug, APP_TIER) || `<your-venue>.${wifiPortalZone(APP_TIER)}`,
+    [slug],
+  );
 
   const load = async (id) => {
     const { data } = await supabase.functions.invoke('wifi-admin', { body: { action: 'get_config', ops_location_id: id } });
@@ -183,16 +213,29 @@ export default function WifiSetup() {
         </div>
       </div>
 
-      {/* Documented setup */}
+      {/* Documented setup (29 Sep 2026): rewritten to follow UniFi Network 10's own screens, with
+          the exact section names, after Huddersfield's setup went wrong three times on the old
+          guide (URL in an IP-only box, wildcard in the allow-list, hosts in the wrong list). */}
       <div style={S.card}>
-        <h2 style={S.h2}>Set it up in UniFi (one time)</h2>
-        <div style={S.step}><span style={S.num}>1</span><span>In <b>UniFi Network → Settings → WiFi</b>, create a <b>Guest</b> network and turn on <b>Hotspot / Captive Portal</b>.</span></div>
-        <div style={S.step}><span style={S.num}>2</span><span>Set the portal type to <b>External portal server</b> and enter this IP address (UniFi only accepts an IP there, not a web address):<br /><span style={S.code}>{WEB_HOST_IP}</span><br />Then turn on <b>Redirect using hostname</b> and enter:<br /><span style={S.code}>{portalHost}</span></span></div>
-        <div style={S.step}><span style={S.num}>3</span><span>Add each of these to the <b>pre-authorization</b> allow-list, one per entry (UniFi does not accept <b>*</b>), so guests can load the page before signing in:<br />{[portalHost, ...PREAUTH_HOSTS].map((h) => <span key={h} style={S.code}>{h}</span>)}</span></div>
-        <div style={S.step}><span style={S.num}>4</span><span>At <b>unifi.ui.com → API Keys</b>, click <b>Create API Key</b> and copy it → paste above.</span></div>
-        <div style={S.step}><span style={S.num}>5</span><span>Copy your <b>Console ID</b> from the unifi.ui.com address bar (<span style={S.code}>/consoles/&lt;ID&gt;/network</span>) → paste above.</span></div>
-        <div style={S.step}><span style={S.num}>6</span><span><b>Save &amp; connect</b> → the status badge turns <b style={{ color: 'var(--grn)' }}>green</b> when it’s working.</span></div>
-        <div style={{ ...S.hint, marginTop: 8 }}>Done. New guests fill the form once; returning devices reconnect automatically. Data capture works the moment the page loads, even before this is connected.</div>
+        <h2 style={S.h2}>Set it up in UniFi (one time per venue)</h2>
+
+        <div style={S.part}>A. In UniFi Network, open this venue's guest WiFi <b>Hotspot Portal</b></div>
+        <div style={S.hint2}>At unifi.ui.com open this venue's console, then <b>Clients → Hotspot → Landing Page</b> (older versions: <b>Settings → WiFi →</b> your guest network <b>→ Hotspot</b>).</div>
+        <div style={S.step}><span style={S.num}>1</span><span>Under <b>One Way Methods</b>, tick <b>External Portal Server</b>, press <b>Edit</b> and enter this IP address, then <b>Save</b>. UniFi only accepts an IP address here, never a web address. It is the ServOS WiFi front door, the same for every venue.<br /><Copy text={FRONT_DOOR_IP} /></span></div>
+        <div style={S.step}><span style={S.num}>2</span><span>Under <b>Landing Page Settings</b>, leave <b>Secure Portal</b> on and enter this in <b>Domain</b> (older versions call it <b>Redirect using hostname</b>). This is how the front door knows which venue's page to show. Without it, phones show a certificate warning or no page at all.<br /><Copy text={portalHost} />{APP_TIER !== 'prod' && wifiPortalZone(APP_TIER) === 'wifi.serv-os.app' && <span style={{ ...S.hint, display: 'block' }}>This is the live address on every ServOS tier, so it is safe to copy into a real venue's UniFi.</span>}</span></div>
+        <div style={S.step}><span style={S.num}>3</span><span>Under <b>Pre-Authorization Allowances</b> (the <b>top</b> list), press <b>Add Hostname, IP or Subnet</b> once for each of these. UniFi does not accept <b>*</b>. Anything older ServOS guides had you add here (216.150.x ranges, supabase.co addresses) is no longer needed and can be removed.<br />{PREAUTH_HOSTS.map((h) => <Copy key={h} text={h} />)}</span></div>
+        <div style={{ ...S.warn }}>Do <b>not</b> put these in <b>Post-Authorization Restrictions</b> (the list below it). That list <b>blocks</b> addresses. Leave its three number ranges (192.168.0.0/16, 172.16.0.0/12, 10.0.0.0/8) as they are.</div>
+        <div style={S.step}><span style={S.num}>4</span><span>Press <b>Apply Changes</b>.</span></div>
+
+        <div style={S.part}>B. Connect ServOS to this venue's UniFi</div>
+        <div style={S.step}><span style={S.num}>5</span><span>Sign in to unifi.ui.com <b>as the owner</b> of this venue's console, in the <b>workspace where that console appears</b> (check the switcher at the top left). Otherwise UniFi refuses with <b>"user is not the owner of this host"</b>.</span></div>
+        <div style={S.step}><span style={S.num}>6</span><span>Go to <b>API → Create API Key</b>. Tick <b>Site Manager</b> and <b>UniFi Applications</b> (Network), leave <b>All Sites</b> ticked and <b>Never Expires</b>. Copy the key straight away (it is shown once) and paste it in <b>Site Manager API key</b> above. One key can serve every venue this owner has.</span></div>
+        <div style={S.step}><span style={S.num}>7</span><span>Open <b>this venue's</b> console. The address bar reads <span style={S.code}>/consoles/&lt;ID&gt;/network</span>. Copy the ID into <b>Console ID</b> above. This is how ServOS knows which venue's WiFi to open.</span></div>
+        <div style={S.step}><span style={S.num}>8</span><span>Press <b>Save &amp; connect</b>. The badge turns <b style={{ color: 'var(--grn)' }}>green</b> when it is working.</span></div>
+
+        <div style={S.part}>C. Test it</div>
+        <div style={S.step}><span style={S.num}>9</span><span>On a phone, <b>forget</b> the guest WiFi and join it again. This venue's sign up page should open. Fill it in: the phone goes online and the guest appears in <b>Customers</b>.</span></div>
+        <div style={{ ...S.hint, marginTop: 8 }}>To check the page on its own, open <span style={S.code}>https://{portalHost}/wifi</span> on any phone. New guests fill the form once; returning devices reconnect automatically. Sign ups are saved the moment the page loads, even before step 8 is done.</div>
       </div>
 
       {/* Off switch */}

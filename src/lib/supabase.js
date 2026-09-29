@@ -4,6 +4,7 @@ import { storageKeyFor, adoptSharedSession, PERSON_STORAGE_KEY } from './authSto
 import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs, legacyHeartbeatPatch } from './deviceFence';
 import { VERSION } from './version';
 import { makeRetryingFetch } from './netRetry';
+import { supabaseBaseUrls, portalAssetUrl } from './wifiPortal';
 
 // One retry for a request that never completed. 20 Sep 2026: a member of staff
 // building a menu kept getting the red "YOUR CHANGES ARE NOT SAVING" bar with
@@ -14,8 +15,32 @@ const retryingFetch = makeRetryingFetch(null, {
   onRetry: ({ attempt, url }) => console.warn(`[net] request never completed, sending again (${attempt}):`, String(url).split('?')[0]),
 });
 
+// ── WiFi front door (29 Sep 2026) ─────────────────────────────────────────────
+// On <slug>.wifi.serv-os.app / <slug>.wifi.dev.serv-os.app a guest's phone is not online yet and
+// UniFi lets it reach ONE address: our relay (wifi-relay/). So on those hosts both clients talk to
+// Supabase through the relay, same origin, under /_sb/ops and /_sb/plat. On every other host
+// supabaseBaseUrls hands back the baked VITE_ URLs untouched. See lib/wifiPortal.js.
+const BAKED_SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const BAKED_PLATFORM_URL = import.meta.env.VITE_PLATFORM_SUPABASE_URL || '';
+const SUPABASE_BASES = supabaseBaseUrls({
+  hostname: typeof window !== 'undefined' ? window.location?.hostname : '',
+  origin: typeof window !== 'undefined' ? window.location?.origin : '',
+  opsUrl: BAKED_SUPABASE_URL,
+  platformUrl: BAKED_PLATFORM_URL,
+});
+
+// A storage image (logo, background) on either project → through the front door on a portal
+// host; unchanged anywhere else. For pages that must load before the guest is online.
+export function viaWifiPortal(url) {
+  if (typeof window === 'undefined') return url;
+  return portalAssetUrl(url, {
+    hostname: window.location?.hostname, origin: window.location?.origin,
+    opsUrl: BAKED_SUPABASE_URL, platformUrl: BAKED_PLATFORM_URL,
+  });
+}
+
 // ── Ops DB (POS operational data — source of truth for all POS operations) ───
-const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL  || '';
+const SUPABASE_URL  = SUPABASE_BASES.opsUrl;
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 export const isMock  = import.meta.env.VITE_USE_MOCK === 'true' || !SUPABASE_URL || !SUPABASE_ANON;
 
@@ -61,7 +86,7 @@ export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON
 });
 
 // ── Platform DB (company/user management — separate project) ──────────────────
-const PLATFORM_URL  = import.meta.env.VITE_PLATFORM_SUPABASE_URL  || '';
+const PLATFORM_URL  = SUPABASE_BASES.platformUrl;
 const PLATFORM_ANON = import.meta.env.VITE_PLATFORM_SUPABASE_ANON_KEY || '';
 export const platformSupabase = (PLATFORM_URL && PLATFORM_ANON)
   ? createClient(PLATFORM_URL, PLATFORM_ANON, { auth: { persistSession: false }, global: { fetch: retryingFetch } })
