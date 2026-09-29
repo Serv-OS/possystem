@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.13',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi: when the UniFi connection check fails, it now shows UniFi's own reply under the error (UniFi said: ...), so a refused key or wrong console can be told apart.",
+    ],
+  },
+  {
     v: '5.11.12',
     date: '29 Sep 2026',
     items: [
