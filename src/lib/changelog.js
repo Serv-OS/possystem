@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.17',
+    date: '29 Sep 2026',
+    items: [
+      "Online ordering and table bookings: when Apple Pay cannot start for a shop, the checkout now says \"Apple Pay could not start for this shop. Please pay by card below.\" above the card form. Before, the Apple Pay sheet flashed up and closed with no message (Coffee Boy). Each time it happens ServOS writes one line to its server logs, so we can see it too.",
+      "Apple Pay registers itself: whenever a venue's online checkout offers Apple Pay, ServOS makes sure that venue's shop address (for example coffee-boy-huddersfield.serv-os.app) is registered for Apple Pay at Adyen, and tries again by itself every 6 hours until Adyen accepts it. It never slows or blocks a payment. A live venue registers only its live address, so a test address Adyen refuses can no longer mark live as failed.",
+      "Admin, Get this venue taking cards: step 4 now shows the real Apple Pay state. It only says done and \"Apple Pay: on\" when the live shop address is registered at Adyen. Otherwise it shows Adyen's reason in plain words (for example: Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential), when ServOS last tried, and a Register for Apple Pay button.",
+    ],
+  },
+  {
     v: '5.11.16',
     date: '29 Sep 2026',
     items: [

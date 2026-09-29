@@ -16,6 +16,8 @@ import {
   usableWalletMethods, droppedWalletNote,
   walletLabel, isWalletType, wantsNativeThreeDS,
   isStoreId, storeForPaymentMethods, STORE_REFERENCE_MAX, STORE_REJECTED_ERROR_CODE,
+  WALLET_START_WINDOW_MS, WALLET_ERROR_TEXT_MAX, QUIET_WALLET_ERRORS,
+  walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from './adyenWallets.js';
 
 import { readFileSync } from 'node:fs';
@@ -466,4 +468,140 @@ test('a refused store asks Adyen for its real name before giving up on it', () =
   // and once Adyen has corrected us, the correction is used FIRST next time
   const resolve = EDGE.slice(EDGE.indexOf('async function storeReferenceFor'), EDGE.indexOf('// ── Asking ADYEN'));
   assert.match(resolve, /adyenRefCache\.get\(`\$\{cfg\.env\}:\$\{merchantAccount\}:\$\{store\}`\)/);
+});
+
+// ── A wallet that cannot start (29 Sep 2026, v5.11.17) ───────────────────────
+// Coffee Boy: the Apple Pay sheet opened and closed at once and the shopper saw
+// nothing. adyen-web raises ERROR (then CANCEL) when merchant validation fails.
+
+const TAP = Date.parse('2026-09-29T11:56:51.000Z');
+const outcome = (over) => walletErrorOutcome({ tappedAt: TAP, now: TAP + 800, submitted: false, ...over });
+
+test('walletErrorOutcome: before any tap, a script or setup error stays silent', () => {
+  assert.deepEqual([...QUIET_WALLET_ERRORS], ['CANCEL', 'SCRIPT_ERROR', 'IMPLEMENTATION_ERROR']);
+  assert.equal(outcome({ name: 'SCRIPT_ERROR', tappedAt: undefined }), 'silent');
+  assert.equal(outcome({ name: 'IMPLEMENTATION_ERROR', tappedAt: 0 }), 'silent');
+  // an ERROR the shopper did not start (no tap) is not theirs to read
+  assert.equal(outcome({ name: 'ERROR', tappedAt: undefined }), 'silent');
+  assert.equal(outcome({ name: 'ERROR', tappedAt: null }), 'silent');
+  assert.equal(outcome({ name: 'ERROR', tappedAt: 'soon' }), 'silent');
+});
+
+test('walletErrorOutcome: a tap then an ERROR or NETWORK_ERROR is a start that failed', () => {
+  assert.equal(outcome({ name: 'ERROR' }), 'start_failed');
+  assert.equal(outcome({ name: 'error' }), 'start_failed');
+  assert.equal(outcome({ name: 'NETWORK_ERROR' }), 'start_failed');
+  assert.equal(outcome({ name: '' }), 'start_failed');
+  assert.equal(outcome({ name: 'ERROR', now: TAP + WALLET_START_WINDOW_MS }), 'start_failed');
+  // a cancel is the shopper closing the sheet, never a failure
+  assert.equal(outcome({ name: 'CANCEL' }), 'silent');
+  // a script that failed after a tap is still not about this shop
+  assert.equal(outcome({ name: 'SCRIPT_ERROR' }), 'silent');
+});
+
+test('walletErrorOutcome: a stale tap (over a minute) or a clock that went backwards is silent', () => {
+  assert.equal(WALLET_START_WINDOW_MS, 60000);
+  assert.equal(outcome({ name: 'ERROR', now: TAP + WALLET_START_WINDOW_MS + 1 }), 'silent');
+  assert.equal(outcome({ name: 'ERROR', now: TAP - 1 }), 'silent');
+  assert.equal(outcome({ name: 'ERROR', now: NaN }), 'silent');
+});
+
+test('walletErrorOutcome: once a payment is submitted an error is the payment error, a cancel is not', () => {
+  assert.equal(outcome({ name: 'ERROR', submitted: true }), 'payment_error');
+  assert.equal(outcome({ name: 'ERROR', submitted: true, tappedAt: undefined }), 'payment_error');
+  assert.equal(outcome({ name: 'NETWORK_ERROR', submitted: true }), 'payment_error');
+  assert.equal(outcome({ name: 'CANCEL', submitted: true }), 'silent');
+  assert.equal(outcome({ name: 'SCRIPT_ERROR', submitted: true }), 'silent');
+  assert.equal(walletErrorOutcome(), 'silent');
+});
+
+test('walletErrorOutcome: a submit only counts for the tap it followed (submittedAt)', () => {
+  // A card refused BEFORE the tap: the shopper then taps Apple Pay and the
+  // sheet dies at merchant validation. That is a start that failed, not a
+  // payment error (29 Sep 2026 review: it showed the raw library text).
+  assert.equal(outcome({ name: 'ERROR', submittedAt: TAP - 30000 }), 'start_failed');
+  assert.equal(outcome({ name: 'ERROR', submittedAt: TAP - 1 }), 'start_failed');
+  // submittedAt wins over the old boolean when both are given
+  assert.equal(outcome({ name: 'ERROR', submitted: true, submittedAt: TAP - 30000 }), 'start_failed');
+  // this tap's own payment went in (onSubmit after Face ID): a payment error
+  assert.equal(outcome({ name: 'ERROR', submittedAt: TAP + 5000, now: TAP + 6000 }), 'payment_error');
+  assert.equal(outcome({ name: 'ERROR', submittedAt: TAP }), 'payment_error');
+  assert.equal(outcome({ name: 'CANCEL', submittedAt: TAP + 5000 }), 'silent');
+  // no submit yet on this mount (0) is the pre submit path
+  assert.equal(outcome({ name: 'ERROR', submittedAt: 0 }), 'start_failed');
+  assert.equal(outcome({ name: 'SCRIPT_ERROR', submittedAt: 0, tappedAt: undefined }), 'silent');
+  // no tap at all: any submit on this mount is a payment in flight, as before
+  assert.equal(outcome({ name: 'ERROR', tappedAt: undefined, submittedAt: TAP - 30000 }), 'payment_error');
+  assert.equal(outcome({ name: 'ERROR', tappedAt: undefined, submittedAt: 0 }), 'silent');
+  // a stale tap with an older submit is still silent (outside the minute)
+  assert.equal(outcome({ name: 'ERROR', submittedAt: TAP - 1, now: TAP + WALLET_START_WINDOW_MS + 1 }), 'silent');
+  // null submittedAt falls back to the boolean
+  assert.equal(outcome({ name: 'ERROR', submitted: true, submittedAt: null }), 'payment_error');
+});
+
+test('both forms pass submittedAt from onSubmit, never the old mount wide flag', () => {
+  for (const file of ['../../components/AdyenPaymentForm.jsx', '../../surfaces/online/BookingWidget.jsx']) {
+    const src = readFileSync(new URL(file, import.meta.url), 'utf8');
+    assert.match(src, /walletErrorOutcome\(\{ name: e\?\.name, tappedAt: tap, now: Date\.now\(\), submittedAt: submittedAt(Ref)?\.current \}\)/, file);
+    assert.match(src, /submittedAt(Ref)?\.current = Date\.now\(\);/, file);
+    assert.doesNotMatch(src, /tappedAt\.current\[type\] = 0/, file);
+  }
+});
+
+test('walletStartFailedNote says it could not start and points at the card', () => {
+  assert.equal(walletStartFailedNote('applepay'), 'Apple Pay could not start for this shop. Please pay by card below.');
+  assert.equal(walletStartFailedNote('ApplePay'), 'Apple Pay could not start for this shop. Please pay by card below.');
+  assert.equal(walletStartFailedNote('googlepay'), 'Google Pay could not start for this shop. Please pay by card below.');
+  assert.equal(walletStartFailedNote('paywithgoogle'), 'Google Pay could not start for this shop. Please pay by card below.');
+  assert.equal(walletStartFailedNote('klarna'), 'This wallet could not start for this shop. Please pay by card below.');
+  for (const t of ['applepay', 'googlepay', null]) assert.doesNotMatch(walletStartFailedNote(t), /[–—]/);
+});
+
+test('walletErrorReport: the shape wallet_error takes, capped, cleaned, no shopper data', () => {
+  const e = new Error('ApplePay - Something went wrong on ApplePayService');
+  e.name = 'ERROR';
+  e.cause = new Error('Could not get Apple Pay session');
+  assert.deepEqual(walletErrorReport({ locationId: ' 15559aa9 ', type: 'ApplePay', error: e, host: 'Coffee-Boy-Huddersfield.serv-os.app:443' }), {
+    action: 'wallet_error',
+    location_id: '15559aa9',
+    wallet: 'applepay',
+    name: 'ERROR',
+    message: 'ApplePay - Something went wrong on ApplePayService',
+    cause: 'Error: Could not get Apple Pay session',
+    host: 'coffee-boy-huddersfield.serv-os.app',
+  });
+  const long = walletErrorReport({ locationId: 'L', type: 'applepay', error: { name: 'error', message: `line one\nline two\u0007${'m'.repeat(500)}`, cause: 'c'.repeat(500) }, host: `${'h'.repeat(300)}.serv-os.app` });
+  assert.equal(WALLET_ERROR_TEXT_MAX, 200);
+  for (const k of ['name', 'message', 'cause', 'host']) assert.ok(long[k].length <= WALLET_ERROR_TEXT_MAX, `${k}: ${long[k].length}`);
+  assert.equal(long.name, 'ERROR');
+  assert.match(long.message, /^line one line two m+$/);
+  assert.equal(long.cause.length, WALLET_ERROR_TEXT_MAX);
+  // a string cause, an object cause, no cause, and a host with junk in it
+  assert.equal(walletErrorReport({ error: { name: 'ERROR', cause: 'plain' } }).cause, 'plain');
+  assert.equal(walletErrorReport({ error: { name: 'ERROR', cause: { statusCode: 422 } } }).cause, '{"statusCode":422}');
+  assert.equal(walletErrorReport({ error: { name: 'ERROR' } }).cause, '');
+  assert.equal(walletErrorReport({ host: 'shop.example.com/<script>' }).host, 'shop.example.comscript');
+  assert.deepEqual(Object.keys(walletErrorReport()).sort(), ['action', 'cause', 'host', 'location_id', 'message', 'name', 'wallet']);
+});
+
+test('the edge function logs wallet_error with the same cap, and writes nothing', () => {
+  assert.match(EDGE, /action === 'wallet_error'/);
+  assert.match(EDGE, new RegExp(`const WALLET_ERROR_TEXT_MAX = ${WALLET_ERROR_TEXT_MAX};`));
+  const block = EDGE.slice(EDGE.indexOf("if (action === 'wallet_error')"), EDGE.indexOf("if (action === 'payment_methods')"));
+  assert.ok(block.length > 0, 'wallet_error sits before payment_methods');
+  assert.match(block, /console\.warn\(`\[adyen-checkout\] wallet_error /);
+  assert.match(block, /\/\^\[A-Z_\]\{1,40\}\$\//);
+  assert.doesNotMatch(block, /\.from\(|\.insert\(|\.upsert\(|\.update\(|fetch\(|lookupPaymentMethods|adyenFetch/, 'log only: no database write, no Adyen call');
+  assert.ok(EDGE.indexOf("if (action === 'status')") < EDGE.indexOf("if (action === 'wallet_error')"), 'after status');
+});
+
+test('the edge function nudges Apple Pay registration from payment_methods, never awaited', () => {
+  const methods = EDGE.slice(EDGE.indexOf("if (action === 'payment_methods')"), EDGE.indexOf("if (action === 'create_session')"));
+  assert.match(methods, /if \(platformLocationId && offersApplePay\(methods\)\) nudgeApplePayDomains\(platformLocationId, cfg\.env\);/);
+  assert.doesNotMatch(methods, /await nudgeApplePayDomains/);
+  const nudge = EDGE.slice(EDGE.indexOf('function nudgeApplePayDomains'), EDGE.indexOf('Deno.serve('));
+  assert.match(nudge, /action: 'ensure_apple_pay_domains'/);
+  assert.match(nudge, /AbortSignal\.timeout\(APPLE_PAY_NUDGE_TIMEOUT_MS\)/);
+  assert.match(nudge, /waitUntil/);
+  assert.match(EDGE, /const APPLE_PAY_NUDGE_MS = 30 \* 60_000;/);
 });

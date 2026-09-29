@@ -31,6 +31,17 @@
 // Pay does not render off Chrome. When the venue offers a wallet this browser
 // did not render we say so in one line under the form, and nothing else.
 //
+// A WALLET THAT CANNOT START IS SAID OUT LOUD (29 Sep 2026, v5.11.17). Coffee
+// Boy: the Apple Pay sheet opened and closed at once and the shopper saw
+// nothing, because every wallet error before onSubmit was swallowed. Each
+// wallet's onClick now stamps the tap, and an error within a minute of it
+// (not a cancel, not a script that did not load) shows "Apple Pay could not
+// start for this shop. Please pay by card below." ABOVE the card form and
+// writes one wallet_error line to the edge logs (adyenWallets.js
+// walletErrorOutcome). Log only: nothing waits on it. A submit only counts
+// for the tap it followed (submittedAt), so a card refused earlier on the
+// same form never hides a later Apple Pay tap that could not start.
+//
 // Static imports only (CLAUDE.md: dynamic import silently fails in the Vite
 // bundle). The CSS import rides the same lazy chunk as the online surface.
 
@@ -41,6 +52,7 @@ import { supabase } from '../lib/supabase';
 import {
   CARD_ONLY_PAYMENT_METHODS, buildPaymentMethodsRequest, resolvePaymentMethods,
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
+  walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../lib/payments/adyenWallets';
 
 export default function AdyenPaymentForm({
@@ -65,13 +77,23 @@ export default function AdyenPaymentForm({
   const lastServer = useRef(null);   // last make_payment/details response, pspReference for onSuccess
   const lastFailure = useRef(null);  // server error message, beats Drop-in's generic banner
   const offeredWallets = useRef([]); // wallet types the venue's Adyen config offers
-  const submitted = useRef(false);   // a payment is actually in flight (see the wallet onError)
+  const submittedAt = useRef(0);     // ms of the last submit on this mount, 0 for none (see the wallet onError)
+  const tappedAt = useRef({});       // { [wallet type]: ms } when the shopper last tapped that wallet
+  const reportedTap = useRef({});    // { [wallet type]: ms } the tap already logged, one line per tap
   const [phase, setPhase] = useState('init');   // init | ready | failed
   const [walletNote, setWalletNote] = useState(''); // the one line when a wallet cannot render here
+  // The one line when a tapped wallet could not start, tagged with the payment
+  // it belongs to, so a remount (a new amount, ref or venue) drops it without
+  // a setState in the effect.
+  const [startNote, setStartNote] = useState({ key: '', text: '' });
+  const payKey = [amountMinor, currency, reference, merchantName, locationId].join('|');
 
   useEffect(() => {
     let live = true;
-    submitted.current = false;   // a remount is a NEW payment: nothing in flight yet
+    submittedAt.current = 0;     // a remount is a NEW payment: nothing in flight yet
+    tappedAt.current = {};       // and nothing tapped yet
+    reportedTap.current = {};
+    const noteKey = [amountMinor, currency, reference, merchantName, locationId].join('|');
     (async () => {
       try {
         // The venue is the payment's environment (test or live), its merchant
@@ -144,10 +166,18 @@ export default function AdyenPaymentForm({
         // (merchantId / gatewayMerchantId must survive, see adyenWallets.js).
         // onAuthorized fires BEFORE onSubmit and the payment does not proceed
         // until it resolves, so resolving is not optional once we supply it.
-        const walletCallbacks = {
+        const walletCallbacksFor = (type) => ({
           onAuthorized: (_data, actions) => {
             lastFailure.current = null;
             actions.resolve();
+          },
+          // The shopper tapped this wallet. adyen-web 6.42 (ApplePay and
+          // GooglePay) calls onClick(resolve, reject) and opens the sheet
+          // only once it resolves, so this resolves at once, synchronously,
+          // inside the tap: Apple Pay must begin within the user gesture.
+          onClick: (resolve) => {
+            tappedAt.current[type] = Date.now();
+            resolve();
           },
           // A wallet component's own error, and it must NOT reach the
           // checkout unless a payment is actually in flight.
@@ -160,14 +190,36 @@ export default function AdyenPaymentForm({
           // this callback is that element's onError. A blocked CDN, a proxy
           // or an extension is a wallet-availability non-event, so it must
           // never put "Payment error" on a checkout whose card form works.
+          //
+          // An ERROR within a minute of a tap and before any submit is the
+          // sheet dying at merchant validation (the shop address not
+          // registered with Apple Pay at Adyen): say so above the card form
+          // and log it (walletErrorOutcome). A CANCEL never clears the tap,
+          // so the ERROR and CANCEL that follow an abort land in either order.
+          // A submit counts only when it came at or after this tap, so a card
+          // refused before the tap is not "a payment in flight" (29 Sep 2026
+          // review). The tap is kept; reportedTap logs it once.
           onError: (e) => {
-            if (!submitted.current || e?.name === 'CANCEL' || e?.name === 'SCRIPT_ERROR' || e?.name === 'IMPLEMENTATION_ERROR') {
-              console.warn('[adyen] wallet unavailable:', e?.name, e?.message);
+            const tap = tappedAt.current[type];
+            const outcome = walletErrorOutcome({ name: e?.name, tappedAt: tap, now: Date.now(), submittedAt: submittedAt.current });
+            if (outcome === 'payment_error') {
+              onError?.(lastFailure.current || new Error(e?.message || 'Payment error'));
               return;
             }
-            onError?.(lastFailure.current || new Error(e?.message || 'Payment error'));
+            if (outcome === 'start_failed') {
+              if (live) setStartNote({ key: noteKey, text: walletStartFailedNote(type) });
+              if (reportedTap.current[type] === tap) return;
+              reportedTap.current[type] = tap;
+              console.warn('[adyen] wallet could not start:', type, e?.name, e?.message, e?.cause);
+              try {
+                const report = walletErrorReport({ locationId, type, error: e, host: typeof window !== 'undefined' ? window.location.hostname : '' });
+                supabase.functions.invoke('adyen-checkout', { body: report }).catch(() => { /* log only */ });
+              } catch { /* log only: never in the shopper's way */ }
+              return;
+            }
+            console.warn('[adyen] wallet unavailable:', e?.name, e?.message);
           },
-        };
+        });
         const wallets = walletConfiguration({
           response: paymentMethodsResponse,
           amountMinor,
@@ -177,7 +229,7 @@ export default function AdyenPaymentForm({
         });
         const paymentMethodsConfiguration = {};
         for (const [type, conf] of Object.entries(wallets)) {
-          paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacks };
+          paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacksFor(type) };
         }
 
         const checkout = await AdyenCheckout({
@@ -188,7 +240,7 @@ export default function AdyenPaymentForm({
           paymentMethodsResponse,
           onSubmit: async (state, _component, actions) => {
             try {
-              submitted.current = true;   // from here a wallet error IS a payment error
+              submittedAt.current = Date.now();   // from here a wallet error of THIS tap IS a payment error
               lastFailure.current = null;
               // One UUID per submit: the fn uses it as Adyen's Idempotency-Key,
               // so a retry after a refused card is a fresh decision, and the
@@ -324,10 +376,18 @@ export default function AdyenPaymentForm({
     // run that does not change them costs nothing.
   }, [amountMinor, currency, reference, merchantName, locationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const startNoteText = startNote.key === payKey ? startNote.text : '';
   return (
     <div>
       {phase === 'init' && <div style={{ padding: 18, textAlign: 'center', opacity: 0.7, fontSize: 13 }}>Loading secure payment…</div>}
       {phase === 'failed' && <div style={{ padding: 18, textAlign: 'center', fontSize: 13 }}>Could not load the payment form. Go back and try again.</div>}
+      {/* ABOVE the form, so "pay by card below" is true. */}
+      {startNoteText && (
+        <div role="status" style={{
+          marginBottom: 10, padding: '10px 12px', borderRadius: 8, fontSize: 13.5, fontWeight: 600, lineHeight: 1.5,
+          background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(180, 83, 9, 0.35)',
+        }}>{startNoteText}</div>
+      )}
       <div ref={holder} />
       {phase === 'ready' && walletNote && (
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>{walletNote}</div>

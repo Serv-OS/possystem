@@ -17,6 +17,10 @@ import {
   allowedOriginDomains, originsPlan, applePayDomainList, applePayDomainsPlan,
   pickApplePayMethod, hasApplePayEntries, applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
   registrationLines,
+  storefrontHostFor, applePayStateKey, applePayRetryDue, adyenErrorCode, applePayAnswerCode, isPermissionRefusal,
+  applePayGuidance, applePayStateFrom, clipText,
+  APPLE_PAY_RETRY_MS, APPLE_PAY_RECHECK_MS, APPLE_PAY_CLOCK_SKEW_MS, APPLE_PAY_STATE_PREFIX, APPLE_PAY_MANUAL_TRIGGERS,
+  APPLE_PAY_PERMISSION_GUIDANCE, APPLE_PAY_GUIDANCE_MAX,
 } from './adyenOrigins.js';
 
 const FIVE = [
@@ -283,4 +287,360 @@ test('registrationLines: a whole call failure is one error line, an empty answer
   const same = 'Apple Pay is not requested on M yet.';
   assert.deepEqual(registrationLines({ ok: false, error: same, note: same }), [{ tone: 'err', text: same }]);
   assert.deepEqual(registrationLines({ ok: false, note: 'Skipped: live keys not set.' }), [{ tone: 'warn', text: 'Skipped: live keys not set.' }]);
+});
+
+// ── ONE HOST ON LIVE (29 Sep 2026, v5.11.17) ─────────────────────────────────
+// Coffee Boy: registering <slug>.serv-os.app AND <slug>.dev.serv-os.app on the
+// live merchant let a refused dev host turn the live answer into ok false.
+// A test venue keeps both ServOS hosts: production Back Office opens a venue
+// still on Adyen test at <slug>.serv-os.app (review, 29 Sep 2026).
+
+test('buildStorefrontDomains: live is the live host plus the custom domain, test is every address it opens on', () => {
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'live' }), ['coffee-boy-leeds.serv-os.app']);
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'LIVE ' }), ['coffee-boy-leeds.serv-os.app']);
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'live', customDomain: 'order.coffeeboy.co.uk' }),
+    ['coffee-boy-leeds.serv-os.app', 'order.coffeeboy.co.uk']);
+  // test: the dev host first (the main one), then the production address and
+  // the custom domain, all on the test merchant, which cannot touch live
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'test' }), ['coffee-boy-leeds.dev.serv-os.app', 'coffee-boy-leeds.serv-os.app']);
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'test', customDomain: 'order.coffeeboy.co.uk' }),
+    ['coffee-boy-leeds.dev.serv-os.app', 'coffee-boy-leeds.serv-os.app', 'order.coffeeboy.co.uk']);
+  // live never carries the dev host, whatever else is set
+  for (const customDomain of [null, 'order.coffeeboy.co.uk']) {
+    assert.ok(!buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'live', customDomain }).some((h) => h.endsWith('.dev.serv-os.app')));
+  }
+  // no environment (or a word that is not one) keeps the legacy pair
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds' }), ['coffee-boy-leeds.serv-os.app', 'coffee-boy-leeds.dev.serv-os.app']);
+  assert.deepEqual(buildStorefrontDomains({ slug: 'coffee-boy-leeds', environment: 'staging' }), ['coffee-boy-leeds.serv-os.app', 'coffee-boy-leeds.dev.serv-os.app']);
+  // a bad slug gives no ServOS host on any environment
+  assert.deepEqual(buildStorefrontDomains({ slug: 'ab', environment: 'live' }), []);
+  assert.deepEqual(buildStorefrontDomains({ slug: null, environment: 'test' }), []);
+});
+
+test('storefrontHostFor is the main host of the environment, empty for a bad slug', () => {
+  assert.equal(storefrontHostFor({ slug: 'coffee-boy-huddersfield', environment: 'live' }), 'coffee-boy-huddersfield.serv-os.app');
+  assert.equal(storefrontHostFor({ slug: ' Coffee-Boy-Huddersfield ', environment: 'test' }), 'coffee-boy-huddersfield.dev.serv-os.app');
+  assert.equal(storefrontHostFor({ slug: 'coffee-boy-huddersfield' }), 'coffee-boy-huddersfield.serv-os.app');
+  assert.equal(storefrontHostFor({ slug: '-bad-', environment: 'live' }), '');
+  assert.equal(storefrontHostFor({}), '');
+  assert.equal(storefrontHostFor(), '');
+});
+
+test('applePayDomainsPlan with an environment wants that environment\'s hosts only', () => {
+  const held = { domains: ['location1.serv-os.app', 'coffee-boy-leeds.dev.serv-os.app'] };
+  assert.deepEqual(applePayDomainsPlan(held, { slug: 'coffee-boy-leeds', environment: 'live' }),
+    { wanted: ['coffee-boy-leeds.serv-os.app'], missing: ['coffee-boy-leeds.serv-os.app'], existing: [] });
+  assert.deepEqual(applePayDomainsPlan(held, { slug: 'coffee-boy-leeds', environment: 'test' }),
+    { wanted: ['coffee-boy-leeds.dev.serv-os.app', 'coffee-boy-leeds.serv-os.app'], missing: ['coffee-boy-leeds.serv-os.app'], existing: ['coffee-boy-leeds.dev.serv-os.app'] });
+  assert.deepEqual(applePayDomainsPlan(held, { slug: 'location1', environment: 'live' }),
+    { wanted: ['location1.serv-os.app'], missing: [], existing: ['location1.serv-os.app'] });
+});
+
+// ── THE KEPT ROW AND THE THROTTLE ────────────────────────────────────────────
+
+test('applePayStateKey is applepay_state:<env>:<platform id>, empty when a part is missing', () => {
+  assert.equal(APPLE_PAY_STATE_PREFIX, 'applepay_state');
+  assert.equal(applePayStateKey('live', '15559aa9-018d-43aa-890d-6da704a08c64'), 'applepay_state:live:15559aa9-018d-43aa-890d-6da704a08c64');
+  assert.equal(applePayStateKey(' TEST ', 'abc'), 'applepay_state:test:abc');
+  assert.equal(applePayStateKey('staging', 'abc'), '');
+  assert.equal(applePayStateKey('live', ''), '');
+  assert.equal(applePayStateKey(null, null), '');
+});
+
+const HOUR = 60 * 60 * 1000;
+const T0 = Date.parse('2026-09-29T12:00:00.000Z');
+const HOST = 'coffee-boy-huddersfield.serv-os.app';
+const MERCHANT = 'FranPOS_QSR_UK';
+const row = (over = {}) => ({ checkedAt: new Date(T0).toISOString(), host: HOST, merchant: MERCHANT, registered: false, ...over });
+const due = (state, at, over = {}) => applePayRetryDue(state, { now: at, host: HOST, merchant: MERCHANT, trigger: 'checkout', ...over });
+
+test('applePayRetryDue: 6 hours after a refusal, 24 once registered', () => {
+  assert.equal(APPLE_PAY_RETRY_MS, 6 * HOUR);
+  assert.equal(APPLE_PAY_RECHECK_MS, 24 * HOUR);
+  // nothing kept yet, or a row that is not an object: ask
+  assert.equal(due(null, T0), true);
+  assert.equal(due(undefined, T0), true);
+  assert.equal(due('garbage', T0), true);
+  assert.equal(due([], T0), true);
+  // refused: not before 6 hours, then yes
+  assert.equal(due(row(), T0 + 1000), false);
+  assert.equal(due(row(), T0 + 6 * HOUR - 1), false);
+  assert.equal(due(row(), T0 + 6 * HOUR), true);
+  // registered: not before 24 hours, then yes
+  assert.equal(due(row({ registered: true }), T0 + 6 * HOUR), false);
+  assert.equal(due(row({ registered: true }), T0 + 24 * HOUR - 1), false);
+  assert.equal(due(row({ registered: true }), T0 + 24 * HOUR), true);
+});
+
+test('applePayRetryDue: a changed host or merchant asks at once; a manual trigger always asks', () => {
+  assert.equal(due(row(), T0 + 1000, { host: 'coffee-boy-leeds.serv-os.app' }), true);
+  assert.equal(due(row(), T0 + 1000, { host: 'HTTPS://Coffee-Boy-Huddersfield.serv-os.app/' }), false);   // the same host, typed differently
+  assert.equal(due(row(), T0 + 1000, { merchant: 'FranPOS_UK' }), true);
+  assert.equal(due(row({ registered: true }), T0 + 1000, { host: '' }), true);   // the slug was cleared
+  assert.deepEqual([...APPLE_PAY_MANUAL_TRIGGERS], ['admin', 'go_live', 'adyen_link']);
+  for (const trigger of APPLE_PAY_MANUAL_TRIGGERS) {
+    assert.equal(due(row({ registered: true }), T0 + 1000, { trigger }), true, trigger);
+    assert.equal(due(row(), T0 + 1000, { trigger }), true, trigger);
+  }
+  for (const trigger of ['checkout', 'golive_state', '', undefined]) assert.equal(due(row(), T0 + 1000, { trigger }), false, String(trigger));
+});
+
+test('applePayRetryDue: a different Apple Pay payment method asks at once, when both are known', () => {
+  const PM = 'PM3224R223224K5KFSH7X5G8B';
+  assert.equal(due(row({ paymentMethodId: PM }), T0 + 1000, { paymentMethodId: PM }), false);
+  assert.equal(due(row({ paymentMethodId: PM, registered: true }), T0 + 1000, { paymentMethodId: 'PM_OTHER_STORE_ENTRY' }), true);
+  assert.equal(due(row({ paymentMethodId: PM }), T0 + 1000, { paymentMethodId: ` ${PM} ` }), false);
+  // unknown on either side: the other rules decide
+  assert.equal(due(row({ paymentMethodId: PM }), T0 + 1000, { paymentMethodId: '' }), false);
+  assert.equal(due(row({ paymentMethodId: PM }), T0 + 1000), false);
+  assert.equal(due(row({ paymentMethodId: null }), T0 + 1000, { paymentMethodId: PM }), false);
+});
+
+test('applePayRetryDue: a bad or future checkedAt asks; a few seconds of clock skew does not', () => {
+  assert.equal(due(row({ checkedAt: 'yesterday' }), T0), true);
+  assert.equal(due(row({ checkedAt: null }), T0), true);
+  assert.equal(due(row({ checkedAt: new Date(T0 + HOUR).toISOString() }), T0), true);
+  assert.equal(due(row({ checkedAt: new Date(T0 + APPLE_PAY_CLOCK_SKEW_MS + 1).toISOString() }), T0), true);
+  assert.equal(due(row({ checkedAt: new Date(T0 + 5000).toISOString() }), T0), false);
+});
+
+test('adyenErrorCode reads errorCode from a refusal body', () => {
+  assert.equal(adyenErrorCode({ status: 403, errorCode: '00_403', title: 'Forbidden' }), '00_403');
+  assert.equal(adyenErrorCode({ errorCode: 901 }), '901');
+  assert.equal(adyenErrorCode({ title: 'Forbidden' }), null);
+  assert.equal(adyenErrorCode({ errorCode: '  ' }), null);
+  assert.equal(adyenErrorCode(null), null);
+  assert.equal(adyenErrorCode('403'), null);
+});
+
+// The answers registerApplePayDomains gives, as the function builds them.
+const LIST_403 = { ok: false, environment: 'live', merchant: MERCHANT, host: HOST, status: 403, code: 'scope_missing', errorCode: '00_403', message: 'Forbidden', error: 'The UK live API key cannot read the payment methods on FranPOS_QSR_UK (403). It needs the Management API role "Payment methods read and write".', added: [], existing: [], failed: [] };
+const POST_403 = { ok: false, environment: 'live', merchant: MERCHANT, host: HOST, paymentMethodId: 'PM3224R223224K5KFSH7X5G8B', verificationStatus: 'valid', added: [], existing: [], failed: [{ domain: HOST, status: 403, errorCode: '00_403', message: 'Forbidden' }] };
+const POST_422 = { ok: false, environment: 'live', merchant: MERCHANT, host: HOST, verificationStatus: 'valid', added: [], existing: [], failed: [{ domain: HOST, status: 422, errorCode: '702', message: 'Domain could not be verified' }] };
+const NOT_REQUESTED = { ok: false, environment: 'live', merchant: MERCHANT, host: HOST, code: 'apple_pay_not_requested', error: 'Apple Pay is not requested on FranPOS_QSR_UK yet.' };
+const STORE_SCOPED = { ok: false, environment: 'live', merchant: MERCHANT, host: HOST, code: 'apple_pay_store_scoped', error: 'Apple Pay on FranPOS_QSR_UK is set up per store.' };
+const NO_STOREFRONT = { ok: false, environment: 'live', merchant: MERCHANT, host: null, code: 'no_storefront', error: 'This venue has no online slug yet.' };
+const TIMEOUT = { ok: false, error: 'Apple Pay domains: Adyen did not answer GET /merchants/FranPOS_QSR_UK/paymentMethodSettings within 15s' };
+const ADDED = { ok: true, environment: 'live', merchant: MERCHANT, host: HOST, paymentMethodId: 'PM1', verificationStatus: 'valid', added: [HOST], existing: [], failed: [] };
+const THERE = { ok: true, environment: 'live', merchant: MERCHANT, host: HOST, paymentMethodId: 'PM1', verificationStatus: 'valid', added: [], existing: [HOST], failed: [] };
+const PENDING = { ...THERE, verificationStatus: 'pending' };
+
+test('isPermissionRefusal: a 401 or 403 on the list read or on any host, or scope_missing', () => {
+  assert.equal(isPermissionRefusal(LIST_403), true);
+  assert.equal(isPermissionRefusal(POST_403), true);
+  assert.equal(isPermissionRefusal({ code: 'scope_missing' }), true);
+  assert.equal(isPermissionRefusal({ status: 401 }), true);
+  assert.equal(isPermissionRefusal(POST_422), false);
+  assert.equal(isPermissionRefusal(TIMEOUT), false);
+  assert.equal(isPermissionRefusal(null), false);
+});
+
+test('applePayAnswerCode names a timed out call', () => {
+  assert.equal(applePayAnswerCode(TIMEOUT), 'timeout');
+  assert.equal(applePayAnswerCode(NOT_REQUESTED), 'apple_pay_not_requested');
+  assert.equal(applePayAnswerCode(POST_422), '');
+  assert.equal(applePayAnswerCode(undefined), '');
+});
+
+test('applePayGuidance: the one sentence for each answer', () => {
+  assert.equal(APPLE_PAY_PERMISSION_GUIDANCE, 'Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential.');
+  assert.equal(applePayGuidance(LIST_403), APPLE_PAY_PERMISSION_GUIDANCE);
+  // a POST refused with 403 only shows in failed[], and still names the role
+  assert.equal(applePayGuidance(POST_403), APPLE_PAY_PERMISSION_GUIDANCE);
+  assert.equal(applePayGuidance(NOT_REQUESTED), "Apple Pay is not switched on for this Adyen account. Ask FranPOS to request it with Adyen's certificate.");
+  assert.equal(applePayGuidance(STORE_SCOPED), "Apple Pay is set up store by store and this venue's store has none. Ask FranPOS to add it.");
+  assert.equal(applePayGuidance(NO_STOREFRONT), 'This venue has no online address yet. Set it in Channels first.');
+  assert.equal(applePayGuidance(TIMEOUT), 'Adyen did not answer. ServOS tries again by itself.');
+  assert.equal(applePayGuidance(POST_422), `Adyen would not add ${HOST}: Domain could not be verified.`);
+  assert.equal(applePayGuidance({ ok: false, code: 'read_failed', status: 500, message: 'Internal error' }), 'Adyen could not be asked about Apple Pay: Internal error. ServOS tries again by itself.');
+  // registered: nothing to do, unless Adyen has not approved Apple Pay yet
+  assert.equal(applePayGuidance(ADDED), null);
+  assert.equal(applePayGuidance(THERE), null);
+  assert.match(applePayGuidance(PENDING), /not approved it yet/);
+  // a read only probe that proved the host missing has no advice beyond that
+  assert.equal(applePayGuidance({ read: true, registered: false, missing: [HOST] }), null);
+  assert.equal(applePayGuidance({ read: false, registered: false, status: 403, code: 'scope_missing' }), APPLE_PAY_PERMISSION_GUIDANCE);
+  assert.equal(applePayGuidance(null), null);
+});
+
+test('applePayGuidance fits a step hint even when Adyen says a lot, and never uses a dash', () => {
+  const long = { ...POST_422, failed: [{ domain: HOST, status: 422, message: 'x'.repeat(400) }] };
+  const g = applePayGuidance(long);
+  assert.ok(g.length <= APPLE_PAY_GUIDANCE_MAX, `${g.length}`);
+  assert.match(g, /^Adyen would not add coffee-boy-huddersfield\.serv-os\.app: x+\.\.\.$/);
+  const read = applePayGuidance({ ok: false, code: 'read_failed', message: 'y'.repeat(400) });
+  assert.ok(read.length <= APPLE_PAY_GUIDANCE_MAX, `${read.length}`);
+  for (const a of [LIST_403, POST_403, POST_422, NOT_REQUESTED, STORE_SCOPED, NO_STOREFRONT, TIMEOUT, long]) {
+    const t = applePayGuidance(a);
+    assert.ok(t.length <= APPLE_PAY_GUIDANCE_MAX, t);
+    assert.doesNotMatch(t, /[–—]/, t);
+  }
+});
+
+test('clipText cuts with an ellipsis and folds whitespace', () => {
+  assert.equal(clipText('  a\n b  ', 10), 'a b');
+  assert.equal(clipText('abcdefghij', 5), 'ab...');
+  assert.equal(clipText(null, 5), '');
+});
+
+const opts = (over = {}) => ({ trigger: 'checkout', host: HOST, now: T0, previous: null, ...over });
+
+test('applePayStateFrom: every outcome', () => {
+  assert.equal(applePayStateFrom(THERE, opts()).outcome, 'registered');
+  assert.equal(applePayStateFrom(ADDED, opts()).outcome, 'added');
+  assert.equal(applePayStateFrom(LIST_403, opts()).outcome, 'refused');
+  assert.equal(applePayStateFrom(POST_403, opts()).outcome, 'refused');
+  assert.equal(applePayStateFrom(POST_422, opts()).outcome, 'refused');
+  assert.equal(applePayStateFrom(NOT_REQUESTED, opts()).outcome, 'not_requested');
+  assert.equal(applePayStateFrom(STORE_SCOPED, opts()).outcome, 'store_scoped');
+  assert.equal(applePayStateFrom(NO_STOREFRONT, opts({ host: '' })).outcome, 'no_storefront');
+  assert.equal(applePayStateFrom(TIMEOUT, opts()).outcome, 'error');
+  assert.equal(applePayStateFrom({ ok: false, code: 'read_failed', status: 500, message: 'boom' }, opts()).outcome, 'error');
+  // ok with no host is never registered
+  assert.equal(applePayStateFrom({ ok: true }, opts({ host: '' })).registered, false);
+});
+
+test('applePayStateFrom keeps Adyen\'s code and message, the guidance, when and from where', () => {
+  const s = applePayStateFrom(LIST_403, opts());
+  assert.deepEqual(s, {
+    v: 1, environment: 'live', host: HOST, merchant: MERCHANT, paymentMethodId: null, verification: null,
+    registered: false, outcome: 'refused', code: 'scope_missing', status: 403, errorCode: '00_403', error: 'Forbidden',
+    failed: [], added: [], guidance: APPLE_PAY_PERMISSION_GUIDANCE,
+    checkedAt: '2026-09-29T12:00:00.000Z', trigger: 'checkout', failures: 1,
+  });
+  const p = applePayStateFrom(POST_422, opts({ trigger: 'admin' }));
+  assert.equal(p.status, 422);
+  assert.equal(p.errorCode, '702');
+  assert.equal(p.error, 'Domain could not be verified');
+  assert.deepEqual(p.failed, [{ domain: HOST, status: 422, errorCode: '702', message: 'Domain could not be verified' }]);
+  assert.equal(p.paymentMethodId, null);
+  assert.equal(p.trigger, 'admin');
+  const t = applePayStateFrom(TIMEOUT, opts());
+  assert.equal(t.code, 'timeout');
+  assert.match(t.error, /did not answer/);
+  assert.equal(t.guidance, 'Adyen did not answer. ServOS tries again by itself.');
+  const a = applePayStateFrom(ADDED, opts());
+  assert.equal(a.registered, true);
+  assert.deepEqual(a.added, [HOST]);
+  assert.equal(a.error, null);
+  assert.equal(a.guidance, null);
+  assert.equal(a.paymentMethodId, 'PM1');
+  assert.equal(a.verification, 'valid');
+});
+
+test('applePayStateFrom counts failures in a row and resets on success', () => {
+  const one = applePayStateFrom(LIST_403, opts());
+  assert.equal(one.failures, 1);
+  const two = applePayStateFrom(LIST_403, opts({ previous: one }));
+  assert.equal(two.failures, 2);
+  const three = applePayStateFrom(TIMEOUT, opts({ previous: two }));
+  assert.equal(three.failures, 3);
+  const ok = applePayStateFrom(THERE, opts({ previous: three }));
+  assert.equal(ok.failures, 0);
+  assert.equal(applePayStateFrom(POST_403, opts({ previous: ok })).failures, 1);
+  assert.equal(applePayStateFrom(POST_403, opts({ previous: { failures: 'x' } })).failures, 1);
+  // a bad clock never throws
+  assert.match(applePayStateFrom(THERE, opts({ now: NaN })).checkedAt, /^\d{4}-\d\d-\d\dT/);
+});
+
+test('applePayStateFrom then applePayRetryDue: a refusal waits 6 hours, a registration 24', () => {
+  const refused = applePayStateFrom(POST_403, opts());
+  assert.equal(applePayRetryDue(refused, { now: T0 + HOUR, host: HOST, merchant: MERCHANT, trigger: 'checkout' }), false);
+  assert.equal(applePayRetryDue(refused, { now: T0 + 6 * HOUR, host: HOST, merchant: MERCHANT, trigger: 'checkout' }), true);
+  const registered = applePayStateFrom(THERE, opts());
+  assert.equal(applePayRetryDue(registered, { now: T0 + 23 * HOUR, host: HOST, merchant: MERCHANT, trigger: 'golive_state' }), false);
+  assert.equal(applePayRetryDue(registered, { now: T0 + 23 * HOUR, host: HOST, merchant: MERCHANT, trigger: 'admin' }), true);
+});
+
+test('registrationLines adds the guidance as a warning, once', () => {
+  const lines = registrationLines({ ...POST_403, guidance: APPLE_PAY_PERMISSION_GUIDANCE });
+  assert.deepEqual(lines, [
+    { tone: 'err', text: `Failed: ${HOST} (403 Forbidden)` },
+    { tone: 'warn', text: APPLE_PAY_PERMISSION_GUIDANCE },
+  ]);
+  // the guidance already said by the error or the note is not repeated
+  const same = "Apple Pay is not switched on for this Adyen account. Ask FranPOS to request it with Adyen's certificate.";
+  assert.deepEqual(registrationLines({ ok: false, error: same, guidance: same }), [{ tone: 'err', text: same }]);
+  assert.deepEqual(registrationLines({ ok: true, added: [HOST], note: `Apple Pay is requested on M but Adyen has not approved it yet. ${same}`, guidance: same }),
+    [{ tone: 'ok', text: `Added: ${HOST}` }, { tone: 'info', text: `Apple Pay is requested on M but Adyen has not approved it yet. ${same}` }]);
+});
+
+// ── THE TWO COPIES AGREE (29 Sep 2026) ───────────────────────────────────────
+// adyen-terminal-admin runs _shared/adyenOrigins.ts; Node strips its types
+// natively from 23.6, an older Node skips this one test instead of failing.
+const TS_MIRROR = '../../../supabase/functions/_shared/adyenOrigins.ts';
+test('TS mirror: the storefront, throttle, guidance and state helpers answer exactly as the JS copy', async (t) => {
+  let ts;
+  try { ts = await import(TS_MIRROR); }
+  catch (e) { t.skip(`this node cannot import the .ts mirror here (${e?.code || e?.message})`); return; }
+  for (const k of ['SERVOS_APEX', 'SERVOS_DEV_ROOT', 'APPLE_PAY_RETRY_MS', 'APPLE_PAY_RECHECK_MS', 'APPLE_PAY_CLOCK_SKEW_MS', 'APPLE_PAY_STATE_PREFIX', 'APPLE_PAY_PERMISSION_GUIDANCE', 'APPLE_PAY_GUIDANCE_MAX']) {
+    assert.deepEqual(ts[k], { SERVOS_APEX, SERVOS_DEV_ROOT, APPLE_PAY_RETRY_MS, APPLE_PAY_RECHECK_MS, APPLE_PAY_CLOCK_SKEW_MS, APPLE_PAY_STATE_PREFIX, APPLE_PAY_PERMISSION_GUIDANCE, APPLE_PAY_GUIDANCE_MAX }[k], k);
+  }
+  assert.deepEqual([...ts.APPLE_PAY_MANUAL_TRIGGERS], [...APPLE_PAY_MANUAL_TRIGGERS]);
+  assert.deepEqual([...ts.STATIC_WEB_ORIGINS], [...STATIC_WEB_ORIGINS]);
+  const storefronts = [
+    { slug: 'coffee-boy-leeds', environment: 'live' }, { slug: 'coffee-boy-leeds', environment: 'test' }, { slug: 'coffee-boy-leeds' },
+    { slug: 'coffee-boy-leeds', environment: 'live', customDomain: 'https://Order.CoffeeBoy.co.uk/' },
+    { slug: 'coffee-boy-leeds', environment: 'test', customDomain: 'order.coffeeboy.co.uk' },
+    { slug: 'ab', environment: 'live' }, { slug: null, customDomain: 'order.coffeeboy.co.uk' }, {},
+  ];
+  const held = { domains: ['coffee-boy-leeds.serv-os.app', 'x.dev.serv-os.app'] };
+  for (const sf of storefronts) {
+    assert.deepEqual(ts.buildStorefrontDomains(sf), buildStorefrontDomains(sf), JSON.stringify(sf));
+    assert.equal(ts.storefrontHostFor(sf), storefrontHostFor(sf), JSON.stringify(sf));
+    assert.deepEqual(ts.applePayDomainsPlan(held, sf), applePayDomainsPlan(held, sf), JSON.stringify(sf));
+  }
+  for (const [env, id] of [['live', 'L1'], ['TEST', 'L2'], ['x', 'L3'], ['live', ''], [null, null]]) assert.equal(ts.applePayStateKey(env, id), applePayStateKey(env, id));
+  const answers = [LIST_403, POST_403, POST_422, NOT_REQUESTED, STORE_SCOPED, NO_STOREFRONT, TIMEOUT, ADDED, THERE, PENDING, null, {}, { ok: false, code: 'read_failed', message: 'z'.repeat(300) }, { read: true, registered: false, missing: [HOST] }];
+  for (const a of answers) {
+    const label = JSON.stringify(a)?.slice(0, 80);
+    assert.equal(ts.applePayGuidance(a), applePayGuidance(a), label);
+    assert.equal(ts.isPermissionRefusal(a), isPermissionRefusal(a), label);
+    assert.equal(ts.applePayAnswerCode(a), applePayAnswerCode(a), label);
+    for (const previous of [null, { failures: 2 }]) {
+      for (const host of [HOST, '']) {
+        const o = { trigger: 'checkout', host, now: T0, previous };
+        assert.deepEqual(ts.applePayStateFrom(a, o), applePayStateFrom(a, o), label);
+      }
+    }
+  }
+  for (const d of [{ errorCode: '00_403' }, { errorCode: 7 }, {}, null]) assert.equal(ts.adyenErrorCode(d), adyenErrorCode(d));
+  const states = [null, row(), row({ registered: true }), row({ checkedAt: 'bad' }), row({ checkedAt: new Date(T0 + HOUR).toISOString() }), row({ paymentMethodId: 'PM1' })];
+  for (const st of states) {
+    for (const at of [T0 + 1000, T0 + 6 * HOUR, T0 + 24 * HOUR]) {
+      for (const trigger of ['checkout', 'golive_state', 'admin', 'go_live', 'adyen_link']) {
+        for (const host of [HOST, 'other.serv-os.app']) {
+          for (const paymentMethodId of [undefined, 'PM1', 'PM2']) {
+            const o = { now: at, host, merchant: MERCHANT, trigger, paymentMethodId };
+            assert.equal(ts.applePayRetryDue(st, o), applePayRetryDue(st, o), JSON.stringify({ st, o }));
+          }
+        }
+      }
+    }
+  }
+  assert.equal(ts.clipText('abcdefghij', 5), clipText('abcdefghij', 5));
+});
+
+// ── THE GO LIVE SCREEN'S OWN APPLE PAY WRITES (29 Sep 2026 review) ───────────
+// Source pins on adyen-terminal-admin golive_state: it registers by itself
+// only what the checkout registers, a probe that threw is "could not check",
+// and a registered read brings a kept refusal up to date.
+test('golive_state: automatic registration only on the checkout\'s own store and method', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ADMIN = readFileSync(new URL('../../../supabase/functions/adyen-terminal-admin/index.ts', import.meta.url), 'utf8');
+  const block = ADMIN.slice(ADMIN.indexOf("if (action === 'golive_state')"), ADMIN.indexOf('── step 5, Card rates and payouts'));
+  assert.ok(block.length > 0);
+  assert.match(block, /const probeIsCheckouts = targetEnv === env && !merchantOverride && !pickedStoreId && storeIdNow === rowStoreId;/);
+  assert.match(block, /if \(env === 'live' && probeIsCheckouts && a\.read === true && !!a\.paymentMethodId && probeMissing > 0\)/);
+  // the row's store, never the screen's pick, and the method just read
+  assert.match(block, /ensureApplePayDomains\(targetCfg, merchantConfigured, rowStoreId, 'golive_state', storefront, String\(a\.paymentMethodId\)\)/);
+  assert.doesNotMatch(block, /ensureApplePayDomains\([^)]*storeIdNow/);
+  // a probe that threw is registered false and read false, with a code
+  const probeCatch = block.slice(block.indexOf('const failedRead = {'), block.indexOf('return { ...failedRead'));
+  assert.match(probeCatch, /registered: false, read: false/);
+  assert.match(probeCatch, /code: \/did not answer\/i\.test\(msg\) \? 'timeout' : 'read_failed'/);
+  // a registered read refreshes a kept "no", on the checkout's own method only
+  assert.match(block, /if \(probeIsCheckouts && a\.read === true && a\.registered === true && kept\.ok && kept\.state && kept\.state\.registered !== true\)/);
+  // ensure passes the method on to the throttle
+  assert.match(ADMIN, /applePayRetryDue\(prev\.state, \{ now: Date\.now\(\), host, merchant: regMerchant, trigger, paymentMethodId \}\)/);
 });
