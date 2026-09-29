@@ -1064,7 +1064,10 @@ export interface GoliveStateInput {
   merchantMismatch?: unknown;
   readers?: unknown;
   origins?: { registered?: unknown } | null;
-  applePay?: { verification?: unknown } | null;
+  // The Apple Pay read (29 Sep 2026): registered, read (the list AND the
+  // domains were read), missing, code, guidance, host, lastAttempt (the kept
+  // row), environment. See applePayReadiness.
+  applePay?: { verification?: unknown; registered?: unknown; read?: unknown; missing?: unknown; code?: unknown; guidance?: unknown; host?: unknown; lastAttempt?: unknown; environment?: unknown } | null;
   // The venue row on the environment the flow looks at ({ store_id, ... }, {}
   // for no row yet), null or absent when the flow looks at the other one.
   row?: unknown;
@@ -1909,6 +1912,50 @@ export function planFingerprint(plan: unknown): string {
 // does not name yet (link_all, 10 Sep 2026): one click saves every id.
 export const DETAILS_NOT_SAVED_DETAIL = 'Adyen holds the venue’s details, they are not saved on the venue yet.';
 
+// ── APPLE PAY ON THE GO LIVE STEP (29 Sep 2026, v5.11.17) ───────────────────
+// Step 4 used to read done on the web origins alone, so Coffee Boy's screen
+// said done while Adyen had refused every shop address for Apple Pay and the
+// sheet closed at once. It now asks applePayReadiness, which reads
+// golive_state's applePay block ({ registered, read, missing, code, guidance,
+// host, verification, lastAttempt, environment }):
+//   registered true            done, the verification hint kept
+//   registered not given       done (not read, or an older caller)
+//   no_storefront              done, nothing to register yet
+//   apple_pay_not_requested    done, the checkout offers cards only
+//   read false                 attention: ServOS cannot check it
+//   registered false           attention: Apple Pay will not open yet
+// Both attention cases carry register_apple_pay_domains, and the hint is the
+// last attempt's guidance for this host, else the read's, else the host. A
+// block read on another environment than live changes nothing here.
+export const APPLE_PAY_NOT_READY_DETAIL = 'Cards work. Apple Pay will not open on the online shop yet.';
+export const APPLE_PAY_UNKNOWN_DETAIL = 'Cards work. ServOS cannot check Apple Pay on this venue.';
+export interface ApplePayReadiness { ready: boolean; hint: string | null; detail?: string; action?: string }
+// A hint the step can carry: 120 characters at most, no dash, no Adyen id.
+const plainApplePayHint = (v: unknown): string => {
+  const t = str(v);
+  if (!t || t.length > 120 || /[\u2013\u2014]/.test(t) || /\b(AH|ST|BA|LE|SI|SC|SWPC|PM)[0-9A-Z]{10,}\b/.test(t)) return '';
+  return t;
+};
+export function applePayReadiness(applePay: unknown): ApplePayReadiness {
+  const a: Dict = isObj(applePay) ? applePay : {};
+  const v = lower(a.verification);
+  const verificationHint = v && v !== 'valid' ? `Apple Pay is ${v} at Adyen.` : null;
+  const code = lower(a.code);
+  if (str(a.environment) && lower(a.environment) !== 'live') return { ready: true, hint: verificationHint };
+  if (code === 'no_storefront') return { ready: true, hint: 'Apple Pay has nothing to register until the venue has an online address.' };
+  if (code === 'apple_pay_not_requested') return { ready: true, hint: 'Apple Pay is not switched on at Adyen, so the online shop offers cards only.' };
+  if (a.registered !== false) return { ready: true, hint: verificationHint };
+  const host = str(a.host) || (Array.isArray(a.missing) ? str((a.missing as unknown[])[0]) : '');
+  const last: Dict | null = isObj(a.lastAttempt) ? a.lastAttempt : null;
+  const lastForHost = last && last.registered !== true && (!host || !str(last.host) || lower(last.host) === lower(host)) ? last : null;
+  const hint = plainApplePayHint(lastForHost ? lastForHost.guidance : '')
+    || plainApplePayHint(a.guidance)
+    || plainApplePayHint(host ? `Not registered at Adyen: ${host}.` : '')
+    || 'Not registered at Adyen yet.';
+  const unknown = a.read === false && code !== 'apple_pay_store_scoped';
+  return { ready: false, detail: unknown ? APPLE_PAY_UNKNOWN_DETAIL : APPLE_PAY_NOT_READY_DETAIL, action: 'register_apple_pay_domains', hint };
+}
+
 // The business accounts could not be searched because the Adyen platform
 // name for this environment and region is not known yet (10 Sep 2026). Never
 // "no business account": nothing was searched. The step carries
@@ -2328,7 +2375,11 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   else if (env === 'live' && storeReady && !originsOk) {
     out.push(step('go_live', { state: 'attention', detail: 'Real cards are on. Online checkout still needs its web addresses.', action: 'register_origins', hint: 'One click adds them.' }));
   } else if (env === 'live' && storeReady) {
-    out.push(step('go_live', { state: 'done', detail: `${str(venue.name) || 'This venue'} takes real cards.`, hint: str(applePay.verification) && lower(applePay.verification) !== 'valid' ? `Apple Pay is ${lower(applePay.verification)} at Adyen.` : null }));
+    // Done only when Apple Pay is ready too (applePayReadiness, 29 Sep 2026).
+    const ap = applePayReadiness(applePay);
+    out.push(ap.ready
+      ? step('go_live', { state: 'done', detail: `${str(venue.name) || 'This venue'} takes real cards.`, hint: ap.hint })
+      : step('go_live', { state: 'attention', detail: ap.detail || APPLE_PAY_NOT_READY_DETAIL, action: ap.action || 'register_apple_pay_domains', hint: ap.hint }));
   } else if (env === 'live' && storeActive && !mismatch && !storeSaved) {
     // Live, the store is fine at Adyen, and the venue row does not name it:
     // a card names a store the venue has not been told about. Step 3 saves it.
