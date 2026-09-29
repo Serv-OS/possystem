@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.11',
+    date: '29 Sep 2026',
+    items: [
+      "Till and phone till discounts: each venue now shows only the discounts set up for it in Back Office, under Discounts. The six built in starter discounts (Staff meal, Staff drinks, Loyalty 10%, NHS / Blue Light, Happy hour 20%, Comp) no longer appear at a venue that has none of its own; Huddersfield showed a Happy hour nobody had set up. A venue with none shows \"No discounts set up for this venue\", and staff can still enter a custom % or £ amount on the till.",
+      "Phone till: a £ discount (for example Reusable cup £0.30) shows as £0.30 off, not \"0.3%\". It was always applied as £.",
+    ],
+  },
+  {
     v: '5.11.10',
     date: '28 Sep 2026',
     items: [
