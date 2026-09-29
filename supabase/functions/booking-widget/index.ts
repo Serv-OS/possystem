@@ -62,6 +62,8 @@ import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadB
 // GUEST PRE ORDER CHOICES (10 Sep 2026): sizes and options on a pick are
 // validated here against the dish's real groups, never trusted from the page.
 import { sanitiseChoice, optionGroupIdsFor, matchChoice, MAX_CHOICE_NOTE } from '../_shared/preorderChoices.js';
+import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -176,13 +178,10 @@ async function detailsIdempotencyKey(reference: string, details: unknown): Promi
 // so the challenge runs inside the Drop-in (same list as adyen-checkout).
 const NO_NATIVE_3DS_TYPES = ['applepay'];
 
-const normPhone = (raw: string) => {
-  const d = String(raw || '').replace(/[^\d+]/g, '');
-  if (d.startsWith('+')) return d;
-  if (d.startsWith('07') && d.length === 11) return '+44' + d.slice(1);
-  if (d.startsWith('44')) return '+' + d;
-  return d.length >= 7 ? d : null;
-};
+// 29 Sep 2026: the guest's number is the ONE phone match key (_shared/phoneKey.js) in the venue's
+// region (its currency): '07931 129015' is '+447931129015', and in a US venue '(650) 555-1234' is
+// '+16505551234'. Fewer than 7 digits is no number.
+const normPhone = (raw: string, region: string) => phoneMatchKey(String(raw || ''), region);
 
 // "Today" is the VENUE's today, never the server's. The fn runs in UTC; a UK
 // guest booking at 11pm BST was getting date_out_of_range because UTC had
@@ -231,7 +230,7 @@ async function loadVenue(locationId: string) {
   // The rules read is checked (10 Sep 2026): a failed read used to look like
   // "no rules", which the book path read as "nothing due".
   const [{ data: loc }, { data: rulesRow, error: rulesError }, { data: floor }, { data: pkgs }, { data: choiceLines }] = await Promise.all([
-    db.from('locations').select('id, org_id, name, timezone').eq('id', locationId).maybeSingle(),
+    db.from('locations').select('id, org_id, name, timezone, currency').eq('id', locationId).maybeSingle(),
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
     db.from('packages').select('*').eq('location_id', locationId).eq('is_active', true).order('sort_order'),
@@ -648,7 +647,8 @@ Deno.serve(async (req) => {
     if (action === 'book') {
       const time = String(body.time || '');
       const name = String(body.name || '').trim().slice(0, 80);
-      const phone = normPhone(String(body.phone || ''));
+      const phoneRegion = phoneRegionFromCurrency((venue.loc as { currency?: string }).currency);
+      const phone = normPhone(String(body.phone || ''), phoneRegion);
       if (!/^\d{2}:\d{2}$/.test(time) || !name || !phone) {
         return json({ ok: false, error: 'name, valid mobile and time required' }, 400);
       }
@@ -719,9 +719,10 @@ Deno.serve(async (req) => {
       const email = String(body.email || '').trim().toLowerCase() || null;
       let customerId: string | null = null;
       let allergens: string[] = [];
-      const { data: existing } = await db.from('customers')
-        .select('id, name, email, allergens')
-        .eq('org_id', venue.loc.org_id).eq('phone', phone).is('deleted_at', null).maybeSingle();
+      // by the key, and every shape an older build or an import stored the number in
+      const { data: existing } = await readCustomerByPhone(db, {
+        orgId: venue.loc.org_id, phone: String(body.phone || ''), region: phoneRegion, cols: 'id, name, email, allergens',
+      });
       if (existing) {
         customerId = existing.id;
         allergens = existing.allergens || [];
@@ -731,7 +732,7 @@ Deno.serve(async (req) => {
         if (Object.keys(patch).length) await db.from('customers').update(patch).eq('id', existing.id);
       } else {
         const { data: created } = await db.from('customers')
-          .insert({ org_id: venue.loc.org_id, name, phone, phone_raw: String(body.phone || ''), email, source: 'booking_widget' })
+          .insert({ org_id: venue.loc.org_id, name, phone, phone_raw: phoneRawText(body.phone) || phone, email, source: 'booking_widget' })
           .select('id').maybeSingle();
         customerId = created?.id || null;
       }

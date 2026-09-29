@@ -113,9 +113,17 @@ test('exact email, case aside: _ % and * match only themselves (safeguard 2)', (
 });
 
 test('the number in the forms the till and the imports store it, safe inside an or() filter', () => {
-  assert.deepEqual(phoneVariants(PHONE, '07415 748167'), [PHONE, '07415748167']);
-  assert.deepEqual(phoneVariants('+14155550123', '(415) 555-0123'), ['+14155550123', '4155550123']);
-  for (const v of phoneVariants(PHONE, '07415,748167)')) assert.match(v, /^\+?\d+$/);
+  // 29 Sep 2026: the stored shapes of the one phone match key that are provably this number: 00
+  // for the + anywhere, and in a UK venue the national form and 44 and the rest
+  assert.deepEqual(phoneVariants(PHONE, '07415 748167', 'GB'), [PHONE, '00447415748167', '004407415748167', '07415748167', '447415748167']);
+  // a US venue never reads a stored bare 10 digit number as American (a UK number stored without
+  // its 0 looks the same, 29 Sep 2026 review)
+  assert.deepEqual(phoneVariants('+14155550123', '(415) 555-0123', 'US'), ['+14155550123', '0014155550123']);
+  // a region we do not know: the key's 00 forms and the typed number's own key (its digits),
+  // never a guessed country
+  assert.deepEqual(phoneVariants(PHONE, '07415 748167'), [PHONE, '00447415748167', '004407415748167', '07415748167']);
+  for (const v of phoneVariants(PHONE, '07415,748167)', 'GB')) assert.match(v, /^\+?\d+$/);
+  assert.deepEqual(phoneVariants('', '123'), []);
   assert.equal(holderPhone(null, PHONE), 'none');
   assert.equal(holderPhone({ phone: '+44 (0) 7415 748167' }, PHONE), 'saved');
 });

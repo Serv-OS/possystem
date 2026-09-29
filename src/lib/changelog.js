@@ -16,6 +16,13 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.16',
+    date: '29 Sep 2026',
+    items: [
+      "Customers: one phone rule everywhere, so 07931 129015, 07931129015 and +44 7931 129015 are the same customer. An online or QR order from an imported loyalty member made them a second customer record (Huddersfield, 29 Sep), because the number was compared as written. The same rule now applies to the till's customer search and save, WiFi sign up, loyalty login and balance, gift card purchases, table bookings, delivery apps (HubRise) and the customer importer. US numbers are matched the same way with and without +1.",
+    ],
+  },
+  {
     v: '5.11.15',
     date: '29 Sep 2026',
     items: [
