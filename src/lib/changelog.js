@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.14',
+    date: '29 Sep 2026',
+    items: [
+      "Guest WiFi: a fixed front door for every venue. UniFi now points at one fixed address (37.16.1.154) and each venue gets its own secure address, <venue>.wifi.serv-os.app, which carries the sign up page and everything it needs. Before, the page came from our web host, whose address keeps changing, so UniFi blocked it at random: phones showed \"Cannot verify server identity\" or nothing popped up (Huddersfield, 29 Sep).",
+      "Back Office, Customers, WiFi: the setup guide follows UniFi's own screens step by step, with a Copy button on every value. External Portal Server 37.16.1.154, Domain <venue>.wifi.serv-os.app, and just three Pre-Authorization Allowances. It warns not to use Post-Authorization Restrictions and explains the \"user is not the owner of this host\" key error.",
+    ],
+  },
+  {
     v: '5.11.13',
     date: '29 Sep 2026',
     items: [

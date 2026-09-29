@@ -10,7 +10,7 @@
 // Mirrors the Review Manager surface pattern (branded light card, venue online_branding).
 
 import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, viaWifiPortal } from '../lib/supabase';
 
 const FALLBACK_ACCENT = '#15C36B';
 
@@ -102,8 +102,10 @@ export default function WifiSurface({ location }) {
 
   const fields = cfg?.fields || DEFAULT_FIELDS;
   const accent = cfg?.accent_color || brand.accent_color || brand.primary_color || FALLBACK_ACCENT;
-  const logo = cfg?.logo_url || brand.logo_url || null;
-  const bg = cfg?.bg_image_url || null;
+  // On the WiFi front door (<slug>.wifi.serv-os.app) the phone is not online yet and can only reach
+  // the relay, so a Supabase storage image has to come through it too. Unchanged on other hosts.
+  const logo = viaWifiPortal(cfg?.logo_url || brand.logo_url || null);
+  const bg = viaWifiPortal(cfg?.bg_image_url || null);
   const ageGate = cfg?.age_gate !== false;
   const age = ageFrom(form.dob);
   const isMinor = ageGate && age != null && age < 18;
