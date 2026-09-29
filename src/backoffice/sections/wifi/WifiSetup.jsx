@@ -34,6 +34,11 @@ const S = {
   set: { fontSize: 11, color: 'var(--grn)', fontWeight: 700, marginLeft: 6 },
 };
 
+// Our web host's IPv4 (Vercel), which every <venue>.serv-os.app resolves to on 29 Sep 2026.
+// If guests stop reaching the portal, check `dig +short A <venue>.serv-os.app` against this.
+const WEB_HOST_IP = '216.150.16.129';
+const PREAUTH_HOSTS = [WEB_HOST_IP, '216.150.16.193', 'tbetcegmszzotrwdtqhi.supabase.co', 'yhzjgyrkyjabvhblqxzu.supabase.co', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+
 const connectorUrl = (consoleId) => `https://api.ui.com/v1/connector/consoles/${String(consoleId || '').trim()}`;
 
 const BADGE = {
@@ -56,6 +61,11 @@ export default function WifiSetup() {
   const [conn, setConn] = useState({ state: 'unset' }); // unset | checking | connected | down
 
   const portalUrl = useMemo(() => (slug ? customerUrl(slug, '/wifi') : 'https://<your-venue>.serv-os.app/wifi'), [slug]);
+  // UniFi's External Portal Server box takes an IPv4 ONLY, and its allow-list takes no wildcards
+  // (29 Sep 2026, Huddersfield). The venue host answers UniFi's /guest/s/<site>/ redirect itself
+  // (customerUrl.js routes /guest/* to the WiFi page), so UniFi gets our web host's IP plus
+  // "Redirect using hostname" = the venue host. No bridge server.
+  const portalHost = useMemo(() => { try { return new URL(portalUrl).host; } catch { return '<your-venue>.serv-os.app'; } }, [portalUrl]);
 
   const load = async (id) => {
     const { data } = await supabase.functions.invoke('wifi-admin', { body: { action: 'get_config', ops_location_id: id } });
@@ -175,8 +185,8 @@ export default function WifiSetup() {
       <div style={S.card}>
         <h2 style={S.h2}>Set it up in UniFi (one time)</h2>
         <div style={S.step}><span style={S.num}>1</span><span>In <b>UniFi Network → Settings → WiFi</b>, create a <b>Guest</b> network and turn on <b>Hotspot / Captive Portal</b>.</span></div>
-        <div style={S.step}><span style={S.num}>2</span><span>Set the portal type to <b>External portal server</b> and point it at:<br /><span style={S.code}>{portalUrl}</span></span></div>
-        <div style={S.step}><span style={S.num}>3</span><span>Add these to the <b>walled garden / pre-authorization</b> allow-list so guests can load the page before signing in:<br /><span style={S.code}>*.serv-os.app</span><span style={S.code}>tbetcegmszzotrwdtqhi.supabase.co</span><span style={S.code}>fonts.googleapis.com</span><span style={S.code}>fonts.gstatic.com</span></span></div>
+        <div style={S.step}><span style={S.num}>2</span><span>Set the portal type to <b>External portal server</b> and enter this IP address (UniFi only accepts an IP there, not a web address):<br /><span style={S.code}>{WEB_HOST_IP}</span><br />Then turn on <b>Redirect using hostname</b> and enter:<br /><span style={S.code}>{portalHost}</span></span></div>
+        <div style={S.step}><span style={S.num}>3</span><span>Add each of these to the <b>pre-authorization</b> allow-list, one per entry (UniFi does not accept <b>*</b>), so guests can load the page before signing in:<br />{[portalHost, ...PREAUTH_HOSTS].map((h) => <span key={h} style={S.code}>{h}</span>)}</span></div>
         <div style={S.step}><span style={S.num}>4</span><span>At <b>unifi.ui.com → API Keys</b>, click <b>Create API Key</b> and copy it → paste above.</span></div>
         <div style={S.step}><span style={S.num}>5</span><span>Copy your <b>Console ID</b> from the unifi.ui.com address bar (<span style={S.code}>/consoles/&lt;ID&gt;/network</span>) → paste above.</span></div>
         <div style={S.step}><span style={S.num}>6</span><span><b>Save &amp; connect</b> → the status badge turns <b style={{ color: 'var(--grn)' }}>green</b> when it’s working.</span></div>

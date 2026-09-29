@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.12',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi setup guide: corrected. UniFi's External Portal Server box only accepts an IP address, so the guide now gives the IP to enter and says to turn on Redirect using hostname with the venue's own address (for example coffee-boy-huddersfield.serv-os.app). The allow-list step lists each address to add one by one, because UniFi does not accept *.serv-os.app.",
+    ],
+  },
+  {
     v: '5.11.11',
     date: '29 Sep 2026',
     items: [
