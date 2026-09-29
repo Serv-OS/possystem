@@ -69,7 +69,8 @@ import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
 import { searchPhonelessMembers, linkOrderCustomer, linkRefused } from '../lib/customerLinkRun.js';
 import { phonelessResults } from '../lib/customerLink.js';
-import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { fetchCustomerByPhone, normalisePhone as phoneKeyOfVenue, activePhoneRegion } from '../lib/customerLookup';
+import { phoneVariants } from '../lib/customerAutoJoin.js';
 
 // Database fence stage 1 (money functions): loyalty-redeem, loyalty-earn and loyalty-refund accept
 // a till or kiosk only when its session is BOUND to its devices row at this venue (the device arm
@@ -4113,16 +4114,10 @@ export const useStore = create((set, get) => ({
   // ── Customers (v4.6.62) ──────────────────────────────────────
   // Phone is the primary identifier (normalised to E.164). DB-backed via Supabase.
 
-  // Normalise UK-ish phone strings into E.164. Falls back to digits-only if format unknown.
-  _normalisePhone: (raw) => {
-    if (!raw) return null;
-    const digits = String(raw).replace(/[^\d+]/g, '');
-    if (!digits) return null;
-    if (digits.startsWith('+')) return digits;
-    if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-    if (digits.startsWith('44')) return '+' + digits;
-    return digits;
-  },
+  // The one phone match key (29 Sep 2026, supabase/functions/_shared/phoneKey.js) in this venue's
+  // region: E.164 when the number can be read ('07931 129015' is '+447931129015'), its digits
+  // otherwise, null under 7 digits. The database finds customers by the same key.
+  _normalisePhone: (raw) => phoneKeyOfVenue(raw),
 
   // Synchronous filter against the session cache. Used by CustomerModal alongside the live
   // Supabase search for instant feedback.
@@ -4205,7 +4200,8 @@ export const useStore = create((set, get) => ({
       if (enriched.length === 0 && safe.length >= 6 && orgId) {
         const phoneN = get()._normalisePhone(safe);
         const phoneFilters = [safe];
-        if (phoneN && phoneN !== safe) phoneFilters.push(phoneN);
+        // 29 Sep 2026: every shape the number may be stored in (the key, the national form, digits)
+        for (const v of phoneVariants(phoneN, safe, activePhoneRegion())) if (!phoneFilters.includes(v)) phoneFilters.push(v);
         const orFilter = phoneFilters.map(p => `phone.eq.${p},phone_raw.eq.${p}`).join(',');
         const { data: fallback } = await supabase
           .from('customers')
@@ -4289,7 +4285,7 @@ export const useStore = create((set, get) => ({
       // left off and the rest saved, never the whole save lost (Ela Stettner's "DB error"). An email
       // never finds a profile here: order close, the Orders Hub and every background save stay
       // phone only. Only the two customer forms join by email (autoJoinCustomerByEmail below).
-      return await upsertCustomerRow({ db: supabase, orgId, c, phoneN });
+      return await upsertCustomerRow({ db: supabase, orgId, c, phoneN, region: activePhoneRegion() });
     } catch (err) {
       console.warn('[upsertCustomer] failed:', err?.message || err);
       return null;
@@ -4325,7 +4321,7 @@ export const useStore = create((set, get) => ({
       const phoneN = get()._normalisePhone(customer?.phone);
       if (!orgId || !phoneN) return none;
       return await autoJoinCustomer({
-        customer, openedWithEmail, phoneN, db: supabase, orgId, locId,
+        customer, openedWithEmail, phoneN, db: supabase, orgId, locId, region: activePhoneRegion(),
         postMerge: postCustomerMerge,
         sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
       });
@@ -4364,7 +4360,7 @@ export const useStore = create((set, get) => ({
       if (!orgId) return linkRefused('no_venue');
       const phoneN = get()._normalisePhone(customer?.phone);
       return await linkOrderCustomer({
-        customer, member, phoneN, db: supabase, orgId, locId,
+        customer, member, phoneN, db: supabase, orgId, locId, region: activePhoneRegion(),
         postMerge: postCustomerMerge,
         sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
         lookup: (phone) => fetchCustomerByPhone(phone, locId),

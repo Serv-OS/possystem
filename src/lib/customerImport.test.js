@@ -47,6 +47,7 @@ import {
   verdictsByRow,
   summarise,
 } from './customerImport.js';
+import { phoneMatchKey } from '../../supabase/functions/_shared/phoneKey.js';
 
 // Every test pins the day, so nothing here goes red next April. The country is
 // the COMPANY's (see countryFromVenue): Coffee Boy is GB.
@@ -273,13 +274,17 @@ test('a UK phone comes back in the shape the whole app looks customers up by', (
   }
 });
 
-test('the phone we write is the phone the APP writes, character for character', () => {
-  // The three live copies of the rule hand a landline back as BARE DIGITS.
+test('the phone we write is the phone the APP keys, character for character', () => {
+  // 29 Sep 2026: the till, the online orders and the database key a number with
+  // the one phone match key, so a landline is E.164 like a mobile. The old app
+  // rule handed a landline back as BARE DIGITS; that shape is still looked under.
   assert.equal(appPhone('01614960000'), '01614960000');
-  assert.equal(writtenPhone('0161 496 0000', GB), '01614960000', 'a landline is stored the way the till stores it');
-  assert.equal(writtenPhone('0113 496 0123', GB), '01134960123');
+  assert.equal(writtenPhone('0161 496 0000', GB), '+441614960000', 'a landline is stored the way the till keys it');
+  assert.equal(writtenPhone('0113 496 0123', GB), '+441134960123');
+  assert.ok(phoneKeys('0161 496 0000', GB).includes('01614960000'), 'and found where an earlier import wrote it');
   for (const typed of ['07700900123', '07700 900123', '+44 7700 900123', '447700900123', '0161 496 0000', '01614960000', '+353 86 123 4567']) {
-    assert.equal(writtenPhone(typed, GB), appPhone(writtenPhone(typed, GB)), 'the importer writes a value the app rule leaves alone: ' + typed);
+    assert.equal(writtenPhone(typed, GB), phoneMatchKey(typed, 'GB'), 'the importer writes the till\'s key: ' + typed);
+    assert.equal(writtenPhone(typed, GB), phoneMatchKey(writtenPhone(typed, GB), 'GB'), 'a value the key leaves alone: ' + typed);
   }
 });
 
@@ -288,7 +293,7 @@ test('A: a GB file puts back the 0 a spreadsheet ate, and only a GB file', () =>
   assert.equal(r.phone, '+447700900123', 'Peter: just insert a 0 in front of the number');
   assert.equal(r.assumed, true, 'the screen must be able to say how many it did this to');
   assert.equal(readPhone('07700900123', GB).assumed, false);
-  assert.equal(writtenPhone('1614960000', GB), '01614960000', 'a UK landline too');
+  assert.equal(writtenPhone('1614960000', GB), '+441614960000', 'a UK landline too');
 
   // Anywhere else, or when we do not know, the cell goes through unchanged.
   for (const c of [US, NONE]) {
@@ -302,8 +307,8 @@ test('A: a US number with a 7xx area code is NEVER written as somebody\'s UK mob
   for (const cell of ['7001234567', '7185550123', '7735550188', '(773) 555-0188']) {
     const written = writtenPhone(cell, US);
     assert.ok(written && !written.startsWith('+44'), cell + ' became ' + written);
-    assert.equal(written, appPhone(cell), 'the till would write exactly this for the same cell');
-    assert.equal(writtenPhone(cell, NONE), appPhone(cell));
+    assert.equal(written, phoneMatchKey(cell, 'US'), 'the till in a US venue keys exactly this for the same cell');
+    assert.equal(writtenPhone(cell, NONE), phoneMatchKey(cell, ''));
   }
 });
 
@@ -311,9 +316,10 @@ test('A: a leading 44 is not the UK code outside a GB company, and is not refuse
   // NANP area codes 440 to 449 are Ohio and friends, not Britain.
   const r = readPhone('4405551234', US);
   assert.equal(r.ok, true, 'a real US number is not too short');
-  assert.equal(r.phone, appPhone('4405551234'), 'written exactly as the till writes it');
+  assert.equal(r.phone, '+14405551234', 'written as the till in a US venue keys it: Ohio, +1');
   assert.equal(r.e164, null, 'no UK E.164 key is made up for it');
-  assert.deepEqual(phoneKeys('4405551234', US), [appPhone('4405551234')]);
+  // the old rule's '+4405551234' (what a US till wrote before 29 Sep 2026) is looked under, never written
+  assert.deepEqual(phoneKeys('4405551234', US), ['+14405551234', appPhone('4405551234')]);
 });
 
 test('A: an E.164 key is built only when the cell had a + or the company is GB and it is a UK shape', () => {
@@ -328,8 +334,9 @@ test('A: an E.164 key is built only when the cell had a + or the company is GB a
 
 test('A: the till would find everybody we write, whatever the country (random cells)', () => {
   // Shape parity, on thousands of cells. For any cell we accept, what we write
-  // is what appPhone gives for that cell, or (GB only) for the cell with its 0
-  // put back, or for the cell with 00 read as + or a (0) after +44 dropped.
+  // is the till's phone match key for that cell, or (GB only) for the cell with
+  // its 0 put back, or for the cell with 00 read as + or a (0) after +44 dropped.
+  // And what an earlier import wrote (appPhone, the same way) is a key we look under.
   let seed = 7;
   const rand = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   const digits = (n) => { let s = ''; for (let i = 0; i < n; i++) s += Math.floor(rand() * 10); return s; };
@@ -341,15 +348,19 @@ test('A: the till would find everybody we write, whatever the country (random ce
       const r = readPhone(cell, c);
       if (!r.ok || !r.phone) continue;
       checked++;
-      const allowed = [appPhone(cell)];
-      if (cell.startsWith('00')) allowed.push(appPhone('+' + cell.slice(2)));
-      if (c === GB) allowed.push(appPhone('0' + cell));
-      if (/^\+440/.test(cell)) allowed.push(appPhone('+44' + cell.slice(4)));
-      assert.ok(allowed.includes(r.phone), JSON.stringify(c) + ' ' + cell + ' wrote ' + r.phone);
-      assert.equal(appPhone(r.phone), r.phone, 'a value the app rule leaves alone');
+      const region = c.country || '';
+      const forms = [cell];
+      if (cell.startsWith('00')) forms.push('+' + cell.slice(2));
+      if (c === GB) forms.push('0' + cell);
+      if (/^\+440/.test(cell)) forms.push('+44' + cell.slice(4));
+      assert.ok(forms.map((f) => phoneMatchKey(f, region)).includes(r.phone), JSON.stringify(c) + ' ' + cell + ' wrote ' + r.phone);
+      assert.ok(forms.map((f) => appPhone(f)).includes(r.old), JSON.stringify(c) + ' ' + cell + ' old ' + r.old);
+      assert.ok(phoneKeys(cell, c).includes(r.old), 'what an earlier import wrote is looked under');
+      if (r.phone.startsWith('+')) assert.equal(phoneMatchKey(r.phone, region), r.phone, 'an E.164 value the key leaves alone');
       if (c !== GB && !cell.startsWith('+') && !cell.startsWith('00')) {
-        assert.equal(r.phone, appPhone(cell), 'outside GB the cell goes through unchanged: ' + cell);
+        assert.equal(r.phone, phoneMatchKey(cell, region), 'outside GB the cell goes to the key unchanged: ' + cell);
         assert.equal(r.e164, null, 'and no E.164 key is invented: ' + cell);
+        assert.ok(!r.phone.startsWith('+44'), 'and no UK number: ' + cell);
       }
     }
   }
@@ -411,7 +422,7 @@ test('H: a phone a spreadsheet turned into a number comes back, a rounded one is
   const rounded = readPhone('7.95441E+09', GB);
   assert.equal(rounded.ok, false, 'the digits are gone, so we never guess them');
   assert.match(rounded.reason, /rounded/);
-  assert.equal(readPhone('1614960000', GB).phone, '01614960000');
+  assert.equal(readPhone('1614960000', GB).phone, '+441614960000');
 });
 
 test('H: dates a spreadsheet wrote day first are read for a GB company', () => {

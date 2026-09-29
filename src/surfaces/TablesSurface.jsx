@@ -7,6 +7,8 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
+import { readCustomerByPhone } from '../../supabase/functions/_shared/customerPhoneRead.js';
+import { activePhoneRegion } from '../lib/customerLookup';
 import { money, currencySymbol } from '../lib/currency';
 import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSectionView } from '../lib/sectionPlan';
 
@@ -1146,9 +1148,11 @@ export default function TablesSurface() {
                 await upsertCustomer({ name: res.name, phone: res.phone });
                 const phoneN = _normalisePhone(res.phone);
                 if (phoneN && _cachedOrgId) {
-                  const { data } = await supabase.from('customers')
-                    .select('id, name, phone, phone_raw, email, allergens, marketing_opt_in, notes')
-                    .eq('org_id', _cachedOrgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle();
+                  // 29 Sep 2026: read back by the one phone match key, under every shape it is stored
+                  const { data } = await readCustomerByPhone(supabase, {
+                    orgId: _cachedOrgId, phone: phoneN, typed: res.phone, region: activePhoneRegion(),
+                    cols: 'id, name, phone, phone_raw, email, allergens, marketing_opt_in, notes',
+                  });
                   if (data) customerObj = data;
                 }
               } catch (err) {

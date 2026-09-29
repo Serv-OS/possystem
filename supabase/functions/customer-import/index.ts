@@ -237,7 +237,7 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
 // email stored in different case) becomes an update instead of a lost person.
 async function reReadOne(orgId: string, row: ImportRow): Promise<ExistingCustomer | null> {
   const phones: string[] = [];
-  for (const v of [row.phone, row.phoneE164]) if (v && phones.indexOf(v) < 0) phones.push(v);
+  for (const v of [row.phone, row.phoneE164, row.phoneOld]) if (v && phones.indexOf(v) < 0) phones.push(v);
   for (const p of phones) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).eq('phone', p).is('deleted_at', null).maybeSingle();

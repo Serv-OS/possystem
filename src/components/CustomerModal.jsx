@@ -6,6 +6,8 @@ import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime
 import AddressAutocomplete from './AddressAutocomplete';
 import { customerInitials } from '../lib/customerInitials';
 import { formStartsAsap } from '../lib/customerFormAsap';
+import { activePhoneRegion } from '../lib/customerLookup';
+import { storedPhoneIs } from '../../supabase/functions/_shared/phoneKey.js';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, showDelayedToast, takeawayCustomerDetails, autoJoinCustomerByEmail } = useStore();
@@ -167,12 +169,16 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     if (phone.trim()) try {
       const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
       const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
+      // 29 Sep 2026: the same number by the one phone match key in this venue ('07931 129015' IS
+      // '+447931129015'; in a US venue '(650) 555-1234' IS '+16505551234'), or written the same.
+      // The stored number is read as a stored number (storedPhoneIs): it may have been typed at
+      // another venue, so a bare 10 digit number is never read as American.
+      const region = activePhoneRegion();
       const match = (live || []).find(c => {
         const cp = (c.phone || '').replace(/[^\d+]/g, '');
         const cr = (c.phone_raw || '').replace(/[^\d+]/g, '');
         return cp === phoneDigits || cr === phoneDigits
-          || (phoneDigits.startsWith('07') && (cp === '+44' + phoneDigits.slice(1) || cr === phoneDigits))
-          || (phoneDigits.startsWith('+44') && (cr === '0' + phoneDigits.slice(3)));
+          || storedPhoneIs(c.phone, phone, region) || storedPhoneIs(c.phone_raw, phone, region);
       });
       if (match) {
         // Use existing profile — operator keeps their typed name/email if they entered something new

@@ -19,6 +19,8 @@
 // opt-in for WiFi); under-18s (DOB age-gate) are captured but never opted in to marketing.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -42,16 +44,10 @@ async function resolveLocation(platformLocationId: string): Promise<{ opsLocatio
   return { opsLocationId: (data.ops_location_id || data.id) as string, companyId: (data.company_id ?? null) as string | null };
 }
 
-// Basic UK-leaning phone normalisation → E.164-ish digits; mirrors the spirit of customerLookup.
-function normalisePhone(raw?: string): string | null {
-  if (!raw) return null;
-  let s = String(raw).replace(/[^\d+]/g, '');
-  if (!s) return null;
-  if (s.startsWith('00')) s = '+' + s.slice(2);
-  if (s.startsWith('0')) s = '+44' + s.slice(1);          // UK national → +44
-  if (!s.startsWith('+') && s.length >= 10) s = '+' + s;
-  return s;
-}
+// 29 Sep 2026: the phone is keyed with the ONE phone match key (_shared/phoneKey.js), in the
+// venue's region (its currency), the same key the till, the online orders and the database use.
+// This function had its own rule: every leading 0 became +44 (in a US venue too) and a bare US
+// number became '+6505551234'. A number with fewer than 7 digits is no phone (as everywhere).
 
 function ageFromDob(dob?: string): number | null {
   if (!dob) return null;
@@ -138,12 +134,13 @@ Deno.serve(async (req) => {
     if (!loc) return json({ error: 'location not found' }, 404);
 
     // org_id (ops) is the customers tenant key.
-    const { data: opsLoc } = await opsAdmin.from('locations').select('org_id').eq('id', loc.opsLocationId).maybeSingle();
+    const { data: opsLoc } = await opsAdmin.from('locations').select('org_id, currency').eq('id', loc.opsLocationId).maybeSingle();
     const orgId = opsLoc?.org_id ?? null;
     if (!orgId) return json({ error: 'location not provisioned' }, 400);
+    const region = phoneRegionFromCurrency(opsLoc?.currency);
 
     const email = body.email ? String(body.email).trim().toLowerCase().slice(0, 200) : null;
-    const phone = normalisePhone(body.phone);
+    const phone = body.phone ? phoneMatchKey(String(body.phone), region) : null;
     const firstName = body.first_name ? String(body.first_name).trim().slice(0, 80) : null;
     const lastName = body.last_name ? String(body.last_name).trim().slice(0, 80) : null;
     const dob = body.dob ? String(body.dob).slice(0, 10) : null;       // YYYY-MM-DD
@@ -164,7 +161,8 @@ Deno.serve(async (req) => {
     // Match by phone first, else by (org_id, lower(email)). Fill blanks; don't clobber.
     let existing: any = null;
     if (phone) {
-      const { data } = await opsAdmin.from('customers').select('*').eq('org_id', orgId).eq('phone', phone).is('deleted_at', null).maybeSingle();
+      // every shape the number may be stored in (an import, an older till); the key's row first
+      const { data } = await readCustomerByPhone(opsAdmin, { orgId, phone: String(body.phone), region, cols: '*' });
       existing = data || null;
     }
     if (!existing && email) {
@@ -176,7 +174,7 @@ Deno.serve(async (req) => {
     if (existing) {
       const patch: Record<string, unknown> = { updated_at: nowIso };
       if (email && !existing.email) patch.email = email;
-      if (phone && !existing.phone) { patch.phone = phone; patch.phone_raw = String(body.phone).slice(0, 40); }
+      if (phone && !existing.phone) { patch.phone = phone; patch.phone_raw = phoneRawText(body.phone); }
       if (firstName && !existing.first_name) patch.first_name = firstName;
       if (lastName && !existing.last_name) patch.last_name = lastName;
       if (fullName && !existing.name) patch.name = fullName;
@@ -191,7 +189,7 @@ Deno.serve(async (req) => {
     } else {
       const { data: ins, error: insErr } = await opsAdmin.from('customers').insert({
         org_id: orgId,
-        email, phone, phone_raw: phone ? String(body.phone).slice(0, 40) : null,
+        email, phone, phone_raw: phone ? phoneRawText(body.phone) : null,
         name: fullName, first_name: firstName, last_name: lastName,
         birthday: dob, is_local: isLocal,
         source: 'wifi', sources: ['wifi'],

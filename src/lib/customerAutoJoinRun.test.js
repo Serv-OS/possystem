@@ -88,6 +88,7 @@ function fakeDb(rows, hooks = {}) {
         return { data: q.single ? out[0] : out, error: null };
       }
       let found = all.filter(match);
+      if (q.sort) found = found.slice().sort(q.sort);
       if (q.lim != null) found = found.slice(0, q.lim);
       if (q.single) return { data: found[0] ? project(found[0]) : null, error: null };
       return { data: found.map(project), error: null };
@@ -95,6 +96,13 @@ function fakeDb(rows, hooks = {}) {
     const b = {
       select(cols) { q.cols = cols || '*'; if (q.op !== 'select') q.returning = true; return b; },
       eq(c, v) { q.desc.push(`eq:${c}`); q.filters.push((r) => r[c] != null && String(r[c]) === String(v)); return b; },
+      in(c, vs) { q.desc.push(`in:${c}`); const set = new Set(vs.map(String)); q.filters.push((r) => r[c] != null && set.has(String(r[c]))); return b; },
+      order(c, { ascending = true } = {}) {
+        q.desc.push(`order:${c}`);
+        const k = (r) => (r[c] == null ? '' : String(r[c]));
+        q.sort = (a, z) => (k(a) === k(z) ? 0 : (k(a) < k(z)) === ascending ? -1 : 1);
+        return b;
+      },
       is(c, v) { q.desc.push(`is:${c}`); q.filters.push((r) => (v === null ? r[c] == null : r[c] === v)); return b; },
       ilike(c, p) { q.desc.push(`ilike:${c}`); const rx = ilikeRx(p); q.filters.push((r) => r[c] != null && rx.test(String(r[c]))); return b; },
       or(expr) {
@@ -341,4 +349,38 @@ test('upsertCustomerRow: a new profile that lost the race for its phone is that 
     before: ({ op, db }) => { if (op === 'insert' && !db.customers.length) db.customers.push({ id: 'first', org_id: ORG, name: '', phone: PHONE, email: null, deleted_at: null, tags: [] }); },
   });
   assert.equal(await upsertCustomerRow({ db: fdb, orgId: ORG, c: typed({ email: '' }), phoneN: PHONE, now: NOW }), 'first');
+});
+
+// ── 29 Sep 2026: the one phone match key ────────────────────────────────────
+// Peter: "I just placed an order online and its registered me again as a customer". The online
+// order stored '07931129015' beside his imported '+447931129015'. The till's save read
+// .eq('phone', key).maybeSingle(), so it never saw the national row, and with both rows present
+// it errored and saved nothing. Now it reads every shape of the number and takes the member.
+
+const PETER = '+447931129015';
+const peterMember = (over = {}) => ({ id: 'peter-member', org_id: ORG, name: 'Peter Roberts', email: 'peter@example.com', phone: PETER, phone_raw: '07931 129015', created_at: '2026-09-21T09:00:00+00:00', ...over });
+const peterDuplicate = (over = {}) => ({ id: 'peter-qr', org_id: ORG, name: '', email: null, phone: '07931129015', phone_raw: '07931129015', created_at: '2026-09-29T11:35:00+00:00', ...over });
+
+test('upsertCustomerRow: the member and the duplicate an older build made: the member, nothing inserted', async () => {
+  const fdb = fakeDb([peterDuplicate(), peterMember()]);
+  const id = await upsertCustomerRow({ db: fdb, orgId: ORG, c: { name: 'Peter', phone: '07931 129015' }, phoneN: PETER, region: 'GB', now: NOW });
+  assert.equal(id, 'peter-member');
+  assert.equal(fdb.db.customers.length, 2, 'no third profile');
+  assert.equal(fdb.log.some((l) => l.op === 'insert'), false);
+});
+
+test('upsertCustomerRow: a number stored the old way (national) is that customer, not a new one', async () => {
+  const fdb = fakeDb([peterDuplicate({ id: 'national-only', name: 'Pete' })]);
+  const id = await upsertCustomerRow({ db: fdb, orgId: ORG, c: { name: 'Peter', phone: '+44 7931 129015' }, phoneN: PETER, region: 'GB', now: NOW });
+  assert.equal(id, 'national-only');
+  assert.equal(fdb.db.customers.length, 1);
+  assert.equal(fdb.row('national-only').phone, '07931129015', 'no row is rewritten');
+});
+
+test('upsertCustomerRow: a new number is stored as the key, phone_raw as typed (trimmed)', async () => {
+  const fdb = fakeDb([]);
+  const id = await upsertCustomerRow({ db: fdb, orgId: ORG, c: { name: 'Hank', phone: ' (650) 555-1234 ' }, phoneN: '+16505551234', region: 'US', now: NOW });
+  assert.ok(id);
+  assert.equal(fdb.row(id).phone, '+16505551234');
+  assert.equal(fdb.row(id).phone_raw, '(650) 555-1234');
 });
