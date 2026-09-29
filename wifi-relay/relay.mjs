@@ -118,6 +118,13 @@ function proxy(req, res, d) {
 
 const server = createServer((req, res) => {
   const d = decideRequest({ method: req.method, host: req.headers.host, url: req.url, cookie: req.headers.cookie, supabase: SUPABASE });
+  // Visit log (29 Sep 2026, Huddersfield "portal does not pop up"): which host and page a guest's
+  // phone reached, so a failed setup shows how far it got. Page only: no query string (UniFi puts
+  // the phone's MAC there), no IP, no headers. Page files and /_sb calls are not logged.
+  const path = String(req.url || '/').split('?')[0];
+  if (d.kind !== 'health' && d.kind !== 'forward' && !/^\/(_sb|assets)\//.test(path)) {
+    console.log(`[visit] ${req.method} ${String(req.headers.host || '-').toLowerCase()} ${path.slice(0, 80)} -> ${d.kind}${d.hint ? ' ' + d.hint : ''}`);
+  }
   switch (d.kind) {
     case 'health': return send(res, 200, { ok: true, service: 'servos-wifi-relay' });
     case 'forward': return forward(req, res);
