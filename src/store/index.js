@@ -6,7 +6,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
-import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
+import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, channelFallbackCentre } from '../lib/productionRouting';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
@@ -821,14 +821,15 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
 // implementation of the rule, and it lives in src/lib/productionRouting.js so node:test
 // can pin it. Production centres are filtered by ORDER TYPE as well as category there.
 
-// catId → parentId, for walking the category hierarchy.
+// catId → parentId, for walking the category hierarchy. The map itself is built by the
+// shared catParentMapOf (lib/productionRouting.js buildCatParentMap), the same one the
+// Back Office Production centres screen uses, so the tree the till routes by and the tree
+// the screen shows are one tree.
 const buildCatParentMap = () => {
   try {
     const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
     const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-    const map = {};
-    cats.forEach(c => { map[c.id] = c.parentId || null; });
-    return map;
+    return catParentMapOf(cats);
   } catch { return {}; }
 };
 
@@ -8260,9 +8261,11 @@ export const useStore = create((set, get) => ({
       // prints at a default centre (first with a printer, else first centre) instead of
       // silently dropping off a MIXED order's tickets (HubRise rule: handle unknown items
       // gracefully). Identity check is safe — same object refs from order.items.
+      // 30 Sep 2026: which centre that is lives in channelFallbackCentre, so the Back Office
+      // Production centres screen can name it ("... send anything no center takes to KDS drinks").
       const unrouted = order.items.filter(it => !Object.values(byCentre).some(arr => arr.includes(it)));
       if (unrouted.length && routingConfig.centres?.length) {
-        const fb = routingConfig.centres.find(c => c.printer?.id) || routingConfig.centres[0];
+        const fb = channelFallbackCentre(routingConfig);
         if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];
       }
 

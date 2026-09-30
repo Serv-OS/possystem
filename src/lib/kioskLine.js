@@ -174,6 +174,13 @@ export function kioskOrderItem(l) {
     // POS expects mods as array of { label, price, groupLabel }
     mods: Array.isArray(l.modsArray) ? l.modsArray : [],
     cat: l.item.cat,
+    // The item's "Also in" categories, as online, QR and catering lines carry them. An Also in
+    // category inside the Primary one decides the production centre (lib/productionRouting.js
+    // routingCategoryOf), and the master till must route this line the same way even before
+    // its menu cache has the row. l.item is the product for a size, so a size carries its
+    // product's, the categories it routes by. Only written when there are any, so a line for
+    // an item without them is exactly what the kiosk always wrote.
+    ...(Array.isArray(l.item.cats) && l.item.cats.length ? { cats: l.item.cats } : {}),
     // KIOSK NEVER HOLDS COURSES. A kiosk order is paid and gone — there is no
     // server to fire course 2, so every line must be produced in one go. Stamped
     // at SOURCE (same three fields online sets, OnlineCheckout.jsx:316-318) so it
