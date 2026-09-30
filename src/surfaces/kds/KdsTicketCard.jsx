@@ -291,6 +291,32 @@ function KitchenNoteEditor({ note, onSave, saving }) {
 }
 
 /**
+ * The void notice. 30 Sep 2026 (Peter, Coffee Boy): a void now reaches the kitchen. The till
+ * flags the voided lines on the ticket row; they show here struck through under a red block so
+ * the cook stops that line. Every line voided reads "ORDER VOIDED": the kitchen bumps it.
+ */
+const VOID_RED = '#FF6B6B';
+function VoidBlock({ voids, big, z }) {
+  if (!voids || !voids.lines.length) return null;
+  return (
+    <div style={{
+      width: '100%', borderLeft: `${big ? 4 : 3}px solid ${VOID_RED}`,
+      background: 'rgba(255,107,107,.12)',
+      padding: z.notePad, borderRadius: big ? '0 10px 10px 0' : '0 8px 8px 0',
+      display: 'flex', flexDirection: 'column', gap: big ? 6 : 3, textAlign: 'left',
+    }}>
+      <div style={{ font: `800 ${z.note}px ${MONO}`, letterSpacing: '.06em', color: VOID_RED }}>⊘ {voids.label}</div>
+      {voids.lines.map(l => (
+        <div key={l.index} style={{ font: `${big ? 700 : 600} ${z.note}px ${SANS}`, color: '#fff', textDecoration: 'line-through', overflowWrap: 'anywhere' }}>
+          {l.qty}× {l.name}
+        </div>
+      ))}
+      {voids.all && <div style={{ font: `600 ${z.note}px ${SANS}`, color: C.ghost }}>Do not make. Bump to clear.</div>}
+    </div>
+  );
+}
+
+/**
  * "Till 2  |  #43". Each segment stays in one piece ("#CA-5BEPG" must never split);
  * a narrow card wraps between segments instead.
  */
@@ -379,6 +405,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(view.id); }
         }}
         style={{ cursor: 'pointer', padding: `${z.padTop}px ${z.padX}px ${z.footPad}px`, display: 'flex', flexDirection: 'column', gap: z.bodyGap, width: '100%', textAlign: 'left' }}>
+        <VoidBlock voids={view.voids} big={false} z={z} />
         {view.groups.map(g => (
           <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: z.bodyGap }}>
             {show.course && <CourseChip label={g.label} accent={accent} font={z.course} />}
@@ -454,6 +481,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <VoidBlock voids={view.voids} big z={z} />
           {note && <NoteBlock note={note} big z={z} />}
           {mode === 'live' && onSaveNote ? (
             <KitchenNoteEditor key={view.id} note={view.kdsNote || null} saving={noteSaving} onSave={(text) => onSaveNote(view.id, text)} />

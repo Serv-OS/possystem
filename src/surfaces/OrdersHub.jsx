@@ -32,6 +32,7 @@ import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
 import { isPrepaidByChannel, ezcaterBadge, ezcaterFlagText, isAwaitingEzcaterAcceptance, cateringChannelLabel, AWAITING_LABEL } from '../lib/ezcaterCatering';
 import PaymentCheckModal from '../components/PaymentCheckModal';
+import VoidModal from '../components/VoidModal';
 import {
   orderPaymentState, PAYMENT_CHECKING_LABEL, paymentStatusLabel, paymentShortLine, PAYMENT_SHORT_HELP, PAYMENT_CHECKING_HELP,
   qrTabShortInfo, qrTabShortLine, shortTabClosedCheck,
@@ -131,6 +132,7 @@ export default function OrdersHub() {
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
+    voidQueueOrder,
     reprintOrderReceipt,
     staff, menuItems, deviceConfig,
   } = useStore();
@@ -162,6 +164,9 @@ export default function OrdersHub() {
   }, []);
   useEffect(() => () => { closingBusyRef.current?.(); closingBusyRef.current = null; }, []);
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
+  // 30 Sep 2026 (Peter, Coffee Boy): a void from the Orders screen. The queue order the Void
+  // button was pressed on; the same VoidModal (manager PIN, reason) as the till.
+  const [voidOrder, setVoidOrder] = useState(null);
   const [paymentCheckOrder, setPaymentCheckOrder] = useState(null); // fence S3: "Payment being checked"
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
   const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
@@ -1212,14 +1217,14 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1247,7 +1252,7 @@ export default function OrdersHub() {
             {queueOrders.length > 0 && (
               <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1255,12 +1260,21 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
           </div>
         )}
       </div>
 
       {/* Read-only view for already-paid orders (e.g. catering pre-orders) — no re-pay. */}
+      {voidOrder && (
+        <VoidModal
+          type="check"
+          items={(voidOrder.items || []).filter(i => !i.voided)}
+          totalValue={voidOrder.total || 0}
+          onConfirm={(opts) => { voidQueueOrder(voidOrder.ref, opts); setVoidOrder(null); }}
+          onCancel={() => setVoidOrder(null)}
+        />
+      )}
       {viewOrder && (
         <div onClick={(e) => { if (e.target === e.currentTarget) setViewOrder(null); }} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'grid', placeItems:'center', zIndex:9999, padding:16 }}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:16, width:'100%', maxWidth:440, maxHeight:'85vh', overflowY:'auto', padding:20 }}>
@@ -1584,7 +1598,7 @@ function OrderCard(props) {
   );
 }
 
-function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab, knownIds }) {
+function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onVoid, onForceClose, closingTab, knownIds }) {
   // v5.5.849: "Accept with delay" — ⏱ Delay expands inline to +10/+15/+20/+30 min pills.
   // Choosing one accepts the order AND tells the channel the kitchen is running behind.
   const [delayOpen, setDelayOpen] = useState(false);
@@ -1596,7 +1610,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   const color  = SECTION_COLORS[order.channel] || 'var(--acc)';
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
   const el     = elapsed(order.sentAt || order.createdAt);
-  const items  = order.items || [];
+  const items  = (order.items || []).filter(i => !i?.voided);   // 30 Sep 2026: a voided line is off the card
   // The number staff call out. Suppressed when the title already is it (an un-named
   // queue order falls back to the same short number) so the card doesn't read "47 47".
   const shortRef = shortOrderRef(order.ref);
@@ -1625,6 +1639,11 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   // (which sends a confirmed prep time back to the channel) before the prep flow.
   const isHubriseNew = order.source === 'hubrise' && order.status === 'received';
   const canAdvance = order._kind === 'queue' && !!NEXT[order.status] && !isHubriseNew;
+  // 30 Sep 2026 (Peter, Coffee Boy): every live queue order (kiosk, online, QR, a till order)
+  // can be voided here with the till's own VoidModal. Tables void on the till, bar tabs on the
+  // bar screen, open QR tabs release their hold, and a new HubRise order has Reject.
+  const canVoid = order._kind === 'queue' && !!onVoid && !isOpenTab && !isHubriseNew
+    && !DONE_STATUSES.includes(order.status) && order.status !== 'ordering' && items.length > 0;
 
   return (
     <div style={{
@@ -1745,6 +1764,11 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>
+          {canVoid && (
+            <button onClick={onVoid} title="Void this order (manager PIN, reason)" style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:700 }}>
+              ⊘ Void
+            </button>
+          )}
           {/* v5.5.150: force-close-and-charge button for open QR tabs.
               Capture flows through /api/stripe-capture on the connected
               account; on success closed_checks is written and the row

@@ -30,6 +30,7 @@ import CustomerModal from '../components/CustomerModal';
 import LinkMemberModal from '../components/LinkMemberModal';
 import { canOfferLink, displayProfileLooksBlank } from '../lib/customerLink';
 import VoidModal from '../components/VoidModal';
+import { canVoidOrder } from '../lib/voidRules';
 import DiscountModal from '../components/DiscountModal';
 import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
 import { printService } from '../lib/printer';
@@ -645,6 +646,12 @@ export default function POSSurface() {
   const hideCourses = (deviceConfig?.hiddenFeatures || []).includes('courses');
   const covers = session?.covers || 2;
   const hasSent = !!session?.sentAt;
+  // 30 Sep 2026 (Peter, Coffee Boy: "Can't void anything other than table orders"): the Void
+  // button follows the ORDER, table or walk in: it shows once any line has gone to the kitchen.
+  // Unsent lines keep Remove (lib/voidRules.js canVoidOrder). A sent table keeps it even when
+  // every line was voided one by one: the check void is what releases the table and writes the
+  // tombstone, as it always did.
+  const orderCanVoid = canVoidOrder(items) || (!!activeTableId && hasSent);
   // v5.7.22 — the quick screen's daypart runs on the VENUE clock, same rule
   // as the menu resolver above (v5.7.20): a till on the wrong OS timezone was
   // showing another daypart's best sellers all shift.
@@ -1720,7 +1727,7 @@ export default function POSSurface() {
                 <button onClick={()=>setShowDiscount(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60,display:'inline-flex',alignItems:'center',justifyContent:'center',gap:5}}><Icon name="tag" size={13}/>Discount</button>
                 <button onClick={()=>setShowReceipt(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60,display:'inline-flex',alignItems:'center',justifyContent:'center',gap:5}}><Icon name="print" size={13}/>Print</button>
                 {hasSent&&<button onClick={()=>setShowReprint(true)} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr)',color:'var(--t3)',fontSize:11,fontWeight:700,minWidth:60}}>↻ Reprint</button>}
-                {activeTableId&&hasSent&&<button onClick={()=>setVoidTarget({type:'check',items:items.filter(i=>!i.voided)})} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:11,fontWeight:700,minWidth:60}}>⊘ Void</button>}
+                {orderCanVoid&&<button onClick={()=>setVoidTarget({type:'check',items:items.filter(i=>!i.voided)})} style={{flex:1,height:32,borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:11,fontWeight:700,minWidth:60}}>⊘ Void</button>}
               </div>
             </>
           )}
@@ -2159,8 +2166,9 @@ export default function POSSurface() {
           items={voidTarget.type==='item'?[voidTarget.item]:items.filter(i=>!i.voided)}
           totalValue={voidTarget.type==='item'?voidTarget.item.price*voidTarget.item.qty:subtotal}
           onConfirm={(opts)=>{
-            if (voidTarget.type==='item') voidItem(activeTableId, voidTarget.item.uid, opts);
-            else voidCheck(activeTableId, opts);
+            // activeTableId null = the walk in order (store voidItem / voidCheck take both).
+            if (voidTarget.type==='item') voidItem(activeTableId||null, voidTarget.item.uid, opts);
+            else voidCheck(activeTableId||null, opts);
             setVoidTarget(null);
           }}
           onCancel={()=>setVoidTarget(null)}
