@@ -94,11 +94,14 @@ test('send: a quick type under none goes straight through; with a name any quick
   assert.equal(sendsWithoutPrompt({ orderType: 'delivery', mode: 'none', hasName: true }), true);
 });
 
-test('send: dine in is never decided here, it goes to the send modal', () => {
-  for (const mode of CUSTOMER_DETAILS_MODES) {
+test('send: dine in under none goes straight through as an unnamed counter order (Peter, 30 Sep); name and full still open the send modal', () => {
+  assert.equal(sendsWithoutPrompt({ orderType: 'dine-in', mode: 'none', hasName: false }), true);
+  assert.equal(sendsWithoutPrompt({ orderType: 'dine-in', mode: 'none', hasName: true }), true);
+  for (const mode of ['name', 'full']) {
     assert.equal(sendsWithoutPrompt({ orderType: 'dine-in', mode, hasName: false }), false, mode);
     assert.equal(sendsWithoutPrompt({ orderType: 'dine-in', mode, hasName: true }), false, mode);
   }
+  assert.equal(sendsWithoutPrompt({ orderType: 'dine-in', mode: undefined, hasName: false }), false, 'unset = full');
 });
 
 // ── customerFormProblem ──────────────────────────────────────────────────────

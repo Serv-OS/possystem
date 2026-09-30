@@ -70,9 +70,12 @@ export function promptsOnTypeChange({ orderType, mode } = {}) {
  * Can Send go straight through with no customer on this order?
  *   A quick type under 'none' sends with an empty name (Orders shows the short ref).
  *   A quick type or delivery that already has a name sends as well.
- *   Dine in is not decided here: it goes to the send modal (table, counter or bar tab).
+ *   Dine in with no table under 'none' sends as a counter order with no name (Peter, TEst 1 at
+ *   Provo, 30 Sep 2026: "this is off, still needs customer name, though it shouldn't"). Under
+ *   'name' or 'full' it still goes to the send modal (table, counter or bar tab).
  */
 export function sendsWithoutPrompt({ orderType, mode, hasName } = {}) {
+  if (orderType === 'dine-in') return customerDetailsMode(mode) === 'none';
   if (hasName && (QUICK_TYPES.includes(orderType) || orderType === 'delivery')) return true;
   return QUICK_TYPES.includes(orderType) && customerDetailsMode(mode) === 'none';
 }

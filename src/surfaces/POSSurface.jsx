@@ -46,7 +46,7 @@ import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
 import FlagNumberModal from '../components/FlagNumberModal';   // 30 Sep 2026: flag number on dine in orders
-import { needsFlagPrompt, flagTableLabel } from '../lib/tillOrderType';
+import { needsFlagPrompt, flagTableLabel, defaultOrderTypeFor } from '../lib/tillOrderType';
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
 import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
@@ -380,6 +380,18 @@ export default function POSSurface() {
 
   // Order types this terminal is allowed to show (from device profile)
   const allowedOrderTypes = deviceConfig?.enabledOrderTypes || ['dine-in', 'takeaway', 'collection'];
+  // 30 Sep 2026 (Peter, TEst 1 at Provo: "still starting on dine in no matter what I did"): whenever
+  // this screen shows with nothing rung up, it starts on the profile's default order type
+  // (lib/tillOrderType.js defaultOrderTypeFor). The store applies the same rule on boot, on a
+  // profile push and after every order; this is the belt and braces for any path that lands
+  // here without one of those (a held order handed back, a surface switch, a cache written by
+  // an older build). Never while a table is open or the cart has items.
+  useEffect(() => {
+    if (activeTableId || walkInOrder?.items?.length) return;
+    const start = defaultOrderTypeFor(deviceConfig);
+    if (start !== orderType) setOrderType(start);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceConfig?.defaultOrderType, deviceConfig?.enabledOrderTypes, activeTableId, walkInOrder?.items?.length]);
 
   // Set of category ids linked to the active deviceMenuId via menu_category_links.
   // Used to extend the cat-strip filter so cats appear in linked menus too.
@@ -918,7 +930,9 @@ export default function POSSurface() {
       // order ref (R-number), matching unnamed walk-ins; delivery always needs details.
       // 30 Sep 2026: decided by lib/customerDetailsRule.js (dine in still goes to the send modal).
       if (sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName: !!customer?.name })) {
-        if (!customer?.name) setCustomer({ name: '', isASAP: true });
+        // 30 Sep 2026: a dine in walk in under 'Not needed' is an unnamed counter order (the same
+        // shape the send modal's Counter choice writes), so Orders shows its short ref.
+        if (!customer?.name) setCustomer(orderType === 'dine-in' ? { name: '', isASAP: true, channel: 'counter' } : { name: '', isASAP: true });
         const name = customer?.name;
         const type = orderTypeLabel;
         setShowCheckout(false);
