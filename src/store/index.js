@@ -64,6 +64,7 @@ import {
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { redemptionsOf, withSlots } from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
@@ -6830,26 +6831,41 @@ export const useStore = create((set, get) => ({
   // Both used to console.warn only, so a 401/500 left the reward unconsumed and re-redeemable.
   redeemLoyaltyAtCommit: async (loy, record, customer) => {
     if (!loy?.pending_commit || !supabase || !record?.id) return;
-    if (!loy.stampProgramId && !loy.reward_id) return;
+    // 30 Sep 2026 (Peter, Coffee Boy: "redeem multiple stamp cards on the same order"): the staged
+    // object may hold several rewards (lib/loyaltyMultiRedeem.js combineRedemptions). Each one is
+    // committed on its own, ONE AFTER THE OTHER, with its slot number: loyalty-redeem keys a stamp
+    // redemption on check + programme, so the second free drink needs slot 2, and two calls for
+    // the same programme in the air at once could both pass its availability check and then both
+    // roll back (its race guard), leaving a member with two drinks and no card used. In turn,
+    // each call sees the row the one before it wrote. One reward staged the old way is a list
+    // of one, so nothing changes for it.
+    const list = withSlots(redemptionsOf(loy));
+    if (!list.length) return;
     if (isTrainingMode()) return;   // TRAINING MODE: never consume real points/stamps
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     const token = await ensureAuthToken().catch(() => null);
-    const r = await commitRedemption({
-      kind: 'loyalty',
-      customerId: loy.customer_id || customer?.customerId || customer?.id || null,
-      locationId: locId,
-      stampProgramId: loy.stampProgramId || null,
-      rewardId: loy.reward_id || null,
-      channel: 'pos',
-      closedCheckId: record.id,
-      staffId: staff?.id || null,
-    }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
-    // Queued failures retry themselves; a refusal never will, so say what didn't happen.
-    if (!r.ok && !r.queued) {
-      get().showToast?.(`Reward discount given but NOT deducted (${r.error}) — check the customer's balance in Back Office.`, 'error');
+    const results = [];
+    for (const one of list) {
+      const r = await commitRedemption({
+        kind: 'loyalty',
+        customerId: one.customer_id || loy.customer_id || customer?.customerId || customer?.id || null,
+        locationId: locId,
+        stampProgramId: one.stampProgramId || null,
+        rewardId: one.reward_id || null,
+        slot: one.slot,
+        channel: 'pos',
+        closedCheckId: record.id,
+        staffId: staff?.id || null,
+      }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
+      results.push(r);
+      // Queued failures retry themselves; a refusal never will, so say what didn't happen.
+      if (!r.ok && !r.queued) {
+        const which = list.length > 1 ? `${one.reward_name || 'Reward'}${one.item_name ? ` (${one.item_name})` : ''}: ` : '';
+        get().showToast?.(`${which}Reward discount given but NOT deducted (${r.error}). Check the customer's balance in Back Office.`, 'error');
+      }
     }
-    return r;
+    return results.length === 1 ? results[0] : { ok: results.every((r) => r.ok), queued: results.some((r) => r.queued), error: results.find((r) => r.error)?.error || null, results };
   },
 
   redeemPromoCode: async (promo, record, customer) => {
