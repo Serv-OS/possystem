@@ -1094,6 +1094,9 @@ export default function OrdersHub() {
           total: o.total,
           isASAP: o.isASAP,
           collectionTime: o.collectionTime,
+          // 30 Sep 2026: a dine in order with a flag number keeps it, so paying it later still
+          // books "Table 30" and the till never asks for the flag twice (lib/tillOrderType.js).
+          tableFlag: o.customer?.tableFlag || null,
         },
         customer: o.customer || null,
         // v4.6.5 follow-up Bug 2 real root cause: the orderQueue-to-list transform at
@@ -1654,6 +1657,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
             {/* Kiosk table and CHECK ID (alcohol, Challenge 21 categories), written onto the order by routeKioskOrderPrints */}
             {order.source === 'kiosk' && order.customer?.kioskTable && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>Table {order.customer.kioskTable}</span>}
+            {/* 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed on a till dine in order (lib/tillOrderType.js) */}
+            {order.customer?.tableFlag && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)' }}>Table {order.customer.tableFlag}</span>}
             {order.source === 'kiosk' && order.customer?.idCheck && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444466', color:'#ef4444', letterSpacing:'.03em' }}>CHECK ID</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {/* An ezCater order is a catering order: the channel and ezCater's own number, plus the hold */}
