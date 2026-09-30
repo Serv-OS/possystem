@@ -16,20 +16,33 @@
 //   shows today only · Undo for 5 seconds after a bump · held tickets dim in place and
 //   move to the end (switch) · held tickets do not count in TO MAKE · settings behind a
 //   manager PIN, saved per screen in devices.kds_settings · auto columns as before.
+//
+// 30 Sep 2026 (Peter, Coffee Boy), three things:
+//   · a note for the kitchen on the pop out, saved on every row of the order (lib/kds/kdsOrderNote.js)
+//   · the venue can have the LAST bump mark the order ready, and collected (lib/kds/kdsAutoStatus.js)
+//   · the type filter can no longer hide tickets unnoticed: banner, snap back after three minutes
+//     or when a hidden type arrives, never saved (lib/kds/kdsTypeFilter.js). The list load has a
+//     15 s timeout, an in flight guard, a "can't reach" banner and a refetch when realtime rejoins.
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { supabase, isMock } from '../../lib/supabase';
 import { updateDeviceHeartbeat } from '../../lib/db';
+import { playOrderChime } from '../../lib/orderChime';
+import { withTimeout } from '../../lib/withTimeout';
+import { hubrisePushStatus } from '../../lib/hubrise';
 import { isDeviceLinkUncertain } from '../../lib/deviceLink';
 import { trustSharedRead } from '../../lib/deviceFence';
 import { mustChangeRow, writeErrorOf } from '../../lib/rowWrites';
 import { loadStaffRoster } from '../../lib/staffRoster';
 import { getLocationConfig } from '../../lib/locationTime';
 import {
-  ticketMeta, ticketView, needsTypeLookup, minutesSince, sortTickets, typeCounts, rollUp, venueBusinessDayStart,
+  ticketMeta, ticketView, needsTypeLookup, minutesSince, sortTickets, typeCounts, rollUp, venueBusinessDayStart, kdsTypeKey,
 } from '../../lib/kds/kdsTicket';
+import { cleanKdsNote, kdsNoteOf, metaWithKdsNote, orderKeyOf, rowsOfSameOrder, SAME_SEND_WINDOW_MS } from '../../lib/kds/kdsOrderNote';
+import { autoStatusSettings, autoStatusAfterBump, autoStatusSteps, bumpedWithoutRef } from '../../lib/kds/kdsAutoStatus';
+import { filterAfterIdle, filterAfterArrival, hiddenCount, filterBanner } from '../../lib/kds/kdsTypeFilter';
 import {
   normaliseKdsSettings, kdsSettingsStorageKey, isMissingColumnError, shouldBumpAfterTick,
 } from '../../lib/kds/kdsSettings';
@@ -51,6 +64,10 @@ const ticketWrite = (id, payload, label) =>
 const UNDO_MS = 5000;
 const MANAGER_GRACE_MS = 90 * 1000;
 const HISTORY_LIMIT = 200;
+// 30 Sep 2026: a read that hangs (a woken tablet, a stalled auth lock) used to hold the 20 s
+// poll for ever with nothing on screen to say so. Every list read now gives up after this.
+const LOAD_TIMEOUT_MS = 15000;
+const AUTO_STATUS_SETTINGS_POLL_MS = 60000;
 
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
 
@@ -74,6 +91,9 @@ function mapRow(row) {
     allCourses: row.all_courses || row.allCourses || [],
     items: (Array.isArray(items) ? items : []).map(i => ({ ...i, _bumped: i._bumped || false })),
     meta: ticketMeta(row),
+    // 30 Sep 2026: the column as stored (the note write merges into it) and the kitchen's own note.
+    rawMeta: row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : null,
+    kdsNote: kdsNoteOf(row.meta),
   };
 }
 
@@ -217,6 +237,28 @@ export function KDSSurface() {
     catch { const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString(); }
   }, [venueCfg, tz]);
 
+  // ── venue: the last bump marks the order ready / collected (30 Sep 2026) ────
+  // Two switches in locations.pos_settings (Back Office, Order screens). Read on boot and once a
+  // minute (Back Office promises "within a minute"); the rule is lib/kds/kdsAutoStatus.js.
+  const [autoStatus, setAutoStatus] = useState(() => autoStatusSettings(null));
+  const autoStatusRef = useRef(autoStatus);
+  useEffect(() => { autoStatusRef.current = autoStatus; }, [autoStatus]);
+  useEffect(() => {
+    if (!live || !supabase) return undefined;
+    let alive = true;
+    const read = async () => {
+      try {
+        const { data, error } = await withTimeout(
+          supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle(), LOAD_TIMEOUT_MS, 'Venue settings');
+        // Only a successful read of the row may change it; offline keeps the last value.
+        if (alive && !error && data) setAutoStatus(autoStatusSettings(data.pos_settings));
+      } catch { /* keep the last value */ }
+    };
+    read();
+    const id = setInterval(read, AUTO_STATUS_SETTINGS_POLL_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, [live, locationId]);
+
   // Card text scale from the column width (Peter: keep today's columns, shrink the text).
   // One observer on whichever grid is showing; the value is rounded so cards re-render
   // only when the column width really changes.
@@ -257,6 +299,7 @@ export function KDSSurface() {
   // live: rows from Supabase. Not live (mock / unpaired): the store's tickets, with the
   // board's own holds, ticks and bumps laid over them.
   const [rows, setRows] = useState([]);
+  const [loadError, setLoadError] = useState(false);          // the last list read failed or timed out
   const [sel, setSel] = useState(null);                       // open pop out: { id, mode }
   const [localPatch, setLocalPatch] = useState({});          // not live only: id → partial row
   const [lastBumpedToday, setLastBumpedToday] = useState(false);
@@ -302,12 +345,27 @@ export function KDSSurface() {
 
   useEffect(() => {
     if (!live) return;
+    // 30 Sep 2026: one read at a time. A second call while one is in flight runs once it ends,
+    // so a poll, a wake and a reconnect landing together make two reads, not five. `alive` goes
+    // false on cleanup: a read still running for the old station (the screen was re pointed in
+    // settings) must not paint its rows, or queue another read, over the new station's list.
+    let inFlight = false;
+    let again = false;
+    let alive = true;
     const load = async () => {
+      if (!alive) return;
+      if (inFlight) { again = true; return; }
+      inFlight = true;
       const seqAtStart = writeSeq.current;
       try {
         let q = supabase.from('kds_tickets').select('*').eq('location_id', locationId).in('status', ['pending', 'held']).order('sent_at', { ascending: true });
         if (centreId) q = q.eq('centre_id', centreId);
-        const { data } = await q;
+        const { data, error } = await withTimeout(q, LOAD_TIMEOUT_MS, 'Kitchen list');
+        if (!alive) return;
+        // A refused or failed read used to be silent: the board simply went stale. The small
+        // banner says so until a read succeeds; what is on screen stays.
+        if (error) throw error;
+        setLoadError(false);
         // Database fence stage 1 (contract A9): an empty read while this screen may have lost
         // its link is unknown, never "no tickets". Keep what is on screen.
         if (data && !trustSharedRead({ linkUncertain: isDeviceLinkUncertain(), rowCount: data.length })) return;
@@ -316,10 +374,15 @@ export function KDSSurface() {
           // A ticket bumped somewhere else while it was open closes the pop out.
           setSel(s => (s && s.mode === 'live' && !data.some(r => r.id === s.id) ? null : s));
         }
-      } catch { /* keep what is on screen; the next poll retries */ }
-      loadLastBumpedRef.current().catch?.(() => {});
+      } catch { if (alive) setLoadError(true); /* keep what is on screen; the next poll retries */ }
+      finally {
+        inFlight = false;
+        if (alive) loadLastBumpedRef.current().catch?.(() => {});
+        if (again) { again = false; if (alive) load(); }
+      }
     };
     load();
+    let subscribedOnce = false;
     const channel = supabase
       .channel(`kds-tickets-${locationId}${centreId ? `-${centreId}` : ''}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
@@ -344,7 +407,14 @@ export function KDSSurface() {
           setRows(prev => prev.map(r => r.id === t.id ? t : r));
         }
       })
-      .subscribe();
+      .subscribe((status) => {
+        // 30 Sep 2026: a channel that rejoins after a drop missed every change while it was down.
+        // The first SUBSCRIBED is the boot (load() above is already running); every later one is a
+        // reconnect and refetches the list.
+        if (status !== 'SUBSCRIBED') return;
+        if (subscribedOnce) load();
+        subscribedOnce = true;
+      });
 
     // v5.7.39 self heal: push is the fast path, never the only path.
     const onVisible = () => { if (document.visibilityState === 'visible') load(); };
@@ -352,6 +422,7 @@ export function KDSSurface() {
     window.addEventListener('online', load);
     const pollId = setInterval(load, 20000);
     return () => {
+      alive = false;
       supabase.removeChannel(channel);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('online', load);
@@ -398,7 +469,32 @@ export function KDSSurface() {
   // ── filters ─────────────────────────────────────────────────────────────────
   const [stationFilter, setStationFilter] = useState(centreId || 'all');
   useEffect(() => { setStationFilter(centreId || 'all'); }, [centreId]);   // v5.9.73: follow the centre
+  // 30 Sep 2026: the type filter is plain state, never saved, and it snaps back to All three
+  // minutes after the last pill tap (the 1 s clock below drives that) or the moment a ticket it
+  // would hide arrives (the effect after `tickets`). See lib/kds/kdsTypeFilter.js.
   const [typeFilter, setTypeFilter] = useState('all');
+  const typeFilterRef = useRef(typeFilter);
+  useEffect(() => { typeFilterRef.current = typeFilter; }, [typeFilter]);
+  const filterTapAt = useRef(0);
+  const tapTypeFilter = useCallback((key) => { filterTapAt.current = Date.now(); setTypeFilter(key); }, []);
+  useEffect(() => {
+    setTypeFilter(f => filterAfterIdle({ filter: f, tappedAt: filterTapAt.current, now }));
+  }, [now]);
+  const knownIds = useRef(null);   // null until the first list has painted: the boot load is not an arrival
+  useEffect(() => {
+    const ids = new Set(tickets.map(t => t.id));
+    const before = knownIds.current;
+    knownIds.current = ids;
+    if (!before) return;
+    const arrived = tickets.filter(t => !before.has(t.id));
+    if (!arrived.length) return;
+    const { snapped } = filterAfterArrival({ filter: typeFilterRef.current, typeKeys: arrived.map(t => kdsTypeKey(t.meta)) });
+    if (snapped) {
+      filterTapAt.current = 0;
+      setTypeFilter('all');
+      playOrderChime();   // the new order chime: the board just changed under the kitchen's eyes
+    }
+  }, [tickets]);
   // Station buttons only when this board really holds tickets from two or more stations.
   // (The old board also showed "All stations" plus the one station on a screen tied to it.)
   const stations = useMemo(() => {
@@ -417,6 +513,7 @@ export function KDSSurface() {
     [inStation, activeType, settings.show.heldToEnd],
   );
   const counts = useMemo(() => typeCounts(inStation, activeType), [inStation, activeType]);
+  const filterNote = filterBanner(activeType, hiddenCount(inStation, activeType));
   const rail = useMemo(() => rollUp(displayed), [displayed]);
   const railTotal = rail.reduce((n, r) => n + r.qty, 0);
 
@@ -432,6 +529,65 @@ export function KDSSurface() {
     useStore.getState().showToast?.(`${what} did not save. Check the connection, the board will catch up.`, 'error');
   }, []);
 
+  // ── the last bump marks the order ready / collected (30 Sep 2026) ───────────
+  // Runs UNDO_MS after this screen's bump landed, so an Undo (the ticket comes back) never leaves
+  // the order marked ready. Then, only when EVERY kds_tickets row of the order is bumped, the
+  // venue's steps run as conditional order_queue writes (lib/kds/kdsAutoStatus.js): the same
+  // status write a tap on Orders Hub makes, so the ready message, the order screens and HubRise
+  // behave exactly as for a manual tap. Two screens racing: the second changes 0 rows.
+  //
+  // One pending timer per ticket id (review 30 Sep 2026: a set of "undone" ids was never cleared,
+  // so one Undo silenced every later bump of that ticket). Undo clears the ticket's timer; a new
+  // bump of the same ticket replaces it and is judged afresh.
+  const autoStatusTimers = useRef(new Map());
+  useEffect(() => () => autoStatusTimers.current.forEach(clearTimeout), []);
+  const cancelAutoStatus = useCallback((id) => {
+    const timer = autoStatusTimers.current.get(id);
+    if (timer) { clearTimeout(timer); autoStatusTimers.current.delete(id); }
+  }, []);
+  // Said once per boot: tills on a build before 30 Sep 2026 stamp no ref, so their orders cannot
+  // be found in order_queue and never mark ready by themselves (Sunmi WebViews keep old bundles
+  // for days). Without this the switch simply looks broken.
+  const warnedNoRef = useRef(false);
+  const scheduleAutoStatus = useCallback((t) => {
+    if (!live || !autoStatusRef.current.ready) return;
+    const key = orderKeyOf(t);
+    if (key?.kind !== 'ref') {   // a table or bar tab send has no order_queue row
+      if (!warnedNoRef.current && bumpedWithoutRef(t.meta)) {
+        warnedNoRef.current = true;
+        console.warn('[KDS] auto ready skipped: ticket has no meta.ref (till on an older build)', { id: t.id, channel: t.meta?.channel, orderNo: t.meta?.orderNo });
+        useStore.getState().showToast?.('This order came from a till on an older version, so it will not mark ready by itself. Restart the tills to update them.', 'warning');
+      }
+      return;
+    }
+    cancelAutoStatus(t.id);
+    const timer = setTimeout(async () => {
+      autoStatusTimers.current.delete(t.id);
+      const settings = autoStatusRef.current;
+      if (!settings.ready) return;
+      try {
+        const [tk, oq] = await Promise.all([
+          withTimeout(supabase.from('kds_tickets').select('id, status').eq('location_id', locationId).eq('meta->>ref', key.ref), LOAD_TIMEOUT_MS, 'Kitchen rows'),
+          withTimeout(supabase.from('order_queue').select('ref, status, source, paid, customer').eq('location_id', locationId).eq('ref', key.ref).maybeSingle(), LOAD_TIMEOUT_MS, 'Order'),
+        ]);
+        if (tk.error || oq.error) return;   // unknown: staff, or the next bump, move it on
+        const decision = autoStatusAfterBump({ ticketRows: tk.data || [], settings, order: oq.data || null });
+        for (const step of autoStatusSteps(decision, oq.data?.status)) {
+          // parkable false: a derived write. Replayed minutes later it could only be stale.
+          const r = await mustChangeRow({
+            table: 'order_queue', type: 'update', payload: { status: step.to },
+            match: { location_id: locationId, ref: key.ref }, inList: { column: 'status', values: step.from },
+            parkable: false, kind: 'kds_auto_status', label: `Order ${key.ref} ${step.to} from the kitchen`,
+          });
+          if (r.outcome !== 'applied') return;   // another screen got there first, or the order moved on
+          // Channel orders mirror each step to HubRise, as Orders Hub does.
+          if (oq.data?.source === 'hubrise') hubrisePushStatus(locationId, key.ref, step.to).catch(() => {});
+        }
+      } catch { /* best effort: the order is still on Orders Hub for staff */ }
+    }, UNDO_MS);
+    autoStatusTimers.current.set(t.id, timer);
+  }, [live, locationId, cancelAutoStatus]);
+
   const bump = useCallback(async (id) => {
     const t = ticketsRef.current.find(x => x.id === id);
     if (!t) return;
@@ -442,14 +598,15 @@ export function KDSSurface() {
       setLastBumpedToday(true);
       const p = tracked(() => ticketWrite(id, { status: 'bumped', bumped_at: new Date().toISOString() }, 'Kitchen ticket bumped'));
       pendingBumps.current.set(id, p);
-      const { error } = await p;
+      const { error, outcome } = await p;
       if (pendingBumps.current.get(id) === p) pendingBumps.current.delete(id);
       if (error) writeFailed('Bump');
+      else if (outcome === 'applied') scheduleAutoStatus(t);
     } else {
       patchRow(id, { status: 'bumped' });
       if (!isMock) bumpTicket(id);
     }
-  }, [live, patchRow, bumpTicket, writeFailed, tracked]);
+  }, [live, patchRow, bumpTicket, writeFailed, tracked, scheduleAutoStatus]);
 
   const hold = useCallback(async (id) => {
     patchRow(id, { status: 'held', held: true });
@@ -519,6 +676,47 @@ export function KDSSurface() {
     return true;
   }, [live, patchRow, writeFailed, tracked]);
 
+  // ── note for the kitchen (30 Sep 2026) ──────────────────────────────────────
+  // Saved into meta.kdsNote on EVERY live row of the order at this venue (the food and the drinks
+  // screen each hold one), read fresh so a newer meta is never overwritten. Never leaves kds_tickets.
+  const [noteSaving, setNoteSaving] = useState(false);
+  const saveKitchenNote = useCallback(async (id, text) => {
+    const t = ticketsRef.current.find(x => x.id === id);
+    if (!t) return false;
+    const note = cleanKdsNote(text);
+    if (!live) {
+      rowsOfSameOrder(t, ticketsRef.current).forEach(r => patchRow(r.id, { kdsNote: note, rawMeta: metaWithKdsNote(r.rawMeta, note) }));
+      return true;
+    }
+    setNoteSaving(true);
+    try {
+      const key = orderKeyOf(t);
+      let q = supabase.from('kds_tickets').select('id, table_label, sent_at, meta').eq('location_id', locationId).in('status', ['pending', 'held']);
+      if (key?.kind === 'ref') q = q.eq('meta->>ref', key.ref);
+      else if (key?.kind === 'send') {
+        q = q.eq('table_label', key.tableLabel)
+          .gte('sent_at', new Date(key.sentAt - SAME_SEND_WINDOW_MS).toISOString())
+          .lte('sent_at', new Date(key.sentAt + SAME_SEND_WINDOW_MS).toISOString());
+      } else q = q.eq('id', id);
+      const { data, error } = await withTimeout(q, LOAD_TIMEOUT_MS, 'Kitchen note');
+      if (error) throw error;
+      const targets = rowsOfSameOrder(t, (data || []).map(mapRow));
+      let failed = false;
+      for (const r of targets) {
+        const meta = metaWithKdsNote(r.rawMeta, note);
+        const { error: e } = await tracked(() => ticketWrite(r.id, { meta }, note ? 'Kitchen note saved' : 'Kitchen note cleared'));
+        if (e) failed = true;
+        else patchRow(r.id, { kdsNote: note, rawMeta: meta });
+      }
+      if (failed) { writeFailed('Note'); return false; }
+      showToast(note ? 'Note saved. Every kitchen screen with this order shows it.' : 'Note cleared', 'success');
+      return true;
+    } catch {
+      writeFailed('Note');
+      return false;
+    } finally { setNoteSaving(false); }
+  }, [live, locationId, patchRow, tracked, writeFailed, showToast]);
+
   // Undo: the last bump, for 5 seconds. A bump changes only this row (no trigger and no
   // listener moves the order on), so putting the row back undoes it completely.
   const undoRef = useRef(undo);
@@ -532,6 +730,7 @@ export function KDSSurface() {
     const u = undoRef.current;
     if (!u) return;
     setUndo(null);
+    cancelAutoStatus(u.id);   // the auto ready / collected timer for this bump stands down
     if (live) {
       // Wait for the bump write itself, or on slow Wi-Fi it could land after the restore
       // and leave the ticket bumped after the kitchen was shown it back.
@@ -542,7 +741,7 @@ export function KDSSurface() {
       patchRow(u.id, { status: u.prevStatus, held: u.prevStatus === 'held' });
     }
     loadLastBumpedRef.current().catch?.(() => {});
-  }, [live, restore, patchRow]);
+  }, [live, restore, patchRow, cancelAutoStatus]);
 
   // Recall last: the last ticket bumped at this station today, from any screen.
   const recallLast = useCallback(async () => {
@@ -656,7 +855,7 @@ export function KDSSurface() {
             <div style={{ flex: 'none', width: 1, height: 40, background: 'rgba(255,255,255,.1)', marginRight: 12 }} />
           )}
           {settings.show.counts && !showHistory && counts.map(c => (
-            <button key={c.key} type="button" onClick={() => setTypeFilter(c.key)} style={{ ...pill(activeType === c.key, c.c), flex: 'none' }}>
+            <button key={c.key} type="button" onClick={() => tapTypeFilter(c.key)} style={{ ...pill(activeType === c.key, c.c), flex: 'none' }}>
               <span style={{ width: 9, height: 9, borderRadius: 99, background: c.c }} />
               <span style={{ font: `700 15px ${SANS}`, whiteSpace: 'nowrap' }}>{c.label}</span>
               <span style={{ font: `700 15px ${MONO}`, color: activeType === c.key ? '#fff' : '#E6ECE9' }}>{c.count}</span>
@@ -691,6 +890,23 @@ export function KDSSurface() {
           <div style={{ font: `700 15px ${MONO}`, color: C.clock, paddingLeft: 6 }}>{clockFmt.format(now)}</div>
         </div>
       </div>
+
+      {/* ── banners (30 Sep 2026) ── a filter that hides tickets is said out loud, and a
+          list read that failed is said too, until one succeeds. */}
+      {loadError && !showHistory && (
+        <div role="status" style={{ flex: 'none', padding: '9px 26px', background: 'rgba(255,107,107,.14)', borderBottom: '1px solid rgba(255,107,107,.3)', color: '#FFB4B4', font: `600 15px ${SANS}` }}>
+          Can't reach the kitchen list, retrying
+        </div>
+      )}
+      {filterNote && !showHistory && (
+        <div role="status" style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 18, padding: '12px 26px', background: 'rgba(245,165,36,.16)', borderBottom: '1px solid rgba(245,165,36,.4)' }}>
+          <span style={{ flex: 1, minWidth: 0, font: `700 20px ${SANS}`, color: '#FFD79A' }}>{filterNote}</span>
+          <button type="button" onClick={() => tapTypeFilter('all')} style={{
+            flex: 'none', border: 0, background: C.bump, color: C.bumpInk, borderRadius: 12, padding: '0 28px', minHeight: 52,
+            font: `800 19px ${SANS}`, cursor: 'pointer',
+          }}>Show all</button>
+        </div>
+      )}
 
       {/* ── body ── */}
       {showHistory ? (
@@ -759,7 +975,8 @@ export function KDSSurface() {
 
       {selView && (
         <KdsTicketModal view={selView} mins={sel.mode === 'history' ? 0 : minutesSince(selView.sentAt, now)} settings={settings} mode={sel.mode}
-          onClose={() => setSel(null)} onBump={bump} onHold={hold} onResume={resume} onBumpItem={bumpItem} onRecall={recallFromHistory} />
+          onClose={() => setSel(null)} onBump={bump} onHold={hold} onResume={resume} onBumpItem={bumpItem} onRecall={recallFromHistory}
+          onSaveNote={sel.mode === 'live' ? saveKitchenNote : undefined} noteSaving={noteSaving} />
       )}
 
       {settingsOpen && (
