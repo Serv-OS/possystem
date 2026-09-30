@@ -262,7 +262,8 @@ export async function findPaxTerminal({ posDeviceId, locationId: explicitLocatio
  * @param {string} p.targetTerminalId
  * @param {number} p.tipBasisMinor   the BILL — tip % applies to this
  * @param {number} p.dueMinor        what the CARD must take, pre-tip
- * @param {boolean} p.suppressTip    this ONE sale takes no tip (bar tab / takeaway)
+ * @param {boolean} p.suppressTip    this ONE sale takes no tip (a bar tab; since 30 Sep 2026 every other
+ *                                   order type follows the reader's own tip settings, readerTipRule.js)
  * @param {string} p.closedCheckId   pre-minted, so the check can close without the POS
  * @param {object} p.checkDraft      everything recordClosedCheck needs EXCEPT the tip
  * @param {boolean} p.tableCheck     v5.7.6, main POS only: this check sits on a table/session

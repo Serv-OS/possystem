@@ -592,17 +592,19 @@ export default function LocationSettings() {
         {loadingImageSetting && <div style={{ fontSize:11, color:'var(--t4)' }}>Loading…</div>}
       </div>
 
-      {/* v5.5.799: Takeaway customer details */}
+      {/* v5.5.799: Takeaway customer details. 30 Sep 2026 (Peter, Coffee Boy: "Dine in users' phone
+          and name still forced"): the same setting now covers every till order type, dine in included
+          (lib/customerDetailsRule.js). The key stays takeaway_customer_details for compatibility. */}
       <div style={S.card}>
-        <div style={S.h2}>🥡 Takeaway customer details</div>
+        <div style={S.h2}>👤 Customer details on the till</div>
         <div style={S.desc}>
-          What the POS asks for on takeaway and collection orders. Quick service: take just a name, or skip details completely.
+          What the till asks for when a customer goes on an order, for every order type: dine in, takeaway, collection and drive thru. Quick service: take just a name, or skip details completely.
         </div>
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {[
-            { value:'full', label:'Full details', sub:'Name and phone required — collection time, email and notes available (current behaviour).' },
-            { value:'name', label:'Name only',    sub:'One quick name field — required, but no phone or email.' },
-            { value:'none', label:'Not needed',   sub:'No prompt at all — the order goes straight through with a short order reference.' },
+            { value:'full', label:'Full details', sub:'Name and phone required on every order type. Collection time, email and notes available.' },
+            { value:'name', label:'Name only',    sub:'A name is enough. Takeaway and collection ask for nothing else; on dine in the phone stays optional, for loyalty.' },
+            { value:'none', label:'Not needed',   sub:'Nothing is asked. Takeaway and collection go straight through with a short order reference. Staff can still add a customer from the button, with a name alone.' },
           ].map(opt => {
             const active = takeawayDetails === opt.value;
             return (
@@ -628,7 +630,7 @@ export default function LocationSettings() {
           })}
         </div>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:10 }}>
-          Applies to till takeaway/collection orders only — online, QR and kiosk ordering are unaffected. Tills pick this up on the next Push to POS or reload.
+          Applies to till orders only. Drive thru is always name only and delivery always needs full details. Online, QR and kiosk ordering are unaffected. Tills pick this up on the next Push to POS or reload.
         </div>
       </div>
 

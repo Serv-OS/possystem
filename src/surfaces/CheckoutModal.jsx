@@ -32,6 +32,7 @@ import {
 import { checkoutOrderRef } from '../lib/payments/terminalJobCloser';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
+import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -2019,7 +2020,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
-          tableLabel: tableId || null,
+          // 30 Sep 2026: a dine in flag order books "Table 30" when the job is closed from this
+          // draft (till gone before the reader answered), as the till's own close does.
+          tableLabel: tableId || flagTableLabel(orderFlag(useStore.getState().walkInOrder, orderType)) || null,
           sessionId: session?.id || null,
           locationId,
           orderType,
