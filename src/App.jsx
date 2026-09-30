@@ -107,6 +107,7 @@ import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
 import KioskStaffAlert from './components/KioskStaffAlert';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
+import CardAdoptedBanner from './components/CardAdoptedBanner';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
@@ -1006,6 +1007,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       <AutoSignout />
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
+      {/* 30 Sep 2026: a card sale booked after its checkout closed (sticky, see the component) */}
+      <CardAdoptedBanner />
       <TrainingModeBanner />
       {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
           surface panels sit as separate rounded glass cards over the scene */}

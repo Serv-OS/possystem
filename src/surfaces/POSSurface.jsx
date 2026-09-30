@@ -414,6 +414,10 @@ export default function POSSurface() {
   const [linkMemberFor, setLinkMemberFor] = useState(null);
   const [pendingOrderType, setPendingOrderType] = useState(null);
   const [rightTab, setRightTab] = useState('menu');  // 'menu' | 'orders'
+  // 30 Sep 2026: "Open R5737" on the checkout's possible repeat warning lands on History
+  // (CheckHistory reads the same focus, searches the ref and clears it).
+  const _checkHistoryFocus = useStore(s => s.checkHistoryFocus);
+  useEffect(() => { if (_checkHistoryFocus?.ref) setRightTab('history'); }, [_checkHistoryFocus]);
   const [voidTarget, setVoidTarget]   = useState(null);
   const [showDiscount, setShowDiscount] = useState(false);
   const [showReceipt, setShowReceipt]   = useState(false);
