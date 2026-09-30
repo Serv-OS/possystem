@@ -96,6 +96,10 @@ export function shortRef(ref) {
  *   isTable     true when the ticket belongs to a table (table orders, QR at a table)
  *   customerName, orderRef (full ref, shortened here for display), appCode (delivery app
  *   code, wins over the ref), source (till name), staff, note (order level kitchen note)
+ *   ref         the FULL order_queue ref (30 Sep 2026): how the KDS finds every row of one order
+ *               (the kitchen note, src/lib/kds/kdsOrderNote.js) and the order_queue row to mark
+ *               ready or collected when the last screen bumps (src/lib/kds/kdsAutoStatus.js).
+ *               null for a table or bar tab send, which has no order_queue row.
  */
 export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note } = {}) {
   const ch = clean(channel);
@@ -109,6 +113,7 @@ export function buildTicketMeta({ channel, orderType, isTable = false, customerN
     isTable: table,
     customerName: clean(customerName),
     orderNo,
+    ref: clean(orderRef),
     source: clean(source),
     staff: clean(staff),
     note: cleanNote(note),
@@ -176,8 +181,9 @@ export function ticketMeta(row) {
   const raw = row?.meta;
   if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.v) {
     // orderNo was already shortened by the writer. Pass it through as-is (as appCode), or a
-    // delivery app code shaped like "R4821" would be shortened a second time to "21".
-    return buildTicketMeta({ ...raw, orderRef: null, appCode: raw.orderNo });
+    // delivery app code shaped like "R4821" would be shortened a second time to "21". The full
+    // ref (rows since 30 Sep 2026) rides along as orderRef and comes out as `ref` unchanged.
+    return buildTicketMeta({ ...raw, orderRef: raw.ref || null, appCode: raw.orderNo });
   }
   return parseLegacyTicket(row);
 }

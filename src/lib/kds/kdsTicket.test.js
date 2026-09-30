@@ -81,6 +81,27 @@ test('buildTicketMeta: tables and bar tabs never carry a number, tills carry the
   assert.equal(till.customerName, 'Peter Roberts');
 });
 
+test('buildTicketMeta carries the FULL ref (30 Sep 2026) and ticketMeta keeps it, while orderNo stays short', () => {
+  const till = buildTicketMeta({ channel: 'till', orderType: 'takeaway', customerName: 'Sam', orderRef: 'R32697' });
+  assert.equal(till.ref, 'R32697');
+  assert.equal(till.orderNo, '97');
+  const back = ticketMeta({ meta: till });
+  assert.equal(back.ref, 'R32697');
+  assert.equal(back.orderNo, '97', 'not shortened a second time');
+  const kiosk = buildTicketMeta({ channel: 'kiosk', orderType: 'takeaway', orderRef: 'R3962' });
+  assert.equal(kiosk.ref, 'R3962');
+  const hub = buildTicketMeta({ channel: 'hubrise', orderType: 'delivery', orderRef: 'HR-g23er44', appCode: '8455' });
+  assert.equal(hub.ref, 'HR-g23er44');
+  assert.equal(hub.orderNo, '8455');
+  assert.equal(ticketMeta({ meta: hub }).orderNo, '8455');
+  // No ref for a table send or a bar round, and a stored row from before this change has null.
+  assert.equal(buildTicketMeta({ channel: 'table', isTable: true }).ref, null);
+  assert.equal(buildTicketMeta({ channel: 'bar', customerName: 'Neil' }).ref, null);
+  assert.equal(ticketMeta({ meta: { v: 1, channel: 'till', orderNo: '35' } }).ref, null);
+  // A legacy channel row reads its ref from the label.
+  assert.equal(parseLegacyTicket({ table_label: 'Kiosk R17' }).ref, 'R17');
+});
+
 test('buildTicketMeta: a delivery app code wins over our ref (Peter: #8455)', () => {
   const m = buildTicketMeta({ channel: 'hubrise', orderType: 'delivery', orderRef: 'HR-g23er44', appCode: '8455', source: 'Deliveroo' });
   assert.equal(m.orderNo, '8455');
