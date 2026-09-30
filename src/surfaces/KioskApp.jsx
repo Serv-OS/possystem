@@ -46,7 +46,8 @@ import { commitRedemption } from '../lib/commitRedemptions';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
-import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
+import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey, markJobReconciled } from '../lib/payments/terminalJobs';
+import { kioskReaderPayment, isKioskReaderPayment, kioskPaymentIsThisBasket, kioskHeldPaymentFits, kioskCheckPaymentFields } from '../lib/kioskCardLink';
 import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
@@ -463,6 +464,22 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // retried submit reuses it — that id is the server-side idempotency scope for the gift-card
   // debit, and a fresh id per attempt would let a retry debit the card twice.
   const checkIdRef = useRef(null);
+  // 30 Sep 2026 (Barnsley kiosk refunds): the check id is also the card machine job's
+  // closed_check_id. ScreenPay asks for it when it sends the charge, so the job and the sale
+  // carry ONE id, as on the till (one id per checkout). Minted once per basket with the same
+  // expression submitOrder uses; resetSession clears it.
+  const ensureCheckId = useCallback(() => {
+    if (!checkIdRef.current) {
+      checkIdRef.current = (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+    }
+    return checkIdRef.current;
+  }, []);
+  // The card machine payment that paid this basket (lib/kioskCardLink.js kioskReaderPayment),
+  // kept for a retried submit: its "Place order" passes a click event or nothing. Only a payment
+  // carrying this basket's check id is ever kept here (kioskPaymentIsThisBasket), and ScreenPay
+  // reads it (heldCardPayment) so a basket that is already paid is never charged again.
+  const paidCardRef = useRef(null);
+  const heldCardPayment = useCallback(() => paidCardRef.current, []);
   // v5.5.887: promo/offer code — validated at entry (no write), REDEEMED in submitOrder once
   // the order exists (promo-redeem is race-safe + idempotent on `${checkId}:${code}` — the
   // check id above, which is stable across retries of the same basket; the order ref is
@@ -761,6 +778,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setLoyaltyRedemption(null);
     setGiftCardPayment(null);
     checkIdRef.current = null;
+    paidCardRef.current = null;
     setPromoApplied(null);
     setVerifiedLoyalty(null);
     setAllergenFilter(new Set());
@@ -883,17 +901,42 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit - taxRelief);
 
   // On 'simulate paid' → write closed_checks + kds_tickets row, set orderNumber, advance.
-  const submitOrder = useCallback(async (nameOverride, phoneOverride) => {
+  const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {
+    // 30 Sep 2026 (Barnsley kiosk refunds): the card machine payment ScreenPay hands over on
+    // approval (lib/kioskCardLink.js). One for the basket on screen (it carries this basket's
+    // check id) is kept before anything else, so a retried submit books with it. One that lands
+    // after a reset (the X or the idle timer inside the 0.8 s before onPaid) belongs to a basket
+    // that is gone: it is booked once under its own id and never written to the refs the next
+    // basket reads.
+    const handed = isKioskReaderPayment(cardPayment) ? cardPayment : null;
+    const late = !!handed && !kioskPaymentIsThisBasket(handed, checkIdRef.current);
+    if (handed && !late) paidCardRef.current = handed;
     if (submitting) return;
     console.log('[kiosk] submitOrder called', { nameOverride, phoneOverride, customerName, customerPhone, loyaltyRedemption: loyaltyRedemption ? 'yes' : 'no' });
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // v5.5.901: stable across retries — see checkIdRef.
-      if (!checkIdRef.current) {
-        checkIdRef.current = (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+      const reader = late ? handed : paidCardRef.current;
+      // A payment kept from an earlier attempt (the order did not save, then the pay screen
+      // opened again) books only while it still pays this basket exactly. A changed basket is
+      // never booked against it and never charged again: a member of staff sorts it out.
+      if (reader && !handed && !kioskHeldPaymentFits(reader, Math.round(grandTotal * 100))) {
+        console.error('[kiosk] held card payment no longer matches the basket', { jobId: reader.jobId, chargeMinor: reader.chargeMinor, grandTotal });
+        setSubmitError(`This order was already paid on the card machine (${money(reader.chargeMinor / 100)}). Please ask a member of staff.`);
+        return;
       }
-      const checkId = checkIdRef.current;
+      // The sale books under the id its card machine job carries: the basket's id (ScreenPay
+      // minted it through ensureCheckId), or a late payment's own id.
+      let checkId;
+      if (late) {
+        checkId = handed.closedCheckId || (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+      } else {
+        // v5.5.901: stable across retries — see checkIdRef.
+        if (!checkIdRef.current) {
+          checkIdRef.current = (crypto.randomUUID ? crypto.randomUUID() : 'cc-' + Date.now());
+        }
+        checkId = checkIdRef.current;
+      }
       // v5.5.901: GIFT CARD — debit at COMMIT, like the promo code and loyalty reward below.
       // The apply step only staged the discount, so an abandoned basket / idle timeout /
       // declined card can no longer burn the card's value. Awaited (not fire-and-forget) so
@@ -969,6 +1012,17 @@ export default function KioskApp({ kioskId, onUnpair }) {
         status: 'paid',
         payment_method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card-external',
         method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card',
+        // 30 Sep 2026 (Barnsley kiosk refunds): a card machine sale is booked like the till's
+        // reader sales: its processor (the column default is 'stripe'), its card reference and
+        // its tenders, so "Return to card" reverses it on the right processor. Nothing is added
+        // when no card machine took the money (lib/kioskCardLink.js kioskCheckPaymentFields).
+        ...kioskCheckPaymentFields({
+          reader,
+          tip,
+          giftRecord: giftCardPayment ? giftCardCheckRecord(giftCardPayment, giftCommit) : null,
+          loyaltyCredit,
+          promoCredit,
+        }),
         closed_at: new Date().toISOString(),
         source: 'kiosk',
         kiosk_id: kioskId,
@@ -1023,6 +1077,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
         e1 = (await supabase.from('closed_checks').insert(checkRow)).error;
       }
       if (e1) throw e1;
+      // The sale is booked, so its card machine job is done: approved -> reconciled, as the till
+      // marks its own (terminal_pos_mark_reconciled; the kiosk's device is at the venue).
+      if (reader?.jobId) markJobReconciled(reader.jobId).catch(() => {});
       // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, since
       // kiosk runs anonymously). Fire-and-forget — never blocks the order.
       // A size line depletes the size's recipe (lib/kioskLine.js kioskDepleteItem).
@@ -1215,7 +1272,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       giftCardPayment, setGiftCardPayment, promoApplied, setPromoApplied,
       loyaltyCredit, giftCardCredit, promoCredit, grandTotal,
       customerPhone, setCustomerPhone,
-      checkIdRef, orderNumber, submitting, submitError, setSubmitError, submitOrder,
+      checkIdRef, ensureCheckId, heldCardPayment, orderNumber, submitting, submitError, setSubmitError, submitOrder,
       brandName, brandLogoUrl, attractVideoUrl, avgWaitMinutes, tableMode, loyaltyEnabled,
       // v5.8.77 (Peter, 15 Sep 2026: "the hero banner should be used", top of the menu): the
       // first Menu screen banner from Back Office, Kiosks, Settings, Hero banners.
@@ -1273,7 +1330,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
       {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
           only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
-      {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={() => submitOrder(customerName, customerPhone)} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskPayLinkGate>}
+      {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskPayLinkGate>}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -3182,7 +3239,7 @@ function LinkedScreenPay(props) {
   );
 }
 
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2 }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2, ensureCheckId = null, heldPayment = null }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
@@ -3193,6 +3250,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   const activeRyftJobRef = useRef(null);        // live terminal_jobs id, for cancel on abort
   const ryftAbortRef = useRef(null);            // AbortController for pollTerminalJob
   const payNonceRef = useRef(0);                // unique leg per payment attempt (checkKey mutex)
+  const alreadyPaidRef = useRef(false);         // the card machine said this bill is already paid
   // v5.5.900: gift card / promo entry moved to its own checkout step (ScreenGiftPromo)
   // BEFORE this screen — it was unreachable here because card payment auto-starts on mount.
 
@@ -3239,10 +3297,17 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
 
   // v5.5.871: Ryft PAX terminal payment — reuses the POS "send to terminal" job
   // path (findPaxTerminal → dispatchTerminalJob → pollTerminalJob) as a pure charge
-  // TRANSPORT. The kiosk still books its own order_queue via submitOrder() on
-  // success (onPaid), so the job carries a throwaway closed_check_id and a
-  // 'kiosk_send_to_terminal' source the POS reconciler deliberately ignores
-  // (RECONCILABLE_SOURCES) — NO closed_check is ever created for a kiosk sale.
+  // TRANSPORT. The kiosk still books its own sale via submitOrder() on success (onPaid),
+  // with a 'kiosk_send_to_terminal' source the POS reconciler deliberately ignores
+  // (RECONCILABLE_SOURCES): the job's draft has no items, so no till ever books it.
+  // 30 Sep 2026 (Barnsley kiosk refunds): the job's closed_check_id is the basket's check id
+  // (ensureCheckId), the approved job is handed to submitOrder (kioskReaderPayment), and the
+  // sale is booked under that id with the job's processor, card reference and tenders, so the
+  // till can refund it to the card. A declined retry still gets a fresh check key (nonce).
+  // A basket that already holds an approved payment is never charged again: startCardPayment
+  // books it with that payment instead (heldPayment). The check key alone does not stop that
+  // (the nonce restarts at 1 on every mount and moves on after a Try again), so this screen also
+  // never starts another charge once the card machine has answered ALREADY_PAID.
   const startRyftTerminalPayment = async () => {
     try {
       const { terminal, reason } = await findPaxTerminal({ posDeviceId: kioskId, locationId });
@@ -3256,7 +3321,8 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       const dueMinor = Math.round(total * 100);           // `total` already includes the kiosk tip
       const nonce = ++payNonceRef.current;
       const checkKey = buildCheckKey({ locationId, tableId: null, sessionId: null, leg: `kiosk-${kioskId}-${nonce}` });
-      const closedCheckId = `chk-kiosk-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${nonce}`}`;
+      const closedCheckId = (typeof ensureCheckId === 'function' && ensureCheckId())
+        || `chk-kiosk-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${nonce}`}`;
 
       const { job } = await dispatchTerminalJob({
         checkKey,
@@ -3291,7 +3357,8 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       if (finalJob?.status === 'approved') {
         setCardState('success');
         setCardStatusMsg('Payment approved');
-        setTimeout(() => onPaid(), 800);
+        const paid = kioskReaderPayment(finalJob, closedCheckId);
+        setTimeout(() => onPaid(paid), 800);
       } else if (['declined', 'cancelled', 'expired'].includes(finalJob?.status)) {
         setCardState('declined');
         setCardError(finalJob?.decline_reason || 'Payment was not completed. Please try again.');
@@ -3304,6 +3371,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       activeRyftJobRef.current = null;
       ryftAbortRef.current = null;
       if (e?.name === 'AbortError') return;   // cancelled / unmounted — not a failure
+      if (e?.code === 'ALREADY_PAID') alreadyPaidRef.current = true;
       console.warn('[kiosk] Ryft terminal payment failed:', e?.message || e);
       setCardState('error');
       setCardError(e?.message || 'Payment error');
@@ -3313,6 +3381,21 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   // v5.5.268: Server-side card payment via stripe-process-payment-on-reader
   // Same REST flow as POS CheckoutModal — edge fn resolves device → reader → Stripe
   const startCardPayment = async () => {
+    // A basket already paid on the card machine (the charge went through, the order did not save,
+    // then this screen opened again or Try again was tapped) is never charged again. submitOrder
+    // books it with the payment it holds, and only while the amount still matches the basket.
+    if (isKioskReaderPayment(typeof heldPayment === 'function' ? heldPayment() : null)) {
+      setCardState('success');
+      setCardError(null);
+      setCardStatusMsg('Payment approved');
+      onPaid();
+      return;
+    }
+    if (alreadyPaidRef.current) {
+      setCardState('error');
+      setCardError('This order has already been paid on the card machine. Please ask a member of staff.');
+      return;
+    }
     if (total <= 0) {
       onPaid();
       return;

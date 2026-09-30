@@ -26,6 +26,7 @@ import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 import { displayHoldMs, loyaltyResultHoldMs } from '../lib/customerDisplayIdle';
 import { stampDots, showPoints } from '../lib/stampSummary';
+import { displayAccent } from '../lib/customerDisplayAccent';
 
 // v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
 // order never times out on its own; the 45 s timer sent customers back to the ads mid order.
@@ -151,7 +152,9 @@ export default function CustomerDisplaySurface() {
   }, [slideImages.length]);
 
   const C = palette(theme);
-  const brand = profile?.kiosk_brand_color || (C.dark ? '#46E08C' : '#0E9E55');
+  // 30 Sep 2026 (Barnsley: the kiosk's black brand colour made every total vanish on this dark
+  // display): the brand colour only when it reads on the display, else the ServOS green.
+  const brand = displayAccent(profile?.kiosk_brand_color, { dark: C.dark, bg: C.bg });
   const logo = profile?.kiosk_brand_logo_url || '';
   const venueName = profile?.kiosk_brand_name
     || (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.locationName; } catch { return null; } })()

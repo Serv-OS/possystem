@@ -8,6 +8,7 @@ import { customerInitials } from '../lib/customerInitials';
 import { formStartsAsap } from '../lib/customerFormAsap';
 import { activePhoneRegion } from '../lib/customerLookup';
 import { storedPhoneIs } from '../../supabase/functions/_shared/phoneKey.js';
+import { orderNotesFromForm } from '../lib/orderCustomerNotes';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, showDelayedToast, takeawayCustomerDetails, autoJoinCustomerByEmail } = useStore();
@@ -162,7 +163,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     // v5.5.799: skipped in name-only mode — there's no phone to dedupe on.
     let finalName = name.trim();
     let finalEmail = email.trim();
-    let finalNotes = notes.trim();
+    // 30 Sep 2026 (Barnsley KDS #58 "6 expired"): the order carries only the notes typed here for
+    // THIS order. A matched profile's own notes (customers.notes, e.g. the importer's "6 expired")
+    // never become the order's notes, so they never reach the kitchen (lib/orderCustomerNotes.js).
+    const finalNotes = orderNotesFromForm(notes);
     // v5.5.894: allergens must SURVIVE the rebuild — this modal used to construct a fresh
     // customer object and silently drop them, so a pulled-up profile lost its allergy record.
     let finalAllergens = Array.isArray(existing?.allergens) ? existing.allergens : [];
@@ -184,7 +188,6 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         // Use existing profile — operator keeps their typed name/email if they entered something new
         finalName = name.trim() || match.name || 'Customer';
         finalEmail = email.trim() || match.email || '';
-        finalNotes = notes.trim() || match.notes || '';
         if (Array.isArray(match.allergens) && match.allergens.length) finalAllergens = match.allergens;
         showToast(`Matched existing customer: ${match.name}`, 'success');
       }

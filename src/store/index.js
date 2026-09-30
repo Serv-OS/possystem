@@ -688,6 +688,7 @@ const putBackIfRefused = (key, row, words) => (r) => {
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
 import { orderCollectionLabel } from '../lib/collectionLabel';
+import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -2512,7 +2513,10 @@ export const useStore = create((set, get) => ({
     // this carries the guest's phone/profile onto the table so checkout can trigger
     // the loyalty flow (or use their existing membership) automatically.
     const tbl = get().tables.find(t => t.id === tableId);
-    const seatCustomer = customer || tbl?.reservation?.customer || null;
+    // 30 Sep 2026 (Barnsley KDS #58 "6 expired"): the order takes the guest, never the customer
+    // RECORD's notes. A reservation saved the whole search row (customers.notes included), and
+    // the kitchen reads the order customer's notes (lib/orderCustomerNotes.js).
+    const seatCustomer = withoutRecordNotes(customer || tbl?.reservation?.customer || null);
     const session = {
       id: `ORD-${++_orderNum}`,
       items: [], firedCourses: [],
@@ -4162,7 +4166,7 @@ export const useStore = create((set, get) => ({
         // Primary path: search within the organisation
         const { data, error: searchErr } = await supabase
           .from('customers')
-          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, allergens')
           .eq('org_id', orgId)
           .is('deleted_at', null)
           .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,phone_raw.ilike.%${safe}%,email.ilike.%${safe}%`)
@@ -4189,6 +4193,10 @@ export const useStore = create((set, get) => ({
           }
         } catch (e) { console.warn('[searchCustomersLive] customer-search threw:', e?.message || e); }
       }
+      // 30 Sep 2026 (Barnsley KDS #58): the till never carries a customer RECORD's notes. The
+      // selects above leave them out; customer-search still returns them, so they are dropped
+      // here too, before the rows reach a form, a reservation or the search cache.
+      enriched = (enriched || []).map(withoutRecordNotes).filter(Boolean);
       // 27 Sep 2026: the link search stops here, phoneless rows only (customer-search returns any).
       if (phoneless) return phonelessResults(enriched);
       // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
@@ -4205,12 +4213,12 @@ export const useStore = create((set, get) => ({
         const orFilter = phoneFilters.map(p => `phone.eq.${p},phone_raw.eq.${p}`).join(',');
         const { data: fallback } = await supabase
           .from('customers')
-          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, allergens')
           .eq('org_id', orgId)
           .is('deleted_at', null)
           .or(orFilter)
           .limit(8);
-        if (fallback?.length) enriched = fallback;
+        if (fallback?.length) enriched = fallback.map(withoutRecordNotes).filter(Boolean);
       }
       // Merge into customerHistory cache, deduped
       const merged = [...enriched, ...(get().customerHistory || [])];
