@@ -31,6 +31,7 @@ import {
 } from '../lib/payments/terminalJobs';
 import { checkoutOrderRef } from '../lib/payments/terminalJobCloser';
 import { getNextOrderRefLocal } from '../lib/db';
+import { suppressReaderTip } from '../lib/payments/readerTipRule';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1324,7 +1325,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
   const isBarTab = orderType==='bar-tab';
   // Drive thru (16 Sep 2026) skips the tip prompt like takeaway.
+  // 30 Sep 2026: skipTip now only drives the Ryft customer display ask (Ryft readers have no tip
+  // settings of their own). An Adyen reader follows its OWN tip settings for every order type except
+  // a bar tab: Peter, "the tip should follow the rules we set on the card reader side".
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection' || orderType==='drive-thru';
+  const skipReaderTip = suppressReaderTip(orderType);
 
   // v5.5.808: resolve the venue's card processor at modal level too — the card
   // press, split card legs and the terminal flow all dispatch by this. Defaults
@@ -1982,8 +1987,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // it fell closed to "no bands" and showed the customer no tip prompt at
         // all. The venue read that as "tipping is off".
         //
-        // skipTip is still ours to decide — a bar tab, takeaway or collection
-        // takes no tip whatever the terminal is configured for — but it travels
+        // skipReaderTip is still ours to decide (30 Sep 2026: only a bar tab; the
+        // reader's own tip settings decide every other order type), and it travels
         // as a suppression flag, which can only ever make the job LESS tippable.
         //
         // v5.6.90 — location_reader_settings.tipping_enabled no longer feeds this
@@ -1995,7 +2000,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // turn them back on. Venue-level tipping on/off already lives in
         // terminal_devices.tip_config, set per terminal in the Adyen / ServOS
         // panels and resolved server-side by terminal-job-create.
-        suppressTip: skipTip,
+        suppressTip: skipReaderTip,
         // v5.7.5 - the MAIN POS checkout is the one surface allowed to open a
         // tip-on-receipt window. NOT for a bar tab: this same modal is also
         // mounted by BarSurface, and the bar flow stays exactly as it was (a

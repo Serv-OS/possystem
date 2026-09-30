@@ -12,6 +12,7 @@ export const CHANGELOG = [
     items: [
       "Push to POS: the Sync POS banner shows again on running tills. A venue's menu push had grown past the 1 MB a live update can carry (Barnsley, Huddersfield and Preston since 29 Sep, Leeds close), so the till got the notice without the menu and quietly ignored it; only closing the app loaded the new menu. The till now fetches the menu itself when the notice arrives without it, so a push of any size shows the banner, and kitchen screens, kiosks and handhelds apply it automatically as before.",
       "Sync POS banner: pressing Later now hides only that push. It used to hide every later push too until someone signed out.",
+      "Card reader tips follow the card reader's own settings (Back Office, Card readers, Tips) for every order type. The till used to stop the reader asking on every takeaway, collection and drive thru sale, so a coffee shop reader with tips switched on almost never asked (Barnsley). Each reader has its own switch, so tips can be on at the counter and off at the drive thru. Bar tabs, phone tills and kiosks are unchanged.",
     ],
   },
   {
