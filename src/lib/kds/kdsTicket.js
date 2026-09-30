@@ -96,6 +96,10 @@ export function shortRef(ref) {
  *   isTable     true when the ticket belongs to a table (table orders, QR at a table)
  *   customerName, orderRef (full ref, shortened here for display), appCode (delivery app
  *   code, wins over the ref), source (till name), staff, note (order level kitchen note)
+ *   ref         the FULL order_queue ref (30 Sep 2026): how the KDS finds every row of one order
+ *               (the kitchen note, src/lib/kds/kdsOrderNote.js) and the order_queue row to mark
+ *               ready or collected when the last screen bumps (src/lib/kds/kdsAutoStatus.js).
+ *               null for a table or bar tab send, which has no order_queue row.
  */
 export function buildTicketMeta({ channel, orderType, isTable = false, customerName, orderRef, appCode, source, staff, note } = {}) {
   const ch = clean(channel);
@@ -109,6 +113,7 @@ export function buildTicketMeta({ channel, orderType, isTable = false, customerN
     isTable: table,
     customerName: clean(customerName),
     orderNo,
+    ref: clean(orderRef),
     source: clean(source),
     staff: clean(staff),
     note: cleanNote(note),
@@ -176,8 +181,9 @@ export function ticketMeta(row) {
   const raw = row?.meta;
   if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.v) {
     // orderNo was already shortened by the writer. Pass it through as-is (as appCode), or a
-    // delivery app code shaped like "R4821" would be shortened a second time to "21".
-    return buildTicketMeta({ ...raw, orderRef: null, appCode: raw.orderNo });
+    // delivery app code shaped like "R4821" would be shortened a second time to "21". The full
+    // ref (rows since 30 Sep 2026) rides along as orderRef and comes out as `ref` unchanged.
+    return buildTicketMeta({ ...raw, orderRef: raw.ref || null, appCode: raw.orderNo });
   }
   return parseLegacyTicket(row);
 }
@@ -294,6 +300,24 @@ export function courseGroups(items, firedCourses) {
   ];
 }
 
+/**
+ * The void notice a ticket carries. 30 Sep 2026 (Peter, Coffee Boy: "can't void anything other
+ * than table orders"): a void now reaches the kitchen. The till flags the voided lines on the
+ * kds_tickets row (store voidKitchenLines); this reads them back for the card.
+ *   lines  the voided lines (ticketLine shape), in ticket order
+ *   all    true when every line on the ticket is voided (the whole order was voided)
+ *   label  the words on the red block
+ */
+export function voidState(items) {
+  const list = Array.isArray(items) ? items : [];
+  const lines = list.map(ticketLine).filter(l => l.voided);
+  const all = list.length > 0 && lines.length === list.length;
+  return {
+    lines, all,
+    label: lines.length === 0 ? null : all ? 'ORDER VOIDED' : `VOID ${lines.length === 1 ? '1 LINE' : `${lines.length} LINES`}`,
+  };
+}
+
 /** Whole minutes since sent. An unknown or future time reads as 0, never NaN (v5.5.914). */
 export function minutesSince(sentAt, now) {
   const ts = sentAt instanceof Date ? sentAt.getTime()
@@ -404,6 +428,7 @@ export function ticketView(row, queueRow = null) {
     staff: meta.staff,
     note: meta.note,
     groups: courseGroups(row?.items, row?.firedCourses),
+    voids: voidState(row?.items),
   };
 }
 

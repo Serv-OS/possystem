@@ -41,7 +41,7 @@ test('the void stores seatedAt, else openedAt, else nothing', () => {
 
 test('pins: the void writes the key, and every closed test uses the one rule', () => {
   const store = read('../store/index.js');
-  assert.match(store, /voided: true, status: 'void', method: 'void',\n[^\n]*\n[^\n]*\n\s+seatedAt: voidOccupationKey\(session\),/);
+  assert.match(store, /voided: true, status: 'voided', method: 'void',\n[^\n]*\n[^\n]*\n\s+seatedAt: voidOccupationKey\(session\),/);
   const closure = read('../sync/sessionClosure.js');
   assert.match(closure, /if \(checkClosesOccupation\(tableId, session, c\)\) return true;/);
   const master = read('../sync/MasterSync.js');

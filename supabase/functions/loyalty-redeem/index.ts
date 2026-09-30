@@ -10,6 +10,8 @@
 //   closed_check_id, -- for audit trail (optional at time of redeem)
 //   staff_id?,
 //   member_token?,   -- the member's loyalty session token (online checkout)
+//   redeem_slot?,    -- 30 Sep 2026: the n-th reward of the SAME stamp programme on one check
+//                       (2, 3, ...). Absent or 1 keeps the old key exactly. See the stamp path.
 // }
 //
 // AUTHORITY (database fence stage 1, 19 Sep 2026): the caller must be a device BOUND to the venue
@@ -55,6 +57,7 @@ Deno.serve(async (req) => {
     closed_check_id,
     staff_id,
     member_token,
+    redeem_slot,
   } = body as any;
 
   if (!customer_id) return json({ error: 'customer_id required' }, 400);
@@ -128,9 +131,19 @@ Deno.serve(async (req) => {
     // Idempotency — same insert-first shape as the points path below. A SELECT-then-INSERT
     // let two concurrent calls both pass the lookup; the ledger row IS the redemption here,
     // so its UNIQUE idempotency_key is the only thing that can settle the race.
+    //
+    // 30 Sep 2026 (Peter, Coffee Boy: "redeem multiple stamp cards on the same order"): the till
+    // now commits one call PER reward, and two free drinks of the same programme on one check
+    // would share this key, so the second came back already_processed having redeemed nothing.
+    // The n-th reward of a programme on a check carries redeem_slot n (lib/loyaltyMultiRedeem.js
+    // withSlots) and gets its own key; slot 1 (or no slot) is the old key byte for byte, so
+    // every parked replay and every older till keeps working. loyalty-refund restores these rows
+    // by order_ref (the check), not by key, so the slot changes nothing there.
+    const slot = Math.max(1, Math.trunc(Number(redeem_slot) || 1));
+    const slotSuffix = slot > 1 ? `:${slot}` : '';
     const idemKey = closed_check_id
-      ? `stampredeem:${closed_check_id}:${prog.id}`
-      : `stampredeem:${customer_id}:${prog.id}:${Math.floor(Date.now() / 30000)}`;
+      ? `stampredeem:${closed_check_id}:${prog.id}${slotSuffix}`
+      : `stampredeem:${customer_id}:${prog.id}:${Math.floor(Date.now() / 30000)}${slotSuffix}`;
 
     const { data: ins, error: insErr } = await opsAdmin
       .from('stamp_transactions')
@@ -140,7 +153,7 @@ Deno.serve(async (req) => {
         location_id,
         stamps: 0,
         type: 'redeem',
-        note: `Redeemed: ${rewardInfo.name}${staff_id ? ` (staff ${staff_id})` : ''}`,
+        note: `Redeemed: ${rewardInfo.name}${slot > 1 ? ` (reward ${slot} on this order)` : ''}${staff_id ? ` (staff ${staff_id})` : ''}`,
         order_ref: closed_check_id || null,
         idempotency_key: idemKey,
       })

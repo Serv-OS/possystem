@@ -256,6 +256,10 @@ test('customer and staff agree: an item that is alcohol only through cats, and a
     assert.equal(customer, true);
     assert.equal(staff, customer);
   }
-  // Without the menu rows an order item cannot see cats.
-  assert.equal(orderHasAlcohol(carts[0].map(kioskOrderItem), set), false);
+  // 30 Sep 2026: the kiosk order item now carries the item's cats (lib/kioskLine.js, for
+  // production routing), so staff agree with the customer even without the menu rows.
+  assert.deepEqual(carts[0].map(kioskOrderItem)[0].cats, ['pizza', 'cocktails']);
+  assert.equal(orderHasAlcohol(carts[0].map(kioskOrderItem), set), true);
+  // An item with no cats still needs its menu row to be seen through a linked modifier.
+  assert.equal(orderHasAlcohol(carts[1].map(kioskOrderItem), set), false);
 });

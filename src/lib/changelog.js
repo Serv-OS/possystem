@@ -7,6 +7,32 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.20',
+    date: '30 Sep 2026',
+    items: [
+      "Kitchen screens: tap a ticket to add a note for the kitchen (up to 200 characters). It shows on every kitchen screen that holds that order and never reaches the till, receipts or reports.",
+      "Kitchen screens: two new venue switches in Back Office, Channels, Order screens, \"When the kitchen bumps an order\": mark the order Ready when the last screen bumps it, and optionally Collected too (paid orders only). Same effect as tapping Ready on the order screen, including the customer's ready message. Tills and kitchen screens must be on this version before turning it on.",
+      "Kitchen screens: tapping a count pill at the top (for example Dine-in name) used to quietly hide every other order type until the app was restarted; at Barnsley on 30 Sep that hid a kiosk order and two takeaways for 3 hours. The screen now shows a clear banner (Showing Dine-in name only. 3 hidden. Show all), goes back to All by itself after 3 minutes or as soon as a hidden order arrives, and the kitchen list read has a timeout, retries and a visible error.",
+      "Production centres: sizes now appear under their product name (Latte, Large) instead of a bare size, and sub categories can be ticked on their own so, for example, Smoothies can go to a different screen from the rest of Drinks. Existing routing is unchanged.",
+      "Tills: each device profile can set the order type a till starts on (Back Office, Device profiles, Starts on). A till with only one order type enabled starts on it automatically, so Huddersfield's drive thru till opens on Drive thru.",
+      "Tills: new device profile switch \"Ask for a flag number on dine in orders\" for coffee shops with numbered signs instead of tables. The till asks for the number before Send or Pay (it cannot be skipped); kitchen screens and dockets show Table 30 · #09, the receipt and Orders show Table 30. Works like the kiosk's Flag number mode.",
+      "Tills: the customer details setting (Back Office, Order types, now called Customer details on the till) covers dine in as well as takeaway and collection: Not needed, Name only, or Full details. The Add customer chip shows on every order type, including an open table.",
+      "Tills: any order can be voided, not only table orders: a sent line or the whole order on takeaway, collection, drive thru and dine in without a table, and every live order on the Orders screen. The kitchen now gets the void (red VOID block and a VOID docket). Voids recorded since 28 Sep were missing from the Exceptions, Z, Shifts and Servers reports; they show again.",
+      "Loyalty: Back Office, Customers now lets owners and managers adjust a member's stamps or completed cards with a reason. Every change is recorded in the loyalty ledger.",
+      "Loyalty: several stamp rewards can be redeemed on one order (up to the rewards available), each on a different eligible item. The till shows 2 of 3 rewards used. Refunding an order gives its stamp rewards back.",
+      "Customer display: its own name, colours and logo, set in Back Office, Device profiles, Customer display branding, separate from the kiosk. Nothing changes until it is set. Needs the 30 Sep database update; until then the display shows the kiosk branding as before.",
+    ],
+  },
+  {
+    v: '5.11.19',
+    date: '30 Sep 2026',
+    items: [
+      "Push to POS: the Sync POS banner shows again on running tills. A venue's menu push had grown past the 1 MB a live update can carry (Barnsley, Huddersfield and Preston since 29 Sep, Leeds close), so the till got the notice without the menu and quietly ignored it; only closing the app loaded the new menu. The till now fetches the menu itself when the notice arrives without it, so a push of any size shows the banner, and kitchen screens, kiosks and handhelds apply it automatically as before.",
+      "Sync POS banner: pressing Later now hides only that push. It used to hide every later push too until someone signed out.",
+      "Card reader tips follow the card reader's own settings (Back Office, Card readers, Tips) for every order type. The till used to stop the reader asking on every takeaway, collection and drive thru sale, so a coffee shop reader with tips switched on almost never asked (Barnsley). Each reader has its own switch, so tips can be on at the counter and off at the drive thru. Bar tabs, phone tills and kiosks are unchanged.",
+    ],
+  },
+  {
     v: '5.11.18',
     date: '29 Sep 2026',
     items: [

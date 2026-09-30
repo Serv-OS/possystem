@@ -17,6 +17,21 @@ import { money } from './currency.js';
 import { v2ReceiptLines, taxLineLabel, breakdownLabel } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
+import { receiptRewardLines } from './loyaltyMultiRedeem.js';
+
+/**
+ * The reward lines for a check: what the till staged (check.loyaltyRewards, [{ label, amount }]),
+ * else the rewards kept on the loyalty tender ([{ name, item, amount }], tenders.js), else the
+ * staged loyalty object itself (an in-memory History record). [] when the check used none.
+ */
+export function receiptRewardsOf(check) {
+  if (Array.isArray(check?.loyaltyRewards)) return check.loyaltyRewards.filter(l => l && Number(l.amount) > 0);
+  const tender = (Array.isArray(check?.tenders) ? check.tenders : []).find(t => t && t.method === 'loyalty' && Array.isArray(t.rewards));
+  if (tender) {
+    return tender.rewards.map(r => ({ label: `Reward: ${r?.name || 'Loyalty reward'}${r?.item ? ` (${r.item})` : ''}`, amount: Number(r?.amount) || 0 }));
+  }
+  return receiptRewardLines(check?.loyaltyRedemption).filter(l => l.amount > 0);
+}
 
 /** db.js shortOrderRef, mirrored so this file stays import free of Supabase: 'R1247' gives '47'. */
 export function shortOrderRef(ref) {
@@ -157,6 +172,13 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
   (Array.isArray(check?.discounts) ? check.discounts : []).forEach(d => {
     const amt = Number(d.amount ?? d.value) || 0;
     if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-${mny(amt)}`);
+  });
+  // 30 Sep 2026: each loyalty reward on its own line ("Reward: Free Drink (Latte)"), so a member
+  // who used two stamp cards on one order sees both. The till passes them on check.loyaltyRewards
+  // (lib/loyaltyMultiRedeem.js receiptRewardLines); a reprint reads them off the loyalty tender.
+  // A check with no reward prints exactly as before (the goldens pin that).
+  receiptRewardsOf(check).forEach(l => {
+    if (l.amount > 0) b.twoCol(String(l.label).substring(0, 34), `-${mny(l.amount)}`);
   });
   if(totals.service>0) b.twoCol('Service',mny(totals.service));
   if(totals.tip>0) b.twoCol('Tip',mny(totals.tip));

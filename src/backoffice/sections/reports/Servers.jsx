@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';
 import { pctDelta, reportClock, workedTime } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
+import { voidedValue } from '../../../lib/voidRules';
 
 const SORT_COLS = [
   { id:'revenue',  label:'Revenue',  fmt: r => r.revenue },
@@ -42,7 +43,7 @@ function rollUp(checks, clock) {
     const isVoid = c.status === 'voided';
     if (isVoid) {
       map[s].voidCount++;
-      map[s].voidValue += c.total || 0;
+      map[s].voidValue += voidedValue(c);   // 30 Sep 2026: a tombstone's value is on its lines
     } else {
       map[s].checks++;
       map[s].covers  += c.covers || 1;
