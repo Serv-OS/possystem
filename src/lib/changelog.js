@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.21',
+    date: '30 Sep 2026',
+    items: [
+      "Tills: with Customer details on the till set to Not needed, a dine in order with no table now sends straight to the kitchen with no name asked (it shows its short ref on the order screen). Name only and Full details still ask. Reported on the Provo test till within minutes of 5.11.20.",
+      "Tills: the order type a till starts on is now applied every time the order screen shows with nothing rung up, not only on boot and after an order, so a till whose profile says Starts on Takeaway cannot sit on Dine in.",
+    ],
+  },
+  {
     v: '5.11.20',
     date: '30 Sep 2026',
     items: [
