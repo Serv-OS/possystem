@@ -174,6 +174,8 @@ import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
+// 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag number.
+import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber } from '../lib/tillOrderType';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
 import { voidOccupationKey } from '../lib/rowWriteFence';
 import {
@@ -1549,6 +1551,15 @@ export const useStore = create((set, get) => ({
     // screen they are working on mid-shift.
     const prevDefaultSurface = get().deviceConfig?.defaultSurface;
     set({ deviceConfig: finalConfig, trainingMode: training });
+    // 30 Sep 2026 (Peter, Coffee Boy): the till starts on the profile's default order type
+    // (lib/tillOrderType.js defaultOrderTypeFor), so a drive thru only till no longer opens on
+    // Dine in. Boot, Apply to this terminal and Push to POS all land here. Only while nothing is
+    // being rung up: a floor table is always dine in, and a walk in order with items keeps the
+    // type staff picked for it. clearWalkIn applies the same default after every order.
+    if (!get().activeTableId && !get().walkInOrder?.items?.length) {
+      const startType = defaultOrderTypeFor(finalConfig);
+      if (startType !== get().orderType) set({ orderType: startType });
+    }
     // v5.7.35: an explicit URL surface pin (?mode=kds) beats the profile's
     // default surface — the operator asked for a specific screen by link.
     if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface && !URL_SURFACE_PIN) set({ surface: finalConfig.defaultSurface });
@@ -3599,14 +3610,20 @@ export const useStore = create((set, get) => ({
         }
       }
       const pendingItems = order.items.filter(isUnsentLine);
-      const label = customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
       // v5.8.66: the ref is taken HERE, before the tickets, so the KDS can show the receipt
       // number (#35). It was taken a few lines further down; the value and the single
       // getNextOrderRefLocal call are unchanged, only the moment moved.
       const ref = order.ref || getNextOrderRefLocal();
+      // 30 Sep 2026 (Peter, Coffee Boy): a dine in order with a flag number is a table ticket,
+      // "Table 30 · #09", exactly as a kiosk flag order (kioskTicketLabels rule 2): the KDS
+      // headline is the table, the paper header too, and no floor table is named like that so
+      // fireCourse never picks it up. A flag typed before the order became a takeaway is ignored.
+      const flag = orderFlag(order, orderType);
+      const label = flag ? flagTicketLabel(flag, ref)
+        : customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const walkInMeta = buildTicketMeta({
-        channel: 'till', orderType,
+        channel: 'till', orderType, isTable: !!flag,
         customerName: customer?.name, orderRef: ref,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(order.orderNote, customer?.notes),
@@ -3637,7 +3654,13 @@ export const useStore = create((set, get) => ({
       // (ref is taken above, before the KDS tickets, v5.8.66)
       const queueEntry = {
         ref, type: orderType,
-        customer: customer ? { ...customer } : { name: customer?.name || label },
+        // The flag rides in customer (the jsonb QueueSync persists, as the kiosk's kioskTable
+        // does) so Orders shows "Table 30" and a reopened order keeps its flag. With no customer
+        // the name was the ticket label; for a flag order that is "Table 30 · #09", which Orders
+        // would show as the customer's name and a reopen would attach as a real customer, so a
+        // flag order with no customer gets an empty name (Orders then shows the order ref, as an
+        // unnamed walk in does).
+        customer: { ...(customer ? { ...customer } : { name: flag ? '' : label }), ...(flag ? { tableFlag: flag } : {}) },
         // v4.6.5 follow-up: align with dine-in visual semantics. Table sessions persist
         // the fired+sent mutation on their items until payment, so reopening a table shows
         // them green. Walk-ins had the same mutation applied to walkInOrder but clearWalkIn()
@@ -3933,7 +3956,13 @@ export const useStore = create((set, get) => ({
 
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
-  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null }),
+  // 30 Sep 2026: the next order starts on the profile's default order type (lib/tillOrderType.js),
+  // not always dine in. Floor tables still open as dine in (openTable and friends).
+  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null })),
+  // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
+  // (FlagNumberModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
+  // and the prompt never shows twice. Digits only, or cleared.
+  setWalkInTableFlag: (flag) => set(s => ({ walkInOrder: { ...(s.walkInOrder || {}), tableFlag: cleanFlagNumber(flag) } })),
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -4017,7 +4046,17 @@ export const useStore = create((set, get) => ({
   setAllergens: (arr) => set({ allergens: Array.isArray(arr) ? [...arr] : [] }),
 
   // ── Order type / customer ─────────────────
-  orderType: 'dine-in',
+  // 30 Sep 2026 (Peter, Coffee Boy): the till STARTS on the profile's default order type, read
+  // from the cached device config at module load the way trainingMode is. setDeviceConfig also
+  // applies it, but every boot path is change gated (App.jsx deviceConfigChanged), so on a plain
+  // reload prev equals next and it never runs: without this a drive thru only till came up on
+  // Dine in after every restart. With no cached config: dine in, as before.
+  orderType: (() => {
+    try {
+      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
+      return defaultOrderTypeFor(raw ? JSON.parse(raw) : null);
+    } catch { return 'dine-in'; }
+  })(),
   // v4.5.6: when order type changes (dine-in / takeaway / collection / delivery),
   // reprice the order the toggle belongs to against the new channel:
   //   - walkInOrder.items (walk-in / takeaway / collection / delivery flow), always
@@ -7058,7 +7097,9 @@ export const useStore = create((set, get) => ({
       id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
-      tableLabel: null,
+      // 30 Sep 2026: a dine in order with a flag number books "Table 30" (the receipt prints
+      // check.tableLabel, printDoc.js). tableId stays null: it is not a floor table.
+      tableLabel: flagTableLabel(orderFlag(walkInOrder, orderType)),
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19

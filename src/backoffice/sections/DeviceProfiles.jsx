@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
+// 30 Sep 2026 (Peter, Coffee Boy): the order type a till starts on, and the dine in flag prompt.
+import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, tillOrderColumnsReady, tillOrderColumnsToKeep, DEFAULT_ORDER_TYPE_COLUMN, FLAG_PROMPT_COLUMN } from '../../lib/tillOrderType';
+import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watches the till order type column flag
 
 const SURFACES = [
   { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
@@ -34,6 +37,51 @@ const ORDER_TYPES = [
   // till that never ticks it never offers it. No new column: device_profiles.enabled_order_types.
   { id:'drive-thru', label:'Drive thru', icon:'🚗' },
 ];
+const orderTypeLabel = (t) => ORDER_TYPES.find(o => o.id === t)?.label || (t === 'delivery' ? 'Delivery' : t);
+
+// 30 Sep 2026: true once device_profiles has default_order_type and dine_in_flag_prompt (the
+// 20260930c migration), false while it does not, null until the profiles have loaded. Set once
+// by loadFromDB (setTillOrderColumns); read by toDbRow and the save guard, and watched by the
+// editor (useTillOrderColumns) so a block already open when the answer lands redraws itself.
+// Only true shows the two settings and sends the columns (PGRST204 would fail the whole save
+// before the migration). A module variable, not editor state, so ProfileEditor's props stay as
+// they are.
+let _tillOrderColumns = isMock ? true : null;
+const _tillOrderWatchers = new Set();
+function setTillOrderColumns(value) {
+  _tillOrderColumns = value;
+  _tillOrderWatchers.forEach(fn => fn());
+}
+const subscribeTillOrderColumns = (fn) => { _tillOrderWatchers.add(fn); return () => { _tillOrderWatchers.delete(fn); }; };
+const readTillOrderColumns = () => _tillOrderColumns;
+function useTillOrderColumns() {
+  return useSyncExternalStore(subscribeTillOrderColumns, readTillOrderColumns);
+}
+
+// 30 Sep 2026: the stale tab guard for the two till order type columns (the v5.7.9 GUARDED_FIELDS
+// class: a tab that opened the profile before another tab set "Starts on" must not wipe it with a
+// rename). Kept beside GUARDED_FIELDS rather than in it so the fresh read never names a column
+// that is not there yet (lib/tillOrderType.js tillOrderColumnsToKeep decides). Reads the stored
+// values for the keys this editor session left alone and puts them on the row; a failed read drops
+// the columns so PostgREST leaves them as they are. Returns the kept values as the form holds them
+// (for this tab's list), or null when nothing was kept.
+async function keepTillOrderColumns(row, touched) {
+  const keep = tillOrderColumnsToKeep(touched, _tillOrderColumns);
+  if (!keep.length || !row?.id) return null;
+  const fresh = await supabase.from('device_profiles')
+    .select(keep.map(([, col]) => col).join(', '))
+    .eq('id', row.id).maybeSingle();
+  const kept = {};
+  for (const [formKey, col] of keep) {
+    if (fresh.data) {
+      row[col] = fresh.data[col];   // untouched: keep the DB value
+      kept[formKey] = col === FLAG_PROMPT_COLUMN ? fresh.data[col] === true : (fresh.data[col] || null);
+    } else {
+      delete row[col];              // new row, or the read failed: omit the column
+    }
+  }
+  return fresh.data ? kept : null;
+}
 
 // v4.5.1: trimmed to only the features actually wired in the codebase.
 // Removed (Apr 26): kds (KDS is now a standalone product), kiosk (own surface, not a flag),
@@ -108,6 +156,9 @@ export default function DeviceProfiles() {
         quickScreenEnabled: p.quick_screen_enabled !== false,
         autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
         orderNotifications: p.order_notifications !== false,
+        // 30 Sep 2026: the order type the till starts on (null = automatic) and the flag prompt.
+        defaultOrderType: p[DEFAULT_ORDER_TYPE_COLUMN] || null,
+        dineInFlagPrompt: p[FLAG_PROMPT_COLUMN] === true,
         menuId: p.menu_id,
         sortOrder: p.sort_order || 0,
         deviceCount: countMap[p.id] || 0,
@@ -128,6 +179,12 @@ export default function DeviceProfiles() {
       }));
       setProfiles(mapped);
       try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
+      // 30 Sep 2026: are the order type columns there yet? The rows say so; with no rows, ask.
+      if (profileData?.length) setTillOrderColumns(tillOrderColumnsReady(profileData[0]));
+      else if (profileData) {
+        const probe = await supabase.from('device_profiles').select(DEFAULT_ORDER_TYPE_COLUMN).limit(1);
+        setTillOrderColumns(!probe.error);
+      }
     };
     loadFromDB();
   }, []);
@@ -145,6 +202,12 @@ export default function DeviceProfiles() {
     quick_screen_enabled: p.quickScreenEnabled !== false,
     auto_print_receipt_on_close: p.autoPrintReceiptOnClose !== false,
     order_notifications: p.orderNotifications !== false,
+    // 30 Sep 2026: only once the columns exist (PGRST204 would fail the whole save before then).
+    // The default is kept only while its type is still enabled (cleanDefaultOrderType).
+    ...(_tillOrderColumns === true ? {
+      [DEFAULT_ORDER_TYPE_COLUMN]: cleanDefaultOrderType(p.defaultOrderType, p.enabledOrderTypes),
+      [FLAG_PROMPT_COLUMN]: p.dineInFlagPrompt === true,
+    } : {}),
     menu_id: p.menuId || null,
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
@@ -209,6 +272,9 @@ export default function DeviceProfiles() {
         if (!locId) throw new Error('Could not resolve location ID');
 
         const row = toDbRow(updated, locId);
+        // 30 Sep 2026: keep the stored Starts on / flag number unless this session changed them.
+        const keptTillOrder = await keepTillOrderColumns(row, touched);
+        if (keptTillOrder) setProfiles(ps => ps.map(p => p.id === row.id ? { ...p, ...keptTillOrder } : p));
         // Use update for existing profiles, insert for new ones. The existence check
         // doubles as the fresh read for the clobber guard (no extra round trip).
         let error;
@@ -361,6 +427,8 @@ export default function DeviceProfiles() {
                   {prof.trainingMode && <ConfigRow label="Training mode" value="🎓 ON — nothing committed" valueColor="#B45309"/>}
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
                   <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
+                  <ConfigRow label="Starts on" value={defaultOrderTypeSummary(prof, orderTypeLabel)}/>
+                  {prof.dineInFlagPrompt && <ConfigRow label="Flag number" value="Asked on dine in orders" valueColor="var(--acc)"/>}
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Auto-print receipt" value={prof.autoPrintReceiptOnClose !== false ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Section" value={prof.assignedSection || 'All sections'}/>
@@ -389,6 +457,8 @@ export default function DeviceProfiles() {
                     autoPrintReceiptOnClose: prof.autoPrintReceiptOnClose !== false,
                     menuId: prof.menuId,
                     receiptPrinterId: prof.receiptPrinterId,
+                    defaultOrderType: prof.defaultOrderType || null,   // 30 Sep 2026 (lib/tillOrderType.js)
+                    dineInFlagPrompt: prof.dineInFlagPrompt === true,
                   });
                   showToast(`"${prof.name}" applied to this terminal`, 'success');
                 }} style={{
@@ -416,6 +486,64 @@ function ConfigRow({ label, value, valueColor, truncate }) {
   );
 }
 
+// ── Starts on + flag number (30 Sep 2026) ─────────────────────────────────────
+// Peter, Coffee Boy: "Huddersfield have one POS that only does drive thru but it's defaulting to
+// Dine in", and for coffee shops with numbered flags and no fixed tables, "prompts for a table
+// flag ... then the KDS and production tickets say Table and the number typed". Both live on the
+// device profile (lib/tillOrderType.js). Greyed out until the 20260930c migration has run.
+const TILL_LABEL = { display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 };
+const TILL_HINT = { fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.45 };
+
+function TillOrderTypeSettings({ form, upd }) {
+  const ready = useTillOrderColumns();
+  if (ready !== true) {
+    return (
+      <div style={{ marginBottom:18 }}>
+        <label style={TILL_LABEL}>Starts on and flag number</label>
+        <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.45 }}>
+          {ready === false
+            ? 'Choosing the order type a till starts on, and asking for a flag number on dine in orders, need a database update first. Until then a till starts on its only enabled order type, or dine in.'
+            : 'These settings are still loading. If they do not appear, refresh Back Office.'}
+        </div>
+      </div>
+    );
+  }
+  const enabled = form.enabledOrderTypes || [];
+  const current = cleanDefaultOrderType(form.defaultOrderType, enabled) || '';
+  const auto = defaultOrderTypeFor({ enabledOrderTypes: enabled, defaultOrderType: null });
+  const flagOn = form.dineInFlagPrompt === true;
+  const dineIn = enabled.includes('dine-in');
+  return (
+    <div style={{ marginBottom:18 }}>
+      <label style={TILL_LABEL}>Starts on</label>
+      <select aria-label="Order type the till starts on" value={current} onChange={e => upd('defaultOrderType', e.target.value || null)}
+        style={{ width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
+        <option value="">Automatic ({orderTypeLabel(auto)})</option>
+        {ORDER_TYPES.filter(t => enabled.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+      </select>
+      <div style={TILL_HINT}>The order type a till on this profile opens on, and goes back to after each order. Automatic means the only enabled type, or dine in. Floor tables are always dine in.</div>
+
+      <label style={{ ...TILL_LABEL, marginTop:14 }}>Flag number</label>
+      <button type="button" onClick={() => upd('dineInFlagPrompt', !flagOn)} aria-pressed={flagOn} style={{
+        width:'100%', padding:'11px 14px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+        background: flagOn ? 'var(--acc-d)' : 'var(--bg3)',
+        border:`1.5px solid ${flagOn ? 'var(--acc)' : 'var(--bdr)'}`,
+        color: flagOn ? 'var(--acc)' : 'var(--t2)', fontSize:13, fontWeight:700, transition:'all .1s',
+        display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
+      }}>
+        <span>Ask for a flag number on dine in orders</span>
+        <span style={{ fontSize:11, fontWeight:800 }}>{flagOn ? 'ON' : 'OFF'}</span>
+      </button>
+      <div style={TILL_HINT}>
+        {flagOn
+          ? 'Before a dine in order is sent or paid, staff type the number on the customer\'s flag. Staff cannot skip it. Kitchen screens, kitchen tickets, the receipt and Orders then say Table and that number.'
+          : 'For coffee shops with numbered flags and no fixed tables. Kitchen screens and tickets say Table and the number typed.'}
+        {!dineIn && ' Dine in is not enabled on this profile, so nothing asks until it is.'}
+      </div>
+    </div>
+  );
+}
+
 // ── Profile editor modal ───────────────────────────────────────────────────────
 function ProfileEditor({ profile, onSave, onDelete, onClose }) {
   const { menus } = useStore();
@@ -429,6 +557,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
     trainingMode:false,
     signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
+    defaultOrderType:null, dineInFlagPrompt:false,   // 30 Sep 2026 (lib/tillOrderType.js)
   });
 
   // v5.7.9: record which fields THIS editor session actually changed. Every control
@@ -575,6 +704,9 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
               })}
             </div>
           </div>
+
+          {/* 30 Sep 2026 (Peter, Coffee Boy): what the till starts on, and the dine in flag prompt */}
+          <TillOrderTypeSettings form={form} upd={upd}/>
 
           {/* Customer-facing display */}
           <div style={{ marginBottom:18 }}>

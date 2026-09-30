@@ -416,6 +416,8 @@ export default function SyncBridge({ onSyncPulse }) {
               quickScreenEnabled: p.quick_screen_enabled !== false,
               menuId: p.menu_id,
               serviceCharge: p.service_charge || null,
+              defaultOrderType: p.default_order_type || null,        // 30 Sep 2026 (lib/tillOrderType.js)
+              dineInFlagPrompt: p.dine_in_flag_prompt === true,
             }));
             try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
           }

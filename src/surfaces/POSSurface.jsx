@@ -44,6 +44,10 @@ import OrderTypeModal from '../components/OrderTypeModal';
 import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
+import FlagNumberModal from '../components/FlagNumberModal';   // 30 Sep 2026: flag number on dine in orders
+import { needsFlagPrompt, flagTableLabel } from '../lib/tillOrderType';
+// 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
+import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
 import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
@@ -91,6 +95,7 @@ export default function POSSurface() {
     addItemDiscount, removeItemDiscount,
     deviceConfig,
     setDeviceConfig,
+    walkInOrder, setWalkInTableFlag,   // 30 Sep 2026: the flag number lives on the order
     menuItems: storeMenuItems,
     instructionGroupDefs,
     menuCategories,
@@ -206,7 +211,11 @@ export default function POSSurface() {
     if (!activeTableId) return;
     const t = tables.find(x => x.id === activeTableId);
     const sessionCust = t?.session?.customer;
-    if (sessionCust && sessionCust.phone && (!customer || customer.phone !== sessionCust.phone)) {
+    // 30 Sep 2026: a guest attached on a name alone (the customer details setting now covers dine
+    // in, lib/customerDetailsRule.js) has no phone, so the match is name and phone together. It
+    // used to want a phone, which would have left that guest off the chip and offered Add customer.
+    const sameGuest = (a, b) => !!a && !!b && String(a.phone || '') === String(b.phone || '') && String(a.name || '') === String(b.name || '');
+    if (sessionCust && (sessionCust.phone || sessionCust.name) && !sameGuest(customer, sessionCust)) {
       setCustomer(sessionCust);
       // v4.4.9: auto-apply guest's saved allergen filters when re-entering their table
       if (Array.isArray(sessionCust.allergens)) setAllergens(sessionCust.allergens);
@@ -403,6 +412,8 @@ export default function POSSurface() {
   // switch (confirming would silently no-op against the wrong session).
   useEffect(() => { setEditLine(null); }, [activeTableId]);
   const [showCheckout, setShowCheckout] = useState(false);
+  // 30 Sep 2026: 'send' | 'pay' while the flag number keypad is up, so it knows what to do next.
+  const [flagPromptFor, setFlagPromptFor] = useState(null);
   const [search, setSearch]       = useState('');
   const [showAllergens, setShowAllergens] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
@@ -718,8 +729,9 @@ export default function POSSurface() {
     if (t!=='dine-in') {
       // v5.5.799: quick-service venues — 'Not needed' skips the customer prompt on
       // takeaway/collection entirely; the order carries its short ref like an unnamed walk-in.
-      // Drive thru follows takeaway here (16 Sep 2026).
-      if (takeawayCustomerDetails === 'none' && (t === 'takeaway' || t === 'collection' || t === 'drive-thru')) { setOrderType(t); return; }
+      // Drive thru follows takeaway here (16 Sep 2026). 30 Sep 2026: the rule lives in
+      // lib/customerDetailsRule.js, the same one the customer form and Send read.
+      if (!promptsOnTypeChange({ orderType: t, mode: takeawayCustomerDetails })) { setOrderType(t); return; }
       setPendingOrderType(t); setShowCustomerModal(true);
     }
     else { setOrderType('dine-in'); clearCustomer(); }
@@ -845,19 +857,59 @@ export default function POSSurface() {
     showToast(`Table ${label} — saved`, 'success');
   };
 
+  // 30 Sep 2026 (Peter, Coffee Boy): coffee shops with numbered flags and no fixed tables. With
+  // the profile switch on, a dine in walk in order must have its flag number before it is sent
+  // or paid, whichever comes first, and staff cannot skip it (lib/tillOrderType.js). The order
+  // then goes to the kitchen as "Table <n>", like a kiosk flag order, with no table picker.
+  const flagNeeded = needsFlagPrompt({ deviceConfig, orderType, activeTableId, walkInOrder });
+  const walkInFlag = !activeTableId && orderType === 'dine-in' ? walkInOrder?.tableFlag : null;
+  // Pay: the allergen gate, then checkout (the flag, when needed, is asked before this).
+  const proceedToCheckout = () => {
+    const hasAllergens = items.some(i=>!i.voided&&i.allergens?.length);
+    if (hasAllergens) setShowAllergenGate(true);
+    else setShowCheckout(true);
+  };
+  const openCheckout = () => {
+    if (flagNeeded) { setFlagPromptFor('pay'); return; }
+    proceedToCheckout();
+  };
+  const onFlagEntered = (flag) => {
+    const next = flagPromptFor;
+    setFlagPromptFor(null);
+    setWalkInTableFlag(flag);   // sync: sendToKitchen below reads the store fresh
+    if (next === 'send') {
+      setShowCheckout(false);
+      sendToKitchen();
+      clearWalkIn();
+      showToast(`${flagTableLabel(flag)} sent`, 'success');
+    } else if (next === 'pay') {
+      proceedToCheckout();
+    }
+  };
+
   const handleSend = () => {
     // Walk-in with no table
     if (!activeTableId) {
       if (!items.length) { showToast('No items on order', 'error'); return; }
+      // 30 Sep 2026: the flag number first (profile switch); onFlagEntered then sends as Table <n>.
+      if (flagNeeded) { setFlagPromptFor('send'); return; }
+      // An order that already has its flag (typed at Pay then backed out, or reopened from
+      // Orders) sends as Table <n> too: the counter / table picker would seat it on a real table.
+      if (walkInFlag) {
+        setShowCheckout(false);
+        sendToKitchen();
+        clearWalkIn();
+        showToast(`${flagTableLabel(walkInFlag)} sent`, 'success');
+        return;
+      }
       // v4.6.5 Bug 1: if user already picked takeaway/collection/delivery AND gave customer
       // details, skip the SendWithoutTableModal — it was forcing them to re-pick the type
       // and losing the original orderType (Bug 2 downstream).
-      const preSelected = (orderType === 'takeaway' || orderType === 'collection' || orderType === 'delivery' || orderType === 'drive-thru');
       // v5.5.799: 'Not needed' mode — takeaway/collection sends straight through with no
       // customer prompt. An empty-name customer means Orders Hub falls back to the short
       // order ref (R-number), matching unnamed walk-ins; delivery always needs details.
-      const skipDetails = takeawayCustomerDetails === 'none' && (orderType === 'takeaway' || orderType === 'collection' || orderType === 'drive-thru');
-      if (preSelected && (customer?.name || skipDetails)) {
+      // 30 Sep 2026: decided by lib/customerDetailsRule.js (dine in still goes to the send modal).
+      if (sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName: !!customer?.name })) {
         if (!customer?.name) setCustomer({ name: '', isASAP: true });
         const name = customer?.name;
         const type = orderTypeLabel;
@@ -940,7 +992,8 @@ export default function POSSurface() {
       const grand = charged.total + tip;
       let taxBreakdown = null;
       if (taxCtxHasConfig(taxCtx)) taxBreakdown = charged.tax || null;
-      const tableLabel = activeTable?.label || null;
+      // 30 Sep 2026: a flag order prints "Table 30" too (the closed check books the same label).
+      const tableLabel = activeTable?.label || flagTableLabel(walkInFlag) || null;
       const server = session?.server || staff?.name || null;
       // Use a timestamp-based ref; the durable closed_checks row gets its own
       // ref inside the store, but the printer only needs a stable display
@@ -972,7 +1025,7 @@ export default function POSSurface() {
       check: {
         ref: 'PENDING',
         server: session?.server || staff?.name || null,
-        tableLabel: activeTable?.label || null,
+        tableLabel: activeTable?.label || flagTableLabel(walkInFlag) || null,
         orderType,
         method: paymentInfo.method,
         cardReceipt: paymentInfo.cardReceipt || null,
@@ -1066,6 +1119,50 @@ export default function POSSurface() {
   };
 
   const seatList = useMemo(()=>{ const a=['shared']; for(let i=1;i<=covers;i++)a.push(i); return a; },[covers]);
+
+  // 30 Sep 2026 (Peter, Coffee Boy: "On dine in the Add customer button has vanished. It needs to
+  // be under the order type as well for quick adding"): the customer chip, or the Add customer
+  // button, in ONE place for every order type. The walk in header shows it under the order type
+  // bar (dine in included); the table header shows it under the table, which had no way to add a
+  // customer from the till at all (only the floor plan's "+ Add guest"). It opens the customer
+  // form explicitly: what the form asks for follows the venue's customer details setting
+  // (lib/customerDetailsRule.js), so nothing here re-forces a name or a phone.
+  const customerRow = () => (
+    <>
+    {/* Named order: show customer name even on dine-in type */}
+    {customer&&(
+      <div style={{background:'var(--bg3)',borderRadius:10,padding:'8px 12px',marginTop:8,display:'flex',alignItems:'center',gap:10,border:'1px solid var(--bdr)'}}>
+        <div style={{width:32,height:32,borderRadius:'50%',background:'var(--acc-d)',border:'1.5px solid var(--acc-b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,color:'var(--acc)',flexShrink:0}}>{customerInitials(customer.name, customer.phone)}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}{stampChip(customer.stampSummary) ? <span style={{fontSize:11,fontWeight:800,color:'var(--acc)',marginLeft:6}}>{stampChip(customer.stampSummary)}</span> : null}</div>
+          <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?(activeTableId?' · Guest':' · Named order'):''}</div>
+          {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
+          {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(
+            <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2}}>
+              ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
+            </div>
+          )}
+          {/* 27 Sep 2026 (Peter: "if a customer adds their number and then a staff member can link that
+              to a profile that currently has no number"): a new customer with just a phone, whatever the
+              takeaway details setting. Link BEFORE payment (order history makes the profile no longer empty). */}
+          {canOfferLink(customer)&&!isTrainingMode()&&(
+            <button data-link-member onClick={()=>setLinkMemberFor(customer)} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,marginTop:3,textAlign:'left'}}>Link to existing member</button>
+          )}
+        </div>
+        <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,flexShrink:0}}>Edit</button>
+        {/* v5.9.79 (Peter, 26 Sep: "no way to remove a customer from an order in case it's the wrong one") */}
+        <button onClick={removeCustomer} aria-label="Remove customer from this order" title="Remove customer from this order" style={{fontSize:13,fontWeight:800,color:'var(--t3)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:'0 2px',flexShrink:0,lineHeight:1}}>✕</button>
+      </div>
+    )}
+    {!customer&&(
+      <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{width:'100%',padding:'9px 12px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1.5px dashed var(--bdr2)',color:'var(--t3)',fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8,justifyContent:'center',marginTop:8,transition:'all .14s'}}
+        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+        <Icon name="user" size={15} /> {orderType==='dine-in'?'Add customer':'Add customer details'}
+      </button>
+    )}
+    </>
+  );
 
   return (
     <div style={{display:'flex',flex:1,overflow:'visible',minWidth:0,gap:12}}>
@@ -1328,6 +1425,7 @@ export default function POSSurface() {
         {/* Context header */}
         <div style={{padding:'10px 12px 8px',borderBottom:'1px solid var(--bdr)',flexShrink:0}}>
           {activeTable ? (
+            <>
             <div style={{display:'flex',alignItems:'center',gap:10}}>
               <div onClick={()=>setShowTableActions(true)} style={{width:compact?30:40,height:compact?30:40,borderRadius:activeTable.shape==='rd'?'50%':compact?7:10,background:'var(--acc-d)',border:'1.5px solid var(--acc-b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:activeTable.parentId?(compact?8:9):(compact?9:11),fontWeight:800,color:'var(--acc)',flexShrink:0,letterSpacing:'-.01em',textAlign:'center',lineHeight:1.1,cursor:'pointer'}}>
                 {activeTable.label}
@@ -1383,6 +1481,9 @@ export default function POSSurface() {
               })()}
               <button onClick={()=>setSurface('tables')} style={{fontSize:12,fontWeight:700,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:'4px 0',flexShrink:0}}>← Floor</button>
             </div>
+            {/* 30 Sep 2026: the same customer chip or Add customer button a walk in order gets (item 7) */}
+            {customerRow()}
+            </>
           ) : (
             <>
               {/* v4.6.36: drawer pulse shortcut — shows the bound drawer's name */}
@@ -1413,38 +1514,7 @@ export default function POSSurface() {
                   );
                 })}
               </div>
-              {/* Named order: show customer name even on dine-in type */}
-              {customer&&(
-                <div style={{background:'var(--bg3)',borderRadius:10,padding:'8px 12px',marginTop:8,display:'flex',alignItems:'center',gap:10,border:'1px solid var(--bdr)'}}>
-                  <div style={{width:32,height:32,borderRadius:'50%',background:'var(--acc-d)',border:'1.5px solid var(--acc-b)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,color:'var(--acc)',flexShrink:0}}>{customerInitials(customer.name, customer.phone)}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{customerLabel(customer.name)}{stampChip(customer.stampSummary) ? <span style={{fontSize:11,fontWeight:800,color:'var(--acc)',marginLeft:6}}>{stampChip(customer.stampSummary)}</span> : null}</div>
-                    <div style={{fontSize:11,color:'var(--t3)'}}>{customer.phone}{orderType==='collection'?` · ${customer.isASAP?'⚡ ASAP':`🕐 ${customer.collectionTime}`}`:orderType==='dine-in'?' · Named order':''}</div>
-                    {/* v5.5.894: persistent allergy warning — the attach toast is only ~3s */}
-                    {Array.isArray(customer.allergens)&&customer.allergens.length>0&&(
-                      <div style={{fontSize:11,fontWeight:800,color:'var(--red)',marginTop:2}}>
-                        ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
-                      </div>
-                    )}
-                    {/* 27 Sep 2026 (Peter: "if a customer adds their number and then a staff member can link that
-                        to a profile that currently has no number"): a new customer with just a phone, whatever the
-                        takeaway details setting. Link BEFORE payment (order history makes the profile no longer empty). */}
-                    {canOfferLink(customer)&&!isTrainingMode()&&(
-                      <button data-link-member onClick={()=>setLinkMemberFor(customer)} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,marginTop:3,textAlign:'left'}}>Link to existing member</button>
-                    )}
-                  </div>
-                  <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{fontSize:11,fontWeight:700,color:'var(--acc)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,flexShrink:0}}>Edit</button>
-                  {/* v5.9.79 (Peter, 26 Sep: "no way to remove a customer from an order in case it's the wrong one") */}
-                  <button onClick={removeCustomer} aria-label="Remove customer from this order" title="Remove customer from this order" style={{fontSize:13,fontWeight:800,color:'var(--t3)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:'0 2px',flexShrink:0,lineHeight:1}}>✕</button>
-                </div>
-              )}
-              {!customer&&(
-                <button onClick={()=>{setShowCustomerModal(true);setPendingOrderType(orderType);}} style={{width:'100%',padding:'9px 12px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1.5px dashed var(--bdr2)',color:'var(--t3)',fontSize:13,fontWeight:600,display:'flex',alignItems:'center',gap:8,justifyContent:'center',marginTop:8,transition:'all .14s'}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
-                  <Icon name="user" size={15} /> Add customer details
-                </button>
-              )}
+              {customerRow()}
             </>
           )}
         </div>
@@ -1452,7 +1522,7 @@ export default function POSSurface() {
         {/* Order label row */}
         <div style={{padding:'6px 12px 3px',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
           <span style={{fontSize:10,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.08em'}}>
-            {activeTable?`${activeTable.label}`:orderTypeLabel} · {staff?.name}
+            {activeTable?`${activeTable.label}`:walkInFlag?flagTableLabel(walkInFlag):orderTypeLabel} · {staff?.name}
           </span>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             {items.length>0&&(
@@ -1690,9 +1760,7 @@ export default function POSSurface() {
                 if (!deliveryQuote.available) { showToast('Delivery unavailable for this address — switch to collection or takeaway.', 'error'); return; }
                 if (deliveryQuote.belowMinimum) { showToast(`Minimum delivery order is ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor/100) : 'higher'} — add more items or change the order type.`, 'error'); return; }
               }
-              const hasAllergens = items.some(i=>!i.voided&&i.allergens?.length);
-              if (hasAllergens) setShowAllergenGate(true);
-              else setShowCheckout(true);
+              openCheckout();   // 30 Sep 2026: flag number (when the profile asks), allergen gate, checkout
             }}>
               {items.length>0?`Pay ${money(total)}`:'Pay'}
             </button>
@@ -2079,7 +2147,10 @@ export default function POSSurface() {
       {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
       {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {linkMemberFor&&<LinkMemberModal customer={linkMemberFor} onLinked={applyMemberLink} onClose={()=>setLinkMemberFor(null)}/>}
-      {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');announceFormCustomer(c);}} onCancel={()=>{setShowCustomerModal(false);if(!customer)setOrderType('dine-in');}}/>}
+      {/* 30 Sep 2026: Cancel leaves the order exactly as it was. It used to put the order back on dine in,
+          which flipped a takeaway to dine in when staff opened Add customer and changed their mind. The
+          type only changes on confirm, so there is nothing to undo. forTable picks the dine in copy. */}
+      {showCustomerModal&&<CustomerModal orderType={pendingOrderType||orderType} forTable={!!activeTableId} existing={customer} onConfirm={c=>{setShowCustomerModal(false);setCustomer(c);if(pendingOrderType&&pendingOrderType!=='dine-in'){setOrderType(pendingOrderType);}setPendingOrderType(null);if(activeTableId){const t=tables.find(x=>x.id===activeTableId);if(t)saveTableSession(activeTableId,{...t.session,customer:c});}showToast(`${c.name} attached to order`,'success');announceFormCustomer(c);}} onCancel={()=>{setShowCustomerModal(false);setPendingOrderType(null);}}/>}
 
       {/* Void modal */}
       {voidTarget&&(
@@ -2160,6 +2231,9 @@ export default function POSSurface() {
         </div></div>
       )}
 
+      {/* 30 Sep 2026: flag number keypad before Send or Pay on a dine in order (profile switch, no skip) */}
+      {flagPromptFor && <FlagNumberModal action={flagPromptFor} onConfirm={onFlagEntered} onClose={()=>setFlagPromptFor(null)}/>}
+
       {/* Allergen confirmation gate before checkout */}
       {showAllergenGate && (
         <AllergenCheckoutModal
@@ -2193,6 +2267,8 @@ export default function POSSurface() {
             if (result.type === 'counter') {
               store.setCustomer({ name: result.name, isASAP: true, isNamedDineIn: true, channel: 'counter' });
               store.setOrderType('dine-in');
+              // 30 Sep 2026: with the flag prompt on, a counter order needs its flag number first.
+              if (needsFlagPrompt({ deviceConfig, orderType: 'dine-in', activeTableId: null, walkInOrder: store.walkInOrder })) { setFlagPromptFor('send'); return; }
               store.sendToKitchen();
               store.clearWalkIn();
               showToast(result.name ? `${result.name} — sent to kitchen` : 'Sent to kitchen', 'success');
@@ -2307,7 +2383,7 @@ export default function POSSurface() {
           covers={covers}
           customer={customer}
           onClose={()=>setShowReview(false)}
-          onCheckout={()=>{ setShowReview(false); if(items.length>0) setShowCheckout(true); }}
+          onCheckout={()=>{ setShowReview(false); if(items.length>0) { if (flagNeeded) setFlagPromptFor('pay'); else setShowCheckout(true); } }}
           onPrint={()=>{ setShowReview(false); setShowReceipt(true); }}
         />
       )}
