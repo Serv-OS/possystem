@@ -18,7 +18,7 @@ import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeSt
 import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
 import { bookedTaxRecord } from './taxShare';
-import { closedCheckRefundFields } from './closedCheckRefundFields';
+import { closedCheckRefundFields, serverTipFields } from './closedCheckRefundFields';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -452,17 +452,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
               // after close (tip_capture / webhook write tip, total and the
               // payment leg's capture flag). Merge them so History repaints
               // live as the window moves pending → capturing → captured.
-              // SCOPED to rows whose legs actually carry a `capture` key - a
-              // refund UPDATE (or any other writer) keeps the old merge
-              // behaviour exactly: refunds + status only, the local richer
-              // camelCase legs/tip/total untouched.
-              ...(Array.isArray(check.payment_intents)
-                && check.payment_intents.some(l => l && typeof l === 'object' && 'capture' in l)
-                ? {
-                  paymentIntents: check.payment_intents,
-                  ...(check.tip != null ? { tip: check.tip } : {}),
-                  ...(check.total != null ? { total: check.total } : {}),
-                } : {}),
+              // v5.11.16: the reader tip heal does the same and marks the card
+              // tender with tip_added_at; tip, total and tenders merge too.
+              // SCOPED to those two markers (serverTipFields) - a refund UPDATE
+              // (or any other writer) keeps the old merge behaviour exactly:
+              // refunds + status only, the local richer camelCase legs/tip/total
+              // untouched.
+              ...serverTipFields(check),
             } : c),
           };
         }

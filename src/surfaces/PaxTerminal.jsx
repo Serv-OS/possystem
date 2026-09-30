@@ -34,6 +34,16 @@ import { watchTerminalJob } from '../lib/payments/terminalJobCloser';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
+import { amountMismatchCopy } from '../lib/payments/amountMismatchCopy';
+
+// v5.11.16 — how often, and for how long, this screen re-reads an Adyen job the card machine
+// charged a different amount for. The server heals a tip by itself within seconds of Adyen's
+// webhook (supabase/functions/_shared/readerTipHeal.ts); re-reading lets THIS checkout book the
+// healed sale (tip included). 20 s is inside every reconciler booking wait (30 s watched, 30 s
+// other tills, 90 s kitchen and office screens, lib/payments/terminalJobCloser.js), so this can
+// never race a reconciler booking of the same job.
+const MISMATCH_REPOLL_EVERY_MS = 3_000;
+const MISMATCH_REPOLL_LIMIT_MS = 20_000;
 
 const STATUS_COPY = {
   pending:         { icon: '📲', title: 'Sent to the card machine',   sub: 'Hand it to the customer.' },
@@ -316,6 +326,37 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
     return () => { clearTimeout(first); if (interval) clearInterval(interval); };
   }, [wedged, status]);
 
+  // ── v5.11.16: an amount mismatch the server may heal ────────────────────────
+  // While the Adyen job sits approved + needs_human, re-read it every 3 s for at most 20 s. When
+  // the heal has cleared needs_human, hand the fresh row to the settle effect above, which completes
+  // the sale exactly like any tipped sale (tip_minor / charge_minor off the job). Deps are two
+  // primitives (the v5.7.12 timer rule), so a parent re-render never restarts the clock.
+  const mismatchHeld = blocked && status === 'approved' && processor === 'adyen';
+  const heldJobId = job?.id ?? null;
+  useEffect(() => {
+    if (!mismatchHeld || !heldJobId) return undefined;
+    const started = Date.now();
+    let stopped = false;
+    let timer = null;
+    const tick = async () => {
+      if (stopped || unmountedRef.current || doneRef.current) return;
+      const fresh = await fetchJob(heldJobId).catch(() => null);
+      if (stopped || unmountedRef.current || doneRef.current) return;
+      if (fresh) setJob(fresh);
+      if (fresh && !fresh.needs_human) return;
+      if (Date.now() - started >= MISMATCH_REPOLL_LIMIT_MS) return;
+      timer = setTimeout(tick, MISMATCH_REPOLL_EVERY_MS);
+    };
+    timer = setTimeout(tick, MISMATCH_REPOLL_EVERY_MS);
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [mismatchHeld, heldJobId]);
+  const mismatchCopy = amountMismatchCopy({
+    reportedMinor: job?.reported_minor ?? null,
+    billMinor: job?.charge_minor ?? null,
+    currency: job?.currency || 'GBP',
+    processor,
+  });
+
   const dueGbp    = (job?.due_minor ?? 0) / 100;
   const tipGbp    = job?.tip_minor != null ? job.tip_minor / 100 : null;
   const chargeGbp = job?.charge_minor != null ? job.charge_minor / 100 : null;
@@ -351,7 +392,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
           background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)',
         }}>
           <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>
-            {status === 'unknown' ? 'We cannot confirm this payment' : 'Amount does not match'}
+            {status === 'unknown' ? 'We cannot confirm this payment' : mismatchCopy.title}
           </div>
           <div style={{ fontSize: 12, lineHeight: 1.6 }}>
             {status === 'unknown'
@@ -359,7 +400,8 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
                 // v5.7.37 — an Adyen unknown has a self-service answer: the reader itself.
                 ? 'Checking with the card machine and with Adyen. This usually clears itself in a few seconds. Do not take payment again yet, in case the card was charged. If it does not clear, tap Check card machine.'
                 : 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. A manager must resolve this in Back Office → Unreconciled payments before this check can close.')
-              : 'The terminal reported a different amount from the one we asked for. This check is held until a manager checks it in Back Office → Unreconciled payments.'}
+              // v5.11.16: the sale IS booked (at the bill amount), never "held"; see amountMismatchCopy.
+              : mismatchCopy.body}
           </div>
           {job?.last_error && (
             <div style={{ fontSize: 11, marginTop: 8, opacity: .85, fontFamily: 'var(--font-mono, monospace)' }}>
