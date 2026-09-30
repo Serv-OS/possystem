@@ -1,18 +1,9 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
+import { VOID_REASONS } from '../lib/voidRules';
 
-const VOID_REASONS = [
-  'Customer changed mind',
-  'Wrong item ordered',
-  'Kitchen error',
-  'Allergy / dietary concern',
-  'Item unavailable',
-  'Duplicate order',
-  'Manager discretion',
-  'Training / test order',
-  'Other',
-];
+// 30 Sep 2026: the reasons live in lib/voidRules.js, shared with the Orders screen void.
 
 const managerPinsFrom = (staffMembers) =>
   (staffMembers || [])

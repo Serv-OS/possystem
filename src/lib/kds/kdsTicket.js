@@ -294,6 +294,24 @@ export function courseGroups(items, firedCourses) {
   ];
 }
 
+/**
+ * The void notice a ticket carries. 30 Sep 2026 (Peter, Coffee Boy: "can't void anything other
+ * than table orders"): a void now reaches the kitchen. The till flags the voided lines on the
+ * kds_tickets row (store voidKitchenLines); this reads them back for the card.
+ *   lines  the voided lines (ticketLine shape), in ticket order
+ *   all    true when every line on the ticket is voided (the whole order was voided)
+ *   label  the words on the red block
+ */
+export function voidState(items) {
+  const list = Array.isArray(items) ? items : [];
+  const lines = list.map(ticketLine).filter(l => l.voided);
+  const all = list.length > 0 && lines.length === list.length;
+  return {
+    lines, all,
+    label: lines.length === 0 ? null : all ? 'ORDER VOIDED' : `VOID ${lines.length === 1 ? '1 LINE' : `${lines.length} LINES`}`,
+  };
+}
+
 /** Whole minutes since sent. An unknown or future time reads as 0, never NaN (v5.5.914). */
 export function minutesSince(sentAt, now) {
   const ts = sentAt instanceof Date ? sentAt.getTime()
@@ -404,6 +422,7 @@ export function ticketView(row, queueRow = null) {
     staff: meta.staff,
     note: meta.note,
     groups: courseGroups(row?.items, row?.firedCourses),
+    voids: voidState(row?.items),
   };
 }
 
