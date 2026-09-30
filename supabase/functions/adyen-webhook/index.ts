@@ -84,6 +84,10 @@ import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.
 import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
 import { promotePaidBooking, markPaymentNeedsRefund, loadBookingDue } from '../_shared/bookingPromote.ts';
 import { looksLikeBackendDown } from '../_shared/backendDown.js';
+// v5.11.16: a reader tip the settle could not record is healed from Adyen's own
+// AUTHORISATION the moment it lands (see the live money event block below).
+import { jobIdFromMerchantReference } from '../_shared/readerTip.js';
+import { healReaderTip } from '../_shared/readerTipHeal.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -117,7 +121,12 @@ const platformAdmin = createClient(
 // never verifies a live item (it is never among a live item's candidates).
 async function hmacOk(item: any, live: boolean, candidates: WebhookKeyCandidate[]): Promise<{ valid: boolean | null; region: AdyenRegion | null }> {
   if (!candidates.length) return { valid: live ? false : null, region: null };
-  if (!item?.additionalData?.hmacSignature) return { valid: null, region: null };
+  // v5.11.16 review: a LIVE item with no signature is FALSE, never "unverifiable,
+  // accepted" (the header's own rule: a live item is never accepted unverified).
+  // Every live event stored so far carried one (read-only SQL, 29 Sep 2026:
+  // 742 of 742 live AUTHORISATION, REFUND and REPORT_AVAILABLE items), so only
+  // an unsigned POST is refused. Test items keep the old null.
+  if (!item?.additionalData?.hmacSignature) return { valid: live ? false : null, region: null };
   for (const c of candidates) {
     try {
       if (await verifyNotificationItem(item, c.hmacKey)) return { valid: true, region: c.region };
@@ -1194,6 +1203,26 @@ Deno.serve(async (req) => {
         const { error: pErr } = await admin.from('adyen_events')
           .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);
         if (pErr) console.error('[adyen-webhook] processed_at stamp failed:', pErr.message);
+      }
+      // v5.11.16 SELF-CORRECT, real time: a reader job the settle PARKED with an
+      // amount mismatch (a tip it could not record, R3618) is healed against
+      // this very AUTHORISATION, now in the ledger. Only on an applied,
+      // successful AUTHORISATION for a 'tj-<uuid>' reference on this live path,
+      // never from ?backfill=1 (runBackfill does not come through here), so a
+      // replay can never mass heal. Adyen redelivering the same AUTHORISATION
+      // simply finds the job already healed (the heal is idempotent). A job
+      // still in flight answers not_parked and nothing happens. Under waitUntil
+      // and caught, so it can never change the ack.
+      if (res === 'applied' && String(item.eventCode || '') === 'AUTHORISATION' && String(item.success) === 'true') {
+        const healJobId = jobIdFromMerchantReference(item.merchantReference);
+        if (healJobId) {
+          const heal = healReaderTip(admin, platformAdmin, healJobId, { trigger: 'webhook' })
+            .then((r) => { if (r.outcome !== 'not_parked') console.log('[adyen-webhook] reader tip heal', healJobId, JSON.stringify(r)); })
+            .catch((e) => console.error('[adyen-webhook] reader tip heal failed:', (e as Error)?.message));
+          // deno-lint-ignore no-explicit-any
+          const rt = (globalThis as any).EdgeRuntime;
+          if (rt?.waitUntil) rt.waitUntil(heal);
+        }
       }
     }
 

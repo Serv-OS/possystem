@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.18',
+    date: '29 Sep 2026',
+    items: [
+      "Card machine tips are never lost. On 29 Sep at Huddersfield (R3618) a customer added a 72p tip on the card machine, but a network blip stopped it being saved; the sale was booked at £7.25 with no tip. Now the tip is saved with retries and checked; if it still cannot be saved, the payment is not closed until it can be, with the tip.",
+      "Self correcting: a card payment parked because the machine took more than the bill is fixed automatically when the difference is a tip the machine asked for (up to half the bill, or £5 / $5 on small bills), but only after Adyen's own record confirms the amount. The sale is corrected too (tip, total and the card payment's tip), and an info note appears in the activity feed. This also fixes R3618 within a minute of going live.",
+      "Anything that cannot be fixed safely (a bigger difference, a refunded sale, Adyen not confirming) raises one alert in the activity feed with both amounts, and Back Office, Card readers, Payments that need checking now shows what the card machine took next to what we asked for.",
+      "Stuck card payments are recovered from Adyen's own record. The check that asks Adyen what happened had a fault that stopped it ever finishing an approved payment; it now works, and every minute a sweep closes any payment Adyen approved that is still inside its payment window. Only Adyen's signed (verified) record counts. A payment Adyen later refunded or cancelled is never booked as paid, two approvals for one sale are never closed automatically, and a payment Adyen confirms after the till gave up on it is not booked by itself (staff may have taken it another way): each of these alerts a manager with the amounts.",
+      "Till: the card amount message no longer says the sale is held for a manager (it never was). It now says the sale is recorded at the bill amount, not to take payment again, and that a tip is added by itself. If the card machine took LESS than the bill, it says how much is still owed instead. The till checks again for 20 seconds and finishes the sale with the tip as soon as it is fixed.",
+    ],
+  },
+  {
     v: '5.11.17',
     date: '29 Sep 2026',
     items: [

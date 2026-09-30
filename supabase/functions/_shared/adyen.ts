@@ -875,7 +875,7 @@ function constantTimeEq(a: string, b: string): boolean {
 }
 
 export async function signNotificationItem(item: any, hmacHexKey: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', hexToBytes(hmacHexKey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const key = await crypto.subtle.importKey('raw', hexToBytes(hmacHexKey) as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(hmacSigningString(item)));
   return b64(sig);
 }
@@ -905,7 +905,7 @@ export async function verifyRawBodyHmac(rawBody: string, headerSig: string, key:
   candidates.push(new TextEncoder().encode(k));
   for (const bytes of candidates) {
     try {
-      const ck = await crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const ck = await crypto.subtle.importKey('raw', bytes as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
       const sig = b64(await crypto.subtle.sign('HMAC', ck, new TextEncoder().encode(rawBody)));
       if (constantTimeEq(sig, headerSig)) return true;
     } catch { /* try the next encoding */ }

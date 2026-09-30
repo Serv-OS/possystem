@@ -80,7 +80,12 @@ export async function runAdyenLocalPayment(jobId, { onStage } = {}) {
 
   if (res.ok && res.payload) {
     onStage?.('confirming');
-    return await charge('report_local', { job_id: jobId, response: res.payload });
+    const reported = await charge('report_local', { job_id: jobId, response: res.payload });
+    // v5.11.16: 'processing' (code SETTLE_DEFERRED) = the terminal answered but the server
+    // could not record the result yet (a tip it could not save, a database blip). NOT a
+    // decline: MCardFlow would read anything that is not approved/pending/cancelled as
+    // "declined", and staff would take the card again. Recover below, like a lost response.
+    if (reported?.state !== 'processing') return reported;
   }
 
   // Transport failed or timed out — the tender may STILL have completed on the
