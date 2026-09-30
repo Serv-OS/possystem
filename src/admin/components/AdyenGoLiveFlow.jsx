@@ -83,7 +83,15 @@
 //   the other one (they act on the venue's own row).
 //   adyen_create_store_by_reference  make the payments location
 //   register_origins                 the ServOS web addresses
-//   register_apple_pay_domains       the venue's storefront for Apple Pay
+//   register_apple_pay_domains       the venue's storefront for Apple Pay:
+//                                    "Register for Apple Pay" on step 4
+//                                    when golive_state says the live host
+//                                    is not registered or cannot be read
+//                                    (29 Sep 2026). ServOS also does it by
+//                                    itself from the online checkout and
+//                                    from this screen, throttled; step 4
+//                                    shows the last attempt and Adyen's
+//                                    reason (applePay.lastAttempt)
 //
 // SAFETY: going live ALWAYS asks, and the ask says what is kept and what comes
 // back (goLiveConfirmLines) AND makes an admin type LIVE, the gate that used
@@ -153,7 +161,9 @@ import {
   goliveFlowView, capabilityNotices, mismatchView, plainFailure, referenceSearchView,
   goLiveConfirmLines, relinkConfirmLines, relinkStoreConfirmView, merchantPicker, candidateLabel,
   goliveProblemBox, PLATFORM_SETTINGS_WAITING_LINE, RATES_LEDE, rateCardRows, PLATFORM_ID_LINE,
+  walletLinesView, applePayAttemptView,
 } from '../../lib/payments/adyenAdminRows';
+import { registrationLines } from '../../lib/payments/adyenOrigins';
 import { isPlatformSettingsMissingWarning, rateCardProblems } from '../../lib/payments/adyenLink';
 import { cardToState, stateToCard, cardsEqual, serverKnowsDebit } from '../../lib/payments/rateCard';
 import RateCardRows from './RateCardRows';
@@ -390,6 +400,7 @@ function whatFailed(key) {
   if (key === 'request') return 'Adyen could not be asked for payouts';
   if (key === 'golive') return 'Live payments could not be turned on';
   if (key === 'origins') return 'The web addresses could not be added';
+  if (key === 'applepay') return 'Apple Pay could not be registered';
   if (key === 'merchant') return 'That Adyen account could not be read';
   return 'The venue could not be read';
 }
@@ -408,22 +419,6 @@ function readPick(id) {
 }
 function savePick(id, v) {
   try { sessionStorage.setItem(pickKey(id), JSON.stringify(v || {})); } catch { /* private mode: the choice lives for this mount */ }
-}
-
-// The one plain line per wallet under step 4. `on` is "Adyen offers it AND it
-// carries the identifiers the browser needs"; anything else names the next
-// thing to do rather than leaving an operator to guess.
-function walletLines(wallets) {
-  if (!wallets || typeof wallets !== 'object') return [];
-  const say = (label, on, extra) => ({
-    label,
-    on: !!on,
-    text: on ? `${label}: on. Adyen offers it on this venue.` : `${label}: off. ${extra}`,
-  });
-  return [
-    say('Apple Pay', wallets.applepay, 'Turn it on in the Adyen Customer Area, then add the web addresses below so the venue\u2019s shop is registered with Apple.'),
-    say('Google Pay', wallets.googlepay, 'Turn it on in the Adyen Customer Area. It also needs a Google merchant ID on the account before a live shopper can use it.'),
-  ];
 }
 
 export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPayments = null, wallets = null, onChanged, refreshKey = 0 }) {
@@ -568,9 +563,17 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     return { value: null, label: null };
   };
   // Apple Pay and Google Pay, read from adyen-checkout `status` by the panel
-  // above and passed in. Nothing here decides: it says what Adyen answered.
-  const walletRows = walletLines(wallets);
+  // above and passed in, with golive_state's Apple Pay read: "on" only when
+  // Adyen offers it AND the live host is registered (walletLinesView, 29 Sep
+  // 2026). Nothing here decides: it says what Adyen answered. `wallets` is
+  // the venue's own environment, so the Apple Pay read only counts when the
+  // flow looks at that same one (29 Sep 2026 review).
+  const walletRows = walletLinesView(wallets, state?.applePay, { venueEnvironment: venueEnv, target });
   const walletProblem = str(wallets?.error) || '';
+  // When ServOS last asked Adyen to register the shop for Apple Pay, and
+  // Adyen's own words when it said no. Quiet when the read above found the
+  // host registered; hidden for the other environment.
+  const applePayAttempt = applePayAttemptView(state?.applePay, { venueEnvironment: venueEnv, target });
 
   // The accounts the credential can see. A mismatch loads them straight away
   // (picking one is the only way forward); otherwise the admin asks.
@@ -1153,6 +1156,25 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     return { notice: { text: added ? `${added} web address${added === 1 ? '' : 'es'} added.` : 'The web addresses were already in place.' }, changed: true };
   });
 
+  // Register for Apple Pay (29 Sep 2026): the venue's live shop address on
+  // the merchant's Apple Pay list, now, whatever the throttle. The answer's
+  // guidance is the one sentence; Adyen's lines sit behind Show detail.
+  const registerApplePay = () => act('applepay', async () => {
+    let r;
+    try { r = await callAdmin('register_apple_pay_domains', {}); }
+    catch (e) { r = { ok: false, error: e?.data?.error || e?.message || String(e) }; }
+    if (r?.ok) {
+      const host = str(r.host) || lines(r.domains).join(', ');
+      return { notice: { text: host ? `Registered for Apple Pay: ${host}.` : 'Registered for Apple Pay.' }, changed: true };
+    }
+    const detail = registrationLines(r).map((l) => l.text).join('\n');
+    setProblem({
+      text: str(r?.guidance) || str(r?.error) || 'Adyen would not register the shop for Apple Pay.',
+      detail: detail || null,
+    });
+    return { changed: true };
+  });
+
   if (loading && !state) {
     return (
       <div style={S.wrap}>
@@ -1674,6 +1696,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                       {step.action === 'register_origins' && (
                         <Primary busy={busy === 'origins'} disabled={anyBusy} onClick={addOrigins}>Add the web addresses</Primary>
                       )}
+                      {step.action === 'register_apple_pay_domains' && (
+                        <Primary busy={busy === 'applepay'} disabled={anyBusy} onClick={registerApplePay}>Register for Apple Pay</Primary>
+                      )}
                       {/* WHAT THE SHOPPER WILL ACTUALLY SEE. The checkout asks
                           Adyen for the venue's real payment methods and falls
                           back to a plain card form in silence when a wallet is
@@ -1682,12 +1707,22 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                       {walletRows.length > 0 && (
                         <div style={{ marginTop: 18, maxWidth: MEASURE }}>
                           {walletRows.map((w) => (
-                            <div key={w.label} style={{ fontSize: 15, lineHeight: 1.5, marginBottom: 6, color: w.on ? 'var(--grn, #15C26A)' : 'var(--t3)' }}>
-                              {w.text}
+                            <div key={w.label} style={{ marginBottom: 6 }}>
+                              <div style={{ fontSize: 15, lineHeight: 1.5, color: w.on ? 'var(--grn, #15C26A)' : w.tone === 'warn' ? CHIP.warn.fg : 'var(--t3)' }}>
+                                {w.text}
+                              </div>
+                              {w.guidance && <div style={{ fontSize: 15, lineHeight: 1.5, color: 'var(--t2)', marginTop: 2 }}>{w.guidance}</div>}
                             </div>
                           ))}
                           {walletProblem && <p style={{ ...S.quiet, marginTop: 6 }}>{walletProblem}</p>}
                         </div>
+                      )}
+                      {/* The last time ServOS asked Adyen, with Adyen's own
+                          words behind Show detail when it said no. */}
+                      {applePayAttempt && (
+                        applePayAttempt.tone === 'quiet'
+                          ? <p style={{ ...S.quiet, marginTop: 10 }}>{applePayAttempt.text}</p>
+                          : <Problem problem={{ text: applePayAttempt.text, detail: applePayAttempt.detail }} tone="warn" />
                       )}
                     </>
                   )}

@@ -334,7 +334,7 @@ export function damagedPhoneRaw(value: unknown, row: ImportRow | null | undefine
 /** The phone keys one row is looked up under. See phoneKeys. */
 function rowPhoneKeys(r: ImportRow): string[] {
   const out: string[] = [];
-  const list = [r.phone, r.phoneE164, r.phoneApp];
+  const list = [r.phone, r.phoneE164, r.phoneApp, r.phoneOld];
   for (let i = 0; i < list.length; i++) {
     const v = list[i];
     if (v && out.indexOf(v) < 0) out.push(v);

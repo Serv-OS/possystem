@@ -91,6 +91,7 @@ function fakeDb(rows, hooks = {}) {
         return { data: q.single ? out[0] : out, error: null };
       }
       let found = all.filter(match);
+      if (q.sort) found = found.slice().sort(q.sort);
       if (q.lim != null) found = found.slice(0, q.lim);
       if (q.single) return { data: found[0] ? project(found[0]) : null, error: null };
       return { data: found.map(project), error: null };
@@ -98,6 +99,13 @@ function fakeDb(rows, hooks = {}) {
     const b = {
       select(cols) { q.cols = cols || '*'; if (q.op !== 'select') q.returning = true; return b; },
       eq(c, v) { q.desc.push(`eq:${c}`); q.filters.push((r) => r[c] != null && String(r[c]) === String(v)); return b; },
+      in(c, vs) { q.desc.push(`in:${c}`); const set = new Set(vs.map(String)); q.filters.push((r) => r[c] != null && set.has(String(r[c]))); return b; },
+      order(c, { ascending = true } = {}) {
+        q.desc.push(`order:${c}`);
+        const k = (r) => (r[c] == null ? '' : String(r[c]));
+        q.sort = (a, z) => (k(a) === k(z) ? 0 : (k(a) < k(z)) === ascending ? -1 : 1);
+        return b;
+      },
       is(c, v) { q.desc.push(`is:${c}`); q.filters.push((r) => (v === null ? r[c] == null : r[c] === v)); return b; },
       ilike(c, p) { q.desc.push(`ilike:${c}`); const rx = ilikeRx(p); q.filters.push((r) => r[c] != null && rx.test(String(r[c]))); return b; },
       or(expr) {

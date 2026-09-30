@@ -34,8 +34,14 @@
 //                  (ServOS runs it from the server)
 //   register_origins → ADMIN. the ServOS hosts and wildcards on the venue's
 //                  API credential's allowed origins (WEB ORIGINS below)
-//   register_apple_pay_domains → ADMIN. the venue's storefront hosts on the
-//                  merchant's Apple Pay payment method (APPLE PAY below)
+//   register_apple_pay_domains → ADMIN. the venue's storefront host on the
+//                  merchant's Apple Pay payment method (APPLE PAY below).
+//                  Always asks Adyen, keeps the outcome (APPLE PAY STATE)
+//   ensure_apple_pay_domains → the same registration, THROTTLED (29 Sep
+//                  2026): service role bearer (adyen-checkout nudges it when
+//                  a checkout offers Apple Pay) or super_admin. Asks Adyen at
+//                  most every 6 hours after a refusal, every 24 once
+//                  registered, and never blocks a payment
 //   adyen_lookup → ADMIN. { reference?, storeId?, accountHolderId?, environment? }
 //                  PULL the venue's Adyen ids BY REFERENCE (the venue code,
 //                  SV-1007, as the store reference): store, balance account,
@@ -230,6 +236,9 @@ import {
 import {
   buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
   applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
+  storefrontHostFor, applePayStateKey, applePayRetryDue, applePayStateFrom, applePayGuidance, adyenErrorCode,
+  APPLE_PAY_MANUAL_TRIGGERS,
+  type ApplePayState,
 } from '../_shared/adyenOrigins.ts';
 import {
   referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates, accountHolderSummary, balanceAccountSummary,
@@ -269,7 +278,10 @@ const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 // payment_list and payment_breakdown (10 Sep 2026) only READ: the payment
 // check on the Revenue page, and the same proof from a server script.
-const SERVICE_ROLE_ACTIONS = new Set(['sync_store_settings', 'list', 'payment_list', 'payment_breakdown']);
+// ensure_apple_pay_domains (29 Sep 2026): adyen-checkout nudges it when a
+// checkout offers Apple Pay, so the venue's shop address is registered by
+// itself (throttled, APPLE PAY STATE below).
+const SERVICE_ROLE_ACTIONS = new Set(['sync_store_settings', 'list', 'payment_list', 'payment_breakdown', 'ensure_apple_pay_domains']);
 // The payment check: how far back the list reaches, and how many pages of
 // Adyen transfers one check reads per listing.
 const PAYMENT_CHECK_DAYS = 30;
@@ -1126,9 +1138,61 @@ function logLink(step: string, locationId: string, raw: unknown) {
   }).then(() => {}, () => {});
 }
 
+// ── APPLE PAY STATE (29 Sep 2026, v5.11.17) ─────────────────────────────────
+// ONE row per venue and environment: platform adyen_webhook_events,
+// event_key 'applepay_state:<live|test>:<platform location id>'
+// (applePayStateKey), raw = the last attempt (applePayStateFrom: outcome,
+// Adyen's code and message, the guidance sentence, checkedAt, trigger,
+// failures in a row). Existing table and columns only: event_key is the
+// primary key, the table has no triggers and nothing else reads it, so the
+// upsert is safe. The throttle for the automatic triggers reads it; the go
+// live screen shows it (applePay.lastAttempt). History stays in the
+// link:apple_pay_domains rows logLink writes beside it.
+// A read answers { ok: false } on a database error, so an automatic trigger
+// can refuse to call Adyen when it cannot tell when it last did.
+async function readApplePayState(env: string, platformLocationId: string): Promise<{ ok: boolean; state: ApplePayState | null }> {
+  const key = applePayStateKey(env, platformLocationId);
+  if (!key) return { ok: false, state: null };
+  try {
+    const { data, error } = await platformAdmin.from('adyen_webhook_events').select('raw').eq('event_key', key).maybeSingle();
+    if (error) {
+      console.warn(`[adyen-terminal-admin] apple pay state read failed for ${key}: ${error.message}`);
+      return { ok: false, state: null };
+    }
+    const raw = (data as { raw?: unknown } | null)?.raw;
+    return { ok: true, state: raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as ApplePayState) : null };
+  } catch (e) {
+    console.warn(`[adyen-terminal-admin] apple pay state read failed for ${key}: ${(e as Error)?.message || String(e)}`);
+    return { ok: false, state: null };
+  }
+}
+// Keep the attempt. A failure is a warning only: it never fails the step.
+async function saveApplePayState(env: string, platformLocationId: string, state: ApplePayState): Promise<void> {
+  const key = applePayStateKey(env, platformLocationId);
+  if (!key) return;
+  try {
+    const { error } = await platformAdmin.from('adyen_webhook_events')
+      .upsert({ event_key: key, raw: state, received_at: new Date().toISOString() }, { onConflict: 'event_key' });
+    if (error) console.warn(`[adyen-terminal-admin] apple pay state save failed for ${key}: ${error.message}`);
+  } catch (e) {
+    console.warn(`[adyen-terminal-admin] apple pay state save failed for ${key}: ${(e as Error)?.message || String(e)}`);
+  }
+}
+
 // Run a registration half, turning a throw into its error line.
 async function attemptRegistration(label: string, run: () => Promise<RegistrationAnswer>): Promise<RegistrationAnswer> {
   try { return await run(); } catch (e) { return { ok: false, error: `${label}: ${(e as Error)?.message || String(e)}` }; }
+}
+
+// The Apple Pay reason on a log line: ' (code scope_missing, 403: Forbidden)'
+// for a refusal, '' when it went through.
+function applePayLogTail(answer: RegistrationAnswer | null): string {
+  if (!answer || answer.ok) return '';
+  const failed = Array.isArray(answer.failed) ? answer.failed as Array<Record<string, unknown>> : [];
+  const status = answer.status ?? failed[0]?.status;
+  const why = String(answer.message ?? failed[0]?.message ?? answer.error ?? '').slice(0, 200);
+  const parts = [answer.code ? `code ${answer.code}` : '', status ? String(status) : ''].filter(Boolean).join(', ');
+  return parts || why ? ` (${[parts, why].filter(Boolean).join(': ')})` : '';
 }
 
 // Write a merchant_adyen_accounts row that names its region. Before
@@ -1419,31 +1483,44 @@ async function registerWebOrigins(cfg: AdyenConfig, customDomain: string | null)
 
 // Find the merchant's Apple Pay payment method, read the domains it holds,
 // POST each missing storefront host. Answers { ok, environment, region,
-// merchant, paymentMethodId, verificationStatus, domains, added, existing,
-// failed: [{ domain, status, message }], note } or { ok: false, code, error }
-// when there is no storefront, the list cannot be read or Apple Pay was
-// never requested on the merchant.
+// merchant, host, paymentMethodId, verificationStatus, domains, added,
+// existing, failed: [{ domain, status, errorCode, message }], note, guidance }
+// or { ok: false, code, status?, errorCode?, message?, error, guidance } when
+// there is no storefront, the list cannot be read (code scope_missing for a
+// 401/403, read_failed otherwise; message is Adyen's own text) or Apple Pay
+// was never requested on the merchant.
+// ONE HOST ON LIVE (29 Sep 2026): the config's environment picks the hosts
+// (live <slug>.serv-os.app only; test <slug>.dev.serv-os.app then
+// <slug>.serv-os.app, the addresses a venue still on Adyen test is opened
+// on), so a dev host Adyen refuses can no longer turn a live answer into ok
+// false. `host` is the main one, the key of the kept row.
 async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, storeId: string | null, storefront: Storefront): Promise<RegistrationAnswer> {
-  const domains = buildStorefrontDomains(storefront);
+  const sf = { ...storefront, environment: cfg.env };
+  const domains = buildStorefrontDomains(sf);
+  const host = storefrontHostFor(sf) || null;
   const base = {
-    environment: cfg.env, region: cfg.region, merchant, domains,
-    added: [] as string[], existing: [] as string[], failed: [] as Array<{ domain: string; status: number; message: string }>,
+    environment: cfg.env, region: cfg.region, merchant, host, domains,
+    added: [] as string[], existing: [] as string[], failed: [] as Array<{ domain: string; status: number; errorCode: string | null; message: string }>,
     paymentMethodId: null as string | null, verificationStatus: null as string | null, note: null as string | null,
   };
+  const done = (answer: RegistrationAnswer): RegistrationAnswer => ({ ...answer, guidance: applePayGuidance(answer) });
   if (!domains.length) {
-    return { ...base, ok: false, code: 'no_storefront', error: 'This venue has no online slug yet, so it has no storefront address to register for Apple Pay. Set the slug in the Back Office (Channels) first.' };
+    return done({ ...base, ok: false, code: 'no_storefront', error: 'This venue has no online slug yet, so it has no storefront address to register for Apple Pay. Set the slug in the Back Office (Channels) first.' });
   }
   const m = encodeURIComponent(merchant);
   const rows: unknown[] = [];
   for (let page = 1; page <= 5; page++) {
     const r = await mgmt<{ data?: unknown[]; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings?pageSize=100&pageNumber=${page}`);
     if (!r.ok) {
-      return {
+      return done({
         ...base, ok: false, status: r.status,
+        code: scopeMissing(r.status) ? 'scope_missing' : 'read_failed',
+        errorCode: adyenErrorCode(r.data),
+        message: adyenRefusalMessage(r.status, r.data),
         error: scopeMissing(r.status)
           ? `The ${cfg.region} ${cfg.env} API key cannot read the payment methods on ${merchant} (${r.status}). It needs the Management API role "Payment methods read and write".`
           : `Could not read the payment methods on ${merchant}: ${adyenRefusalMessage(r.status, r.data)}`,
-      };
+      });
     }
     const pageRows: unknown = r.data?.data;
     rows.push(...(Array.isArray(pageRows) ? pageRows : []));
@@ -1456,7 +1533,7 @@ async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, store
   // venue's registration).
   const storeScoped = !pm && hasApplePayEntries(rows);
   const note = applePayStatusNote(pm, merchant, { storeScoped });
-  if (!pm) return { ...base, ok: false, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: note, note };
+  if (!pm) return done({ ...base, ok: false, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: note, note });
   const pmId = String(pm.id ?? '');
   const verificationStatus = pm.verificationStatus === undefined || pm.verificationStatus === null ? null : String(pm.verificationStatus);
   // What is registered already. The GET is the source of truth: 200 with
@@ -1472,22 +1549,22 @@ async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, store
   if (cur.ok && (cur.status === 204 || cur.data == null || got === undefined)) known = [];
   else if (Array.isArray(got)) known = got.filter((d): d is string => typeof d === 'string');
   else if (Array.isArray(own)) known = own.filter((d): d is string => typeof d === 'string');
-  const plan = applePayDomainsPlan(known ?? [], storefront);
+  const plan = applePayDomainsPlan(known ?? [], sf);
   const added: string[] = [];
   const existing = [...plan.existing];
-  const failed: Array<{ domain: string; status: number; message: string }> = [];
+  const failed: Array<{ domain: string; status: number; errorCode: string | null; message: string }> = [];
   for (const domain of plan.missing) {
     // One host per call so a host that does not serve the association file
     // fails on its own line instead of taking the batch down with it.
     const r = await mgmt(cfg, 'POST', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/addApplePayDomains`, { domains: [domain] });
     if (r.ok) added.push(domain);
     else if (isDuplicateRefusal(r.status, r.data)) existing.push(domain);
-    else failed.push({ domain, status: r.status, message: adyenRefusalMessage(r.status, r.data) });
+    else failed.push({ domain, status: r.status, errorCode: adyenErrorCode(r.data), message: adyenRefusalMessage(r.status, r.data) });
   }
   const notes = [note];
   if (known === null) notes.push('Adyen did not list the domains registered already, so every host was sent; "already exists" answers count as existing.');
-  if (failed.length) notes.push('A host is refused when it does not serve /.well-known/apple-developer-merchantid-domain-association over https. The app serves it on every ServOS host, so check that the host resolves.');
-  return { ...base, ok: failed.length === 0, paymentMethodId: pmId, verificationStatus, added, existing, failed, note: notes.join(' ') };
+  if (failed.some((f) => !scopeMissing(f.status))) notes.push('A host is refused when it does not serve /.well-known/apple-developer-merchantid-domain-association over https. The app serves it on every ServOS host, so check that the host resolves.');
+  return done({ ...base, ok: failed.length === 0, paymentMethodId: pmId, verificationStatus, added, existing, failed, note: notes.join(' ') });
 }
 
 // ── READ ONLY probes for golive_state (8 Sep 2026) ───────────────────────────
@@ -1521,34 +1598,54 @@ async function probeWebOrigins(cfg: AdyenConfig, customDomain: string | null): P
 //   GET /v3/merchants/{m}/paymentMethodSettings/{id}/getApplePayDomains      https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/paymentMethodSettings/_paymentMethodId_/getApplePayDomains
 // `domains` is what Adyen holds NOW, `verification` the payment method's own
 // status (valid | pending | invalid | rejected), null when Apple Pay was never
-// requested on the merchant.
+// requested on the merchant. `read` (29 Sep 2026) is true only when the method
+// list AND the domains were read, so `registered: false` with read false is
+// "could not check", never "not registered". `host` is the main host of the
+// config's environment, `guidance` the one sentence on what to do.
 async function probeApplePay(cfg: AdyenConfig, merchant: string, storeId: string | null, storefront: Storefront): Promise<Record<string, unknown> & { domains: string[]; verification: string | null }> {
-  const wanted = buildStorefrontDomains(storefront);
-  const base = { environment: cfg.env, region: cfg.region, merchant, domains: [] as string[], wanted, missing: wanted, verification: null as string | null, registered: false };
-  if (!wanted.length) return { ...base, code: 'no_storefront', error: 'This venue has no online address yet, so there is nothing to register for Apple Pay.' };
+  const sf = { ...storefront, environment: cfg.env };
+  const wanted = buildStorefrontDomains(sf);
+  const host = storefrontHostFor(sf) || null;
+  const base = { environment: cfg.env, region: cfg.region, merchant, host, domains: [] as string[], wanted, missing: wanted, verification: null as string | null, registered: false, read: false };
+  const done = <T extends Record<string, unknown>>(answer: T) => ({ ...answer, guidance: applePayGuidance(answer) });
+  if (!wanted.length) return done({ ...base, code: 'no_storefront', error: 'This venue has no online address yet, so there is nothing to register for Apple Pay.' });
   const m = encodeURIComponent(merchant);
   const rows: unknown[] = [];
   for (let page = 1; page <= 5; page++) {
     const r = await mgmt<{ data?: unknown[]; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings?pageSize=100&pageNumber=${page}`);
-    if (!r.ok) return { ...base, error: `Could not read the payment methods on ${merchant}: ${adyenRefusalMessage(r.status, r.data)}` };
+    if (!r.ok) {
+      return done({
+        ...base, status: r.status, code: scopeMissing(r.status) ? 'scope_missing' : 'read_failed', errorCode: adyenErrorCode(r.data),
+        message: adyenRefusalMessage(r.status, r.data),
+        error: `Could not read the payment methods on ${merchant}: ${adyenRefusalMessage(r.status, r.data)}`,
+      });
+    }
     const pageRows: unknown = r.data?.data;
     rows.push(...(Array.isArray(pageRows) ? pageRows : []));
     if (!r.data?._links?.next) break;
   }
   const pm = pickApplePayMethod(rows, storeId);
   const storeScoped = !pm && hasApplePayEntries(rows);
-  if (!pm) return { ...base, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: applePayStatusNote(pm, merchant, { storeScoped }) };
+  if (!pm) return done({ ...base, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: applePayStatusNote(pm, merchant, { storeScoped }) });
   const pmId = String(pm.id ?? '');
   const verification = pm.verificationStatus === undefined || pm.verificationStatus === null ? null : String(pm.verificationStatus);
   const cur = await mgmt<{ domains?: unknown }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/getApplePayDomains`);
   const got: unknown = cur.ok ? cur.data?.domains : null;
   const own: unknown = pm.applePay?.domains;
-  let known: string[] = [];
+  let known: string[] | null = null;
   if (cur.ok && (cur.status === 204 || cur.data == null || got === undefined)) known = [];
   else if (Array.isArray(got)) known = got.filter((d): d is string => typeof d === 'string');
   else if (Array.isArray(own)) known = own.filter((d): d is string => typeof d === 'string');
-  const plan = applePayDomainsPlan(known, storefront);
-  return { ...base, paymentMethodId: pmId, verification, domains: known, missing: plan.missing, registered: plan.missing.length === 0 };
+  if (known === null) {
+    // Neither Adyen's list nor the method's own copy: unknown, not missing.
+    return done({
+      ...base, paymentMethodId: pmId, verification, status: cur.status, code: scopeMissing(cur.status) ? 'scope_missing' : 'read_failed',
+      errorCode: adyenErrorCode(cur.data), message: adyenRefusalMessage(cur.status, cur.data),
+      error: `Could not read the Apple Pay domains on ${merchant}: ${adyenRefusalMessage(cur.status, cur.data)}`,
+    });
+  }
+  const plan = applePayDomainsPlan(known, sf);
+  return done({ ...base, read: true, paymentMethodId: pmId, verification, domains: known, missing: plan.missing, registered: plan.missing.length === 0 });
 }
 
 // ── step 5 reads for golive_state and set_split (9 Sep 2026) ─────────────────
@@ -2201,11 +2298,58 @@ Deno.serve(async (req) => {
     // SAME rules, the same reader registry and ops link clearing and the
     // same merchant account rewrite, in one write.
 
+    // APPLE PAY, BY ITSELF (29 Sep 2026, v5.11.17, OWNER: "can we not just
+    // set it so that it just sets the domain with adyen automatically"). The
+    // venue's ONE host on regCfg's environment goes on regMerchant's Apple
+    // Pay method, the outcome and Adyen's reason are kept (APPLE PAY STATE)
+    // and one log line says what happened. A manual trigger (admin, go_live,
+    // adyen_link) always asks Adyen; an automatic one (checkout,
+    // golive_state) only when applePayRetryDue says so (6 hours after a
+    // refusal, 24 once registered, at once when the host or the merchant
+    // changed), and never when the kept row cannot be read. Idempotent at
+    // Adyen: the list is read first and only a missing host is posted. Never
+    // throws: every failure is an answer with its error line.
+    type EnsureAnswer = RegistrationAnswer & { throttled?: boolean; registered?: boolean; outcome?: string | null; guidance?: string | null; state?: ApplePayState | null };
+    // `paymentMethodId` (golive_state only): the Apple Pay method the caller
+    // just read, so a kept row for ANOTHER method never throttles this one.
+    const ensureApplePayDomains = async (regCfg: AdyenConfig, regMerchant: string, regStoreId: string | null, trigger: string, known?: Storefront, paymentMethodId: string | null = null): Promise<EnsureAnswer> => {
+      const manual = APPLE_PAY_MANUAL_TRIGGERS.includes(trigger);
+      let storefront: Storefront;
+      if (known) storefront = known;
+      else {
+        try { storefront = await storefrontFor(loc.id); } catch (e) {
+          return { ok: false, trigger, error: `storefront lookup: ${(e as Error)?.message || String(e)}` };
+        }
+      }
+      const host = storefrontHostFor({ slug: storefront.slug, environment: regCfg.env });
+      const prev = await readApplePayState(regCfg.env, loc.id);
+      if (!manual && !prev.ok) {
+        return { ok: false, trigger, skipped: true, throttled: true, error: 'The last Apple Pay attempt could not be read, so Adyen was not asked this time.' };
+      }
+      if (!manual && !applePayRetryDue(prev.state, { now: Date.now(), host, merchant: regMerchant, trigger, paymentMethodId })) {
+        const st = prev.state;
+        return {
+          ok: st?.registered === true, trigger, throttled: true, registered: st?.registered === true,
+          outcome: st?.outcome ?? null, code: st?.code ?? null, guidance: st?.guidance ?? null, host: st?.host ?? (host || null), state: st,
+        };
+      }
+      const answer = await attemptRegistration('Apple Pay domains', () => registerApplePayDomains(regCfg, regMerchant, regStoreId, storefront));
+      const state = applePayStateFrom(
+        { ...answer, environment: answer.environment ?? regCfg.env, merchant: answer.merchant ?? regMerchant },
+        { trigger, host, now: Date.now(), previous: prev.state },
+      );
+      await saveApplePayState(regCfg.env, loc.id, state);
+      logLink('apple_pay_domains', loc.id, { ...state, region: regCfg.region, storeId: regStoreId });
+      console.log(`[adyen-terminal-admin] ${caller.id} apple pay ${trigger} for ${loc.id} on ${regMerchant} (${regCfg.region} ${regCfg.env}): ${host || 'no host'} ${state.outcome}${state.code ? `, code ${state.code}` : ''}${state.status ? `, ${state.status}` : ''}${state.error ? `: ${state.error}` : ''}`);
+      return { ...answer, trigger, throttled: false, host: host || null, registered: state.registered, outcome: state.outcome, code: state.code, guidance: state.guidance, state };
+    };
+
     // Web origins and Apple Pay domains for one config, best effort: both
     // halves always answer, a storefront lookup failure answers both with
     // its error, a throw becomes that half's error line. Shared by the go
-    // live tail of set_environment and by adyen_link.
-    const runRegistrations = async (regCfg: AdyenConfig, regMerchant: string, regStoreId: string | null): Promise<{ webOrigins: RegistrationAnswer; applePayDomains: RegistrationAnswer }> => {
+    // live tail of set_environment and by adyen_link, each passing its own
+    // trigger (a manual one: Apple Pay is always asked, and kept).
+    const runRegistrations = async (regCfg: AdyenConfig, regMerchant: string, regStoreId: string | null, trigger: string): Promise<{ webOrigins: RegistrationAnswer; applePayDomains: RegistrationAnswer }> => {
       let storefront: Storefront;
       try { storefront = await storefrontFor(loc.id); } catch (e) {
         const error = `storefront lookup: ${(e as Error)?.message || String(e)}`;
@@ -2213,7 +2357,7 @@ Deno.serve(async (req) => {
       }
       const sf = storefront;
       const webOrigins = await attemptRegistration('web origins', () => registerWebOrigins(regCfg, sf.customDomain));
-      const applePayDomains = await attemptRegistration('Apple Pay domains', () => registerApplePayDomains(regCfg, regMerchant, regStoreId, sf));
+      const applePayDomains = await ensureApplePayDomains(regCfg, regMerchant, regStoreId, trigger, sf);
       return { webOrigins, applePayDomains };
     };
 
@@ -2425,9 +2569,9 @@ Deno.serve(async (req) => {
           // button, which passes the row's store id, covers the store
           // scoped case once the live store exists.
           const liveStoreId: string | null = restored?.store_id ?? null;
-          ({ webOrigins, applePayDomains } = await runRegistrations(liveCfg, liveMerchant, liveStoreId));
+          ({ webOrigins, applePayDomains } = await runRegistrations(liveCfg, liveMerchant, liveStoreId, 'go_live'));
         }
-        console.log(`[adyen-terminal-admin] ${caller.id} go live registrations for ${loc.id}: origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
+        console.log(`[adyen-terminal-admin] ${caller.id} go live registrations for ${loc.id}: origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}${applePayLogTail(applePayDomains)}`);
       }
       return { ok: true, reprovisioned: provisionedOnCurrent, merchantNext: merchantWritten, warnings, webOrigins, applePayDomains, stashSaved, restored, keepsSetup: envStash.available };
     };
@@ -2678,7 +2822,7 @@ Deno.serve(async (req) => {
         webOrigins = { ok: false, skipped: true, error };
         applePayDomains = { ok: false, skipped: true, error };
       } else {
-        ({ webOrigins, applePayDomains } = await runRegistrations(linkCfg, merchant, String(patch.store_id ?? '').trim() || null));
+        ({ webOrigins, applePayDomains } = await runRegistrations(linkCfg, merchant, String(patch.store_id ?? '').trim() || null, 'adyen_link'));
       }
       // The same whitelist payments-admin adyen_accounts answers: never the
       // hosted onboarding link (a bearer style URL) or a future secret column.
@@ -2687,8 +2831,15 @@ Deno.serve(async (req) => {
         .eq('location_id', loc.id).maybeSingle();
       if (afterErr) warnings.push(`The row was written but could not be read back: ${afterErr.message}`);
       const ids = Object.fromEntries(Object.entries(patch).filter(([k]) => k !== 'verification_status'));
-      logLink('link', loc.id, { environment: linkEnv, previous: env, region, merchant, reference, storeId, plan: plan.kind, diff: plan.diff, ids, reprovisioned, stashSaved, restored, errors, warnings, origins: webOrigins?.ok ?? null, applePay: applePayDomains?.ok ?? null });
-      console.log(`[adyen-terminal-admin] ${caller.id} adyen_link ${reference ?? '(by id)'} for ${loc.id} on ${merchant} (${region} ${linkEnv}, was ${env}): ${plan.kind}, changed ${plan.diff.changed.join(', ') || 'nothing'}; origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
+      // The Apple Pay REASON rides in the audit row too (29 Sep 2026: on 22
+      // Sep only the yes/no was kept and nobody could say why Adyen refused).
+      logLink('link', loc.id, {
+        environment: linkEnv, previous: env, region, merchant, reference, storeId, plan: plan.kind, diff: plan.diff, ids, reprovisioned, stashSaved, restored, errors, warnings,
+        origins: webOrigins?.ok ?? null, applePay: applePayDomains?.ok ?? null,
+        applePayCode: applePayDomains?.code ?? null, applePayError: applePayDomains?.ok ? null : ((applePayDomains?.message ?? applePayDomains?.error) ?? null),
+        applePayFailed: Array.isArray(applePayDomains?.failed) ? applePayDomains?.failed : [],
+      });
+      console.log(`[adyen-terminal-admin] ${caller.id} adyen_link ${reference ?? '(by id)'} for ${loc.id} on ${merchant} (${region} ${linkEnv}, was ${env}): ${plan.kind}, changed ${plan.diff.changed.join(', ') || 'nothing'}; origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}${applePayLogTail(applePayDomains)}`);
       return json({
         ok: true, ...base, reprovisioned, row: after ?? null,
         web_origins: webOrigins, apple_pay_domains: applePayDomains,
@@ -2810,6 +2961,11 @@ Deno.serve(async (req) => {
     // Read only for the VENUE row. It DOES write adyen_platform_settings (the
     // balance platform id it learned) and the audit trail. Everything else is
     // best effort: a refusal is a line, never a 500.
+    // APPLE PAY (29 Sep 2026): the one exception to "read only at Adyen". A
+    // LIVE venue whose live shop address Adyen does not hold for Apple Pay is
+    // registered from here (ensureApplePayDomains, throttled to once in 6
+    // hours after a refusal), and the answer carries applePay.lastAttempt,
+    // the kept outcome with Adyen's reason.
     //   { venue, keys, holder, balanceAccount, legalEntity, capabilities,
     //     store, merchantConfigured, merchantMismatch, readers, origins,
     //     applePay, steps: [{ id, title, state, detail, action, hint }] }
@@ -2948,11 +3104,79 @@ Deno.serve(async (req) => {
           })(),
           (async (): Promise<ApplePayProbe> => {
             try { return await probeApplePay(targetCfg, merchantConfigured, storeIdNow, storefront); }
-            catch (e) { return { domains: [], verification: null, error: `Apple Pay: ${(e as Error)?.message || String(e)}` }; }
+            catch (e) {
+              // A throw (Adyen did not answer in time) is "could not check",
+              // never "ready": registered false with read false, so step 4
+              // asks for attention and offers Register for Apple Pay (29 Sep
+              // 2026 review: a timeout used to turn the step green).
+              const msg = (e as Error)?.message || String(e);
+              const failedRead = {
+                domains: [] as string[], verification: null, registered: false, read: false,
+                environment: targetCfg.env, region: targetCfg.region, merchant: merchantConfigured,
+                host: storefrontHostFor({ slug: storefront.slug, environment: targetCfg.env }) || null,
+                code: /did not answer/i.test(msg) ? 'timeout' : 'read_failed',
+                message: msg, error: `Apple Pay: ${msg}`,
+              };
+              return { ...failedRead, guidance: applePayGuidance(failedRead) };
+            }
           })(),
         ]);
         origins = o;
         applePay = a;
+        // APPLE PAY, BY ITSELF, FROM THIS SCREEN (29 Sep 2026, v5.11.17): a
+        // live venue whose live host Adyen does not hold is registered right
+        // here, throttled exactly like the checkout's nudge, so opening the
+        // screen is enough. Only when the read PROVED the host is missing (an
+        // unreadable list is never "missing"), and only when this screen read
+        // EXACTLY what the checkout registers (29 Sep 2026 review): the
+        // venue's own environment, the account the checkout uses (no merchant
+        // override), no store picked on the screen, and the store probed is
+        // the venue row's own. A picked or pasted store is another venue's
+        // Apple Pay entry, never written to by itself. The row's store id is
+        // what ensure registers with, as ensure_apple_pay_domains does, and
+        // the method just read rides in so a kept row for another method
+        // never throttles it. A throttled answer changes nothing on screen;
+        // the probe stays the truth.
+        const probeIsCheckouts = targetEnv === env && !merchantOverride && !pickedStoreId && storeIdNow === rowStoreId;
+        const probeMissing = Array.isArray(a.missing) ? (a.missing as unknown[]).length : 0;
+        const probeHost = storefrontHostFor({ slug: storefront.slug, environment: targetCfg.env });
+        let ensured: Awaited<ReturnType<typeof ensureApplePayDomains>> | null = null;
+        if (env === 'live' && probeIsCheckouts && a.read === true && !!a.paymentMethodId && probeMissing > 0) {
+          ensured = await ensureApplePayDomains(targetCfg, merchantConfigured, rowStoreId, 'golive_state', storefront, String(a.paymentMethodId));
+          if (!ensured.throttled) {
+            const refusedHosts = (Array.isArray(ensured.failed) ? ensured.failed as Array<Record<string, unknown>> : [])
+              .map((f) => String(f?.domain ?? '')).filter(Boolean);
+            applePay = {
+              ...applePay,
+              registered: ensured.registered === true,
+              missing: ensured.registered === true ? [] : (refusedHosts.length ? refusedHosts : a.missing),
+              added: Array.isArray(ensured.added) ? ensured.added : [],
+              failed: Array.isArray(ensured.failed) ? ensured.failed : [],
+              guidance: ensured.guidance ?? null,
+            };
+            if (ensured.registered === true && Array.isArray(ensured.added)) applePay.domains = [...applePay.domains, ...(ensured.added as string[])];
+          }
+        }
+        // The last attempt kept for this environment (APPLE PAY STATE), so the
+        // screen can say when ServOS last asked and what Adyen answered.
+        let kept = ensured && !ensured.throttled ? { ok: true, state: ensured.state ?? null } : await readApplePayState(targetEnv, loc.id);
+        // THE READ IS NEWER THAN A KEPT REFUSAL (29 Sep 2026 review): when
+        // this screen reads the host as registered on the checkout's own
+        // method and the kept row says it is not (FranPOS added it by hand in
+        // the Customer Area), the row is brought up to date, so the screen
+        // stops showing the old refusal and the checkout's recheck waits the
+        // 24 hours a registered host waits. Only a row that exists and says
+        // no is rewritten; a registered row, or none, is left alone.
+        if (probeIsCheckouts && a.read === true && a.registered === true && kept.ok && kept.state && kept.state.registered !== true) {
+          const fresh = applePayStateFrom(
+            { ...a, ok: true, environment: targetCfg.env, merchant: merchantConfigured },
+            { trigger: 'golive_state', host: probeHost, now: Date.now(), previous: kept.state },
+          );
+          await saveApplePayState(targetEnv, loc.id, fresh);
+          logLink('apple_pay_domains', loc.id, { ...fresh, region: targetCfg.region, storeId: rowStoreId, note: 'read as registered on the go live screen' });
+          kept = { ok: true, state: fresh };
+        }
+        applePay = { ...applePay, lastAttempt: kept.state ?? null };
       } else if (!keysOk) {
         notes.push(`Nothing was read from Adyen: the ${region} ${targetEnv} set is missing ${keysMissing.join(', ')}.`);
       } else {
@@ -3555,12 +3779,36 @@ Deno.serve(async (req) => {
     // venue's store id prefers a store scoped entry when the merchant has
     // one. Answers 200 with ok false and a plain message when Apple Pay is
     // not requested or approved yet, or the venue has no slug.
+    // 29 Sep 2026: through ensureApplePayDomains with the manual trigger
+    // 'admin', so it always asks Adyen, keeps the outcome and Adyen's reason,
+    // and answers the guidance sentence the Register for Apple Pay button
+    // shows. The venue's own environment picks the hosts.
     if (action === 'register_apple_pay_domains') {
       if (!isServosAdmin) return adminOnly();
-      const storefront = await storefrontFor(loc.id);
-      const r = await registerApplePayDomains(cfg, merchant, (maa?.store_id as string | undefined) ?? null, storefront);
+      const r = await ensureApplePayDomains(cfg, merchant, (maa?.store_id as string | undefined) ?? null, 'admin');
+      const { state: _state, ...answer } = r;
       console.log(`[adyen-terminal-admin] ${caller.id} register_apple_pay_domains for ${loc.id} on ${merchant} (${cfg.region} ${cfg.env}): added ${(r.added as string[] | undefined)?.length ?? 0}, existing ${(r.existing as string[] | undefined)?.length ?? 0}, failed ${(r.failed as unknown[] | undefined)?.length ?? 0}${r.error ? ` (${r.error})` : ''}`);
-      return json({ action, ...r });
+      return json({ action, ...answer, lastAttempt: r.state ?? null });
+    }
+
+    // ── ensure_apple_pay_domains: the same, THROTTLED (29 Sep 2026) ──────────
+    // The automatic door: adyen-checkout nudges it (service role bearer,
+    // fire and forget) whenever a checkout for this venue offers Apple Pay,
+    // and a super_admin may call it too. The venue's own environment, merchant
+    // and store; the shopper never chooses the host (the slug and the
+    // environment decide it). Asks Adyen at most every 6 hours after a
+    // refusal and every 24 once registered (applePayRetryDue). A venue with
+    // no Adyen row is skipped. Answers { ok, throttled, registered, outcome,
+    // code, guidance }, nothing else: the service role caller only logs it.
+    if (action === 'ensure_apple_pay_domains') {
+      if (!isServosAdmin && !isServiceRole) return adminOnly();
+      if (!maa) return json({ ok: false, skipped: true, reason: 'This venue has no Adyen account row.' });
+      const r = await ensureApplePayDomains(cfg, merchant, (maa?.store_id as string | undefined) ?? null, 'checkout');
+      return json({
+        ok: r.ok === true, throttled: r.throttled === true, registered: r.registered === true,
+        outcome: r.outcome ?? null, code: r.code ?? null, guidance: r.guidance ?? null,
+        ...(r.skipped ? { skipped: true } : {}), ...(r.error && !r.ok ? { error: r.error } : {}),
+      });
     }
 
     // ── status: everything the panel needs to decide what to show ────────────

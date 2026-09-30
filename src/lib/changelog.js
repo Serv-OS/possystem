@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.16',
+    v: '5.11.18',
     date: '29 Sep 2026',
     items: [
       "Card machine tips are never lost. On 29 Sep at Huddersfield (R3618) a customer added a 72p tip on the card machine, but a network blip stopped it being saved; the sale was booked at £7.25 with no tip. Now the tip is saved with retries and checked; if it still cannot be saved, the payment is not closed until it can be, with the tip.",
@@ -15,6 +15,22 @@ export const CHANGELOG = [
       "Anything that cannot be fixed safely (a bigger difference, a refunded sale, Adyen not confirming) raises one alert in the activity feed with both amounts, and Back Office, Card readers, Payments that need checking now shows what the card machine took next to what we asked for.",
       "Stuck card payments are recovered from Adyen's own record. The check that asks Adyen what happened had a fault that stopped it ever finishing an approved payment; it now works, and every minute a sweep closes any payment Adyen approved that is still inside its payment window. Only Adyen's signed (verified) record counts. A payment Adyen later refunded or cancelled is never booked as paid, two approvals for one sale are never closed automatically, and a payment Adyen confirms after the till gave up on it is not booked by itself (staff may have taken it another way): each of these alerts a manager with the amounts.",
       "Till: the card amount message no longer says the sale is held for a manager (it never was). It now says the sale is recorded at the bill amount, not to take payment again, and that a tip is added by itself. If the card machine took LESS than the bill, it says how much is still owed instead. The till checks again for 20 seconds and finishes the sale with the tip as soon as it is fixed.",
+    ],
+  },
+  {
+    v: '5.11.17',
+    date: '29 Sep 2026',
+    items: [
+      "Online ordering and table bookings: when Apple Pay cannot start for a shop, the checkout now says \"Apple Pay could not start for this shop. Please pay by card below.\" above the card form. Before, the Apple Pay sheet flashed up and closed with no message (Coffee Boy). Each time it happens ServOS writes one line to its server logs, so we can see it too.",
+      "Apple Pay registers itself: whenever a venue's online checkout offers Apple Pay, ServOS makes sure that venue's shop address (for example coffee-boy-huddersfield.serv-os.app) is registered for Apple Pay at Adyen, and tries again by itself every 6 hours until Adyen accepts it. It never slows or blocks a payment. A live venue registers only its live address, so a test address Adyen refuses can no longer mark live as failed.",
+      "Admin, Get this venue taking cards: step 4 now shows the real Apple Pay state. It only says done and \"Apple Pay: on\" when the live shop address is registered at Adyen. Otherwise it shows Adyen's reason in plain words (for example: Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential), when ServOS last tried, and a Register for Apple Pay button.",
+    ],
+  },
+  {
+    v: '5.11.16',
+    date: '29 Sep 2026',
+    items: [
+      "Customers: one phone rule everywhere, so 07931 129015, 07931129015 and +44 7931 129015 are the same customer. An online or QR order from an imported loyalty member made them a second customer record (Huddersfield, 29 Sep), because the number was compared as written. The same rule now applies to the till's customer search and save, WiFi sign up, loyalty login and balance, gift card purchases, table bookings, delivery apps (HubRise) and the customer importer. US numbers are matched the same way with and without +1.",
     ],
   },
   {

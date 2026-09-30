@@ -70,8 +70,8 @@ export async function searchPhonelessMembers({ db, orgId, q, limit = LINK_SEARCH
  * READS ONLY. The live profiles holding the order's number (any of the ways it is stored), and the
  * picked member as it is NOW (same organisation, not deleted). { ok: false } when a read fails.
  */
-export async function readLinkFacts({ db, orgId, phoneN, typedPhone = '', memberId }) {
-  const variants = phoneVariants(phoneN, typedPhone);
+export async function readLinkFacts({ db, orgId, phoneN, typedPhone = '', memberId, region = '' }) {
+  const variants = phoneVariants(phoneN, typedPhone, region);
   if (!db || !orgId || !memberId || !variants.length) return { ok: false, code: 'nothing_to_check' };
   const orPhone = variants.flatMap((v) => [`phone.eq.${v}`, `phone_raw.eq.${v}`]).join(',');
   const [p, m] = await Promise.all([
@@ -112,7 +112,7 @@ function notify(sendNotice, body) {
  * customer display shows for a known member (or null when the lookup did not answer).
  */
 export async function linkOrderCustomer({
-  customer, member, phoneN, db, orgId, locId = null, postMerge = null, sendNotice = null, lookup = null,
+  customer, member, phoneN, db, orgId, locId = null, postMerge = null, sendNotice = null, lookup = null, region = '',
   now = null, timeout = withTimeout, checkMs = CHECK_TIMEOUT_MS, writeMs = WRITE_TIMEOUT_MS,
 }) {
   const c = customer || {};
@@ -123,7 +123,7 @@ export async function linkOrderCustomer({
 
   let facts = null;
   try {
-    facts = await timeout(readLinkFacts({ db, orgId, phoneN, typedPhone: c.phone, memberId: member.id }), checkMs, 'Customer check');
+    facts = await timeout(readLinkFacts({ db, orgId, phoneN, typedPhone: c.phone, memberId: member.id, region }), checkMs, 'Customer check');
   } catch (e) {
     console.warn('[link member] check:', e?.message || e);
     return linkRefused('read_failed');

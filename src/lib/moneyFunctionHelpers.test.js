@@ -21,6 +21,7 @@ import {
   phoneMatchVariants, giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS,
   normaliseMemberPhone, cardBelongsToPhone, phonesMatch, phoneShape,
 } from '../../supabase/functions/_shared/giftCardMatch.ts';
+import { legacyAppPhone, phoneMatchKey } from '../../supabase/functions/_shared/phoneKey.js';
 import { limitedMemberReply, LIMITED_MEMBER_KEYS } from '../../supabase/functions/_shared/memberReply.ts';
 import {
   decideEarnSource, earnItemsFromCheck, checkCapMinor, checkBelongsToMember, checkItemIds, checkIsEarnable,
@@ -125,12 +126,15 @@ test('GB and US numbers match on their digits, never across countries', () => {
   assert.equal(normaliseMemberPhone('07931 123 456'), '+447931123456');
 });
 
-test('the phone rule is the app\'s own rule (same as src/lib/customerLookup.js normalisePhone)', () => {
-  const src = read('./customerLookup.js');
-  const body = src.slice(src.indexOf('export function normalisePhone(raw) {'), src.indexOf('// Cache the org_id'));
-  const appRule = new Function(`${body.replace('export ', '')}; return normalisePhone;`)();
+test('the phone rule is the rule customers.phone was written with until 29 Sep 2026 (phoneKey.js legacyAppPhone)', () => {
+  // 29 Sep 2026: the till now keys with the one phone match key (phoneKey.js phoneMatchKey), which
+  // gives the same +44 for every UK mobile this rule reads. Gift card matching is pairwise
+  // (phonesMatch) and unchanged; this pins that its first test is still the old rule, cell for cell.
   for (const p of ['07931 123 456', '+44 7931 123456', '447931123456', '07931-123-456', '(650) 555-0100', '+1 650 555 0100', '0203 123 4567', '', 'abc']) {
-    assert.equal(normaliseMemberPhone(p), appRule(p), p);
+    assert.equal(normaliseMemberPhone(p), legacyAppPhone(p), p);
+  }
+  for (const p of ['07931 123 456', '+44 7931 123456', '447931123456']) {
+    assert.equal(normaliseMemberPhone(p), phoneMatchKey(p, 'GB'), 'a UK mobile is the same key both ways: ' + p);
   }
 });
 

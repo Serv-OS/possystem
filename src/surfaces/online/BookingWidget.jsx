@@ -44,6 +44,7 @@ import {
 import {
   CARD_ONLY_PAYMENT_METHODS, buildPaymentMethodsRequest, resolvePaymentMethods,
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
+  walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../../lib/payments/adyenWallets';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
@@ -505,6 +506,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
   const dropinRef = useRef(null);
   const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
   const offeredWallets = useRef([]);  // wallet types the venue's Adyen config offers
+  const tappedAt = useRef({});        // { [wallet type]: ms } when the guest last tapped that wallet
+  const reportedTap = useRef({});     // { [wallet type]: ms } the tap already logged, one line per tap
+  const submittedAtRef = useRef(0);   // ms of the last submit on this form, 0 for none (the wallet onError)
   // 10 Sep 2026: the merchant reference booking_pay answered with, sent back
   // on booking_pay_details so the 3DS result settles the SAME payment row.
   const referenceRef = useRef(null);
@@ -524,6 +528,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
   // server's error code, shown only behind Show detail.
   const [stuckCode, setStuckCode] = useState('');
   const [walletNote, setWalletNote] = useState(''); // one line when a wallet cannot render here
+  // 29 Sep 2026: the one line when a tapped wallet could not start, tagged
+  // with the form mount it belongs to (a retry or another booking drops it).
+  const [startNote, setStartNote] = useState({ key: '', text: '' });
   const [paidInfo, setPaidInfo] = useState(null); // { pspReference }
 
   const kind = paymentDue?.kind;
@@ -535,6 +542,10 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
 
   useEffect(() => {
     let live = true;
+    tappedAt.current = {};
+    reportedTap.current = {};
+    submittedAtRef.current = 0;
+    const noteKey = `${bookingId}|${attempt}`;
     (async () => {
       try {
         // What can this venue actually offer at THIS amount? Same
@@ -591,17 +602,37 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
         // is that element's onError. A blocked CDN or an extension is a
         // wallet-availability non-event on a browser where the card works.
         // A dismissed sheet arrives as name === 'CANCEL', likewise nothing.
-        const walletCallbacks = {
+        // A WALLET THAT CANNOT START (29 Sep 2026): onClick stamps the tap, and
+        // an error within a minute of it before any submit (the sheet dying at
+        // merchant validation) shows the card fallback line above the form and
+        // writes one wallet_error log line, as AdyenPaymentForm does. A submit
+        // counts only when it came at or after this tap (submittedAtRef), so an
+        // earlier refused card never hides a later tap that could not start.
+        const walletCallbacksFor = (type) => ({
           onAuthorized: (_data, actions) => { setPayErr(''); actions.resolve(); },
+          onClick: (resolve) => { tappedAt.current[type] = Date.now(); resolve(); },
           onError: (e) => {
             if (!live) return;
-            if (!submittedRef.current || e?.name === 'CANCEL' || e?.name === 'SCRIPT_ERROR' || e?.name === 'IMPLEMENTATION_ERROR') {
-              console.warn('[adyen] wallet unavailable:', e?.name, e?.message);
+            const tap = tappedAt.current[type];
+            const outcome = walletErrorOutcome({ name: e?.name, tappedAt: tap, now: Date.now(), submittedAt: submittedAtRef.current });
+            if (outcome === 'payment_error') {
+              setPayErr('Something went wrong, please try again.');
               return;
             }
-            setPayErr('Something went wrong, please try again.');
+            if (outcome === 'start_failed') {
+              setStartNote({ key: noteKey, text: walletStartFailedNote(type) });
+              if (reportedTap.current[type] === tap) return;
+              reportedTap.current[type] = tap;
+              console.warn('[adyen] wallet could not start:', type, e?.name, e?.message, e?.cause);
+              try {
+                const report = walletErrorReport({ locationId: opsId, type, error: e, host: typeof window !== 'undefined' ? window.location.hostname : '' });
+                supabase.functions.invoke('adyen-checkout', { body: report }).catch(() => { /* log only */ });
+              } catch { /* log only: never in the guest's way */ }
+              return;
+            }
+            console.warn('[adyen] wallet unavailable:', e?.name, e?.message);
           },
-        };
+        });
         const wallets = walletConfiguration({
           response: paymentMethodsResponse,
           amountMinor,
@@ -611,7 +642,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
         });
         const paymentMethodsConfiguration = {};
         for (const [type, conf] of Object.entries(wallets)) {
-          paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacks };
+          paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacksFor(type) };
         }
 
         // ONE reading of a booking-widget payment reply, shared by the first
@@ -710,6 +741,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           paymentMethodsResponse,
           onSubmit: async (state, _component, actions) => {
             submittedRef.current = true;
+            submittedAtRef.current = Date.now();
             setPayErr('');
             const r = await callWidget({
               action: 'booking_pay',
@@ -846,6 +878,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
   );
 
   const showForm = phase === 'init' || phase === 'ready';
+  const startNoteText = startNote.key === `${bookingId}|${attempt}` ? startNote.text : '';
   return (
     <div style={{
       margin: '0 auto 14px', maxWidth: 380, padding: '14px 16px', borderRadius: 12,
@@ -922,6 +955,10 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
                 Try another card
               </button>
             </>
+          )}
+          {/* ABOVE the form, so "pay by card below" is true. */}
+          {startNoteText && showForm && (
+            <div role="status" style={{ marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.5 }}>{startNoteText}</div>
           )}
           <div ref={holder} style={{ display: showForm ? 'block' : 'none' }} />
           {walletNote && showForm && (

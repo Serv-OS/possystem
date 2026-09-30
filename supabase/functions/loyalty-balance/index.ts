@@ -21,6 +21,8 @@ import {
   isServiceRoleRequest,
 } from '../_shared/loyalty-utils.ts';
 import { limitedMemberReply } from '../_shared/memberReply.ts';
+import { phoneMatchKey, phoneRegionFromCurrency } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -57,9 +59,9 @@ Deno.serve(async (req) => {
       .maybeSingle();
     membership = data;
   } else if (phone) {
-    // Normalise phone, find customer in ops DB, then look up membership
-    const phoneN = normalisePhone(phone);
-    if (!phoneN) return json({ error: 'Invalid phone number' }, 400);
+    // Find customer in ops DB by the one phone match key (29 Sep 2026), then look up membership.
+    // Fewer than 7 digits is no number in any region.
+    if (!phoneMatchKey(phone, '')) return json({ error: 'Invalid phone number' }, 400);
 
     // Resolve org_id: platform locations has ops_location_id, ops locations has org_id
     const { data: platLoc } = await platformAdmin
@@ -73,21 +75,17 @@ Deno.serve(async (req) => {
 
     const { data: opsLoc } = await opsAdmin
       .from('locations')
-      .select('org_id')
+      .select('org_id, currency')
       .eq('id', platLoc.ops_location_id)
       .maybeSingle();
 
     if (!opsLoc?.org_id) return json({ error: 'Location org not found' }, 404);
+    const region = phoneRegionFromCurrency(opsLoc.currency);
+    const phoneN = phoneMatchKey(phone, region) as string;
 
-    // Find customer by phone in ops DB — try normalised first, fallback to raw
+    // Find customer by phone in ops DB: the key, and every shape an older build stored it in
     let customer: any = null;
-    const { data: c1 } = await opsAdmin
-      .from('customers')
-      .select('id')
-      .eq('org_id', opsLoc.org_id)
-      .eq('phone', phoneN)
-      .is('deleted_at', null)
-      .maybeSingle();
+    const { data: c1 } = await readCustomerByPhone(opsAdmin, { orgId: opsLoc.org_id, phone, region });
     customer = c1;
 
     // Fallback: try phone_raw column too (UK 07xxx format)
@@ -324,13 +322,3 @@ Deno.serve(async (req) => {
   });
 });
 
-// ── Phone normalisation (mirrored from customerLookup.js) ────────────────
-function normalisePhone(raw: string): string | null {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits;
-}
