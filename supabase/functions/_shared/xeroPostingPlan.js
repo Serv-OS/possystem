@@ -104,9 +104,18 @@ const shortId = (id) => String(id || '').replace(/-/g, '').slice(0, 8) || 'none'
  * units: the VAT ServOS booked against what Xero will work out from the lines. `blocked` lists
  * the ServOS rates with no Xero sales rate: such a day must not be posted.
  */
-export function planXeroDay(summary, { mapping = {}, detail = {}, sample = false } = {}) {
+/**
+ * @param {any} summary
+ * @param {{ mapping?: any, detail?: any, sample?: boolean, site?: { name?: string } | null }} [opts]
+ * @returns {any}
+ */
+export function planXeroDay(summary, { mapping = {}, detail = {}, sample = false, site = null } = {}) {
   const warnings = [];
   const date = summary.date;
+  // 30 Sep 2026: the site's name in every reference and line, so two sites posting to one Xero
+  // org never share a reference. With no site (demo) the payloads read exactly as before.
+  const siteName = String(site?.name || '').trim();
+  const at = siteName ? `${siteName} ${date}` : date;
   const paymentMap = mapping.paymentMap || {};
   const revenueRef = accountRef(mapping.revenueAccount) || accountRef(detail.salesAccountCode) || { AccountCode: '200' };
   const tipsRef = accountRef(mapping.tipsAccount) || accountRef(detail.tipsAccountCode);
@@ -217,19 +226,19 @@ export function planXeroDay(summary, { mapping = {}, detail = {}, sample = false
     if (g.totals.sales > 0) {
       vatLines = goodsLines(g);
       for (const l of vatLines) {
-        li.push({ Description: `${refund ? 'Refunded sales' : 'Sales'} ${date} (${what})${l.label ? ` ${l.label}` : ''}`, Quantity: 1, UnitAmount: minorToMajor(l.amount), ...revenueRef, TaxType: l.taxType });
+        li.push({ Description: `${refund ? 'Refunded sales' : 'Sales'} ${at} (${what})${l.label ? ` ${l.label}` : ''}`, Quantity: 1, UnitAmount: minorToMajor(l.amount), ...revenueRef, TaxType: l.taxType });
       }
-      if (g.totals.tip > 0) li.push({ Description: `${refund ? 'Refunded tips' : 'Tips and gratuities'} ${date}`, Quantity: 1, UnitAmount: minorToMajor(g.totals.tip), ...(tipsRef || revenueRef), TaxType: 'NONE' });
+      if (g.totals.tip > 0) li.push({ Description: `${refund ? 'Refunded tips' : 'Tips and gratuities'} ${at}`, Quantity: 1, UnitAmount: minorToMajor(g.totals.tip), ...(tipsRef || revenueRef), TaxType: 'NONE' });
       if (g.totals.service > 0) {
         if (!serviceTax) blocked.set('service', { key: 'service', name: 'Service charge', pct: null });
         serviceVat = inclusiveTaxMinor(g.totals.service, rateOf(serviceTax, rev) ?? 0);
-        li.push({ Description: `${refund ? 'Refunded service charge' : 'Service charge'} ${date}`, Quantity: 1, UnitAmount: minorToMajor(g.totals.service), ...(serviceRef || revenueRef), TaxType: serviceTax });
+        li.push({ Description: `${refund ? 'Refunded service charge' : 'Service charge'} ${at}`, Quantity: 1, UnitAmount: minorToMajor(g.totals.service), ...(serviceRef || revenueRef), TaxType: serviceTax });
       }
     } else {
       // Odd data (tips plus service at or above the money): one line for the whole amount, never at a VAT rate.
-      li.push({ Description: `${label} ${date} (${what})`, Quantity: 1, UnitAmount: minorToMajor(g.totals.gross), ...revenueRef, TaxType: 'NONE' });
+      li.push({ Description: `${label} ${at} (${what})`, Quantity: 1, UnitAmount: minorToMajor(g.totals.gross), ...revenueRef, TaxType: 'NONE' });
     }
-    const reference = `ServOS ${label.toLowerCase()} ${date} (${shortId(g.accountId || g.accountDefault)})${sample ? ' TEST' : ''}`;
+    const reference = `ServOS ${label.toLowerCase()} ${at} (${shortId(g.accountId || g.accountDefault)})${sample ? ' TEST' : ''}`;
     const checked = vatLines.filter((l) => l.compare);
     const vat = {
       lines: vatLines.map(({ taxType, label: lb, amount, taxBooked, taxXero, compare }) => ({ taxType, label: lb, amount, taxBooked, taxXero, compare })),
@@ -336,6 +345,28 @@ export const SAMPLE_TAX_NOTES = new Set(['tax_split_estimated', 'tax_not_recorde
 /** The VAT lines a posting records ({ 'TaxType|label': major amount }), to spot a later change. */
 export function postingVat(tx) {
   return Object.fromEntries((tx?.vat?.lines || []).map((l) => [`${l.taxType}|${l.label}`, minorToMajor(l.amount)]));
+}
+
+/**
+ * Whether a bank transaction found in Xero by its reference (a posting whose answer was lost)
+ * is this site's own (30 Sep 2026: two Coffee Boy sites post to one org and, before the site
+ * name was in references, their 28 Sep references were identical).
+ *   'adopt'      the reference is the one expected and names this site (or no other site shares the org)
+ *   'ambiguous'  an older reference with no site name, on an org other sites post to: never adopted
+ *   'none'       not the posting expected
+ */
+/**
+ * @param {any} found
+ * @param {{ expectedRef?: string, siteName?: string, siblingCount?: number }} [opts]
+ * @returns {'adopt' | 'ambiguous' | 'none'}
+ */
+export function adoptable(found, { expectedRef, siteName = '', siblingCount = 0 } = {}) {
+  if (!found) return 'none';
+  const ref = String(found.Reference ?? '');
+  if (!expectedRef || ref !== expectedRef) return 'none';
+  const name = String(siteName || '').trim();
+  if (name && ref.includes(name)) return 'adopt';
+  return Number(siblingCount) > 0 ? 'ambiguous' : 'adopt';
 }
 
 /**
