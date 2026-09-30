@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
+import { receiptRewardsOf } from '../lib/printDoc';
 import { money } from '../lib/currency';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
@@ -872,6 +873,9 @@ export default function CheckHistory(){
           // cardReceipt; DB-loaded checks carry it on paymentIntents[0].card)
           cardReceipt: selectedCheck.cardReceipt || null,
           paymentIntents: selectedCheck.paymentIntents || selectedCheck.payment_intents || null,
+          // 30 Sep 2026: the rewards the check used print again (off the loyalty tender, or the
+          // staged object on an in-memory record).
+          loyaltyRewards: receiptRewardsOf(selectedCheck),
         },
         items: nonVoided,
         totals: {
@@ -1048,6 +1052,10 @@ export default function CheckHistory(){
               {/* Totals */}
               <div style={{padding:'10px 0',marginBottom:12}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.subtotal)}</span></div>
+                {/* 30 Sep 2026: each loyalty reward the check used (several stamp cards on one order) */}
+                {receiptRewardsOf(selectedCheck).map((l, i) => (
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}><span>{l.label}</span><span style={{fontFamily:'DM Mono,monospace'}}>{String.fromCodePoint(0x2212)}{money(l.amount)}</span></div>
+                ))}
                 {selectedCheck.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.service)}</span></div>}
                 {selectedCheck.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.tip)}</span></div>}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700,borderTop:'1px solid var(--bdr3)',paddingTop:8,marginTop:4}}>

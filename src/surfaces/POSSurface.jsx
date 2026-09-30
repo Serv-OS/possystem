@@ -55,6 +55,7 @@ import { Icon, emojiToIcon } from '../components/ServOSIcons';
 import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
+import { receiptRewardLines } from '../lib/loyaltyMultiRedeem';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -1010,7 +1011,8 @@ export default function POSSurface() {
       const ref = 'PENDING';
       return {
         location,
-        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer, processor: paymentInfo.processor || null, cardReceipt: paymentInfo.cardReceipt || null },
+        // 30 Sep 2026: each loyalty reward prints on its own line (two stamp cards on one order).
+        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer, processor: paymentInfo.processor || null, cardReceipt: paymentInfo.cardReceipt || null, loyaltyRewards: receiptRewardLines(paymentInfo.loyaltyRedemption) },
         items: nonVoided,
         totals: { subtotal, service, tip, grand, taxBreakdown },
       };
