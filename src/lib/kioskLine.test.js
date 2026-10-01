@@ -118,6 +118,35 @@ test('KDS and kitchen print: routed by the parent, printed with the size', () =>
   assert.deepEqual(resolveCentresForItem(o, excl, ctx).centreIds, []);
 });
 
+// 4b ────────────────────────────────────────────────────────────────────────
+// Review 30 Sep 2026: an "Also in" category inside the Primary one decides the centre. Online,
+// QR and catering lines stamp cats; the kiosk line must too, or it routes by its Primary
+// category while the master till's menu cache does not have the row yet.
+test('KDS and kitchen print: an Also in sub category routes a kiosk line like an online one, cache or not', () => {
+  const MAINS = { id: 'm-tomahawk', name: 'Tomahawk', menu_name: 'Tomahawk', cat: 'mains', cats: ['steaks'], pricing: { base: 30 } };
+  const config = {
+    centres: [{ id: 'kitchen' }, { id: 'grill' }],
+    routing: { kitchen: { assignedCategories: ['mains'] }, grill: { assignedCategories: ['steaks'] } },
+  };
+  const catParents = { mains: null, steaks: 'mains' };
+  const o = kioskOrderItem(line(MAINS, null, [], 30));
+  assert.deepEqual(o.cats, ['steaks']);
+  const online = { itemId: 'm-tomahawk', cat: 'mains', cats: ['steaks'] };
+  for (const menuItems of [[], [{ id: 'm-tomahawk', cat: 'mains', cats: ['steaks'] }]]) {
+    const ctx = { menuItems, catParents, orderType: 'takeaway' };
+    assert.deepEqual(resolveCentresForItem(o, config, ctx).centreIds, ['grill']);
+    assert.deepEqual(resolveCentresForItem(online, config, ctx).centreIds, ['grill']);
+  }
+  // a size carries its product's categories, the ones it routes by
+  const STEAK = { ...MAINS, id: 'm-steak' };
+  const s = kioskOrderItem(line(STEAK, { id: 'm-steak-l', name: 'Large', menu_name: 'Large', parent_id: 'm-steak', cat: 'mains', pricing: { base: 40 } }, [], 40));
+  assert.deepEqual(s.cats, ['steaks']);
+  assert.deepEqual(resolveCentresForItem(s, config, { menuItems: [], catParents, orderType: 'takeaway' }).centreIds, ['grill']);
+  // no Also in: the line has no cats key at all, exactly as before
+  assert.equal('cats' in kioskOrderItem(line(TEA, null, [], 2)), false);
+  assert.equal('cats' in kioskOrderItem(line({ ...TEA, cats: [] }, null, [], 2)), false);
+});
+
 // 5 ─────────────────────────────────────────────────────────────────────────
 test('receipt: the size is printed and sizes at the same price stay apart', () => {
   const large = kioskOrderItem(line(LATTE, LARGE, [], 3));

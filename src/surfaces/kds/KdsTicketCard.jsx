@@ -18,8 +18,9 @@
 // second for the clock, and a component declared inside it would remount every card on
 // every tick (the old board declared TicketCard inside KDSSurface).
 
-import { memo, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { memo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { identityParts, formatElapsed, statusOf } from '../../lib/kds/kdsTicket';
+import { KDS_NOTE_MAX, cleanKdsNote } from '../../lib/kds/kdsOrderNote';
 import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { C, SANS, MONO, LATE_PULSE } from './kdsStyles';
@@ -105,6 +106,16 @@ const MODAL = {
   timerPad: '14px 22px', timerLabel: 12, timerValue: 44,
   chip: 52, chipFont: 28, chipPad: 12, lineGap: 18,
   item: 30, itemMin: 18, mods: 23, allergen: 19, note: 20, notePad: '14px 18px',
+};
+
+const modalGhost = {
+  border: '1px solid rgba(255,255,255,.18)', background: 'transparent', color: C.ghost, borderRadius: 14,
+  padding: '0 28px', height: 64, font: `700 20px ${SANS}`, cursor: 'pointer',
+};
+
+const modalBump = {
+  border: 0, background: C.bump, color: C.bumpInk, borderRadius: 14, padding: '0 56px', height: 64,
+  font: `800 24px ${SANS}`, cursor: 'pointer',
 };
 
 /** Accent for the top bar and course chip: the type colour, or the time status colour. */
@@ -200,15 +211,108 @@ function LineRow({ line, big, z, onTick, canTick, showTick }) {
   );
 }
 
-function NoteBlock({ note, big, z }) {
+/**
+ * The order's note (amber, from the till or the customer) or, with `kitchen`, the kitchen's own
+ * note (green, typed on a kitchen screen, 30 Sep 2026) so the two never read as one.
+ */
+function NoteBlock({ note, big, z, kitchen = false }) {
+  const edge = kitchen ? C.bump : C.allergen;
+  const bg = kitchen ? (big ? 'rgba(34,197,94,.12)' : 'rgba(34,197,94,.1)') : (big ? 'rgba(255,196,107,.1)' : 'rgba(255,196,107,.09)');
   return (
     <div style={{
-      width: '100%', borderLeft: `${big ? 4 : 3}px solid ${C.allergen}`,
-      background: big ? 'rgba(255,196,107,.1)' : 'rgba(255,196,107,.09)',
+      width: '100%', borderLeft: `${big ? 4 : 3}px solid ${edge}`,
+      background: bg,
       padding: z.notePad, borderRadius: big ? '0 10px 10px 0' : '0 8px 8px 0',
-      font: `${big ? 700 : 600} ${z.note}px ${SANS}`, color: C.note, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+      font: `${big ? 700 : 600} ${z.note}px ${SANS}`, color: kitchen ? C.mods : C.note, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
       textAlign: 'left',
-    }}>{note}</div>
+    }}>
+      {kitchen && <div style={{ font: `700 ${Math.max(10, Math.round(z.note * 0.72))}px ${MONO}`, letterSpacing: '.12em', color: C.bump, marginBottom: 3 }}>KITCHEN</div>}
+      {note}
+    </div>
+  );
+}
+
+/**
+ * The note box in the pop out (Peter, 30 Sep 2026: "when you click on the order it pops up on
+ * the screen"). Big text for a kitchen tablet's on screen keyboard, capped at KDS_NOTE_MAX.
+ * Save writes the note to every row of the order (KDSSurface.saveNote); the same box clears it.
+ */
+function KitchenNoteEditor({ note, onSave, saving }) {
+  const [text, setText] = useState(note || '');
+  const [editing, setEditing] = useState(false);
+  const shown = editing ? text : (note || '');
+  const changed = cleanKdsNote(text) !== cleanKdsNote(note);
+  const start = () => { setText(note || ''); setEditing(true); };
+  const save = async () => {
+    if (!changed) { setEditing(false); return; }
+    const ok = await onSave(cleanKdsNote(text));
+    if (ok) setEditing(false);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ font: `700 12px ${MONO}`, letterSpacing: '.16em', color: C.meta3 }}>NOTE FOR THE KITCHEN</div>
+        {editing && <div style={{ font: `600 14px ${MONO}`, color: shown.length >= KDS_NOTE_MAX ? C.allergen : C.meta3 }}>{shown.length} / {KDS_NOTE_MAX}</div>}
+      </div>
+      {editing ? (
+        <textarea autoFocus value={text} maxLength={KDS_NOTE_MAX} rows={3}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setEditing(false); }}
+          placeholder="Type a note staff on every kitchen screen will see on this order"
+          style={{
+            width: '100%', boxSizing: 'border-box', resize: 'none', outline: 'none',
+            font: `600 22px/1.3 ${SANS}`, color: '#fff', background: 'rgba(255,255,255,.06)',
+            border: `1px solid ${C.bump}`, borderRadius: 14, padding: '14px 18px', minHeight: 110,
+          }} />
+      ) : (
+        <button type="button" onClick={start} style={{
+          width: '100%', textAlign: 'left', cursor: 'pointer', appearance: 'none',
+          font: `600 20px/1.3 ${SANS}`, color: note ? C.mods : C.meta2, background: 'rgba(255,255,255,.04)',
+          border: `1px dashed ${note ? C.bump : 'rgba(255,255,255,.22)'}`, borderRadius: 14, padding: '14px 18px', minHeight: 64,
+          whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+        }}>{note || 'Tap to add a note for the kitchen'}</button>
+      )}
+      {editing && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="kds-bump-lg" disabled={saving || !changed} onClick={save}
+            style={{ ...modalBump, padding: '0 34px', height: 56, font: `800 20px ${SANS}`, opacity: saving || !changed ? 0.5 : 1 }}>
+            {saving ? 'Saving' : 'Save note'}
+          </button>
+          {note && (
+            <button type="button" className="kds-ghost" disabled={saving} onClick={async () => { const ok = await onSave(null); if (ok) setEditing(false); }}
+              style={{ ...modalGhost, height: 56, font: `700 18px ${SANS}` }}>Clear note</button>
+          )}
+          <button type="button" className="kds-ghost" disabled={saving} onClick={() => setEditing(false)}
+            style={{ ...modalGhost, height: 56, font: `700 18px ${SANS}` }}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The void notice. 30 Sep 2026 (Peter, Coffee Boy): a void now reaches the kitchen. The till
+ * flags the voided lines on the ticket row; they show here struck through under a red block so
+ * the cook stops that line. Every line voided reads "ORDER VOIDED": the kitchen bumps it.
+ */
+const VOID_RED = '#FF6B6B';
+function VoidBlock({ voids, big, z }) {
+  if (!voids || !voids.lines.length) return null;
+  return (
+    <div style={{
+      width: '100%', borderLeft: `${big ? 4 : 3}px solid ${VOID_RED}`,
+      background: 'rgba(255,107,107,.12)',
+      padding: z.notePad, borderRadius: big ? '0 10px 10px 0' : '0 8px 8px 0',
+      display: 'flex', flexDirection: 'column', gap: big ? 6 : 3, textAlign: 'left',
+    }}>
+      <div style={{ font: `800 ${z.note}px ${MONO}`, letterSpacing: '.06em', color: VOID_RED }}>⊘ {voids.label}</div>
+      {voids.lines.map(l => (
+        <div key={l.index} style={{ font: `${big ? 700 : 600} ${z.note}px ${SANS}`, color: '#fff', textDecoration: 'line-through', overflowWrap: 'anywhere' }}>
+          {l.qty}× {l.name}
+        </div>
+      ))}
+      {voids.all && <div style={{ font: `600 ${z.note}px ${SANS}`, color: C.ghost }}>Do not make. Bump to clear.</div>}
+    </div>
   );
 }
 
@@ -301,6 +405,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(view.id); }
         }}
         style={{ cursor: 'pointer', padding: `${z.padTop}px ${z.padX}px ${z.footPad}px`, display: 'flex', flexDirection: 'column', gap: z.bodyGap, width: '100%', textAlign: 'left' }}>
+        <VoidBlock voids={view.voids} big={false} z={z} />
         {view.groups.map(g => (
           <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: z.bodyGap }}>
             {show.course && <CourseChip label={g.label} accent={accent} font={z.course} />}
@@ -310,6 +415,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
           </div>
         ))}
         {note && <NoteBlock note={note} big={false} z={z} />}
+        {view.kdsNote && <NoteBlock note={view.kdsNote} big={false} z={z} kitchen />}
       </div>
 
       <div style={{ marginTop: 'auto', padding: `0 ${z.footPad}px ${z.footPad}px`, display: 'flex', gap: 8 }}>
@@ -338,18 +444,8 @@ function bumpStyle(compact, scale) {
   };
 }
 
-const modalGhost = {
-  border: '1px solid rgba(255,255,255,.18)', background: 'transparent', color: C.ghost, borderRadius: 14,
-  padding: '0 28px', height: 64, font: `700 20px ${SANS}`, cursor: 'pointer',
-};
-
-const modalBump = {
-  border: 0, background: C.bump, color: C.bumpInk, borderRadius: 14, padding: '0 56px', height: 64,
-  font: `800 24px ${SANS}`, cursor: 'pointer',
-};
-
 /** The expanded ticket in the centre of the screen, always at the design's big sizes. */
-export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, onBump, onHold, onResume, onBumpItem, onRecall }) {
+export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, onBump, onHold, onResume, onBumpItem, onRecall, onSaveNote, noteSaving = false }) {
   const show = settings.show;
   const z = MODAL;
   const st = statusOf(mins, settings.caution, settings.late);
@@ -385,7 +481,11 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <VoidBlock voids={view.voids} big z={z} />
           {note && <NoteBlock note={note} big z={z} />}
+          {mode === 'live' && onSaveNote ? (
+            <KitchenNoteEditor key={view.id} note={view.kdsNote || null} saving={noteSaving} onSave={(text) => onSaveNote(view.id, text)} />
+          ) : (view.kdsNote && <NoteBlock note={view.kdsNote} big z={z} kitchen />)}
           {view.groups.map(g => (
             <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {show.course && <CourseChip label={g.label} accent={accent} font={z.course} big />}

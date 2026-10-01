@@ -7,6 +7,42 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.22',
+    date: '1 Oct 2026',
+    items: [
+      "Card payments: the till no longer waits for the whole card payment before showing the card screen. Pressing Card now opens the card screen within 3 seconds (\"Customer is paying on the card machine. Keep this screen open, it finishes by itself.\"), the close button and Cash are hidden while the customer pays, and the till watches the payment from the first second. Before, staff saw Sending… for the whole payment with the close button live; closing it left the sale to book itself in the background with no kitchen ticket, so staff sent it again and the customer could pay twice (Huddersfield 30 Sep, Headingley 1 Oct).",
+      "Card payments: if a card payment is approved after the checkout was closed, the till books it, clears that order and shows a banner: Card approved after the checkout closed: R1234 £11.65 is booked. Do not take payment again.",
+      "Card payments: the server now refuses a second charge of the same order. If the card machine already took that order in the last 10 minutes and the sale was not finished on screen, the till says so in plain words with the sale number, and offers Open the sale, Clear this order, or Different customer, take payment. A same basket paid in the last 5 minutes shows an amber warning on the card screen instead.",
+      "Card payments: while the card machine is still taking a payment for an order sent from this till, the busy message names the amount and time and offers Watch that payment instead of a second send.",
+      "Card payments: a payment approved on the same card for the same amount on another sale within 15 minutes raises an urgent note in the activity feed. The card machine is never asked about a payment in its first 2 minutes, so a slow reader cannot be cancelled by the till's own check.",
+    ],
+  },
+  {
+    v: '5.11.21',
+    date: '30 Sep 2026',
+    items: [
+      "Tills: with Customer details on the till set to Not needed, a dine in order with no table now sends straight to the kitchen with no name asked (it shows its short ref on the order screen). Name only and Full details still ask. Reported on the Provo test till within minutes of 5.11.20.",
+      "Tills: the order type a till starts on is now applied every time the order screen shows with nothing rung up, not only on boot and after an order, so a till whose profile says Starts on Takeaway cannot sit on Dine in.",
+    ],
+  },
+  {
+    v: '5.11.20',
+    date: '30 Sep 2026',
+    items: [
+      "Kitchen screens: tap a ticket to add a note for the kitchen (up to 200 characters). It shows on every kitchen screen that holds that order and never reaches the till, receipts or reports.",
+      "Kitchen screens: two new venue switches in Back Office, Channels, Order screens, \"When the kitchen bumps an order\": mark the order Ready when the last screen bumps it, and optionally Collected too (paid orders only). Same effect as tapping Ready on the order screen, including the customer's ready message. Tills and kitchen screens must be on this version before turning it on.",
+      "Kitchen screens: tapping a count pill at the top (for example Dine-in name) used to quietly hide every other order type until the app was restarted; at Barnsley on 30 Sep that hid a kiosk order and two takeaways for 3 hours. The screen now shows a clear banner (Showing Dine-in name only. 3 hidden. Show all), goes back to All by itself after 3 minutes or as soon as a hidden order arrives, and the kitchen list read has a timeout, retries and a visible error.",
+      "Production centres: sizes now appear under their product name (Latte, Large) instead of a bare size, and sub categories can be ticked on their own so, for example, Smoothies can go to a different screen from the rest of Drinks. Existing routing is unchanged.",
+      "Tills: each device profile can set the order type a till starts on (Back Office, Device profiles, Starts on). A till with only one order type enabled starts on it automatically, so Huddersfield's drive thru till opens on Drive thru.",
+      "Tills: new device profile switch \"Ask for a flag number on dine in orders\" for coffee shops with numbered signs instead of tables. The till asks for the number before Send or Pay (it cannot be skipped); kitchen screens and dockets show Table 30 · #09, the receipt and Orders show Table 30. Works like the kiosk's Flag number mode.",
+      "Tills: the customer details setting (Back Office, Order types, now called Customer details on the till) covers dine in as well as takeaway and collection: Not needed, Name only, or Full details. The Add customer chip shows on every order type, including an open table.",
+      "Tills: any order can be voided, not only table orders: a sent line or the whole order on takeaway, collection, drive thru and dine in without a table, and every live order on the Orders screen. The kitchen now gets the void (red VOID block and a VOID docket). Voids recorded since 28 Sep were missing from the Exceptions, Z, Shifts and Servers reports; they show again.",
+      "Loyalty: Back Office, Customers now lets owners and managers adjust a member's stamps or completed cards with a reason. Every change is recorded in the loyalty ledger.",
+      "Loyalty: several stamp rewards can be redeemed on one order (up to the rewards available), each on a different eligible item. The till shows 2 of 3 rewards used. Refunding an order gives its stamp rewards back.",
+      "Customer display: its own name, colours and logo, set in Back Office, Device profiles, Customer display branding, separate from the kiosk. Nothing changes until it is set. Needs the 30 Sep database update; until then the display shows the kiosk branding as before.",
+    ],
+  },
+  {
     v: '5.11.19',
     date: '30 Sep 2026',
     items: [

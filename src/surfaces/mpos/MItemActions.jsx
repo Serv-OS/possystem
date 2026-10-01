@@ -76,15 +76,9 @@ export default function MItemActions({ item, onClose }) {
     // KDS / printer pick up the void. The desktop POS gates this behind a
     // manager-PIN modal; until 1D ships, we use the current staff as the
     // approving party so the void doesn't crash on null.manager.
-    if (!activeTableId) {
-      // Walk-in items don't truly hit voidItem — the desktop POS only voids
-      // table sessions. For walk-ins we fall back to remove (which still
-      // restores the daily count via the existing branch in removeItem).
-      removeItem?.(item.uid);
-      close();
-      return;
-    }
-    voidItem?.(activeTableId, item.uid, {
+    // 30 Sep 2026: a walk in's sent line voids for real now (store voidItem takes tableId
+    // null): void log, kitchen notice, queue copy. It used to fall back to a plain remove.
+    voidItem?.(activeTableId || null, item.uid, {
       manager: staff || { id:'mpos-system', name:'MPOS' },
       reason: 'voided from MPOS',
     });

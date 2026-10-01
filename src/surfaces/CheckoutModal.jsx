@@ -17,6 +17,10 @@ import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } 
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
+import {
+  planRedemptions, combineRedemptions, pickNext, toggleUnit, removeLastPick, pickBlock, pickBlockText,
+  rewardUnits, rewardUses, usesOf, takenUnits, rewardCapacity, rewardsUsedLabel, receiptRewardLines, rewardsRecord,
+} from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
 import { checkoutLoyaltyView } from '../lib/orderCustomerLoyalty';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
 import { tillTenders, splitTenders } from '../lib/accounting/tenders';
@@ -33,6 +37,7 @@ import { checkoutOrderRef, watchCheckout } from '../lib/payments/terminalJobClos
 import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
+import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1006,39 +1011,43 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onRemove, on
 }
 
 // ─── Loyalty rewards entry (v5.5.218) ─────────────────────────────────────────
-// Staff selects a reward to redeem, we call loyalty-redeem, and apply the
-// resulting discount to the checkout total. Follows the same pattern as
-// GiftCardEntry above.
-const FUNCTIONS_URL_LOYALTY = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+// Staff pick the rewards to redeem (one or several since 30 Sep 2026) and the discount is staged
+// on the checkout total; the real redemption fires when the check commits. Follows the same
+// pattern as GiftCardEntry above.
 
 function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onApplied, onBack }) {
   const compact = useCompact();
-  const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
+  // 30 Sep 2026 (Peter, Coffee Boy: "be able to redeem multiple stamp cards on the same order").
+  // Staff PICK rewards instead of tapping one: each tap on a reward adds one use of it to the
+  // cheapest eligible item nobody else has, the ticks under it move that use to another item,
+  // and Apply stages them all at once (lib/loyaltyMultiRedeem.js, pure and tested). A stamp
+  // reward can be used once per completed card; a points reward once, while the points last.
+  // Nothing is consumed server side until the check commits (store.redeemLoyaltyAtCommit, one
+  // loyalty-redeem call per reward), exactly as before.
+  const [picks, setPicks] = useState([]);
   const [error, setError] = useState('');
 
   const rewards = loyaltyData?.rewards || [];
+  const credit = Number(loyaltyData?.credit) || 0;
+  // This site's menu, so a reward saved at another site matches by name (18 Sep 2026), and its
+  // categories, so a reward that names a CATEGORY matches too (v5.9.66).
+  const ctx = {
+    items, total, credit,
+    menuItems: useStore.getState().menuItems || [],
+    categories: useStore.getState().menuCategories || [],
+    customerId: loyaltyData?.customerId || customer?.customerId || null,
+  };
+  const plan = planRedemptions(picks, rewards, ctx);
+  const capacity = rewardCapacity(rewards, { credit });
 
-  const redeem = async (reward) => {
-    setError('');
-    setRedeeming(reward.id);
-    try {
-      // v5.5.896: APPLY-ONLY — nothing is consumed server-side until the check commits
-      // (store.redeemLoyaltyAtCommit, promo-code pattern). Free-item rewards refuse to
-      // apply until an eligible item is in the basket, with a clear message.
-      const applied = await redeemLoyaltyReward(reward, {
-        customerId: loyaltyData.customerId || customer?.customerId,
-        items, total,
-        // This site's menu, so a reward saved at another site matches by name (18 Sep 2026),
-        // and its categories, so a reward that names a CATEGORY matches too (v5.9.66).
-        menuItems: useStore.getState().menuItems || [],
-        categories: useStore.getState().menuCategories || [],
-      });
-      onApplied(applied);
-    } catch (e) {
-      setError(e?.message || 'Could not apply reward');
-    } finally {
-      setRedeeming(null);
-    }
+  const add = (r) => { const res = pickNext(picks, r, rewards, ctx); setError(res.error || ''); setPicks(res.picks); };
+  const less = (r) => { setError(''); setPicks(removeLastPick(picks, r)); };
+  const tick = (r, key) => { const res = toggleUnit(picks, r, key, rewards, ctx); setError(res.error || ''); setPicks(res.picks); };
+  const apply = () => {
+    if (plan.error) { setError(plan.error); return; }
+    const combined = combineRedemptions(plan.redemptions, { customerId: ctx.customerId });
+    if (!combined) return;
+    onApplied(combined);
   };
 
   return (
@@ -1072,8 +1081,15 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
       )}
 
       {/* Rewards list */}
-      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
-        Choose a reward to redeem
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          Tap a reward to use it
+        </div>
+        {capacity > 0 && (
+          <div style={{ fontSize: 12, fontWeight: 700, color: picks.length ? 'var(--grn)' : 'var(--t4)' }}>
+            {rewardsUsedLabel(picks.length, capacity)}
+          </div>
+        )}
       </div>
 
       {rewards.length === 0 && (
@@ -1082,65 +1098,119 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
         </div>
       )}
 
-      {rewards.map(r => (
-        <button
-          key={r.id}
-          onClick={() => redeem(r)}
-          disabled={!!redeeming}
-          style={{
-            width: '100%', padding: compact ? '12px 14px' : '14px 18px',
-            borderRadius: 12, border: '1.5px solid var(--bdr2)', background: 'var(--bg2)',
-            cursor: redeeming ? 'wait' : 'pointer', fontFamily: 'inherit',
-            display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8,
-            opacity: redeeming && redeeming !== r.id ? 0.5 : 1,
-            transition: 'border-color .14s, transform .14s',
-          }}
-          onMouseEnter={e => { if (!redeeming) { e.currentTarget.style.borderColor = 'var(--acc)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr2)'; e.currentTarget.style.transform = ''; }}
-        >
-          <div style={{
-            width: 36, height: 36, borderRadius: 8, background: 'var(--acc-d, var(--bg3))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 14, flexShrink: 0, border: '1px solid var(--bdr)',
-          }}>
-            {r.icon || 'gift'}
-          </div>
-          <div style={{ flex: 1, textAlign: 'left' }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.label}</div>
-            {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
-            {r.type === 'discount_fixed' && r.value?.amount_minor && (
-              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
-                {money(r.value.amount_minor / 100)} off
+      {rewards.map(r => {
+        const uses = usesOf(picks, r);
+        const maxUses = rewardUses(r);
+        const block = pickBlock(picks, r, rewards, ctx);
+        const units = r.type === 'free_item' ? rewardUnits(r, ctx) : [];
+        const taken = takenUnits(picks);
+        const mine = new Set(picks.filter(p => String(p.rewardId) === String(r.id)).map(p => p.unitKey));
+        return (
+          <div key={r.id} style={{ marginBottom: 8 }}>
+            <button
+              onClick={() => add(r)}
+              disabled={!!block && !uses}
+              style={{
+                width: '100%', padding: compact ? '12px 14px' : '14px 18px',
+                borderRadius: units.length && uses ? '12px 12px 0 0' : 12,
+                border: `1.5px solid ${uses ? 'var(--grn)' : 'var(--bdr2)'}`, background: 'var(--bg2)',
+                cursor: block && !uses ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                display: 'flex', alignItems: 'center', gap: 12,
+                opacity: block && !uses ? 0.55 : 1,
+                transition: 'border-color .14s, transform .14s',
+              }}
+            >
+              <div style={{
+                width: 36, height: 36, borderRadius: 8, background: 'var(--acc-d, var(--bg3))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 14, flexShrink: 0, border: '1px solid var(--bdr)',
+              }}>
+                {r.icon || 'gift'}
               </div>
-            )}
-            {r.type === 'discount_percent' && r.value?.percent && (
-              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
-                {r.value.percent}% off
+              <div style={{ flex: 1, textAlign: 'left' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.label}</div>
+                {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
+                {r.type === 'discount_fixed' && r.value?.amount_minor && (
+                  <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                    {money(r.value.amount_minor / 100)} off
+                  </div>
+                )}
+                {r.type === 'discount_percent' && r.value?.percent && (
+                  <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                    {r.value.percent}% off
+                  </div>
+                )}
+                {block === 'no_item' && !uses && (
+                  <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{pickBlockText(block, r)}</div>
+                )}
               </div>
-            )}
-          </div>
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            {r.stamp ? (
-              <>
-                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--grn)' }}>FREE</div>
-                <div style={{ fontSize: 10, color: 'var(--t4)' }}>stamp card{r.available > 1 ? ` ×${r.available}` : ''}</div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
-                  {r.pointsCost}
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                {r.stamp ? (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--grn)' }}>FREE</div>
+                    <div style={{ fontSize: 10, color: 'var(--t4)' }}>stamp card{maxUses > 1 ? ` ×${maxUses}` : ''}</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
+                      {r.pointsCost}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
+                  </>
+                )}
+                {/* v5.5.896: explicit affordance — staff didn't realise rows were tappable */}
+                <div style={{ marginTop: 5, fontSize: 9, fontWeight: 800, letterSpacing: '.05em', color: uses ? '#0b0c10' : 'var(--grn)', background: uses ? 'var(--grn)' : 'transparent', border: '1px solid rgba(34,197,94,.4)', borderRadius: 6, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                  {uses ? `${uses} OF ${maxUses} USED` : 'TAP TO USE'}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
-              </>
+              </div>
+            </button>
+            {units.length > 0 && uses > 0 && (
+              <div style={{ border: '1.5px solid var(--grn)', borderTop: 'none', borderRadius: '0 0 12px 12px', background: 'var(--bg3)', padding: '8px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Free item{uses > 1 ? 's' : ''}</div>
+                  <button onClick={() => less(r)} style={{ padding: '2px 10px', fontSize: 11, fontWeight: 700, borderRadius: 6, border: '1px solid var(--bdr2)', background: 'transparent', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                    Use one fewer
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {units.map(u => {
+                    const ticked = mine.has(u.key);
+                    const other = !ticked && taken.has(u.key);
+                    return (
+                      <button key={u.key} onClick={() => tick(r, u.key)} disabled={other}
+                        style={{
+                          padding: '6px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+                          border: `1px solid ${ticked ? 'var(--grn)' : 'var(--bdr2)'}`,
+                          background: ticked ? 'rgba(34,197,94,.15)' : 'var(--bg2)', color: ticked ? 'var(--grn)' : 'var(--t2)',
+                          cursor: other ? 'not-allowed' : 'pointer', opacity: other ? 0.45 : 1,
+                        }}>
+                        {ticked ? '☑' : '☐'} {u.name} · {money(u.priceMinor / 100)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
-            {/* v5.5.896: explicit affordance — staff didn't realise rows were tappable */}
-            <div style={{ marginTop: 5, fontSize: 9, fontWeight: 800, letterSpacing: '.05em', color: 'var(--grn)', border: '1px solid rgba(34,197,94,.4)', borderRadius: 6, padding: '2px 7px', whiteSpace: 'nowrap' }}>
-              TAP TO REDEEM
-            </div>
+            {units.length === 0 && uses > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <button onClick={() => less(r)} style={{ padding: '2px 10px', fontSize: 11, fontWeight: 700, borderRadius: 6, border: '1px solid var(--bdr2)', background: 'transparent', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Remove
+                </button>
+              </div>
+            )}
           </div>
-          {redeeming === r.id && <div style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 6 }}>...</div>}
+        );
+      })}
+
+      {picks.length > 0 && (
+        <button onClick={apply} style={{
+          marginTop: 12, width: '100%', padding: '12px', borderRadius: 10,
+          border: 'none', background: 'var(--grn)', color: '#0b0c10',
+          fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+        }}>
+          Apply {picks.length} reward{picks.length === 1 ? '' : 's'} · {String.fromCodePoint(0x2212)}{money(plan.discountMinor / 100)}
         </button>
-      ))}
+      )}
 
       <button onClick={onBack} style={{
         marginTop: 12, width: '100%', padding: '10px', borderRadius: 10,
@@ -1801,6 +1871,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       tip,
       giftRecord,
       loyaltyCredit,
+      // 30 Sep 2026: each reward on the loyalty tender, so a reprint or History read from the
+      // database still shows every free item (the staged object itself is not persisted).
+      loyaltyRewards: rewardsRecord(loyaltyApplied),
       promoCredit,
       bookingPayment: bookingRecord,
       readerLegs: legs,
@@ -2083,7 +2156,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
-          tableLabel: tableId || null,
+          // 30 Sep 2026: a dine in flag order books "Table 30" when the job is closed from this
+          // draft (till gone before the reader answered), as the till's own close does.
+          tableLabel: tableId || flagTableLabel(orderFlag(useStore.getState().walkInOrder, orderType)) || null,
           sessionId: session?.id || null,
           locationId,
           orderType,
@@ -2549,12 +2624,23 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(bookingApplied)}</span>
                   </div>
                 )}
-                {loyaltyApplied && (
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(loyaltyCredit)}</span>
+                {/* 30 Sep 2026: one line per reward (several stamp cards on one order), and Change
+                    reopens the picker. Nothing is consumed until the check commits, so changing
+                    costs the customer nothing. */}
+                {loyaltyApplied && receiptRewardLines(loyaltyApplied).map((l, i) => (
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
+                      {'⭐'} {l.label.replace(/^Reward: /, '')}{l.points > 0 ? ` (${l.points} pts)` : ''}
+                      {i === 0 && (
+                        <button onClick={() => { setLoyaltyApplied(null); setScreen('loyalty_rewards'); }}
+                          style={{ marginLeft:8, padding:'1px 8px', fontSize:10, fontWeight:700, borderRadius:6, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit' }}>
+                          Change
+                        </button>
+                      )}
+                    </span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(l.amount)}</span>
                   </div>
-                )}
+                ))}
                 {giftApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     {/* v5.5.902: removable — the card has not been debited yet, so taking it

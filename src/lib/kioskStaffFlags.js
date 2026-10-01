@@ -53,8 +53,9 @@ function lineCats(line) {
  *   set:   alcoholCategorySet(...)
  *   itemsById: optional Map (or object) of menu rows. With it, a picked modifier linked to an
  *          alcohol item (mod.itemId) counts, and an order item is also checked against its own
- *          menu row and its parent's row (order items carry only `cat`, so an item that is
- *          alcohol only through `cats` is still found). The kiosk and the staff ticket pass
+ *          menu row and its parent's row (an order item may carry only `cat`, so an item that
+ *          is alcohol only through `cats` is still found; kiosk order items carry `cats` too
+ *          since 30 Sep 2026). The kiosk and the staff ticket pass
  *          the same kind of menu rows, so the customer and staff answers agree.
  */
 export function orderHasAlcohol(lines, set, itemsById) {
