@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.23',
+    date: '1 Oct 2026',
+    items: [
+      "Xero: a new way to post sales, one paid sales invoice per site per day, the way Lightspeed did it. Each site gets its own contact, invoice numbers (SOS-LEEDS-20260929), Site tracking on every line, sales by group and VAT rate exactly as the till recorded them, tips and gift cards to their own accounts, and payments into that site's Card clearing and Cash in till. Refunds go on their own credit note. Off by default: switch it on per site in Back Office, Xero, with a start date.",
+      "Xero: Copy my Lightspeed setup reads the accounts and tracking already in your Xero and fills the mapping for you. Check figures shows exactly what one day would post before anything is sent.",
+      "Xero: every post names the site, and Postings shows every day, every site and what was sent, with a link to open it in Xero.",
+    ],
+  },
+  {
     v: '5.11.22',
     date: '1 Oct 2026',
     items: [
