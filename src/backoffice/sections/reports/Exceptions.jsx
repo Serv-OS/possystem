@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { plainText, checkCustomerText } from '../../../lib/reportText';
+import { voidedValue } from '../../../lib/voidRules';
 
 // Flatten closed checks into a single event list sorted by time (newest first).
 // A single check can produce multiple events (one void + two discounts, for example).
@@ -19,8 +20,10 @@ function flattenEvents(checks) {
     const tableLabel = plainText(c.tableLabel) || checkCustomerText(c.customer) || '—';
     const ref = plainText(c.ref) || plainText(c.id);
     if (c.status === 'voided') {
+      // 30 Sep 2026: a void tombstone books total 0 on purpose (no report counts it as a sale),
+      // so the voided value comes from its lines (lib/voidRules.js voidedValue).
       events.push({
-        type:'void', amount: c.total || 0, ts: c.closedAt, ref, server, tableLabel,
+        type:'void', amount: voidedValue(c), ts: c.closedAt, ref, server, tableLabel,
         reason: plainText(c.voidReason) || null, approvedBy: plainText(c.voidedBy) || null,
       });
     }

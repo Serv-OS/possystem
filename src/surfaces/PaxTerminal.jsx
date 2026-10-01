@@ -35,6 +35,7 @@ import { useStore } from '../store';
 import { money } from '../lib/currency';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { amountMismatchCopy } from '../lib/payments/amountMismatchCopy';
+import { shouldAutoCheckReader, KICK_SETTLE_LIMIT_MS } from '../lib/payments/paxAutoCheck';
 
 // v5.11.16 — how often, and for how long, this screen re-reads an Adyen job the card machine
 // charged a different amount for. The server heals a tip by itself within seconds of Adyen's
@@ -50,7 +51,9 @@ const STATUS_COPY = {
   claimed:         { icon: '📲', title: 'On the card machine',        sub: 'Waiting for the customer.' },
   tipping:         { icon: '💬', title: 'Choosing a tip',             sub: 'The customer is picking a gratuity.' },
   charging_unsent: { icon: '💳', title: 'Ready to take the card',     sub: 'Tip settled — asking for the card.' },
-  charging:        { icon: '💳', title: 'Taking the card',            sub: 'Do not walk away — this one is live.' },
+  // 30 Sep 2026: this screen now mounts while the customer is still paying (lib/payments/kickRace.js),
+  // so say what staff should do: nothing. Peter's words, no dashes.
+  charging:        { icon: '💳', title: 'Taking the card',            sub: 'Customer is paying on the card machine. Keep this screen open, it finishes by itself.' },
   approved:        { icon: '✅', title: 'Approved',                   sub: '' },
   // Same screen as approved: the reconciler simply booked the check before this
   // modal's poll caught up. Without an entry here the header fell back to blank.
@@ -61,8 +64,46 @@ const STATUS_COPY = {
   unknown:         { icon: '⚠️', title: 'Outcome not confirmed',      sub: '' },
 };
 
-export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete, onBack, onFailed }) {
+export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete, onBack, onFailed, kickPending = false, kick = null, advisory = null }) {
   const [job, setJob] = useState(initialJob);
+  // 30 Sep 2026: the sending till's own Adyen 'start' kick, still running when the send returned
+  // (lib/payments/kickRace.js). While it is out, 'charging' means the customer is paying, not a
+  // wedge, so the reader auto check below waits for it (lib/payments/paxAutoCheck.js). A late
+  // REFUSAL the fn answered (an HTTP status) is shown and settles the gate. A late TRANSPORT
+  // failure (the till lost the network, kickAnswered false) settles NOTHING: the reader may still
+  // be mid PIN, so the gate stays shut until the 130 s clock below (review 30 Sep: opening it
+  // sent TransactionStatus at 8 s, and an unreachable reader plus an empty ledger cancelled the
+  // row under a live tender). The poll of the job row is the truth.
+  // kickPending with NO kick promise (the checkout adopted a live job it did not send, "Watch that
+  // payment") means the same thing: nobody here will hear the tender end, wait for the clock.
+  const [kickSettled, setKickSettled] = useState(!kickPending);
+  const [kickRefusal, setKickRefusal] = useState('');
+  const kickOpen = !!kickPending && !kickSettled;
+  useEffect(() => {
+    if (!kickPending || !kick) return undefined;
+    let alive = true;
+    Promise.resolve(kick).then((o) => {
+      if (!alive) return;
+      if (!o?.kickError || o?.kickAnswered) setKickSettled(true);
+      if (o?.kickError && o?.kickAnswered) setKickRefusal(`The card machine refused the payment: ${o.kickError}`);
+    }, () => { /* the kick promise never rejects (kickRace.js); if it did, the clock still opens the gate */ });
+    return () => { alive = false; };
+  }, [kickPending, kick]);
+  // The 130 s clock counts from THIS screen's mount, on this till's clock, never from the server's
+  // dispatched_at (review 30 Sep: a Sunmi 3 minutes ahead of the server passed the line at mount on
+  // every sale, lib/payments/terminalJobCloser.js rule 1: no device's clock is compared with
+  // another's). The send returned at most KICK_WAIT_MS after the dispatch, so mount plus 130 s is
+  // the same line, a little later, which is the safe side.
+  const mountedAtRef = useRef(Date.now());
+  const mountedMs = mountedAtRef.current;
+  // Re-rendered once, when a still open kick passes the 130 s line, so the gate below can open.
+  const [kickClock, setKickClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!kickOpen) return undefined;
+    const ms = Math.max(0, mountedMs + KICK_SETTLE_LIMIT_MS - Date.now()) + 50;
+    const t = setTimeout(() => setKickClock(Date.now()), ms);
+    return () => clearTimeout(t);
+  }, [kickOpen, mountedMs]);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState('');
   const [checkBusy, setCheckBusy] = useState(false);
@@ -189,7 +230,13 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // The processor comes off the job row (falling back to the create-response row —
   // pollTerminalJob's timeout can synthesise a row without it).
   const processor = job?.processor ?? initialJob?.processor ?? null;
-  const wedged = processor === 'adyen' && (status === 'charging' || status === 'unknown');
+  // 30 Sep 2026: REGRESSION TRAP. This screen now mounts while the customer is paying, so an
+  // ungated 'wedged' would send TransactionStatus mid PIN on about half of all sales, and its
+  // 'unknown' and unreachable branches can cancel a live tender. The gate is a pure rule
+  // (lib/payments/paxAutoCheck.js): true only once this till's kick has settled, or 130 s or more
+  // after the job went to the reader. adyenLive keeps the copy for the unknown sheet.
+  const adyenLive = processor === 'adyen' && (status === 'charging' || status === 'unknown');
+  const wedged = shouldAutoCheckReader({ status, processor, kickPending: kickOpen, dispatchedAt: mountedMs, now: kickClock });
   // v5.7.86: Adyen tenders used to be excluded here, so staff had NO way to stop
   // a payment once it reached the terminal. That is the ordinary case of a
   // customer changing their mind, and it left the check locked until the
@@ -396,7 +443,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
           </div>
           <div style={{ fontSize: 12, lineHeight: 1.6 }}>
             {status === 'unknown'
-              ? (wedged
+              ? (adyenLive
                 // v5.7.37 — an Adyen unknown has a self-service answer: the reader itself.
                 ? 'Checking with the card machine and with Adyen. This usually clears itself in a few seconds. Do not take payment again yet, in case the card was charged. If it does not clear, tap Check card machine.'
                 : 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. A manager must resolve this in Back Office → Unreconciled payments before this check can close.')
@@ -411,6 +458,23 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
         </div>
       )}
 
+      {/* 30 Sep 2026: the server's same basket advisory (terminal-job-create repeat_warning): the same
+          items were paid on this reader minutes ago. Advice while the tender is live, never a block. */}
+      {advisory?.message && LIVE.includes(status) && (
+        <div style={{ marginTop: 14, padding: 12, borderRadius: 10, textAlign: 'left', fontSize: 12, lineHeight: 1.5, background: 'var(--amber-d, var(--bg3))', border: '1px solid var(--amber-b, var(--bdr))', color: 'var(--amber, var(--t1))' }}>
+          {advisory.message}
+        </div>
+      )}
+      {/* 30 Sep 2026: a refusal this till's late kick brought back (the fn answered it), or the server's
+          own reason for a job still unsent. Never a transport error: the poll is the truth. */}
+      {kickRefusal && (
+        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--red)', lineHeight: 1.5 }}>{kickRefusal}</div>
+      )}
+      {status === 'charging_unsent' && job?.last_error && !blocked && (
+        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--red)', lineHeight: 1.5 }}>
+          Not sent to the card machine yet: {job.last_error}
+        </div>
+      )}
       {cancelMsg && (
         <div style={{ marginTop: 14, fontSize: 12, color: 'var(--red)' }}>{cancelMsg}</div>
       )}

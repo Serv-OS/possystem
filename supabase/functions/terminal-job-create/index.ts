@@ -45,6 +45,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { readTipOnReceipt } from '../_shared/tip_capture.ts';
 import { shouldServerKick, clientOwnsCreateKick, LOST_CAS_ASK_AFTER_MS } from '../_shared/terminalKick.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+// 30 Sep 2026: the double charge net (see § 3e below).
+import { shouldCheckRepeat, findPossibleRepeat, repeatRefusal, repeatWarning, repeatAckRecord, repeatDetail, repeatMessage, REPEAT_WINDOW_MS } from '../_shared/repeatCharge.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -206,6 +208,10 @@ interface Body {
                                 // to a table/session, false for a counter/walk-in sale. Under scope
                                 // 'table_checks' only true opens a tip window; missing = false (a
                                 // stale till fails toward normal capture-at-payment behaviour).
+  repeat_ok_job_id?: string;    // 30 Sep 2026: staff saw the POSSIBLE_REPEAT warning naming this job
+                                // and said "different customer, take payment". Honoured for that one
+                                // job only, recorded on the draft as repeatAck. Never releases a LIVE
+                                // tender (TERMINAL_BUSY): cancel it on the machine first.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -530,6 +536,93 @@ Deno.serve(async (req) => {
     }
   }
 
+  // ── 3e. DOUBLE CHARGE NET (30 Sep 2026, Coffee Boy Huddersfield R5737/R5739) ──
+  // The till's checkout used to await its own Adyen 'start' call (the whole tender)
+  // on "Sending…" with × still live. Staff closed it, the reader approved £11.65,
+  // the till's reconciler booked R5737 in the background, and the same order was
+  // rung again with a NEW check id, so idx_tj_one_live_per_check never fired and the
+  // customer paid twice. The till is fixed (it watches from the first second), but
+  // a stale WebView is still out there, so the SERVER now asks, before every
+  // insert from a till checkout: did this till or this reader just take this
+  // payment? _shared/repeatCharge.js decides (pure, tested):
+  //   live         still on the reader: TERMINAL_BUSY with the job named, adoptable
+  //                by the same till ("Watch that payment"), never overridable.
+  //   unfinished   approved inside 10 min, not booked or booked in the background,
+  //                its items all in this basket: 409 POSSIBLE_REPEAT. The incident
+  //                pattern, and the ONE hard refusal a stale till can meet.
+  //   same_basket  same amount and items inside 5 min, booked by a checkout. Never
+  //                refused (review 30 Sep: 12 of 13 live hits were another customer
+  //                in a queue): it rides on the 200 body as repeat_warning and the
+  //                card screen shows it next to Cancel payment.
+  // Staff answer "Different customer, take payment" and the till re-sends with
+  // repeat_ok_job_id = that job; the ack is written into check_draft.repeatAck so
+  // the record shows who waved it through. A till that never learned the code shows
+  // the error text as it is, which is why the text is written for a human. MPOS is
+  // not checked as a sender (MCardFlow shows a 409 as a dead error with no button).
+  //
+  // FAIL OPEN. A read that errors here is not evidence of a repeat, and the card
+  // path never blocks a sale on an advisory read (Peter, 9 Sep: nothing like the
+  // stranded live job again). The insert's own indexes still guard the same check
+  // and the same reader.
+  let repeatAck: Record<string, unknown> | null = null;
+  let repeatWarn: Record<string, unknown> | null = null;
+  if (shouldCheckRepeat(check_draft)) {
+    try {
+      const since = new Date(Date.now() - REPEAT_WINDOW_MS - 60_000).toISOString();
+      const sameDevice = pos_device_id
+        ? `pos_device_id.eq.${pos_device_id},target_terminal_id.eq.${target_terminal_id}`
+        : `target_terminal_id.eq.${target_terminal_id}`;
+      const { data: recent, error: recentErr } = await opsAdmin
+        .from('terminal_jobs')
+        .select('id, check_key, status, location_id, pos_device_id, target_terminal_id, due_minor, charge_minor, currency, closed_check_id, check_draft, card, simulated, training, created_at, dispatched_at, charged_at, settled_at, updated_at')
+        .eq('location_id', locationId)
+        .or(sameDevice)
+        .neq('check_key', check_key)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (recentErr) throw recentErr;
+      const rows = (recent ?? []) as Array<Record<string, unknown>>;
+      const checkIds = rows.map((r) => r.closed_check_id).filter((v): v is string => typeof v === 'string' && v.length > 0);
+      if (checkIds.length) {
+        const { data: checks } = await opsAdmin.from('closed_checks')
+          .select('id, ref, source, refunded, status, voided').in('id', checkIds);
+        const byId = new Map((checks ?? []).map((c: Record<string, unknown>) => [c.id, c]));
+        for (const r of rows) r.booked = byId.get(r.closed_check_id as string) ?? null;
+      }
+      const hit = findPossibleRepeat({
+        job_id, check_key, location_id: locationId, pos_device_id: pos_device_id ?? null, target_terminal_id,
+        due_minor: due, check_draft,
+      }, rows, Date.now());
+      if (hit) {
+        const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', locationId).maybeSingle();
+        const tz = (loc?.timezone as string | undefined) || 'Europe/London';
+        const refusal = repeatRefusal(hit, body.repeat_ok_job_id ?? null, { tz });
+        if (refusal) {
+          console.log('[terminal-job-create] possible repeat refused', JSON.stringify({
+            job_id, tier: hit.tier, prior: hit.job.job_id, prior_ref: hit.job.ref, prior_booked: hit.job.booked,
+            same_items: hit.same_items, subset_items: hit.subset_items, adoptable: hit.adoptable, ack_sent: body.repeat_ok_job_id ?? null,
+          }));
+          return json({
+            error: refusal.error,
+            code: refusal.code,
+            ...(refusal.code === 'TERMINAL_BUSY' ? { busy_job_id: hit.job.job_id, busy_status: hit.job.status } : {}),
+            detail: refusal.detail,
+          }, refusal.status);
+        }
+        repeatWarn = repeatWarning(hit, { tz });
+        if (repeatWarn) {
+          console.log('[terminal-job-create] same basket warning (advisory, job goes ahead)', JSON.stringify({ job_id, prior: hit.job.job_id, prior_ref: hit.job.ref }));
+        } else {
+          repeatAck = repeatAckRecord(hit, { staffId: (check_draft as Record<string, unknown>).staffId as string ?? null });
+          console.log('[terminal-job-create] possible repeat acknowledged by staff', JSON.stringify({ job_id, ...repeatAck }));
+        }
+      }
+    } catch (e) {
+      console.error('[terminal-job-create] repeat check skipped (read failed, failing open):', (e as Error)?.message || e);
+    }
+  }
+
   // ── 4. Insert. On 23505 return the EXISTING live job for this check ────────
   const row = {
     id: job_id,
@@ -543,7 +636,8 @@ Deno.serve(async (req) => {
     currency: String(body.currency || 'GBP').toUpperCase().slice(0, 3),
     tip_config: resolvedTipConfig,
     closed_check_id,
-    check_draft,
+    // 30 Sep 2026: with the staff confirmation of a possible repeat on it (§ 3e), when there was one.
+    check_draft: repeatAck ? { ...check_draft, repeatAck } : check_draft,
     simulated: isDemoTerminal,
     // v5.7.5: 'manual' = tip-on-receipt hold, absent = capture at auth. Only
     // included when set, so the insert keeps working before migration
@@ -599,7 +693,8 @@ Deno.serve(async (req) => {
     const plan = kickPlan(inserted as Record<string, unknown>);
     if (plan.kick) scheduleServerKick(inserted.id, `fresh insert: ${plan.reason}`);
     else console.log(`[terminal-job-create] no server kick for job ${inserted.id}: ${plan.reason}`);
-    return json({ ok: true, job: inserted, existing: false, kick_scheduled: plan.kick, kick_reason: plan.reason });
+    // 30 Sep 2026: repeat_warning (same_basket, advisory) rides with the job; an old till ignores it.
+    return json({ ok: true, job: inserted, existing: false, kick_scheduled: plan.kick, kick_reason: plan.reason, ...(repeatWarn ? { repeat_warning: repeatWarn } : {}) });
   }
 
   // ONLY a unique violation means "already recorded". Anything else is a real
@@ -652,20 +747,27 @@ Deno.serve(async (req) => {
     //    the reconcile queue and must never take a terminal out of service.
     const { data: busy } = await opsAdmin
       .from('terminal_jobs')
-      .select('id, check_key, status, due_minor, charge_minor, check_draft')
+      .select('id, check_key, status, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')
       .eq('target_terminal_id', target_terminal_id)
       .in('status', ['claimed', 'tipping', 'charging_unsent', 'charging'])
       .order('created_at', { ascending: false })
       .limit(1).maybeSingle();
     if (busy) {
-      const where = (busy.check_draft as Record<string, unknown> | null)?.tableLabel;
-      const amt = ((busy.charge_minor ?? busy.due_minor ?? 0) as number) / 100;
+      // 30 Sep 2026: the same detail § 3e gives (job id, amount, time, ref, items, and
+      // adoptable when THIS till sent it), so the checkout can offer "Watch that payment"
+      // instead of a second charge. The § 3e read normally catches this first; this is the
+      // index catching a race, or a job from a source § 3e does not check.
+      const detail = repeatDetail(busy as Record<string, unknown>, null, { now: Date.now() });
+      const busyDraft = (busy.check_draft as Record<string, unknown> | null) ?? {};
+      const adoptable = !!pos_device_id && busy.pos_device_id === pos_device_id && busyDraft.source === 'pos_send_to_terminal';
+      const hit = { tier: 'live', job: detail, adoptable, same_items: false, subset_items: false, same_amount: false };
+      const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', locationId).maybeSingle();
       return json({
-        error: `That card machine is already taking a payment${where ? ` for ${where}` : ''}`
-             + ` (£${amt.toFixed(2)}). Wait for it to finish, or send this one to another terminal.`,
+        error: repeatMessage(hit, { tz: (loc?.timezone as string | undefined) || 'Europe/London' }),
         code: 'TERMINAL_BUSY',
         busy_job_id: busy.id,
         busy_status: busy.status,
+        detail: { tier: 'live', adoptable, same_items: false, subset_items: false, ...detail },
       }, 409);
     }
 

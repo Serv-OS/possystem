@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import {
   closerRole, isKitchenScreen, closeWaitMs, isDue, createSightings,
   watchTerminalJob, isWatchedHere, checkoutOrderRef, usableOrderRef,
+  watchCheckout, adoptBookedSale, adoptedSaleBanner,
   WATCHED_LIMIT_MS, OTHER_TILL_WAIT_MS, FALLBACK_WAIT_MS,
 } from './terminalJobCloser.js';
 
@@ -161,7 +162,13 @@ test('wiring: the reconciler waits its turn before booking, and never runs on a 
   const wait = tick.indexOf('if (!isDue(wait, firstSeen, now)) continue;');
   const close = tick.indexOf('closeApprovedTerminalJob(job)');
   assert.ok(wait > 0 && close > wait, 'the wait comes before the close');
-  assert.match(tick, /closeWaitMs\(job, \{ \.\.\.me, watchedHere: isWatchedHere\(job\.id\) \}\)/);
+  // 30 Sep 2026: watched by job id (the card screen) OR by check id (the checkout, before any job exists).
+  assert.match(tick, /const watchedHere = isWatchedHere\(job\.id, job\.closed_check_id\);/);
+  assert.match(tick, /closeWaitMs\(job, \{ \.\.\.me, watchedHere \}\)/);
+  // and what it booked comes back, for the adoption below
+  assert.match(tick, /const booked = await useStore\.getState\(\)\.closeApprovedTerminalJob\(job\);/);
+  assert.match(tick, /adoptBookedSale\(\{ job, booked, myDeviceId: me\.myDeviceId, watchedHere, walkInRef, fmt: moneyMinor \}\)/);
+  assert.match(tick, /if \(adopt\.clearWalkIn\) st\.clearWalkIn\?\.\(\);/);
   assert.match(tick, /_sightings\.keepOnly\(jobs\.map\(j => j\.id\)\);/);
 });
 
@@ -194,4 +201,126 @@ test('wiring: every writer books the frozen ref (table, walk in, bar tab, and th
   assert.match(walk, /ref: existingRef \|\| frozenRef \|\| getNextOrderRefLocal\(\),/);
   const bar = read('../../surfaces/BarSurface.jsx');
   assert.match(bar, /ref: usableOrderRef\(payInfo\?\.orderRef\) \|\| \('TAB-' \+ getNextOrderRefLocal\(\)\.slice\(1\)\),/);
+});
+
+// ── 30 Sep 2026: the checkout's own watch, before any job exists ────────────
+// Huddersfield 30 Sep: the checkout waited for the whole tender before it mounted PaxTerminal, so
+// nothing was watching; the sending till's reconciler booked R5737 0.1 s after approval, and the
+// same order was rung again (R5739). The checkout now marks its CHECK watched when Card is pressed.
+
+test('watchCheckout holds the sending till\'s wait at 30 s for a job whose closed_check_id matches, before any card screen mounts', () => {
+  const j = job({ id: 'job-c1', closed_check_id: 'chk-1790768566981' });
+  assert.equal(isWatchedHere(j.id, j.closed_check_id), false);
+  assert.equal(closeWaitMs(j, { role: 'till', myDeviceId: POS1, watchedHere: isWatchedHere(j.id, j.closed_check_id) }), 0, 'unwatched: books at once');
+  const off = watchCheckout('chk-1790768566981');
+  assert.equal(isWatchedHere(j.id, j.closed_check_id), true, 'watched by check id, no PaxTerminal mark needed');
+  assert.equal(isWatchedHere('some-other-job', j.closed_check_id), true, 'any job of that check');
+  assert.equal(isWatchedHere(j.id), false, 'the job id alone is not marked');
+  const wait = closeWaitMs(j, { role: 'till', myDeviceId: POS1, watchedHere: isWatchedHere(j.id, j.closed_check_id) });
+  assert.ok(wait >= WATCHED_LIMIT_MS, `sender waits at least ${WATCHED_LIMIT_MS}: ${wait}`);
+  assert.equal(wait, 30_000);
+  off();
+  assert.equal(isWatchedHere(j.id, j.closed_check_id), false, 'released on unmount');
+  assert.equal(closeWaitMs(j, { role: 'till', myDeviceId: POS1, watchedHere: isWatchedHere(j.id, j.closed_check_id) }), 0, 'after release the sender waits 0');
+});
+
+test('watchCheckout is counted, unwatching twice is harmless, and no id is a no-op', () => {
+  const a = watchCheckout('chk-x');
+  const b = watchCheckout('chk-x');
+  a(); a();
+  assert.equal(isWatchedHere(null, 'chk-x'), true, 'the second mark still holds it');
+  b();
+  assert.equal(isWatchedHere(null, 'chk-x'), false);
+  watchCheckout(null)();
+  watchCheckout('')();
+  assert.equal(isWatchedHere(null, null), false);
+});
+
+test('the check watch and the job watch are independent marks', () => {
+  const offJob = watchTerminalJob('job-i');
+  assert.equal(isWatchedHere('job-i', 'chk-i'), true);
+  assert.equal(isWatchedHere('job-other', 'chk-i'), false);
+  offJob();
+  const offChk = watchCheckout('chk-i');
+  assert.equal(isWatchedHere('job-i', 'chk-i'), true);
+  assert.equal(isWatchedHere('job-i'), false);
+  offChk();
+});
+
+// ── 30 Sep 2026: adopting a sale booked after the checkout closed ───────────
+const fmt = (minor, cur) => `${cur === 'USD' ? '$' : '£'}${(minor / 100).toFixed(2)}`;
+const hudJob = (over = {}) => job({
+  id: '97c6176c', closed_check_id: 'chk-1790768566981', charge_minor: 1165, currency: 'GBP',
+  pos_device_id: 'ff1b5fb8', check_draft: { source: 'pos_send_to_terminal', orderRef: 'R5737', tableId: null },
+  ...over,
+});
+const booked = (over = {}) => ({ booked: true, created: true, ref: 'R5737', closedCheckId: 'chk-1790768566981', ...over });
+
+test('banner wording (Peter\'s words, no dashes)', () => {
+  const t = adoptedSaleBanner({ ref: 'R5737', amount: '£11.65' });
+  assert.equal(t, 'Card approved after the checkout closed: R5737 £11.65 is booked. Do not take payment again.');
+  assert.ok(!/[\u2013\u2014]/.test(t));
+});
+
+test('the sending till books its own unwatched job: the matching cart is cleared and the banner shown', () => {
+  const r = adoptBookedSale({ job: hudJob(), booked: booked(), myDeviceId: 'ff1b5fb8', watchedHere: false, walkInRef: 'R5737', fmt });
+  assert.equal(r.clearWalkIn, true);
+  assert.equal(r.banner, 'Card approved after the checkout closed: R5737 £11.65 is booked. Do not take payment again.');
+});
+
+test('a cart that does not match is NEVER cleared, but the banner still warns', () => {
+  for (const walkInRef of ['R5738', null, undefined, '']) {
+    const r = adoptBookedSale({ job: hudJob(), booked: booked(), myDeviceId: 'ff1b5fb8', walkInRef, fmt });
+    assert.equal(r.clearWalkIn, false, String(walkInRef));
+    assert.ok(r.banner, 'the money is booked whatever is on screen: say so');
+  }
+  // a table check never clears the counter cart, even on a ref match
+  const t = adoptBookedSale({ job: hudJob({ check_draft: { source: 'pos_send_to_terminal', orderRef: 'R5737', tableId: 'T3' } }), booked: booked(), myDeviceId: 'ff1b5fb8', walkInRef: 'R5737', fmt });
+  assert.equal(t.clearWalkIn, false);
+});
+
+test('nothing is adopted when the checkout was watching, on another till, for Pay at table, or when nothing was booked', () => {
+  const base = { job: hudJob(), booked: booked(), myDeviceId: 'ff1b5fb8', walkInRef: 'R5737', fmt };
+  assert.deepEqual(adoptBookedSale({ ...base, watchedHere: true }), { clearWalkIn: false, banner: null }, 'the checkout finishes it');
+  assert.deepEqual(adoptBookedSale({ ...base, myDeviceId: KDS_FOOD }), { clearWalkIn: false, banner: null }, 'a kitchen screen or another till');
+  assert.deepEqual(adoptBookedSale({ ...base, myDeviceId: null }), { clearWalkIn: false, banner: null });
+  assert.deepEqual(adoptBookedSale({ ...base, job: hudJob({ pos_device_id: null }) }), { clearWalkIn: false, banner: null });
+  assert.deepEqual(adoptBookedSale({ ...base, job: hudJob({ check_draft: { source: 'pax_table_pay', orderRef: 'R5737' } }) }), { clearWalkIn: false, banner: null });
+  assert.deepEqual(adoptBookedSale({ ...base, booked: null }), { clearWalkIn: false, banner: null });
+  assert.deepEqual(adoptBookedSale({ ...base, booked: { booked: false } }), { clearWalkIn: false, banner: null });
+  assert.deepEqual(adoptBookedSale({ ...base, booked: { booked: false, alreadyLocal: true } }), { clearWalkIn: false, banner: null }, 'this till already had the sale');
+  assert.deepEqual(adoptBookedSale({}), { clearWalkIn: false, banner: null });
+});
+
+test('the banner names the booked ref, and falls back to the draft ref, and the job\'s currency', () => {
+  const r = adoptBookedSale({ job: hudJob({ currency: 'USD', charge_minor: 650 }), booked: booked({ ref: null }), myDeviceId: 'ff1b5fb8', walkInRef: null, fmt });
+  assert.equal(r.banner, 'Card approved after the checkout closed: R5737 $6.50 is booked. Do not take payment again.');
+  const noFmt = adoptBookedSale({ job: hudJob(), booked: booked(), myDeviceId: 'ff1b5fb8', walkInRef: null });
+  assert.equal(noFmt.banner, 'Card approved after the checkout closed: R5737 11.65 is booked. Do not take payment again.');
+});
+
+test('wiring: the checkout watches its check before the link gate, the gift commit and the create, and releases on unmount', () => {
+  const src = read('../../surfaces/CheckoutModal.jsx');
+  assert.match(src, /import \{ checkoutOrderRef, watchCheckout \} from '\.\.\/lib\/payments\/terminalJobCloser';/);
+  const job = src.slice(src.indexOf('const startTerminalJob = async () => {'), src.indexOf('const handleCardPress = () => {'));
+  const watch = job.indexOf('watchThisCheck();');
+  assert.ok(watch > 0, 'the watch is taken inside startTerminalJob');
+  const helper = src.slice(src.indexOf('const watchThisCheck = () => {'), src.indexOf('const startTerminalJob = async () => {'));
+  assert.match(helper, /const watchId = getCheckId\(\);/);
+  assert.match(helper, /checkWatchRef\.current = \{ id: watchId, off: watchCheckout\(watchId\) \};/);
+  assert.ok(watch < job.indexOf('confirmLinkBeforeCard()'), 'before the link gate');
+  assert.ok(watch < job.indexOf('commitGift('), 'before the gift commit');
+  assert.ok(watch < job.indexOf('dispatchTerminalJob({'), 'before the create');
+  assert.match(src, /useEffect\(\(\) => \(\) => \{ checkWatchRef\.current\?\.off\?\.\(\); checkWatchRef\.current = null; \}, \[\]\);/);
+});
+
+test('wiring: the store hands back what it booked, and the walk in takes the frozen ref at the first send', () => {
+  const store = read('../../store/index.js');
+  const close = store.slice(store.indexOf('closeApprovedTerminalJob: async (job) => {'), store.indexOf('_reverseTerminalJobGift: async ('));
+  assert.match(close, /return \{ booked: true, created: !!created, ref: record\.ref \|\| null, closedCheckId: record\.id, source: record\.source \|\| null \};/);
+  assert.match(close, /return \{ booked: false, alreadyLocal: true \};/);
+  assert.match(store, /freezeWalkInRef: \(ref\) => \{/);
+  const co = read('../../surfaces/CheckoutModal.jsx');
+  assert.match(co, /if \(!tableId && !isBarTab\) useStore\.getState\(\)\.freezeWalkInRef\?\.\(orderRef\);/);
+  assert.match(read('../../App.jsx'), /<CardAdoptedBanner \/>/);
 });

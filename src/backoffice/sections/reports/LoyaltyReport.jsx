@@ -78,7 +78,7 @@ export default function LoyaltyReport({ rangeFrom, rangeTo, initialTab }) {
             .order('created_at', { ascending: false }).order('id', { ascending: true })),
           // Stamp transactions in date range
           readAllRows(() => supabase.from('stamp_transactions')
-            .select('id, customer_id, program_id, stamps, order_ref, trigger_item_name, created_at')
+            .select('id, customer_id, program_id, stamps, order_ref, trigger_item_name, type, note, created_at')
             .gte('created_at', new Date(rangeFrom).toISOString())
             .lte('created_at', new Date(rangeTo).toISOString())
             .order('created_at', { ascending: false }).order('id', { ascending: true })),
@@ -406,11 +406,17 @@ function TransactionsTab({ data }) {
 
   const filtered = useMemo(() => {
     if (filter === 'stamps') {
-      return stampTransactions.map(t => ({
-        ...t, _type: 'stamp',
-        display: `+${t.stamps} stamp${t.stamps > 1 ? 's' : ''}`,
-        items: t.trigger_item_name,
-      }));
+      // 30 Sep 2026: a redeem row (0 stamps) and a hand adjustment (signed, with its reason) read
+      // as what they are, not as "+0 stamps".
+      return stampTransactions.map(t => {
+        const n = Number(t.stamps) || 0;
+        let display = `${n > 0 ? '+' : ''}${n} stamp${Math.abs(n) === 1 ? '' : 's'}`;
+        if (t.type === 'redeem') display = 'Reward redeemed';
+        else if (t.type === 'refund') display = 'Reward restored (refund)';
+        else if (t.type === 'adjust') display = `${display} (adjusted)`;
+        const withNote = t.type === 'adjust' || t.type === 'redeem' || t.type === 'refund';
+        return { ...t, _type: 'stamp', display, items: withNote ? (t.note || t.trigger_item_name) : t.trigger_item_name };
+      });
     }
     let txs = transactions;
     if (filter === 'earn') txs = txs.filter(t => t.type === 'earn');

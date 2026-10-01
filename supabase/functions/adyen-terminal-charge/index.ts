@@ -71,6 +71,8 @@ import {
   selectUnsentSweepCandidates, UNSENT_SWEEP_MIN_AGE_MS, UNSENT_SWEEP_MAX_AGE_MS, UNSENT_SWEEP_LIMIT,
 } from '../_shared/terminalKick.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+// 30 Sep 2026: the alert of last resort after an approved settle (see afterSettle).
+import { findSameCardRepeat, sameCardAlert, cardKeyOf, SAME_CARD_WINDOW_MS } from '../_shared/repeatCharge.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -290,6 +292,53 @@ async function afterSettle(jobId: string, settled: any, ctx: {
       }
     }
   } catch { /* toast is advisory — never block a settle */ }
+  // 30 Sep 2026 SAME CARD, SAME AMOUNT, ANOTHER CHECK (Huddersfield R5737/R5739). The
+  // till now watches every tender and terminal-job-create refuses a likely repeat
+  // before the insert; this is the net under both, written once the money HAS moved:
+  // if the card that just paid also paid the same amount for a different check at
+  // this venue inside 15 minutes, one activity feed row tells the floor to refund
+  // one of them. Gated on the RPC's non idempotent approved transition (exactly once
+  // across the sync/async settle race). Advisory: a failed read or insert is logged
+  // and never blocks the settle. The pure decision lives in _shared/repeatCharge.js.
+  try {
+    if (ctx.success && (settled as any)?.ok === true && (settled as any)?.idempotent !== true
+        && (settled as any)?.status === 'approved') {
+      const { data: me } = await opsAdmin.from('terminal_jobs')
+        .select('id, status, location_id, closed_check_id, due_minor, charge_minor, currency, card, check_draft, settled_at, charged_at, created_at, simulated, training')
+        .eq('id', jobId).maybeSingle();
+      if (me && me.simulated !== true && cardKeyOf(me.card) && Number(me.charge_minor) > 0) {
+        const since = new Date(Date.now() - SAME_CARD_WINDOW_MS - 60_000).toISOString();
+        const { data: others } = await opsAdmin.from('terminal_jobs')
+          .select('id, status, location_id, closed_check_id, due_minor, charge_minor, currency, card, check_draft, settled_at, charged_at, created_at, simulated, training')
+          .eq('location_id', me.location_id)
+          .neq('id', jobId)
+          .in('status', ['approved', 'reconciled'])
+          .eq('charge_minor', me.charge_minor)
+          .gte('settled_at', since)
+          .order('settled_at', { ascending: false })
+          .limit(20);
+        const rows = (others ?? []) as Array<Record<string, unknown>>;
+        const checkIds = rows.map((r) => r.closed_check_id).filter((v): v is string => typeof v === 'string' && v.length > 0);
+        if (checkIds.length) {
+          const { data: checks } = await opsAdmin.from('closed_checks').select('id, ref, source, refunded, status, voided').in('id', checkIds);
+          const byId = new Map((checks ?? []).map((c: Record<string, unknown>) => [c.id, c]));
+          for (const r of rows) r.booked = byId.get(r.closed_check_id as string) ?? null;
+        }
+        const prior = findSameCardRepeat(me, rows, Date.now());
+        if (prior) {
+          const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', me.location_id).maybeSingle();
+          const alert = sameCardAlert(me, prior, { tz: (loc?.timezone as string | undefined) || 'Europe/London' });
+          console.error(`adyen-terminal-charge: POSSIBLE DOUBLE CHARGE job ${jobId} after ${prior.job_id} (${prior.ref ?? 'no ref'}): ${alert.title}`);
+          const { error: aErr } = await opsAdmin.from('activity_events').insert({
+            location_id: me.location_id, kind: 'system', severity: 'urgent',
+            title: alert.title, body: alert.body,
+            ref_type: 'terminal_job', ref_id: jobId,
+          });
+          if (aErr) console.error('adyen-terminal-charge: double charge alert insert failed', aErr.message);
+        }
+      }
+    }
+  } catch (e) { console.error('adyen-terminal-charge: double charge check skipped', (e as Error)?.message || e); }
 }
 
 // ── Settle from ADYEN'S OWN RECORD (v5.11.16) ────────────────────────────────
@@ -1585,11 +1634,24 @@ Deno.serve(async (req) => {
     const res = noTarget
       ? { ok: false, data: null }
       : await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: 30_000 });
+    // 30 Sep 2026: NEVER CANCEL A YOUNG TENDER FROM AN EMPTY LEDGER. The till's card screen now
+    // mounts while the customer is still paying (lib/payments/kickRace.js), so this action can be
+    // asked about a job whose reader is mid PIN. An unreachable reader (its wifi is the usual
+    // reason a tender is slow) plus a ledger the authorisation has not reached yet is NOT proof
+    // that nothing was charged: it is the customer still paying. Inside Adyen's own 120 s
+    // cardholder window (measured from dispatch, server clock to server clock, the same line the
+    // in_progress branch below has used since v5.7.85) the unreachable and unknown branches answer
+    // "processing" and the till asks again. Peter's bar (9 Sep): never abort a live tender.
+    const tenderStalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;
     if (!res.ok) {
       // The terminal could not be reached. Adyen's ledger is the fallback, and
       // it is the branch that actually matters in service: a dead terminal used
       // to leave the check blocked with no way out.
       const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing' && !tenderStalled) {
+        console.log(`adyen-terminal-charge: result for job ${job.id}: reader unreachable, ledger empty, tender under 120 s, not cancelling`);
+        return json({ ok: true, state: 'processing', status: job.status });
+      }
       if (v.verdict === 'nothing') {
         await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
@@ -1656,6 +1718,10 @@ Deno.serve(async (req) => {
     }
     if (cond === 'unknown') {
       const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing' && !tenderStalled) {
+        console.log(`adyen-terminal-charge: result for job ${job.id}: reader gave no answer, ledger empty, tender under 120 s, not cancelling`);
+        return json({ ok: true, state: 'processing', status: job.status });
+      }
       if (v.verdict === 'nothing') {
         await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })

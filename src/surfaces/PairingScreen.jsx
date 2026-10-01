@@ -166,6 +166,8 @@ export default function PairingScreen({ onPaired }) {
             quickScreenEnabled: profile.quickScreenEnabled !== false,
             autoPrintReceiptOnClose: true,
             orderNotifications: profile.orderNotifications !== false,
+            defaultOrderType: profile.defaultOrderType || null,        // 30 Sep 2026 (lib/tillOrderType.js)
+            dineInFlagPrompt: profile.dineInFlagPrompt === true,
           }));
         }
       } catch(e) { console.warn('Profile apply failed:', e); }

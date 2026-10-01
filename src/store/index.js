@@ -6,7 +6,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
-import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
+import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, channelFallbackCentre } from '../lib/productionRouting';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
@@ -64,6 +64,7 @@ import {
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { redemptionsOf, withSlots } from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
@@ -174,8 +175,17 @@ import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
+// 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag number.
+import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber } from '../lib/tillOrderType';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
 import { voidOccupationKey } from '../lib/rowWriteFence';
+// 30 Sep 2026: the void rules (who can be voided, the records a void writes, how a kitchen
+// ticket learns about it) live in lib/voidRules.js so tables, walk ins and the order screens
+// all void the same way.
+import { voidableLines, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone, orderVoidLabel, voidLinesText } from '../lib/voidRules';
+// 30 Sep 2026: how long a voided queue row stays (status 'cancelled') before it is deleted,
+// so the customer's order tracker (5 s poll) can show the cancellation.
+const VOID_QUEUE_ROW_LINGER_MS = 30_000;
 import {
   NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, mayTakeOrRefundMoney,
   isEzcaterOrder, ezcaterOrderNumber,
@@ -821,14 +831,15 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
 // implementation of the rule, and it lives in src/lib/productionRouting.js so node:test
 // can pin it. Production centres are filtered by ORDER TYPE as well as category there.
 
-// catId → parentId, for walking the category hierarchy.
+// catId → parentId, for walking the category hierarchy. The map itself is built by the
+// shared catParentMapOf (lib/productionRouting.js buildCatParentMap), the same one the
+// Back Office Production centres screen uses, so the tree the till routes by and the tree
+// the screen shows are one tree.
 const buildCatParentMap = () => {
   try {
     const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
     const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-    const map = {};
-    cats.forEach(c => { map[c.id] = c.parentId || null; });
-    return map;
+    return catParentMapOf(cats);
   } catch { return {}; }
 };
 
@@ -1548,6 +1559,15 @@ export const useStore = create((set, get) => ({
     // screen they are working on mid-shift.
     const prevDefaultSurface = get().deviceConfig?.defaultSurface;
     set({ deviceConfig: finalConfig, trainingMode: training });
+    // 30 Sep 2026 (Peter, Coffee Boy): the till starts on the profile's default order type
+    // (lib/tillOrderType.js defaultOrderTypeFor), so a drive thru only till no longer opens on
+    // Dine in. Boot, Apply to this terminal and Push to POS all land here. Only while nothing is
+    // being rung up: a floor table is always dine in, and a walk in order with items keeps the
+    // type staff picked for it. clearWalkIn applies the same default after every order.
+    if (!get().activeTableId && !get().walkInOrder?.items?.length) {
+      const startType = defaultOrderTypeFor(finalConfig);
+      if (startType !== get().orderType) set({ orderType: startType });
+    }
     // v5.7.35: an explicit URL surface pin (?mode=kds) beats the profile's
     // default surface — the operator asked for a specific screen by link.
     if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface && !URL_SURFACE_PIN) set({ surface: finalConfig.defaultSurface });
@@ -3598,14 +3618,20 @@ export const useStore = create((set, get) => ({
         }
       }
       const pendingItems = order.items.filter(isUnsentLine);
-      const label = customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
       // v5.8.66: the ref is taken HERE, before the tickets, so the KDS can show the receipt
       // number (#35). It was taken a few lines further down; the value and the single
       // getNextOrderRefLocal call are unchanged, only the moment moved.
       const ref = order.ref || getNextOrderRefLocal();
+      // 30 Sep 2026 (Peter, Coffee Boy): a dine in order with a flag number is a table ticket,
+      // "Table 30 · #09", exactly as a kiosk flag order (kioskTicketLabels rule 2): the KDS
+      // headline is the table, the paper header too, and no floor table is named like that so
+      // fireCourse never picks it up. A flag typed before the order became a takeaway is ignored.
+      const flag = orderFlag(order, orderType);
+      const label = flag ? flagTicketLabel(flag, ref)
+        : customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const walkInMeta = buildTicketMeta({
-        channel: 'till', orderType,
+        channel: 'till', orderType, isTable: !!flag,
         customerName: customer?.name, orderRef: ref,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(order.orderNote, customer?.notes),
@@ -3636,7 +3662,13 @@ export const useStore = create((set, get) => ({
       // (ref is taken above, before the KDS tickets, v5.8.66)
       const queueEntry = {
         ref, type: orderType,
-        customer: customer ? { ...customer } : { name: customer?.name || label },
+        // The flag rides in customer (the jsonb QueueSync persists, as the kiosk's kioskTable
+        // does) so Orders shows "Table 30" and a reopened order keeps its flag. With no customer
+        // the name was the ticket label; for a flag order that is "Table 30 · #09", which Orders
+        // would show as the customer's name and a reopen would attach as a real customer, so a
+        // flag order with no customer gets an empty name (Orders then shows the order ref, as an
+        // unnamed walk in does).
+        customer: { ...(customer ? { ...customer } : { name: flag ? '' : label }), ...(flag ? { tableFlag: flag } : {}) },
         // v4.6.5 follow-up: align with dine-in visual semantics. Table sessions persist
         // the fired+sent mutation on their items until payment, so reopening a table shows
         // them green. Walk-ins had the same mutation applied to walkInOrder but clearWalkIn()
@@ -3932,7 +3964,13 @@ export const useStore = create((set, get) => ({
 
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
-  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null }),
+  // 30 Sep 2026: the next order starts on the profile's default order type (lib/tillOrderType.js),
+  // not always dine in. Floor tables still open as dine in (openTable and friends).
+  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null })),
+  // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
+  // (FlagNumberModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
+  // and the prompt never shows twice. Digits only, or cleared.
+  setWalkInTableFlag: (flag) => set(s => ({ walkInOrder: { ...(s.walkInOrder || {}), tableFlag: cleanFlagNumber(flag) } })),
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -4016,7 +4054,17 @@ export const useStore = create((set, get) => ({
   setAllergens: (arr) => set({ allergens: Array.isArray(arr) ? [...arr] : [] }),
 
   // ── Order type / customer ─────────────────
-  orderType: 'dine-in',
+  // 30 Sep 2026 (Peter, Coffee Boy): the till STARTS on the profile's default order type, read
+  // from the cached device config at module load the way trainingMode is. setDeviceConfig also
+  // applies it, but every boot path is change gated (App.jsx deviceConfigChanged), so on a plain
+  // reload prev equals next and it never runs: without this a drive thru only till came up on
+  // Dine in after every restart. With no cached config: dine in, as before.
+  orderType: (() => {
+    try {
+      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
+      return defaultOrderTypeFor(raw ? JSON.parse(raw) : null);
+    } catch { return 'dine-in'; }
+  })(),
   // v4.5.6: when order type changes (dine-in / takeaway / collection / delivery),
   // reprice the order the toggle belongs to against the new channel:
   //   - walkInOrder.items (walk-in / takeaway / collection / delivery flow), always
@@ -6470,7 +6518,7 @@ export const useStore = create((set, get) => ({
       if (!isPendingCheck(job.closed_check_id) && Date.now() - (Number(localClose.closedAt) || 0) > 30000) {
         markJobReconciled(job.id).catch(() => {});
       }
-      return;
+      return { booked: false, alreadyLocal: true };
     }
     const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
@@ -6682,6 +6730,8 @@ export const useStore = create((set, get) => ({
     // NOTHING local, flag it once where a human can see it, and let the next tick retry.
     if (!ok) {
       console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+      // 30 Sep 2026: the caller (TerminalJobReconciler) reads what was booked; nothing was.
+      let bookedResult = { booked: false };
       if (!_closeFailFlagged.has(job.id)) {
         _closeFailFlagged.add(job.id);
         logActivity(record.locationId || d.locationId || null, {
@@ -6691,7 +6741,7 @@ export const useStore = create((set, get) => ({
           refType: 'terminal_job', refId: job.id,
         }).catch(() => {});
       }
-      return;
+      return bookedResult;
     }
 
     // Idempotent on every caller: prepend the tombstone.
@@ -6767,6 +6817,11 @@ export const useStore = create((set, get) => ({
     // reference handle for the check. A stale handle here is what produced
     // "payment reference has already been used" on the NEXT sale sharing the key.
     if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
+    // 30 Sep 2026: tell the caller what was booked. TerminalJobReconciler uses it to adopt a sale
+    // this till booked after its own checkout closed (clear the matching walk in, sticky banner:
+    // lib/payments/terminalJobCloser.js adoptBookedSale). `created` is true for the one elected
+    // writer only; a repeat upsert of the same row books nothing new.
+    return { booked: true, created: !!created, ref: record.ref || null, closedCheckId: record.id, source: record.source || null };
   },
 
   /**
@@ -6830,26 +6885,41 @@ export const useStore = create((set, get) => ({
   // Both used to console.warn only, so a 401/500 left the reward unconsumed and re-redeemable.
   redeemLoyaltyAtCommit: async (loy, record, customer) => {
     if (!loy?.pending_commit || !supabase || !record?.id) return;
-    if (!loy.stampProgramId && !loy.reward_id) return;
+    // 30 Sep 2026 (Peter, Coffee Boy: "redeem multiple stamp cards on the same order"): the staged
+    // object may hold several rewards (lib/loyaltyMultiRedeem.js combineRedemptions). Each one is
+    // committed on its own, ONE AFTER THE OTHER, with its slot number: loyalty-redeem keys a stamp
+    // redemption on check + programme, so the second free drink needs slot 2, and two calls for
+    // the same programme in the air at once could both pass its availability check and then both
+    // roll back (its race guard), leaving a member with two drinks and no card used. In turn,
+    // each call sees the row the one before it wrote. One reward staged the old way is a list
+    // of one, so nothing changes for it.
+    const list = withSlots(redemptionsOf(loy));
+    if (!list.length) return;
     if (isTrainingMode()) return;   // TRAINING MODE: never consume real points/stamps
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     const token = await ensureAuthToken().catch(() => null);
-    const r = await commitRedemption({
-      kind: 'loyalty',
-      customerId: loy.customer_id || customer?.customerId || customer?.id || null,
-      locationId: locId,
-      stampProgramId: loy.stampProgramId || null,
-      rewardId: loy.reward_id || null,
-      channel: 'pos',
-      closedCheckId: record.id,
-      staffId: staff?.id || null,
-    }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
-    // Queued failures retry themselves; a refusal never will, so say what didn't happen.
-    if (!r.ok && !r.queued) {
-      get().showToast?.(`Reward discount given but NOT deducted (${r.error}) — check the customer's balance in Back Office.`, 'error');
+    const results = [];
+    for (const one of list) {
+      const r = await commitRedemption({
+        kind: 'loyalty',
+        customerId: one.customer_id || loy.customer_id || customer?.customerId || customer?.id || null,
+        locationId: locId,
+        stampProgramId: one.stampProgramId || null,
+        rewardId: one.reward_id || null,
+        slot: one.slot,
+        channel: 'pos',
+        closedCheckId: record.id,
+        staffId: staff?.id || null,
+      }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
+      results.push(r);
+      // Queued failures retry themselves; a refusal never will, so say what didn't happen.
+      if (!r.ok && !r.queued) {
+        const which = list.length > 1 ? `${one.reward_name || 'Reward'}${one.item_name ? ` (${one.item_name})` : ''}: ` : '';
+        get().showToast?.(`${which}Reward discount given but NOT deducted (${r.error}). Check the customer's balance in Back Office.`, 'error');
+      }
     }
-    return r;
+    return results.length === 1 ? results[0] : { ok: results.every((r) => r.ok), queued: results.some((r) => r.queued), error: results.find((r) => r.error)?.error || null, results };
   },
 
   redeemPromoCode: async (promo, record, customer) => {
@@ -7057,7 +7127,9 @@ export const useStore = create((set, get) => ({
       id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
-      tableLabel: null,
+      // 30 Sep 2026: a dine in order with a flag number books "Table 30" (the receipt prints
+      // check.tableLabel, printDoc.js). tableId stays null: it is not a floor table.
+      tableLabel: flagTableLabel(orderFlag(walkInOrder, orderType)),
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19
@@ -7761,20 +7833,153 @@ export const useStore = create((set, get) => ({
   // ── Void log ──────────────────────────────
   voidLog: [],
 
+  // 30 Sep 2026 (Peter, Coffee Boy: "Can't void anything other than table orders"): the KDS now
+  // learns about a void. Before this a void only changed the till's own copy; the kitchen ticket
+  // stayed exactly as sent and the cook made the food. This flags the voided lines on every
+  // pending kitchen ticket that carries them (the ticket keeps the line's uid, createKdsTickets),
+  // in memory and on kds_tickets, and prints a "** VOID **" docket to each production centre
+  // that had them. Tables and walk ins both come through here.
+  //   label   the ticket's table_label (a table label, or the walk in label sendToKitchen used)
+  //   lines   the order lines being voided (their uids are matched)
+  voidKitchenLines: ({ label, lines, reason, manager }) => {
+    const uids = lineUids(lines);
+    if (!uids.size) return;
+    const centres = new Map();   // centreId -> voided ticket items (for the docket)
+    const noteCentre = (centreId, items) => {
+      if (!centreId) return;
+      const have = centres.get(centreId) || [];
+      centres.set(centreId, [...have, ...items.filter(i => uids.has(i.uid))]);
+    };
+    // The till's own copy first (also what a KDS in the same browser reads).
+    set(s => ({
+      kdsTickets: (s.kdsTickets || []).map(t => {
+        if (!ticketHasLines(t.items, uids)) return t;
+        const r = voidTicketItems(t.items, uids);
+        if (!r.changed) return t;
+        noteCentre(t.centreId, t.items);
+        return { ...t, items: r.items };
+      }),
+    }));
+    const printDockets = () => {
+      const printConfig = (() => {
+        try {
+          const stored = get().printRouting;
+          if (stored?.centres?.length) return stored;
+          return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
+        } catch { return { centres: [], routing: {} }; }
+      })();
+      centres.forEach((items, centreId) => {
+        if (!items.length) return;
+        const centre = printConfig.centres?.find(c => c.id === centreId);
+        get().routePrintJob({
+          centreId,
+          printerName: centre?.printer?.name || centre?.name || 'Kitchen',
+          tableLabel: label || '',
+          server: manager?.name || get().staff?.name || '',
+          covers: 0, course: 0,
+          items: items.map(i => ({ qty: i.qty, name: i.name, mods: [] })),
+          type: 'kitchen',
+          itemLabel: `** VOID ** ${reason || ''}`.trim(),
+        });
+      });
+    };
+    // TRAINING MODE: no real kds_tickets write and no docket.
+    if (isTrainingMode() || !supabase) return;
+    (async () => {
+      try {
+        const locId = getActiveLocationSync() || await getLocationId();
+        if (!locId) { printDockets(); return; }
+        // Matched by the lines' uids, not the label: a walk in label ("takeaway") is shared by
+        // every unnamed takeaway of the day. Pending tickets at a venue are a few dozen at most.
+        const { data: tickets } = await supabase
+          .from('kds_tickets')
+          .select('id, centre_id, items')
+          .eq('location_id', locId)
+          .in('status', ['pending', 'held'])
+          .order('sent_at', { ascending: false })
+          .limit(200);
+        for (const t of tickets || []) {
+          if (!ticketHasLines(t.items, uids)) continue;
+          const r = voidTicketItems(t.items, uids);
+          if (!r.changed) continue;
+          if (!centres.has(t.centre_id)) noteCentre(t.centre_id, t.items);
+          // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked.
+          const w = await mustChangeRow({
+            table: 'kds_tickets', type: 'update', payload: { items: r.items },
+            match: { id: t.id }, kind: 'kds_void', label: `Void on kitchen ticket ${label || ''}`.trim(),
+          });
+          if (w.outcome === 'error') console.warn('[voidKitchenLines] kds_tickets update failed', w.error?.message || w.error);
+        }
+      } catch (e) { console.warn('[voidKitchenLines] failed:', e?.message || e); }
+      printDockets();
+    })();
+  },
+
+  // The activity feed row for a void (Back Office bell + panel). Fire and forget.
+  _logVoidActivity: ({ label, lines, reason, manager, ref }) => {
+    try {
+      const locId = getActiveLocationSync();
+      if (!locId) return;
+      logActivity(locId, {
+        kind: 'order', severity: 'info',
+        title: `Void: ${label}`,
+        body: [voidLinesText(lines), reason].filter(Boolean).join(' · '),
+        refType: 'order', refId: ref || null, actorName: manager?.name || null,
+      }).catch(() => {});
+    } catch { /* the feed is a log, never a blocker */ }
+  },
+
+  // v4.6.11 / v5.5.189: a voided line is not being consumed, so its daily count (and its
+  // modifier sub items) go back. One helper for every void path (till line, till check, Orders
+  // screen); decrementDailyCount itself ignores an item with no count set, so a kiosk or online
+  // line that was never counted is a no op here.
+  _restoreDailyCounts: (lines) => {
+    (Array.isArray(lines) ? lines : []).forEach(i => {
+      if (!i?.itemId || i.voided) return;
+      get().decrementDailyCount(i.itemId, -(i.qty || 1));
+      (i.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (i.qty || 1)));
+      });
+    });
+  },
+
+  // A void of one line. tableId null = the walk in order (takeaway, collection, delivery, drive
+  // thru, dine in without a table). Same modal, same log, same kitchen notice as a table.
   voidItem: (tableId, itemUid, { manager, reason }) => {
-    const { tables, voidLog, showToast } = get();
+    const { tables, showToast } = get();
+    if (!tableId) {
+      const order = get().walkInOrder;
+      const item = order?.items?.find(i => i.uid === itemUid);
+      if (!item || item.voided) return;
+      // A HubRise order opened for payment is a display copy of the channel's order (its lines
+      // carry hrpay uids the queue row does not have): a line void here would show one total and
+      // charge another. The channel is told from the Orders screen instead.
+      if (order?._channelRef) { showToast('This is a channel order. Reject it from the Orders screen.', 'error'); return; }
+      get()._restoreDailyCounts([item]);
+      const label = orderVoidLabel({ orderType: get().orderType, customer: get().customer, ref: order.ref });
+      const markVoided = (items) => (items || []).map(i => i.uid === itemUid ? { ...i, status: 'voided', voided: true } : i);
+      set(s => {
+        const items = markVoided(s.walkInOrder?.items);
+        const subtotal = items.filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0);
+        return {
+          walkInOrder: { ...s.walkInOrder, items, subtotal, total: subtotal },
+          // The queue copy (Orders screen, other tills) shows the line struck through too.
+          orderQueue: order.ref ? s.orderQueue.map(o => o.ref === order.ref
+            ? { ...o, items: markVoided(o.items), total: markVoided(o.items).filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0) }
+            : o) : s.orderQueue,
+          voidLog: [voidLogEntry({ type: 'item', label, items: [item], reason, manager, ref: order.ref }), ...s.voidLog],
+        };
+      });
+      get().voidKitchenLines({ label, lines: [item], reason, manager });
+      get()._logVoidActivity({ label, lines: [item], reason, manager, ref: order.ref });
+      showToast(`${item.name} voided. ${reason}`, 'warning');
+      return;
+    }
     const table = tables.find(t => t.id === tableId);
     const item  = table?.session?.items?.find(i => i.uid === itemUid);
     if (!item) return;
 
-    // v4.6.11: restore daily count — the voided item is not being consumed.
-    if (item.itemId && !item.voided) {
-      get().decrementDailyCount(item.itemId, -(item.qty || 1));
-      // v5.5.189: restore modifier sub-item counts too
-      (item.mods || []).forEach(mod => {
-        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (item.qty || 1)));
-      });
-    }
+    get()._restoreDailyCounts([item]);
 
     // Mark item as voided (keep visible with strikethrough)
     set(s => ({
@@ -7784,47 +7989,59 @@ export const useStore = create((set, get) => ({
         const subtotal = items.filter(i=>!i.voided).reduce((s,i)=>s+i.price*i.qty,0);
         return { ...t, session:{ ...t.session, items, subtotal, total:subtotal*1.125 } };
       }),
-      voidLog: [{
-        id:`void-${Date.now()}`, timestamp:Date.now(), type:'item',
-        tableId, tableLabel:table.label,
-        items:[{ name:item.name, price:item.price, qty:item.qty }],
-        totalValue: item.price * item.qty,
-        reason, manager: manager.name, managerId: manager.id,
-      }, ...s.voidLog],
+      voidLog: [voidLogEntry({ type: 'item', tableId, label: table.label, items: [item], reason, manager }), ...s.voidLog],
     }));
-    showToast(`${item.name} voided — ${reason}`, 'warning');
+    // 30 Sep 2026: the kitchen learns about it (it never did before).
+    get().voidKitchenLines({ label: table.label, lines: [item], reason, manager });
+    get()._logVoidActivity({ label: table.label, lines: [item], reason, manager, ref: null });
+    showToast(`${item.name} voided. ${reason}`, 'warning');
   },
 
+  // A void of the whole order. tableId null = the walk in order: same records as a table void
+  // (void log, closed_checks tombstone flagged voided with no money on it, kitchen notice,
+  // activity feed) and the queue row goes, so no Orders screen keeps serving it.
   voidCheck: (tableId, { manager, reason }) => {
     const { tables, showToast } = get();
+    if (!tableId) {
+      const order = get().walkInOrder;
+      const lines = voidableLines(order?.items);
+      if (!lines.length) return;
+      // A HubRise order opened for payment is a channel's order: it is rejected from the
+      // Orders screen (the channel is told), never voided here.
+      if (order._channelRef) { showToast('This is a channel order. Reject it from the Orders screen.', 'error'); return; }
+      const { orderType, customer, staff } = get();
+      get()._restoreDailyCounts(lines);
+      const label = orderVoidLabel({ orderType, customer, ref: order.ref });
+      const tomb = buildVoidTombstone({
+        order, orderType, customer, staff, manager, reason,
+        locationId: getActiveLocationSync() || null, source: 'pos',
+      });
+      set(s => ({
+        voidLog: [voidLogEntry({ type: 'check', label, items: lines, reason, manager, ref: order.ref }), ...s.voidLog],
+        closedChecks: capClosedChecks([tomb, ...(s.closedChecks || [])]),
+        deliveryQuote: null,
+      }));
+      try { insertClosedCheck(tomb); } catch (e) { console.warn('[voidCheck] tombstone not written:', e?.message || e); }
+      // Only the lines the kitchen has: an unsent line was never on a ticket.
+      get().voidKitchenLines({ label, lines: lines.filter(i => i.status === 'sent'), reason, manager });
+      get()._logVoidActivity({ label, lines, reason, manager, ref: order.ref });
+      if (order.ref) get().removeFromQueue(order.ref);   // local + DB delete, like a HubRise reject
+      get().clearWalkIn();
+      showToast(`${label} voided by ${manager.name}. ${reason}`, 'error');
+      return;
+    }
     const table  = tables.find(t => t.id === tableId);
     const session = table?.session;
     if (!session) return;
 
-    // v4.6.11: restore daily count for every non-voided item before we void the check.
-    (session.items || []).forEach(i => {
-      if (i.itemId && !i.voided) {
-        get().decrementDailyCount(i.itemId, -(i.qty || 1));
-        // v5.5.189: restore modifier sub-item counts too
-        (i.mods || []).forEach(mod => {
-          if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (i.qty || 1)));
-        });
-      }
-    });
+    get()._restoreDailyCounts(session.items);
 
-    const totalValue = session.items.reduce((s,i) => s+i.price*i.qty, 0);
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
-        const items = t.session.items.map(i => ({ ...i, status:'voided', voided:true }));
         return { ...t, status:'available', session:null };
       }),
-      voidLog: [{
-        id:`void-${Date.now()}`, timestamp:Date.now(), type:'check',
-        tableId, tableLabel:table.label,
-        items: session.items.map(i => ({ name:i.name, price:i.price, qty:i.qty })),
-        totalValue, reason, manager:manager.name, managerId:manager.id,
-      }, ...s.voidLog],
+      voidLog: [voidLogEntry({ type: 'check', tableId, label: table.label, items: session.items, reason, manager }), ...s.voidLog],
       activeTableId: s.activeTableId === tableId ? null : s.activeTableId,
     }));
     // v5.9.72 TOMBSTONE (Leeds, 26 Sep 2026: "this order is being voided but still coming back").
@@ -7833,12 +8050,15 @@ export const useStore = create((set, get) => ({
     // writes a closed check that every device treats as the occupation's tombstone
     // (sync/sessionClosure.js, matched on seatedAt); a void now writes the same, flagged voided
     // with nothing on it, so the table stays closed everywhere and no report counts money.
+    // 30 Sep 2026: status 'voided', not 'void'. Every report (Exceptions, Z, Shifts, Servers)
+    // looks for 'voided', so the 'void' tombstones never showed as voids anywhere. Old rows are
+    // read as 'voided' too (lib/voidRules.js normaliseCheckStatus, applied in db.js).
     try {
       const record = get().buildCloseRecord(session, table, { method: 'void' }) || {};
       const tomb = {
         ...record,
         id: `void-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        voided: true, status: 'void', method: 'void',
+        voided: true, status: 'voided', method: 'void',
         // v5.9.81: the occupation key; openedAt when there is no seatedAt (a QR floor session), so
         // the void closes it on every device (lib/rowWriteFence.js checkClosesOccupation).
         seatedAt: voidOccupationKey(session),
@@ -7849,7 +8069,62 @@ export const useStore = create((set, get) => ({
       set(s => ({ closedChecks: [tomb, ...(s.closedChecks || [])] }));
       insertClosedCheck(tomb);
     } catch (e) { console.warn('[voidCheck] tombstone not written:', e?.message || e); }
-    showToast(`Check voided by ${manager.name} — ${reason}`, 'error');
+    // 30 Sep 2026: the kitchen learns about it (it never did before).
+    const sentLines = (session.items || []).filter(i => !i.voided && i.status === 'sent');
+    get().voidKitchenLines({ label: table.label, lines: sentLines, reason, manager });
+    get()._logVoidActivity({ label: table.label, lines: session.items, reason, manager, ref: null });
+    showToast(`Check voided by ${manager.name}. ${reason}`, 'error');
+  },
+
+  // 30 Sep 2026: a void from the Orders screen (kiosk, online, QR, a till order in the queue).
+  // Same modal and reasons as the till, same records (void log, tombstone, kitchen notice,
+  // activity feed). The row is marked cancelled first (the customer's order tracker polls it
+  // and reads a missing row as "keep the last state", so a plain delete left "Being prepared"
+  // on their phone for good), then removed like a HubRise reject once the tracker has had time
+  // to see it, so every Orders screen stops serving it. Money already taken (a prepaid kiosk or
+  // online order) is NOT touched here: that sale stays booked and is refunded from Back Office,
+  // Transactions, the same as any other refund. The toast says so.
+  voidQueueOrder: (ref, { manager, reason }) => {
+    const o = (get().orderQueue || []).find(x => x.ref === ref);
+    if (!o) return null;
+    const lines = voidableLines(o.items);
+    get()._restoreDailyCounts(lines);
+    const label = orderVoidLabel({ orderType: o.type, customer: o.customer, ref: o.ref });
+    const tomb = buildVoidTombstone({
+      order: o, orderType: o.type, customer: o.customer, staff: get().staff, manager, reason,
+      locationId: getActiveLocationSync() || null, source: o.source || 'pos',
+    });
+    set(s => ({
+      voidLog: [voidLogEntry({ type: 'check', label, items: lines, reason, manager, ref: o.ref }), ...s.voidLog],
+      closedChecks: capClosedChecks([tomb, ...(s.closedChecks || [])]),
+    }));
+    try { insertClosedCheck(tomb); } catch (e) { console.warn('[voidQueueOrder] tombstone not written:', e?.message || e); }
+    get().voidKitchenLines({ label, lines, reason, manager });
+    get()._logVoidActivity({ label, lines, reason, manager, ref: o.ref });
+    if (o.source === 'hubrise') {
+      // 'reject' is a refusal before acceptance; an order the venue already accepted is
+      // cancelled (hubrise-map.ts maps both), or the channel treats it as a late refusal.
+      const action = o.status === 'received' ? 'reject' : 'cancel';
+      hubrisePushStatus(getActiveLocationSync(), o.ref, action, { reason: `Voided: ${reason}` }).catch(() => {});
+    }
+    get().updateQueueStatus(o.ref, 'cancelled');   // hidden on every Orders screen (DONE_STATUSES)
+    if (supabase && !isTrainingMode()) {
+      const locId = getActiveLocationSync();
+      if (locId) {
+        mustChangeRow({ table: 'order_queue', type: 'update', payload: { status: 'cancelled' }, match: { ref: o.ref, location_id: locId }, kind: 'queue_status', label: `Order ${o.ref} voided` })
+          .catch(e => console.warn('[voidQueueOrder] status write:', e?.message || e));
+      }
+    }
+    // The tracker polls every 5 s; the row goes once it has had time to read the cancel.
+    setTimeout(() => get().removeFromQueue(o.ref), VOID_QUEUE_ROW_LINGER_MS);
+    // The same order may be open on this till (Orders screen, Open): the walk in slot goes
+    // too, or Pay would book a sale for an order that is already voided.
+    if (get().walkInOrder?.ref === o.ref) get().clearWalkIn();
+    const paid = !!(o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source));
+    get().showToast(paid
+      ? `${label} voided. It was already paid: refund it in Back Office, Transactions.`
+      : `${label} voided by ${manager.name}. ${reason}`, 'error');
+    return tomb;
   },
 
   // ── Discounts ──────────────────────────────
@@ -7992,7 +8267,9 @@ export const useStore = create((set, get) => ({
       // Coffee-shop "sticker" mode: when this centre is set to split each item onto its own
       // ticket, dispatch one kitchen ticket per item UNIT (qty-expanded), each labelled
       // "ITEM X OF Y" with a unique idempotency key. Skips the single combined ticket below.
-      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem) {
+      // 30 Sep 2026: a labelled notice (the "** VOID **" docket) never splits. Split stickers
+      // ignore itemLabel and read "ITEM 1 OF 2", so a sticker centre made the voided lattes again.
+      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem && !job.itemLabel) {
         const units = [];
         printItems.forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
         const total = units.length || 1;
@@ -8037,6 +8314,7 @@ export const useStore = create((set, get) => ({
             sentAt: basePrintJob.sentAt,
             delivery: job.delivery || null,   // HubRise/delivery context block (null for all other tickets)
             reprint: !!job.reprint,           // v5.7.72: duplicate docket — banner, never a new order
+            itemLabel: job.itemLabel || undefined,   // 30 Sep 2026: "** VOID **" on a void docket
           }, printerId, { idempotencyKey });
 
       // Any outcome here is "first attempt done". PrintRetrier handles persistent retries.
@@ -8260,9 +8538,11 @@ export const useStore = create((set, get) => ({
       // prints at a default centre (first with a printer, else first centre) instead of
       // silently dropping off a MIXED order's tickets (HubRise rule: handle unknown items
       // gracefully). Identity check is safe — same object refs from order.items.
+      // 30 Sep 2026: which centre that is lives in channelFallbackCentre, so the Back Office
+      // Production centres screen can name it ("... send anything no center takes to KDS drinks").
       const unrouted = order.items.filter(it => !Object.values(byCentre).some(arr => arr.includes(it)));
       if (unrouted.length && routingConfig.centres?.length) {
-        const fb = routingConfig.centres.find(c => c.printer?.id) || routingConfig.centres[0];
+        const fb = channelFallbackCentre(routingConfig);
         if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];
       }
 
@@ -8734,6 +9014,29 @@ export const useStore = create((set, get) => ({
 
   // ── Toast ─────────────────────────────────
   toast: null,
+  // 30 Sep 2026: STICKY banner for a card sale this till booked after its checkout was closed mid
+  // tender (TerminalJobReconciler + lib/payments/terminalJobCloser.js adoptBookedSale). Not a toast:
+  // it stays until staff dismiss it, because the next thing they were about to do was ring the same
+  // order again (Huddersfield R5737/R5739). { text, jobId, ref, at }.
+  cardAdoptedBanner: null,
+  showCardAdoptedBanner: (b) => set({ cardAdoptedBanner: b ? { ...b, at: b.at || Date.now() } : null }),
+  dismissCardAdoptedBanner: () => set({ cardAdoptedBanner: null }),
+  // 30 Sep 2026: "Open R5737" on the checkout's possible repeat warning. POSSurface switches its
+  // right pane to History and CheckHistory searches for the ref, then clears this. { ref, at }.
+  checkHistoryFocus: null,
+  openCheckHistoryFor: (ref) => set({ checkHistoryFocus: ref ? { ref: String(ref), at: Date.now() } : null }),
+  // 30 Sep 2026: the checkout froze an order ref into the card machine job (getOrderRef); give it to
+  // the walk in NOW, at the first send, not only at close (recordWalkInClosed does the same stamp
+  // there). The kitchen send reuses an existing ref (order.ref || getNextOrderRefLocal), so the
+  // ticket shows the same number, and a sale booked after the checkout closed can be matched to the
+  // cart on screen by this ref. Only ever fills an EMPTY ref; a walk in that already went to the
+  // kitchen keeps the number its ticket shows.
+  freezeWalkInRef: (ref) => {
+    const r = usableOrderRef(ref);
+    const w = get().walkInOrder;
+    if (!r || !w || w.ref) return;
+    set({ walkInOrder: { ...w, ref: r } });
+  },
   theme: localStorage.getItem('rpos-theme') || 'dark',
   setTheme: (t) => {
     localStorage.setItem('rpos-theme', t);

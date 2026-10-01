@@ -10,6 +10,7 @@ import {
   KDS_TYPES, KDS_STATUS, buildTicketMeta, parseLegacyTicket, ticketMeta, needsTypeLookup, fallbackTypeForChannel,
   kdsTypeKey, ticketHeadline, identityLine, ticketLine, courseGroups, minutesSince, formatElapsed,
   statusOf, sortTickets, typeCounts, rollUp, shortRef, joinNotes, normaliseOrderType, applyQueueLookup, ticketView, identityParts, venueBusinessDayStart,
+  voidState,
 } from './kdsTicket.js';
 
 test('six types, delivery is pink, drive thru is blue and red stays the LATE colour only', () => {
@@ -79,6 +80,27 @@ test('buildTicketMeta: tables and bar tabs never carry a number, tills carry the
   const till = buildTicketMeta({ channel: 'till', orderType: 'takeaway', customerName: '  Peter  Roberts ', orderRef: 'R32635' });
   assert.equal(till.orderNo, '35');
   assert.equal(till.customerName, 'Peter Roberts');
+});
+
+test('buildTicketMeta carries the FULL ref (30 Sep 2026) and ticketMeta keeps it, while orderNo stays short', () => {
+  const till = buildTicketMeta({ channel: 'till', orderType: 'takeaway', customerName: 'Sam', orderRef: 'R32697' });
+  assert.equal(till.ref, 'R32697');
+  assert.equal(till.orderNo, '97');
+  const back = ticketMeta({ meta: till });
+  assert.equal(back.ref, 'R32697');
+  assert.equal(back.orderNo, '97', 'not shortened a second time');
+  const kiosk = buildTicketMeta({ channel: 'kiosk', orderType: 'takeaway', orderRef: 'R3962' });
+  assert.equal(kiosk.ref, 'R3962');
+  const hub = buildTicketMeta({ channel: 'hubrise', orderType: 'delivery', orderRef: 'HR-g23er44', appCode: '8455' });
+  assert.equal(hub.ref, 'HR-g23er44');
+  assert.equal(hub.orderNo, '8455');
+  assert.equal(ticketMeta({ meta: hub }).orderNo, '8455');
+  // No ref for a table send or a bar round, and a stored row from before this change has null.
+  assert.equal(buildTicketMeta({ channel: 'table', isTable: true }).ref, null);
+  assert.equal(buildTicketMeta({ channel: 'bar', customerName: 'Neil' }).ref, null);
+  assert.equal(ticketMeta({ meta: { v: 1, channel: 'till', orderNo: '35' } }).ref, null);
+  // A legacy channel row reads its ref from the label.
+  assert.equal(parseLegacyTicket({ table_label: 'Kiosk R17' }).ref, 'R17');
 });
 
 test('buildTicketMeta: a delivery app code wins over our ref (Peter: #8455)', () => {
@@ -346,4 +368,32 @@ test('venueBusinessDayStart: the venue clock, not the device clock, and DST corr
   // Missing settings fall back to London 06:00.
   assert.equal(iso(venueBusinessDayStart(Date.parse('2026-09-14T05:30:00Z'))), '2026-09-14T05:00:00.000Z');
   assert.throws(() => venueBusinessDayStart(Date.now(), 'Not/AZone'));
+});
+
+// 30 Sep 2026 (Peter, Coffee Boy): a void reaches the kitchen. The till flags the voided lines on
+// the ticket row; the card shows them struck through under a red block, off the course groups.
+test('voidState: the void notice a ticket carries', () => {
+  const items = [
+    { uid: 'a', name: 'Burger', qty: 2, course: 1 },
+    { uid: 'b', name: 'Chips', qty: 1, course: 1, voided: true },
+  ];
+  const one = voidState(items);
+  assert.equal(one.lines.length, 1);
+  assert.equal(one.lines[0].name, 'Chips');
+  assert.equal(one.lines[0].index, 1, 'the ticket index, so the line matches the row');
+  assert.equal(one.all, false);
+  assert.equal(one.label, 'VOID 1 LINE');
+  const all = voidState(items.map(i => ({ ...i, voided: true })));
+  assert.equal(all.all, true);
+  assert.equal(all.label, 'ORDER VOIDED');
+  assert.equal(voidState(items.map(i => ({ ...i, voided: false }))).label, null);
+  assert.equal(voidState([]).all, false, 'an empty ticket is not a voided one');
+  assert.equal(voidState(null).lines.length, 0);
+  // The course groups still leave voided lines off, and the view carries both.
+  const view = ticketView({ id: 'k1', table: 'T4', items, firedCourses: [0, 1], meta: buildTicketMeta({ channel: 'table', isTable: true }) });
+  assert.equal(view.groups[0].lines.length, 1);
+  assert.equal(view.groups[0].lines[0].name, 'Burger');
+  assert.equal(view.voids.label, 'VOID 1 LINE');
+  assert.equal(voidState(items.map(i => ({ ...i, voided: true }))).lines.length, 2);
+  assert.equal(courseGroups(items.map(i => ({ ...i, voided: true })), [0, 1]).length, 0, 'a fully voided ticket shows only the red block');
 });

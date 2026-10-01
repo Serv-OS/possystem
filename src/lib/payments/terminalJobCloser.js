@@ -114,8 +114,73 @@ export function watchTerminalJob(jobId) {
   };
 }
 
-export function isWatchedHere(jobId) {
-  return !!jobId && _watched.has(String(jobId));
+// 30 Sep 2026: THE CHECKOUT WATCHES ITS CHECK BEFORE ANY JOB EXISTS. PaxTerminal's mark above only
+// goes on when the card screen mounts, and until kickRace.js that was after the whole tender. In the
+// gap this till's own reconciler booked the sale in the background 0.1 s after approval (48 sales,
+// 25 to 30 Sep, and the R5737/R5739 double charge at Huddersfield). CheckoutModal now marks its check
+// id watched at the START of startTerminalJob, before the gift commit and the create call, and
+// releases it on unmount. Same counted mark, keyed on closed_check_id, which the job row carries.
+const _watchedChecks = new Map();
+
+/** Mark a check watched by this device's checkout. Returns the function that unmarks it. */
+export function watchCheckout(closedCheckId) {
+  if (!closedCheckId) return () => {};
+  const id = String(closedCheckId);
+  _watchedChecks.set(id, (_watchedChecks.get(id) || 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const n = (_watchedChecks.get(id) || 0) - 1;
+    if (n > 0) _watchedChecks.set(id, n); else _watchedChecks.delete(id);
+  };
+}
+
+/** Is this device's checkout watching the job (by job id, or by the check it belongs to)? */
+export function isWatchedHere(jobId, closedCheckId = null) {
+  if (jobId && _watched.has(String(jobId))) return true;
+  return !!closedCheckId && _watchedChecks.has(String(closedCheckId));
+}
+
+// ── Adopting a sale booked after the checkout closed ────────────────────────
+// 30 Sep 2026, Huddersfield: staff closed the checkout during a slow tender, the reader approved,
+// this till's reconciler booked R5737 in the background, and the cart stayed on screen with no
+// kitchen ticket, so it was rung again. When THIS till books ITS OWN unwatched send to terminal
+// job, and the walk in on screen is the very order the job was sent for (the checkout freezes the
+// order ref into the draft and stamps it on the walk in), the cart is cleared and a sticky banner
+// says so. A cart that does not match is never cleared: a different order is a different sale.
+
+/** The sticky banner's words. Peter's wording, no dashes. */
+export function adoptedSaleBanner({ ref, amount }) {
+  return `Card approved after the checkout closed: ${ref} ${amount} is booked. Do not take payment again.`;
+}
+
+/**
+ * @param {object} p
+ * @param {object} p.job          the terminal_jobs row that was booked
+ * @param {object|null} p.booked  what closeApprovedTerminalJob returned ({ booked, created, ref, ... })
+ * @param {string|null} p.myDeviceId
+ * @param {boolean} p.watchedHere the checkout was watching this job when it booked (then it finishes it)
+ * @param {string|null} p.walkInRef  the ref of the walk in order on this till's screen, if any
+ * @param {(minor:number, currency:string) => string} p.fmt  money formatter
+ * @returns {{ clearWalkIn: boolean, banner: string|null }}
+ */
+export function adoptBookedSale({ job, booked, myDeviceId = null, watchedHere = false, walkInRef = null, fmt } = {}) {
+  const none = { clearWalkIn: false, banner: null };
+  if (!booked?.booked || !job) return none;
+  if (watchedHere) return none;                                       // the checkout books and clears it
+  const d = job.check_draft || {};
+  if (d.source !== 'pos_send_to_terminal') return none;               // Pay at table clears its table itself
+  const sender = job.pos_device_id ? String(job.pos_device_id) : null;
+  if (!sender || !myDeviceId || sender !== String(myDeviceId)) return none;   // only the till that sent it
+  const ref = booked.ref || usableOrderRef(d.orderRef) || null;
+  const amount = typeof fmt === 'function'
+    ? fmt(Number(job.charge_minor) || 0, job.currency || 'GBP')
+    : `${((Number(job.charge_minor) || 0) / 100).toFixed(2)}`;
+  const banner = adoptedSaleBanner({ ref: ref || 'The sale', amount });
+  const draftRef = usableOrderRef(d.orderRef);
+  const clearWalkIn = !d.tableId && !!draftRef && !!walkInRef && String(walkInRef) === String(draftRef);
+  return { clearWalkIn, banner };
 }
 
 // ── The ref ─────────────────────────────────────────────────────────────────

@@ -8,10 +8,12 @@ import { closedCheckRow } from './closedCheckRow.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-test('a voided tombstone reaches the row as voided, status void, nothing on it', () => {
-  const row = closedCheckRow({ id: 'void-1', tableId: 't1', items: [{ name: 'Latte', voided: true }], total: 0, subtotal: 0, method: 'void', status: 'void', voided: true, seatedAt: 1786124809674 }, 'loc-1');
+// 30 Sep 2026: the tombstone's status is 'voided', the spelling every report reads. The rows
+// written as 'void' before this load as 'voided' too (lib/voidRules.js normaliseCheckStatus).
+test('a voided tombstone reaches the row as voided, status voided, nothing on it', () => {
+  const row = closedCheckRow({ id: 'void-1', tableId: 't1', items: [{ name: 'Latte', voided: true }], total: 0, subtotal: 0, method: 'void', status: 'voided', voided: true, seatedAt: 1786124809674 }, 'loc-1');
   assert.equal(row.voided, true);
-  assert.equal(row.status, 'void');
+  assert.equal(row.status, 'voided');
   assert.equal(row.method, 'void');
   assert.equal(Number(row.total), 0);
   assert.equal(row.seated_at, new Date(1786124809674).toISOString(), 'the occupation key every device tombstones on');
@@ -21,7 +23,7 @@ test('a voided tombstone reaches the row as voided, status void, nothing on it',
 test('pins: voidCheck writes the tombstone; demo tabs only in mock; a KDS never publishes', () => {
   const store = read('../store/index.js');
   const v = store.slice(store.indexOf('  voidCheck: (tableId, { manager, reason }) => {'), store.indexOf('  // ── Discounts'));
-  assert.match(v, /voided: true, status: 'void', method: 'void',/);
+  assert.match(v, /voided: true, status: 'voided', method: 'void',/);
   assert.match(v, /set\(s => \(\{ closedChecks: \[tomb, \.\.\.\(s\.closedChecks \|\| \[\]\)\] \}\)\);/, 'the tombstone is in memory at once, so this device never republishes');
   assert.match(v, /insertClosedCheck\(tomb\);/);
   assert.match(store, /seedTabs: \(\) => \{ if \(!isMock\) return; set\(\{ tabs:\[/);
