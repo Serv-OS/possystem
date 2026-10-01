@@ -24,7 +24,8 @@ import { getLocationId, supabase, getDeviceMode } from '../lib/supabase';
 import { useStore } from '../store';
 import { fetchApprovedTablePayJobs, getPosDeviceId } from '../lib/payments/terminalJobs';
 import { getLocationProcessor } from '../lib/payments/processor';
-import { closerRole, closeWaitMs, isDue, createSightings, isWatchedHere } from '../lib/payments/terminalJobCloser';
+import { closerRole, closeWaitMs, isDue, createSightings, isWatchedHere, adoptBookedSale } from '../lib/payments/terminalJobCloser';
+import { moneyMinor } from '../lib/currency';
 
 let _timer = null;
 let _adyenWarm = null;
@@ -85,9 +86,25 @@ export async function startTerminalJobReconciler() {
       // Sequential, not parallel: calmer on the DB, and closes are independent.
       for (const job of jobs) {
         const firstSeen = _sightings.see(job.id, now);
-        const wait = closeWaitMs(job, { ...me, watchedHere: isWatchedHere(job.id) });
+        // 30 Sep 2026: watched by job id (the card screen) OR by check id (the checkout, from the
+        // moment it presses Card, before the job row exists). Closes the 0.1 s race that booked
+        // 48 sales in the background while the checkout was about to finish them.
+        const watchedHere = isWatchedHere(job.id, job.closed_check_id);
+        const wait = closeWaitMs(job, { ...me, watchedHere });
         if (!isDue(wait, firstSeen, now)) continue;   // the till that sent it books it first
-        await useStore.getState().closeApprovedTerminalJob(job);
+        const booked = await useStore.getState().closeApprovedTerminalJob(job);
+        // 30 Sep 2026: this till booked its OWN unwatched send to terminal job, so the checkout was
+        // closed during the tender (Huddersfield R5737). If the cart on screen is that very order,
+        // clear it, and say so where staff cannot miss it, so it is never rung again.
+        try {
+          const st = useStore.getState();
+          const walkInRef = st.walkInOrder?.ref || null;
+          const adopt = adoptBookedSale({ job, booked, myDeviceId: me.myDeviceId, watchedHere, walkInRef, fmt: moneyMinor });
+          if (adopt.banner) {
+            if (adopt.clearWalkIn) st.clearWalkIn?.();
+            st.showCardAdoptedBanner?.({ text: adopt.banner, jobId: job.id, ref: booked?.ref || null, at: Date.now() });
+          }
+        } catch (e) { console.warn('[TerminalJobReconciler] adopt:', e?.message || e); }
       }
     } catch (e) {
       console.warn('[TerminalJobReconciler]', e?.message || e);

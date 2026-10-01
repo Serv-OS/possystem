@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.22',
+    date: '1 Oct 2026',
+    items: [
+      "Card payments: the till no longer waits for the whole card payment before showing the card screen. Pressing Card now opens the card screen within 3 seconds (\"Customer is paying on the card machine. Keep this screen open, it finishes by itself.\"), the close button and Cash are hidden while the customer pays, and the till watches the payment from the first second. Before, staff saw Sending… for the whole payment with the close button live; closing it left the sale to book itself in the background with no kitchen ticket, so staff sent it again and the customer could pay twice (Huddersfield 30 Sep, Headingley 1 Oct).",
+      "Card payments: if a card payment is approved after the checkout was closed, the till books it, clears that order and shows a banner: Card approved after the checkout closed: R1234 £11.65 is booked. Do not take payment again.",
+      "Card payments: the server now refuses a second charge of the same order. If the card machine already took that order in the last 10 minutes and the sale was not finished on screen, the till says so in plain words with the sale number, and offers Open the sale, Clear this order, or Different customer, take payment. A same basket paid in the last 5 minutes shows an amber warning on the card screen instead.",
+      "Card payments: while the card machine is still taking a payment for an order sent from this till, the busy message names the amount and time and offers Watch that payment instead of a second send.",
+      "Card payments: a payment approved on the same card for the same amount on another sale within 15 minutes raises an urgent note in the activity feed. The card machine is never asked about a payment in its first 2 minutes, so a slow reader cannot be cancelled by the till's own check.",
+    ],
+  },
+  {
     v: '5.11.21',
     date: '30 Sep 2026',
     items: [

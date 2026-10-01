@@ -6518,7 +6518,7 @@ export const useStore = create((set, get) => ({
       if (!isPendingCheck(job.closed_check_id) && Date.now() - (Number(localClose.closedAt) || 0) > 30000) {
         markJobReconciled(job.id).catch(() => {});
       }
-      return;
+      return { booked: false, alreadyLocal: true };
     }
     const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
@@ -6730,6 +6730,8 @@ export const useStore = create((set, get) => ({
     // NOTHING local, flag it once where a human can see it, and let the next tick retry.
     if (!ok) {
       console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+      // 30 Sep 2026: the caller (TerminalJobReconciler) reads what was booked; nothing was.
+      let bookedResult = { booked: false };
       if (!_closeFailFlagged.has(job.id)) {
         _closeFailFlagged.add(job.id);
         logActivity(record.locationId || d.locationId || null, {
@@ -6739,7 +6741,7 @@ export const useStore = create((set, get) => ({
           refType: 'terminal_job', refId: job.id,
         }).catch(() => {});
       }
-      return;
+      return bookedResult;
     }
 
     // Idempotent on every caller: prepend the tombstone.
@@ -6815,6 +6817,11 @@ export const useStore = create((set, get) => ({
     // reference handle for the check. A stale handle here is what produced
     // "payment reference has already been used" on the NEXT sale sharing the key.
     if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
+    // 30 Sep 2026: tell the caller what was booked. TerminalJobReconciler uses it to adopt a sale
+    // this till booked after its own checkout closed (clear the matching walk in, sticky banner:
+    // lib/payments/terminalJobCloser.js adoptBookedSale). `created` is true for the one elected
+    // writer only; a repeat upsert of the same row books nothing new.
+    return { booked: true, created: !!created, ref: record.ref || null, closedCheckId: record.id, source: record.source || null };
   },
 
   /**
@@ -9007,6 +9014,29 @@ export const useStore = create((set, get) => ({
 
   // ── Toast ─────────────────────────────────
   toast: null,
+  // 30 Sep 2026: STICKY banner for a card sale this till booked after its checkout was closed mid
+  // tender (TerminalJobReconciler + lib/payments/terminalJobCloser.js adoptBookedSale). Not a toast:
+  // it stays until staff dismiss it, because the next thing they were about to do was ring the same
+  // order again (Huddersfield R5737/R5739). { text, jobId, ref, at }.
+  cardAdoptedBanner: null,
+  showCardAdoptedBanner: (b) => set({ cardAdoptedBanner: b ? { ...b, at: b.at || Date.now() } : null }),
+  dismissCardAdoptedBanner: () => set({ cardAdoptedBanner: null }),
+  // 30 Sep 2026: "Open R5737" on the checkout's possible repeat warning. POSSurface switches its
+  // right pane to History and CheckHistory searches for the ref, then clears this. { ref, at }.
+  checkHistoryFocus: null,
+  openCheckHistoryFor: (ref) => set({ checkHistoryFocus: ref ? { ref: String(ref), at: Date.now() } : null }),
+  // 30 Sep 2026: the checkout froze an order ref into the card machine job (getOrderRef); give it to
+  // the walk in NOW, at the first send, not only at close (recordWalkInClosed does the same stamp
+  // there). The kitchen send reuses an existing ref (order.ref || getNextOrderRefLocal), so the
+  // ticket shows the same number, and a sale booked after the checkout closed can be matched to the
+  // cart on screen by this ref. Only ever fills an EMPTY ref; a walk in that already went to the
+  // kitchen keeps the number its ticket shows.
+  freezeWalkInRef: (ref) => {
+    const r = usableOrderRef(ref);
+    const w = get().walkInOrder;
+    if (!r || !w || w.ref) return;
+    set({ walkInOrder: { ...w, ref: r } });
+  },
   theme: localStorage.getItem('rpos-theme') || 'dark',
   setTheme: (t) => {
     localStorage.setItem('rpos-theme', t);

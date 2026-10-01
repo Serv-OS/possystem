@@ -33,7 +33,8 @@ import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
   fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
-import { checkoutOrderRef } from '../lib/payments/terminalJobCloser';
+import { checkoutOrderRef, watchCheckout } from '../lib/payments/terminalJobCloser';
+import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
 import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
@@ -1430,6 +1431,35 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [paxJob, setPaxJob] = useState(null);
   const [paxError, setPaxError] = useState('');
   const [paxBusy, setPaxBusy] = useState(false);
+  // 30 Sep 2026: the till's own Adyen 'start' kick still running when the send returned (a promise
+  // of its outcome, lib/payments/kickRace.js), handed to PaxTerminal so it can show a late refusal
+  // and hold its reader auto check until the kick settles. null = the kick answered in time.
+  const [paxKick, setPaxKick] = useState(null);
+  // 30 Sep 2026: the card screen was mounted on a live job THIS checkout did not send ("Watch that
+  // payment"). Nobody here hears that tender end, so PaxTerminal treats it like an open kick.
+  const [paxAdopted, setPaxAdopted] = useState(false);
+  // 30 Sep 2026: terminal-job-create's same_basket advisory (repeat_warning) for the job on screen.
+  const [paxAdvisory, setPaxAdvisory] = useState(null);
+  // 30 Sep 2026: THE SERVER'S DOUBLE CHARGE NET (terminal-job-create § 3e, _shared/repeatCharge.js).
+  //   repeatWarn  a 409 POSSIBLE_REPEAT: this till or reader took a payment for these items minutes
+  //               ago (R5737 booked in the background, then rung again). Shown as a dialog with
+  //               Open <ref>, Clear this order and Different customer, take payment.
+  //   busyOffer   a 409 TERMINAL_BUSY whose detail says THIS till sent the live job: offer to watch
+  //               that payment instead of sending another (mounts the card screen on that job, so
+  //               its approval is booked under the job's own check id and order ref).
+  //   repeatOkRef the job staff confirmed as a different customer, sent once as repeat_ok_job_id.
+  const [repeatWarn, setRepeatWarn] = useState(null);
+  const [busyOffer, setBusyOffer] = useState(null);
+  const repeatOkRef = useRef(null);
+  const takeRepeatOk = () => { const id = repeatOkRef.current; repeatOkRef.current = null; return id; };
+  // 30 Sep 2026: THIS CHECKOUT WATCHES ITS CHECK FROM THE MOMENT CARD IS PRESSED. The mark (by
+  // closed_check_id, lib/payments/terminalJobCloser.js watchCheckout) tells this till's
+  // TerminalJobReconciler to leave the booking to this screen, which books the full record.
+  // PaxTerminal's own mark (by job id) only goes on when the card screen mounts, and the reconciler
+  // booked 48 sales in the gap, 0.1 s after approval. Released on unmount, so closing the checkout
+  // still lets the reconciler book an approved sale at once (and adopt it, see the banner).
+  const checkWatchRef = useRef(null);
+  useEffect(() => () => { checkWatchRef.current?.off?.(); checkWatchRef.current = null; }, []);
   // v5.5.862: ONE check id per checkout, minted on the first send and held for the
   // life of this modal. It does two jobs: (a) it is the pre-minted closed_check_id
   // (was re-minted `chk-${Date.now()}` on EVERY press, breaking idempotent retry),
@@ -1985,9 +2015,31 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   //               gift card already paid — the customer pays twice, then charges back.
   //   charge    = server-computed as due + tip, inside terminal_commit_tip. The POS
   //               never sends a charge figure at all.
+  // 30 Sep 2026: watch this checkout's check (lib/payments/terminalJobCloser.js watchCheckout) so no
+  // reconciler tick on this till books the sale behind this screen. Called FIRST in startTerminalJob,
+  // before the link gate, the gift commit and the create call. Re-keyed if the check id was re-minted
+  // (a gift reversal retires it); the previous mark is released. One live mark per checkout.
+  const watchThisCheck = () => {
+    const watchId = getCheckId();
+    if (checkWatchRef.current?.id === watchId) return;
+    checkWatchRef.current?.off?.();
+    checkWatchRef.current = { id: watchId, off: watchCheckout(watchId) };
+  };
+
+  // 30 Sep 2026: may this checkout mount its card screen on the live job the server named?
+  // Only a counter sale this till sent for the same amount (the money the reader is taking is
+  // this bill), with no gift card staged here (that gift was not debited for that job).
+  const canWatchBusyJob = (detail) => !!detail?.adoptable && !!detail?.job_id && !!detail?.closed_check_id
+    && !tableId && !isBarTab && !paxGiftRef.current
+    && Number(detail.due_minor) === toMinor(grand);
+
+  // Clears the last answer (error, repeat dialog, busy offer) and marks the send as out.
+  const resetCardStart = () => { setPaxError(''); setPaxBusy(true); setRepeatWarn(null); setBusyOffer(null); setPaxAdopted(false); setPaxAdvisory(null); };
+
   const startTerminalJob = async () => {
-    setPaxError(''); setPaxBusy(true);
+    resetCardStart();
     try {
+      watchThisCheck();   // 30 Sep 2026: watched before the gate, the gift commit and the create
       // Database fence stage 1, fix round 2: a till that is not linked never sends a card job
       // (and never debits a staged gift card for one). Nothing is charged; the reason is shown.
       const linkGate = await confirmLinkBeforeCard();
@@ -1999,6 +2051,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // a per-sale leg so they never share a key with a previous customer.
       const checkId = getCheckId();
       const orderRef = getOrderRef();   // 28 Sep 2026: frozen into the draft below
+      // 30 Sep 2026: and onto the walk in on screen, so a sale booked after this checkout closed
+      // can be matched to the cart (TerminalJobReconciler adopts it and clears the cart). Fills an
+      // EMPTY ref only; a cart already sent to the kitchen keeps its ticket's number.
+      if (!tableId && !isBarTab) useStore.getState().freezeWalkInRef?.(orderRef);
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
         leg: tableId ? undefined : checkId,
@@ -2038,10 +2094,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         paxGiftRef.current = paxGiftRecord;
       }
 
-      const { job, kickError, serverKick } = await dispatchTerminalJob({
+      const { job, kickError, serverKick, kickPending, kick, repeatWarning } = await dispatchTerminalJob({
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
+        // 30 Sep 2026: wait 3 s for the Adyen 'start' kick to answer, not the whole tender. The
+        // send used to return only when the customer had finished paying, so this screen showed
+        // "Sending…" with × and Cash live for the entire payment and watched nothing (Huddersfield
+        // R5737/R5739, charged twice). Past 3 s the card screen mounts with the kick still running.
+        kickWaitMs: KICK_WAIT_MS,
+        // 30 Sep 2026: the job staff confirmed as a different customer (see repeatOkRef), or null.
+        // Read and forgotten here, so the ack rides on THIS send only.
+        repeatOkJobId: takeRepeatOk(),
         // v5.8.19: tip % on the food and drink after discounts. billDue carried
         // the service charge, delivery and tax, so "15%" on a 12.5% service table
         // was 15% of subtotal + service + VAT.
@@ -2154,6 +2218,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         },
       });
       setPaxJob(job);
+      setPaxKick(kickPending && kick ? kick : null);
+      setPaxAdvisory(repeatWarning || null);
       // v5.6.86 — if the charge never reached the reader, SAY SO. This used to be
       // a swallowed console.warn, so the till happily showed "present the card"
       // over a terminal that had been told nothing (live 19 Aug: two jobs stuck
@@ -2168,11 +2234,74 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         : `Could not reach the card machine: ${kickError}`);
       setScreen('pax_terminal');
     } catch (e) {
-      setPaxError(e?.message || 'Could not send the payment to the card machine.');
+      // 30 Sep 2026: the server's double charge net (terminal-job-create § 3e). A POSSIBLE_REPEAT
+      // becomes the dialog below; a TERMINAL_BUSY whose live job THIS till sent (adoptable, same
+      // counter sale, same amount, no gift staged on this checkout) offers "Watch that payment".
+      const detail = e?.detail && typeof e.detail === 'object' ? e.detail : null;
+      if (e?.code === 'POSSIBLE_REPEAT' && detail?.job_id) {
+        setRepeatWarn({ ...detail, message: e.message || 'This payment may already have been taken. Do not charge again.' });
+      } else if (e?.code === 'TERMINAL_BUSY') {
+        setPaxError(e?.message || 'The card machine is still taking a payment.');
+        if (canWatchBusyJob(detail)) setBusyOffer(detail);
+      } else {
+        setPaxError(e?.message || 'Could not send the payment to the card machine.');
+      }
     } finally {
       setPaxBusy(false);
     }
   };
+
+  // 30 Sep 2026: WATCH THAT PAYMENT. Take over the job's check id and WATCH IT FIRST, then re-read
+  // the live job, take its order ref (so complete() books under the job's own id, the same id the
+  // reconciler would use) and show the card screen on it. Nothing is sent to the reader.
+  // Review 30 Sep: the watch used to come after the read. The reader can approve between the
+  // TERMINAL_BUSY refusal and the tap; with the job unwatched on this till the reconciler booked
+  // it on its next tick while this screen mounted on an approved row and complete() booked the
+  // same check id from a cart the reconciler had just cleared. Now the reconciler waits 30 s from
+  // the moment this is pressed, and a job already approved is NOT mounted: one writer, the
+  // reconciler, with its banner. On any failure the checkout's own check id comes back.
+  const watchBusyPayment = async (detail) => {
+    setPaxBusy(true); setPaxError('');
+    const ownCheckId = checkIdRef.current;
+    const ownOrderRef = orderRefRef.current;
+    const giveBack = () => { checkIdRef.current = ownCheckId; orderRefRef.current = ownOrderRef; watchThisCheck(); };
+    checkIdRef.current = detail.closed_check_id;
+    watchThisCheck();
+    try {
+      const job = (await fetchJobs([detail.job_id]))?.[0] || null;
+      if (!job?.id || !job.closed_check_id) throw new Error('Could not read that payment. Check the card machine.');
+      if (['declined', 'cancelled', 'expired'].includes(job.status)) {
+        setBusyOffer(null);
+        throw new Error(`That payment ended (${job.status}). No card was charged, take payment again.`);
+      }
+      if (job.status === 'unknown') throw new Error('That payment needs a manager to check it in Back Office before anything else is taken.');
+      if (job.status === 'approved' || job.status === 'reconciled') {
+        // Approved before the tap. The reconciler books it (it is this till's own job) and shows
+        // the sticky banner; this checkout closes so there is exactly one writer.
+        const ref = job.check_draft?.orderRef || detail.order_ref || detail.ref || null;
+        useStore.getState().showToast?.(`That payment was approved and is being booked${ref ? ` as ${ref}` : ''}. Do not take payment again.`, 'info', 8000);
+        setBusyOffer(null);
+        onClose?.();
+        return;
+      }
+      checkIdRef.current = job.closed_check_id;
+      const jobRef = job.check_draft?.orderRef;
+      if (jobRef) orderRefRef.current = jobRef;
+      watchThisCheck();
+      setBusyOffer(null); setPaxJob(job); setPaxKick(null); setPaxAdopted(true); setPaxAdvisory(null); setScreen('pax_terminal');
+    } catch (e) {
+      giveBack();
+      setPaxError(e?.message || 'Could not read that payment.');
+    } finally {
+      setPaxBusy(false);
+    }
+  };
+  // The three answers to the possible repeat dialog. Nothing was sent to the reader, so a gift
+  // card debited at dispatch for this send goes back on the card before the checkout closes
+  // (the same reversal the card screen's Back uses).
+  const openPriorCheck = (ref) => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().openCheckHistoryFor?.(ref); onClose?.(); };
+  const clearRepeatedOrder = () => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().clearWalkIn?.(); onClose?.(); };
+  const takePaymentAnyway = (jobId) => { repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob(); };
 
   const handleCardPress = () => {
     // TRAINING MODE — first, before anything else. A job row would dispatch a
@@ -2300,10 +2429,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 had already walked away from — the job stays live, the customer can still
                 tap, and nothing on the POS is listening for the result. Both screens are
                 now treated identically: the in-screen Cancel is the only way out. */}
-            {screen!=='review' && screen!=='card_terminal' && screen!=='pax_terminal' && (
+            {/* 30 Sep 2026: and not while the send itself is out (paxBusy). Between the press and
+                the card screen the job may already be on the reader; × here left the tender live
+                with nothing watching it (Huddersfield R5737). */}
+            {screen!=='review' && screen!=='card_terminal' && screen!=='pax_terminal' && !paxBusy && (
               <button className="btn btn-ghost btn-sm" onClick={()=>setScreen('review')}>← Back</button>
             )}
-            {screen!=='card_terminal' && screen!=='pax_terminal' && (
+            {screen!=='card_terminal' && screen!=='pax_terminal' && !paxBusy && (
               <button onClick={onClose} style={{ width:32, height:32, borderRadius:9, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:18, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
             )}
           </div>
@@ -2320,8 +2452,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           {/* ══ REVIEW ══════════════════════════════════════════════ */}
           {screen==='review' && (
             <>
-              {/* Scrolling region: bill items (+ loyalty banner) */}
-              <div style={{ flex:'1 1 auto', minHeight:0, overflowY:'auto' }}>
+              {/* Scrolling region: bill items (+ loyalty banner).
+                  30 Sep 2026: locked while the send is out (paxBusy): no gift, promo, reward or
+                  discount change can alter a bill the reader may already be charging. */}
+              <div style={{ flex:'1 1 auto', minHeight:0, overflowY:'auto', pointerEvents: paxBusy ? 'none' : undefined, opacity: paxBusy ? .6 : 1 }}>
               {/* Bill items — grouped by course */}
               <div style={{ marginBottom:16, borderRadius:14, border:'1px solid var(--bdr)', overflow:'hidden' }}>
                 {courseNums.map(cNum => (
@@ -2511,13 +2645,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     {/* v5.5.902: removable — the card has not been debited yet, so taking it
                         off costs the customer nothing (before, the money had already gone). */}
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button disabled={paxBusy} onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(giftCredit)}</span>
                   </div>
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${money(promoCredit)}` : '✓'}</span>
                   </div>
                 )}
@@ -2561,11 +2695,43 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               {/* ── Primary payment buttons ── */}
               {/* v5.5.837: a failed dispatch to the card machine must be LOUD. Silently
                   falling back to another path is how the same bill gets taken twice. */}
+              {/* 30 Sep 2026: POSSIBLE REPEAT. The server (terminal-job-create § 3e) found a payment this
+                  till or reader took for these items minutes ago. Nothing was sent to the reader. Three
+                  ways out, all explicit; the send only goes again with the job named in repeat_ok_job_id. */}
+              {repeatWarn && (
+                <div style={{
+                  marginBottom:10, padding:'12px 14px', borderRadius:12, fontSize:13, lineHeight:1.5,
+                  background:'var(--red-d)', color:'var(--t1)', border:'1.5px solid var(--red-b)',
+                }}>
+                  <div style={{ fontWeight:800, color:'var(--red)', marginBottom:4 }}>Already paid?</div>
+                  <div style={{ marginBottom:10 }}>{repeatWarn.message}</div>
+                  {repeatWarn.items && <div style={{ fontSize:12, color:'var(--t3)', marginBottom:10 }}>{repeatWarn.items}</div>}
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    {repeatWarn.ref && (
+                      <button className="btn btn-sm" onClick={()=>openPriorCheck(repeatWarn.ref)} style={{ fontWeight:700 }}>Open {repeatWarn.ref}</button>
+                    )}
+                    {!tableId && !isBarTab && (
+                      <button className="btn btn-sm" onClick={clearRepeatedOrder}>Clear this order</button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" onClick={()=>takePaymentAnyway(repeatWarn.job_id)}>Different customer, take payment</button>
+                  </div>
+                </div>
+              )}
               {paxError && (
                 <div style={{
                   marginBottom:10, padding:'10px 12px', borderRadius:10, fontSize:12, lineHeight:1.5,
                   background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)',
-                }}>{paxError}</div>
+                }}>
+                  {paxError}
+                  {/* 30 Sep 2026: the live job is THIS till's own (adoptable): watch it instead of
+                      sending another. The alternative is to cancel it on the card machine first. */}
+                  {busyOffer && (
+                    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginTop:8 }}>
+                      <button className="btn btn-sm" disabled={paxBusy} onClick={()=>watchBusyPayment(busyOffer)} style={{ fontWeight:700 }}>Watch that payment</button>
+                      <span style={{ color:'var(--t3)' }}>Or cancel it on the card machine first.</span>
+                    </div>
+                  )}
+                </div>
               )}
               {/* v5.7.21 — the booking credit covers the whole bill: nothing left for
                   cash or card, so offer the one honest close. The tender legs and the
@@ -2592,7 +2758,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
                     <span style={{ fontSize:compact?17:20 }}>💳</span>
                     <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>
-                      {paxBusy ? 'Sending…' : 'Card'}
+                      {paxBusy ? 'Sending to the card machine…' : 'Card'}
                     </span>
                   </div>
                   {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first.
@@ -2605,7 +2771,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   }</div>
                 </button>
 
-                {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
+                {/* 30 Sep 2026: no Cash while the card send is out; a second tender on a bill the reader
+                    may be taking is how a customer pays twice. */}
+                {_canTakeCash && !paxBusy && <button onClick={()=>setScreen('cash')} style={{
                   flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--cash-bg)', border:`1.5px solid var(--cash-border)`,
                   display:'flex', flexDirection:'column', alignItems:'center', gap:3,
@@ -2623,7 +2791,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
               {/* v5.5.793: Gift card (v5.5.505: also accepts promo codes) + Split — side by side to save vertical space */}
               <div style={{ display:'flex', gap:10 }}>
-                <button onClick={()=>setScreen('gift_card')} style={{
+                <button disabled={paxBusy} onClick={()=>setScreen('gift_card')} style={{
                   flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
@@ -2649,7 +2817,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     splitting a part-paid table would re-charge money already taken. The
                     till takes the remainder in one tender instead (any method), or the
                     party finishes on the reader. Disabled rather than silently wrong. */}
-                <button disabled={splitWithReader || splitWithBookingCredit} onClick={()=>{
+                <button disabled={paxBusy || splitWithReader || splitWithBookingCredit} onClick={()=>{
                   if (giftRef.current) {
                     applyGift(null);
                     try { useStore.getState().showToast?.('Gift card removed — apply it to a split portion instead.', 'info'); } catch {}
@@ -2743,6 +2911,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             <PaxTerminal
               job={paxJob}
               terminalLabel={paxTarget?.label || null}
+              // 30 Sep 2026: this till's own kick, still out (lib/payments/kickRace.js), or null.
+              kickPending={!!paxKick || paxAdopted}
+              kick={paxKick}
+              advisory={paxAdvisory}
               onComplete={async (pi)=>{
                 // Derive BOTH legs from the job's integers — tip_minor and
                 // charge_minor — so the recorded tip and the refundable leg are
@@ -2786,7 +2958,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               // one retry staff get if the reversal above failed on a network blip.
               onBack={()=>{
                 reverseDispatchedGift('Card machine payment abandoned');
-                setPaxJob(null); setScreen('review');
+                setPaxJob(null); setPaxKick(null); setScreen('review');
               }}
             />
           )}

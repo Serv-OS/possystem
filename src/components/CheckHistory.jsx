@@ -779,6 +779,22 @@ export default function CheckHistory(){
 
   const selectedCheck=closedChecks.find(c=>c.id===selected);
 
+  // 30 Sep 2026: "Open R5737" from the checkout's possible repeat warning (store.openCheckHistoryFor).
+  // Search that ref on today's checks, open it when it is here, then clear the focus so the next
+  // visit to History starts clean. The check may not be on this till yet (booked by another
+  // device, realtime still catching up): the search stays so staff see it land.
+  const checkHistoryFocus=useStore(s=>s.checkHistoryFocus);
+  useEffect(()=>{
+    const ref=checkHistoryFocus?.ref;
+    if(!ref)return;
+    setDateFilter('today');
+    setSearch(ref);
+    const hit=closedChecks.find(c=>c.ref===ref);
+    if(hit)setSelected(hit.id);
+    useStore.getState().openCheckHistoryFor?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[checkHistoryFocus]);
+
   // v5.7.8 - reconciler-closed checks can hold a live tip window whose leg
   // stamping never landed (no capture flag on the card leg), so TipWindowCard
   // renders nothing. On opening a check detail, let the store re-read the
