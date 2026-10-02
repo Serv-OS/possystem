@@ -10,6 +10,10 @@
 //   VAT and accounts  the daily sales invoice setup per site (xero/SiteSetup.jsx); called "Tax
 //                     and accounts" where tax is added on top of prices (US)
 //   Postings          one row per site per day, with exactly what was sent (xero/PostingsHistory.jsx)
+// 2 Oct 2026: a day that answers "Already pushed" and is in Xero as bank transactions (the old
+// way), at a site that now posts sales invoices, offers "Replace with a daily sales invoice"
+// (xero/ReplaceDay.jsx). Peter at Leeds: "these are supposed to be invoices, I cannot find the
+// invoice at all".
 
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
@@ -17,6 +21,8 @@ import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions,
 import { money } from '../../lib/currency';
 import { migrateTaxMapping } from '../../../supabase/functions/_shared/xeroTax.js';
 import { mappingHash, setupTabName } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
+import { offerForAnswer, answerAfterFailure, OLD_REMOVED } from '../../../supabase/functions/_shared/xeroReplacePlan.js';
+import ReplaceDay from './xero/ReplaceDay';
 import SiteSetup from './xero/SiteSetup';
 import PostingsHistory from './xero/PostingsHistory';
 import InvoicePreview from './xero/InvoicePreview';
@@ -204,6 +210,8 @@ export default function XeroIntegration() {
   const [syncResult, setSyncResult] = useState(null);
   const [syncErr, setSyncErr] = useState('');
   const [refused, setRefused] = useState([]);   // rates the last push or check was refused for
+  const [refusedDay, setRefusedDay] = useState(null);   // a day part way through a replace: a push it refused, or a replace that stopped
+  const [startDate, setStartDate] = useState(null);     // the site's first invoice day
   const [autoDaily, setAutoDaily] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoErr, setAutoErr] = useState('');
@@ -227,6 +235,7 @@ export default function XeroIntegration() {
         setSiblings(m.siblings || []);
         setTenantName(m.tenantName || '');
         setPostMode(m.postMode || 'bank_tx');
+        setStartDate(m.mapping?.invoiceStartDate || null);
         setLapsed(figuresLapsed(m.postMode, m.mapping));
         setAddedOnTax(!!m.addedOnTax);
         // The server's figure; the fallback (venue clock unreadable) is only a starting point,
@@ -242,6 +251,7 @@ export default function XeroIntegration() {
     try {
       const m = await xeroGetMapping(locId);
       setPostMode(m.postMode || 'bank_tx'); setSiblings(m.siblings || []); setAutoDaily(!!m.autoDaily);
+      setStartDate(m.mapping?.invoiceStartDate || null);
       setLapsed(figuresLapsed(m.postMode, m.mapping));
     } catch { /* the next load shows it */ }
   }, [locId]);
@@ -277,16 +287,28 @@ export default function XeroIntegration() {
 
   const syncSales = async (dryRun = false) => {
     if (!locId || !syncDate) return;
-    setSyncing(dryRun ? 'preview' : 'push'); setSyncErr(''); setSyncResult(null);
+    setSyncing(dryRun ? 'preview' : 'push'); setSyncErr(''); setSyncResult(null); setRefusedDay(null);
     try { const r = await xeroSyncSales(locId, syncDate, dryRun ? { dryRun: true } : {}); setSyncResult(r); setRefused(r?.blocked || []); }
     catch (e) {
       const why = (e.notReady || []).map((n) => n.message).join(' ');
       setSyncErr(`${e.message || 'Sync failed'}${why && !String(e.message || '').includes(why) ? ` ${why}` : ''}`); setRefused(e.blocked || []);
+      // A day part way through being replaced refuses a push and offers to finish the replace.
+      if (e.replace) setRefusedDay({ model: 'bank_tx', date: e.date || syncDate, replace: e.replace });
     }
     finally { setSyncing(false); }
   };
   const cur = syncResult?.currency || venue?.currency;
   const tabName = setupTabName(addedOnTax);
+  // The day just asked about, when it is in Xero the old way: can it become a sales invoice?
+  const oldDay = syncResult?.ok && syncResult.already ? syncResult : refusedDay;
+  const offer = offerForAnswer(oldDay, { postMode, startDate });
+  // 2 Oct 2026 review: a replace that removed old entries and then failed (the invoice not sent,
+  // or only some removed) left "Already pushed" and the old lines on screen, with links to
+  // transactions Xero had deleted. They come down; the replace panel stays open with what to do.
+  const replaceFailed = (e) => {
+    const next = answerAfterFailure(oldDay, e);
+    if (next) { setRefusedDay(next); setSyncResult(null); }
+  };
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!locId) return <div style={S.empty}>Pick a location to connect Xero.</div>;
@@ -360,12 +382,21 @@ export default function XeroIntegration() {
             )}
             {syncErr && <div style={S.banner(false)}>{syncErr}</div>}
             {syncResult?.ok && syncResult.already && <div style={{ ...S.banner(true), marginTop: 12 }}>✓ Already pushed for {syncResult.date}.</div>}
+            {offer.show !== 'none' && (
+              <div style={{ marginTop: 12, marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: 'rgba(80,120,200,.12)', border: '1px solid rgba(80,120,200,.3)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', lineHeight: 1.5 }}>{offer.text}</div>
+                {offer.show === 'button' && (
+                  <ReplaceDay key={oldDay.date} locId={locId} date={oldDay.date} currency={cur} resume={offer.resume} style={{ marginTop: 10 }}
+                    onDone={(r) => { setSyncErr(''); setRefusedDay(null); setSyncResult(r); }} onFail={replaceFailed} />
+                )}
+              </div>
+            )}
             {syncResult?.ok && syncResult.empty && <div style={{ ...S.banner(true), marginTop: 12 }}>No sales or refunds on {syncResult.date}. Nothing to post.</div>}
             {syncResult?.ok && !syncResult.empty && syncResult.model === 'sales_invoice' && (
               <div style={{ marginTop: 12 }}>
                 {!syncResult.already && (
                   <div style={{ ...S.banner(true), marginBottom: 8 }}>
-                    {syncResult.dryRun ? `Sales invoice figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Posted ${syncResult.date} to Xero as a sales invoice.`}
+                    {syncResult.dryRun ? `Sales invoice figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Posted ${syncResult.date} to Xero as a sales invoice.${syncResult.replaced ? ` ${OLD_REMOVED}` : ''}`}
                   </div>
                 )}
                 {(syncResult.documents || []).map((d) => (
@@ -444,7 +475,7 @@ export default function XeroIntegration() {
         </>
         )}
         {tab === 'setup' && <SiteSetup locId={locId} venue={venue} siblings={siblings} postMode={postMode} onModeChange={refreshMode} />}
-        {tab === 'postings' && <PostingsHistory locId={locId} hasSiblings={siblings.length > 0} currency={venue?.currency} />}
+        {tab === 'postings' && <PostingsHistory locId={locId} hasSiblings={siblings.length > 0} currency={venue?.currency} postMode={postMode} startDate={startDate} />}
         </>
       ) : (
         <div style={S.card}>
