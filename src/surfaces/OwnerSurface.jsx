@@ -6,16 +6,33 @@
 // today's sales vs forecast, labour %, live orders/tables, WTD vs last week and
 // today's top items. All figures come from the owner-snapshot edge fn in one
 // round trip. Read-only by design.
+//
+// 2 Oct 2026, Peter: "On the owner app I want to be able to have quick filters for
+// today, this week, this month." Three chips under the header choose the period for
+// the group card and every venue card; the phone remembers the last one. Today is
+// the default and reads the same fields as before. The words and the fallback for a
+// function from before the filters are in src/lib/ownerPeriod.js.
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { withTimeout, TimeoutError } from '../lib/withTimeout';
+import {
+  PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod, shownPeriod,
+  venueView, rollupView, likeForLikeNote, rangeLabel, sharedRange, signedPct,
+} from '../lib/ownerPeriod';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
 const LOAD_TIMEOUT_MS = 15000;
+/** This month reads two months of checks for every venue, so it is given longer to answer. */
+const MONTH_LOAD_TIMEOUT_MS = 30000;
+/** The screen refreshes itself every two minutes; a month is a heavier read, so every ten. */
+const REFRESH_MS = 120000;
+const MONTH_REFRESH_MS = 600000;
+// Private browsing can throw on the very mention of localStorage.
+const phoneStorage = () => { try { return window.localStorage; } catch { return null; } };
 
 const money = (n, currency = 'GBP', dp = 0) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -163,8 +180,15 @@ function Dashboard({ email, theme, onToggleTheme }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [updated, setUpdated] = useState('');
+  // The chip. `period` is what the owner asked for; what the cards SAY always comes from the
+  // answer itself (shownPeriod), so numbers and labels can never be for different periods.
+  const [period, setPeriod] = useState(() => readStoredPeriod(phoneStorage()));
+  const [needsUpdate, setNeedsUpdate] = useState(false);
+  // Chips can be tapped faster than answers come back: only the latest request is shown.
+  const seq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (want) => {
+    const mine = ++seq.current;
     // 27 Sep 2026: tapping refresh looked like it did nothing at all. On a phone that has
     // been asleep the call can hang for good (a stalled auth lock or a socket the OS
     // dropped), and nothing here ever finished: no new time, no error, no spinner. So the
@@ -173,22 +197,53 @@ function Dashboard({ email, theme, onToggleTheme }) {
     setErr(''); setBusy(true);
     try {
       const { data: d, error } = await withTimeout(
-        supabase.functions.invoke('owner-snapshot', { body: {} }), LOAD_TIMEOUT_MS, 'Owner snapshot');
+        supabase.functions.invoke('owner-snapshot', { body: { period: want } }),
+        want === 'month' ? MONTH_LOAD_TIMEOUT_MS : LOAD_TIMEOUT_MS, 'Owner snapshot');
       if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
       if (d?.error) throw new Error(d.error);
+      if (mine !== seq.current) return;
       setData(d);
       setUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+      // A function from before the filters answers a week or a month with today's numbers and
+      // no echo. They are shown as today's, the chip goes back to Today, and one line says why.
+      if (shownPeriod(d, want).needsUpdate) {
+        setNeedsUpdate(true);
+        setPeriod('today');
+        storePeriod(phoneStorage(), 'today');
+      }
     } catch (e) {
+      if (mine !== seq.current) return;
       setErr(e instanceof TimeoutError
         ? 'Could not reach ServOS. Tap the arrow to try again, or close and reopen the app.'
         : (e.message || 'Could not load'));
     }
-    finally { setBusy(false); setLoading(false); }
+    finally { if (mine === seq.current) { setBusy(false); setLoading(false); } }
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 120000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    load(period);
+    const t = setInterval(() => load(period), period === 'month' ? MONTH_REFRESH_MS : REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load, period]);
+
+  const pick = useCallback((id) => {
+    setNeedsUpdate(false);
+    storePeriod(phoneStorage(), id);
+    if (id === period) load(id); else setPeriod(id);
+  }, [load, period]);
 
   const r = data?.rollup;
   const multi = (data?.locations?.length || 0) > 1;
+  // The period the numbers on screen are for (the function's own word, never the chip's).
+  const shown = shownPeriod(data, period).period;
+  const copy = PERIOD_COPY[shown];
+  const rv = rollupView(r, shown);
+  const dates = shown === 'today' ? null : sharedRange(data?.locations);
+  const heading = [copy.heading, multi ? `${r?.locations} venues` : '', rangeLabel(dates)].filter(Boolean).join(' · ');
+  // The numbers on screen are for another period than the lit chip: they stay, dimmed, under
+  // their own labels, until an answer for the chip lands. NOT only while the call is running:
+  // a This month call that failed left Today's figures at full brightness under a lit
+  // This month chip, with only the red line to say they were not the month's.
+  const waiting = !!data && shown !== period;
 
   return (
     <>
@@ -202,11 +257,20 @@ function Dashboard({ email, theme, onToggleTheme }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <ThemeBtn theme={theme} onClick={onToggleTheme} />
-          <button onClick={load} disabled={busy} title="Refresh" aria-busy={busy}
+          <button onClick={() => load(period)} disabled={busy} title="Refresh" aria-busy={busy}
             style={{ ...iconBtn, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>{busy ? '⋯' : '↻'}</button>
           <button onClick={() => supabase.auth.signOut()} title="Sign out" style={iconBtn}>⎋</button>
         </div>
       </div>
+
+      {/* ── Quick filters: the period for the group card and every venue card ── */}
+      <div role="group" aria-label="Period" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 14 }}>
+        {PERIOD_CHIPS.map((c) => (
+          <button key={c.id} onClick={() => pick(c.id)} aria-pressed={period === c.id}
+            style={{ ...periodChip, ...(period === c.id ? periodChipOn : null) }}>{c.label}</button>
+        ))}
+      </div>
+      {needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-4px 0 12px' }}>{NEEDS_UPDATE}</div>}
 
       {loading && !data && <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '60px 0' }}>Loading your business…</div>}
       {err && <div style={{ color: 'var(--red)', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>{err}</div>}
@@ -215,33 +279,35 @@ function Dashboard({ email, theme, onToggleTheme }) {
         <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '50px 16px', fontSize: 14 }}>No locations are linked to your account yet.</div>
       )}
 
-      {/* ── Rollup (all venues today) ── */}
-      {r && data.locations.length > 0 && (
-        <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16 }}>
-          <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{multi ? `Today · ${r.locations} venues` : 'Today'}</div>
-          <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(r.net_sales, data.locations[0]?.currency)}</div>
-          {r.forecast > 0 && (
-            <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(r.forecast_pct) }}>
-              {r.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(r.forecast, data.locations[0]?.currency)})</span>
+      <div style={{ opacity: waiting ? 0.5 : 1, transition: 'opacity .15s' }}>
+        {/* ── Rollup (all venues, the period shown) ── */}
+        {r && data.locations.length > 0 && (
+          <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{heading}</div>
+            <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rv.net_sales, data.locations[0]?.currency)}</div>
+            {rv.forecast > 0 && (
+              <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
+                {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, data.locations[0]?.currency)})</span>
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
+              <Mini label="Orders" value={rv.orders} />
+              <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '—'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
+              <Mini label="Live now" value={rv.live_orders} />
+              <Mini label="On floor" value={rv.open_tables} />
             </div>
-          )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
-            <Mini label="Orders" value={r.orders} />
-            <Mini label="Labour" value={r.labour_pct != null ? `${r.labour_pct}%` : '—'} tone={r.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
-            <Mini label="Live now" value={r.live_orders} />
-            <Mini label="On floor" value={r.open_tables} />
+            {rv.vs_pct != null && (
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
+                {shown === 'today' ? 'Week to date' : copy.before} {money(rv.before, data.locations[0]?.currency)} ·{' '}
+                <span style={{ color: rv.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rv.vs_pct)}</span>{shown === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
+              </div>
+            )}
           </div>
-          {r.wtd_vs_last_week_pct != null && (
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
-              Week to date {money(r.wtd_net, data.locations[0]?.currency)} ·{' '}
-              <span style={{ color: r.wtd_vs_last_week_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{r.wtd_vs_last_week_pct >= 0 ? '+' : ''}{r.wtd_vs_last_week_pct}%</span> vs last week
-            </div>
-          )}
-        </div>
-      )}
+        )}
 
-      {/* ── Per-venue cards ── */}
-      {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} />)}
+        {/* ── Per-venue cards ── */}
+        {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates} />)}
+      </div>
     </>
   );
 }
@@ -255,15 +321,16 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName }) {
-  const t = l.today;
+function VenueCard({ l, showName, period, showDates }) {
+  const t = venueView(l, period);
+  const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
   return (
     <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 16, marginBottom: 12 }}>
       {showName && <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>{l.name}</div>}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Net sales today</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{copy.sales}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
           <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(t.net_sales, l.currency)}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
@@ -290,13 +357,13 @@ function VenueCard({ l, showName }) {
         <Chip>● {l.live.orders} live order{l.live.orders === 1 ? '' : 's'}</Chip>
         <Chip>▢ {l.live.tables} on floor</Chip>
         {t.tips > 0 && <Chip>{money(t.tips, l.currency)} tips</Chip>}
-        {l.wtd.vs_last_week_pct != null && <Chip tone={l.wtd.vs_last_week_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>WTD {l.wtd.vs_last_week_pct >= 0 ? '+' : ''}{l.wtd.vs_last_week_pct}% vs last wk</Chip>}
+        {t.vs_pct != null && <Chip tone={t.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(t.vs_pct)} vs last wk` : `${signedPct(t.vs_pct)} ${copy.versus}`}</Chip>}
       </div>
 
-      {l.top_items?.length > 0 && (
+      {t.top_items.length > 0 && (
         <div style={{ marginTop: 14, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>Top sellers today</div>
-          {l.top_items.map((it, i) => (
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}</div>
+          {t.top_items.map((it, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', color: 'var(--t2)' }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.qty}× {it.name}</span>
               <span style={{ color: 'var(--t3)', marginLeft: 10, flexShrink: 0 }}>{money(it.rev, l.currency)}</span>
@@ -319,4 +386,6 @@ function Stat({ label, value, tone }) {
 const Chip = ({ children, tone }) => (
   <span style={{ fontSize: 11.5, fontWeight: 700, color: tone || 'var(--t3)', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 99, padding: '4px 10px' }}>{children}</span>
 );
+const periodChip = { padding: '9px 6px', borderRadius: 99, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t2)', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' };
+const periodChipOn = { background: 'var(--acc)', border: '1px solid var(--acc)', color: '#0b0c10' };
 const iconBtn = { width: 38, height: 38, borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t2)', fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' };
