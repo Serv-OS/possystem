@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.26',
+    date: '2 Oct 2026',
+    items: [
+      "QR table ordering: an order paid on the phone is now ONE order on the till, on its real table (Table T6). Before, the phone also put the items on the floor table as an open, unpaid check, so the Orders screen showed two cards and the open one could have been charged a second time (Coffee Boy Leeds, 2 Oct). Only an open tab goes onto the floor plan now. A table left open by a paid QR order clears itself once a till on this version sees the sale is already booked.",
+      "Orders screen, kitchen screens and dockets: a drink ordered online, by QR or on catering now shows the product and the size (Mont Blanc, Big Boy), not just the size. Orders already in the queue are fixed too. On paper dockets a long name prints the product, then the size on a second line.",
+      "Online ordering and QR menus: items that live in a sub category now show under their parent section, the same as the till. At Coffee Boy Leeds the whole Hot/Iced Coffee and Tea sections had never shown online. Every venue gains the sub category items it already sells on the till; mark sold out (86) anything a venue does not stock.",
+    ],
+  },
+  {
     v: '5.11.25',
     date: '2 Oct 2026',
     items: [
