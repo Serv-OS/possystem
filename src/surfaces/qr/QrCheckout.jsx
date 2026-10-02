@@ -27,6 +27,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { publicCheckTaxFields, offerChargedTax } from '../../lib/publicCheckTax';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { fetchActiveDiscountRules } from '../../lib/db';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
@@ -163,7 +164,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // they hit (uid = the key evaluateAutoDiscounts saw) and the table service
   // charge is taxed where the line's profile says so (US default: yes). UK
   // inclusive VAT never uses the basis, so UK totals and VAT are unchanged.
-  const taxBreakdown = useMemo(() => computeOrderTaxUnified(
+  const goodsTaxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map((l, i) => ({
       uid: l.key || l.uid || l.id || `l${i}`,
       price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
@@ -179,6 +180,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     'dine-in',
     { discounts: autoDiscounts, service: serviceCharge },
   ), [cart, taxCtx, taxRates, autoDiscounts, serviceCharge]);
+  // 2 Oct 2026: with an automatic offer, UK VAT is the VAT on what was CHARGED, as the till
+  // books a discounted bill (the engine works it out on the full menu price: 10.00 with 5.00
+  // off showed and sent 1.67, the till books 0.83). This one record is shown, charged from and
+  // booked. No offer: the same object as before. Added-on (US) tax: never scaled, it already
+  // has the offer in its basis (lib/publicCheckTax.js offerChargedTax).
+  const taxBreakdown = useMemo(
+    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal),
+    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal],
+  );
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
   // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
@@ -542,10 +552,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         subtotal,
         service: serviceCharge,
         tip: tipAmount,
-        tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
-            // v5.9.30 (was v5.9.12, rebased): the named lines, only when added-on tax
-            // was charged. A UK row is unchanged: hasExclusiveTax is false for VAT.
-            ...(taxBreakdown?.hasExclusiveTax && exclusiveTax > 0 ? { tax_breakdown: taxBreakdown } : {}),
+        // 2 Oct 2026 (QR-FAUOB, Coffee Boy Leeds, booked with VAT 0): tax_amount in pence, never
+        // the raw figure (the server read 0.9333333333333327 as 0), and the tax record by rate
+        // whenever a rate was resolved, UK included, as the till writes it (lib/publicCheckTax.js).
+        // With an automatic offer this is the VAT on what was charged (taxBreakdown above).
+        ...publicCheckTaxFields(taxBreakdown),
         total,
         method: 'card',
         // v5.9.11: what paid the check, per tender. place_public_order keeps it on the row it
