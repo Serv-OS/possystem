@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.27',
+    date: '2 Oct 2026',
+    items: [
+      "VAT on QR, online and catering orders: a sale paid on the customer's phone was being booked with VAT 0 (9 of the 10 such sales since 20 Sep). The VAT was worked out correctly on the phone, then lost on the way in because of how the figure was written. Sales now book the VAT their items are set to, to the penny, with the split by rate, the same as a till sale. A database update restores it for phones already holding the old page, and the 6 affected Coffee Boy sales are corrected.",
+      "QR and online orders with an automatic offer now book VAT on what the customer actually paid, the same rule as the till.",
+    ],
+  },
+  {
     v: '5.11.26',
     date: '2 Oct 2026',
     items: [
