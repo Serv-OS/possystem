@@ -43,6 +43,7 @@ import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
 import { computeOrderTaxUnified, chargesAddedOnRate } from '../../lib/taxCompute';
+import { publicCheckTaxFields, offerScaledTax } from '../../lib/publicCheckTax';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
@@ -297,23 +298,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.787: offers reduce the price actually paid, so the VAT shown/recorded must be
   // extracted from the DISCOUNTED amount, not the full menu prices. Offers apply across
   // the goods, so scale each rate's share by the goods discount ratio.
+  // 2 Oct 2026: the sums moved to lib/publicCheckTax.js (offerScaledTax), unchanged, and the
+  // record's own subtotal and total are now scaled with the rest, so the check that is booked
+  // describes the discounted bill in full (Xero read the offer as sales with no VAT rate).
   const discountedTaxBreakdown = useMemo(() => {
     if (!taxBreakdown || autoDiscountMinor <= 0 || subtotalMinor <= 0) return taxBreakdown;
-    const scale = discountedSubtotalMinor / subtotalMinor;
-    return {
-      ...taxBreakdown,
-      totalTax: taxBreakdown.totalTax * scale,
-      exclusiveTax: (taxBreakdown.exclusiveTax || 0) * scale,   // v5.7.31: the charged share scales with the goods discount too
-      breakdown: taxBreakdown.breakdown.map(b => ({ ...b, tax: b.tax * scale, net: b.net * scale, gross: b.gross * scale })),
-      // v5.7.34: the v2 named-lines record scales with the goods discount too —
-      // its figures must describe the same discounted bill as the legacy keys.
-      ...(taxBreakdown.taxV2 ? { taxV2: {
-        ...taxBreakdown.taxV2,
-        lines: taxBreakdown.taxV2.lines.map(l => ({ ...l, amount: l.amount * scale })),
-        exclusiveTaxTotal: taxBreakdown.taxV2.exclusiveTaxTotal * scale,
-        inclusiveExtractedTotal: taxBreakdown.taxV2.inclusiveExtractedTotal * scale,
-      } } : {}),
-    };
+    return offerScaledTax(taxBreakdown, discountedSubtotalMinor / subtotalMinor);
   }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
   // venues) — fold the customer fee into the amount payable so it's charged + shown.
@@ -1184,9 +1174,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: tipMinor / 100,
-          tax_amount: chargedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
-          // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
-          ...(chargedTaxBreakdown?.hasExclusiveTax && exclusiveTaxMinor > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
+          // VAT on the discounted amount (v5.5.787). 2 Oct 2026: in pence, with the tax record by
+          // rate whenever a rate was resolved (lib/publicCheckTax.js; the raw figure booked 0).
+          ...publicCheckTaxFields(chargedTaxBreakdown),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           // v5.9.11: what paid the order, per tender: the gift card as DEBITED and the loyalty
@@ -1397,9 +1387,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           subtotal,
           service: 0,
           tip: tipMinor / 100,
-          tax_amount: chargedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
-          // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
-          ...(chargedTaxBreakdown?.hasExclusiveTax && exclusiveTaxMinor > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
+          // VAT for reports and the receipt, on the discounted amount (v5.5.154, v5.5.787).
+          // 2 Oct 2026: in pence, with the tax record by rate whenever a rate was resolved
+          // (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
+          ...publicCheckTaxFields(chargedTaxBreakdown),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
           // v5.9.11: what paid the order, per tender. `total` above is the CARD amount (tip
