@@ -317,6 +317,32 @@ function VoidBlock({ voids, big, z }) {
 }
 
 /**
+ * The void notice. 30 Sep 2026 (Peter, Coffee Boy): a void now reaches the kitchen. The till
+ * flags the voided lines on the ticket row; they show here struck through under a red block so
+ * the cook stops that line. Every line voided reads "ORDER VOIDED": the kitchen bumps it.
+ */
+const VOID_RED = '#FF6B6B';
+function VoidBlock({ voids, big, z }) {
+  if (!voids || !voids.lines.length) return null;
+  return (
+    <div style={{
+      width: '100%', borderLeft: `${big ? 4 : 3}px solid ${VOID_RED}`,
+      background: 'rgba(255,107,107,.12)',
+      padding: z.notePad, borderRadius: big ? '0 10px 10px 0' : '0 8px 8px 0',
+      display: 'flex', flexDirection: 'column', gap: big ? 6 : 3, textAlign: 'left',
+    }}>
+      <div style={{ font: `800 ${z.note}px ${MONO}`, letterSpacing: '.06em', color: VOID_RED }}>⊘ {voids.label}</div>
+      {voids.lines.map(l => (
+        <div key={l.index} style={{ font: `${big ? 700 : 600} ${z.note}px ${SANS}`, color: '#fff', textDecoration: 'line-through', overflowWrap: 'anywhere' }}>
+          {l.qty}× {l.name}
+        </div>
+      ))}
+      {voids.all && <div style={{ font: `600 ${z.note}px ${SANS}`, color: C.ghost }}>Do not make. Bump to clear.</div>}
+    </div>
+  );
+}
+
+/**
  * "Till 2  |  #43". Each segment stays in one piece ("#CA-5BEPG" must never split);
  * a narrow card wraps between segments instead.
  */
