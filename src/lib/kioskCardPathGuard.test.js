@@ -65,6 +65,43 @@
 //       kiosk's own menu_categories rows) so lib/kioskLoyaltyReward.js can size a free item
 //       reward that names a category. A reward that names no category is sized exactly as
 //       before (the category rule is skipped). Gift, promo, tax relief and grandTotal unchanged.
+//   v5.11.x (30 Sep 2026, Barnsley kiosk refunds. CARD PATH: Peter's explicit sign off and one
+//   kiosk card payment on a real Adyen reader, then "Return to card" from the till, are REQUIRED
+//   before this merges). Kiosk card sales on a card machine were booked under their own id with
+//   processor 'stripe' (the column default), no card reference and no tenders, so the till could
+//   not refund them to the card. The credits, the totals and updateCartQty are byte for byte v5.9.66.
+//     ScreenPay logic 10964 -> 11622 chars: the job's closed_check_id is the basket's check id
+//       (`ensureCheckId()`, a new ScreenPay prop; the old `chk-kiosk-<uuid>` is the fallback when
+//       it is not given), and on approval `onPaid(kioskReaderPayment(finalJob, closedCheckId))`
+//       hands the approved job over (was `onPaid()`). The comment above it is rewritten. The
+//       processor branch, the check key and nonce, amounts, suppressTip, polling, cancel, the
+//       Stripe branch and every other outcome are unchanged.
+//     submitOrder 17280 -> 18730 chars: a third parameter `cardPayment` (start marker changed),
+//       kept in paidCardRef when isKioskReaderPayment (a click event or nothing never counts); the
+//       check id falls back to the job's closed_check_id when checkIdRef is empty; the row gains
+//       ...kioskCheckPaymentFields({ reader, tip, giftRecord, loyaltyCredit, promoCredit })
+//       (processor, stripe_payment_intent_id and tenders, and NOTHING when no card machine took
+//       the money, lib/kioskCardLink.js); after the insert lands the job is marked reconciled.
+//       The gift commit order, the idempotency key, the PGRST204 retry, both stock paths, the
+//       order_queue insert, the 30 second reset and the dependency list are unchanged.
+//     The old kiosk's pay screen line passes the payment on:
+//       onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId}
+//       and the new design's (KioskFlowV2.jsx) does the same through the engine.
+//   Same entry, review round (30 Sep 2026). A payment is tied to its basket, and a basket that is
+//   already paid is never charged again:
+//     submitOrder 18730 -> 19963 chars: a handed payment is kept in paidCardRef only when it carries
+//       the basket's check id (kioskPaymentIsThisBasket). One that lands after a reset (the X or the
+//       idle timer inside the 0.8 s before onPaid) is booked once under its own id and never writes
+//       paidCardRef or checkIdRef, so the next customer's basket never inherits it. A payment kept
+//       from an earlier attempt books only while its amount still matches the basket
+//       (kioskHeldPaymentFits), else the customer is asked to fetch a member of staff. The old
+//       "check id from the job when checkIdRef is empty" line is gone (a late payment covers it).
+//     ScreenPay logic 11622 -> 12669 chars: a new prop heldPayment (a getter of paidCardRef). When
+//       the basket holds an approved payment, startCardPayment (mount and Try again) books it
+//       through onPaid() and never starts a charge. After the card machine answers ALREADY_PAID
+//       this screen never starts another charge either. The comment above the Ryft path is
+//       corrected (the check key alone does not stop a second charge).
+//     Both pay screen lines pass heldPayment (heldCardPayment on the engine for the new design).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -76,17 +113,17 @@ const SRC = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url)
 const BLOCKS = [
   {
     name: 'submitOrder',
-    start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride) => {',
+    start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 17280,
-    sha256: 'd843c8fd7ddf9bde47d5f789160f9a70feacc9ef00659a9aea31965f730a191c',
+    length: 19963,
+    sha256: '2613c18354fd393598a6c8bcedd7b3173858d981ca5153863c8ad20c2e91dc68',
   },
   {
     name: 'ScreenPay logic',
     start: "const [cardState, setCardState] = useState('idle');",
     end: 'const cardDueAmount = total;',
-    length: 10964,
-    sha256: '0975f4b933039dcdd81b9bce90375ec98829e4dedff71033b579cd6f2cb6d6e9',
+    length: 12669,
+    sha256: 'cf7253971568703e4778ce74749fdb11870fdd2e4a26ad8f29d240bc328806d6',
   },
   {
     name: 'credits',
@@ -114,7 +151,7 @@ const BLOCKS = [
 const count = (hay, needle) => hay.split(needle).length - 1;
 
 for (const b of BLOCKS) {
-  test(`card path guard: ${b.name} is unchanged since v5.9.12`, () => {
+  test(`card path guard: ${b.name} is unchanged since its last signed entry`, () => {
     const i = SRC.indexOf(b.start);
     assert.ok(i >= 0, `${b.name}: start marker not found`);
     const j = SRC.indexOf(b.end, i);
@@ -171,8 +208,9 @@ test('card path guard: ONE reward money implementation (lib/kioskLoyaltyReward.j
 });
 
 test('card path guard: the old kiosk still charges through the same ScreenPay call', () => {
-  // The old flow's pay screen line, unchanged: submitOrder with the customer name and phone.
-  assert.equal(count(SRC, 'onPaid={() => submitOrder(customerName, customerPhone)}'), 1);
+  // The old flow's pay screen line: submitOrder with the customer name and phone, and (30 Sep
+  // 2026) the card machine payment ScreenPay hands over, with the basket's check id for the job.
+  assert.equal(count(SRC, 'onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment}'), 1);
   // The new design is gated by the flag helper, once.
   assert.equal(count(SRC, 'const newDesign = kioskNewDesignOn(profile);'), 1);
 });
@@ -217,4 +255,61 @@ test('card path guard: every card surface decides "card machine or Stripe reader
   const jobs = fs.readFileSync(new URL('./payments/terminalJobs.js', import.meta.url), 'utf8');
   assert.match(jobs, /const locationId = explicitLocationId \|\| getActiveLocationSync\(\);/);
   assert.match(jobs, /const locationId = p\?\.locationId \|\| getActiveLocationSync\(\);/);
+});
+
+test('card path guard: a kiosk card machine sale is booked linked to its job (30 Sep 2026)', () => {
+  // One pure implementation (lib/kioskCardLink.js), imported once.
+  assert.equal(count(SRC, "import { kioskReaderPayment, isKioskReaderPayment, kioskPaymentIsThisBasket, kioskHeldPaymentFits, kioskCheckPaymentFields } from '../lib/kioskCardLink';"), 1);
+  const submit = SRC.slice(SRC.indexOf(BLOCKS[0].start), SRC.indexOf(BLOCKS[0].end, SRC.indexOf(BLOCKS[0].start)));
+  const pay = SRC.slice(SRC.indexOf(BLOCKS[1].start), SRC.indexOf(BLOCKS[1].end, SRC.indexOf(BLOCKS[1].start)));
+  // ScreenPay: the job carries the basket's check id, and the approved job is handed over.
+  assert.equal(count(pay, "const closedCheckId = (typeof ensureCheckId === 'function' && ensureCheckId())"), 1);
+  assert.equal(count(pay, 'const paid = kioskReaderPayment(finalJob, closedCheckId);'), 1);
+  assert.equal(count(pay, 'setTimeout(() => onPaid(paid), 800);'), 1);
+  // Only the approved branch passes a payment: the Stripe branch and the covered order pass none.
+  assert.equal(count(pay, 'setTimeout(() => onPaid(), 800);'), 1);
+  // submitOrder: only a real payment is kept, the row is spread with the linked fields, and the
+  // job is reconciled only after the insert landed.
+  assert.equal(count(submit, 'const handed = isKioskReaderPayment(cardPayment) ? cardPayment : null;'), 1);
+  assert.equal(count(submit, '...kioskCheckPaymentFields({'), 1);
+  const insertAt = submit.indexOf('if (e1) throw e1;');
+  const reconcileAt = submit.indexOf('if (reader?.jobId) markJobReconciled(reader.jobId).catch(() => {});');
+  assert.ok(insertAt > 0 && reconcileAt > insertAt, 'the job is reconciled after the sale is booked, never before');
+  // A new basket never inherits the last one's card payment.
+  assert.equal(count(SRC, 'paidCardRef.current = null;'), 1);
+  // The new design passes the payment, the check id and the held payment the same way.
+  const flow = fs.readFileSync(new URL('../surfaces/kiosk/KioskFlowV2.jsx', import.meta.url), 'utf8');
+  assert.equal(count(flow, 'onPaid={(paid) => engine.submitOrder(...checkout.submitArgs, paid)}'), 1);
+  assert.equal(count(flow, 'ensureCheckId={engine.ensureCheckId}'), 1);
+  assert.equal(count(flow, 'heldPayment={engine.heldCardPayment}'), 1);
+  // The kiosk job is still never booked by a till: its draft has no items.
+  const jobs = fs.readFileSync(new URL('./payments/terminalJobs.js', import.meta.url), 'utf8');
+  assert.match(jobs, /const RECONCILABLE_SOURCES = \['pax_table_pay', 'pos_send_to_terminal', 'adyen_pay_at_table'\];/);
+});
+
+test('card path guard: a payment is tied to its basket, and a paid basket is never charged again (30 Sep 2026 review)', () => {
+  const submit = SRC.slice(SRC.indexOf(BLOCKS[0].start), SRC.indexOf(BLOCKS[0].end, SRC.indexOf(BLOCKS[0].start)));
+  const pay = SRC.slice(SRC.indexOf(BLOCKS[1].start), SRC.indexOf(BLOCKS[1].end, SRC.indexOf(BLOCKS[1].start)));
+  // Only a payment carrying this basket's check id is kept for the basket.
+  assert.equal(count(submit, 'const late = !!handed && !kioskPaymentIsThisBasket(handed, checkIdRef.current);'), 1);
+  assert.equal(count(submit, 'if (handed && !late) paidCardRef.current = handed;'), 1);
+  // Nowhere else in submitOrder writes the refs the next basket reads: paidCardRef once (above),
+  // checkIdRef once (the basket's own mint, in the branch a late payment never takes).
+  assert.equal(count(submit, 'paidCardRef.current ='), 1);
+  assert.equal(count(submit, 'checkIdRef.current ='), 1);
+  const lateAt = submit.indexOf('if (late) {');
+  const mintAt = submit.indexOf('checkIdRef.current =');
+  const elseAt = submit.indexOf('} else {', lateAt);
+  assert.ok(lateAt > 0 && elseAt > lateAt && mintAt > elseAt, 'the basket id is minted only when the payment is not late');
+  // A late payment books under its own id.
+  assert.equal(count(submit, 'checkId = handed.closedCheckId ||'), 1);
+  // A held payment is booked only while its amount still matches the basket.
+  assert.equal(count(submit, 'if (reader && !handed && !kioskHeldPaymentFits(reader, Math.round(grandTotal * 100))) {'), 1);
+  // ScreenPay: a held payment is booked, never charged again, before any charge can start.
+  const startAt = pay.indexOf('const startCardPayment = async () => {');
+  const heldAt = pay.indexOf("if (isKioskReaderPayment(typeof heldPayment === 'function' ? heldPayment() : null)) {");
+  const lockAt = pay.indexOf('if (alreadyPaidRef.current) {');
+  const chargeAt = pay.indexOf('if (takesCardsOnTerminal(processor)) { await startRyftTerminalPayment(); return; }');
+  assert.ok(startAt > 0 && heldAt > startAt && lockAt > heldAt && chargeAt > lockAt, 'held and ALREADY_PAID checks come before any charge');
+  assert.equal(count(pay, "if (e?.code === 'ALREADY_PAID') alreadyPaidRef.current = true;"), 1);
 });

@@ -8,6 +8,7 @@ import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watch
 import { money } from '../../lib/currency';
 import { ServOSIcon } from '../../components/ServOSBrand';
 import { DISPLAY_BRAND_COLUMN, cleanDisplayBrand, displayBrandForDb, displayBrandFromKiosk, badDisplayBrandColours, hasDisplayBrandColumn, displayBrandIsSet, mergeDisplayBrand, normaliseHex, resolveDisplayBrand, EMPTY_DISPLAY_BRAND, DEFAULT_ACCENT_DARK } from '../../lib/customerDisplayBrand';
+import { displayAccent, accentUnreadable } from '../../lib/customerDisplayAccent';   // 2 Oct 2026: the preview shows the accent the display really draws
 
 const SURFACES = [
   { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
@@ -587,6 +588,16 @@ function DisplayBrandEditor({ ready, brand, kiosk, onChange, onReplace, onUpload
   }, { theme: 'dark', placeName: 'Venue name' });
   const ink = look.dark ? '#E9ECEA' : '#16191C';
   const kioskHex = normaliseHex(k.color);
+  // 2 Oct 2026: the display draws the accent only when it reads on its background, else the
+  // standard green, else its text colour (lib/customerDisplayAccent.js, Barnsley's black on the
+  // dark display). The preview uses the same rule, and says so when the colour is swapped.
+  const previewBg = look.bgColor || DISPLAY_DARK_BG;
+  const accent = displayAccent(look.color, { dark: look.dark, bg: previewBg, text: ink });
+  const accentSwapped = look.from.color !== 'default' && accentUnreadable(look.color, { dark: look.dark, bg: previewBg });
+  const accentNote = !accentSwapped ? null
+    : look.bgColor
+      ? 'This accent colour is too close to the background to read, so the display shows a colour that can be read instead.'
+      : 'This accent colour is too close to the dark background to read. A display in the dark look shows the standard green instead.';
 
   let note;
   if (ownSet) note = 'The customer display uses this branding, and the kiosk keeps its own. Empty fields use the standard look, and an empty background follows the till.';
@@ -606,14 +617,15 @@ function DisplayBrandEditor({ ready, brand, kiosk, onChange, onReplace, onUpload
       {/* Preview */}
       <div aria-label="Customer display preview" style={{
         display:'flex', alignItems:'center', gap:12, padding:'12px 14px', borderRadius:12, marginBottom:14,
-        background: look.bgColor || DISPLAY_DARK_BG, color: ink, borderLeft:`4px solid ${look.color}`,
+        background: previewBg, color: ink, borderLeft:`4px solid ${accent}`,
       }}>
         {look.logoUrl
           ? <img src={look.logoUrl} alt="" style={{ height:30, maxWidth:110, objectFit:'contain' }}/>
           : <ServOSIcon size={26} style={{ color: ink }}/>}
         <div style={{ fontSize:15, fontWeight:700, flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{look.name}</div>
-        <div style={{ fontSize:18, fontWeight:900, color: look.color }}>{money(12.5)}</div>
+        <div style={{ fontSize:18, fontWeight:900, color: accent }}>{money(12.5)}</div>
       </div>
+      {accentNote && <div style={{ ...BRAND_NOTE, color:'var(--t3)', marginTop:-6 }}>{accentNote}</div>}
 
       <div style={{ marginBottom:12 }}>
         <div style={BRAND_FIELD}>Name</div>

@@ -26,6 +26,7 @@ import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 import { displayHoldMs, loyaltyResultHoldMs } from '../lib/customerDisplayIdle';
 import { stampDots, showPoints } from '../lib/stampSummary';
+import { displayAccent, inkOnAccent } from '../lib/customerDisplayAccent';
 import { resolveDisplayBrand, DISPLAY_BRAND_COLUMN } from '../lib/customerDisplayBrand';
 
 // v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
@@ -164,7 +165,11 @@ export default function CustomerDisplaySurface() {
   });
   const basePalette = palette(look.dark ? 'dark' : 'light');
   const C = look.bgColor ? { ...basePalette, bg: look.bgColor } : basePalette;
-  const brand = look.color;
+  // 30 Sep 2026 (Barnsley: the kiosk's black brand colour made every total vanish on this dark
+  // display): the resolver says WHICH colour is the brand (the display's own, else the kiosk's);
+  // it is used only when it reads on the background the display really has (its own background
+  // when one is set), else the ServOS green, else the text colour (lib/customerDisplayAccent.js).
+  const brand = displayAccent(look.color, { dark: look.dark, bg: C.bg, text: C.text });
   const logo = look.logoUrl;
   const venueName = look.name;
 
@@ -360,9 +365,11 @@ function PhoneKeypad({ value, brand, C, error, ukNumber, onKey, onBackspace, onS
           }}>{k}</button>
         ))}
       </div>
+      {/* 2 Oct 2026: the accent is this button's background, so its label is picked to read on
+          it (near black as before on the greens and bright accents, white on a dark accent). */}
       <button onClick={onSubmit} disabled={!ready} style={{
         marginTop: 18, width: 260, height: 60, borderRadius: 14, border: 'none',
-        background: ready ? brand : C.surface, color: ready ? '#0b0c10' : C.faint,
+        background: ready ? brand : C.surface, color: ready ? inkOnAccent(brand) : C.faint,
         fontSize: 21, fontWeight: 800, cursor: ready ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
       }}>Collect points</button>
       <div style={{ marginTop: 12, fontSize: 12, color: C.faint, textAlign: 'center', maxWidth: 280 }}>New? We'll text you a link to finish joining.</div>
