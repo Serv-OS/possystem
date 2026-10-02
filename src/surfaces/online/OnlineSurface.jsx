@@ -21,7 +21,7 @@ import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
-import { receiptOverride } from '../../lib/itemDisplay';
+import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
@@ -601,7 +601,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       itemId: item.id,
       name: item.menu_name || item.name,
-      kitchenName: item.kitchen_name || item.kitchenName || null,
+      // 2 Oct 2026 (Peter, Leeds: "it's not showing the product, just the size"): the raw
+      // kitchen_name column defaults to the row's own name, and a size row is called "Big Boy",
+      // so the kitchen saw "Big Boy" for "Mont Blanc — Big Boy". Only a kitchen name the venue
+      // really typed rides on the line (null otherwise), the same rule as the till and the kiosk.
+      kitchenName: kitchenOverride(item),
       // Triple-naming: explicit receipt name (null when not set) — the
       // checkout stamps it onto order_queue/closed_checks items so printed +
       // emailed receipts read receiptName || name.

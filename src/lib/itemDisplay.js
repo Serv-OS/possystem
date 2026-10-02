@@ -47,3 +47,33 @@ export function receiptOverride(item) {
   const r = item.receiptName ?? item.receipt_name ?? null;
   return (r && r !== item.name) ? r : null;
 }
+
+// ── The name staff read for an order line (2 Oct 2026) ───────────────────────
+// Peter, Coffee Boy Leeds, live: "it's not showing the product, just the size; this is back,
+// the variant issue." QR order QR-FAUOB reached the Orders screen and the kitchen screen as
+// "Big Boy". The line was stored as name "Mont Blanc — Big Boy", kitchenName "Big Boy".
+//
+// A size row is called "Big Boy" and its kitchen_name column defaults to that same word. The
+// online and QR page copied the raw column onto the line, so every staff screen (they all read
+// kitchenName first) dropped the product. The page now uses kitchenOverride like the till and
+// the kiosk, and this resolver covers the lines already stored and any phone still holding the
+// old page: a kitchen name that is only the size at the end of "<product> — <size>" is not an
+// override, so the full line name is shown. A real override (the venue typed a different
+// kitchen name) still wins, and a line whose name is already full is never doubled.
+const SIZE_JOIN = ' — ';   // the long dash every channel writes between product and size
+
+/** True when kitchenName is just the size the line name already ends with. */
+export function isSizeOnlyKitchenName(line) {
+  if (!line) return false;
+  const k = String(line.kitchenName ?? line.kitchen_name ?? '').trim().toLowerCase();
+  const name = String(line.name ?? '').trim().toLowerCase();
+  if (!k || !name || k === name) return false;
+  return name.endsWith(SIZE_JOIN + k);
+}
+
+/** What the kitchen and the Orders screen show for a line: its kitchen name, else its name. */
+export function kitchenLineName(line) {
+  if (!line) return '';
+  const k = line.kitchenName ?? line.kitchen_name ?? null;
+  return (k && !isSizeOnlyKitchenName(line)) ? k : (line.name ?? '');
+}

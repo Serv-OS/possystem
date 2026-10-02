@@ -11,7 +11,7 @@ import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { publicRead } from '../../lib/publicOrderClient';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
-import { receiptOverride } from '../../lib/itemDisplay';
+import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
@@ -185,7 +185,7 @@ export default function CateringSurface({ location }) {
       q = Math.min(q, room);
     }
     const price = Number(item.pricing?.base ?? item.price ?? 0);
-    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: item.kitchen_name || null, receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, taxProfileId: item.tax_profile_id ?? null, price, qty: q, mods, notes }]);
+    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, taxProfileId: item.tax_profile_id ?? null, price, qty: q, mods, notes }]);
   };
 
   // v5.7.34: the unified seam's tax context — this surface's own fetches
