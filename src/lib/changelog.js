@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.28',
+    date: '2 Oct 2026',
+    items: [
+      "Kiosk: card sales can be refunded to the card. The kiosk booked each sale without its card payment attached, so the till showed no card to refund and labelled it Stripe (Coffee Boy Barnsley, 30 Sep). The kiosk now books the sale under the same number as the card machine job, with the processor, the card reference and the payment recorded, and marks the job closed. The refund screen names the processor of the card it will actually refund.",
+      "Kiosk: if the pay screen reopens after a card payment was approved but the order had not been saved, the kiosk finishes the order with that payment and never charges the card a second time.",
+      "Kitchen tickets and orders: notes kept on a customer's record (for example an importer note such as 6 expired) no longer appear on orders or kitchen tickets. Notes typed for the order still do, and allergens still come from the customer's profile.",
+      "Customer display: a brand colour that cannot be read against the display's background is replaced with one that can (Barnsley's black on the dark display), the Collect points button label always reads, and the Back Office preview shows the colour the display will really use.",
+    ],
+  },
+  {
     v: '5.11.27',
     date: '2 Oct 2026',
     items: [
