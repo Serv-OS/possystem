@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.24',
+    date: '2 Oct 2026',
+    items: [
+      "Owner app: quick filters at the top, Today, This week and This month. The group card and every venue card follow the choice: net sales, forecast for the same days, orders, average check, labour, tips and top items. Comparisons are like for like: this week against the same days last week, this month against the same number of days into last month. A venue with nothing to compare against is left out of the group percent, and the line says so (2 of 3 venues). Live orders always show now. The choice is remembered on that phone.",
+    ],
+  },
+  {
     v: '5.11.23',
     date: '1 Oct 2026',
     items: [
