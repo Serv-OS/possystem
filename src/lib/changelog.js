@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.25',
+    date: '2 Oct 2026',
+    items: [
+      "Xero: a day that went to Xero the old way (bank transactions) can now be replaced with the daily sales invoice. Back Office, Xero, Posting or Postings: Replace with invoice shows the old entries it will remove and the invoice number it will create, then asks you to confirm. It refuses the whole day if any old entry is already reconciled in Xero, and it only opens once the site has posted its first sales invoice, because removing entries in Xero cannot be undone. If it stops part way it says exactly what was removed and what was not, and pressing again finishes it.",
+    ],
+  },
+  {
     v: '5.11.24',
     date: '2 Oct 2026',
     items: [
