@@ -21,6 +21,7 @@ import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
+import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
@@ -567,9 +568,17 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     return { kids, fromPrice: prices.length ? Math.min(...prices) : 0 };
   };
 
+  // 2 Oct 2026 (Coffee Boy Leeds, Peter: "anything in sub categories is not
+  // showing on the online menu"): a section is its top level category PLUS its
+  // sub categories, the till's rule. It used to match the top level id only, so
+  // Latte (in Coffee, under Hot/Iced Coffee) was in no section and the section
+  // itself was dropped as empty. Sub categories come from rawCats (every venue
+  // category): they follow their parent onto a menu, as on the till. Online and
+  // QR both use this (same surface). The rule lives in lib/onlineMenuTree.js.
+  const sectionTrees = useMemo(() => onlineSectionTrees(topCategories, rawCats), [topCategories, rawCats]);
   const itemsForCat = (catId) => (items || []).filter(i => {
     if (i.parent_id || i.archived || i.sold_alone === false) return false;
-    if (!(i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))) return false;
+    if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;
     if (activeAllergens.length && (i.allergens || []).some(a => activeAllergens.includes(a))) return false;
     return true;
   });
