@@ -15,6 +15,8 @@ import { supabase } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
+import { kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
+import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
 import { money, currencySymbol } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
 import { ryftTab } from '../lib/payments/ryft';
@@ -229,7 +231,13 @@ export default function OrdersHub() {
     const out = [];
 
     // Table sessions
-    tables.filter(t => t.status !== 'available' && t.session).forEach(t => {
+    // 2 Oct 2026 (Peter, Leeds: "when you order to table you get 2 orders ... one on the actual
+    // table 6 and 6.1, that needs to not happen"): a QR floor session is only a copy of QR
+    // orders that have their own card in the QR section below, so it is not listed a second
+    // time as a table (its Open button loaded a paid order into the pay flow). It still shows
+    // when no QR row is left in the queue, or when staff rang a line onto it at the till
+    // (lib/qrTabStranded.js qrSessionShownInQrSection).
+    tables.filter(t => t.status !== 'available' && t.session && !qrSessionShownInQrSection(t, orderQueue)).forEach(t => {
       const items = t.session?.items?.filter(i => !i.voided) || [];
       out.push({
         _kind: 'table', id: `tbl-${t.id}`,
@@ -1508,7 +1516,7 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
         {tab.allItems.slice(0, 6).map((item, i) => (
           <div key={i} style={{ display:'flex', gap:6, marginBottom:2, alignItems:'baseline', fontSize:12, color:'var(--t1)' }}>
             <span style={{ fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right' }}>{item.qty}×</span>
-            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.kitchenName || item.name}</span>
+            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{kitchenLineName(item)}</span>
           </div>
         ))}
         {tab.allItems.length > 6 && (
@@ -1712,7 +1720,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
                 <div style={{ display:'flex', gap:6, alignItems:'baseline' }}>
                   <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right', flexShrink:0 }}>{item.qty}×</span>
                   <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {item.kitchenName || item.receiptName || item.name}
+                    {(!isSizeOnlyKitchenName(item) && item.kitchenName) || item.receiptName || item.name}
                   </span>
                   {/* v5.5.850: channel line whose sku_ref isn't in our catalog — flag it (it still prints via the default-centre fallback) */}
                   {order.source === 'hubrise' && knownIds && !knownIds.has(item.itemId || item.id) && (

@@ -55,10 +55,11 @@ export async function syncQrTableSession(locationId, tableId) {
       .neq('status', 'collected')
       .filter('customer->>tableId', 'eq', String(tableId));
     if (error) { console.warn('[syncQrTableSession] read failed:', error.message); return; }
-    // Fix round 2 (LOW): an order whose payment is being checked (payment_state 'checking' or
-    // 'short', payment_unverified) is NOT on the floor plan until the server proves it or a
-    // manager confirms it, exactly like the order_queue_qr_floor trigger of 20260919b (paid, or a
-    // round of an open tab). Rounds of an open tab always count.
+    // 2 Oct 2026 (Peter, Leeds: "it's opening 2 tables ... that needs to not happen"): only the
+    // rounds of an OPEN TAB go on the floor plan. A pay now order is paid on the phone, so it is
+    // never an open check on the table (lib/publicOrder.js qrRowOnFloor); it lives in the
+    // Orders screen's QR section until it is collected. The server's own copy of this rule
+    // (_qr_sync_table_session) gets the same change in 20261002a, before 20260919b attaches it.
     const rows = (allRows || []).filter(qrRowOnFloor);
 
     // Tag each item with its tab's payment_intent_id so the floor-plan UI

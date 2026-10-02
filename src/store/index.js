@@ -15,7 +15,11 @@ import { venueRowsOnly } from '../lib/boVenueBoot';
 import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
 import { creditDiscountsFromPayment, chargedTaxOf } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
-import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
+import { kitchenOverride, receiptOverride, kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
+// The till's own kitchen name chain (send, reprint, bar round, transfer notice), unchanged but
+// for one case (2 Oct 2026, lib/itemDisplay.js): a kitchen name that is only the size at the end
+// of "<product> — <size>" is skipped, so the kitchen always reads the product AND the size.
+const tillKitchenName = (i) => (!isSizeOnlyKitchenName(i) && i.kitchenName) || i.menu_name || i.menuName || i.name;
 import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates } from '../lib/rowMapping';
@@ -2923,7 +2927,7 @@ export const useStore = create((set, get) => ({
             tableLabel: to.label,
             items: items.map(i => ({
               qty: i.qty,
-              name: i.kitchenName || i.menu_name || i.menuName || i.name,
+              name: tillKitchenName(i),
               mods: i.mods,
               course: i.course,
             })),
@@ -3350,7 +3354,7 @@ export const useStore = create((set, get) => ({
         reprint: true,
         type: 'kitchen',
         items: centreItems.map(i => ({
-          qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
+          qty: i.qty, name: tillKitchenName(i),
           mods: [
             ...(i.mods?.map(m => (m._instruction ? m.label : (m.name || m.label))).filter(Boolean) || []),
             ...(i.allergens?.length ? [`⚠ ${i.allergens.map(a=>a.toUpperCase()).join(' · ')}`] : []),
@@ -3460,7 +3464,7 @@ export const useStore = create((set, get) => ({
           allCourses,
           meta,
           items: centreItems.map(i => ({
-            qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
+            qty: i.qty, name: tillKitchenName(i),
             mods: [
               // v4.6.10: drop the `${groupLabel}: ` prefix on mods shown on KDS and
               // production dockets. Kitchens care about the modifier itself, not which
@@ -5096,7 +5100,7 @@ export const useStore = create((set, get) => ({
         meta: buildTicketMeta({ channel: 'bar', customerName: tab.name || null, source: thisDeviceName(), staff: staffName }),
         items: centreItems.map(i => ({
           qty: i.qty,
-          name: i.kitchenName || i.menu_name || i.menuName || i.name,
+          name: tillKitchenName(i),
           mods: [
             // v4.6.10: no groupLabel prefix on bar-round tickets either.
             // v5.5.965: one pass in line order — instructions were forced last here too.
@@ -8690,7 +8694,9 @@ export const useStore = create((set, get) => ({
         fired_courses: [1],
         items: items.map(i => ({
           qty: i.qty,
-          name: i.kitchenName || i.name,
+          // 2 Oct 2026: kitchenLineName, so a size line stored with only the size as its kitchen
+          // name ("Big Boy") still reaches the kitchen as "Mont Blanc — Big Boy" (lib/itemDisplay.js).
+          name: kitchenLineName(i),
           mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
           course: 1, fired: true, status: 'sent', centreId,
         })),
@@ -8746,7 +8752,7 @@ export const useStore = create((set, get) => ({
           course: 1,
           items: items.map(i => ({
             qty: i.qty,
-            kitchenName: i.kitchenName,
+            kitchenName: kitchenLineName(i),
             name: i.name,
             mods: i.mods,
           })),
