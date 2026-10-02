@@ -22,6 +22,13 @@
 // ServOS green does not read on either (a mid red, a green), so with `text` given the last
 // resort is the display's text colour, which the resolver picks to read on that background.
 //
+// 2 Oct 2026 (review of that merge): the phone keypad's "Collect points" button is the one place
+// the accent is a BACKGROUND with a label on top. The label was a fixed near black, so when the
+// accent came out dark (the text colour on a light own background such as yellow or sky blue, or
+// a venue's own dark accent on a light display) the label was near black on near black, 1.1:1.
+// inkOnAccent picks the label for the accent it sits on: the same near black wherever it reads
+// (the standard greens and every bright accent, so those look exactly as before), else white.
+//
 // Pure: imports only kioskTheme.js (itself pure), so node:test can load it.
 import { parseCssColor, contrastRatio } from './kioskTheme.js';
 
@@ -32,6 +39,9 @@ export const DISPLAY_ACCENT_LIGHT = '#0E9E55';
 export const DISPLAY_BG_DARK = '#0F1211';
 export const DISPLAY_BG_LIGHT = '#F4F6F2';
 export const MIN_ACCENT_CONTRAST = 3;
+// The label drawn ON the accent (the keypad's "Collect points" button): near black, else white.
+export const INK_ON_ACCENT_DARK = '#0b0c10';
+export const INK_ON_ACCENT_LIGHT = '#FFFFFF';
 
 const hex2 = (v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
 
@@ -67,4 +77,16 @@ export function displayAccent(color, { dark = true, bg = null, text = null } = {
   if (reads(parseCssColor(fallback))) return fallback;
   const ink = parseCssColor(text);
   return reads(ink) ? '#' + ink.map(hex2).join('') : fallback;
+}
+
+/**
+ * The colour of a label drawn ON the accent (the accent is the button, the label sits on it).
+ * The display's usual near black when it reads on the accent at 3:1 or better, else white. One
+ * of the two always does: near black needs the accent's luminance above about 0.11, white needs
+ * it below 0.30. An accent that is not a colour keeps the near black, as before.
+ */
+export function inkOnAccent(accent) {
+  const rgb = parseCssColor(accent);
+  if (!rgb) return INK_ON_ACCENT_DARK;
+  return contrastRatio(parseCssColor(INK_ON_ACCENT_DARK), rgb) >= MIN_ACCENT_CONTRAST ? INK_ON_ACCENT_DARK : INK_ON_ACCENT_LIGHT;
 }

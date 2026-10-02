@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  displayAccent, accentUnreadable, DISPLAY_ACCENT_DARK, DISPLAY_ACCENT_LIGHT, DISPLAY_BG_DARK, DISPLAY_BG_LIGHT, MIN_ACCENT_CONTRAST,
+  displayAccent, accentUnreadable, inkOnAccent, INK_ON_ACCENT_DARK, INK_ON_ACCENT_LIGHT,
+  DISPLAY_ACCENT_DARK, DISPLAY_ACCENT_LIGHT, DISPLAY_BG_DARK, DISPLAY_BG_LIGHT, MIN_ACCENT_CONTRAST,
 } from './customerDisplayAccent.js';
 import { parseCssColor, contrastRatio } from './kioskTheme.js';
 import { resolveDisplayBrand, DISPLAY_BRAND_COLUMN } from './customerDisplayBrand.js';
@@ -59,7 +60,7 @@ test('an unreadable background falls back to the look\'s own background', () => 
 
 test('wiring: the customer display takes its accent through displayAccent', () => {
   const src = fs.readFileSync(new URL('../surfaces/CustomerDisplaySurface.jsx', import.meta.url), 'utf8');
-  assert.match(src, /import \{ displayAccent \} from '\.\.\/lib\/customerDisplayAccent';/);
+  assert.match(src, /import \{ displayAccent, inkOnAccent \} from '\.\.\/lib\/customerDisplayAccent';/);
   // 2 Oct 2026: the brand comes from the display's own branding resolver (customerDisplayBrand.js),
   // and its colour goes through the contrast rule against the background the display really has.
   assert.match(src, /const brand = displayAccent\(look\.color, \{ dark: look\.dark, bg: C\.bg, text: C\.text \}\);/);
@@ -133,12 +134,62 @@ test('whatever is set, the accent the display draws reads on its background', ()
         const own = shown({ kiosk_brand_color: '#000000', [DISPLAY_BRAND_COLUMN]: { name: 'x', color, bgColor } }, theme);
         assert.ok(reads(own.accent, own.bg), `own ${color || 'none'} on ${bgColor || 'none'} (${theme}): ${own.accent}`);
         assert.match(own.accent, /^#[0-9a-fA-F]{6}$/);
+        // The keypad button is drawn in that accent; its label reads on it.
+        assert.ok(reads(inkOnAccent(own.accent), own.accent), `label on ${own.accent}: own ${color || 'none'} on ${bgColor || 'none'} (${theme})`);
       }
       // ...and the kiosk colour while nothing of its own is set.
       const kiosk = shown({ kiosk_brand_color: color }, theme);
       assert.ok(reads(kiosk.accent, kiosk.bg), `kiosk ${color || 'none'} (${theme}): ${kiosk.accent}`);
+      assert.ok(reads(inkOnAccent(kiosk.accent), kiosk.accent), `label on ${kiosk.accent}: kiosk ${color || 'none'} (${theme})`);
     }
   }
+});
+
+test('the label on the keypad button reads on whatever accent the button is drawn in', () => {
+  // The standard looks and bright accents keep the near black label they always had.
+  for (const accent of [DISPLAY_ACCENT_DARK, DISPLAY_ACCENT_LIGHT, '#46e08c', '#0e9e55', '#E11D48', '#f97316', '#fde047', '#ffffff', '#e9ecea']) {
+    assert.equal(inkOnAccent(accent), INK_ON_ACCENT_DARK, accent);
+  }
+  assert.equal(INK_ON_ACCENT_DARK, '#0b0c10', 'the label colour the button had before');
+  // A dark accent gets a white label: the display's light look text colour, black, navy.
+  for (const accent of ['#16191c', '#16191C', '#000000', '#101a3a', '#0F1211']) {
+    assert.equal(inkOnAccent(accent), INK_ON_ACCENT_LIGHT, accent);
+  }
+  // Not a colour: the near black, as before.
+  for (const junk of [null, undefined, '', 'notacolour!']) assert.equal(inkOnAccent(junk), INK_ON_ACCENT_DARK, String(junk));
+  // One of the two always reads, on every grey from black to white and a spread of hues.
+  const hex = (n) => n.toString(16).padStart(2, '0');
+  for (let v = 0; v <= 255; v++) {
+    const grey = `#${hex(v)}${hex(v)}${hex(v)}`;
+    assert.ok(reads(inkOnAccent(grey), grey), grey);
+  }
+  for (let r = 0; r <= 255; r += 51) for (let g = 0; g <= 255; g += 51) for (let b = 0; b <= 255; b += 51) {
+    const c = `#${hex(r)}${hex(g)}${hex(b)}`;
+    assert.ok(reads(inkOnAccent(c), c), c);
+  }
+});
+
+test('a light own background with no accent set: the button is the text colour and its label is white', () => {
+  // Yellow, sky blue, grey, beige, pink: light looks the light green does not read on, so the
+  // accent is the display's dark text colour. The fixed near black label on it was 1.1:1.
+  for (const bgColor of ['#FFD966', '#87CEEB', '#D9D9D9', '#E8DCC8', '#F5C6CB']) {
+    const s = shown({ [DISPLAY_BRAND_COLUMN]: { bgColor } });
+    assert.equal(s.look.dark, false, bgColor);
+    assert.equal(s.accent, TEXT.light.toLowerCase(), bgColor);
+    assert.equal(reads(INK_ON_ACCENT_DARK, s.accent), false, 'the case this covers');
+    assert.equal(inkOnAccent(s.accent), INK_ON_ACCENT_LIGHT, bgColor);
+  }
+  // The kiosk's black on a light till (kept there, it reads on the background): white label too.
+  assert.equal(inkOnAccent(shown({ kiosk_brand_color: '#000000' }, 'light').accent), INK_ON_ACCENT_LIGHT);
+  // The standard dark and light displays: the green button with the near black label, unchanged.
+  assert.equal(inkOnAccent(shown({}, 'dark').accent), INK_ON_ACCENT_DARK);
+  assert.equal(inkOnAccent(shown({}, 'light').accent), INK_ON_ACCENT_DARK);
+});
+
+test('wiring: the keypad button picks its label through inkOnAccent, not a fixed colour', () => {
+  const src = fs.readFileSync(new URL('../surfaces/CustomerDisplaySurface.jsx', import.meta.url), 'utf8');
+  assert.match(src, /background: ready \? brand : C\.surface, color: ready \? inkOnAccent\(brand\) : C\.faint,/);
+  assert.doesNotMatch(src, /color: ready \? '#0b0c10'/);
 });
 
 test('wiring: the Back Office preview draws the accent the display draws, and says when it is swapped', () => {
