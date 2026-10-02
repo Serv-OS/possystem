@@ -234,7 +234,7 @@ import {
   type PatchResult, type StoreSettingsOutcome, type ReaderTips, type TipsSkip,
 } from '../_shared/readerSettings.ts';
 import {
-  buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
+  buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries, customDomainOrigin,
   applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
   storefrontHostFor, applePayStateKey, applePayRetryDue, applePayStateFrom, applePayGuidance, adyenErrorCode,
   APPLE_PAY_MANUAL_TRIGGERS,
@@ -1556,7 +1556,11 @@ async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, store
   for (const domain of plan.missing) {
     // One host per call so a host that does not serve the association file
     // fails on its own line instead of taking the batch down with it.
-    const r = await mgmt(cfg, 'POST', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/addApplePayDomains`, { domains: [domain] });
+    // 2 Oct 2026 (Peter: "Apple Pay is not working on the online ordering"): Adyen refuses a bare
+    // host here with 400 "Provided value: coffee-boy-preston.serv-os.app is not a correct URL".
+    // It wants the https URL (its own example is https://example.com). The list it returns and
+    // our plan still compare on the bare host (domainKey strips the scheme).
+    const r = await mgmt(cfg, 'POST', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/addApplePayDomains`, { domains: [customDomainOrigin(domain) || domain] });
     if (r.ok) added.push(domain);
     else if (isDuplicateRefusal(r.status, r.data)) existing.push(domain);
     else failed.push({ domain, status: r.status, errorCode: adyenErrorCode(r.data), message: adyenRefusalMessage(r.status, r.data) });

@@ -19,7 +19,7 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { supabase } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
-import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
+import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey, afterPlaced, qrTableLabel, qrRowOnFloor } from '../../lib/publicOrder';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -27,6 +27,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { publicCheckTaxFields, offerChargedTax } from '../../lib/publicCheckTax';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { fetchActiveDiscountRules } from '../../lib/db';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
@@ -163,7 +164,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // they hit (uid = the key evaluateAutoDiscounts saw) and the table service
   // charge is taxed where the line's profile says so (US default: yes). UK
   // inclusive VAT never uses the basis, so UK totals and VAT are unchanged.
-  const taxBreakdown = useMemo(() => computeOrderTaxUnified(
+  const goodsTaxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map((l, i) => ({
       uid: l.key || l.uid || l.id || `l${i}`,
       price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
@@ -179,6 +180,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     'dine-in',
     { discounts: autoDiscounts, service: serviceCharge },
   ), [cart, taxCtx, taxRates, autoDiscounts, serviceCharge]);
+  // 2 Oct 2026: with an automatic offer, UK VAT is the VAT on what was CHARGED, as the till
+  // books a discounted bill (the engine works it out on the full menu price: 10.00 with 5.00
+  // off showed and sent 1.67, the till books 0.83). This one record is shown, charged from and
+  // booked. No offer: the same object as before. Added-on (US) tax: never scaled, it already
+  // has the offer in its basis (lib/publicCheckTax.js offerChargedTax).
+  const taxBreakdown = useMemo(
+    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal),
+    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal],
+  );
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
   // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
@@ -414,17 +424,19 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       const payId = ryft ? (ryftCard?.sessionId || paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
       const tabMode = isOpenTab;            // both processors now run the open-tab/pre-auth path
 
-      // v5.5.155: sub-numbering for multiple QR orders at the same table.
-      // First customer at table 2 → "2.1"; second customer (separate scan,
-      // separate order, separate Stripe charge) → "2.2", and so on.
-      // v5.5.162: ALSO applies to pay-now (was open-tab only) — operators
-      // expect ALL QR orders at the same table to be sub-numbered so they
-      // can tell which guest ordered which round. Count over any non-
-      // collected QR order at this table, regardless of pay-now vs open-tab.
-      // Group by payment_intent_id so multiple rounds of the same tab
-      // share one sub-number (they're already pooled in OrdersHub).
+      // v5.5.155: sub-numbering for multiple QR TABS at the same table.
+      // 2 Oct 2026 (Peter, Leeds: "one on the actual table 6 and 6.1, that needs to not
+      // happen"): a pay now order always carries the table itself, "T6". v5.5.162 numbered pay
+      // now orders too, and a lone order read as a second table ("T6.1"). Numbering them only
+      // "while another is open" does not work either: a paid order stays open in the queue
+      // until staff tap it through to collected (QR-FAUOB was still 'prep' 40 minutes on), so
+      // the next guest would have read "T6.2". Staff tell pay now orders apart by the name and
+      // the order number on the card.
+      // An OPEN TAB is still numbered: the first tab on a table is "2", a second tab opened
+      // while that one is still running is "2.2", and so on (lib/publicOrder.js qrTableLabel).
+      // Rounds of one tab share its payment_intent_id, so they share one number.
       let effectiveTableLabel = tableLabel || tableId;
-      if (tableId) {
+      if (tableId && tabMode) {
         try {
           // Database fence stage 1 (contract C7): qr_table_tab_count counts the distinct open tabs.
           // FENCE STAGE 1 FALLBACK: today's direct read, only while it does not exist.
@@ -440,9 +452,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           let count = 0;
           if (cnt.legacy) {
             // Count DISTINCT payment_intent_id (one number per tab/charge),
-            // fall back to ref for any order without a PI.
+            // fall back to ref for any order without a PI. Open tabs only (2 Oct 2026): a
+            // paid pay now order still in the queue is not a tab and takes no number.
             const distinctPIs = new Set();
-            (cnt.data || []).forEach(r => {
+            (cnt.data || []).filter(qrRowOnFloor).forEach(r => {
               const k = r.customer?.payment_intent_id || `ref:${r.ref}`;
               distinctPIs.add(k);
             });
@@ -450,8 +463,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           } else {
             count = Number(cnt.data) || 0;
           }
-          const subNum = count + 1;
-          effectiveTableLabel = `${tableLabel || tableId}.${subNum}`;
+          effectiveTableLabel = qrTableLabel(tableLabel || tableId, count);
         } catch (e) { console.warn('[QrCheckout] sub-numbering query failed:', e?.message); }
       }
       const tableLabelStr = `Table ${effectiveTableLabel}`;
@@ -464,8 +476,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // of the regular advance buttons.
       const customerWithPayment = {
         ...customer,
-        // Override the orderShape.customer.tableLabel with the sub-numbered
-        // version so POS displays "Table 4.2" not "Table 4".
+        // The label staff read. A pay now order: the table itself ("Table 4"). A second
+        // open tab on the same table: the sub-numbered version ("Table 4.2").
         tableLabel: effectiveTableLabel,
         // payment_intent_id stays the universal pooling key (holds the Ryft
         // session id when on Ryft) so OrdersHub pooling + sub-numbering are
@@ -540,10 +552,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         subtotal,
         service: serviceCharge,
         tip: tipAmount,
-        tax_amount: taxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt
-            // v5.9.30 (was v5.9.12, rebased): the named lines, only when added-on tax
-            // was charged. A UK row is unchanged: hasExclusiveTax is false for VAT.
-            ...(taxBreakdown?.hasExclusiveTax && exclusiveTax > 0 ? { tax_breakdown: taxBreakdown } : {}),
+        // 2 Oct 2026 (QR-FAUOB, Coffee Boy Leeds, booked with VAT 0): tax_amount in pence, never
+        // the raw figure (the server read 0.9333333333333327 as 0), and the tax record by rate
+        // whenever a rate was resolved, UK included, as the till writes it (lib/publicCheckTax.js).
+        // With an automatic offer this is the VAT on what was charged (taxBreakdown above).
+        ...publicCheckTaxFields(taxBreakdown),
         total,
         method: 'card',
         // v5.9.11: what paid the check, per tender. place_public_order keeps it on the row it
@@ -653,7 +666,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             } : {}),
             phone_last4: (customer.phone || '').replace(/\D/g, '').slice(-4),
             opened_at: new Date().toISOString(),
-            table_label: effectiveTableLabel, // sub-numbered (4.1, 4.2, ...)
+            table_label: effectiveTableLabel, // the table; a second open tab is sub-numbered (4.2, 4.3, ...)
             pre_auth_amount: tabPreAuthAmount,
           });
         } catch (e) { console.warn('[QrCheckout] stashTab:', e?.message); }
@@ -661,9 +674,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // v5.5.157: also surface the order on the floor-plan table session
       // so operators see the table as in-service from the moment of
       // first round, not just in the OrdersHub QR-tabs section.
+      // 2 Oct 2026 (Peter, Leeds: "it's opening 2 tables ... that needs to not happen"): an
+      // OPEN TAB only. A pay now order is paid in full, so it never touches the floor plan: it
+      // was written onto the table as an open, unpaid check next to its own paid QR card, and
+      // nothing took it off again (lib/publicOrder.js qrRowOnFloor).
       // STAGE 1 CLEANUP: remove after 20260919b (its order_queue_qr_floor trigger does this;
       // until then this helper only ever writes a QR owned session, contract S1).
-      if (tableId) {
+      if (tableId && tabMode) {
         syncQrTableSession(opsLocationId, tableId).catch(() => {});
       }
       onPlaced?.({ ref, total, paymentIntent, joinCode, trackToken: placed.trackToken, paymentIntentId: payId, paymentUnverified: !!placed.unverified });

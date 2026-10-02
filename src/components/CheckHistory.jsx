@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
+import { receiptRewardsOf } from '../lib/printDoc';
 import { money } from '../lib/currency';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
@@ -776,6 +777,22 @@ export default function CheckHistory(){
 
   const selectedCheck=closedChecks.find(c=>c.id===selected);
 
+  // 30 Sep 2026: "Open R5737" from the checkout's possible repeat warning (store.openCheckHistoryFor).
+  // Search that ref on today's checks, open it when it is here, then clear the focus so the next
+  // visit to History starts clean. The check may not be on this till yet (booked by another
+  // device, realtime still catching up): the search stays so staff see it land.
+  const checkHistoryFocus=useStore(s=>s.checkHistoryFocus);
+  useEffect(()=>{
+    const ref=checkHistoryFocus?.ref;
+    if(!ref)return;
+    setDateFilter('today');
+    setSearch(ref);
+    const hit=closedChecks.find(c=>c.ref===ref);
+    if(hit)setSelected(hit.id);
+    useStore.getState().openCheckHistoryFor?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[checkHistoryFocus]);
+
   // v5.7.8 - reconciler-closed checks can hold a live tip window whose leg
   // stamping never landed (no capture flag on the card leg), so TipWindowCard
   // renders nothing. On opening a check detail, let the store re-read the
@@ -870,6 +887,9 @@ export default function CheckHistory(){
           // cardReceipt; DB-loaded checks carry it on paymentIntents[0].card)
           cardReceipt: selectedCheck.cardReceipt || null,
           paymentIntents: selectedCheck.paymentIntents || selectedCheck.payment_intents || null,
+          // 30 Sep 2026: the rewards the check used print again (off the loyalty tender, or the
+          // staged object on an in-memory record).
+          loyaltyRewards: receiptRewardsOf(selectedCheck),
         },
         items: nonVoided,
         totals: {
@@ -1046,6 +1066,10 @@ export default function CheckHistory(){
               {/* Totals */}
               <div style={{padding:'10px 0',marginBottom:12}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.subtotal)}</span></div>
+                {/* 30 Sep 2026: each loyalty reward the check used (several stamp cards on one order) */}
+                {receiptRewardsOf(selectedCheck).map((l, i) => (
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}><span>{l.label}</span><span style={{fontFamily:'DM Mono,monospace'}}>{String.fromCodePoint(0x2212)}{money(l.amount)}</span></div>
+                ))}
                 {selectedCheck.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.service)}</span></div>}
                 {selectedCheck.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.tip)}</span></div>}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700,borderTop:'1px solid var(--bdr3)',paddingTop:8,marginTop:4}}>

@@ -19,6 +19,7 @@ import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
 import { bookedTaxRecord } from './taxShare';
 import { closedCheckRefundFields, serverTipFields } from './closedCheckRefundFields';
+import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -174,6 +175,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
 
   // ── Config pushes ──────────────────────────────────────────────────────────
+  let lastConfigPushAt = NaN;
   const configChannel = supabase
     .channel(`config:${locationId}`)
     .on('postgres_changes', {
@@ -181,7 +183,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       schema: 'public',
       table: 'config_pushes',
       filter: `location_id=eq.${locationId}`,
-    }, ({ new: push }) => {
+    }, async ({ new: push }) => {
       // v5.7.7: Push to POS must ALSO deliver the current device profile. App's
       // paired-device layer listens for this and re-fetches its profile from the
       // DB (self-healing deviceConfig), same window-event pattern as
@@ -195,8 +197,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         clearLocationConfigCache();
         getLocationConfig(locationId).then((cfg) => { if (cfg) store.setState({ locationConfig: cfg }); }).catch(() => {});
       } catch { /* best effort */ }
-      if (push.snapshot) {
-        store.getState().setConfigUpdate(push.snapshot);
+      // 30 Sep 2026: a push over Supabase Realtime's 1 MB row limit arrives WITHOUT its snapshot
+      // (Barnsley, Huddersfield, Preston from 29 Sep: no "Sync POS" until the app was closed). Read
+      // it by id instead (lib/configPushReceive.js). isNewerPush stops a slow read of an older push
+      // replacing a newer one.
+      if (!isNewerPush(push, lastConfigPushAt)) return;
+      const snapshot = await resolvePushSnapshot(push, async (id) => {
+        const { data, error } = await supabase.from('config_pushes').select('snapshot').eq('id', id).maybeSingle();
+        if (error) throw error;
+        return data?.snapshot || null;
+      });
+      if (!isNewerPush(push, lastConfigPushAt)) return;
+      if (snapshot) {
+        const at = Date.parse(push?.created_at || '');
+        if (Number.isFinite(at)) lastConfigPushAt = at;
+        store.getState().setConfigUpdate(snapshot);
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
         // MPOS) — nobody is there to click the ConfigSyncBanner, so without
         // this they never pick up new menu items / production-centre changes

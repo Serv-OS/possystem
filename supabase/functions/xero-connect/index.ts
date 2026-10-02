@@ -8,6 +8,12 @@
 //   GET ?code&state  -> Xero's redirect target; verifies state, exchanges the code, reads
 //                       the authorised organisation, stores tokens, redirects back to the BO.
 //
+// 30 Sep 2026: venues on one Xero organisation connected by the same Xero user share one sign
+// in. Xero supersedes the older token set when that user connects again, so the callback writes
+// the new set to every sibling row on the same tenant and Xero user, and disconnect revokes the
+// Xero connection only when no other venue uses that organisation (else only this venue's row
+// is removed, and the others keep posting).
+//
 // Tokens live only in xero_connections (service-role only) and are never returned to the
 // browser. POST actions require a signed-in Ops user WITH access to the location, mirroring
 // hubrise-connect / payments-onboard. Deploy with --no-verify-jwt (GET callback is public).
@@ -15,6 +21,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { authorizeUrl, exchangeCode, getConnections, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { xeroUserIdFromToken } from '../_shared/xeroTokens.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -84,17 +91,29 @@ Deno.serve(async (req) => {
       const conns = await getConnections(t.access_token);
       const org = conns.find((x: any) => x.tenantType === 'ORGANISATION') || conns[0];
       if (!org) return redirect(withParam(ret, 'xero', 'no_org'));
-      await sb.from('xero_connections').upsert({
-        location_id: payload.loc,
-        tenant_id: org.tenantId,
-        tenant_name: org.tenantName || null,
+      const tokenSet = {
         access_token: t.access_token,
         refresh_token: t.refresh_token,
         expires_at: new Date(Date.now() + (t.expires_in || 1800) * 1000).toISOString(),
         scopes: t.scope || XERO_SCOPES,
-        connected_by: payload.uid && payload.uid !== 'service' ? payload.uid : null,
         updated_at: new Date().toISOString(),
+      };
+      await sb.from('xero_connections').upsert({
+        location_id: payload.loc,
+        tenant_id: org.tenantId,
+        tenant_name: org.tenantName || null,
+        ...tokenSet,
+        connected_by: payload.uid && payload.uid !== 'service' ? payload.uid : null,
       }, { onConflict: 'location_id' });
+      // The same Xero user's sign in at sibling venues on this organisation: the new set supersedes theirs.
+      const uid = xeroUserIdFromToken(t.access_token);
+      if (uid) {
+        try {
+          const { data: sibs } = await sb.from('xero_connections').select('location_id,access_token').eq('tenant_id', org.tenantId).neq('location_id', payload.loc);
+          const same = (sibs || []).filter((r: any) => xeroUserIdFromToken(r.access_token) === uid).map((r: any) => r.location_id);
+          if (same.length) await sb.from('xero_connections').update(tokenSet).in('location_id', same).eq('tenant_id', org.tenantId);
+        } catch (e) { console.warn('[xero-connect] sibling token update', (e as Error)?.message || e); }
+      }
       return redirect(withParam(ret, 'xero', 'connected'));
     } catch (e) {
       console.error('[xero-connect] callback', (e as Error)?.message || e);
@@ -127,16 +146,22 @@ Deno.serve(async (req) => {
 
   if (action === 'disconnect') {
     const { data: c } = await sb.from('xero_connections').select('*').eq('location_id', locationId).maybeSingle();
+    let shared = 0;
     if (c) {
-      // Best-effort revoke at Xero (delete the connection); ignore failures.
-      try {
-        const conns = await getConnections(c.access_token);
-        const match = conns.find((x: any) => x.tenantId === c.tenant_id);
-        if (match?.id) await fetch(`https://api.xero.com/connections/${match.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${c.access_token}` } });
-      } catch { /* token may be stale; still drop our copy */ }
+      // Another venue on the same Xero organisation still posts through this connection: only
+      // this venue's copy is removed. Otherwise revoke at Xero too (best effort).
+      const { data: others } = await sb.from('xero_connections').select('location_id').eq('tenant_id', c.tenant_id).neq('location_id', locationId);
+      shared = (others || []).length;
+      if (!shared) {
+        try {
+          const conns = await getConnections(c.access_token);
+          const match = conns.find((x: any) => x.tenantId === c.tenant_id);
+          if (match?.id) await fetch(`https://api.xero.com/connections/${match.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${c.access_token}` } });
+        } catch { /* token may be stale; still drop our copy */ }
+      }
       await sb.from('xero_connections').delete().eq('location_id', locationId);
     }
-    return json({ ok: true, connected: false });
+    return json({ ok: true, connected: false, keptForOtherSites: shared });
   }
 
   return json({ error: 'Unknown action' }, 400);

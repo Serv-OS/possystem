@@ -9,6 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
+import { normaliseCheckStatus } from './voidRules.js';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
 import { copiesNeedingMasterRate } from './venueTaxRates';
@@ -821,7 +822,9 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
       // Epoch ms, matching the live session's seatedAt.
       seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      status: c.status, refunds: c.refunds || [],
+      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
+      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
+      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
       // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
       // the fields a refund reads, through the one row map realtime and MasterSync use too
@@ -868,7 +871,9 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
       // Epoch ms, matching the live session's seatedAt.
       seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      status: c.status, refunds: c.refunds || [],
+      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
+      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
+      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
       tableId: c.table_id, tableLabel: c.table_label,
       // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
       // the fields a refund reads, through the one row map realtime and MasterSync use too

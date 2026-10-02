@@ -2,6 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
+// 30 Sep 2026 (Peter, Coffee Boy): the order type a till starts on, and the dine in flag prompt.
+import { defaultOrderTypeFor, defaultOrderTypeSummary, cleanDefaultOrderType, tillOrderColumnsReady, tillOrderColumnsToKeep, DEFAULT_ORDER_TYPE_COLUMN, FLAG_PROMPT_COLUMN } from '../../lib/tillOrderType';
+import { useSyncExternalStore } from 'react';   // 30 Sep 2026: the editor watches the till order type column flag
+import { money } from '../../lib/currency';
+import { ServOSIcon } from '../../components/ServOSBrand';
+import { DISPLAY_BRAND_COLUMN, cleanDisplayBrand, displayBrandForDb, displayBrandFromKiosk, badDisplayBrandColours, hasDisplayBrandColumn, displayBrandIsSet, mergeDisplayBrand, normaliseHex, resolveDisplayBrand, EMPTY_DISPLAY_BRAND, DEFAULT_ACCENT_DARK } from '../../lib/customerDisplayBrand';
+import { displayAccent, accentUnreadable } from '../../lib/customerDisplayAccent';   // 2 Oct 2026: the preview shows the accent the display really draws
 
 const SURFACES = [
   { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
@@ -34,6 +41,51 @@ const ORDER_TYPES = [
   // till that never ticks it never offers it. No new column: device_profiles.enabled_order_types.
   { id:'drive-thru', label:'Drive thru', icon:'🚗' },
 ];
+const orderTypeLabel = (t) => ORDER_TYPES.find(o => o.id === t)?.label || (t === 'delivery' ? 'Delivery' : t);
+
+// 30 Sep 2026: true once device_profiles has default_order_type and dine_in_flag_prompt (the
+// 20260930c migration), false while it does not, null until the profiles have loaded. Set once
+// by loadFromDB (setTillOrderColumns); read by toDbRow and the save guard, and watched by the
+// editor (useTillOrderColumns) so a block already open when the answer lands redraws itself.
+// Only true shows the two settings and sends the columns (PGRST204 would fail the whole save
+// before the migration). A module variable, not editor state, so ProfileEditor's props stay as
+// they are.
+let _tillOrderColumns = isMock ? true : null;
+const _tillOrderWatchers = new Set();
+function setTillOrderColumns(value) {
+  _tillOrderColumns = value;
+  _tillOrderWatchers.forEach(fn => fn());
+}
+const subscribeTillOrderColumns = (fn) => { _tillOrderWatchers.add(fn); return () => { _tillOrderWatchers.delete(fn); }; };
+const readTillOrderColumns = () => _tillOrderColumns;
+function useTillOrderColumns() {
+  return useSyncExternalStore(subscribeTillOrderColumns, readTillOrderColumns);
+}
+
+// 30 Sep 2026: the stale tab guard for the two till order type columns (the v5.7.9 GUARDED_FIELDS
+// class: a tab that opened the profile before another tab set "Starts on" must not wipe it with a
+// rename). Kept beside GUARDED_FIELDS rather than in it so the fresh read never names a column
+// that is not there yet (lib/tillOrderType.js tillOrderColumnsToKeep decides). Reads the stored
+// values for the keys this editor session left alone and puts them on the row; a failed read drops
+// the columns so PostgREST leaves them as they are. Returns the kept values as the form holds them
+// (for this tab's list), or null when nothing was kept.
+async function keepTillOrderColumns(row, touched) {
+  const keep = tillOrderColumnsToKeep(touched, _tillOrderColumns);
+  if (!keep.length || !row?.id) return null;
+  const fresh = await supabase.from('device_profiles')
+    .select(keep.map(([, col]) => col).join(', '))
+    .eq('id', row.id).maybeSingle();
+  const kept = {};
+  for (const [formKey, col] of keep) {
+    if (fresh.data) {
+      row[col] = fresh.data[col];   // untouched: keep the DB value
+      kept[formKey] = col === FLAG_PROMPT_COLUMN ? fresh.data[col] === true : (fresh.data[col] || null);
+    } else {
+      delete row[col];              // new row, or the read failed: omit the column
+    }
+  }
+  return fresh.data ? kept : null;
+}
 
 // v4.5.1: trimmed to only the features actually wired in the codebase.
 // Removed (Apr 26): kds (KDS is now a standalone product), kiosk (own surface, not a flag),
@@ -78,6 +130,10 @@ export default function DeviceProfiles() {
   const [editing, setEditing] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [locationId, setLocationId] = useState(null);
+  // 30 Sep 2026: true once device_profiles has the customer_display_brand column (the 20260930b
+  // migration), false while it does not, null until the profiles have loaded (or when that read
+  // failed). Only true shows the branding editor and lets toDbRow send the column.
+  const [brandColumnReady, setBrandColumnReady] = useState(isMock ? true : null);
 
   // Load from Supabase on mount — replaces localStorage cache with fresh data
   useEffect(() => {
@@ -99,6 +155,13 @@ export default function DeviceProfiles() {
         if (d.profile_id) countMap[d.profile_id] = (countMap[d.profile_id] || 0) + 1;
       });
 
+      // Does the branding column exist yet? The rows say so; with no rows, ask for the column.
+      if (profileData?.length) setBrandColumnReady(hasDisplayBrandColumn(profileData[0]));
+      else if (profileData) {
+        const probe = await supabase.from('device_profiles').select(DISPLAY_BRAND_COLUMN).limit(1);
+        setBrandColumnReady(!probe.error);
+      }
+
       const mapped = (profileData || []).map(p => ({
         id: p.id, name: p.name, color: p.color || '#3b82f6',
         defaultSurface: p.default_surface || 'tables',
@@ -108,6 +171,9 @@ export default function DeviceProfiles() {
         quickScreenEnabled: p.quick_screen_enabled !== false,
         autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
         orderNotifications: p.order_notifications !== false,
+        // 30 Sep 2026: the order type the till starts on (null = automatic) and the flag prompt.
+        defaultOrderType: p[DEFAULT_ORDER_TYPE_COLUMN] || null,
+        dineInFlagPrompt: p[FLAG_PROMPT_COLUMN] === true,
         menuId: p.menu_id,
         sortOrder: p.sort_order || 0,
         deviceCount: countMap[p.id] || 0,
@@ -124,10 +190,21 @@ export default function DeviceProfiles() {
         paymentMode: p.payment_mode || 'tap_to_pay',
         customerDisplayMode: p.customer_display_mode || 'auto',
         customerDisplayImages: Array.isArray(p.customer_display_images) ? p.customer_display_images : [],
+        // 30 Sep 2026: the customer display's own branding (lib/customerDisplayBrand.js), and the
+        // kiosk look it falls back to while that is empty. kioskBrand is read only here: Kiosk
+        // settings owns it and toDbRow never writes it.
+        customerDisplayBrand: cleanDisplayBrand(p[DISPLAY_BRAND_COLUMN]),
+        kioskBrand: { name: p.kiosk_brand_name || '', color: p.kiosk_brand_color || '', logoUrl: p.kiosk_brand_logo_url || '' },
         assignedReaderId: p.assigned_reader_id || null,
       }));
       setProfiles(mapped);
       try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
+      // 30 Sep 2026: are the order type columns there yet? The rows say so; with no rows, ask.
+      if (profileData?.length) setTillOrderColumns(tillOrderColumnsReady(profileData[0]));
+      else if (profileData) {
+        const probe = await supabase.from('device_profiles').select(DEFAULT_ORDER_TYPE_COLUMN).limit(1);
+        setTillOrderColumns(!probe.error);
+      }
     };
     loadFromDB();
   }, []);
@@ -145,6 +222,12 @@ export default function DeviceProfiles() {
     quick_screen_enabled: p.quickScreenEnabled !== false,
     auto_print_receipt_on_close: p.autoPrintReceiptOnClose !== false,
     order_notifications: p.orderNotifications !== false,
+    // 30 Sep 2026: only once the columns exist (PGRST204 would fail the whole save before then).
+    // The default is kept only while its type is still enabled (cleanDefaultOrderType).
+    ...(_tillOrderColumns === true ? {
+      [DEFAULT_ORDER_TYPE_COLUMN]: cleanDefaultOrderType(p.defaultOrderType, p.enabledOrderTypes),
+      [FLAG_PROMPT_COLUMN]: p.dineInFlagPrompt === true,
+    } : {}),
     menu_id: p.menuId || null,
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
@@ -161,6 +244,8 @@ export default function DeviceProfiles() {
     customer_display_mode: p.customerDisplayMode || 'auto',
     customer_display_images: p.customerDisplayImages || [],
     assigned_reader_id: p.assignedReaderId || null,
+    // 30 Sep 2026: only once the column exists (PGRST204 would fail the whole save before it).
+    ...(brandColumnReady ? { [DISPLAY_BRAND_COLUMN]: displayBrandForDb(p.customerDisplayBrand) } : {}),
   });
 
   // Always resolve a real locationId — never save with null
@@ -177,29 +262,44 @@ export default function DeviceProfiles() {
   // BEFORE a menu was pinned held menuId undefined, so ANY save from that tab (even a
   // rename) nulled the pin. Same class as the vanishing-categories saga. On update,
   // these keep the DB value unless THIS editor session actually touched them.
+  // Third entry: the DB value as the form holds it, for putting a kept value back into this
+  // tab's list after the save (so the next editor opened here starts from what was stored).
   const GUARDED_FIELDS = [
-    ['menuId', 'menu_id'],
-    ['serviceCharge', 'service_charge'],
-    ['trainingMode', 'training_mode'],
+    ['menuId', 'menu_id', v => v],
+    ['serviceCharge', 'service_charge', v => v || null],
+    ['trainingMode', 'training_mode', v => v === true],
+    // 30 Sep 2026: the customer display's own branding, once its column exists. A tab opened
+    // before someone set it elsewhere cannot wipe it by saving a rename.
+    ...(brandColumnReady ? [['customerDisplayBrand', DISPLAY_BRAND_COLUMN, cleanDisplayBrand]] : []),
   ];
 
+  // The tab's own copy of the profiles (state + the rpos-device-profiles cache), one row replaced.
+  const putLocal = (p) => {
+    setProfiles(ps => ps.map(x => x.id === p.id ? p : x));
+    try {
+      const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
+      const exists = cur.find(x => x.id === p.id);
+      const next = exists
+        ? cur.map(x => x.id === p.id ? p : x)
+        : [...cur, p];
+      localStorage.setItem('rpos-device-profiles', JSON.stringify(next));
+    } catch {}
+  };
+
   // `touched` is the Set of form keys the editor session explicitly changed (null =
-  // unknown caller: keep today's full-overwrite behaviour).
-  const save = async (updated, touched = null) => {
+  // unknown caller: keep today's full-overwrite behaviour). `opened` is the profile as the
+  // editor opened with it (the base for merging the display branding).
+  const save = async (form, touched = null, opened = null) => {
     // Close panel immediately so it feels instant
     setEditing(null);
     setShowNew(false);
 
+    // 30 Sep 2026: keep what is stored, not what was typed (trimmed name, lower case colour codes),
+    // so reopening the editor in this tab shows the saved branding.
+    const updated = { ...form, customerDisplayBrand: cleanDisplayBrand(form.customerDisplayBrand) };
+
     // Update local state and localStorage immediately
-    setProfiles(ps => ps.map(p => p.id === updated.id ? updated : p));
-    try {
-      const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
-      const exists = cur.find(p => p.id === updated.id);
-      const next = exists
-        ? cur.map(p => p.id === updated.id ? updated : p)
-        : [...cur, updated];
-      localStorage.setItem('rpos-device-profiles', JSON.stringify(next));
-    } catch {}
+    putLocal(updated);
 
     markBOChange();
 
@@ -209,27 +309,46 @@ export default function DeviceProfiles() {
         if (!locId) throw new Error('Could not resolve location ID');
 
         const row = toDbRow(updated, locId);
+        // 30 Sep 2026: keep the stored Starts on / flag number unless this session changed them.
+        const keptTillOrder = await keepTillOrderColumns(row, touched);
+        if (keptTillOrder) setProfiles(ps => ps.map(p => p.id === row.id ? { ...p, ...keptTillOrder } : p));
         // Use update for existing profiles, insert for new ones. The existence check
         // doubles as the fresh read for the clobber guard (no extra round trip).
         let error;
         const existing = await supabase.from('device_profiles')
-          .select('id, menu_id, service_charge, training_mode')
+          .select(['id', ...GUARDED_FIELDS.map(([, col]) => col)].join(', '))
           .eq('id', row.id).maybeSingle();
+        const kept = {};   // guarded fields that kept the DB value: form key -> value as the form holds it
         if (existing.data || existing.error) {
           // Row exists, or the fresh read failed and we cannot tell. Treat both as
           // an update: a genuinely new row then fails loudly on the 0-row check
           // below instead of a duplicate-key insert error, never silently.
           if (touched) {
-            for (const [formKey, col] of GUARDED_FIELDS) {
+            for (const [formKey, col, fromDb] of GUARDED_FIELDS) {
               if (touched.has(formKey)) continue;                // session edited it: write the form value
-              if (existing.data) row[col] = existing.data[col];  // untouched: keep the DB value
+              if (existing.data) {                               // untouched: keep the DB value
+                row[col] = existing.data[col];
+                kept[formKey] = fromDb(existing.data[col]);
+              }
               else delete row[col];                              // fresh read failed: omit the column so PostgREST leaves it alone
+            }
+            // 30 Sep 2026 (review): branding this session changed is merged field by field with the
+            // database copy (mergeDisplayBrand), so a tab open since before someone else set the
+            // name and logo, that only picks an accent colour here, keeps that name and logo.
+            if (brandColumnReady && touched.has('customerDisplayBrand') && existing.data && opened) {
+              const merged = mergeDisplayBrand(opened.customerDisplayBrand, updated.customerDisplayBrand, existing.data[DISPLAY_BRAND_COLUMN]);
+              row[DISPLAY_BRAND_COLUMN] = displayBrandForDb(merged);
+              kept.customerDisplayBrand = merged;
             }
           }
           const { error: e, data: dataUp } = await supabase.from('device_profiles').update(row).eq('id', row.id).select('id');
           if (e) throw e;
           if (!dataUp || dataUp.length === 0) throw new Error(`Profile update matched 0 rows for id=${row.id}. Column may be missing (run migration) or RLS blocked it.`);
           error = e;
+          // 30 Sep 2026 (review): the list above still holds this tab's stale copy of every field
+          // the guard kept. Put the stored value back, or the next editor opened here starts from
+          // the stale one and a later save of that field would write it.
+          if (Object.keys(kept).length) putLocal({ ...updated, ...kept });
         } else {
           const { error: e } = await supabase.from('device_profiles').insert(row);
           error = e;
@@ -249,7 +368,7 @@ export default function DeviceProfiles() {
 
   const addProfile = async (profile) => {
     const nextId = `prof-${Date.now()}`;
-    const newProfile = { ...profile, id: nextId, deviceCount: 0 };
+    const newProfile = { ...profile, id: nextId, deviceCount: 0, customerDisplayBrand: cleanDisplayBrand(profile.customerDisplayBrand) };
 
     // Close panel immediately
     setShowNew(false);
@@ -361,6 +480,8 @@ export default function DeviceProfiles() {
                   {prof.trainingMode && <ConfigRow label="Training mode" value="🎓 ON — nothing committed" valueColor="#B45309"/>}
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
                   <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
+                  <ConfigRow label="Starts on" value={defaultOrderTypeSummary(prof, orderTypeLabel)}/>
+                  {prof.dineInFlagPrompt && <ConfigRow label="Flag number" value="Asked on dine in orders" valueColor="var(--acc)"/>}
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Auto-print receipt" value={prof.autoPrintReceiptOnClose !== false ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Section" value={prof.assignedSection || 'All sections'}/>
@@ -389,6 +510,8 @@ export default function DeviceProfiles() {
                     autoPrintReceiptOnClose: prof.autoPrintReceiptOnClose !== false,
                     menuId: prof.menuId,
                     receiptPrinterId: prof.receiptPrinterId,
+                    defaultOrderType: prof.defaultOrderType || null,   // 30 Sep 2026 (lib/tillOrderType.js)
+                    dineInFlagPrompt: prof.dineInFlagPrompt === true,
                   });
                   showToast(`"${prof.name}" applied to this terminal`, 'success');
                 }} style={{
@@ -401,8 +524,156 @@ export default function DeviceProfiles() {
         })}
       </div>
 
-      {editing && <ProfileEditor profile={editing} onSave={save} onDelete={() => { deleteProfile(editing.id); setEditing(null); }} onClose={() => setEditing(null)}/>}
-      {showNew  && <ProfileEditor profile={null} onSave={addProfile} onClose={() => setShowNew(false)}/>}
+      {editing && <ProfileEditor profile={editing} brandReady={brandColumnReady} onSave={save} onDelete={() => { deleteProfile(editing.id); setEditing(null); }} onClose={() => setEditing(null)}/>}
+      {showNew  && <ProfileEditor profile={null} brandReady={brandColumnReady} onSave={addProfile} onClose={() => setShowNew(false)}/>}
+    </div>
+  );
+}
+
+// ── Customer display branding ─────────────────────────────────────────────────
+// Peter, 30 Sep 2026: "The customer branding for the kiosk and the customer display should be
+// separate". The display's own name, accent colour, background colour and logo, stored in
+// device_profiles.customer_display_brand (lib/customerDisplayBrand.js). While none is set the
+// display shows the kiosk branding, as before. Once any field is set the display uses only its
+// own, and an empty field is the standard look, never the kiosk's, so a kiosk change no longer
+// reaches the display.
+const BRAND_LABEL = { display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 };
+const BRAND_FIELD = { fontSize:12, fontWeight:700, color:'var(--t2)', marginBottom:6 };
+const BRAND_HINT = { fontSize:11, color:'var(--t4)', marginTop:4 };
+const BRAND_NOTE = { fontSize:12, marginBottom:10, lineHeight:1.45 };
+const BRAND_INPUT = { width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box' };
+const BRAND_BTN = { padding:'8px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t2)', cursor:'pointer', fontSize:12, fontWeight:600, fontFamily:'inherit', flexShrink:0 };
+const DISPLAY_DARK_BG = '#0f1211';
+
+function BrandColourRow({ label, value, pickerValue, onChange, emptyHint }) {
+  const raw = value || '';
+  const bad = raw.trim() !== '' && !normaliseHex(raw);
+  return (
+    <div style={{ marginBottom:12 }}>
+      <div style={BRAND_FIELD}>{label}</div>
+      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+        <input type="color" aria-label={label} value={pickerValue} onChange={e => onChange(e.target.value)}
+          style={{ width:42, height:38, padding:2, borderRadius:8, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', cursor:'pointer', flexShrink:0 }}/>
+        <input aria-label={label + ' code'} value={raw} onChange={e => onChange(e.target.value)} placeholder="Not set" style={BRAND_INPUT}/>
+        {raw && <button type="button" onClick={() => onChange('')} style={BRAND_BTN}>Clear</button>}
+      </div>
+      {bad
+        ? <div style={{ ...BRAND_HINT, color:'var(--red)' }}>Type a colour code like #15C26A, or pick one. You can save once it is fixed or cleared.</div>
+        : !raw && <div style={BRAND_HINT}>{emptyHint}</div>}
+    </div>
+  );
+}
+
+function DisplayBrandEditor({ ready, brand, kiosk, onChange, onReplace, onUploadLogo, uploading }) {
+  if (ready !== true) {
+    return (
+      <div style={{ marginBottom:18 }}>
+        <label style={BRAND_LABEL}>Customer display branding</label>
+        <div style={{ ...BRAND_NOTE, color:'var(--t3)' }}>
+          {ready === false
+            ? "The customer display's own branding needs a database update before it can be set here. Until then the display uses the kiosk branding."
+            : 'The customer display branding has not loaded. Refresh Back Office to set it. Until then the display keeps what it shows now.'}
+        </div>
+      </div>
+    );
+  }
+  const b = { ...EMPTY_DISPLAY_BRAND, ...(brand || {}) };
+  const k = kiosk || {};
+  const ownSet = displayBrandIsSet(b);
+  const kioskHas = !!(k.name || k.color || k.logoUrl);
+  // What the display will show with these settings (dark look when no background is set).
+  const look = resolveDisplayBrand({
+    kiosk_brand_name: k.name, kiosk_brand_color: k.color, kiosk_brand_logo_url: k.logoUrl,
+    [DISPLAY_BRAND_COLUMN]: b,
+  }, { theme: 'dark', placeName: 'Venue name' });
+  const ink = look.dark ? '#E9ECEA' : '#16191C';
+  const kioskHex = normaliseHex(k.color);
+  // 2 Oct 2026: the display draws the accent only when it reads on its background, else the
+  // standard green, else its text colour (lib/customerDisplayAccent.js, Barnsley's black on the
+  // dark display). The preview uses the same rule, and says so when the colour is swapped.
+  const previewBg = look.bgColor || DISPLAY_DARK_BG;
+  const accent = displayAccent(look.color, { dark: look.dark, bg: previewBg, text: ink });
+  const accentSwapped = look.from.color !== 'default' && accentUnreadable(look.color, { dark: look.dark, bg: previewBg });
+  const accentNote = !accentSwapped ? null
+    : look.bgColor
+      ? 'This accent colour is too close to the background to read, so the display shows a colour that can be read instead.'
+      : 'This accent colour is too close to the dark background to read. A display in the dark look shows the standard green instead.';
+
+  let note;
+  if (ownSet) note = 'The customer display uses this branding, and the kiosk keeps its own. Empty fields use the standard look, and an empty background follows the till.';
+  else if (kioskHas) note = 'Using the kiosk branding until you set this. Once you set anything here, the display stops following the kiosk.';
+  else note = 'This profile has no kiosk branding, so the display shows the venue name and the standard look until you set this.';
+
+  return (
+    <div style={{ marginBottom:18 }}>
+      <label style={BRAND_LABEL}>Customer display branding</label>
+      <div style={{ ...BRAND_NOTE, color: ownSet ? 'var(--t2)' : 'var(--t3)' }}>{note}</div>
+      {!ownSet && kioskHas && (
+        <button type="button" onClick={() => onReplace(displayBrandFromKiosk(k))} style={{ ...BRAND_BTN, marginBottom:12 }}>
+          Start from the kiosk branding
+        </button>
+      )}
+
+      {/* Preview */}
+      <div aria-label="Customer display preview" style={{
+        display:'flex', alignItems:'center', gap:12, padding:'12px 14px', borderRadius:12, marginBottom:14,
+        background: previewBg, color: ink, borderLeft:`4px solid ${accent}`,
+      }}>
+        {look.logoUrl
+          ? <img src={look.logoUrl} alt="" style={{ height:30, maxWidth:110, objectFit:'contain' }}/>
+          : <ServOSIcon size={26} style={{ color: ink }}/>}
+        <div style={{ fontSize:15, fontWeight:700, flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{look.name}</div>
+        <div style={{ fontSize:18, fontWeight:900, color: accent }}>{money(12.5)}</div>
+      </div>
+      {accentNote && <div style={{ ...BRAND_NOTE, color:'var(--t3)', marginTop:-6 }}>{accentNote}</div>}
+
+      <div style={{ marginBottom:12 }}>
+        <div style={BRAND_FIELD}>Name</div>
+        <input aria-label="Customer display name" value={b.name} maxLength={60} onChange={e => onChange('name', e.target.value)}
+          placeholder={!ownSet && k.name ? `Kiosk name: ${k.name}` : 'Venue name'} style={BRAND_INPUT}/>
+        {!b.name.trim() && <div style={BRAND_HINT}>{
+          ownSet ? 'Shows the venue name.'
+            : k.name ? 'Using the kiosk name until you set this.' : 'Shows the venue name until you set this.'
+        }</div>}
+      </div>
+
+      <BrandColourRow
+        label="Accent colour"
+        value={b.color}
+        pickerValue={normaliseHex(b.color) || (!ownSet && kioskHex) || DEFAULT_ACCENT_DARK.toLowerCase()}
+        onChange={v => onChange('color', v)}
+        emptyHint={ownSet ? 'Uses the standard green.'
+          : k.color ? `Using the kiosk colour (${k.color}) until you set this.` : 'Using the standard green until you set this.'}
+      />
+
+      <BrandColourRow
+        label="Background colour"
+        value={b.bgColor}
+        pickerValue={normaliseHex(b.bgColor) || DISPLAY_DARK_BG}
+        onChange={v => onChange('bgColor', v)}
+        emptyHint="Follows the till's light or dark look until you set this."
+      />
+
+      <div>
+        <div style={BRAND_FIELD}>Logo</div>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          {b.logoUrl && (
+            <div style={{ height:40, padding:4, borderRadius:8, border:'1px solid var(--bdr2)', background:'var(--bg3)', display:'flex', alignItems:'center' }}>
+              <img src={b.logoUrl} alt="Customer display logo" style={{ height:30, maxWidth:120, objectFit:'contain' }}/>
+            </div>
+          )}
+          <label style={{ ...BRAND_BTN, display:'inline-block', border:'1px dashed var(--bdr2)', background:'transparent' }}>
+            {uploading ? 'Uploading…' : b.logoUrl ? 'Replace logo' : '+ Upload logo'}
+            <input type="file" accept="image/*" style={{ display:'none' }} disabled={uploading}
+              onChange={e => { const f = e.target.files?.[0]; if (f) onUploadLogo(f); e.target.value = ''; }}/>
+          </label>
+          {b.logoUrl && <button type="button" onClick={() => onChange('logoUrl', '')} style={BRAND_BTN}>Remove</button>}
+        </div>
+        {!b.logoUrl && <div style={BRAND_HINT}>{
+          ownSet ? 'Shows the Serv OS mark.'
+            : k.logoUrl ? 'Using the kiosk logo until you set this.' : 'Shows the Serv OS mark until you set this.'
+        }</div>}
+      </div>
     </div>
   );
 }
@@ -416,8 +687,66 @@ function ConfigRow({ label, value, valueColor, truncate }) {
   );
 }
 
+// ── Starts on + flag number (30 Sep 2026) ─────────────────────────────────────
+// Peter, Coffee Boy: "Huddersfield have one POS that only does drive thru but it's defaulting to
+// Dine in", and for coffee shops with numbered flags and no fixed tables, "prompts for a table
+// flag ... then the KDS and production tickets say Table and the number typed". Both live on the
+// device profile (lib/tillOrderType.js). Greyed out until the 20260930c migration has run.
+const TILL_LABEL = { display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 };
+const TILL_HINT = { fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.45 };
+
+function TillOrderTypeSettings({ form, upd }) {
+  const ready = useTillOrderColumns();
+  if (ready !== true) {
+    return (
+      <div style={{ marginBottom:18 }}>
+        <label style={TILL_LABEL}>Starts on and flag number</label>
+        <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.45 }}>
+          {ready === false
+            ? 'Choosing the order type a till starts on, and asking for a flag number on dine in orders, need a database update first. Until then a till starts on its only enabled order type, or dine in.'
+            : 'These settings are still loading. If they do not appear, refresh Back Office.'}
+        </div>
+      </div>
+    );
+  }
+  const enabled = form.enabledOrderTypes || [];
+  const current = cleanDefaultOrderType(form.defaultOrderType, enabled) || '';
+  const auto = defaultOrderTypeFor({ enabledOrderTypes: enabled, defaultOrderType: null });
+  const flagOn = form.dineInFlagPrompt === true;
+  const dineIn = enabled.includes('dine-in');
+  return (
+    <div style={{ marginBottom:18 }}>
+      <label style={TILL_LABEL}>Starts on</label>
+      <select aria-label="Order type the till starts on" value={current} onChange={e => upd('defaultOrderType', e.target.value || null)}
+        style={{ width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
+        <option value="">Automatic ({orderTypeLabel(auto)})</option>
+        {ORDER_TYPES.filter(t => enabled.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+      </select>
+      <div style={TILL_HINT}>The order type a till on this profile opens on, and goes back to after each order. Automatic means the only enabled type, or dine in. Floor tables are always dine in.</div>
+
+      <label style={{ ...TILL_LABEL, marginTop:14 }}>Flag number</label>
+      <button type="button" onClick={() => upd('dineInFlagPrompt', !flagOn)} aria-pressed={flagOn} style={{
+        width:'100%', padding:'11px 14px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+        background: flagOn ? 'var(--acc-d)' : 'var(--bg3)',
+        border:`1.5px solid ${flagOn ? 'var(--acc)' : 'var(--bdr)'}`,
+        color: flagOn ? 'var(--acc)' : 'var(--t2)', fontSize:13, fontWeight:700, transition:'all .1s',
+        display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
+      }}>
+        <span>Ask for a flag number on dine in orders</span>
+        <span style={{ fontSize:11, fontWeight:800 }}>{flagOn ? 'ON' : 'OFF'}</span>
+      </button>
+      <div style={TILL_HINT}>
+        {flagOn
+          ? 'Before a dine in order is sent or paid, staff type the number on the customer\'s flag. Staff cannot skip it. Kitchen screens, kitchen tickets, the receipt and Orders then say Table and that number.'
+          : 'For coffee shops with numbered flags and no fixed tables. Kitchen screens and tickets say Table and the number typed.'}
+        {!dineIn && ' Dine in is not enabled on this profile, so nothing asks until it is.'}
+      </div>
+    </div>
+  );
+}
+
 // ── Profile editor modal ───────────────────────────────────────────────────────
-function ProfileEditor({ profile, onSave, onDelete, onClose }) {
+function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
   const { menus } = useStore();
   const isNew = !profile;
   const [form, setForm] = useState(profile || {
@@ -429,6 +758,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
     trainingMode:false,
     signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
+    defaultOrderType:null, dineInFlagPrompt:false,   // 30 Sep 2026 (lib/tillOrderType.js)
   });
 
   // v5.7.9: record which fields THIS editor session actually changed. Every control
@@ -440,25 +770,54 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
   const touchedRef = useRef(new Set());
   const upd = (key, val) => { touchedRef.current.add(key); setForm(f => ({ ...f, [key]: val })); };
 
-  // Customer-display slideshow image upload (kiosk-assets public bucket).
+  // Customer-display uploads (kiosk-assets public bucket, customer-display/ folder).
+  const putDisplayAsset = async (file, tag = '') => {
+    const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `customer-display/${Date.now()}-${tag}${safe}`;
+    const { error } = await supabase.storage.from('kiosk-assets').upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
+    if (error) throw error;
+    return supabase.storage.from('kiosk-assets').getPublicUrl(path).data?.publicUrl || '';
+  };
   const [uploadingImg, setUploadingImg] = useState(false);
   const uploadDisplayImage = async (file) => {
     if (!file || isMock || !supabase) return;
     setUploadingImg(true);
     try {
-      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const path = `customer-display/${Date.now()}-${safe}`;
-      const { error } = await supabase.storage.from('kiosk-assets').upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
-      if (error) throw error;
-      const { data } = supabase.storage.from('kiosk-assets').getPublicUrl(path);
-      if (data?.publicUrl) {
-        touchedRef.current.add('customerDisplayImages'); // only setForm call that bypasses upd()
-        setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), data.publicUrl ] }));
+      const url = await putDisplayAsset(file);
+      if (url) {
+        touchedRef.current.add('customerDisplayImages'); // setForm call that bypasses upd()
+        setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), url ] }));
       }
     } catch (e) {
       alert('Image upload failed: ' + (e.message || e) + '\n(Check the kiosk-assets storage bucket exists and is public.)');
     } finally {
       setUploadingImg(false);
+    }
+  };
+  // 30 Sep 2026: the customer display's own branding (lib/customerDisplayBrand.js). Functional
+  // setForm so a logo upload finishing after a typed change never loses either.
+  const updBrand = (key, val) => {
+    touchedRef.current.add('customerDisplayBrand');
+    setForm(f => ({ ...f, customerDisplayBrand: { ...EMPTY_DISPLAY_BRAND, ...(f.customerDisplayBrand || {}), [key]: val } }));
+  };
+  const replaceBrand = (next) => {
+    touchedRef.current.add('customerDisplayBrand');
+    setForm(f => ({ ...f, customerDisplayBrand: { ...EMPTY_DISPLAY_BRAND, ...(next || {}) } }));
+  };
+  // 30 Sep 2026 (review): a colour code that is not one would be dropped on save without a word,
+  // so Save waits until it is fixed or cleared (the field says why).
+  const badBrandColours = brandReady === true ? badDisplayBrandColours(form.customerDisplayBrand) : [];
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const uploadDisplayLogo = async (file) => {
+    if (!file || isMock || !supabase) return;
+    setUploadingLogo(true);
+    try {
+      const url = await putDisplayAsset(file, 'logo-');
+      if (url) updBrand('logoUrl', url);
+    } catch (e) {
+      alert('Logo upload failed: ' + (e.message || e) + '\n(Check the kiosk-assets storage bucket exists and is public.)');
+    } finally {
+      setUploadingLogo(false);
     }
   };
   const toggleOrderType = id => { const arr = form.enabledOrderTypes || []; upd('enabledOrderTypes', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
@@ -576,6 +935,9 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             </div>
           </div>
 
+          {/* 30 Sep 2026 (Peter, Coffee Boy): what the till starts on, and the dine in flag prompt */}
+          <TillOrderTypeSettings form={form} upd={upd}/>
+
           {/* Customer-facing display */}
           <div style={{ marginBottom:18 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Customer-facing display</label>
@@ -618,6 +980,17 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             </label>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>Cycled as a slideshow when idle, and shown on the left half while an order is rung up.</div>
           </div>
+
+          {/* Customer display branding (30 Sep 2026): its own look, separate from the kiosk's */}
+          <DisplayBrandEditor
+            ready={brandReady}
+            brand={form.customerDisplayBrand}
+            kiosk={form.kioskBrand}
+            onChange={updBrand}
+            onReplace={replaceBrand}
+            onUploadLogo={uploadDisplayLogo}
+            uploading={uploadingLogo}
+          />
 
           {/* Section */}
           <div style={{ marginBottom:18 }}>
@@ -849,7 +1222,9 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
         <div style={{ padding:'12px 20px', borderTop:'1px solid var(--bdr)', display:'flex', gap:8, flexShrink:0 }}>
           {!isNew && onDelete && <button onClick={onDelete} style={{ padding:'8px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Delete</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0} onClick={() => onSave(form, touchedRef.current)}>
+          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0 || badBrandColours.length > 0}
+            title={badBrandColours.length ? 'Fix or clear the colour code in Customer display branding to save.' : undefined}
+            onClick={() => onSave(form, touchedRef.current, profile)}>
             {isNew ? 'Create profile' : 'Save changes'}
           </button>
         </div>

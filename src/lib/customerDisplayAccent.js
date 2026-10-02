@@ -15,6 +15,13 @@
 // when no colour is set. The colour is handed back as '#rrggbb', so the display's '<colour>44'
 // style tints stay valid CSS.
 //
+// 2 Oct 2026 (merged with the display's own branding, lib/customerDisplayBrand.js): that resolver
+// says WHICH colour is the brand (the display's own, else the kiosk's, exactly as stored, so a
+// black one still comes through) and whether the display has its own background. This rule runs
+// after it, against the background the display really has. An own background can be one the
+// ServOS green does not read on either (a mid red, a green), so with `text` given the last
+// resort is the display's text colour, which the resolver picks to read on that background.
+//
 // Pure: imports only kioskTheme.js (itself pure), so node:test can load it.
 import { parseCssColor, contrastRatio } from './kioskTheme.js';
 
@@ -28,18 +35,36 @@ export const MIN_ACCENT_CONTRAST = 3;
 
 const hex2 = (v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
 
+const groundFor = (dark, bg) => parseCssColor(bg) || parseCssColor(dark ? DISPLAY_BG_DARK : DISPLAY_BG_LIGHT);
+
+/**
+ * True when `color` is a colour and does NOT read on the display's background, that is, when
+ * displayAccent swaps it for another. Back Office uses it to say so beside its preview.
+ */
+export function accentUnreadable(color, { dark = true, bg = null } = {}) {
+  const rgb = parseCssColor(color);
+  const ground = groundFor(dark, bg);
+  return !!rgb && !!ground && contrastRatio(rgb, ground) < MIN_ACCENT_CONTRAST;
+}
+
 /**
  * The accent colour for the display.
- *   color  the brand colour (the kiosk's kiosk_brand_color, or anything else offered)
+ *   color  the brand colour (the display's own, else the kiosk's kiosk_brand_color)
  *   dark   true for the dark look (the default), false for light
  *   bg     the background it is drawn on; the look's own background when not given
- * Returns '#rrggbb': the colour when it reads on the background, else the default accent.
+ *   text   the display's text colour, the last resort on an own background where neither the
+ *          brand colour nor the default accent reads; not given, the default accent is the end
+ * Returns '#rrggbb': the colour when it reads on the background, else the default accent, else
+ * (only when that does not read either and `text` does) the text colour.
  */
-export function displayAccent(color, { dark = true, bg = null } = {}) {
+export function displayAccent(color, { dark = true, bg = null, text = null } = {}) {
   const fallback = dark ? DISPLAY_ACCENT_DARK : DISPLAY_ACCENT_LIGHT;
+  const ground = groundFor(dark, bg);
+  if (!ground) return fallback;
+  const reads = (rgb) => !!rgb && contrastRatio(rgb, ground) >= MIN_ACCENT_CONTRAST;
   const rgb = parseCssColor(color);
-  if (!rgb) return fallback;
-  const ground = parseCssColor(bg) || parseCssColor(dark ? DISPLAY_BG_DARK : DISPLAY_BG_LIGHT);
-  if (!ground || contrastRatio(rgb, ground) < MIN_ACCENT_CONTRAST) return fallback;
-  return '#' + rgb.map(hex2).join('');
+  if (reads(rgb)) return '#' + rgb.map(hex2).join('');
+  if (reads(parseCssColor(fallback))) return fallback;
+  const ink = parseCssColor(text);
+  return reads(ink) ? '#' + ink.map(hex2).join('') : fallback;
 }

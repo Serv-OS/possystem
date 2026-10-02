@@ -107,6 +107,7 @@ import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
 import KioskStaffAlert from './components/KioskStaffAlert';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
+import CardAdoptedBanner from './components/CardAdoptedBanner';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
@@ -395,6 +396,10 @@ function profileRowToProfile(row) {
     signoutIdleSeconds: row.signout_idle_seconds || 0,   // v5.5.731 auto sign-out
     signoutOnPay: row.signout_on_pay === true,
     signoutOnSend: row.signout_on_send === true,
+    // 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag
+    // prompt (lib/tillOrderType.js). The columns arrive with 20260930c; missing = automatic, off.
+    defaultOrderType: row.default_order_type || null,
+    dineInFlagPrompt: row.dine_in_flag_prompt === true,
   };
 }
 
@@ -417,6 +422,8 @@ function configFromProfile(profile) {
     orderNotifications: profile.orderNotifications !== false,
     menuId: profile.menuId || null,
     trainingMode: profile.trainingMode === true,   // v5.5.645: per-device training
+    defaultOrderType: profile.defaultOrderType || null,        // 30 Sep 2026, see profileRowToProfile
+    dineInFlagPrompt: profile.dineInFlagPrompt === true,
     // v5.5.731: auto sign-out policy, how this device signs the operator out
     signout: {
       idleSeconds: Number(profile.signoutIdleSeconds) || 0,
@@ -479,6 +486,7 @@ const CONFIG_COMPARE_KEYS = [
   'autoPrintReceiptOnClose', 'orderNotifications', 'menuId', 'trainingMode',
   'enabledOrderTypes', 'hiddenFeatures', 'serviceCharge', 'signout',
   'paymentMode', 'assignedReaderId', 'runnerMode', 'customerDisplayMode',   // v5.8.27
+  'defaultOrderType', 'dineInFlagPrompt',   // 30 Sep 2026
 ];
 function deviceConfigChanged(prev, next) {
   if (!prev) return true;
@@ -773,6 +781,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               orderNotifications: existingConfig?.orderNotifications !== false,
               menuId: existingConfig?.menuId || null,
               trainingMode: existingConfig?.trainingMode === true,   // v5.5.645: preserve training flag on fallback
+              defaultOrderType: existingConfig?.defaultOrderType || null,   // 30 Sep 2026
+              dineInFlagPrompt: existingConfig?.dineInFlagPrompt === true,
             };
             applyDeviceConfig(minConfig);   // v5.7.7: same apply path (change-gated)
           }
@@ -1006,6 +1016,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       <AutoSignout />
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
+      {/* 30 Sep 2026: a card sale booked after its checkout closed (sticky, see the component) */}
+      <CardAdoptedBanner />
       <TrainingModeBanner />
       {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
           surface panels sit as separate rounded glass cards over the scene */}

@@ -9,8 +9,12 @@ import { formStartsAsap } from '../lib/customerFormAsap';
 import { activePhoneRegion } from '../lib/customerLookup';
 import { storedPhoneIs } from '../../supabase/functions/_shared/phoneKey.js';
 import { orderNotesFromForm } from '../lib/orderCustomerNotes';
+// 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
+import { customerFieldsFor, customerFormProblem } from '../lib/customerDetailsRule';
 
-export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
+// forTable: a dine in form opened on a floor table ('Attach to table'); false for a walk in dine in
+// order ('Add customer to order'). Missing means a table (TablesSurface never passes it).
+export default function CustomerModal({ orderType, existing, onConfirm, onCancel, forTable = true }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, showDelayedToast, takeawayCustomerDetails, autoJoinCustomerByEmail } = useStore();
   // v5.8.6: quote the same wait the kitchen is actually carrying. The slot grid
   // was hard-coded to now+15 regardless of the venue's lead time, so a caller
@@ -100,10 +104,15 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const isDriveThru = orderType === 'drive-thru';
   // v5.5.799: quick-service venues can relax takeaway/collection to a single name field
   // ('name' mode — and 'none' mode when this modal is opened explicitly via Add customer).
-  // Dine-in loyalty attach and delivery always keep the full form.
   // Drive thru (16 Sep 2026) is name only whatever the setting says: the car is at the
   // window, there is no one to phone. No slot, no address.
-  const nameOnly = isDriveThru || ((orderType === 'takeaway' || isCollection) && takeawayCustomerDetails !== 'full' && !!takeawayCustomerDetails);
+  // 30 Sep 2026 (Peter, Coffee Boy: "Dine in users' phone and name still forced. It only turns
+  // it off for collection and takeaway"): the same setting now covers dine in. Under 'name' or
+  // 'none' a dine in customer attaches on a name alone; the phone stays on the form as optional,
+  // because the returning customer search and loyalty run on it (lib/customerDetailsRule.js).
+  // Delivery always keeps the full form.
+  const fields = customerFieldsFor({ orderType, mode: takeawayCustomerDetails });
+  const isDineIn = orderType === 'dine-in';
 
   // Live phone/name search
   // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
@@ -146,12 +155,9 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
 
   const handleConfirm = async () => {
     if (busyRef.current) return;
-    if (!String(name || '').trim() || (!nameOnly && !String(phone || '').trim())) {
-      showToast(nameOnly ? 'Customer name is required' : 'Name and phone number are required', 'error'); return;
-    }
-    if (isDelivery && (!addr1.trim() || !postcode.trim())) {
-      showToast('Delivery address and postcode are required', 'error'); return;
-    }
+    // 30 Sep 2026: one gate for every order type (lib/customerDetailsRule.js customerFormProblem).
+    const problem = customerFormProblem({ orderType, mode: takeawayCustomerDetails, name, phone, address: addr1, postcode });
+    if (problem) { showToast(problem, 'error'); return; }
     busyRef.current = true; setBusy(true);
     await confirmChecked().catch((e) => console.warn('[CustomerModal] confirm failed:', e?.message || e));
     busyRef.current = false; setBusy(false);
@@ -206,7 +212,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
     // empty profile the phone is on is folded into it (lib/customerAutoJoin.js). Only an email that
     // is NEW in this form joins: one that came in with a reopened order or a table's guest
     // (writable with the public key) never does. Anything else saves phone only, as before.
-    if (!nameOnly && phone.trim() && typeof autoJoinCustomerByEmail === 'function') {
+    if (fields.phoneShown && phone.trim() && typeof autoJoinCustomerByEmail === 'function') {
       // Never throws (the store answers 'none' on anything unexpected); the phone only save runs.
       const joined = await autoJoinCustomerByEmail(customer, { openedWithEmail: existing?.email || '' }).catch(() => null);
       if (joined?.customer) customer = joined.customer;
@@ -236,10 +242,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)' }}>
-              {isDriveThru ? '🚗 Drive thru order' : orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
+              {isDriveThru ? '🚗 Drive thru order' : orderType === 'collection' ? '📦 Collection order' : isDineIn ? (forTable ? '👤 Add customer to table' : '👤 Add customer to order') : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
-              {existing ? 'Editing customer details: update only what you need' : (isDriveThru ? 'Name or car, so the order reaches the right window' : orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
+              {existing ? 'Editing customer details: update only what you need' : (isDriveThru ? 'Name or car, so the order reaches the right window' : orderType === 'collection' ? 'Customer collects from the counter' : isDineIn ? (fields.phone ? 'Attach a customer so this visit counts toward their loyalty' : 'A name is enough. Add the phone so this visit counts toward their loyalty') : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
             </div>
           </div>
           <button onClick={cancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
@@ -284,11 +290,12 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             </label>
             <input style={inputStyle} placeholder={isDriveThru ? 'Name or car, e.g. Sam or red Golf' : 'Customer name'} value={name} onChange={e => setName(e.target.value)}/>
           </div>
-          {/* v5.5.799: name-only mode — quick service takes just the name */}
-          {!nameOnly && (<>
+          {/* v5.5.799: name-only mode — quick service takes just the name.
+              30 Sep 2026: dine in keeps the phone on the form, starred only when the setting requires it. */}
+          {fields.phoneShown && (<>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
-              Phone <span style={{ color: 'var(--red)' }}>*</span>
+              Phone {fields.phone ? <span style={{ color: 'var(--red)' }}>*</span> : <span style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'none', letterSpacing: 0 }}>(optional, for loyalty)</span>}
             </label>
             <input style={inputStyle} type="tel" placeholder="07700 000000" value={phone} onChange={e => setPhone(e.target.value)}/>
           </div>
@@ -382,7 +389,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost" style={{ flex: 1 }} onClick={cancel}>Cancel</button>
           <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15, opacity: busy ? .6 : 1 }} onClick={handleConfirm} disabled={busy}>
-            {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : isDriveThru ? 'Confirm drive thru →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
+            {isDineIn ? (forTable ? 'Attach to table' : 'Add to order') : isDelivery ? 'Confirm delivery →' : isDriveThru ? 'Confirm drive thru →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
           </button>
         </div>
       </div>

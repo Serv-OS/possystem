@@ -15,6 +15,8 @@ import { supabase } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
+import { kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
+import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
 import { money, currencySymbol } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
 import { ryftTab } from '../lib/payments/ryft';
@@ -32,6 +34,7 @@ import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
 import { isPrepaidByChannel, ezcaterBadge, ezcaterFlagText, isAwaitingEzcaterAcceptance, cateringChannelLabel, AWAITING_LABEL } from '../lib/ezcaterCatering';
 import PaymentCheckModal from '../components/PaymentCheckModal';
+import VoidModal from '../components/VoidModal';
 import {
   orderPaymentState, PAYMENT_CHECKING_LABEL, paymentStatusLabel, paymentShortLine, PAYMENT_SHORT_HELP, PAYMENT_CHECKING_HELP,
   qrTabShortInfo, qrTabShortLine, shortTabClosedCheck,
@@ -131,6 +134,7 @@ export default function OrdersHub() {
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
+    voidQueueOrder,
     reprintOrderReceipt,
     staff, menuItems, deviceConfig,
   } = useStore();
@@ -162,6 +166,9 @@ export default function OrdersHub() {
   }, []);
   useEffect(() => () => { closingBusyRef.current?.(); closingBusyRef.current = null; }, []);
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
+  // 30 Sep 2026 (Peter, Coffee Boy): a void from the Orders screen. The queue order the Void
+  // button was pressed on; the same VoidModal (manager PIN, reason) as the till.
+  const [voidOrder, setVoidOrder] = useState(null);
   const [paymentCheckOrder, setPaymentCheckOrder] = useState(null); // fence S3: "Payment being checked"
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
   const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
@@ -224,7 +231,13 @@ export default function OrdersHub() {
     const out = [];
 
     // Table sessions
-    tables.filter(t => t.status !== 'available' && t.session).forEach(t => {
+    // 2 Oct 2026 (Peter, Leeds: "when you order to table you get 2 orders ... one on the actual
+    // table 6 and 6.1, that needs to not happen"): a QR floor session is only a copy of QR
+    // orders that have their own card in the QR section below, so it is not listed a second
+    // time as a table (its Open button loaded a paid order into the pay flow). It still shows
+    // when no QR row is left in the queue, or when staff rang a line onto it at the till
+    // (lib/qrTabStranded.js qrSessionShownInQrSection).
+    tables.filter(t => t.status !== 'available' && t.session && !qrSessionShownInQrSection(t, orderQueue)).forEach(t => {
       const items = t.session?.items?.filter(i => !i.voided) || [];
       out.push({
         _kind: 'table', id: `tbl-${t.id}`,
@@ -1094,6 +1107,9 @@ export default function OrdersHub() {
           total: o.total,
           isASAP: o.isASAP,
           collectionTime: o.collectionTime,
+          // 30 Sep 2026: a dine in order with a flag number keeps it, so paying it later still
+          // books "Table 30" and the till never asks for the flag twice (lib/tillOrderType.js).
+          tableFlag: o.customer?.tableFlag || null,
         },
         customer: o.customer || null,
         // v4.6.5 follow-up Bug 2 real root cause: the orderQueue-to-list transform at
@@ -1209,14 +1225,14 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1244,7 +1260,7 @@ export default function OrdersHub() {
             {queueOrders.length > 0 && (
               <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1252,12 +1268,21 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
           </div>
         )}
       </div>
 
       {/* Read-only view for already-paid orders (e.g. catering pre-orders) — no re-pay. */}
+      {voidOrder && (
+        <VoidModal
+          type="check"
+          items={(voidOrder.items || []).filter(i => !i.voided)}
+          totalValue={voidOrder.total || 0}
+          onConfirm={(opts) => { voidQueueOrder(voidOrder.ref, opts); setVoidOrder(null); }}
+          onCancel={() => setVoidOrder(null)}
+        />
+      )}
       {viewOrder && (
         <div onClick={(e) => { if (e.target === e.currentTarget) setViewOrder(null); }} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'grid', placeItems:'center', zIndex:9999, padding:16 }}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:16, width:'100%', maxWidth:440, maxHeight:'85vh', overflowY:'auto', padding:20 }}>
@@ -1491,7 +1516,7 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
         {tab.allItems.slice(0, 6).map((item, i) => (
           <div key={i} style={{ display:'flex', gap:6, marginBottom:2, alignItems:'baseline', fontSize:12, color:'var(--t1)' }}>
             <span style={{ fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right' }}>{item.qty}×</span>
-            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.kitchenName || item.name}</span>
+            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{kitchenLineName(item)}</span>
           </div>
         ))}
         {tab.allItems.length > 6 && (
@@ -1581,7 +1606,7 @@ function OrderCard(props) {
   );
 }
 
-function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab, knownIds }) {
+function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onVoid, onForceClose, closingTab, knownIds }) {
   // v5.5.849: "Accept with delay" — ⏱ Delay expands inline to +10/+15/+20/+30 min pills.
   // Choosing one accepts the order AND tells the channel the kitchen is running behind.
   const [delayOpen, setDelayOpen] = useState(false);
@@ -1593,7 +1618,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   const color  = SECTION_COLORS[order.channel] || 'var(--acc)';
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
   const el     = elapsed(order.sentAt || order.createdAt);
-  const items  = order.items || [];
+  const items  = (order.items || []).filter(i => !i?.voided);   // 30 Sep 2026: a voided line is off the card
   // The number staff call out. Suppressed when the title already is it (an un-named
   // queue order falls back to the same short number) so the card doesn't read "47 47".
   const shortRef = shortOrderRef(order.ref);
@@ -1622,6 +1647,11 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   // (which sends a confirmed prep time back to the channel) before the prep flow.
   const isHubriseNew = order.source === 'hubrise' && order.status === 'received';
   const canAdvance = order._kind === 'queue' && !!NEXT[order.status] && !isHubriseNew;
+  // 30 Sep 2026 (Peter, Coffee Boy): every live queue order (kiosk, online, QR, a till order)
+  // can be voided here with the till's own VoidModal. Tables void on the till, bar tabs on the
+  // bar screen, open QR tabs release their hold, and a new HubRise order has Reject.
+  const canVoid = order._kind === 'queue' && !!onVoid && !isOpenTab && !isHubriseNew
+    && !DONE_STATUSES.includes(order.status) && order.status !== 'ordering' && items.length > 0;
 
   return (
     <div style={{
@@ -1654,6 +1684,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
             {/* Kiosk table and CHECK ID (alcohol, Challenge 21 categories), written onto the order by routeKioskOrderPrints */}
             {order.source === 'kiosk' && order.customer?.kioskTable && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>Table {order.customer.kioskTable}</span>}
+            {/* 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed on a till dine in order (lib/tillOrderType.js) */}
+            {order.customer?.tableFlag && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)' }}>Table {order.customer.tableFlag}</span>}
             {order.source === 'kiosk' && order.customer?.idCheck && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444466', color:'#ef4444', letterSpacing:'.03em' }}>CHECK ID</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {/* An ezCater order is a catering order: the channel and ezCater's own number, plus the hold */}
@@ -1688,7 +1720,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
                 <div style={{ display:'flex', gap:6, alignItems:'baseline' }}>
                   <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right', flexShrink:0 }}>{item.qty}×</span>
                   <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {item.kitchenName || item.receiptName || item.name}
+                    {(!isSizeOnlyKitchenName(item) && item.kitchenName) || item.receiptName || item.name}
                   </span>
                   {/* v5.5.850: channel line whose sku_ref isn't in our catalog — flag it (it still prints via the default-centre fallback) */}
                   {order.source === 'hubrise' && knownIds && !knownIds.has(item.itemId || item.id) && (
@@ -1740,6 +1772,11 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>
+          {canVoid && (
+            <button onClick={onVoid} title="Void this order (manager PIN, reason)" style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:700 }}>
+              ⊘ Void
+            </button>
+          )}
           {/* v5.5.150: force-close-and-charge button for open QR tabs.
               Capture flows through /api/stripe-capture on the connected
               account; on success closed_checks is written and the row

@@ -1,15 +1,45 @@
 // src/backoffice/sections/XeroIntegration.jsx
 //
 // Back office → Settings → "Xero (accounting)". Connects THIS venue to its own Xero
-// organisation (OAuth) so we can push sales, bills/expenses and payment data. Phase 1:
-// connect + show the linked org. The tokens live server-side (xero_connections); this
-// screen only ever sees the non-secret status.
+// organisation (OAuth) so we can push sales, bills/expenses and payment data. The tokens live
+// server-side (xero_connections); this screen only ever sees the non-secret status.
+//
+// 30 Sep 2026: the screen is a shell with four tabs:
+//   Connection        the organisation, who else posts to it (sites sharing one Xero org)
+//   Posting           push a day, auto posting, and the bank transactions mapping (older model)
+//   VAT and accounts  the daily sales invoice setup per site (xero/SiteSetup.jsx); called "Tax
+//                     and accounts" where tax is added on top of prices (US)
+//   Postings          one row per site per day, with exactly what was sent (xero/PostingsHistory.jsx)
+// 2 Oct 2026: a day that answers "Already pushed" and is in Xero as bank transactions (the old
+// way), at a site that now posts sales invoices, offers "Replace with a daily sales invoice"
+// (xero/ReplaceDay.jsx). Peter at Leeds: "these are supposed to be invoices, I cannot find the
+// invoice at all".
 
 import { useCallback, useEffect, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
 import { money } from '../../lib/currency';
-import { migrateTaxMapping, pickSalesTaxType, healedTaxType } from '../../../supabase/functions/_shared/xeroTax.js';
+import { migrateTaxMapping } from '../../../supabase/functions/_shared/xeroTax.js';
+import { mappingHash, setupTabName } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
+import { offerForAnswer, answerAfterFailure, OLD_REMOVED } from '../../../supabase/functions/_shared/xeroReplacePlan.js';
+import ReplaceDay from './xero/ReplaceDay';
+import SiteSetup from './xero/SiteSetup';
+import PostingsHistory from './xero/PostingsHistory';
+import InvoicePreview from './xero/InvoicePreview';
+import SalesVat from './xero/SalesVat';
+
+const tabsFor = (addedOn) => [
+  { id: 'connection', label: 'Connection' },
+  { id: 'posting', label: 'Posting' },
+  { id: 'setup', label: setupTabName(addedOn) },
+  { id: 'postings', label: 'Postings' },
+];
+
+// A site live on the sales invoice posts only while its "figures checked" tick matches its
+// choices (a saved change lapses it): nightly posting then waits, and the screens say so.
+const figuresLapsed = (postMode, mapping) => postMode === 'sales_invoice'
+  && (!mapping?.figuresChecked?.hash || mapping.figuresChecked.hash !== mappingHash(mapping || {}));
+const tabBtn = (on) => ({ padding: '8px 14px', borderRadius: 9, cursor: 'pointer', fontSize: 13, fontWeight: 800, fontFamily: 'inherit', border: `1px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`, background: on ? 'var(--acc)' : 'transparent', color: on ? '#0b0c10' : 'var(--t2)' });
 
 // v5.9.11: tender methods as xero-sales posts them (closed_checks.tenders), each with the
 // ServOS clearing account it lands in when the operator has not chosen one.
@@ -39,137 +69,31 @@ const sel = { width: '100%', boxSizing: 'border-box', border: '1px solid var(--b
 const fieldRow = { display: 'grid', gridTemplateColumns: '150px 1fr', gap: 12, alignItems: 'center', marginBottom: 10 };
 const flabel = { fontSize: 12.5, fontWeight: 700, color: 'var(--t2)' };
 
-// A Xero sales rate select. Blank is Auto (shown with what Auto picks). A saved choice that is
-// not a sales rate stays visible so it can be changed (the save refuses expense rates).
-function TaxSelect({ value, onChange, rates, autoLabel }) {
-  const known = !value || rates.some(t => t.taxType === value);
+// An account select for the older mapping card, at module scope so a focused select keeps its
+// focus when its own value changes (it was declared inside the card's render).
+function TypedAcctSelect({ value, onChange, accounts, types, placeholder = 'Default (Sales)' }) {
+  const list = accounts.filter(a => !a.bank && (!types || types.includes(String(a.type).toUpperCase())));
   return (
     <select value={value || ''} onChange={e => onChange(e.target.value)} style={sel}>
-      <option value="">{autoLabel}</option>
-      {!known && <option value={value}>{value} (not a sales rate: choose again)</option>}
-      {rates.map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
+      <option value="">{placeholder}</option>
+      {list.map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
     </select>
   );
 }
 
-// 28 Sep 2026: VAT on sales is chosen PER ServOS tax rate, so zero rated food never posts with
-// 20% VAT, and only Xero's rates for income are offered (the old single list included
-// "20% (VAT on Expenses)", which Xero refuses on sales). The rows mirror the server
-// (_shared/xeroTax.js): a venue that adds tax on top (US) keeps one sales line at one rate,
-// and whole sales with no VAT breakdown at a venue with no default rate post at taxDefault.
-function SalesVat({ opts, map, set, detail, blocked = [] }) {
-  const rates = opts.salesTaxRates || (opts.taxRates || []).filter(t => t.revenue !== false);
-  const servos = opts.servosTaxRates || [];
-  const hasExclusive = servos.some(r => r.mode === 'exclusive');
-  const addedOn = opts.addedOnTax ?? (hasExclusive && !servos.some(r => r.mode === 'inclusive' && r.active !== false && r.pct > 0));
-  const inclusive = addedOn ? [] : servos.filter(r => r.mode === 'inclusive');
-  const inclusiveDefault = servos.some(r => r.isDefault && r.active !== false && r.mode === 'inclusive');
-  const showDefault = !opts.servosRatesError && (addedOn || hasExclusive || !inclusiveDefault);
-  const rateName = (tt) => rates.find(t => t.taxType === tt)?.name || (tt === 'NONE' ? 'No VAT' : tt);
-  // The older single choice still applies at its own percentage, as it does on the server.
-  const legacy = map.taxDefault ? rates.find(t => t.taxType === map.taxDefault) : null;
-  // Percentages a push was refused for that no ServOS rate of this venue has, and any chosen.
-  const pctRows = new Map();
-  for (const b of [...(opts.unmatchedTaxBuckets || []), ...(blocked || [])]) {
-    if (String(b?.key || '').startsWith('pct:')) pctRows.set(b.key, b);
-  }
-  for (const k of Object.keys(map.taxRateMap || {})) {
-    if (!k.startsWith('pct:') || pctRows.has(k)) continue;
-    const p = Number(k.slice(4));
-    pctRows.set(k, { key: k, name: `${k.slice(4)}%`, pct: Number.isFinite(p) ? p : null });
-  }
-  const auto = (key, pct) => {
-    if (legacy && pct > 0 && Math.abs(legacy.rate - pct) < 0.0005) return `Auto (${legacy.name})`;
-    let tt;
-    if (key.startsWith('pct:')) tt = pickSalesTaxType(rates, { pct });
-    else if (!opts.autoTax || !(key in opts.autoTax)) return 'Auto (match by percentage)';
-    else tt = opts.autoTax[key];
-    return tt ? `Auto (${rateName(tt)})` : 'Auto: no match, choose one';
-  };
-  const setRate = (key, v) => {
-    const next = { ...(map.taxRateMap || {}) };
-    if (v) next[key] = v; else delete next[key];
-    set({ taxRateMap: next });
-  };
-  const defaultLabel = addedOn || hasExclusive ? 'Sales with added-on tax' : 'Sales with no VAT breakdown';
-  const defaultNote = addedOn || hasExclusive
-    ? `Sales tax added on top of prices posts as before: one sales line with the tax included, at this rate.${!addedOn && !inclusiveDefault ? ' So do checks saved with no VAT breakdown.' : ''}`
-    : `Checks saved with no VAT breakdown post at this rate, because this venue has no default VAT rate in ServOS.`;
-  const serviceKnown = !map.serviceTax || rates.some(t => t.taxType === map.serviceTax);
-  return (
-    <>
-      <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '18px 0 4px' }}>{addedOn ? 'Sales tax' : 'VAT on sales'}</div>
-      <div style={S.note}>
-        {addedOn
-          ? 'This venue adds sales tax on top of its prices, so each sale posts as one line at one Xero rate, as before.'
-          : 'Each ServOS tax rate posts as its own sales line at its own Xero rate. Only Xero rates for income are listed. Auto matches by percentage; a rate with no match stops the day until you choose one.'}
-      </div>
-      {(!addedOn || map.salesNoVat) && (
-        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', margin: '10px 0' }}>
-          <input type="checkbox" checked={!!map.salesNoVat} onChange={e => set({ salesNoVat: e.target.checked })} style={{ width: 16, height: 16 }} />
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Not VAT registered: post every sale with No VAT</span>
-        </label>
-      )}
-      {opts.taxRatesError && (
-        <div style={{ ...S.banner(false), marginTop: 10 }}>Could not load Xero&rsquo;s tax rates, so the VAT choices are hidden. Close Account mapping and open it again to retry. Saving keeps them as they are.</div>
-      )}
-      {!map.salesNoVat && !opts.taxRatesError && (
-        <div style={{ marginTop: 6 }}>
-          {opts.servosRatesError && <div style={{ ...S.banner(false), marginBottom: 10 }}>Could not load this venue&rsquo;s ServOS tax rates. Close Account mapping and open it again to retry. Saving keeps your choices as they are.</div>}
-          {!opts.servosRatesError && servos.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 10 }}>This venue has no tax rates set up in ServOS, so its sales post at the rate below.</div>}
-          {inclusive.map(r => (
-            <div key={r.id} style={fieldRow}>
-              <span style={flabel}>{r.name || 'Rate'} ({r.pct}%){r.active === false ? ' (inactive)' : ''}</span>
-              <TaxSelect value={(map.taxRateMap || {})[r.id]} onChange={v => setRate(r.id, v)} rates={rates} autoLabel={auto(r.id, r.pct)} />
-            </div>
-          ))}
-          {!addedOn && [...pctRows.values()].map(b => (
-            <div key={b.key} style={fieldRow}>
-              <span style={flabel}>{b.pct != null ? `${b.pct}%` : b.name} (no ServOS rate)</span>
-              <TaxSelect value={(map.taxRateMap || {})[b.key]} onChange={v => setRate(b.key, v)} rates={rates} autoLabel={auto(b.key, b.pct)} />
-            </div>
-          ))}
-          {inclusive.length > 0 && (
-            <div style={fieldRow}>
-              <span style={flabel}>Items with no tax rate</span>
-              <TaxSelect value={(map.taxRateMap || {}).none} onChange={v => setRate('none', v)} rates={rates} autoLabel={auto('none', 0)} />
-            </div>
-          )}
-          {showDefault && (
-            <>
-              <div style={fieldRow}>
-                <span style={flabel}>{defaultLabel}</span>
-                <TaxSelect value={map.taxDefault} onChange={v => set({ taxDefault: v || undefined })} rates={rates} autoLabel={`Auto (${rateName(healedTaxType(detail || {}, rates))})`} />
-              </div>
-              <div style={{ ...S.note, marginBottom: 10 }}>{defaultNote}</div>
-            </>
-          )}
-        </div>
-      )}
-      {!opts.taxRatesError && (
-        <div style={fieldRow}>
-          <span style={flabel}>Service charge {addedOn ? 'tax' : 'VAT'}</span>
-          <select value={map.salesNoVat ? '' : (map.serviceTax || '')} disabled={!!map.salesNoVat} onChange={e => set({ serviceTax: e.target.value || undefined })} style={sel}>
-            <option value="">{addedOn ? 'Same rate as the sales line (as before)' : 'No VAT (optional service charge is outside the scope of VAT)'}</option>
-            {!map.salesNoVat && !serviceKnown && <option value={map.serviceTax}>{map.serviceTax} (not a sales rate: choose again)</option>}
-            {rates.map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
-          </select>
-        </div>
-      )}
-    </>
-  );
-}
-
-// Advanced: map each money flow to a Xero account + the VAT rate per ServOS tax rate + which
-// clearing account each payment method lands in. All optional: sensible defaults apply if left blank.
-function MappingCard({ locId, blocked }) {
+// The older posting's choices: each money flow to a Xero account, the Xero rate per ServOS tax
+// rate, and which clearing account each payment method lands in. All optional: sensible defaults
+// apply if left blank. The VAT rates, tips and service charge here are the same choices as on
+// the VAT and accounts tab, so they apply to both ways of posting.
+function MappingCard({ locId, blocked, postMode, tabName, onSaved }) {
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState(null);
   const [map, setMap] = useState({});
+  const [savedMap, setSavedMap] = useState({});
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState('');
   const [err, setErr] = useState('');
 
   const load = async () => {
@@ -177,7 +101,7 @@ function MappingCard({ locId, blocked }) {
     try {
       const [o, m] = await Promise.all([xeroOptions(locId), xeroGetMapping(locId)]);
       // The older single VAT choice (taxDefault) moves to the per rate choices; saved on the next save.
-      setOpts(o); setDetail((m && m.detail) || null); setMap(migrateTaxMapping((m && m.mapping) || {}, o || {}));
+      setOpts(o); setDetail((m && m.detail) || null); setSavedMap((m && m.mapping) || {}); setMap(migrateTaxMapping((m && m.mapping) || {}, o || {}));
     } catch (e) { setErr(e.message || 'Could not load your Xero accounts'); }
     finally { setLoading(false); }
   };
@@ -185,8 +109,18 @@ function MappingCard({ locId, blocked }) {
   const set = (patch) => setMap(m => ({ ...m, ...patch }));
   const setPay = (method, acctId) => setMap(m => ({ ...m, paymentMap: { ...(m.paymentMap || {}), [method]: acctId } }));
   const save = async () => {
-    setSaving(true); setSaved(false); setErr('');
-    try { await xeroSaveMapping(locId, map); setSaved(true); setTimeout(() => setSaved(false), 2200); }
+    // A site live on the sales invoice: a change to these choices pauses nightly posting until a
+    // day's figures are checked again. Asked first, never silent.
+    if (!figuresLapsed(postMode, savedMap) && postMode === 'sales_invoice' && mappingHash(map) !== mappingHash(savedMap)
+      && !window.confirm(`These changes pause nightly posting to Xero until you check a day's figures again (${tabName}, Check figures). Save them?`)) return;
+    setSaving(true); setSaved(''); setErr('');
+    try {
+      const r = await xeroSaveMapping(locId, map);
+      setSavedMap(map);
+      setSaved(r?.paused ? r.message : '✓ Saved');
+      if (!r?.paused) setTimeout(() => setSaved(''), 2200);
+      onSaved?.();
+    }
     catch (e) { setErr(e.message || 'Save failed'); } finally { setSaving(false); }
   };
 
@@ -194,29 +128,27 @@ function MappingCard({ locId, blocked }) {
   const purchaseRates = opts?.purchaseTaxRates || (opts?.taxRates || []).filter(t => t.expense !== false);
   const banks = accounts.filter(a => a.bank);
   const byType = (types) => accounts.filter(a => !a.bank && (!types || types.includes(String(a.type).toUpperCase())));
-  const AcctSelect = ({ value, onChange, types, placeholder = 'Default (Sales)' }) => (
-    <select value={value || ''} onChange={e => onChange(e.target.value)} style={sel}>
-      <option value="">{placeholder}</option>
-      {byType(types).map(a => <option key={a.id} value={a.code || a.id}>{a.code ? `${a.code} · ` : ''}{a.name}</option>)}
-    </select>
-  );
 
   return (
     <div style={{ ...S.card, marginTop: 0 }}>
       <button onClick={toggle} style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
-        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>Account mapping <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--t4)' }}>· optional</span></span>
+        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)' }}>Accounts, {opts?.addedOnTax ? 'sales tax' : 'VAT'} rates and payment methods <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--t4)' }}>· optional</span></span>
         <span style={{ color: 'var(--t3)', fontSize: 13 }}>{open ? 'Hide ▲' : 'Set up ▼'}</span>
       </button>
       {open && (
         <div style={{ marginTop: 14 }}>
-          <div style={S.note}>Choose exactly where each part of a sale posts in Xero. Leave anything blank to use the default. Tips are a <b>liability</b> (money owed to staff), never income, so by default they post to <b>ServOS Tips Payable</b>. Service charge posts to <b>ServOS Service Charge Payable</b> until you choose where it belongs.</div>
+          <ul style={{ ...S.note, margin: 0, paddingLeft: 18 }}>
+            <li><b style={{ color: 'var(--t2)' }}>Bank transactions:</b> choose where each part of a sale posts. Leave anything blank to use the default.</li>
+            <li><b style={{ color: 'var(--t2)' }}>Shared:</b> the {opts?.addedOnTax ? 'sales tax' : 'VAT'} rates, tips and service charge here are the same choices as under {tabName}, so they apply to the daily sales invoice too.</li>
+            <li><b style={{ color: 'var(--t2)' }}>Tips</b> are a liability (money owed to staff), never income. By default they post to ServOS Tips Payable.</li>
+          </ul>
           {loading && <div style={{ ...S.note, marginTop: 12 }}>Loading your Xero accounts…</div>}
           {err && <div style={{ ...S.banner(false), marginTop: 12 }}>{err}</div>}
           {opts && !loading && (
             <div style={{ marginTop: 14 }}>
-              <div style={fieldRow}><span style={flabel}>Sales revenue</span><AcctSelect value={map.revenueAccount} onChange={v => set({ revenueAccount: v })} types={['REVENUE', 'SALES']} /></div>
-              <div style={fieldRow}><span style={flabel}>Tips / gratuities</span><AcctSelect value={map.tipsAccount} onChange={v => set({ tipsAccount: v })} types={['CURRLIAB', 'LIABILITY', 'REVENUE']} placeholder="Default (ServOS Tips Payable)" /></div>
-              <div style={fieldRow}><span style={flabel}>Service charge</span><AcctSelect value={map.serviceAccount} onChange={v => set({ serviceAccount: v })} types={['REVENUE', 'CURRLIAB', 'LIABILITY']} placeholder="Default (ServOS Service Charge Payable)" /></div>
+              <div style={fieldRow}><span style={flabel}>Sales revenue</span><TypedAcctSelect accounts={accounts} value={map.revenueAccount} onChange={v => set({ revenueAccount: v })} types={['REVENUE', 'SALES']} /></div>
+              <div style={fieldRow}><span style={flabel}>Tips / gratuities</span><TypedAcctSelect accounts={accounts} value={map.tipsAccount} onChange={v => set({ tipsAccount: v })} types={['CURRLIAB', 'LIABILITY', 'REVENUE']} placeholder="Default (ServOS Tips Payable)" /></div>
+              <div style={fieldRow}><span style={flabel}>Service charge</span><TypedAcctSelect accounts={accounts} value={map.serviceAccount} onChange={v => set({ serviceAccount: v })} types={['REVENUE', 'CURRLIAB', 'LIABILITY']} placeholder="Default (ServOS Service Charge Payable)" /></div>
               <div style={fieldRow}><span style={flabel}>Purchases / COGS</span>
                 <select value={map.purchasesAccount || ''} onChange={e => set({ purchasesAccount: e.target.value })} style={sel}>
                   <option value="">Auto (cost of sales)</option>
@@ -251,9 +183,9 @@ function MappingCard({ locId, blocked }) {
                 ))}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
                 <button style={S.btn} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save mapping'}</button>
-                {saved && <span style={{ color: '#2f8f4e', fontWeight: 700, fontSize: 13 }}>✓ Saved</span>}
+                {saved && <span style={{ color: saved.startsWith('✓') ? '#2f8f4e' : '#c89628', fontWeight: 700, fontSize: 13 }}>{saved}</span>}
               </div>
             </div>
           )}
@@ -278,8 +210,17 @@ export default function XeroIntegration() {
   const [syncResult, setSyncResult] = useState(null);
   const [syncErr, setSyncErr] = useState('');
   const [refused, setRefused] = useState([]);   // rates the last push or check was refused for
+  const [refusedDay, setRefusedDay] = useState(null);   // a day part way through a replace: a push it refused, or a replace that stopped
+  const [startDate, setStartDate] = useState(null);     // the site's first invoice day
   const [autoDaily, setAutoDaily] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
+  const [autoErr, setAutoErr] = useState('');
+  const [tab, setTab] = useState('connection');
+  const [siblings, setSiblings] = useState([]);
+  const [tenantName, setTenantName] = useState('');
+  const [postMode, setPostMode] = useState('bank_tx');
+  const [lapsed, setLapsed] = useState(false);
+  const [addedOnTax, setAddedOnTax] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -291,6 +232,12 @@ export default function XeroIntegration() {
         const m = await xeroGetMapping(id);
         setAutoDaily(!!m.autoDaily);
         if (m.venue) setVenue(m.venue);
+        setSiblings(m.siblings || []);
+        setTenantName(m.tenantName || '');
+        setPostMode(m.postMode || 'bank_tx');
+        setStartDate(m.mapping?.invoiceStartDate || null);
+        setLapsed(figuresLapsed(m.postMode, m.mapping));
+        setAddedOnTax(!!m.addedOnTax);
         // The server's figure; the fallback (venue clock unreadable) is only a starting point,
         // the server still checks the day against the venue clock before posting.
         setSyncDate(d => d || m.venue?.lastCompletedDay || new Date(Date.now() - 86400000).toISOString().slice(0, 10));
@@ -298,6 +245,16 @@ export default function XeroIntegration() {
     } catch (e) { setErr(e.message || 'Could not load Xero status'); } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // After the setup switches the posting model: refresh the model and the sites, not the whole screen.
+  const refreshMode = useCallback(async () => {
+    if (!locId) return;
+    try {
+      const m = await xeroGetMapping(locId);
+      setPostMode(m.postMode || 'bank_tx'); setSiblings(m.siblings || []); setAutoDaily(!!m.autoDaily);
+      setStartDate(m.mapping?.invoiceStartDate || null);
+      setLapsed(figuresLapsed(m.postMode, m.mapping));
+    } catch { /* the next load shows it */ }
+  }, [locId]);
 
   // Handle the redirect back from Xero (?xero=connected|error|expired|invalid|no_org).
   useEffect(() => {
@@ -322,19 +279,36 @@ export default function XeroIntegration() {
   };
 
   const disconnect = async () => {
-    if (!locId || !window.confirm('Disconnect this venue from Xero? You can reconnect any time.')) return;
+    const others = siblings.length ? ` ${siblings.map((x) => x.name).join(', ')} also post${siblings.length === 1 ? 's' : ''} to this Xero organisation and will stay connected.` : '';
+    if (!locId || !window.confirm(`Disconnect this venue from Xero? You can reconnect any time.${others}`)) return;
     setBusy(true); setErr('');
     try { await xeroDisconnect(locId); await load(); } catch (e) { setErr(e.message || 'Disconnect failed'); } finally { setBusy(false); }
   };
 
   const syncSales = async (dryRun = false) => {
     if (!locId || !syncDate) return;
-    setSyncing(dryRun ? 'preview' : 'push'); setSyncErr(''); setSyncResult(null);
+    setSyncing(dryRun ? 'preview' : 'push'); setSyncErr(''); setSyncResult(null); setRefusedDay(null);
     try { const r = await xeroSyncSales(locId, syncDate, dryRun ? { dryRun: true } : {}); setSyncResult(r); setRefused(r?.blocked || []); }
-    catch (e) { setSyncErr(e.message || 'Sync failed'); setRefused(e.blocked || []); }
+    catch (e) {
+      const why = (e.notReady || []).map((n) => n.message).join(' ');
+      setSyncErr(`${e.message || 'Sync failed'}${why && !String(e.message || '').includes(why) ? ` ${why}` : ''}`); setRefused(e.blocked || []);
+      // A day part way through being replaced refuses a push and offers to finish the replace.
+      if (e.replace) setRefusedDay({ model: 'bank_tx', date: e.date || syncDate, replace: e.replace });
+    }
     finally { setSyncing(false); }
   };
   const cur = syncResult?.currency || venue?.currency;
+  const tabName = setupTabName(addedOnTax);
+  // The day just asked about, when it is in Xero the old way: can it become a sales invoice?
+  const oldDay = syncResult?.ok && syncResult.already ? syncResult : refusedDay;
+  const offer = offerForAnswer(oldDay, { postMode, startDate });
+  // 2 Oct 2026 review: a replace that removed old entries and then failed (the invoice not sent,
+  // or only some removed) left "Already pushed" and the old lines on screen, with links to
+  // transactions Xero had deleted. They come down; the replace panel stays open with what to do.
+  const replaceFailed = (e) => {
+    const next = answerAfterFailure(oldDay, e);
+    if (next) { setRefusedDay(next); setSyncResult(null); }
+  };
 
   if (loading) return <div style={S.empty}>Loading…</div>;
   if (!locId) return <div style={S.empty}>Pick a location to connect Xero.</div>;
@@ -346,7 +320,7 @@ export default function XeroIntegration() {
     <div>
       <h1 style={S.h1}>Xero (accounting)</h1>
       <div style={S.sub}>
-        Connect this venue to its own Xero organisation so your books stay up to date automatically —
+        Connect this venue to its own Xero organisation so your books stay up to date automatically:
         daily sales &amp; VAT, supplier bills/expenses, and payment data for bank reconciliation.
       </div>
 
@@ -364,22 +338,42 @@ export default function XeroIntegration() {
         </div>
       ) : connected ? (
         <>
+        {siblings.length > 0 && (
+          <div style={{ ...S.banner(true), background: 'rgba(80,120,200,.12)', color: 'var(--t2)', border: '1px solid rgba(80,120,200,.3)' }}>
+            {siblings.map((x) => x.name).join(', ')} also post{siblings.length === 1 ? 's' : ''} to {tenantName || status.tenant_name || 'this Xero organisation'}. Sites that share a Xero organisation are one company with one VAT number; each site&rsquo;s postings carry its own name, number and tracking option.
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          {tabsFor(addedOnTax).map((t) => <button key={t.id} style={tabBtn(tab === t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
+        </div>
+        {tab === 'connection' && (
         <div style={S.card}>
           <div style={S.pill('rgba(46,143,78,.16)', '#2f8f4e')}>● Connected</div>
           <div style={{ marginTop: 12, fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{status.tenant_name || 'Xero organisation'}</div>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 2 }}>Linked {status.connected_at ? new Date(status.connected_at).toLocaleDateString() : ''}</div>
+          <div style={{ ...S.note, marginTop: 10 }}>
+            {postMode === 'sales_invoice' ? 'This site posts a daily sales invoice.' : `This site posts bank transactions each day. The daily sales invoice is set up under ${tabName}.`}
+            {siblings.length > 0 && <> Other sites on this organisation: {siblings.map((x) => `${x.name} (${x.postMode === 'sales_invoice' ? 'sales invoice' : 'bank transactions'})`).join(', ')}.</>}
+          </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
             <a href={status.manager_url || 'https://go.xero.com'} target="_blank" rel="noreferrer" style={{ ...S.ghost, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>Open in Xero ↗</a>
             <button style={S.ghost} onClick={disconnect} disabled={busy}>Disconnect</button>
           </div>
-          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--bdr)' }}>
+        </div>
+        )}
+        {tab === 'posting' && (
+        <>
+        <div style={S.card}>
+          <div>
             <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>Push sales to Xero</div>
-            <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account per payment type (card, cash and gift card kept separate), and that day’s refunds as “spent money”. When your card <b>payout</b> lands in the bank, reconcile it against the clearing account — that’s how sales connect to the cash in the bank.</div>
+            {postMode === 'sales_invoice'
+              ? <div style={S.note}>This site posts each day from its start day as one <b>sales invoice</b>, paid into its clearing accounts, with a credit note for refunds (set up under {tabName}). Days before the start day post as bank transactions, as before.</div>
+              : <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account per payment type (card, cash and gift card kept separate), and that day’s refunds as “spent money”. When your card <b>payout</b> lands in the bank, reconcile it against the clearing account. That is how sales connect to the cash in the bank.</div>}
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
               <input type="date" value={syncDate} max={venue?.lastCompletedDay || undefined} onChange={e => setSyncDate(e.target.value)}
                 style={{ border: '1px solid var(--bdr2)', borderRadius: 9, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)' }} />
               <button style={S.btn} onClick={() => syncSales(false)} disabled={!!syncing || !syncDate}>{syncing === 'push' ? 'Pushing…' : 'Push sales to Xero'}</button>
-              <button style={S.ghost} onClick={() => syncSales(true)} disabled={!!syncing || !syncDate}>{syncing === 'preview' ? 'Checking…' : 'Check figures first'}</button>
+              <button style={S.ghost} onClick={() => syncSales(true)} disabled={!!syncing || !syncDate}>{syncing === 'preview' ? 'Working out…' : 'Preview this day'}</button>
             </div>
             {venue && (
               <div style={{ ...S.note, marginTop: 8 }}>
@@ -388,12 +382,37 @@ export default function XeroIntegration() {
             )}
             {syncErr && <div style={S.banner(false)}>{syncErr}</div>}
             {syncResult?.ok && syncResult.already && <div style={{ ...S.banner(true), marginTop: 12 }}>✓ Already pushed for {syncResult.date}.</div>}
+            {offer.show !== 'none' && (
+              <div style={{ marginTop: 12, marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: 'rgba(80,120,200,.12)', border: '1px solid rgba(80,120,200,.3)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', lineHeight: 1.5 }}>{offer.text}</div>
+                {offer.show === 'button' && (
+                  <ReplaceDay key={oldDay.date} locId={locId} date={oldDay.date} currency={cur} resume={offer.resume} style={{ marginTop: 10 }}
+                    onDone={(r) => { setSyncErr(''); setRefusedDay(null); setSyncResult(r); }} onFail={replaceFailed} />
+                )}
+              </div>
+            )}
             {syncResult?.ok && syncResult.empty && <div style={{ ...S.banner(true), marginTop: 12 }}>No sales or refunds on {syncResult.date}. Nothing to post.</div>}
-            {syncResult?.ok && !syncResult.empty && (
+            {syncResult?.ok && !syncResult.empty && syncResult.model === 'sales_invoice' && (
               <div style={{ marginTop: 12 }}>
                 {!syncResult.already && (
                   <div style={{ ...S.banner(true), marginBottom: 8 }}>
-                    {syncResult.dryRun ? `Figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Pushed ${syncResult.date} to Xero${syncResult.sample ? ' (test figures — no real sales that day)' : ''}.`}
+                    {syncResult.dryRun ? `Sales invoice figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Posted ${syncResult.date} to Xero as a sales invoice.${syncResult.replaced ? ` ${OLD_REMOVED}` : ''}`}
+                  </div>
+                )}
+                {(syncResult.documents || []).map((d) => (
+                  <div key={d.key || d.xeroId} style={{ fontSize: 13, padding: '7px 10px', border: '1px solid var(--bdr2)', borderRadius: 8, marginBottom: 6, background: 'var(--bg2)', display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                    <span style={{ color: 'var(--t1)', fontWeight: 700 }}>{d.type === 'invoice' ? 'Invoice' : d.type === 'credit_note' ? 'Credit note' : d.type === 'refund' ? 'Refund payment' : 'Payment'} {d.type === 'invoice' || d.type === 'credit_note' ? d.number : d.reference} · {money(d.total, cur)}</span>
+                    {d.link && <a href={d.link} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontWeight: 700, textDecoration: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>Open in Xero ↗</a>}
+                  </div>
+                ))}
+                {syncResult.dryRun && <InvoicePreview result={syncResult} currency={cur} />}
+              </div>
+            )}
+            {syncResult?.ok && !syncResult.empty && syncResult.model !== 'sales_invoice' && (
+              <div style={{ marginTop: 12 }}>
+                {!syncResult.already && (
+                  <div style={{ ...S.banner(true), marginBottom: 8 }}>
+                    {syncResult.dryRun ? `Figures for ${syncResult.date}. Nothing has been sent to Xero.` : `✓ Pushed ${syncResult.date} to Xero${syncResult.sample ? ' (test figures: no real sales that day)' : ''}.`}
                   </div>
                 )}
                 {(syncResult.lines || []).map((l, i) => (
@@ -422,7 +441,7 @@ export default function XeroIntegration() {
                 ))}
               </div>
             )}
-            {(syncResult?.warnings || []).length > 0 && (
+            {(syncResult?.warnings || []).length > 0 && !(syncResult.model === 'sales_invoice' && syncResult.dryRun) && (
               <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'rgba(200,150,40,.12)', border: '1px solid rgba(200,150,40,.3)' }}>
                 {(syncResult.warnings || []).map((w, i) => (
                   <div key={w.code || i} style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.5, marginTop: i ? 6 : 0 }}>
@@ -431,21 +450,32 @@ export default function XeroIntegration() {
                 ))}
               </div>
             )}
-            <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once — a day already sent won’t be duplicated, and a day that stopped halfway finishes without sending the first half again.</div>
+            <div style={{ ...S.note, marginTop: 10 }}>Safe to click more than once. A day already sent won’t be duplicated, and a day that stopped halfway finishes without sending the first half again.</div>
+            {lapsed && (
+              <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(200,150,40,.12)', border: '1px solid rgba(200,150,40,.3)', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: 'var(--t1)' }}><b>Paused:</b> nightly posting waits until a day&rsquo;s figures are checked again, because the choices changed.</span>
+                <button style={S.ghost} onClick={() => setTab('setup')}>Check figures</button>
+              </div>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
               <input type="checkbox" checked={autoDaily} disabled={autoBusy}
                 onChange={async (e) => {
                   const v = e.target.checked;
-                  setAutoDaily(v); setAutoBusy(true);
-                  try { await xeroSetAutoDaily(locId, v); } catch { setAutoDaily(!v); } finally { setAutoBusy(false); }
+                  setAutoDaily(v); setAutoBusy(true); setAutoErr('');
+                  try { await xeroSetAutoDaily(locId, v); } catch (er) { setAutoDaily(!v); setAutoErr(er.message || 'Could not change auto posting'); } finally { setAutoBusy(false); }
                 }}
                 style={{ width: 17, height: 17 }} />
               <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>Auto-post each night</span>
-              <span style={{ fontSize: 12, color: 'var(--t4)' }}>— each business day posts automatically about four hours after it ends, so a till that was offline has time to catch up. Days with no sales are skipped.</span>
+              <span style={{ fontSize: 12, color: 'var(--t4)' }}>Each business day posts automatically about four hours after it ends, so a till that was offline has time to catch up. Days with no sales are skipped.</span>
             </label>
+            {autoErr && <div style={{ ...S.banner(false), marginTop: 10 }}>{autoErr}</div>}
           </div>
         </div>
-        <MappingCard locId={locId} blocked={refused} />
+        <MappingCard locId={locId} blocked={refused} postMode={postMode} tabName={tabName} onSaved={refreshMode} />
+        </>
+        )}
+        {tab === 'setup' && <SiteSetup locId={locId} venue={venue} siblings={siblings} postMode={postMode} onModeChange={refreshMode} />}
+        {tab === 'postings' && <PostingsHistory locId={locId} hasSiblings={siblings.length > 0} currency={venue?.currency} postMode={postMode} startDate={startDate} />}
         </>
       ) : (
         <div style={S.card}>

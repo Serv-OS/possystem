@@ -21,6 +21,7 @@ import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift, dayText, groupChecksByDay, groupChecksByService, reportClock } from './_filters';
 import { money } from '../../../lib/currency';
+import { voidedValue } from '../../../lib/voidRules';
 
 // Aggregate a check bundle into shift stats. Reused for both business-day and server session.
 function aggregate(checks) {
@@ -30,7 +31,7 @@ function aggregate(checks) {
   const tips       = paid.reduce((s, c) => s + (c.tip || 0), 0);
   const cash       = paid.filter(c => (c.method || '').toLowerCase() === 'cash').reduce((s, c) => s + (c.total || 0), 0);
   const voidCount  = checks.filter(c => c.status === 'voided').length;
-  const voidValue  = checks.filter(c => c.status === 'voided').reduce((s, c) => s + (c.total || 0), 0);
+  const voidValue  = checks.filter(c => c.status === 'voided').reduce((s, c) => s + voidedValue(c), 0);   // 30 Sep 2026: a tombstone's value is on its lines
   const discounts  = paid.reduce((s, c) => s + (c.discounts || []).reduce((x, d) => x + (d.amount || d.value || 0), 0), 0);
   const refunds    = paid.reduce((s, c) => s + (c.refunds || []).reduce((x, r) => x + (r.amount || 0), 0), 0);
   const times      = checks.map(c => c.closedAt).filter(Boolean).sort((a, b) => a - b);

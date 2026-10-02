@@ -243,20 +243,43 @@ export function qrSessionWriteAction({ existing, hasItems }) {
 const fenceBool = (v) => v === true || ['true', 't', '1', 'yes', 'y', 'on'].includes(String(v ?? '').trim().toLowerCase());
 
 /**
- * Fix round 2 (LOW): does this QR order_queue row put its items on the floor plan? The phone's
- * floor sync (lib/qrTableSession.js, until 20260919b) must match the server trigger that
- * replaces it (_qr_sync_table_session: paid, or a round of an open tab). A round of an open tab
- * always counts; an order the server has not proven paid yet ('checking' or 'short',
- * payment_unverified) never does, so it is not shown on the table like a paid one. Anything else
- * (an order the old direct insert wrote, before 20260919a2: customer.paid) counts as today.
+ * Does this QR order_queue row put its items on the floor plan? Only a round of an OPEN TAB does.
+ *
+ * 2 Oct 2026, Peter, Coffee Boy Leeds, live: "when you order to table you get 2 orders ... it's
+ * opening 2 tables for some reason, one on the actual table 6 and 6.1, that needs to not happen."
+ * QR-FAUOB was paid in full on the phone, and the floor sync (lib/qrTableSession.js) still wrote
+ * its items onto floor table T6 as a session. The till shows every session as an open, unpaid
+ * check, so the Orders screen had "Table T6, In service, Open" next to the paid QR card, the
+ * Open button loaded a paid order into the pay flow, and nothing removed the session when the
+ * order was collected. A pay now order is finished business: it is ONE paid order in the QR
+ * section and never a check on the table. An open tab is unpaid and still running, so its
+ * rounds keep the table busy on the floor plan, as before.
+ *
+ * The server's _qr_sync_table_session (20260919a2) still counts a paid order. Nothing calls it
+ * until 20260919b attaches its trigger; 20261002a gives it this rule and must run before that.
  */
 export function qrRowOnFloor(row) {
   if (!row || typeof row !== 'object') return false;
   const c = row.customer && typeof row.customer === 'object' ? row.customer : {};
-  if (fenceBool(c.tab_open)) return true;
-  if (row.paid === true) return true;
-  if (c.payment_unverified === true || c.payment_state === 'checking' || c.payment_state === 'short') return false;
-  return true;
+  return fenceBool(c.tab_open);
+}
+
+/**
+ * The table label a new QR TAB carries (customer.tableLabel, the kitchen ticket, the Orders
+ * screen). 2 Oct 2026 (Peter: "one on the actual table 6 and 6.1"): the first tab on a table is
+ * the table itself, "T6". Only a further separate tab while that one is still open gets a number
+ * ("T6.2", "T6.3") so staff can tell the parties apart. Before, every order got one, so a lone
+ * order read as a second table, "T6.1".
+ * A PAY NOW order never comes here: it always carries the plain table (QrCheckout). A paid order
+ * stays in the queue until staff tap it through to collected, so counting it would number the
+ * next guest "T6.2" for no reason.
+ *   openCount  the tabs already open on the table (qr_table_tab_count)
+ */
+export function qrTableLabel(base, openCount) {
+  const label = String(base ?? '').trim();
+  const n = Math.floor(Number(openCount));
+  if (!label) return label;
+  return n >= 1 ? `${label}.${n + 1}` : label;
 }
 
 /** Words for an order placed but not proven paid (contract C1 step 4, C17). Never "pay again". */
