@@ -278,9 +278,15 @@ test('filtered down to ANOTHER single site: the multi site reports show it, the 
   const summary = sitesForView('summary', s);
   assert.deepEqual(summary.sites.map((x) => x.id), ['preston']);
   assert.equal(summary.note, null);
-  const items = sitesForView('items', s);
-  assert.deepEqual(items.sites.map((x) => x.id), ['leeds']);
-  assert.equal(items.note, 'This report shows the site you are signed in to for now. Showing Coffee Boy Leeds.');
+  // Step 4: the menu, tax, tips and kitchen reports follow the ticks too (each site's own menu
+  // and rates, src/lib/reportSiteMenu.js); payroll still reads the signed in site.
+  for (const view of ['items', 'item_trend', 'menu_eng', 'tax', 'tips', 'kds_perf']) {
+    assert.deepEqual(sitesForView(view, s).sites.map((x) => x.id), ['preston'], view);
+    assert.equal(sitesForView(view, s).note, null, view);
+  }
+  const payroll = sitesForView('payroll', s);
+  assert.deepEqual(payroll.sites.map((x) => x.id), ['leeds']);
+  assert.equal(payroll.note, 'This report shows the site you are signed in to for now. Showing Coffee Boy Leeds.');
   const z = sitesForView('zreport', s);
   assert.deepEqual(z.sites.map((x) => x.id), ['leeds']);
   assert.equal(z.note, 'This report is for one site: the one you are signed in to. Showing Coffee Boy Leeds.');
@@ -311,8 +317,11 @@ test('several ticked: a report that is not multi site ready shows ONE site with 
   assert.deepEqual(summary.sites.map((x) => x.id).sort(), ['hudds', 'leeds', 'preston']);
   assert.equal(summary.note, null);
   // every other report still gets one site only: never mixed rows it cannot split
-  assert.equal(sitesForView('items', s).sites.length, 1);
-  assert.equal(sitesForView('tax', s).note, 'This report shows the site you are signed in to for now. Showing Coffee Boy Leeds.');
+  assert.equal(sitesForView('payroll', s).sites.length, 1);
+  assert.equal(sitesForView('daily_trading', s).note, 'This report shows the site you are signed in to for now. Showing Coffee Boy Leeds.');
+  // Step 4: the six that read a menu, rates or stations get every ticked site, each read
+  // against its own (pinned in reportSiteMenu.test.js)
+  for (const view of ['items', 'item_trend', 'menu_eng', 'tax', 'tips', 'kds_perf']) assert.equal(sitesForView(view, s).sites.length, 3, view);
   for (const view of Object.keys(REPORT_SITE_MODE)) {
     const got = sitesForView(view, s);
     if (REPORT_SITE_MODE[view] === 'all') assert.equal(got.sites.length, 6);

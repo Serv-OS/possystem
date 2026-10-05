@@ -10,6 +10,14 @@ import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { daySlot } from './_filters';
+import { isSplit, sumFields } from '../../../lib/reportSplit.js';
+import { siteItemRows, siteCategoryRows, siteModifierRows, joinSiteRows } from '../../../lib/reportSiteMenu.js';
+import { useParts, exportSites } from './_siteSplit';
+import { useSiteMenus, useOtherSiteMenu } from './_siteMenus';
+import { SplitHeader, Blocks, SiteRows, SiteMatrix } from './SiteSplit';
+
+// One empty list, so a view with nothing to show does not rebuild its tables every render.
+const NONE = Object.freeze([]);
 
 const SUB_TABS = [
   { id:'items',      label:'Items',      icon:'🍽' },
@@ -18,8 +26,22 @@ const SUB_TABS = [
   { id:'eighty_six', label:"86'd",       icon:'🚫' },
 ];
 
-export default function ProductMix({ checks, fmt, fmtN, locationConfig }) {
-  const { menuCategories = [], menuItems = [], eightySixIds = [] } = useStore();
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file, each site's lines read against ITS OWN menu (src/lib/reportSiteMenu.js). One site is
+// the report exactly as it was.
+export default function ProductMix(props) {
+  return isSplit(props.sites) ? <ProductMixSites {...props}/> : <ProductMixOne {...props}/>;
+}
+
+function ProductMixOne({ checks, fmt, fmtN, locationConfig, sites }) {
+  const store = useStore();
+  // 5 Oct 2026: one OTHER site ticked. Its categories and products are its own, read fresh
+  // (the store holds the signed in site's). The signed in site reads the store as it always has.
+  const other = useOtherSiteMenu(sites);
+  const menuCategories = other.other ? (other.menu?.categories || NONE) : (store.menuCategories || NONE);
+  const menuItems      = other.other ? (other.menu?.items || NONE) : (store.menuItems || NONE);
+  const eightySixIds   = other.other ? NONE : (store.eightySixIds || NONE);
   const [sub, setSub] = useState('items');
 
   // Category lookup: id -> label
@@ -167,8 +189,12 @@ export default function ProductMix({ checks, fmt, fmtN, locationConfig }) {
 
   // -------------- Render --------------
 
+  if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's menu…</div>;
+
   return (
     <div>
+      {other.failed && <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>{other.site.name}: the menu could not be read, so categories show their ids and the 86 list is not available.</div>}
+      {other.other && !other.failed && sub === 'eighty_six' && <div style={{ marginBottom:10, fontSize:11, color:'var(--t4)' }}>The 86 list is live at the site itself; here dormant items are this site's products with no sales in the period.</div>}
       {/* Sub-tab bar */}
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
         {SUB_TABS.map(t => (
@@ -373,5 +399,197 @@ function EightySixList({ data, fmt, fmtN }) {
         ⓘ Dormant items are candidates for removal or repricing. Consider menu engineering (under Sales reports) before cutting.
       </div>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: each site's lines are read against ITS OWN menu (a category id is a per
+// site copy; the signed in site's menu named another site's categories wrongly), then the
+// sites are joined on what they share: a shared product by its master id, a local one by its
+// name (src/lib/reportSiteMenu.js). A column per site, the group first. Shared products are
+// one row across all sites. The 86 list is a menu state, so it stays one site at a time.
+// ─────────────────────────────────────────────────────────────────────────────
+const MIX_METRICS = [{ id:'rev', label:'Revenue' }, { id:'qty', label:'Qty sold' }];
+const SITE_TABS = SUB_TABS.filter(t => t.id !== 'eighty_six');
+
+function ProductMixSites(props) {
+  const { fmtN } = props;
+  const { parts, blocks } = useParts(props);
+  const { menus, loading, failed } = useSiteMenus(parts);
+  const [sub, setSub] = useState('items');
+  const [metric, setMetric] = useState('rev');
+
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const menu = menus[p.id] || null;
+    return [p.id, {
+      items: siteItemRows(p.rows, menu, ts => daySlot(ts, p.clock.timeZone)),
+      cats:  siteCategoryRows(p.rows, menu),
+      mods:  siteModifierRows(p.rows),
+    }];
+  })), [parts, menus]);
+
+  const joined = (block, pick, fields, opts) => joinSiteRows(block.parts.map(p => ({ siteId: p.id, rows: pick(bySite.get(p.id)).rows })), fields, opts);
+  const tagged = (pick, extra = () => ({})) => parts.flatMap(p => pick(bySite.get(p.id)).rows.map(r => ({ ...r, siteId: p.id, siteName: p.name, currency: p.currency || '', ...extra(r, p) })));
+
+  const exportFn = {
+    items: () => exportSites('product-mix-items', tagged(s => s.items), [
+      { label:'Currency',  key:'currency' },
+      { label:'Item',      key:'name' },
+      { label:'Category',  key:'catLabel' },
+      { label:'Qty',       key:'qty' },
+      { label:'Revenue',   key: r => r.rev.toFixed(2) },
+      { label:'Avg price', key: r => r.avgPrice.toFixed(2) },
+      { label:'Share % (of site)', key: r => r.share.toFixed(2) },
+      { label:'Morning',   key:'morning' },
+      { label:'Lunch',     key:'lunch' },
+      { label:'Afternoon', key:'afternoon' },
+      { label:'Dinner',    key:'dinner' },
+      { label:'Late',      key:'late' },
+    ]),
+    categories: () => exportSites('product-mix-categories', tagged(s => s.cats), [
+      { label:'Currency',     key:'currency' },
+      { label:'Category',     key:'label' },
+      { label:'Unique items', key:'itemCount' },
+      { label:'Qty',          key:'qty' },
+      { label:'Revenue',      key: r => r.rev.toFixed(2) },
+      { label:'Share % (of site)', key: r => r.share.toFixed(2) },
+    ]),
+    modifiers: () => exportSites('product-mix-modifiers', tagged(s => s.mods), [
+      { label:'Currency',    key:'currency' },
+      { label:'Modifier',    key:'name' },
+      { label:'Times used',  key:'qty' },
+      { label:'Revenue',     key: r => r.revenue.toFixed(2) },
+      { label:'Attach rate', key: r => r.attachRate.toFixed(2) },
+    ]),
+    eighty_six: null,
+  };
+
+  if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's menu…</div>;
+
+  const nameCell = (label, sub2) => (
+    <span>
+      <span style={{ color:'var(--t1)', fontWeight:600 }}>{label}</span>
+      {sub2 ? <span style={{ color:'var(--t4)', fontSize:10, marginLeft:6 }}>{sub2}</span> : null}
+    </span>
+  );
+  const kind = metric === 'qty' ? 'count' : 'money';
+  const metricPick = metric === 'qty' ? 'qty' : 'rev';
+
+  return (
+    <div>
+      <SplitHeader parts={parts} chips={false} onExport={exportFn[sub] || undefined}>
+        {failed.map(id => {
+          const p = parts.find(x => x.id === id);
+          return <div key={id} style={{ color:'var(--amber)' }}>{p?.name || id}: the menu could not be read, so its products are matched by name and its categories show their ids.</div>;
+        })}
+      </SplitHeader>
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
+        {SUB_TABS.map(t => (
+          <button key={t.id} onClick={() => setSub(t.id)} style={{
+            padding:'6px 14px', borderRadius:8,
+            border:`1px solid ${sub === t.id ? 'var(--acc-b)' : 'var(--bdr)'}`,
+            background: sub === t.id ? 'var(--acc-d)' : 'var(--bg3)',
+            color: sub === t.id ? 'var(--acc)' : 'var(--t3)',
+            fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+            display:'flex', alignItems:'center', gap:6,
+          }}>
+            <span style={{ fontSize:13 }}>{t.icon}</span>{t.label}
+          </button>
+        ))}
+        <div style={{ flex:1 }}/>
+        {SITE_TABS.some(t => t.id === sub) && (
+          <select value={metric} onChange={e => setMetric(e.target.value)} style={{ padding:'6px 10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+            {MIX_METRICS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        )}
+      </div>
+
+      {sub === 'eighty_six' && (
+        <div style={{ padding:'28px 16px', textAlign:'center', color:'var(--t3)', fontSize:13, background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12 }}>
+          The 86 list and dormant items belong to one site's menu. Pick one site to see them.
+        </div>
+      )}
+
+      {sub !== 'eighty_six' && (
+        <Blocks blocks={blocks}>{b => {
+          if (sub === 'items') {
+            const rows = joined(b, s => s.items, ['qty', 'rev'], { sortBy: metricPick });
+            const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).items.rows, ['qty', 'rev']), items: bySite.get(p.id).items.rows.length } }));
+            const all = { ...sumFields(site.map(x => x.cells), ['qty', 'rev']), items: rows.length };
+            if (!rows.length) return <EmptyState icon="🍽" message="No items sold at these sites in this period."/>;
+            return (
+              <>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+                  <StatTile label="Unique items"       value={fmtN(all.items)} sub="shared products counted once"/>
+                  <StatTile label="Units sold"         value={fmtN(all.qty)}/>
+                  <StatTile label="Total item revenue" value={b.fmt(all.rev)} color="var(--acc)"/>
+                </div>
+                <SiteRows block={b} rows={site} total={all} columns={[
+                  { label:'Items',   cell: c => fmtN(c.items) },
+                  { label:'Units',   cell: c => fmtN(c.qty) },
+                  { label:'Revenue', cell: (c, f) => f(c.rev), color:'var(--acc)' },
+                ]}/>
+                <SiteMatrix block={b} first="Item" fmtN={fmtN} rows={rows.slice(0, 100).map(r => ({
+                  key: r.key, label: nameCell(r.label, r.catLabel), kind,
+                  total: r[metricPick], bySite: Object.fromEntries(b.parts.map(p => [p.id, r.bySite[p.id]?.[metricPick] || 0])),
+                }))}/>
+                {rows.length > 100 && <div style={{ fontSize:11, color:'var(--t4)', textAlign:'center', marginTop:-6, marginBottom:14 }}>Showing top 100 of {rows.length}. Export CSV for the full list.</div>}
+              </>
+            );
+          }
+          if (sub === 'categories') {
+            const rows = joined(b, s => s.cats, ['qty', 'rev'], { sortBy: metricPick });
+            const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).cats.rows, ['qty', 'rev']), cats: bySite.get(p.id).cats.rows.length } }));
+            const all = { ...sumFields(site.map(x => x.cells), ['qty', 'rev']), cats: rows.length };
+            if (!rows.length) return <EmptyState icon="🗂" message="No category data at these sites."/>;
+            return (
+              <>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+                  <StatTile label="Categories sold"  value={fmtN(all.cats)}/>
+                  <StatTile label="Total units"      value={fmtN(all.qty)}/>
+                  <StatTile label="Category revenue" value={b.fmt(all.rev)} color="var(--acc)"/>
+                </div>
+                <SiteRows block={b} rows={site} total={all} columns={[
+                  { label:'Categories', cell: c => fmtN(c.cats) },
+                  { label:'Units',      cell: c => fmtN(c.qty) },
+                  { label:'Revenue',    cell: (c, f) => f(c.rev), color:'var(--acc)' },
+                ]}/>
+                <SiteMatrix block={b} first="Category" fmtN={fmtN} rows={rows.map(r => ({
+                  key: r.key, label: nameCell(r.label, `${fmtN(r.itemCount)} item${r.itemCount === 1 ? '' : 's'}`), kind,
+                  total: r[metricPick], bySite: Object.fromEntries(b.parts.map(p => [p.id, r.bySite[p.id]?.[metricPick] || 0])),
+                }))}/>
+              </>
+            );
+          }
+          const modPick = metric === 'qty' ? 'qty' : 'revenue';
+          const rows = joined(b, s => s.mods, ['qty', 'revenue'], { sortBy: modPick });
+          const site = b.parts.map(p => ({ part: p, cells: { ...sumFields(bySite.get(p.id).mods.rows, ['qty', 'revenue']), mods: bySite.get(p.id).mods.rows.length, items: bySite.get(p.id).mods.totalItemCount } }));
+          const all = { ...sumFields(site.map(x => x.cells), ['qty', 'revenue', 'items']), mods: rows.length };
+          if (!rows.length) return <EmptyState icon="➕" message="No modifiers used at these sites in this period."/>;
+          return (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+                <StatTile label="Unique modifiers" value={fmtN(all.mods)}/>
+                <StatTile label="Total attaches"   value={fmtN(all.qty)} sub={all.items ? `${((all.qty / all.items) * 100).toFixed(1)}% attach rate` : null}/>
+                <StatTile label="Modifier revenue" value={b.fmt(all.revenue)} color="var(--acc)"/>
+              </div>
+              <SiteRows block={b} rows={site} total={all} columns={[
+                { label:'Modifiers', cell: c => fmtN(c.mods) },
+                { label:'Attaches',  cell: c => fmtN(c.qty) },
+                { label:'Revenue',   cell: (c, f) => f(c.revenue), color:'var(--acc)' },
+              ]}/>
+              <SiteMatrix block={b} first="Modifier" fmtN={fmtN} rows={rows.map(r => ({
+                key: r.key, label: nameCell(r.label), kind,
+                total: r[modPick], bySite: Object.fromEntries(b.parts.map(p => [p.id, r.bySite[p.id]?.[modPick] || 0])),
+              }))}/>
+            </>
+          );
+        }}</Blocks>
+      )}
+
+      <div style={{ marginTop:12, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
+        ⓘ Each site's sales are read against its own menu. A product shared across sites is one row; a product made at one site is matched to another site's by its name. Share % in the CSV is of that site's own revenue.
+      </div>
+    </div>
   );
 }

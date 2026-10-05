@@ -45,13 +45,16 @@ import { compareRange } from './reportCompare.js';
 // src/lib/reportSplit.js). Transactions is among them: the LIST shows any ticked site, and
 // refunds, receipts and the reversal retry stay locked to the signed in site inside the
 // report (reportSplit.actionLock).
-// STEP 4 flips items, item_trend, menu_eng, tax, tips and kds_perf once they stop reading
-// one site's menu, tax or staff.
+// STEP 4 (5 Oct 2026) flipped items, item_trend, menu_eng, tax, tips and kds_perf: each
+// site's lines are now read against ITS OWN menu, tax rates and production centres
+// (src/lib/reportSiteMenu.js), so another site's rows get the right categories, one row per
+// shared product (by master id), its own VAT and its own station names. The tip pool
+// calculator and the 86 list stay one site at a time inside their reports.
 export const REPORT_SITE_MODE = {
   summary: 'multi', daily_trend: 'multi', order_types: 'multi', order_sources: 'multi', daypart: 'multi',
   servers: 'multi', shifts: 'multi', exceptions: 'multi', payments: 'multi', tables: 'multi',
   transactions: 'multi',
-  items: 'home', item_trend: 'home', menu_eng: 'home', tax: 'home', tips: 'home', kds_perf: 'home',
+  items: 'multi', item_trend: 'multi', menu_eng: 'multi', tax: 'multi', tips: 'multi', kds_perf: 'multi',
   payroll: 'home', daily_trading: 'home', bookings: 'home', cash_drawer: 'home',
   zreport: 'home', open: 'home',
   location_compare: 'all',
