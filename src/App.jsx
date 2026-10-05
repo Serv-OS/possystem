@@ -106,6 +106,8 @@ import { normaliseMenuRow, assembleTaxProfiles } from './lib/rowMapping';
 import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
 import KioskStaffAlert from './components/KioskStaffAlert';
+import VenueMessagePopup from './components/VenueMessagePopup';
+import { tillMayHostPopup } from './lib/venueMessageRules';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
 import CardAdoptedBanner from './components/CardAdoptedBanner';
 import OrdersHub from './surfaces/OrdersHub';
@@ -1040,6 +1042,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       <ChangeDueOverlay />
       {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
       {showWhatsNew && <Suspense fallback={null}><WhatsNewModal onClose={()=>setShowWhatsNew(false)} /></Suspense>}
+      {/* 5 Oct 2026 (Peter: "a POP UP from the admin"): a message from ServOS, until someone taps
+          Got it. ONLY here, inside the till shell with a member of staff signed in: never on the
+          PIN screen, a kiosk, a kitchen screen or the phone till, and never over a payment
+          (components/VenueMessagePopup.jsx waits for lib/paymentBusy.js). */}
+      {tillMayHostPopup({ deviceMode: 'pos', deviceType: pairedDeviceType, defaultSurface: deviceConfig?.defaultSurface, surface, isKdsDevice, staffSignedIn: !!staff })
+        && <VenueMessagePopup host="till" locationId={pairedDevice?.locationId || null} />}
     </div>
     );
   }

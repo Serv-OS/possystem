@@ -135,6 +135,22 @@ export function sharedRange(locations) {
   return list.every((r) => r.from === first.from && r.to === first.to) ? first : null;
 }
 
+/**
+ * The group cards to draw: one, or ONE PER CURRENCY when the venues do not share one.
+ * 5 Oct 2026: currencies are never added together. The function sends rollup.by_currency (one
+ * total per currency); with two or more of them each gets its own card and its own venues.
+ * A function from before that sends no by_currency: one card, in the first venue's currency,
+ * exactly as the app has always drawn it.
+ * @returns {{ rollup: any, currency: string, locations: any[] }[]}
+ */
+export function groupCards(data) {
+  const r = data?.rollup, locs = data?.locations || [];
+  if (!r || !locs.length) return [];
+  const by = Array.isArray(r.by_currency) ? r.by_currency.filter((g) => g?.currency && g.locations > 0) : [];
+  if (by.length > 1) return by.map((g) => ({ rollup: g, currency: g.currency, locations: locs.filter((l) => l.currency === g.currency) }));
+  return [{ rollup: r, currency: r.currency || locs[0]?.currency || 'GBP', locations: locs }];
+}
+
 /** '+12%' or '-3%'; '' when there is nothing to compare with. */
 export function signedPct(p) {
   return p == null ? '' : `${p >= 0 ? '+' : ''}${p}%`;
