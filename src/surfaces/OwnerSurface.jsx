@@ -12,6 +12,20 @@
 // the group card and every venue card; the phone remembers the last one. Today is
 // the default and reads the same fields as before. The words and the fallback for a
 // function from before the filters are in src/lib/ownerPeriod.js.
+//
+// 5 Oct 2026 (Peter's decisions on multi site reporting):
+//   * THE COMPARISON LINE IS ALWAYS DRAWN, on every venue card and on the group card, and it
+//     says what it compares to: "+2% vs last Monday by 2pm", "+2% vs same days last week",
+//     "New this week" and "No sales yet today" in grey (never a red minus 100%), and for the
+//     group "Same days last week £881 · +177% (2 of 6 venues, 4 new)". The percent and the
+//     reason word are the function's; the words are src/lib/ownerCompare.js.
+//   * TAP A CARD. A venue card opens that venue's seven reports, the group card the same
+//     seven across all sites (src/surfaces/owner/OwnerDetail.jsx). The chips stay on top and
+//     the phone's own back closes the screen, as the Back button does.
+//   * CURRENCIES ARE NEVER ADDED TOGETHER: a login with pound and dollar venues gets one
+//     group card per currency (the function's rollup.by_currency).
+//   * AN OLD FUNCTION (no `compare` block, no detail call): the cards draw exactly what they
+//     drew before, and the venue screen says "More reports need a ServOS update".
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
@@ -21,8 +35,12 @@ import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { withTimeout, TimeoutError } from '../lib/withTimeout';
 import {
   PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod, shownPeriod,
-  venueView, rollupView, likeForLikeNote, rangeLabel, sharedRange, signedPct,
+  venueView, rollupView, likeForLikeNote, rangeLabel, sharedRange, signedPct, groupCards,
 } from '../lib/ownerPeriod';
+import { compareBlock, groupCompareBlock, compareLine, groupLine, sharedCompareRange } from '../lib/ownerCompare';
+import { canDetail, groupTarget, venueTarget } from '../lib/ownerDetail';
+import OwnerDetail from './owner/OwnerDetail';
+import { money, toneColor, periodChip, periodChipOn } from './owner/style';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
 const LOAD_TIMEOUT_MS = 15000;
@@ -34,10 +52,6 @@ const MONTH_REFRESH_MS = 600000;
 // Private browsing can throw on the very mention of localStorage.
 const phoneStorage = () => { try { return window.localStorage; } catch { return null; } };
 
-const money = (n, currency = 'GBP', dp = 0) => {
-  try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
-  catch { return `£${(Number(n) || 0).toFixed(dp)}`; }
-};
 const pctTone = (p, good = 'up') => p == null ? 'var(--t3)' : (good === 'up' ? (p >= 100 ? 'var(--grn)' : p >= 85 ? 'var(--amber)' : 'var(--red)') : 'var(--t1)');
 
 export default function OwnerSurface() {
@@ -225,6 +239,32 @@ function Dashboard({ email, theme, onToggleTheme }) {
     return () => clearInterval(t);
   }, [load, period]);
 
+  // The screen behind a card: which venue (or group) is open, null for the cards. Opening adds
+  // a step to the phone's history so its own back (the Android button, the iOS swipe) closes
+  // the screen and does not leave the app.
+  const [open, setOpen] = useState(null);
+  const [tick, setTick] = useState(0);
+  const cardsScroll = useRef(0);
+  const openDetail = useCallback((target) => {
+    try { cardsScroll.current = window.scrollY || 0; } catch { /* no window */ }
+    try { window.history.pushState({ ...(window.history.state || {}), ownerDetail: true }, ''); } catch { /* history closed to us: the Back button still works */ }
+    setOpen(target);
+  }, []);
+  const closeDetail = useCallback(() => {
+    let went = false;
+    try { if (window.history.state?.ownerDetail) { window.history.back(); went = true; } } catch { /* fall through to a plain close */ }
+    if (!went) setOpen(null);
+  }, []);
+  useEffect(() => {
+    const onPop = () => setOpen(null);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  // The reports start at the top; the cards come back where they were left.
+  const isOpen = !!open;
+  useEffect(() => { try { window.scrollTo(0, isOpen ? 0 : cardsScroll.current); } catch { /* no window */ } }, [isOpen]);
+  const refresh = useCallback(() => { load(period); setTick((n) => n + 1); }, [load, period]);
+
   const pick = useCallback((id) => {
     setNeedsUpdate(false);
     storePeriod(phoneStorage(), id);
@@ -235,10 +275,9 @@ function Dashboard({ email, theme, onToggleTheme }) {
   const multi = (data?.locations?.length || 0) > 1;
   // The period the numbers on screen are for (the function's own word, never the chip's).
   const shown = shownPeriod(data, period).period;
-  const copy = PERIOD_COPY[shown];
-  const rv = rollupView(r, shown);
   const dates = shown === 'today' ? null : sharedRange(data?.locations);
-  const heading = [copy.heading, multi ? `${r?.locations} venues` : '', rangeLabel(dates)].filter(Boolean).join(' · ');
+  // One group card, or one per currency when the venues do not share one.
+  const groups = groupCards(data);
   // The numbers on screen are for another period than the lit chip: they stay, dimmed, under
   // their own labels, until an answer for the chip lands. NOT only while the call is running:
   // a This month call that failed left Today's figures at full brightness under a lit
@@ -257,7 +296,7 @@ function Dashboard({ email, theme, onToggleTheme }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <ThemeBtn theme={theme} onClick={onToggleTheme} />
-          <button onClick={() => load(period)} disabled={busy} title="Refresh" aria-busy={busy}
+          <button onClick={refresh} disabled={busy} title="Refresh" aria-busy={busy}
             style={{ ...iconBtn, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>{busy ? '⋯' : '↻'}</button>
           <button onClick={() => supabase.auth.signOut()} title="Sign out" style={iconBtn}>⎋</button>
         </div>
@@ -279,36 +318,79 @@ function Dashboard({ email, theme, onToggleTheme }) {
         <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '50px 16px', fontSize: 14 }}>No locations are linked to your account yet.</div>
       )}
 
-      <div style={{ opacity: waiting ? 0.5 : 1, transition: 'opacity .15s' }}>
-        {/* ── Rollup (all venues, the period shown) ── */}
-        {r && data.locations.length > 0 && (
-          <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16 }}>
-            <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{heading}</div>
-            <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rv.net_sales, data.locations[0]?.currency)}</div>
-            {rv.forecast > 0 && (
-              <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
-                {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, data.locations[0]?.currency)})</span>
-              </div>
-            )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
-              <Mini label="Orders" value={rv.orders} />
-              <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '—'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
-              <Mini label="Live now" value={rv.live_orders} />
-              <Mini label="On floor" value={rv.open_tables} />
-            </div>
-            {rv.vs_pct != null && (
-              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
-                {shown === 'today' ? 'Week to date' : copy.before} {money(rv.before, data.locations[0]?.currency)} ·{' '}
-                <span style={{ color: rv.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rv.vs_pct)}</span>{shown === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
-              </div>
-            )}
-          </div>
-        )}
+      {open && (
+        <OwnerDetail target={open} period={period} supported={canDetail(data)} tick={tick} onBack={closeDetail} backLabel="Back" />
+      )}
 
-        {/* ── Per-venue cards ── */}
-        {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates} />)}
-      </div>
+      {!open && (
+        <div style={{ opacity: waiting ? 0.5 : 1, transition: 'opacity .15s' }}>
+          {/* ── Rollup (all venues of one currency, the period shown) ── */}
+          {groups.map((g) => (
+            <GroupCard key={g.currency} g={g} shown={shown} multi={multi} mixed={groups.length > 1}
+              onOpen={() => openDetail(groupTarget(groups.length > 1 ? g.currency : (r.currency || null), g.rollup.locations))} />
+          ))}
+
+          {/* ── Per-venue cards ── */}
+          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates} onOpen={() => openDetail(venueTarget(l))} />)}
+        </div>
+      )}
     </>
+  );
+}
+
+// A card that opens a screen: a tap, or Enter or Space from a keyboard.
+const tapProps = (onOpen, label) => ({
+  role: 'button', tabIndex: 0, 'aria-label': label, onClick: onOpen,
+  onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } },
+});
+const MoreHint = () => <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, flexShrink: 0 }}>Reports ›</span>;
+
+function GroupCard({ g, shown, multi, mixed, onOpen }) {
+  const r = g.rollup;
+  const cur = g.currency;
+  const copy = PERIOD_COPY[shown];
+  const rv = rollupView(r, shown);
+  const dates = sharedRange(g.locations);
+  const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates)].filter(Boolean).join(' · ');
+  // The function's own comparison for the period shown; null from a function before the reason word.
+  const cmp = groupCompareBlock(r, rv.period);
+  const line = cmp ? groupLine(cmp, sharedCompareRange(g.locations), rv.period) : null;
+  return (
+    <div {...tapProps(onOpen, `Reports for ${mixed ? `${cur} venues` : 'all venues'}`)}
+      style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16, cursor: 'pointer' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{heading}</div>
+        <MoreHint />
+      </div>
+      <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rv.net_sales, cur)}</div>
+      {rv.forecast > 0 && (
+        <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
+          {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
+        <Mini label="Orders" value={rv.orders} />
+        <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '—'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
+        <Mini label="Live now" value={rv.live_orders} />
+        <Mini label="On floor" value={rv.open_tables} />
+      </div>
+      {/* The comparison line is ALWAYS drawn, and the pounds are always the comparison's. */}
+      {line && (
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
+          {line.grey ? <span style={{ fontWeight: 700 }}>{line.grey}</span> : (
+            <>{line.label} {money(line.amount, cur)} ·{' '}
+              <span style={{ color: toneColor(line.tone), fontWeight: 700 }}>{line.pct}</span>{line.note}</>
+          )}
+        </div>
+      )}
+      {/* A function from before the reason word: the line it has always had. */}
+      {!line && rv.vs_pct != null && (
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
+          {rv.period === 'today' ? 'Week to date' : copy.before} {money(rv.before, cur)} ·{' '}
+          <span style={{ color: rv.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rv.vs_pct)}</span>{rv.period === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -321,13 +403,20 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName, period, showDates }) {
+function VenueCard({ l, showName, period, showDates, onOpen }) {
   const t = venueView(l, period);
   const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
+  // The function's own comparison for the period shown; null from a function before the reason word.
+  const cmp = compareBlock(l, t.period);
+  const line = cmp ? compareLine(cmp, l.range, t.period) : null;
   return (
-    <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 16, marginBottom: 12 }}>
-      {showName && <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>{l.name}</div>}
+    <div {...tapProps(onOpen, `Reports for ${l.name}`)}
+      style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 16, marginBottom: 12, cursor: 'pointer' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{showName ? l.name : ''}</div>
+        <MoreHint />
+      </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
         <div>
           <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{copy.sales}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
@@ -357,8 +446,11 @@ function VenueCard({ l, showName, period, showDates }) {
         <Chip>● {l.live.orders} live order{l.live.orders === 1 ? '' : 's'}</Chip>
         <Chip>▢ {l.live.tables} on floor</Chip>
         {t.tips > 0 && <Chip>{money(t.tips, l.currency)} tips</Chip>}
-        {t.vs_pct != null && <Chip tone={t.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(t.vs_pct)} vs last wk` : `${signedPct(t.vs_pct)} ${copy.versus}`}</Chip>}
+        {/* A function from before the reason word: the chip it has always had. */}
+        {!line && t.vs_pct != null && <Chip tone={t.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(t.vs_pct)} vs last wk` : `${signedPct(t.vs_pct)} ${copy.versus}`}</Chip>}
       </div>
+      {/* The comparison line is ALWAYS drawn: a percent with what it is against, or the reason in grey. */}
+      {line && <div style={{ fontSize: 12.5, fontWeight: 700, color: toneColor(line.tone), marginTop: 10 }}>{line.text}</div>}
 
       {t.top_items.length > 0 && (
         <div style={{ marginTop: 14, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
@@ -386,6 +478,4 @@ function Stat({ label, value, tone }) {
 const Chip = ({ children, tone }) => (
   <span style={{ fontSize: 11.5, fontWeight: 700, color: tone || 'var(--t3)', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 99, padding: '4px 10px' }}>{children}</span>
 );
-const periodChip = { padding: '9px 6px', borderRadius: 99, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t2)', fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' };
-const periodChipOn = { background: 'var(--acc)', border: '1px solid var(--acc)', color: '#0b0c10' };
 const iconBtn = { width: 38, height: 38, borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t2)', fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' };
