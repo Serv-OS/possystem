@@ -102,6 +102,8 @@ import OrderScreens from './sections/OrderScreens';
 import PrintMenu from './sections/PrintMenu';
 import PackageBuilder from './sections/PackageBuilder';
 import TableBookings from './sections/TableBookings';
+import ServosMessages from './sections/ServosMessages';
+import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
@@ -173,6 +175,7 @@ const NAV = [
   { id: 'marketing-reports', label: 'Marketing report', icon: '\u{1F4C8}', group: 'Analytics' },
   { id: 'compliance', label: 'Marketing compliance', icon: '\u{1F6E1}', group: 'Analytics' },
   { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Settings' },
+  { id: 'servos-messages', label: 'Messages from ServOS', icon: '\u{1F514}', group: 'Settings' },
 ];
 
 // v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
@@ -194,7 +197,7 @@ const NAV_IA = [
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Card payments', icon:'card',   single:'card-payments' },
-  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['security','Sign in security'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
+  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['security','Sign in security'],['servos-messages','Messages from ServOS'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
 
 // v5.5.951 — the "Premium Sauces vanished" guard. Menu writers used to log failures
@@ -744,6 +747,11 @@ export default function BackOfficeApp() {
     }}>
       <SaveHealthBanner />
       <BackOfficeToast />
+      {/* 5 Oct 2026 (Peter: "a POP UP from the admin"): a message from ServOS for the venue this
+          person is signed in to, until someone taps Got it (components/VenueMessagePopup.jsx). */}
+      {authUser && !isMock && orgCtx?.locationId && (
+        <VenueMessagePopup host="backoffice" locationId={orgCtx.locationId} user={authUser} userName={orgCtx?.userName || null} />
+      )}
       {/* ── Sidebar (glass) ─────────────────────────────── */}
       <div style={{
         width:236, background:'var(--glass-bg)',
@@ -961,6 +969,7 @@ export default function BackOfficeApp() {
         <div className="bo-page-shell">
           {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
           {section === 'security'   && <SignInSecurity orgCtx={orgCtx} />}
+          {section === 'servos-messages' && <ServosMessages locationId={orgCtx?.locationId || null} />}
           {section === 'reviews'    && <ReviewManager />}
           {section === 'wifi'       && <WifiManager />}
           {section === 'promotions' && <Promotions />}
