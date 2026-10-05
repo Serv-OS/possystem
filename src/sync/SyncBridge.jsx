@@ -13,6 +13,8 @@ import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode
 import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
+import { flushVenueMessageTaps } from '../lib/venueMessageTaps';
+import { confirmVenueMessage } from '../lib/venueMessages';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 import { startQueueReconciler, stopQueueReconciler } from './QueueReconciler';
@@ -808,6 +810,9 @@ export default function SyncBridge({ onSyncPulse }) {
         await onReconnect();
         await flushRedemptions();
       } catch {}
+      // 5 Oct 2026: a Got it tap (message from ServOS) made with no internet, on a till that
+      // has since gone back to the PIN screen. Nothing saved = no request at all.
+      try { await flushVenueMessageTaps({ send: confirmVenueMessage }); } catch { /* best-effort */ }
     };
     if (!isMock) window.addEventListener('online', onBackOnline);
 
@@ -818,6 +823,8 @@ export default function SyncBridge({ onSyncPulse }) {
           // v4.6.27: static import above (ADR-008)
           await periodicSync();
         } catch {}
+        // 5 Oct 2026: the same saved Got it taps, in case the 'online' event never fired.
+        try { await flushVenueMessageTaps({ send: confirmVenueMessage }); } catch { /* best-effort */ }
         try {
           // v4.6.29: fire any scheduled collection orders whose fire time
           // has been reached. Piggy-backs on the existing 60s cadence so we

@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import AdminSecondSteps from './sections/AdminSecondSteps';
+import AdminVenueMessages from './sections/AdminVenueMessages';
 import { isRealLogin, sessionProvesSecondStep, MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 import { currentAccessToken } from '../lib/secondStep/client';
 import AdminBillingManager from './sections/AdminBillingManager';
@@ -484,6 +485,7 @@ function AdminPanel({ authUser }) {
           { id:'billing', label:'Processing', icon:'💳' },
           { id:'revenue', label:'Revenue', icon:'📈' },
           { id:'reseller', label:'FranPOS', icon:'🧾' },
+          { id:'venue-messages', label:'Messages to venues', icon:'📣' },
           { id:'customer-import', label:'Import customers', icon:'📥' },
           { id:'second-step', label:'Sign in security', icon:'🔐' },
         ].map(n => (
@@ -527,6 +529,8 @@ function AdminPanel({ authUser }) {
         {section === 'customer-import' && <AdminCustomerImport orgs={orgs} sbFetch={sbFetch} />}
         {/* Second sign in step: who has set up, and the ServOS reset for a lost phone. */}
         {section === 'second-step' && <AdminSecondSteps />}
+        {/* 5 Oct 2026: a pop up on the tills and Back Office of chosen venues, until someone taps Got it. */}
+        {section === 'venue-messages' && <AdminVenueMessages />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (
