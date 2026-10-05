@@ -45,8 +45,8 @@ function buildDayBuckets(checks, days, clock) {
 // range = getPeriodRange's answer: fromDay/toDay are the venue business days, and
 // timeZone/dayStart the clock each check is put on a day with.
 export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }) {
-  // Day axis for the active range, and for the comparison period (same number of
-  // business days, immediately before)
+  // Day axis for the active range, and for what it is compared to (range.compare, the one
+  // percent rule: the same days of the week or month before, or the whole period before)
   const days     = useMemo(() => rangeDays(range),     [range]);
   const prevDays = useMemo(() => prevRangeDays(range), [range]);
 
@@ -96,9 +96,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
     const prevTotalCov = sum(series.prevCovers);
     const avgCheck     = totalChecks ? totalRevenue / totalChecks : 0;
     const tipRate      = totalRevenue ? (totalTips / totalRevenue) * 100 : 0;
-    const revenueDelta = prevTotalRev ? ((totalRevenue - prevTotalRev) / prevTotalRev) * 100 : null;
-    const coversDelta  = prevTotalCov ? ((totalCovers  - prevTotalCov) / prevTotalCov) * 100 : null;
-    return { totalRevenue, totalCovers, totalChecks, totalTips, avgCheck, tipRate, revenueDelta, coversDelta };
+    return { totalRevenue, totalCovers, totalChecks, totalTips, avgCheck, tipRate, prevTotalRev, prevTotalCov };
   }, [series, buckets, days]);
 
   // Best / worst day
@@ -159,9 +157,9 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
       {/* KPI tiles with vs-prev compare chips */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:18 }}>
         <StatTile label="Revenue" value={fmt(totals.totalRevenue)}
-          compare={totals.revenueDelta} sub="vs previous period"/>
+          vs={range?.compare} values={[totals.totalRevenue, totals.prevTotalRev]}/>
         <StatTile label="Covers"  value={fmtN(totals.totalCovers)}
-          compare={totals.coversDelta} sub="vs previous period"/>
+          vs={range?.compare} values={[totals.totalCovers, totals.prevTotalCov]} noun="covers"/>
         <StatTile label="Avg check" value={fmt(totals.avgCheck)}
           sub={`across ${fmtN(totals.totalChecks)} check${totals.totalChecks === 1 ? '' : 's'}`}/>
         <StatTile label="Tip rate" value={`${totals.tipRate.toFixed(1)}%`}
@@ -178,7 +176,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
 
       {/* Charts grid */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(420px, 1fr))', gap:14 }}>
-        <ChartCard title="Daily revenue" sub="orange = revenue · faint = previous period · dotted = 7d rolling avg"
+        <ChartCard title="Daily revenue" sub={`orange = revenue · faint = ${(range?.compare?.label || 'vs previous period').replace(/^vs /, '')} · dotted = 7d rolling avg`}
           values={series.revenue} prev={series.prevRevenue} rolling={series.rolling}
           format={fmt} days={days}/>
         <ChartCard title="Covers per day" sub="seated guests"

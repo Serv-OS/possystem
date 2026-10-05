@@ -10,14 +10,15 @@
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
-import { pctDelta, classifyShift } from './_filters';
+import { classifyShift } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 
 // The figures live in lib/salesStats.js (28 Sep 2026) so the till can print them too.
 export { computeSalesStats } from '../../../lib/salesStats';
 import { computeSalesStats } from '../../../lib/salesStats';
 
-export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationConfig }) {
+// compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
+export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const cur  = useMemo(() => computeSalesStats(checks),     [checks]);
   const prev = useMemo(() => computeSalesStats(prevChecks), [prevChecks]);
   const avgCheck     = cur.count  ? cur.net  / cur.count  : 0;
@@ -90,10 +91,10 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
       <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}><ExportBtn onClick={onExport}/></div>
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
-        <StatTile label="Net sales"  value={fmt(cur.net)}      compare={pctDelta(cur.net, prev.net)}         sub={`${cur.count} checks`} color="var(--acc)"/>
-        <StatTile label="Covers"     value={fmtN(cur.covers)}  compare={pctDelta(cur.covers, prev.covers)}   sub={`${fmt(avgCover)} / cover`}/>
-        <StatTile label="Avg check"  value={fmt(avgCheck)}     compare={pctDelta(avgCheck, prevAvgCheck)}/>
-        <StatTile label="Tips"       value={fmt(cur.tips)}     compare={pctDelta(cur.tips, prev.tips)}       sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
+        <StatTile label="Net sales"  value={fmt(cur.net)}      vs={compare} values={[cur.net, prev.net]} sub={`${cur.count} checks`} color="var(--acc)"/>
+        <StatTile label="Covers"     value={fmtN(cur.covers)}  vs={compare} values={[cur.covers, prev.covers]} noun="covers" sub={`${fmt(avgCover)} / cover`}/>
+        <StatTile label="Avg check"  value={fmt(avgCheck)}     vs={compare} values={[avgCheck, prevAvgCheck]}/>
+        <StatTile label="Tips"       value={fmt(cur.tips)}     vs={compare} values={[cur.tips, prev.tips]} noun="tips" sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
       </div>
 
       {servicePeriods && servicePeriods.rows.length > 0 && (

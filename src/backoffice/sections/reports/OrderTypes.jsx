@@ -39,7 +39,7 @@ export function aggregate(checks, keyFn) {
   return byType;
 }
 
-export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConfig }) {
+export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const typeKey = (c) => c.orderType || 'dine-in';
   const cur  = useMemo(() => aggregate(checks,     typeKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, typeKey), [prevChecks]);
@@ -94,7 +94,7 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConf
         <StatTile label="Total revenue"    value={fmt(totalRev)}    sub={`${fmtN(totalChks)} checks`} color="var(--acc)"/>
         <StatTile label="Dominant channel" value={styleFor(dominant.type).label} sub={`${dominant.share.toFixed(1)}% of revenue`} color={styleFor(dominant.type).color}/>
         {fastestGrowth ? (
-          <StatTile label="Fastest growing" value={styleFor(fastestGrowth.type).label} compare={fastestGrowth.revDelta} color={styleFor(fastestGrowth.type).color}/>
+          <StatTile label="Fastest growing" value={styleFor(fastestGrowth.type).label} vs={compare} values={[fastestGrowth.revenue, fastestGrowth.prevRevenue]} color={styleFor(fastestGrowth.type).color}/>
         ) : (
           <StatTile label="Growth trend" value="—" sub="no prior period data"/>
         )}
@@ -130,7 +130,7 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConf
           <span style={{ textAlign:'right' }}>Revenue</span>
           <span style={{ textAlign:'right' }}>Avg check</span>
           <span style={{ textAlign:'right' }}>Share</span>
-          <span>vs previous</span>
+          <span>{compare?.label || 'vs previous'}</span>
         </div>
         {rows.map(r => {
           const st = styleFor(r.type);
@@ -142,7 +142,7 @@ export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConf
               <span style={{ textAlign:'right', color: st.color, fontFamily:'var(--font-mono)', fontWeight:700 }}>{fmt(r.revenue)}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{fmt(r.avgCheck)}</span>
               <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{r.share.toFixed(1)}%</span>
-              <span><CompareChip pct={r.revDelta}/></span>
+              <span><CompareChip vs={compare} values={[r.revenue, r.prevRevenue]} short/></span>
             </div>
           );
         })}
