@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.29',
+    date: '5 Oct 2026',
+    items: [
+      "Messages from ServOS: when ServOS needs a venue to do something (for example after an update), a message now pops up on the venue's tills and in Back Office and stays until someone taps Got it. One tap clears it on every till and Back Office tab at that venue and records who confirmed and when. It never appears over a payment, an open checkout or the change due screen, and never on kiosks, kitchen screens, customer displays or menu boards. Past messages are listed in Back Office, Settings, Messages from ServOS.",
+    ],
+  },
+  {
     v: '5.11.28',
     date: '2 Oct 2026',
     items: [
