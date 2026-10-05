@@ -150,7 +150,7 @@ export const CATEGORIES = [
     id: 'location', label: 'Multi-location reports', short: 'Multi-location', icon: '📍', glyph: 'multi',
     description: 'Compare performance across all your sites side by side.',
     reports: [
-      { id:'location_compare', label:'Location compare', desc:'Side-by-side performance across every site you manage, with outlier alerts' },
+      { id:'location_compare', label:'All sites overview', desc:'Every site of your company side by side, with the change on last time and outlier alerts' },
     ],
   },
 ];

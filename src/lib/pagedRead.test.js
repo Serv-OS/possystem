@@ -425,20 +425,27 @@ test('pin: no report screen keeps a bare .limit above 1,000 or passes a row cap 
   }
 });
 
+// 5 Oct 2026 (multi site reports): the shell's read moved into ONE shared loader,
+// src/lib/reportScopeLoad.js, so six sites are read by the same code as one. The pins follow
+// it there; what the loader DOES is tested in reportScopeLoad.test.js with fake fetchers.
 test('pin: the reports shell loads this period AND the previous one in full, and shows the fault', () => {
   const shell = read('../backoffice/sections/BOReports.jsx');
-  assert.match(shell, /fetchClosedChecksRange\(locId, range\.from,\s+range\.to,\s+\{ onProgress/);
-  assert.match(shell, /fetchClosedChecksRange\(locId, range\.prevFrom, range\.prevTo, \{ onProgress/);
+  assert.match(shell, /loadScopeRows\(\{/);
+  assert.match(shell, /fetchChecks: fetchClosedChecksRange, fetchTickets: fetchKDSTicketsRange, wantTickets,/);
+  assert.match(shell, /from: s\.range\.from, to: s\.range\.to, prevFrom: s\.range\.prevFrom, prevTo: s\.range\.prevTo/);
   assert.match(shell, /loadingText\(loadProgress\)/);
   assert.match(shell, /TOO_LONG_TEXT/);
   assert.match(shell, /return \(\) => \{ stale = true; \};/);
+  const loader = read('./reportScopeLoad.js');
+  assert.match(loader, /fetchChecks\(s\.id, s\.from, s\.to, \{ onProgress: slot\(`cur:\$\{s\.id\}`\), stop: halt, budget \}\)/);
+  assert.match(loader, /fetchChecks\(s\.id, s\.prevFrom, s\.prevTo, \{ onProgress: slot\(`prev:\$\{s\.id\}`\), stop: halt, budget \}\)/);
 });
 
 test('pin: the shell shares one row budget between this period and the previous one', () => {
-  const shell = read('../backoffice/sections/BOReports.jsx');
-  assert.match(shell, /const budget = rowBudget\(CHECK_ROWS_ON_SCREEN\)/);
-  assert.match(shell, /slot\('cur'\),\s+stop, budget \}/);
-  assert.match(shell, /slot\('prev'\), stop, budget \}/);
+  const loader = read('./reportScopeLoad.js');
+  assert.match(loader, /const budget = rowBudget\(maxRows\)/);
+  assert.match(loader, /maxRows = CHECK_ROWS_ON_SCREEN/);
+  assert.equal((loader.match(/rowBudget\(/g) || []).length, 1, 'one budget for every site and both periods');
 });
 
 test('pin: the shell\'s comparison top up pages too, on the same budget, and a failed comparison is not a quiet one', () => {
@@ -451,9 +458,15 @@ test('pin: the shell\'s comparison top up pages too, on the same budget, and a f
   assert.match(shell, /if \(res\.tooMany\) \{\s+prevHeld\.current = null;\s+setLoadFault\('too_long'\);/);
   // too many rows on either period is the too long line; this period failing blanks the report;
   // the previous one failing alone leaves this period standing with "Comparison did not load".
-  assert.match(shell, /const tooLong = cur\.tooMany \|\| prev\.tooMany;\s+if \(cur\.error \|\| tooLong\) \{/);
-  assert.match(shell, /const prevOk = !prev\.error && Array\.isArray\(prev\.data\);\s+setPrevLoaded\(prevOk\);/);
+  // (The rule itself is the loader's now: see reportScopeLoad.test.js.)
+  const loader = read('./reportScopeLoad.js');
+  assert.match(loader, /const tooLong = cur\.some\(\(r\) => r\.tooMany\) \|\| \(one && prevTooMany\);\s+if \(curBad \|\| tooLong\) return blank\(/);
+  assert.match(shell, /setPrevLoaded\(res\.prevLoaded\);/);
   assert.match(shell, /compare \? \(prevLoaded \? compare : notLoaded\(compare\)\) : null/);
+  // The top up and the live merge are for the signed in site alone (another site's report
+  // is a picture as of its load, so both sides of the percent stand still together).
+  assert.match(shell, /setActiveLocId\(homeOnly \? homeId : null\);\s+setLiveOn\(homeOnly\);/);
+  assert.match(shell, /if \(!liveOn\) return base;/);
 });
 
 test('pin: Stock reports: each read has its own run number, load and fault', () => {

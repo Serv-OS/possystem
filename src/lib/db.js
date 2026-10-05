@@ -1213,7 +1213,9 @@ export const fetchClosedChecksMultiRange = async (windows = [], opts = {}) => {
   const slot = o.onProgress ? progressSum(o.onProgress) : null;
   let failed = false;
   const stop = () => failed || !!o.stop?.();
-  const budget = rowBudget(CHECK_ROWS_ON_SCREEN);
+  // opts.budget: a caller that reads twice for one screen (this period, then the one it is
+  // compared to) hands the SAME budget to both, so the two together stay under the ceiling.
+  const budget = o.budget || rowBudget(CHECK_ROWS_ON_SCREEN);
   try {
     const results = await Promise.all(windows.map(({ locationId: id, from, to }) =>
       fetchClosedChecksRange(id, from, to, { onProgress: slot ? slot(id) : null, stop, budget }).then(r => {

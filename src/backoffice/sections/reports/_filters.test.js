@@ -291,7 +291,9 @@ test('Daily Trading and Bookings get fromDay/toDay, never the range instants rea
 test('the reports hub fetches only once the venue config is in, and again when the range changes', () => {
   const bo = read('../BOReports.jsx');
   assert.match(bo, /if \(!locationConfig\) return;/);
-  assert.match(bo, /\}, \[period, customRange\.from, customRange\.to, locationConfig, range\]\);/);
+  // 5 Oct 2026 (multi site): and once the report scope is in, and again when the sites read change.
+  assert.match(bo, /if \(!scopeReady\) return;/);
+  assert.match(bo, /\}, \[period, customRange\.from, customRange\.to, locationConfig, range, scopeReady, loadKey\]\);/);
   // builtAt (v5.11.29): the range notes when it was worked out, so its comparison can move on.
   assert.match(bo, /getPeriodRange\(period, customRange, locationConfig, builtAt\)/);
   // The comparison moves with the clock without rebuilding the range (no reload each tick).
