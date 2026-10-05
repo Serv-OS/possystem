@@ -7,10 +7,29 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.29',
+    v: '5.11.31',
     date: '5 Oct 2026',
     items: [
       "Messages from ServOS: when ServOS needs a venue to do something (for example after an update), a message now pops up on the venue's tills and in Back Office and stays until someone taps Got it. One tap clears it on every till and Back Office tab at that venue and records who confirmed and when. It never appears over a payment, an open checkout or the change due screen, and never on kiosks, kitchen screens, customer displays or menu boards. Past messages are listed in Back Office, Settings, Messages from ServOS.",
+    ],
+  },
+  {
+    v: '5.11.30',
+    date: '5 Oct 2026',
+    items: [
+      "Owner app: tap a venue, or the group card, to open seven reports for it: sales by hour, week by day, payment mix, order types and channels, discounts voids and refunds, top items, and labour against sales (shown when the site has timesheets). The three period chips work there too.",
+      "Owner app: the percent is now the same rule everywhere and says what it compares to. Today compares to the same weekday last week up to the same time of day (+4% vs last Monday by 2pm). This week compares to the same days of the week before. This month compares to the same days of the month before. A site with nothing to compare says New this week, and a quiet morning says No sales yet today, never a red minus 100%. The group percent only counts sites that can be compared and says how many.",
+      "Owner app: days now follow each site's business day, the same as Back Office, Daily trading and Xero. A US site shows in dollars.",
+    ],
+  },
+  {
+    v: '5.11.29',
+    date: '5 Oct 2026',
+    items: [
+      "Reports now add up every sale in the period. Any report covering more than about 1,000 sales was only counting the newest 1,000, so the earliest days of a week or month were missing: at Huddersfield, Last 7 days showed about 8,250 pounds when the true figure was about 14,570. This affected the sales, payments, tax, tips, exceptions, kitchen, stock and location compare reports at busy sites. Daily figures, Z reports, Xero and the Owner app were always right. A long period now shows a loading count (Loading 3 of 9), and a period too long to load says so, never a part total.",
+      "KDS performance report: stations now show the names you gave them in Production printing (KDS drinks, kds food, Frozen Drinks KDS). They were showing as codes such as pc-1790752941614-i9vh.",
+      "Reports: the hour by hour bar charts (KDS performance, Daypart and Tips) now draw real bars. Every bar was showing as a flat line.",
+      "KDS performance report: P50 and P90 are now in plain words. Typical is the time half of tickets beat. 9 in 10 by is the time nine tickets in ten were done within; it shows red over 15 minutes.",
     ],
   },
   {

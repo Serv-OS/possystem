@@ -13,6 +13,7 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { packBaseUnitCost } from './costing.js';
 import { purchaseNet } from '../tax.js';
+import { readAllPagesResult } from '../pagedRead.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -452,16 +453,24 @@ export const fetchRecentMovements = async (locationId = null, limit = 15) => {
 };
 
 /** All movements in a date range (for stock reports / the gap). */
-export const fetchMovementsRange = async (fromIso, toIso, locationId = null, limit = 5000) => {
+// 5 Oct 2026: every movement of the range, in pages of 1,000 (lib/pagedRead.js). It asked for
+// 5,000 (8,000 for the usage rate) in one request and the API answers 1,000 at most, newest
+// first, so a busy period lost its oldest movements without a word. On the ceiling or a
+// failed page: { data: [], error, tooMany }.
+export const fetchMovementsRange = async (fromIso, toIso, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  let q = supabase.from('stock_movements')
-    .select('id, inventory_item_id, qty_base, value_delta, movement_type, occurred_at')
-    .eq('location_id', locationId);
-  if (fromIso) q = q.gte('occurred_at', fromIso);
-  if (toIso) q = q.lte('occurred_at', toIso);
-  const { data, error } = await q.order('occurred_at', { ascending: false }).limit(limit);
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const { data, error, tooMany } = await readAllPagesResult('stock movements', (first) => {
+    let q = supabase.from('stock_movements')
+      .select('id, inventory_item_id, qty_base, value_delta, movement_type, occurred_at', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId);
+    if (fromIso) q = q.gte('occurred_at', fromIso);
+    if (toIso) q = q.lte('occurred_at', toIso);
+    return q.order('occurred_at', { ascending: false }).order('id', { ascending: false });
+  }, { onProgress: o.onProgress, stop: o.stop });
+  if (error) return { data: [], error, tooMany: !!tooMany };
   return {
     data: (data || []).map(r => ({
       id: r.id, inventoryItemId: r.inventory_item_id, qtyBase: Number(r.qty_base),
@@ -509,7 +518,7 @@ export const fetchUsageRates = async (days = 28, locationId = null) => {
   }
   // fallback — RPC missing/not yet migrated: aggregate from the movements range.
   const fromIso = new Date(Date.now() - days * 86400000).toISOString();
-  const { data: moves } = await fetchMovementsRange(fromIso, null, locationId, 8000);
+  const { data: moves } = await fetchMovementsRange(fromIso, null, locationId);
   const used = {};
   (moves || []).forEach(m => { if (m.movementType === 'SALE_DEPLETION' || m.movementType === 'PRODUCTION_CONSUME') used[m.inventoryItemId] = (used[m.inventoryItemId] || 0) + (-m.qtyBase); });
   const rate = {};

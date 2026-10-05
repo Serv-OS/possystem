@@ -158,11 +158,17 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     assert.ok(paged.length >= 5, `${fn}: expected its paged reads, found ${paged.length}`);
     // Every closed_checks read pages, in closed_at then id order, and the sales read uses the tender columns.
     const checkReads = paged.filter((p) => p.q.includes(".from('closed_checks')"));
-    assert.equal(checkReads.length, (src.match(/\.from\('closed_checks'\)/g) ?? []).length, 'a closed_checks read outside pagedRows');
+    // 5 Oct 2026: owner-snapshot has ONE closed_checks read outside pagedRows, on purpose: a
+    // venue's opening day, from its oldest checks that are not voided, sixty at a time in
+    // closed_at then id order, and at most FIRST_SALE_PAGES times, for the "New" word.
+    const firstSale = fn === 'owner-snapshot' ? (src.match(/\.from\('closed_checks'\)\.select\('id, closed_at, status, voided'\)\s*\.eq\('location_id', id\)\.not\('voided', 'is', true\)\.order\('closed_at'\)\.order\('id'\)\s*\.range\(page \* FIRST_SALE_ROWS, \(page \+ 1\) \* FIRST_SALE_ROWS - 1\)/g) ?? []).length : 0;
+    if (fn === 'owner-snapshot') { assert.equal(firstSale, 1, 'the first sale read'); assert.match(src, /const FIRST_SALE_ROWS = 60;/); assert.match(src, /const FIRST_SALE_PAGES = 5;/); }
+    assert.equal(checkReads.length + firstSale, (src.match(/\.from\('closed_checks'\)/g) ?? []).length, 'a closed_checks read outside pagedRows');
     assert.ok(checkReads.some((p) => p.q.includes('.select(SALES_CHECK_COLS)')), 'no closed_checks read with SALES_CHECK_COLS');
     for (const p of checkReads) assert.match(p.q, /\.order\('closed_at'\)\.order\('id'\)$/);
     // Every read that pages is ordered on a unique key (order_queue's is location_id + ref).
-    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$/, `${fn}: '${p.what}' pages without a unique order`);
+    // (wf_venue_settings has one row a venue: its key is location_id.)
+    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('wf_venue_settings'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
     // PostgREST returns at most 1000 rows a request: a .limit() of 1000 or more is a lie.
     for (const m of src.replace(/\/\/[^\n]*/g, '').matchAll(/\.limit\((\d+)\)/g)) assert.ok(Number(m[1]) < 1000, `${fn} still has .limit(${m[1]})`);
   });
@@ -179,7 +185,16 @@ test('owner-snapshot answers VAT with net, and a failed read is a 500, not £0',
   assert.match(src, /return json\(\{ error: \(e as Error\)\?\.message \|\| 'Could not build the snapshot' \}, 500\);/);
   // Items (the heavy column) are read for the period's own days only (today's, under Today),
   // never the comparison or the whole sales window. ownerSnapshot.test.js checks the dates asked for.
-  assert.match(core, /const itemsOf = \(id\) => Promise\.all\(windowsOf\(id, \[\{ from: plan\[id\]\.range\.from, to: plan\[id\]\.today \}\]\)/);
+  assert.match(core, /const itemsOf = \(id\) => Promise\.all\(windowsOf\(plan\[id\], \[\{ from: plan\[id\]\.range\.from, to: plan\[id\]\.today \}\], SLICE_DAYS\[period\]\)/);
+  // 5 Oct 2026: the detail call goes through the shared build too, and every answer says what
+  // the function can do, so an app can tell it from one that cannot.
+  assert.match(src, /const out = await buildOwnerDetail\(\{ ops: opsAdmin, opsIds, meta, target, currency: body\?\.currency, now: new Date\(\), period \}\);/);
+  assert.equal((src.match(/api: OWNER_API, features: OWNER_FEATURES/g) ?? []).length, 3, 'every answer carries api and features');
+  // The currency and the day start come from the Platform locations row (The Cabin, a dollar
+  // venue, was labelled GBP), never from a 'GBP' written into the function.
+  assert.match(src, /\.select\('id, ops_location_id, name, timezone, currency, business_day_start'\)/);
+  assert.match(src, /const meta = venueMeta\(opsIds, plocs \?\? \[\], vsRows \?\? \[\]\);/);
+  assert.doesNotMatch(src, /currency: 'GBP'/);
 });
 
 test('manager-snapshot answers VAT with net', () => {

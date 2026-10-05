@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   OWNER_PERIODS, ownerPeriod, periodRange, addDays, weekStartOf, dayCount, inDays, mergeDayRanges,
   sliceDayRange, addCheckItems, topItems, vsPct, periodTotals, rollupTotals,
+  lineRevenue, rankItems, compareOf, groupCompare, subtractDayRange, hhmm, COMPARE_REASONS,
 } from '../../supabase/functions/_shared/ownerPeriod.js';
 import {
   OWNER_PERIOD_KEY, PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod,
@@ -229,6 +230,95 @@ test('the group comparison is like for like: a venue with nothing last time is l
   const shut = periodTotals({ sales: { net: 0, vat: 0, gross: 0, orders: 0, tips: 0 }, cmpNet: 1000 });
   assert.equal(rollupTotals([old, shut]).vs_cmp_pct, -45);
   assert.equal(rollupTotals([old, shut]).cmp_locations, 2);
+});
+
+// ── 5 Oct 2026: line sales, the reason word, like for like everywhere ───────
+
+test('a line takes its price times the quantity: the price already holds the paid extras', () => {
+  // Live shape (Coffee Boy, 5 Oct 2026): a Small Latte at 3.70 with a 0.70 syrup is stored as
+  // price 4.40 AND mods [{ Caramel Syrup, 0.70 }]. The check's subtotal is the sum of price x
+  // qty, so adding the mods on top counts the syrup twice.
+  const latte = { name: 'Latte — Small Boy', qty: 1, price: 4.4, mods: [{ name: 'Caramel Syrup', price: 0.7 }] };
+  assert.equal(Math.round(lineRevenue(latte) * 100), 440);
+  assert.equal(lineRevenue({ qty: 3, price: 2, mods: [{ price: 1 }, { price: 0 }, { name: 'free' }, null] }), 6);
+  assert.equal(lineRevenue({ price: 5 }), 5);                 // a missing qty is one, no mods at all
+  assert.equal(lineRevenue({ qty: 2, price: 5, mods: 'none' }), 10);
+  const m = new Map();
+  addCheckItems(m, [latte, { ...latte, mods: [] }, { name: 'Tea', qty: 1, price: 2, status: 'voided' }]);
+  assert.deepEqual(topItems(m), [{ name: 'Latte — Small Boy', qty: 2, rev: 8.8 }]);
+});
+
+test('the detail lists: top by quantity and top by pounds are different lists, with categories', () => {
+  const m = new Map();
+  const cat = (id) => ({ c1: 'Hot drinks', c2: 'Food' }[id] ?? null);
+  addCheckItems(m, [{ name: 'Espresso', qty: 10, price: 2, cat: 'c1' }, { name: 'Sandwich', qty: 4, price: 7, cat: 'c2' }, { name: 'Water', qty: 1, price: 1, cat: 'gone' }], cat);
+  addCheckItems(m, [{ name: 'Latte', qty: 4, price: 4, cat: 'c1', mods: [{ price: 1 }] }], cat);
+  const r = rankItems(m, 2);
+  assert.deepEqual(r.by_qty, [{ name: 'Espresso', qty: 10, rev: 20, category: 'Hot drinks' }, { name: 'Latte', qty: 4, rev: 16, category: 'Hot drinks' }]);
+  assert.deepEqual(r.by_rev, [{ name: 'Sandwich', qty: 4, rev: 28, category: 'Food' }, { name: 'Espresso', qty: 10, rev: 20, category: 'Hot drinks' }]);
+  // A category nobody can name any more is Other, never dropped.
+  assert.deepEqual(r.categories, [{ name: 'Hot drinks', qty: 14, rev: 36 }, { name: 'Food', qty: 4, rev: 28 }, { name: 'Other', qty: 1, rev: 1 }]);
+  assert.deepEqual(rankItems(new Map()), { by_qty: [], by_rev: [], categories: [] });
+});
+
+test('the reason word for one venue', () => {
+  assert.deepEqual(COMPARE_REASONS, ['ok', 'new', 'no_sales_now', 'no_sales_then']);
+  const at = { cmpFrom: '2026-09-28' };
+  assert.deepEqual(compareOf({ net: 120, cmpNet: 100, firstSaleDay: '2026-06-01', ...at }), { reason: 'ok', pct: 20, net_sales: 120, cmp_net_sales: 100, first_sale_date: '2026-06-01' });
+  // It opened on the first day of the span: a full span, so it counts.
+  assert.equal(compareOf({ net: 120, cmpNet: 100, firstSaleDay: '2026-09-28', ...at }).reason, 'ok');
+  // It opened a day into the span: New, with its first day, whatever it sold in the rest of it.
+  assert.deepEqual(compareOf({ net: 120, cmpNet: 100, firstSaleDay: '2026-09-29', ...at }), { reason: 'new', pct: null, net_sales: 120, cmp_net_sales: 100, first_sale_date: '2026-09-29' });
+  // It has never sold anything.
+  assert.deepEqual(compareOf({ net: 0, cmpNet: 0, firstSaleDay: null, ...at }), { reason: 'new', pct: null, net_sales: 0, cmp_net_sales: 0, first_sale_date: null });
+  // Nothing yet this time: grey words, never -100%.
+  assert.deepEqual(compareOf({ net: 0, cmpNet: 100, firstSaleDay: '2026-06-01', ...at }), { reason: 'no_sales_now', pct: null, net_sales: 0, cmp_net_sales: 100, first_sale_date: '2026-06-01' });
+  assert.equal(compareOf({ net: 0, cmpNet: 0, firstSaleDay: '2026-06-01', ...at }).reason, 'no_sales_now');
+  // Trading by then, but closed in the span.
+  assert.equal(compareOf({ net: 50, cmpNet: 0, firstSaleDay: '2026-06-01', ...at }).reason, 'no_sales_then');
+  // Huddersfield, Mon 5 Oct 2026: test sales worth £7 the Monday before read +22,000%. The day
+  // it opened is the 29th (_shared/ownerSnapshot.js firstTradingDay), so it is New.
+  assert.equal(compareOf({ net: 1500, cmpNet: 6.67, firstSaleDay: '2026-09-29', ...at }).reason, 'new');
+});
+
+test('the group comparison: only venues with a full comparison, on both sides, and it says how many', () => {
+  const ok = compareOf({ net: 110, cmpNet: 100, firstSaleDay: '2026-01-01', cmpFrom: '2026-09-28' });
+  const fresh = compareOf({ net: 900, cmpNet: 40, firstSaleDay: '2026-09-30', cmpFrom: '2026-09-28' });
+  const quiet = compareOf({ net: 0, cmpNet: 50, firstSaleDay: '2026-01-01', cmpFrom: '2026-09-28' });
+  const shut = compareOf({ net: 70, cmpNet: 0, firstSaleDay: '2026-01-01', cmpFrom: '2026-09-28' });
+  assert.deepEqual(groupCompare([ok, fresh, quiet, shut]), {
+    // 110 + 0 against 100 + 50. The new venue's 900 and its 40 are on neither side.
+    reason: 'ok', pct: -27, net_sales: 1080, like_net_sales: 110, cmp_net_sales: 150,
+    venues: 4, venues_compared: 2, venues_new: 1, venues_no_sales_then: 1, venues_no_sales_now: 1,
+  });
+  // Every venue is new (Coffee Boy's first week): the group says New, with no percent.
+  const allNew = groupCompare([fresh, fresh]);
+  assert.deepEqual([allNew.reason, allNew.pct, allNew.venues_new, allNew.net_sales, allNew.cmp_net_sales], ['new', null, 2, 1800, 0]);
+  // The only venue with a comparison has sold nothing yet: no red -100% for the group either.
+  assert.deepEqual([groupCompare([quiet, fresh]).reason, groupCompare([quiet, fresh]).pct], ['no_sales_now', null]);
+  assert.equal(groupCompare([quiet]).reason, 'no_sales_now');
+  assert.equal(groupCompare([shut, fresh]).reason, 'no_sales_then');
+  assert.deepEqual(groupCompare([]), { reason: 'no_sales_now', pct: null, net_sales: 0, like_net_sales: 0, cmp_net_sales: 0, venues: 0, venues_compared: 0, venues_new: 0, venues_no_sales_then: 0, venues_no_sales_now: 0 });
+  // The group totals an older app reads follow the same rule when the reasons are handed in.
+  const totals = (c) => periodTotals({ sales: { net: c.net_sales, vat: 0, gross: c.net_sales, orders: 1, tips: 0 }, cmpNet: c.cmp_net_sales, reason: c.reason });
+  const list = [ok, fresh, quiet, shut];
+  const g = rollupTotals(list.map(totals), list);
+  assert.deepEqual([g.net_sales, g.like_net_sales, g.cmp_net_sales, g.cmp_locations, g.vs_cmp_pct], [1080, 110, 150, 2, -27]);
+  // A venue card from an older app: no chip for New or for no sales yet.
+  assert.deepEqual(list.map((c) => totals(c).vs_cmp_pct), [10, null, null, null]);
+});
+
+test('day ranges with a span taken out: each day in exactly one read', () => {
+  const all = [{ from: '2026-09-21', to: '2026-10-02' }, { from: '2026-09-01', to: '2026-09-02' }];
+  assert.deepEqual(subtractDayRange(all, { from: '2026-10-02', to: '2026-10-02' }), [{ from: '2026-09-01', to: '2026-09-02' }, { from: '2026-09-21', to: '2026-10-01' }]);
+  assert.deepEqual(subtractDayRange(all, { from: '2026-09-28', to: '2026-10-02' }), [{ from: '2026-09-01', to: '2026-09-02' }, { from: '2026-09-21', to: '2026-09-27' }]);
+  // Out of the middle, the whole of one, and one that touches nothing.
+  assert.deepEqual(subtractDayRange([{ from: '2026-10-01', to: '2026-10-10' }], { from: '2026-10-04', to: '2026-10-05' }), [{ from: '2026-10-01', to: '2026-10-03' }, { from: '2026-10-06', to: '2026-10-10' }]);
+  assert.deepEqual(subtractDayRange(all, { from: '2026-08-01', to: '2026-10-31' }), []);
+  assert.deepEqual(subtractDayRange(all, { from: '2026-11-01', to: '2026-11-02' }), mergeDayRanges(all));
+  assert.equal(hhmm(390), '06:30');
+  assert.equal(hhmm(0), '00:00');
+  assert.equal(hhmm(1439), '23:59');
 });
 
 // ── the app's side ───────────────────────────────────────────────────────────
