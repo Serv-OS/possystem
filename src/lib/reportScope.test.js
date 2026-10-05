@@ -273,7 +273,7 @@ test('one site ticked: every report gets that site and no note', () => {
   }
 });
 
-test('filtered down to ANOTHER single site: the ride along reports show it, the rest stay on the signed in site and say so', () => {
+test('filtered down to ANOTHER single site: the multi site reports show it, the rest stay on the signed in site and say so', () => {
   const s = scopeOf({ tickedIds: ['preston'] });
   const summary = sitesForView('summary', s);
   assert.deepEqual(summary.sites.map((x) => x.id), ['preston']);
@@ -284,22 +284,35 @@ test('filtered down to ANOTHER single site: the ride along reports show it, the 
   const z = sitesForView('zreport', s);
   assert.deepEqual(z.sites.map((x) => x.id), ['leeds']);
   assert.equal(z.note, 'This report is for one site: the one you are signed in to. Showing Coffee Boy Leeds.');
-  // refunds live on Transactions: it never leaves the signed in site
-  assert.deepEqual(sitesForView('transactions', s).sites.map((x) => x.id), ['leeds']);
+  // Step 3: the Transactions LIST follows the ticks. Its refunds and receipts are locked to
+  // the signed in site inside the report (reportSplit.actionLock, pinned in reportSplit.test.js).
+  assert.deepEqual(sitesForView('transactions', s).sites.map((x) => x.id), ['preston']);
+  assert.equal(sitesForView('transactions', s).note, null);
 });
 
 test('several ticked: a report that is not multi site ready shows ONE site with a note, never mixed rows', () => {
   const s = scopeOf({ tickedIds: ['hudds', 'preston', 'leeds'] });
-  const v = sitesForView('summary', s);
-  assert.equal(v.sites.length, 1);
-  assert.equal(v.sites[0].id, 'leeds');
-  assert.equal(v.note, 'This report shows one site at a time. Showing Coffee Boy Leeds.');
-  assert.deepEqual(v.choices.map((x) => x.id).sort(), ['hudds', 'leeds', 'preston']);
-  // the chooser in the note picks among the ticked sites only
-  assert.equal(sitesForView('summary', s, 'preston').sites[0].id, 'preston');
-  assert.equal(sitesForView('summary', s, 'preston').note, 'This report shows one site at a time. Showing Coffee Boy Preston.');
-  assert.equal(sitesForView('summary', s, 'station').sites[0].id, 'leeds');
-  // no report is flagged multi yet except the overview: none may receive more than one site
+  // Step 3 flipped every 'one' report to 'multi', so the one at a time rule is pinned on a
+  // probe: it is what a report gets if it is ever flagged 'one' again.
+  REPORT_SITE_MODE.__one = 'one';
+  try {
+    const v = sitesForView('__one', s);
+    assert.equal(v.sites.length, 1);
+    assert.equal(v.sites[0].id, 'leeds');
+    assert.equal(v.note, 'This report shows one site at a time. Showing Coffee Boy Leeds.');
+    assert.deepEqual(v.choices.map((x) => x.id).sort(), ['hudds', 'leeds', 'preston']);
+    // the chooser in the note picks among the ticked sites only
+    assert.equal(sitesForView('__one', s, 'preston').sites[0].id, 'preston');
+    assert.equal(sitesForView('__one', s, 'preston').note, 'This report shows one site at a time. Showing Coffee Boy Preston.');
+    assert.equal(sitesForView('__one', s, 'station').sites[0].id, 'leeds');
+  } finally { delete REPORT_SITE_MODE.__one; }
+  // a multi site report gets every ticked site and no note
+  const summary = sitesForView('summary', s);
+  assert.deepEqual(summary.sites.map((x) => x.id).sort(), ['hudds', 'leeds', 'preston']);
+  assert.equal(summary.note, null);
+  // every other report still gets one site only: never mixed rows it cannot split
+  assert.equal(sitesForView('items', s).sites.length, 1);
+  assert.equal(sitesForView('tax', s).note, 'This report shows the site you are signed in to for now. Showing Coffee Boy Leeds.');
   for (const view of Object.keys(REPORT_SITE_MODE)) {
     const got = sitesForView(view, s);
     if (REPORT_SITE_MODE[view] === 'all') assert.equal(got.sites.length, 6);
@@ -346,7 +359,8 @@ test('item reports across several sites stop at 7 days; one site has no cap', ()
 test('figures come from rows until a report can draw from the day sums AND they are there', () => {
   const two = [{ id: 'a' }, { id: 'b' }];
   const month = { fromDay: '2026-09-06', toDay: '2026-10-05' };
-  assert.equal(figuresFrom('summary', two, month, { available: true }), 'rows', 'no report is flagged for sums yet');
+  assert.equal(figuresFrom('servers', two, month, { available: true }), 'rows', 'a report that cannot draw from the sums reads rows');
+  assert.equal(figuresFrom('summary', two, month, { available: true }), 'sums');
   assert.equal(figuresFrom('summary', two, month, { available: false, reason: 'not_installed' }), 'rows');
   assert.equal(figuresFrom('summary', [{ id: 'a' }], month, { available: true }), 'rows');
   assert.equal(scopeOf().daySums.available, null);

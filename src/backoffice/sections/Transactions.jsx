@@ -8,6 +8,12 @@
 //           adds its own text search, status/method filters, and refund modal.
 // v5.5.276: Email receipt — send receipt from expanded row, pre-fills customer
 //           email when available.
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+//           together"): the LIST can show any ticked site, with a Site column when there
+//           is more than one. Refunds, receipts and the card reversal retry stay LOCKED to
+//           the site you are signed in to (actionLock in src/lib/reportSplit.js): a refund
+//           fired from another site's row could go against the wrong site's reader and
+//           books, and a receipt would carry the wrong site's name. A locked row says why.
 
 import { useState, useMemo, useEffect, Fragment } from 'react';
 import { useStore } from '../../store';
@@ -18,19 +24,23 @@ import { money } from '../../lib/currency';
 import { refundBreakdown, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
 import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
 import { modsText } from '../../lib/reportText';
+import { isSplit, actionLock } from '../../lib/reportSplit.js';
+import { totalsByCurrency } from '../../lib/reportScope.js';
 
 // ── Formatting helpers ──────────────────────────────────────────────
-const fmtDate = ts => {
+// timeZone: only passed when several sites are listed, so each row reads on its own site's
+// clock. Not passed (one site) = the browser's clock, as this list has always shown.
+const fmtDate = (ts, timeZone) => {
   if (!ts) return '—';
   const d = new Date(typeof ts === 'number' ? ts : ts);
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone });
 };
-const fmtTime = ts => {
+const fmtTime = (ts, timeZone) => {
   if (!ts) return '';
   const d = new Date(typeof ts === 'number' ? ts : ts);
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone });
 };
-const fmtDateTime = ts => `${fmtDate(ts)} ${fmtTime(ts)}`.trim();
+const fmtDateTime = (ts, timeZone) => `${fmtDate(ts, timeZone)} ${fmtTime(ts, timeZone)}`.trim();
 
 // ── Status badge ────────────────────────────────────────────────────
 const STATUS_STYLES = {
@@ -62,9 +72,16 @@ const sourceLabel = (c) =>
 // ═════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════════
-export default function Transactions({ checks: parentChecks = [], fmt: parentFmt }) {
+export default function Transactions({ checks: parentChecks = [], fmt: parentFmt, scope = null, sites = null }) {
   const { refundCheck, retryRefundReversal, staff } = useStore();
   const fmt = parentFmt || (n => `${money((n || 0))}`);
+  // Several sites listed: a Site column, each row in its own site's currency and clock.
+  const multi = isSplit(sites);
+  const fmtOf = (c) => {
+    const cur = multi ? scope?.currencyOf?.(c.siteId) : null;
+    return cur ? (n => money(n || 0, cur)) : fmt;
+  };
+  const zoneOf = (c) => (multi ? scope?.clockOf?.(c.siteId)?.timeZone : undefined);
 
   // ── State ──
   const [search, setSearch] = useState('');
@@ -108,6 +125,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
 
   // When opening email form for a check, pre-fill customer email
   const openEmailForm = (check) => {
+    if (actionLock(check, scope)) return;   // another site's sale: locked
     const custEmail = typeof check.customer === 'object' ? check.customer?.email || '' : '';
     setEmailCheckId(check.id);
     setEmailAddr(custEmail);
@@ -115,6 +133,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   };
 
   const sendReceipt = async (check) => {
+    if (actionLock(check, scope)) return;   // another site's sale: locked
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddr.trim())) {
       setEmailResult({ ok: false, error: 'Please enter a valid email address' });
       return;
@@ -165,9 +184,14 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     const refunds = filtered.reduce((s, c) => s + (c.refunds || []).reduce((rs, r) => rs + (r.amount || 0), 0), 0);
     return { count: filtered.length, total, tips, service, refunds };
   }, [filtered]);
+  // Money in two currencies is never one number: "£120.00 and $80.00".
+  const moneyStat = (one, valueOf) => (multi
+    ? (totalsByCurrency(filtered, scope, valueOf).map(t => money(t.total, t.currency || undefined)).join(' and ') || fmt(0))
+    : fmt(one));
 
   // ── Refund handlers ──
   const openRefund = (check) => {
+    if (actionLock(check, scope)) return;   // another site's sale: locked
     setRefundTarget(check);
     setRefundMode('full');
     setRefundSelections({});
@@ -244,6 +268,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   // so a reversal that never reached a processor looked exactly like one that did.
   const executeRefund = async () => {
     if (!refundTarget || !refundReason.trim() || refundBusy) return;
+    if (actionLock(refundTarget, scope)) return;   // never refund another site's sale from here
     if (refundItems.length === 0 && refundAmount <= 0) return;
     setRefundBusy(true);
     const res = await refundCheck(refundTarget.id, {
@@ -263,6 +288,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
 
   const retryReversal = async (checkId, refundId) => {
     if (retrying) return;
+    if (actionLock(parentChecks.find(c => c.id === checkId), scope)) return;   // another site's sale: locked
     setRetrying(refundId);
     await retryRefundReversal(checkId, refundId);
     setRetrying(null);
@@ -288,19 +314,19 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
         </div>
         <div style={statCard}>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Revenue</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.total)}</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{moneyStat(stats.total, c => c.total || 0)}</div>
         </div>
         <div style={statCard}>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Tips</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.tips)}</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{moneyStat(stats.tips, c => c.tip || 0)}</div>
         </div>
         <div style={statCard}>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Service</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(stats.service)}</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{moneyStat(stats.service, c => c.service || 0)}</div>
         </div>
         <div style={statCard}>
           <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>Refunded</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: stats.refunds > 0 ? '#dc2626' : undefined }}>{fmt(stats.refunds)}</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: stats.refunds > 0 ? '#dc2626' : undefined }}>{moneyStat(stats.refunds, c => (c.refunds || []).reduce((rs, r) => rs + (r.amount || 0), 0))}</div>
         </div>
       </div>
 
@@ -341,6 +367,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
           <thead>
             <tr style={{ background: 'var(--bg3, #f9fafb)' }}>
               <th style={thStyle}>Order #</th>
+              {multi && <th style={thStyle}>Site</th>}
               <th style={thStyle}>Date / Time</th>
               <th style={thStyle}>Server</th>
               <th style={thStyle}>Customer</th>
@@ -357,7 +384,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={12} style={{ ...tdStyle, textAlign: 'center', padding: 40, color: 'var(--t4, #9ca3af)' }}>
+                <td colSpan={multi ? 13 : 12} style={{ ...tdStyle, textAlign: 'center', padding: 40, color: 'var(--t4, #9ca3af)' }}>
                   No transactions found for this period
                 </td>
               </tr>
@@ -367,6 +394,10 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
               const isExpanded = expandedId === c.id;
               const canRefund = c.status !== 'refunded' && c.status !== 'voided';
               const totalRefunded = (c.refunds || []).reduce((s, r) => s + (r.amount || 0), 0);
+              // 5 Oct 2026: this row in its own site's currency, and whether it may be acted
+              // on here. One site listed: the same fmt as ever and no lock on its own rows.
+              const fmt = fmtOf(c);
+              const lock = actionLock(c, scope);
               return (
                 <Fragment key={c.id}>
                   <tr
@@ -374,7 +405,8 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                     style={{ cursor: 'pointer', background: isExpanded ? 'var(--bg3, #f9fafb)' : 'transparent' }}
                   >
                     <td style={{ ...tdStyle, fontWeight: 700, fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>{c.ref || c.id?.slice(0, 8)}</td>
-                    <td style={tdStyle}>{fmtDateTime(c.closedAt)}</td>
+                    {multi && <td style={{ ...tdStyle, fontSize: 12, color: 'var(--t2, #374151)' }}>{c.siteName || '—'}</td>}
+                    <td style={tdStyle}>{fmtDateTime(c.closedAt, zoneOf(c))}</td>
                     <td style={tdStyle}>{c.server || '—'}</td>
                     <td style={tdStyle}>{custName || '—'}</td>
                     <td style={tdStyle}>
@@ -393,7 +425,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={12} style={{ padding: 0, background: 'var(--bg3, #f9fafb)', borderBottom: '1px solid var(--bdr, #e5e7eb)' }}>
+                      <td colSpan={multi ? 13 : 12} style={{ padding: 0, background: 'var(--bg3, #f9fafb)', borderBottom: '1px solid var(--bdr, #e5e7eb)' }}>
                         <div style={{ padding: '16px 20px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
                           {/* Left: Line items */}
                           <div style={{ flex: 2, minWidth: 300 }}>
@@ -507,7 +539,7 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                               {l.ref ? ` · ${l.ref}` : ''}{l.error ? ` · ${l.error}` : ''}
                                             </div>
                                           ))}
-                                          {canRetry && (
+                                          {canRetry && !lock && (
                                             <button onClick={() => retryReversal(c.id, r.id)} disabled={retrying === r.id}
                                               style={{ marginTop: 6, padding: '5px 10px', borderRadius: 8, border: 'none', background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 700, cursor: retrying === r.id ? 'wait' : 'pointer', fontFamily: 'inherit' }}>
                                               {retrying === r.id ? 'Retrying…' : '↻ Retry card reversal'}
@@ -546,8 +578,16 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                               <div><strong>Check ID:</strong> <span style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11 }}>{c.id}</span></div>
                             </div>
 
+                            {/* 5 Oct 2026: another site's sale. Nothing can be done to it from
+                                here; the line says why and where to go. */}
+                            {lock && (
+                              <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg1, #fff)', border: '1px dashed var(--bdr, #e5e7eb)', fontSize: 12, color: 'var(--t3, #6b7280)', lineHeight: 1.6 }}>
+                                {lock.text}
+                              </div>
+                            )}
+
                             {/* Email receipt */}
-                            <div style={{ marginBottom: 12 }}>
+                            {!lock && <div style={{ marginBottom: 12 }}>
                               {emailCheckId === c.id ? (
                                 <div style={{
                                   padding: '12px 14px', borderRadius: 10,
@@ -594,10 +634,10 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                   {'✉'} Email receipt
                                 </button>
                               )}
-                            </div>
+                            </div>}
 
                             {/* Refund button */}
-                            {canRefund && (
+                            {canRefund && !lock && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); openRefund(c); }}
                                 style={{ ...btnPrimary, background: '#dc2626', width: '100%' }}

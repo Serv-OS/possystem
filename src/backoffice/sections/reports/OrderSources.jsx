@@ -10,7 +10,8 @@ import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
-import { aggregate, StackedBarChart } from './OrderTypes';
+import { aggregate, StackedBarChart, MixSites } from './OrderTypes';
+import { isSplit } from '../../../lib/reportSplit.js';
 
 const SOURCE_STYLE = {
   pos:      { label:'POS',      color:'#e8a020', icon:'🖥' },
@@ -32,7 +33,24 @@ export const srcKey = (c) => c.source === 'hubrise'
   ? (c.customer?.channel || 'Delivery channel')
   : (CUSTOMER_SOURCES.has(c.source) ? c.source : 'pos');
 
-export default function OrderSources({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split (MixSites in Order
+// types: the group's mix on top, a column per site). One site is the report exactly as it was.
+export default function OrderSources(props) {
+  if (!isSplit(props.sites)) return <OrderSourcesOne {...props}/>;
+  return <MixSites {...props} name="order-sources" keyOf={srcKey} fromSums={null}
+    styleOf={sourceStyles} first="Order source" keyLabel="Source" leadLabel="Biggest source" icon="🛵"/>;
+}
+
+// Platform keys (not in SOURCE_STYLE) get colours by revenue rank, as on one site.
+function sourceStyles(all) {
+  const map = {};
+  Object.keys(all).filter(k => !SOURCE_STYLE[k]).sort((a, b) => (all[b]?.revenue || 0) - (all[a]?.revenue || 0))
+    .forEach((k, i) => { map[k] = { label: k, color: PLATFORM_COLORS[i % PLATFORM_COLORS.length], icon: '🛵' }; });
+  return (k) => SOURCE_STYLE[k] || map[k] || { label: k, color: 'var(--t4)', icon: '?' };
+}
+
+function OrderSourcesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const cur  = useMemo(() => aggregate(checks,     srcKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, srcKey), [prevChecks]);
 

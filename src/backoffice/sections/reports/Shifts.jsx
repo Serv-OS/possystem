@@ -22,6 +22,9 @@ import { toCsv, downloadCsv } from './_csv';
 import { classifyShift, dayText, groupChecksByDay, groupChecksByService, reportClock } from './_filters';
 import { money } from '../../../lib/currency';
 import { voidedValue } from '../../../lib/voidRules';
+import { isSplit, sumFields } from '../../../lib/reportSplit.js';
+import { useParts, exportSites, titleSt } from './_siteSplit';
+import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
 
 // Aggregate a check bundle into shift stats. Reused for both business-day and server session.
 function aggregate(checks) {
@@ -411,9 +414,101 @@ function MiniStat({ label, value }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point — picks the right view based on locationConfig
 // ─────────────────────────────────────────────────────────────────────────────
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen it is ShiftsSites below. One site is the
+// report exactly as it was.
 export default function Shifts(props) {
+  if (isSplit(props.sites)) return <ShiftsSites {...props}/>;
   const hasServicePeriods = (props.locationConfig?.shifts?.length || 0) > 0;
   return hasServicePeriods
     ? <ServicePeriodShifts {...props}/>
     : <DayBasedShifts {...props}/>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: each site's totals on top, then one row per site per business day.
+// A check belongs to the business day of ITS OWN site (part.clock), and First and Last are
+// that site's wall clock. Services are not shown here: each site names and times its own.
+// ─────────────────────────────────────────────────────────────────────────────
+const SHIFT_SITE_COLS = '1.1fr 1.2fr 70px 70px 80px 64px 64px 104px 84px 100px';
+
+function ShiftsSites(props) {
+  const { fmtN } = props;
+  const { parts, blocks } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const rows = groupChecksByDay(p.rows, p.clock).map(d => ({ key: d.key, ...aggregate(d.checks), part: p, siteName: p.name }));
+    return [p.id, { rows, days: rows.length, ...sumFields(rows, ['revenue', 'covers', 'checkCount', 'tips', 'voidCount']) }];
+  })), [parts]);
+
+  const onExport = () => {
+    const rows = parts.flatMap(p => bySite.get(p.id).rows);
+    exportSites('shifts', rows, [
+      { label:'Currency',  key: r => r.part.currency || '' },
+      { label:'Date',      key:'key' },
+      { label:'Day',       key: r => dayText(r.key, { weekday: 'short' }) },
+      { label:'First',     key: r => formatTime(r.firstAt, r.part.clock.timeZone) },
+      { label:'Last',      key: r => formatTime(r.lastAt, r.part.clock.timeZone) },
+      { label:'Duration',  key: r => formatDuration(r.durationMs) },
+      { label:'Checks',    key:'checkCount' },
+      { label:'Covers',    key:'covers' },
+      { label:'Revenue',   key: r => r.revenue.toFixed(2) },
+      { label:'Tips',      key: r => r.tips.toFixed(2) },
+      { label:'Cash',      key: r => r.cash.toFixed(2) },
+      { label:'Discounts', key: r => r.discounts.toFixed(2) },
+      { label:'Voids',     key: r => `${r.voidCount} (${r.part.fmt(r.voidValue)})` },
+    ]);
+  };
+
+  if (parts.every(p => bySite.get(p.id).days === 0)) {
+    return <EmptyState icon="🕘" message="No shifts at these sites in this period. Widen the date range to see prior days."/>;
+  }
+
+  return (
+    <div>
+      <SplitHeader parts={parts} onExport={onExport}>
+        <div style={{ color:'var(--t4)' }}>One shift is one site's business day, first check to last. Pick one site to see its service periods and who was on.</div>
+      </SplitHeader>
+      <Blocks blocks={blocks}>{b => {
+        const site = b.parts.map(p => ({ part: p, cells: bySite.get(p.id) }));
+        const all = sumFields(site.map(x => x.cells), ['revenue', 'covers', 'checkCount', 'tips', 'days']);
+        const shifts = b.parts.flatMap(p => bySite.get(p.id).rows)
+          .sort((x, y) => (x.key < y.key ? 1 : x.key > y.key ? -1 : x.siteName.localeCompare(y.siteName)));
+        return (
+          <>
+            <SiteRows block={b} rows={site} total={all} columns={[
+              { label:'Shifts',  cell: c => fmtN(c.days) },
+              { label:'Checks',  cell: c => fmtN(c.checkCount) },
+              { label:'Covers',  cell: c => fmtN(c.covers) },
+              { label:'Revenue', cell: (c, f) => f(c.revenue), color:'var(--acc)' },
+              { label:'Avg shift', cell: (c, f) => f(c.days ? c.revenue / c.days : 0) },
+              { label:'Tips',    cell: (c, f) => f(c.tips), color:'var(--grn)' },
+            ]}/>
+            <div style={titleSt}>Business day shifts</div>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'auto', marginBottom:14 }}>
+              <div style={{ display:'grid', gridTemplateColumns:SHIFT_SITE_COLS, padding:'8px 16px', borderBottom:'1px solid var(--bdr)', background:'var(--bg3)', fontSize:10, fontWeight:700, color:'var(--t4)', letterSpacing:'.05em', textTransform:'uppercase', gap:6, minWidth:900 }}>
+                <span>Date</span><span>Site</span>
+                {['First', 'Last', 'Duration', 'Checks', 'Covers', 'Revenue', 'Tips', 'Voids'].map(h => <span key={h} style={{ textAlign:'right' }}>{h}</span>)}
+              </div>
+              {shifts.map(r => (
+                <div key={`${r.part.id}:${r.key}`} style={{ display:'grid', gridTemplateColumns:SHIFT_SITE_COLS, padding:'10px 16px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:6, minWidth:900 }}>
+                  <span style={{ color:'var(--t1)', fontWeight:600 }}>{formatDate(r.key)}</span>
+                  <SiteCell name={r.siteName}/>
+                  <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.firstAt, r.part.clock.timeZone)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatTime(r.lastAt, r.part.clock.timeZone)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatDuration(r.durationMs)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checkCount}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.covers}</span>
+                  <span style={{ textAlign:'right', color:'var(--acc)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{b.fmt(r.revenue)}</span>
+                  <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{b.fmt(r.tips)}</span>
+                  <span style={{ textAlign:'right', color: r.voidCount ? 'var(--red)' : 'var(--t4)', fontFamily:'var(--font-mono)' }}>
+                    {r.voidCount ? `${r.voidCount} · ${b.fmt(r.voidValue)}` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      }}</Blocks>
+    </div>
+  );
 }

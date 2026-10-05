@@ -40,14 +40,18 @@ import { compareRange } from './reportCompare.js';
 //            menu, tax rates, staff, a drawer), so it shows the signed in site only.
 //   'all'    the overview: always every connected site.
 //
-// STEP 3 flips the 'one' reports below to 'multi' as each learns the site split.
+// STEP 3 (5 Oct 2026) flipped the first eleven to 'multi': each has a site split (a group
+// total on top, then a row or column per site, a Site column in its CSV; the shared maths is
+// src/lib/reportSplit.js). Transactions is among them: the LIST shows any ticked site, and
+// refunds, receipts and the reversal retry stay locked to the signed in site inside the
+// report (reportSplit.actionLock).
 // STEP 4 flips items, item_trend, menu_eng, tax, tips and kds_perf once they stop reading
-// one site's menu, tax or staff. Transactions: the list can go multi, refunds stay locked.
+// one site's menu, tax or staff.
 export const REPORT_SITE_MODE = {
-  summary: 'one', daily_trend: 'one', order_types: 'one', order_sources: 'one', daypart: 'one',
-  servers: 'one', shifts: 'one', exceptions: 'one', payments: 'one', tables: 'one',
+  summary: 'multi', daily_trend: 'multi', order_types: 'multi', order_sources: 'multi', daypart: 'multi',
+  servers: 'multi', shifts: 'multi', exceptions: 'multi', payments: 'multi', tables: 'multi',
+  transactions: 'multi',
   items: 'home', item_trend: 'home', menu_eng: 'home', tax: 'home', tips: 'home', kds_perf: 'home',
-  transactions: 'home',
   payroll: 'home', daily_trading: 'home', bookings: 'home', cash_drawer: 'home',
   zreport: 'home', open: 'home',
   location_compare: 'all',
@@ -63,9 +67,10 @@ export const ITEM_LEVEL_REPORTS = new Set(['items', 'item_trend', 'menu_eng']);
 export const ITEM_MULTI_MAX_DAYS = 7;
 export const ITEM_CAP_TEXT = 'Item reports across several sites cover up to 7 days. Pick one site for longer.';
 
-// Money reports that can draw from the server day sums (src/lib/reportDaySums.js). Empty
-// until Step 3 teaches each one; while a report is not here its rows are read in the browser.
-export const DAY_SUMS_REPORTS = new Set([]);
+// Money reports that can draw from the server day sums (src/lib/reportDaySums.js): their
+// site split reads either rows or sums (reportSplit.js has the adapters). A report that is
+// not here always has its rows read in the browser.
+export const DAY_SUMS_REPORTS = new Set(['summary', 'daily_trend', 'payments', 'order_types']);
 // Several sites over more days than this is too heavy to read row by row on the database
 // the tills use (design, section 5): the day sums are asked instead, when they are there.
 export const ROWS_MULTI_MAX_DAYS = 7;

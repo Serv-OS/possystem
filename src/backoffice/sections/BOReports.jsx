@@ -288,7 +288,13 @@ export default function BOReports({ setSection } = {}) {
           const sums = await loadScopeDaySums({ load: loadReportDaySums, client: supabase, sites, range });
           if (stale) return;
           // Not there after all (or it failed): fall back to the rows, under the row budget.
-          if (sums.available) { setDaySums(sums); nothing(); setPrevLoaded(!!sums.previous); setLoadingRange(false); return; }
+          if (sums.available) {
+            // The sums are every sale of the day: they cannot be cut down to one server,
+            // order type or source. So those filters go back to "all" (their dropdowns have
+            // no rows to list anyway) and the figures are never a filtered total in disguise.
+            setServerFilter('all'); setOrderTypeFilter('all'); setSourceFilter('all');
+            setDaySums(sums); nothing(); setPrevLoaded(!!sums.previous); setLoadingRange(false); return;
+          }
         }
         // This period, the previous period (the percent chips) and the kitchen tickets are
         // each read in full, for every site in `sites`, sharing 3 requests in flight and ONE

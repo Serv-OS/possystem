@@ -12,6 +12,9 @@ import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { pctDelta, reportClock, mixSeries, mixLabel } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { currencySymbol } from '../../../lib/currency';
+import { isSplit, keyedMatrix, orderTypesFromSums } from '../../../lib/reportSplit.js';
+import { useParts, exportSites } from './_siteSplit';
+import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
 
 const TYPE_STYLE = {
   'dine-in':    { label:'Dine-in',    color:'#e8a020', icon:'🪑' },
@@ -39,7 +42,95 @@ export function aggregate(checks, keyFn) {
   return byType;
 }
 
-export default function OrderTypes({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split (MixSites, shared
+// with Order sources). One site is the report exactly as it was.
+const orderTypeKey = (c) => c.orderType || 'dine-in';
+const orderTypeStyles = () => styleFor;
+export default function OrderTypes(props) {
+  if (!isSplit(props.sites)) return <OrderTypesOne {...props}/>;
+  return <MixSites {...props} name="order-types" keyOf={orderTypeKey} fromSums={orderTypesFromSums}
+    styleOf={orderTypeStyles} first="Channel" keyLabel="Order type" leadLabel="Dominant channel" icon="📦"/>;
+}
+
+// Several sites, for a report that is a mix of named things (order types, order sources):
+// the group's mix on top, then a column per site. Each site's rows are added with the same
+// `aggregate` one site uses; a long period reads the server day sums instead (fromSums).
+//   keyOf       a check's key           styleOf(cur)  => (key) => { label, color }
+//   fromSums    (sums) => { [key]: { checks, revenue } }, or null when the sums cannot answer
+export function MixSites(props) {
+  const { fmtN, name, keyOf, fromSums: sumsRows, styleOf, first, keyLabel, leadLabel, icon } = props;
+  const { parts, blocks, fromSums } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => [p.id, {
+    cur:  p.sums && sumsRows ? sumsRows(p.sums.totals)      : aggregate(p.rows, keyOf),
+    prev: p.sums && sumsRows ? sumsRows(p.prevSums?.totals) : aggregate(p.prevRows, keyOf),
+  }])), [parts, keyOf, sumsRows]);
+  const revenueOf = (map) => Object.values(map).reduce((s, r) => s + r.revenue, 0);
+  const checksOf  = (map) => Object.values(map).reduce((s, r) => s + r.checks, 0);
+  const styleFor = useMemo(() => {
+    const all = {};
+    for (const { cur } of bySite.values()) for (const [k, r] of Object.entries(cur)) (all[k] ||= { revenue: 0 }).revenue += r.revenue;
+    return styleOf(all);
+  }, [bySite, styleOf]);
+
+  const onExport = () => {
+    const rows = [];
+    for (const p of parts) {
+      const { cur, prev } = bySite.get(p.id);
+      const total = revenueOf(cur);
+      const compared = !!p.compare && p.compare.loaded !== false;
+      for (const k of new Set([...Object.keys(cur), ...Object.keys(prev)])) {
+        const c = cur[k] || { checks: 0, revenue: 0 }, pr = prev[k] || { checks: 0, revenue: 0 };
+        rows.push({ siteName: p.name, currency: p.currency || '', label: styleFor(k).label, checks: c.checks, revenue: c.revenue,
+          avgCheck: c.checks ? c.revenue / c.checks : 0, share: total > 0 ? (c.revenue / total) * 100 : 0,
+          prevRevenue: compared ? pr.revenue : null, revDelta: compared ? pctDelta(c.revenue, pr.revenue) : null });
+      }
+    }
+    exportSites(name, rows, [
+      { label:'Currency',         key:'currency' },
+      { label: keyLabel,          key:'label' },
+      { label:'Checks',           key:'checks' },
+      { label:'Revenue',          key: r => r.revenue.toFixed(2) },
+      { label:'Avg check',        key: r => r.avgCheck.toFixed(2) },
+      { label:'Share %',          key: r => r.share.toFixed(2) },
+      { label:'Previous revenue', key: r => (r.prevRevenue == null ? '' : r.prevRevenue.toFixed(2)) },
+      { label:'Change %',         key: r => (r.revDelta == null ? '' : r.revDelta.toFixed(2)) },
+    ]);
+  };
+
+  if (parts.every(p => revenueOf(bySite.get(p.id).cur) === 0)) return <EmptyState icon={icon} message="No orders at these sites in this period."/>;
+
+  return (
+    <div>
+      <SplitHeader parts={parts} fromSums={fromSums} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const m = keyedMatrix(b.parts, p => Object.fromEntries(Object.entries(bySite.get(p.id).cur).map(([k, r]) => [k, r.revenue])));
+        const checks = b.parts.reduce((s, p) => s + checksOf(bySite.get(p.id).cur), 0);
+        const lead = m.rows[0];
+        const rows = [
+          { key:'__total', label:'Total revenue', strong:true, total: m.total, bySite: m.bySite },
+          ...m.rows.map(r => ({ ...r, label: <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background: styleFor(r.key).color, marginRight:6 }}/>{styleFor(r.key).label}</span> })),
+          { key:'__checks', label:'Checks', kind:'count', total: checks, bySite: Object.fromEntries(b.parts.map(p => [p.id, checksOf(bySite.get(p.id).cur)])) },
+          { key:'__change', label:'Change', render: p => <SiteChange part={p} values={[revenueOf(bySite.get(p.id).cur), revenueOf(bySite.get(p.id).prev)]}/> },
+        ];
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:18 }}>
+              <StatTile label="Total revenue" value={b.fmt(m.total)} sub={`${fmtN(checks)} checks`} color="var(--acc)"/>
+              {lead && <StatTile label={leadLabel} value={styleFor(lead.key).label} sub={`${(m.total > 0 ? (lead.total / m.total) * 100 : 0).toFixed(1)}% of revenue`} color={styleFor(lead.key).color}/>}
+              {b.parts.every(p => p.compare) && (
+                <StatTile label="Against the comparison" value={<GroupChange block={b} pairs={b.parts.map(p => ({ current: revenueOf(bySite.get(p.id).cur), previous: revenueOf(bySite.get(p.id).prev) }))}/>}/>
+              )}
+            </div>
+            <SiteMatrix block={b} rows={rows} first={first} fmtN={fmtN}/>
+          </>
+        );
+      }}</Blocks>
+    </div>
+  );
+}
+
+function OrderTypesOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const typeKey = (c) => c.orderType || 'dine-in';
   const cur  = useMemo(() => aggregate(checks,     typeKey), [checks]);
   const prev = useMemo(() => aggregate(prevChecks, typeKey), [prevChecks]);
