@@ -3,6 +3,7 @@
 
 import { Fragment } from 'react';
 import { currencySymbol } from '../../../lib/currency';
+import { hourBarHeightPx } from '../../../lib/hourBar';
 
 // Period-over-period delta chip. Inverted=true when a decrease is the good outcome
 // (e.g. void rate, discount leakage) — the chip flips red/green accordingly.
@@ -114,16 +115,19 @@ export function Heatmap({ grid, formatCell }) {
 }
 
 // 24-bucket vertical bar chart (used for hourly breakdowns).
+// 5 Oct 2026 (Peter: "make sure bar graphs are actually bar graphs"): every bar was a flat line.
+// The bar's height was a PERCENT of its column, and the column had no height of its own (it was
+// bottom aligned in the row), so the percent resolved to nothing and only the 2px border drew.
+// Heights are now worked out in pixels against a fixed track, so they cannot collapse.
 export function HourBar({ values, maxLabel, nowHour, currency = true }) {
   const max = Math.max(1, ...values);
   return (
-    <div style={{ display:'flex', alignItems:'flex-end', gap:3, height:140 }}>
+    <div style={{ display:'flex', alignItems:'stretch', gap:3, height:140 }}>
       {values.map((val, h) => {
-        const pct = (val / max) * 100;
         const isNow = nowHour === h;
         return (
-          <div key={h} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
-            <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
+          <div key={h} style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'flex-end', gap:3 }}>
+            <div style={{ fontSize:9, color:'var(--t4)', fontFamily:'var(--font-mono)', whiteSpace:'nowrap' }}>
               {val > 0 ? (maxLabel ? maxLabel(val) : (currency ? `${currencySymbol()}${Math.round(val)}` : Math.round(val))) : ''}
             </div>
             <div style={{
@@ -131,8 +135,8 @@ export function HourBar({ values, maxLabel, nowHour, currency = true }) {
               background: isNow ? 'var(--acc)' : val > 0 ? 'var(--acc-d)' : 'var(--bg3)',
               borderRadius:'3px 3px 0 0',
               transition:'height .3s',
-              height:`${Math.max(pct, val > 0 ? 4 : 0)}%`,
-              border: isNow ? '1px solid var(--acc-b)' : '1px solid var(--bdr)',
+              height: val > 0 ? hourBarHeightPx(val, max) : 2,
+              border: val > 0 ? (isNow ? '1px solid var(--acc-b)' : '1px solid var(--bdr)') : 'none',
             }}/>
             <div style={{ fontSize:8, color: isNow ? 'var(--acc)' : 'var(--t4)', fontWeight: isNow ? 700 : 400 }}>{h}</div>
           </div>

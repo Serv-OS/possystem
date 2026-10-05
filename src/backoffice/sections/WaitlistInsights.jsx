@@ -20,6 +20,7 @@ import { quoteAccuracy } from '../../lib/waitlist/learning';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { PERIODS, getPeriodRange, periodLabel } from './reports/_filters';
 import { getLocationConfig } from '../../lib/locationTime';
+import { readAllPagesResult, faultText } from '../../lib/pagedRead';
 
 const FD = 'var(--font-display)';
 const FM = 'var(--font-mono)';
@@ -65,6 +66,10 @@ export default function WaitlistInsights() {
   const [locId, setLocId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tableMissing, setTableMissing] = useState(false);
+  // 5 Oct 2026: 'too_long' or 'failed' when the entries or the quote accuracy did not come
+  // back whole. The tiles then give way to a plain line; a failed read used to show as a
+  // period with no walk-ins. A table that is not there yet is NOT a fault (tableMissing).
+  const [fault, setFault] = useState(null);
   const [entries, setEntries] = useState([]);   // period waitlist_entries (camelCase via rowToWaitlist)
   const [accuracy, setAccuracy] = useState([]);  // period quote_accuracy rows (snake_case from DB)
   const [turns, setTurns] = useState([]);        // turn_time_stats rows (per band; not period-scoped)
@@ -92,6 +97,7 @@ export default function WaitlistInsights() {
     if (venueTz === undefined) return;
     setLoading(true);
     setTableMissing(false);
+    setFault(null);
     try {
       const id = getActiveLocationSync() || (await getLocationId().catch(() => null));
       setLocId(id);
@@ -102,23 +108,35 @@ export default function WaitlistInsights() {
       const toIso = range.to.toISOString();
       // Each read isolated so one absent relation never kills the others.
       const [eRes, aRes, tRes] = await Promise.all([
-        supabase.from('waitlist_entries').select('*')
+        // 5 Oct 2026: both read in pages of 1,000 (lib/pagedRead.js). They asked for 5,000 in
+        // one request; the API answers 1,000 at most, so a long period would have been cut.
+        readAllPagesResult('waitlist entries', (first) => supabase.from('waitlist_entries')
+          .select('*', first ? { count: 'exact' } : undefined)
           .eq('location_id', id).gte('added_at', fromIso).lte('added_at', toIso)
-          .order('added_at', { ascending: true }).limit(5000)
-          .then((r) => r).catch((e) => ({ data: [], error: e })),
-        supabase.from('quote_accuracy').select('*')
+          .order('added_at', { ascending: true }).order('id', { ascending: true })),
+        readAllPagesResult('quote accuracy', (first) => supabase.from('quote_accuracy')
+          .select('*', first ? { count: 'exact' } : undefined)
           .eq('location_id', id).gte('recorded_at', fromIso).lte('recorded_at', toIso)
-          .limit(5000)
-          .then((r) => r).catch((e) => ({ data: [], error: e })),
+          .order('recorded_at', { ascending: true }).order('id', { ascending: true })),
         supabase.from('turn_time_stats').select('*')
           .eq('location_id', id).order('party_band', { ascending: true }).limit(200)
           .then((r) => r).catch((e) => ({ data: [], error: e })),
       ]);
-      setTableMissing(isMissingRelation(eRes.error));
+      // The API's own error sits under .cause (the pager wraps it); either says "missing table".
+      const missing = (r) => isMissingRelation(r.error?.cause) || isMissingRelation(r.error);
+      setTableMissing(missing(eRes));
+      const bad = [eRes, aRes].find((r) => r.error && !missing(r));
+      if (bad) {
+        console.warn('[WaitlistInsights] read failed:', bad.error?.message || bad.error);
+        setFault(bad.tooMany ? 'too_long' : 'failed');
+        setEntries([]); setAccuracy([]); setTurns([]);
+        return;
+      }
       setEntries((eRes.data || []).map(rowToWaitlist).filter(Boolean));
       setAccuracy(aRes.data || []);
       setTurns(tRes.data || []);
     } catch {
+      setFault('failed');
       setEntries([]); setAccuracy([]); setTurns([]);
     } finally {
       setLoading(false);
@@ -240,6 +258,7 @@ export default function WaitlistInsights() {
         <div style={S.note}>The waitlist tables aren't set up on this venue yet — insights will populate once the feature is live and parties start joining.</div>
       )}
 
+      {fault ? (<div style={S.empty}>{faultText(fault)}</div>) : (<>
       {/* KPI tiles */}
       <div style={S.kpis}>
         <Tile lab="Parties added" val={kpi.added} sub="walk-ins" />
@@ -318,6 +337,7 @@ export default function WaitlistInsights() {
           </table>
         )}
       </div>
+      </>)}
     </div>
   );
 }
