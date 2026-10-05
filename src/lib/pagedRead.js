@@ -87,6 +87,25 @@ export const isReadStopped = (err) => err?.code === 'read_stopped';
 export const isPageTimeout = (err) => err?.code === 'page_timeout';
 
 /**
+ * The end of a window that is still trading, pinned to the moment the read started.
+ *
+ * 6 Oct 2026 (multi site review): the pages are read by offset on a newest first order, and
+ * pages 1..n go out together. A sale closing between two pages pushes every older row down a
+ * place. When the earlier page is answered first the row shows on both pages and is kept once
+ * (keyOf). When the LATER page is answered first (page 2 back 80 ms before page 1), the row
+ * that sat last on the earlier page falls between them and is on neither: one check quietly
+ * missing from a month that is still trading, a different one on each reload. With the end
+ * pinned, a sale closing during the read falls outside every page's window, so the offsets
+ * cannot shift. A window that ended in the past is left exactly as it is. The signed in
+ * site's live sales are merged in by the reports shell, so Today still fills in as it trades;
+ * another site is a picture as of its load, as it always was.
+ */
+export function pinnedEnd(toDate, nowMs = Date.now()) {
+  if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return toDate;
+  return toDate.getTime() > nowMs ? new Date(nowMs) : toDate;
+}
+
+/**
  * A count of rows several reads share. Hand the SAME budget to each read that lands on one
  * screen together: once their rows pass `maxRows` between them, every one of them stops with
  * TooManyRowsError (the one that tipped it at once, the others at their next page).

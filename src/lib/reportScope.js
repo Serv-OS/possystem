@@ -340,14 +340,54 @@ export function figuresFrom(view, sites, range, daySums) {
 
 // ── group figures ────────────────────────────────────────────────────────────
 
-/** Rows' money per currency: [{ currency, total }], in the scope's order. Never one sum. */
+/**
+ * Rows' money per currency: [{ key, currency, siteId, total }], in first seen order. Never
+ * one sum. A site whose currency nobody knows is a total of its own (key 'unknown:<id>',
+ * currency null, siteId set), never added to another: the same rule as
+ * reportSplit.currencyBlocks, so the shell's header and the Transactions cards say what the
+ * Business summary's blocks say (6 Oct 2026 review: they folded it into the signed in site's
+ * currency). A row with no site at all (none tagged) counts in the signed in site's currency.
+ */
 export function totalsByCurrency(rows, scope, valueOf = (r) => r.total || 0) {
   const map = new Map();
   for (const r of rows || []) {
-    const cur = scope?.currencyOf?.(r.siteId ?? r.locationId) ?? scope?.home?.currency ?? null;
-    map.set(cur, (map.get(cur) || 0) + valueOf(r));
+    const id = r.siteId ?? r.locationId ?? null;
+    const known = id != null ? (scope?.currencyOf?.(id) || null) : (scope?.home?.currency || null);
+    const key = known || (id != null ? `unknown:${id}` : 'unknown');
+    const t = map.get(key) || map.set(key, { key, currency: known, siteId: known ? null : id, total: 0 }).get(key);
+    t.total += valueOf(r);
   }
-  return [...map.entries()].map(([currency, total]) => ({ currency, total }));
+  return [...map.values()];
+}
+
+/**
+ * The totals as words: "£120.00 and $80.00", an unknown currency as
+ * "12.00 at Leeds (currency not set)". `money(n, currency)` is lib/currency's.
+ */
+export function totalsWords(totals, scope, money) {
+  return (totals || []).map((t) => {
+    if (t.currency) return money(t.total, t.currency);
+    const name = scope?.siteOf?.(t.siteId)?.name || 'a site';
+    return `${money(t.total)} at ${name} (currency not set)`;
+  }).join(' and ');
+}
+
+/**
+ * The words on a GROUP percent. Each site is compared on its own clock, so the words can
+ * differ between the sites of one block (viewed at 3am UK, Leeds's "today" is still Monday
+ * and reads "vs last Monday by 3am"; Barnsley Train Station's day started at midnight, so
+ * its Monday is over and reads "vs the Monday before"). The chip must not describe one
+ * site's cut for a sum that mixes them.
+ *   compares  each site's compare (compareRange's answer), one per site of the block
+ * Returns { vs, mixed }: vs = the one compare when every site says the same, else null;
+ * mixed = true when the words differ (the chip then carries MIXED_COMPARE_TEXT).
+ */
+export const MIXED_COMPARE_TEXT = 'each site against its own same days';
+export function groupCompareWords(compares) {
+  const list = (compares || []).filter(Boolean);
+  if (!list.length) return { vs: null, mixed: false };
+  const labels = new Set(list.map((c) => c.label || ''));
+  return labels.size === 1 ? { vs: list[0], mixed: false } : { vs: null, mixed: true };
 }
 
 /**

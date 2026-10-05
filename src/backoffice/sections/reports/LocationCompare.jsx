@@ -35,11 +35,11 @@
 //     it does not fit or does not load, this period still shows and the percent says so.
 
 import { useEffect, useMemo, useState } from 'react';
-import { fetchAccessibleLocations, fetchClosedChecksMultiRange } from '../../../lib/db';
+import { fetchClosedChecksMultiRange } from '../../../lib/db';
 import { loadingText, TOO_LONG_TEXT, isTooManyRows, rowBudget, CHECK_ROWS_ON_SCREEN } from '../../../lib/pagedRead';
 import { getVenueClock } from '../../../lib/locationTime';
 import { compareRange, compareChip, notLoaded } from '../../../lib/reportCompare.js';
-import { groupCompare } from '../../../lib/reportScope.js';
+import { groupCompare, groupCompareWords, MIXED_COMPARE_TEXT } from '../../../lib/reportScope.js';
 import { money } from '../../../lib/currency';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
@@ -123,8 +123,11 @@ function computeAlerts(rows) {
 // range = getPeriodRange's answer for the active venue; only its days (and, for a
 // service, its wall clock times) are used, re-read on each venue's clock.
 // scope = the report scope (its sites are the ones compared); period = the period id, for
-// the comparison. Both optional: without a scope it reads every site the login is linked to,
-// as it did before.
+// the comparison. 6 Oct 2026 (review): WITHOUT a scope nothing is read. It used to fall back
+// to every user_locations row, across every company, and the shell handed scope null while
+// the scope reads were still in flight: for the four owner logins that hold sites in 2 to 4
+// companies the first picture was another company's sales. Connected means same company,
+// and that is the scope's to say.
 export default function LocationCompare({ range, period, periodLabelText, fmt, fmtN, scope }) {
   const [locations, setLocations] = useState(null);
   const [checks, setChecks]       = useState(null);
@@ -148,10 +151,10 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       try {
         const locs = scopeSites
           ? scopeSites.map(s => ({ id: s.id, name: s.name, role: s.isHome ? 'signed in here' : '', currency: s.currency }))
-          : ((await fetchAccessibleLocations()).data || []);
+          : null;   // no scope = no sites: the empty state below, never a guess at "my sites"
         if (stale) return;
-        setLocations(locs);
-        if (!locs.length) { setChecks([]); setLoading(false); return; }
+        setLocations(locs || []);
+        if (!locs?.length) { setChecks([]); setLoading(false); return; }
         if (!range?.fromDay || !range?.toDay) { setChecks([]); setLoading(false); return; }
         const windows = await Promise.all(locs.map(async l => {
           const r = venueRange(range, await getVenueClock(l.id));
@@ -217,7 +220,12 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       }), { revenue: 0, covers: 0, checks: 0, tips: 0 });
       return {
         ...g, portfolio: total, alerts: computeAlerts(g.rows), revenueMedian: median(g.rows.map(r => r.revenue)),
-        change: prev ? groupCompare(g.rows.map(r => ({ current: r.revenue, previous: prev.revenue[r.locationId] }))) : null,
+        change: prev ? {
+          ...groupCompare(g.rows.map(r => ({ current: r.revenue, previous: prev.revenue[r.locationId] }))),
+          // The words only when every site of the block compares to the same thing (each is cut
+          // on its own clock); 6 Oct 2026, it was the signed in site's words for every block.
+          words: groupCompareWords(g.rows.map(r => prev.compare[r.locationId])),
+        } : null,
         fmt: g.currency ? (n) => money(n || 0, g.currency) : fmt,
       };
     });
@@ -249,6 +257,9 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
   }
   if (error) {
     return <EmptyState icon="⚠" message={isTooManyRows(error) ? TOO_LONG_TEXT : `Could not load locations: ${error.message}`}/>;
+  }
+  if (!scopeSites) {
+    return <EmptyState icon="📍" message="Sites could not be worked out. Choose the report again."/>;
   }
   if (!locations || locations.length === 0) {
     return <EmptyState icon="📍" message="No locations accessible. Check that your user_locations junction has rows for your user."/>;
@@ -369,7 +380,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
             <span>All {g.rows.length} sites:</span>
             {!prev ? <span style={{ color:'var(--t4)' }}>comparison not loaded yet</span>
               : g.change.pct == null ? <span style={{ color:'var(--t4)' }}>nothing to compare with {g.change.fresh ? `(${g.change.fresh} new)` : ''}</span>
-              : <><CompareChip pct={g.change.pct} vs={range?.compare}/><span style={{ color:'var(--t4)' }}>· {g.fmt(g.change.previous)} then {g.change.text}</span></>}
+              : <><CompareChip pct={g.change.pct} vs={g.change.words.vs}/>{g.change.words.mixed && <span style={{ color:'var(--t4)' }}>{MIXED_COMPARE_TEXT}</span>}<span style={{ color:'var(--t4)' }}>· {g.fmt(g.change.previous)} then {g.change.text}</span></>}
           </div>
         </div>
       ))}

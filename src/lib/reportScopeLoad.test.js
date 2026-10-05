@@ -104,6 +104,27 @@ test('one site: the fault rule is the one the shell had', async () => {
   assert.equal(r.fault, null); assert.equal(r.kdsFault, 'too_long'); assert.deepEqual(r.kdsTickets, []); assert.equal(r.checks.length, 1);
 });
 
+// 6 Oct 2026 (review): the checks blanking the read blank the tickets WITH the same fault.
+// Kitchen performance looked at kdsFault alone, so "too long" on the checks showed as an
+// empty kitchen ("No KDS tickets at these sites") instead of the too long line.
+test('the checks too long or failed: the kitchen tickets carry the same fault, never an empty list', async () => {
+  const hudds = site('hudds', 'Huddersfield'), leeds = site('leeds', 'Leeds');
+  const tickets = async () => ({ data: [{ id: 't', sentAt: 1 }], error: null });
+  // several sites, this period over the budget
+  let r = await loadScopeRows({
+    sites: [hudds, leeds], maxRows: 1, fetchTickets: tickets,
+    fetchChecks: fakeChecks({ [`hudds|${hudds.from.toISOString()}`]: [check('a', '2026-10-05T09:00:00Z')], [`leeds|${leeds.from.toISOString()}`]: [check('b', '2026-10-05T09:00:00Z')] }),
+  });
+  assert.equal(r.fault, 'too_long'); assert.equal(r.kdsFault, 'too_long'); assert.deepEqual(r.kdsTickets, []);
+  // one site, this period failed
+  r = await loadScopeRows({ sites: [leeds], fetchTickets: tickets, fetchChecks: fakeChecks({ [`leeds|${leeds.from.toISOString()}`]: new Error('offline') }) });
+  assert.equal(r.fault, 'failed'); assert.equal(r.kdsFault, 'failed'); assert.deepEqual(r.kdsTickets, []);
+  // and the shell shows it for Kitchen performance: kdsFault first, then the checks' fault
+  const fs = await import('node:fs');
+  const shell = fs.readFileSync(new URL('../backoffice/sections/BOReports.jsx', import.meta.url), 'utf8');
+  assert.match(shell, /if \(view === 'kds_perf'\) return kdsFault \|\| loadFault \|\| null;/);
+});
+
 test('several sites: each over its OWN window, tagged, newest first, one budget', async () => {
   const hudds = site('hudds', 'Huddersfield');
   const station = { ...site('station', 'Barnsley Train Station', '2026-10-04T23:00:00Z'), to: D('2026-10-05T22:59:59.999Z') };

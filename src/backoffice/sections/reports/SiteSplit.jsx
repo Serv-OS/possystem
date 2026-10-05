@@ -13,7 +13,7 @@
 import { CompareChip, ExportBtn } from './_charts';
 import { blockTitle } from '../../../lib/reportSplit.js';
 import { titleSt } from './_siteSplit';
-import { groupCompare } from '../../../lib/reportScope.js';
+import { groupCompare, groupCompareWords, MIXED_COMPARE_TEXT } from '../../../lib/reportScope.js';
 
 const cardSt = { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'auto', marginBottom:14 };
 const headSt = { padding:'9px 14px', background:'var(--bg3)', borderBottom:'1px solid var(--bdr)', fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', gap:8 };
@@ -53,6 +53,10 @@ export function Blocks({ blocks, children }) {
 
 // The group against its comparison, like for like: only sites with both sides count.
 //   pairs  [{ current, previous }], one per site of the block, in the block's order
+// 6 Oct 2026 (review): the words are shown only when every site's comparison says the same
+// thing. Each site is compared on its own clock, so at 3am UK one site's Monday is still
+// trading ("vs last Monday by 3am") while the midnight site's Monday is over ("vs the
+// Monday before"); the chip then says the percent alone, with the grey line explaining why.
 export function GroupChange({ block, pairs }) {
   const grey = { fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' };
   const vs = block.parts.map(p => p.compare);
@@ -60,9 +64,11 @@ export function GroupChange({ block, pairs }) {
   if (vs.some(c => c.loaded === false)) return <span style={grey}>Comparison did not load</span>;
   const g = groupCompare(pairs);
   if (g.pct == null) return <span style={grey}>Nothing to compare with{g.fresh ? ` (${g.fresh} new)` : ''}</span>;
+  const words = groupCompareWords(vs);
   return (
     <span style={{ display:'inline-flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-      <CompareChip pct={g.pct} vs={vs[0]}/>
+      <CompareChip pct={g.pct} vs={words.vs}/>
+      {words.mixed && <span style={grey}>{MIXED_COMPARE_TEXT}</span>}
       {g.text && <span style={grey}>{g.text}</span>}
     </span>
   );

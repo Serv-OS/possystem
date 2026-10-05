@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import {
   readAllPages, readAllPagesResult, progressSum, loadingText,
   TooManyRowsError, isTooManyRows, isReadStopped, PAGE, MAX_PAGES, MAX_IN_FLIGHT, reportGate,
-  rowBudget, isPageTimeout, faultText, TOO_LONG_TEXT, LOAD_FAILED_TEXT,
+  rowBudget, isPageTimeout, faultText, TOO_LONG_TEXT, LOAD_FAILED_TEXT, pinnedEnd,
   CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES, PAGE_TIMEOUT_MS,
 } from './pagedRead.js';
 import { limiter } from '../../supabase/functions/_shared/pagedRows.js';
@@ -122,6 +122,61 @@ test('rows arriving mid read with pages in flight together: still every original
   assert.equal(unique(rows), rows.length);
   const got = new Set(ids(rows));
   for (const id of before) assert.ok(got.has(id), `row ${id} was skipped`);
+});
+
+// 6 Oct 2026 (multi site review): the mirror case. Pages 1 and 2 go out together; page 2 is
+// answered FIRST, then a sale lands, then page 1 is answered off the shifted table. The row
+// that sat last on page 1 before the shift (row 1999, c401 of 2,400) is now first on page 2,
+// which was already read without it: on neither page. The loaders pin the window's end to the moment the read started, so the
+// late sale (closed after that) is outside every page and nothing shifts.
+function shiftingTable(n, pinAt) {
+  const t = {
+    rows: Array.from({ length: n }, (_, i) => ({ id: `c${n - i}`, at: n - i })),
+    gate: null,
+  };
+  let page1Answer = null;
+  t.build = () => ({
+    range: (from, to) => new Promise((resolve) => {
+      const answer = () => {
+        const seen = pinAt == null ? t.rows : t.rows.filter((r) => r.at <= pinAt);
+        resolve({ data: seen.slice(from, to + 1), error: null, count: from === 0 ? seen.length : null });
+      };
+      if (from === 1000) { page1Answer = answer; return; }          // held back
+      answer();
+      if (from === 2000) {                                          // page 2 answered: a sale lands, then page 1 answers
+        t.rows.unshift({ id: 'late-sale', at: n + 1 });
+        setTimeout(() => page1Answer?.(), 0);
+      }
+    }),
+  });
+  return t;
+}
+
+test('a later page answered before an earlier one, with a sale between: the pinned end keeps every row', async () => {
+  const n = 2400;
+  // Without the pin, c1001 falls between the pages (this is the fault, shown so the fix is seen to matter).
+  const open = shiftingTable(n, null);
+  const lost = await readAllPages('checks', open.build, { gate: null });
+  assert.ok(!ids(lost).includes('c401'), 'without a pinned end one row is lost');
+  assert.equal(unique(lost), n - 1, 'one original row is out (the late sale sits above page 0, which was already read)');
+  // With the end pinned at the read's start (the loaders do this with pinnedEnd), every row once.
+  const pinned = shiftingTable(n, n);
+  const rows = await readAllPages('checks', pinned.build, { gate: null });
+  assert.equal(rows.length, n);
+  assert.equal(unique(rows), n);
+  assert.ok(ids(rows).includes('c401'));
+  assert.ok(!ids(rows).includes('late-sale'), 'a sale closing during the read is outside the window');
+});
+
+test('pinnedEnd: a window still trading ends now; a finished one is left alone', () => {
+  const now = Date.parse('2026-10-06T14:00:00Z');
+  const future = new Date('2026-10-07T05:29:59.999Z');
+  const past   = new Date('2026-10-05T05:29:59.999Z');
+  assert.equal(pinnedEnd(future, now).getTime(), now);
+  assert.equal(pinnedEnd(past, now), past);           // the very same object
+  assert.equal(pinnedEnd(new Date(now), now).getTime(), now);
+  assert.equal(pinnedEnd(null, now), null);
+  assert.equal(pinnedEnd(undefined, now), undefined);
 });
 
 test('rows with no id are all kept (nothing to tell doubles by)', async () => {
@@ -391,6 +446,10 @@ test('pin: the shared report loaders read through the pager, with a unique order
     assert.doesNotMatch(body, /\.limit\(/, `${name} must not cap the read`);
     assert.match(body, new RegExp(`\\.order\\('${col}'[^)]*\\)\\s*\\.order\\('id'`), `${name} orders ${col} then id`);
     assert.match(body, /count: 'exact'/, `${name} asks the first page for the count`);
+    // 6 Oct 2026: the window's end is pinned to the read's start and EVERY page uses it
+    assert.match(body, /const to = pinnedEnd\(toDate\);/, `${name} pins the window's end`);
+    assert.match(body, /\.lte\('[a-z_]+', to\.toISOString\(\)\)/, `${name} reads up to the pinned end`);
+    assert.doesNotMatch(body, /toDate\.toISOString/, `${name} must not use the unpinned end`);
   }
   const multi = fnBody(db, 'fetchClosedChecksMultiRange');
   assert.match(multi, /fetchClosedChecksRange\(/);

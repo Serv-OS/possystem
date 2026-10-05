@@ -16,7 +16,7 @@ import { fetchClosedChecksRange, fetchKDSTicketsRange } from '../../lib/db';
 import { loadingText, TOO_LONG_TEXT, rowBudget, CHECK_ROWS_ON_SCREEN } from '../../lib/pagedRead';
 import { buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL, dayOfCheck, reportClock } from './reports/_filters';
 import {
-  buildReportScope, connectedSites, sitesForView, siteRange, itemCapLine, figuresFrom, totalsByCurrency,
+  buildReportScope, connectedSites, sitesForView, siteRange, itemCapLine, figuresFrom, totalsByCurrency, totalsWords,
   choiceKey, readSiteChoice, writeSiteChoice, resolveTicked, toggleTicked, choiceFor,
 } from '../../lib/reportScope.js';
 import { loadScopeRows, loadScopeDaySums, tagRows } from '../../lib/reportScopeLoad.js';
@@ -65,11 +65,13 @@ const NO_SITES = [];
 
 // 5 Oct 2026: which fault, if any, blanks this report. The reports below read their own data
 // (their own loaders, not the shell's closed checks), so a period too long for the shell does
-// not take them down; Kitchen performance stands on the ticket read alone.
+// not take them down; Kitchen performance stands on the ticket read, and (6 Oct 2026 review)
+// on the checks read when THAT is what stopped everything: the tickets are halted with the
+// checks, so an empty ticket list then is not "no kitchen tickets", it is the same fault.
 const OWN_DATA_VIEWS = new Set(['payroll', 'daily_trading', 'bookings', 'location_compare', 'cash_drawer', 'open']);
 function faultFor(view, loadFault, kdsFault) {
   if (OWN_DATA_VIEWS.has(view) || view.startsWith('loyalty_')) return null;
-  if (view === 'kds_perf') return kdsFault || null;
+  if (view === 'kds_perf') return kdsFault || loadFault || null;
   return loadFault || null;
 }
 
@@ -501,8 +503,8 @@ export default function BOReports({ setSection } = {}) {
             <span style={{ color:'var(--t4)', fontWeight:400, fontSize:14, marginLeft:10 }}>{periodLabel(period, customRange, range)}</span>
           </div>
           <div style={{ fontSize:12, color:'var(--t3)', marginTop:4, visibility: (viewSites.mode === 'all' && scope?.hasChoice) || daySums || capLine ? 'hidden' : 'visible' }}>
-            {filtered.length} checks · {moneyTotals && moneyTotals.length > 1
-              ? moneyTotals.map(t => money(t.total, t.currency || undefined)).join(' and ')
+            {filtered.length} checks · {moneyTotals && (moneyTotals.length > 1 || moneyTotals.some(t => !t.currency))
+              ? totalsWords(moneyTotals, scope, money)
               : fmt(totalRevenue)} revenue
             {(serverFilter !== 'all' || orderTypeFilter !== 'all' || sourceFilter !== 'all') && (
               <span style={{ color:'var(--acc)', marginLeft:6 }}>· filtered</span>
@@ -565,7 +567,12 @@ export default function BOReports({ setSection } = {}) {
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>
           Pick a start and end date to load the custom range.
         </div>
-      ) : (loadingRange || !locationConfig) ? (
+      ) : (loadingRange || !locationConfig || !scopeReady) ? (
+        /* 6 Oct 2026 (review): the scope wait is loading too. The read does not start until the
+           scope is in (up to its 6 second fallback), and until then the rows are null: without
+           this line a report painted "0 checks, no sales in this period" as a finished answer,
+           then jumped to the real figures. A stale or unfinished read must never read as a
+           quiet period (and the overview must never mount without its scope). */
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>{loadingRange ? loadingText(loadProgress) : 'Loading…'}</div>
       ) : capLine ? (
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t2)', fontSize:14 }}>{capLine}</div>

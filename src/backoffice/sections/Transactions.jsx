@@ -25,7 +25,7 @@ import { refundBreakdown, legRefundedMinor, toMinor } from '../../lib/payments/r
 import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
 import { modsText } from '../../lib/reportText';
 import { isSplit, actionLock } from '../../lib/reportSplit.js';
-import { totalsByCurrency } from '../../lib/reportScope.js';
+import { totalsByCurrency, totalsWords } from '../../lib/reportScope.js';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 // timeZone: only passed when several sites are listed, so each row reads on its own site's
@@ -184,9 +184,10 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     const refunds = filtered.reduce((s, c) => s + (c.refunds || []).reduce((rs, r) => rs + (r.amount || 0), 0), 0);
     return { count: filtered.length, total, tips, service, refunds };
   }, [filtered]);
-  // Money in two currencies is never one number: "£120.00 and $80.00".
+  // Money in two currencies is never one number: "£120.00 and $80.00". A site with no
+  // currency on record is named on its own, never added to another (totalsWords).
   const moneyStat = (one, valueOf) => (multi
-    ? (totalsByCurrency(filtered, scope, valueOf).map(t => money(t.total, t.currency || undefined)).join(' and ') || fmt(0))
+    ? (totalsWords(totalsByCurrency(filtered, scope, valueOf), scope, money) || fmt(0))
     : fmt(one));
 
   // ── Refund handlers ──

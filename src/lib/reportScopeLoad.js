@@ -48,7 +48,7 @@ const newestFirst = (key) => (a, b) => (b[key] || 0) - (a[key] || 0);
  * @param {number} [a.maxRows]
  * @returns {Promise<{
  *   checks: object[], prevChecks: object[], kdsTickets: object[],
- *   fault: null|'too_long'|'failed', kdsFault: null|'too_long'|'failed',
+ *   fault: null|'too_long'|'failed', kdsFault: null|'too_long'|'failed' (never null when fault is set),
  *   prevLoaded: boolean, prevSkipped: null|'too_long'|'failed',
  *   prevHeld: Record<string, { from: number, to: number }>, error: any,
  * }>}
@@ -58,8 +58,12 @@ export async function loadScopeRows({
   onProgress = null, stop = null, maxRows = CHECK_ROWS_ON_SCREEN,
 } = {}) {
   const list = Array.isArray(sites) ? sites : [];
+  // 6 Oct 2026 (review): when the checks blank the read, the tickets carry the SAME fault.
+  // The tickets were halted (or thrown away) because of the checks, so handing them back as
+  // an empty list made Kitchen performance say "No KDS tickets at these sites" for a period
+  // that was simply too long.
   const blank = (fault, error = null) => ({
-    checks: [], prevChecks: [], kdsTickets: [], fault, kdsFault: null,
+    checks: [], prevChecks: [], kdsTickets: [], fault, kdsFault: fault,
     prevLoaded: false, prevSkipped: null, prevHeld: {}, error,
   });
   if (!list.length) return { ...blank(null), prevLoaded: true };

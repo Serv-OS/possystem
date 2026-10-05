@@ -26,7 +26,8 @@ import assert from 'node:assert/strict';
 import {
   connectedSites, buildReportScope, choiceKey, readSiteChoice, writeSiteChoice, resolveTicked, toggleTicked, choiceFor,
   isMulti, currenciesInScope, canShowCombinedTotal, sitesLabel, sitesForView, siteModeFor, siteRange, rangeDayCount,
-  itemCapLine, figuresFrom, totalsByCurrency, groupCompare, REPORT_SITE_MODE, ITEM_CAP_TEXT,
+  itemCapLine, figuresFrom, totalsByCurrency, totalsWords, groupCompare, groupCompareWords, MIXED_COMPARE_TEXT,
+  REPORT_SITE_MODE, ITEM_CAP_TEXT,
 } from './reportScope.js';
 import { getPeriodRange, venueRange } from '../backoffice/sections/reports/_filters.js';
 
@@ -184,7 +185,27 @@ test('currencies are never added together', () => {
   const unknown = buildReportScope({ homeId: 'uk', locations: mixedLocs, readableIds: ['uk', 'us', 'new'], tickedIds: ['uk', 'new'], homeConfig: { currency: 'GBP' } });
   assert.equal(unknown.canShowCombinedTotal, false);
   const rows = [{ siteId: 'uk', total: 10 }, { siteId: 'us', total: 5 }, { siteId: 'uk', total: 2.5 }];
-  assert.deepEqual(totalsByCurrency(rows, mixed), [{ currency: 'GBP', total: 12.5 }, { currency: 'USD', total: 5 }]);
+  assert.deepEqual(totalsByCurrency(rows, mixed), [{ key: 'GBP', currency: 'GBP', siteId: null, total: 12.5 }, { key: 'USD', currency: 'USD', siteId: null, total: 5 }]);
+});
+
+// 6 Oct 2026 (review): the shell header and the Transactions cards folded a site whose
+// currency nobody knows into the signed in site's pounds, while the Business summary kept it
+// in a block of its own. One rule now, the blocks' rule.
+test('a site with no currency on record is a total of its own, named, never added to the home currency', () => {
+  const locs = [{ id: 'uk', name: 'UK', org_id: 'o', currency: 'GBP' }, { id: 'new', name: 'Seventh Site', org_id: 'o', currency: null }];
+  const scope = buildReportScope({ homeId: 'uk', locations: locs, readableIds: ['uk', 'new'], tickedIds: ['uk', 'new'], homeConfig: { currency: 'GBP' } });
+  const rows = [{ siteId: 'uk', total: 10 }, { siteId: 'new', total: 7 }, { siteId: 'uk', total: 2 }];
+  const t = totalsByCurrency(rows, scope);
+  assert.deepEqual(t, [{ key: 'GBP', currency: 'GBP', siteId: null, total: 12 }, { key: 'unknown:new', currency: null, siteId: 'new', total: 7 }]);
+  const money = (n, cur) => `${cur === 'GBP' ? '£' : cur ? cur + ' ' : ''}${n.toFixed(2)}`;
+  assert.equal(totalsWords(t, scope, money), '£12.00 and 7.00 at Seventh Site (currency not set)');
+  // a row with no site at all (none tagged) is the signed in site's money
+  assert.deepEqual(totalsByCurrency([{ total: 3 }], scope), [{ key: 'GBP', currency: 'GBP', siteId: null, total: 3 }]);
+  // the same rule as the split's blocks: the unknown site is its own block
+  assert.match(read('./reportSplit.js'), /const key = p\.currency \|\| `unknown:\$\{p\.id\}`;/);
+  // and both callers print the words, not money() over a folded sum
+  assert.match(read('../backoffice/sections/BOReports.jsx'), /totalsWords\(moneyTotals, scope, money\)/);
+  assert.match(read('../backoffice/sections/Transactions.jsx'), /totalsWords\(totalsByCurrency\(filtered, scope, valueOf\), scope, money\)/);
 });
 
 // ── 6 and 7: each site's own clock and business day ──────────────────────────
@@ -391,6 +412,30 @@ test('the group percent is like for like: a new site cannot make the group read 
   assert.equal(groupCompare([]).pct, null);
 });
 
+// 6 Oct 2026 (review): the group chip said the FIRST site's words. Signed in at Leeds at
+// 03:00 UK on Tue 6 Oct, Today: Leeds (06:30 start) is still on Monday and compares "vs last
+// Monday by 3am"; Barnsley Train Station (00:00 start) is read over its whole Monday and
+// compares "vs the Monday before". One sentence cannot describe both.
+test('the group percent carries the words only when every site compares to the same thing', () => {
+  const now = at('2026-10-06T02:00:00Z');   // 03:00 UK, Tue 6 Oct
+  const range = { ...getPeriodRange('today', null, LEEDS_CFG, now), builtAt: now };
+  const s = scopeOf({ tickedIds: ['leeds', 'station'] });
+  const leeds = siteRange('today', range, s.siteOf('leeds'), now).compare;
+  const station = siteRange('today', range, s.siteOf('station'), now).compare;
+  assert.equal(leeds.label, 'vs last Monday by 3am');
+  assert.equal(station.label, 'vs the Monday before');
+  assert.deepEqual(groupCompareWords([leeds, station]), { vs: null, mixed: true });
+  const hudds = siteRange('today', range, s.siteOf('hudds'), now).compare;
+  assert.deepEqual(groupCompareWords([leeds, hudds]), { vs: leeds, mixed: false });
+  assert.deepEqual(groupCompareWords([]), { vs: null, mixed: false });
+  assert.deepEqual(groupCompareWords([null, leeds]), { vs: leeds, mixed: false });
+  assert.doesNotMatch(MIXED_COMPARE_TEXT, /[\u2013\u2014]/);
+  // both group chips use it
+  assert.match(read('../backoffice/sections/reports/SiteSplit.jsx'), /const words = groupCompareWords\(vs\);\s+return \([\s\S]*?<CompareChip pct=\{g\.pct\} vs=\{words\.vs\}\/>/);
+  assert.match(read('../backoffice/sections/reports/LocationCompare.jsx'), /words: groupCompareWords\(g\.rows\.map\(r => prev\.compare\[r\.locationId\]\)\),/);
+  assert.match(read('../backoffice/sections/reports/LocationCompare.jsx'), /<CompareChip pct=\{g\.change\.pct\} vs=\{g\.change\.words\.vs\}\/>/);
+});
+
 // ── the shell's wiring: one site is built exactly as it was before the scope ─────────────
 
 import { readFileSync } from 'node:fs';
@@ -426,6 +471,12 @@ test('pin: every report in the shell gets the optional multi site props, and the
 test('pin: the overview compares the scope\'s sites, per currency, on one row budget', () => {
   const lc = read('../backoffice/sections/reports/LocationCompare.jsx');
   assert.match(lc, /const locs = scopeSites\s+\? scopeSites\.map\(/);
+  // 6 Oct 2026 (review): and ONLY the scope's sites. The fallback to every user_locations row
+  // (every company) is gone: without a scope nothing is read and the screen says so.
+  assert.doesNotMatch(lc, /fetchAccessibleLocations/);
+  assert.match(lc, /if \(!scopeSites\) \{\s+return <EmptyState icon="📍" message="Sites could not be worked out\. Choose the report again\."\/>;/);
+  // and the shell never draws a report body (the overview included) before the scope is in
+  assert.match(read('../backoffice/sections/BOReports.jsx'), /\(loadingRange \|\| !locationConfig \|\| !scopeReady\) \? \(/);
   assert.match(lc, /stop: \(\) => stale, budget,/);
   assert.match(lc, /fetchClosedChecksMultiRange\(prevWindows, \{ stop: \(\) => stale, budget \}\)/);
   assert.match(lc, /groupCompare\(g\.rows\.map\(/);
