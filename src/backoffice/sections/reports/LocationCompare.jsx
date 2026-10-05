@@ -24,6 +24,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchAccessibleLocations, fetchClosedChecksMultiRange } from '../../../lib/db';
+import { loadingText, TOO_LONG_TEXT, isTooManyRows } from '../../../lib/pagedRead';
 import { getVenueClock } from '../../../lib/locationTime';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
@@ -109,10 +110,15 @@ export default function LocationCompare({ range, periodLabelText, fmt, fmtN }) {
   const [checks, setChecks]       = useState(null);
   const [loading, setLoading]     = useState(true);
   const [error,   setError]       = useState(null);
+  const [progress, setProgress]   = useState(null);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setProgress(null);
+    // 5 Oct 2026: every venue is read in full, in pages (it was the newest 1,000 checks a
+    // venue). A read the period has moved on from stops and is dropped.
+    let stale = false;
     (async () => {
       try {
         const locRes = await fetchAccessibleLocations();
@@ -124,16 +130,23 @@ export default function LocationCompare({ range, periodLabelText, fmt, fmtN }) {
           const r = venueRange(range, await getVenueClock(l.id));
           return { locationId: l.id, from: r.from, to: r.to };
         }));
-        const res = await fetchClosedChecksMultiRange(windows, 2000);
+        if (stale) return;
+        const res = await fetchClosedChecksMultiRange(windows, {
+          onProgress: (p) => { if (!stale) setProgress(p); },
+          stop: () => stale,
+        });
+        if (stale) return;
         if (res.error) throw res.error;
         setChecks(res.data || []);
       } catch (err) {
+        if (stale) return;
         console.error('[LocationCompare] fetch failed', err);
         setError(err);
         setChecks([]);
       }
       setLoading(false);
     })();
+    return () => { stale = true; };
   }, [range]);
 
   const rows = useMemo(() =>
@@ -169,10 +182,10 @@ export default function LocationCompare({ range, periodLabelText, fmt, fmtN }) {
   };
 
   if (loading) {
-    return <div style={{ padding:'40px 0', textAlign:'center', color:'var(--t4)', fontSize:12 }}>Loading every location you have access to…</div>;
+    return <div style={{ padding:'40px 0', textAlign:'center', color:'var(--t4)', fontSize:12 }}>{progress?.total > 1 ? `${loadingText(progress)} (every location you have access to)` : 'Loading every location you have access to…'}</div>;
   }
   if (error) {
-    return <EmptyState icon="⚠" message={`Could not load locations: ${error.message}`}/>;
+    return <EmptyState icon="⚠" message={isTooManyRows(error) ? TOO_LONG_TEXT : `Could not load locations: ${error.message}`}/>;
   }
   if (!locations || locations.length === 0) {
     return <EmptyState icon="📍" message="No locations accessible. Check that your user_locations junction has rows for your user."/>;
