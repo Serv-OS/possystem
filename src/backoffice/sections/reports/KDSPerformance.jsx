@@ -7,14 +7,18 @@
 //   - Bump time by hour of day (spot kitchen pressure windows)
 //     (v5.11.1: the venue's hour the ticket was sent, sumByVenueHour; was the browser's)
 //
-// Centre ids resolve to station names via the menuCategories store if the centre
-// id happens to be a category id; falls back to the raw id label otherwise.
+// 5 Oct 2026 (Peter, Coffee Boy: "KDS report station name doesn't match what we called them"):
+// a ticket's centre id is a PRODUCTION CENTRE (Back Office, Production printing), so the names
+// come from print_routing.centres (lib/kdsStationNames.js). The report used to look the id up
+// among menu categories and so showed raw ids such as pc-1790752941614-i9vh.
 //
 // Percentile note: we use a simple sorted-index percentile which is fine for
 // the volumes a single restaurant produces in a day / week / month.
 
-import { useMemo } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import { useStore } from '../../../store';
+import { supabase, isMock, getLocationId } from '../../../lib/supabase';
+import { stationNameMap, stationLabel as stationLabelFor } from '../../../lib/kdsStationNames';
 import { StatTile, ExportBtn, EmptyState, HourBar, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { reportClock, sumByVenueHour, venueHour } from './_filters';
@@ -34,14 +38,30 @@ function formatMs(ms) {
 }
 
 export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationConfig }) {
-  const { menuCategories = [] } = useStore();
+  const storeCentres = useStore(s => s.printRouting?.centres);
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
 
+  // The venue's own production centres, read fresh: the copy in this browser can be another
+  // venue's (Back Office switches venues) or older than a rename.
+  const [venueCentres, setVenueCentres] = useState(null);
+  useEffect(() => {
+    if (isMock) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const locId = await getLocationId();
+        if (!locId) return;
+        const { data } = await supabase.from('print_routing').select('centres').eq('location_id', locId).maybeSingle();
+        if (alive && Array.isArray(data?.centres)) setVenueCentres(data.centres);
+      } catch { /* the names fall back to this browser's copy */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+
   const stationLabel = useMemo(() => {
-    const m = {};
-    menuCategories.forEach(c => { m[c.id] = c.label || c.name || c.id; });
-    return (id) => id ? (m[id] || id) : 'No station';
-  }, [menuCategories]);
+    const m = stationNameMap(storeCentres, venueCentres);
+    return (id) => stationLabelFor(id, m);
+  }, [storeCentres, venueCentres]);
 
   const analysis = useMemo(() => {
     const bumped = kdsTickets.filter(t => t.status === 'bumped' && t.sentAt && t.bumpedAt);
@@ -94,8 +114,8 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationCon
       { label:'Station',     key:'label' },
       { label:'Tickets',     key:'count' },
       { label:'Avg (sec)',   key: s => Math.round(s.avgMs / 1000) },
-      { label:'p50 (sec)',   key: s => Math.round(s.p50 / 1000) },
-      { label:'p90 (sec)',   key: s => Math.round(s.p90 / 1000) },
+      { label:'Typical (sec)',          key: s => Math.round(s.p50 / 1000) },
+      { label:'9 in 10 done by (sec)',  key: s => Math.round(s.p90 / 1000) },
     ]);
     downloadCsv(`kds-performance-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
@@ -113,8 +133,8 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationCon
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
         <StatTile label="Tickets bumped"  value={fmtN(analysis.totalCount)}/>
-        <StatTile label="Avg bump time"   value={formatMs(analysis.avgMs)} color="var(--acc)" sub={`p50 ${formatMs(analysis.p50)}`}/>
-        <StatTile label="p90 bump time"   value={formatMs(analysis.p90)} color={analysis.p90 > 900000 ? 'var(--red)' : 'var(--t1)'} sub={`p99 ${formatMs(analysis.p99)}`}/>
+        <StatTile label="Avg bump time"   value={formatMs(analysis.avgMs)} color="var(--acc)" sub={`Typical ${formatMs(analysis.p50)}`}/>
+        <StatTile label="9 in 10 done by" value={formatMs(analysis.p90)} color={analysis.p90 > 900000 ? 'var(--red)' : 'var(--t1)'} sub={`Slowest 1 in 100: ${formatMs(analysis.p99)}`}/>
         <StatTile label="Open right now"  value={fmtN(analysis.openCount)} color={analysis.openCount > 20 ? 'var(--red)' : analysis.openCount > 10 ? 'var(--acc)' : 'var(--t1)'}/>
       </div>
 
@@ -134,8 +154,8 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationCon
           <span>Station</span>
           <span style={{ textAlign:'right' }}>Tickets</span>
           <span style={{ textAlign:'right' }}>Avg</span>
-          <span style={{ textAlign:'right' }}>p50</span>
-          <span style={{ textAlign:'right' }}>p90</span>
+          <span style={{ textAlign:'right' }}>Typical</span>
+          <span style={{ textAlign:'right' }}>9 in 10 by</span>
           <span>Volume</span>
         </div>
         {analysis.stations.map((s, i) => (
@@ -155,7 +175,7 @@ export default function KDSPerformance({ kdsTickets = [], fmt, fmtN, locationCon
       </div>
 
       <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ Bump time = bumped_at − sent_at. p90 over 15 minutes is flagged red as a kitchen pressure signal. Open-right-now counts use live data and are not bounded by the date filter.
+        Bump time is how long a ticket waits from being sent to being bumped. Typical: half of tickets were quicker than this. 9 in 10 by: nine tickets in ten were done within this time, and it shows red over 15 minutes. Open right now is live and ignores the date filter.
       </div>
     </div>
   );
