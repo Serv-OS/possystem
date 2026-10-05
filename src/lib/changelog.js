@@ -10,6 +10,7 @@ export const CHANGELOG = [
     v: '5.11.29',
     date: '5 Oct 2026',
     items: [
+      "Reports now add up every sale in the period. Any report covering more than about 1,000 sales was only counting the newest 1,000, so the earliest days of a week or month were missing: at Huddersfield, Last 7 days showed about 8,250 pounds when the true figure was about 14,570. This affected the sales, payments, tax, tips, exceptions, kitchen, stock and location compare reports at busy sites. Daily figures, Z reports, Xero and the Owner app were always right. A long period now shows a loading count (Loading 3 of 9), and a period too long to load says so, never a part total.",
       "KDS performance report: stations now show the names you gave them in Production printing (KDS drinks, kds food, Frozen Drinks KDS). They were showing as codes such as pc-1790752941614-i9vh.",
       "Reports: the hour by hour bar charts (KDS performance, Daypart and Tips) now draw real bars. Every bar was showing as a flat line.",
       "KDS performance report: P50 and P90 are now in plain words. Typical is the time half of tickets beat. 9 in 10 by is the time nine tickets in ten were done within; it shows red over 15 minutes.",
