@@ -10,6 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
 import { normaliseCheckStatus } from './voidRules.js';
+import { readAllPagesResult, progressSum, isTooManyRows, rowBudget, CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES } from './pagedRead.js';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
 import { copiesNeedingMasterRate } from './venueTaxRates';
@@ -617,17 +618,22 @@ export const bumpKDSTicket = async (id) => {
 
 // v4.6.20 — historical fetch for the KDS performance report. Returns both
 // pending and bumped tickets so we can compute bump time (bumped_at - sent_at).
-export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, limit = 2000) => {
+// 5 Oct 2026: read in pages (lib/pagedRead.js). It asked for 2,000 in one request and got the
+// newest 1,000: Huddersfield sent 2,057 tickets in 7 days. opts = { onProgress, stop }.
+export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
-  let query = supabase
-    .from('kds_tickets')
-    .select('*')
-    .eq('location_id', locationId)
-    .order('sent_at', { ascending: false })
-    .limit(limit);
-  if (fromDate) query = query.gte('sent_at', fromDate.toISOString());
-  if (toDate)   query = query.lte('sent_at', toDate.toISOString());
-  const result = await query;
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const result = await readAllPagesResult('kitchen tickets', (first) => {
+    let query = supabase
+      .from('kds_tickets')
+      .select('*', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId)
+      .order('sent_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (fromDate) query = query.gte('sent_at', fromDate.toISOString());
+    if (toDate)   query = query.lte('sent_at', toDate.toISOString());
+    return query;
+  }, { onProgress: o.onProgress, stop: o.stop, maxPages: TICKET_MAX_PAGES });
   if (result.data) {
     result.data = result.data.map(t => ({
       id: t.id,
@@ -836,17 +842,30 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
 };
 
 // For reports — fetch checks across any date range
-export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate, limit = 1000) => {
+// 5 Oct 2026 (Peter: "improve our reports"): EVERY check of the window, read in pages of
+// 1,000 (lib/pagedRead.js). Until now this was one request with .limit(5000), and the API
+// answers at most 1,000 rows a request: newest first, so the oldest days of a week or a
+// month silently dropped and the totals were short (Huddersfield: 1,861 checks in 7 days,
+// 1,000 on screen). Ordered closed_at then id, because several checks can share one
+// closed_at and the pages must not overlap. The row map below is unchanged.
+// opts = { onProgress({ done, total }), stop(), budget }. On the ceiling: { data: null, error, tooMany: true }.
+// The ceiling is 20 pages, not the reader's 60: a check is read whole and is heavy (see
+// CHECK_MAX_PAGES in lib/pagedRead.js). `budget` (rowBudget) is shared by the reads one screen
+// holds together, so two periods cannot each come in under the ceiling and sink the tab.
+export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
-  let query = supabase
-    .from('closed_checks')
-    .select('*')
-    .eq('location_id', locationId)
-    .order('closed_at', { ascending: false })
-    .limit(limit);
-  if (fromDate) query = query.gte('closed_at', fromDate.toISOString());
-  if (toDate)   query = query.lte('closed_at', toDate.toISOString());
-  const result = await query;
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const result = await readAllPagesResult('closed checks', (first) => {
+    let query = supabase
+      .from('closed_checks')
+      .select('*', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId)
+      .order('closed_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (fromDate) query = query.gte('closed_at', fromDate.toISOString());
+    if (toDate)   query = query.lte('closed_at', toDate.toISOString());
+    return query;
+  }, { onProgress: o.onProgress, stop: o.stop, maxPages: CHECK_MAX_PAGES, budget: o.budget || null });
   if (result.data) {
     result.data = result.data.map(c => ({
       id: c.id, ref: c.ref, server: c.server, covers: c.covers,
@@ -1180,19 +1199,35 @@ export const fetchAccessibleLocations = async () => {
 // v5.10.3: each location is read over ITS OWN window, [{ locationId, from, to }]
 // (reports/_filters venueRange: the same business days on that venue's clock).
 // Until then one window, built on the active venue's clock, was used for every venue.
-export const fetchClosedChecksMultiRange = async (windows = [], limit = 2000) => {
+// 5 Oct 2026: every venue is read in full (fetchClosedChecksRange pages; it was 2,000 asked,
+// 1,000 answered, so the busy sites compared short against the quiet ones). The venues still
+// start together but share the one report gate, so 3 requests are in flight at most. A venue
+// that fails or is too long now fails the compare: a missing site read as a quiet one before.
+// When one venue fails, the others stop asking for pages (their answer is thrown away anyway
+// and their pages would sit in front of whatever is loaded next). All the venues share one
+// row budget (CHECK_ROWS_ON_SCREEN): six sites each under the ceiling is still too much.
+export const fetchClosedChecksMultiRange = async (windows = [], opts = {}) => {
   if (!windows?.length) return { data: [], error: null };
   if (isMock) return { data: [], error: null };
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const slot = o.onProgress ? progressSum(o.onProgress) : null;
+  let failed = false;
+  const stop = () => failed || !!o.stop?.();
+  const budget = rowBudget(CHECK_ROWS_ON_SCREEN);
   try {
     const results = await Promise.all(windows.map(({ locationId: id, from, to }) =>
-      fetchClosedChecksRange(id, from, to, limit).then(r => ({
-        id,
-        checks: (r.data || []).map(c => ({ ...c, locationId: id })),
-      }))
+      fetchClosedChecksRange(id, from, to, { onProgress: slot ? slot(id) : null, stop, budget }).then(r => {
+        if (r.error) { failed = true; throw r.error; }
+        return {
+          id,
+          checks: (r.data || []).map(c => ({ ...c, locationId: id })),
+        };
+      })
     ));
     return { data: results.flatMap(r => r.checks), error: null };
   } catch (err) {
-    return { data: [], error: err };
+    failed = true;
+    return { data: [], error: err, tooMany: isTooManyRows(err) };
   }
 };
 

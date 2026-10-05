@@ -13,6 +13,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
 import { isMock, getLocationId } from '../../lib/supabase';
 import { fetchClosedChecksRange, fetchKDSTicketsRange } from '../../lib/db';
+import { progressSum, loadingText, TOO_LONG_TEXT, rowBudget, CHECK_ROWS_ON_SCREEN } from '../../lib/pagedRead';
 import { PERIODS, buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL } from './reports/_filters';
 import { getLocationConfig } from '../../lib/locationTime';
 import Catalog, { CATEGORIES, REPORT_INDEX } from './reports/Catalog';
@@ -44,6 +45,16 @@ import { money } from '../../lib/currency';
 
 const fmt  = n => `${money((n || 0))}`;
 const fmtN = n => (n || 0).toLocaleString();
+
+// 5 Oct 2026: which fault, if any, blanks this report. The reports below read their own data
+// (their own loaders, not the shell's closed checks), so a period too long for the shell does
+// not take them down; Kitchen performance stands on the ticket read alone.
+const OWN_DATA_VIEWS = new Set(['payroll', 'daily_trading', 'bookings', 'location_compare', 'cash_drawer', 'open']);
+function faultFor(view, loadFault, kdsFault) {
+  if (OWN_DATA_VIEWS.has(view) || view.startsWith('loyalty_')) return null;
+  if (view === 'kds_perf') return kdsFault || null;
+  return loadFault || null;
+}
 
 export default function BOReports({ setSection } = {}) {
   const { tables, taxRates, closedChecks: storeChecks } = useStore();
@@ -84,6 +95,13 @@ export default function BOReports({ setSection } = {}) {
   const [prevChecks,  setPrevChecks]  = useState(null);
   const [kdsTickets,  setKdsTickets]  = useState(null);
   const [loadingRange, setLoadingRange] = useState(false);
+  // 5 Oct 2026: the period is read in pages of 1,000 (lib/pagedRead.js), so the screen says
+  // "Loading 3 of 9" while they arrive. loadFault: 'too_long' when the period holds more rows
+  // than one report can read, 'failed' when a page failed. Either way NO totals are shown:
+  // until now a failed or cut read showed as a quiet week.
+  const [loadProgress, setLoadProgress] = useState(null);
+  const [loadFault, setLoadFault] = useState(null);
+  const [kdsFault, setKdsFault] = useState(null);
   const [activeLocId, setActiveLocId] = useState(null); // v5.5.278: track resolved location for merge filtering
 
   const range = useMemo(() => getPeriodRange(period, customRange, locationConfig), [period, customRange, locationConfig]);
@@ -101,6 +119,13 @@ export default function BOReports({ setSection } = {}) {
     // (browser midnight) and never again, so "Today" read the wrong window.
     if (!locationConfig) return;
     setLoadingRange(true);
+    setLoadProgress(null);
+    setLoadFault(null);
+    setKdsFault(null);
+    // A read can now take a few seconds: when the period changes under it, the old read
+    // stops asking for pages and its answer is dropped, never painted over the new one.
+    let stale = false;
+    const stop = () => stale;
     (async () => {
       try {
         let locId = await getLocationId().catch(() => null);
@@ -113,25 +138,51 @@ export default function BOReports({ setSection } = {}) {
         }
         if (!locId) {
           const localSlice = (storeChecks || []).filter(c => c.closedAt && new Date(c.closedAt) >= range.from && new Date(c.closedAt) <= range.to);
+          if (stale) return;
           setRangeChecks(localSlice); setPrevChecks([]); setKdsTickets([]);
           setLoadingRange(false);
           return;
         }
+        if (stale) return;
         setActiveLocId(locId);
+        // This period, the previous period (the percent chips) and the kitchen tickets are
+        // each read in full, sharing 3 requests in flight between them (pagedRead reportGate).
+        const slot = progressSum((p) => { if (!stale) setLoadProgress(p); });
+        // The two periods share one row budget: each could come in under its own ceiling
+        // and the pair still be more than the tab can hold. Past it, both stop after their
+        // first page and the too long line shows.
+        const budget = rowBudget(CHECK_ROWS_ON_SCREEN);
         const [cur, prev, kds] = await Promise.all([
-          fetchClosedChecksRange(locId, range.from,     range.to,     5000),
-          fetchClosedChecksRange(locId, range.prevFrom, range.prevTo, 5000),
-          fetchKDSTicketsRange  (locId, range.from,     range.to,     2000),
+          fetchClosedChecksRange(locId, range.from,     range.to,     { onProgress: slot('cur'),  stop, budget }),
+          fetchClosedChecksRange(locId, range.prevFrom, range.prevTo, { onProgress: slot('prev'), stop, budget }),
+          fetchKDSTicketsRange  (locId, range.from,     range.to,     { onProgress: slot('kds'),  stop }),
         ]);
-        setRangeChecks(cur.data  || []);
-        setPrevChecks (prev.data || []);
-        setKdsTickets (kds.data  || []);
+        if (stale) return;
+        // The sales reads decide the fault. Kitchen tickets feed one report only, so a
+        // failure there leaves the sales reports standing and that one report empty.
+        const bad = [cur, prev].find(r => r.error);
+        if (bad) {
+          console.error('[BOReports] fetch failed', bad.error);
+          setLoadFault(bad.tooMany ? 'too_long' : 'failed');
+          setRangeChecks([]); setPrevChecks([]); setKdsTickets([]);
+        } else {
+          if (kds.error) {
+            console.error('[BOReports] kitchen tickets failed', kds.error);
+            setKdsFault(kds.tooMany ? 'too_long' : 'failed');
+          }
+          setRangeChecks(cur.data  || []);
+          setPrevChecks (prev.data || []);
+          setKdsTickets (kds.data  || []);
+        }
       } catch (err) {
+        if (stale) return;
         console.error('[BOReports] fetch failed', err);
+        setLoadFault('failed');
         setRangeChecks([]); setPrevChecks([]); setKdsTickets([]);
       }
       setLoadingRange(false);
     })();
+    return () => { stale = true; };
   }, [period, customRange.from, customRange.to, locationConfig, range]);
 
   // Merge in any live closed_checks that landed via realtime AFTER the initial
@@ -272,7 +323,11 @@ export default function BOReports({ setSection } = {}) {
           Pick a start and end date to load the custom range.
         </div>
       ) : (loadingRange || !locationConfig) ? (
-        <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading…</div>
+        <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>{loadingRange ? loadingText(loadProgress) : 'Loading…'}</div>
+      ) : faultFor(view, loadFault, kdsFault) ? (
+        <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t2)', fontSize:14 }}>
+          {faultFor(view, loadFault, kdsFault) === 'too_long' ? TOO_LONG_TEXT : 'This report could not be loaded. Check the connection and choose the period again.'}
+        </div>
       ) : (
         <>
           {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
