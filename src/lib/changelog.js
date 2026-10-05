@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.29',
+    date: '5 Oct 2026',
+    items: [
+      "KDS performance report: stations now show the names you gave them in Production printing (KDS drinks, kds food, Frozen Drinks KDS). They were showing as codes such as pc-1790752941614-i9vh.",
+      "Reports: the hour by hour bar charts (KDS performance, Daypart and Tips) now draw real bars. Every bar was showing as a flat line.",
+      "KDS performance report: P50 and P90 are now in plain words. Typical is the time half of tickets beat. 9 in 10 by is the time nine tickets in ten were done within; it shows red over 15 minutes.",
+    ],
+  },
+  {
     v: '5.11.28',
     date: '2 Oct 2026',
     items: [
