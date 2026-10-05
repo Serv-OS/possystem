@@ -12,7 +12,8 @@
 //   • forecast for the same days (wf_sales_forecast) + % to forecast
 //   • actual labour (wf_timesheets, approved/paid) + labour % of sales
 //   • the comparison: same weekday last week (today), the same span last week (week), the same
-//     number of days into last month (month)
+//     number of days into last month (month), cut at the same time of day, with a reason word
+//     (ok, new, no_sales_now, no_sales_then) so the screen never has to guess
 //   • top items for the period (from closed_checks.items)
 //   • live: open orders (order_queue) + open tables (active_sessions), always now
 // plus everything it answered before the filters (today, wtd, top_items), whatever the period,
@@ -23,6 +24,20 @@
 //   function from before the filters) and gives each venue its `range` of venue-local dates.
 // Auth: any back-office user; locations fenced to user_locations (super_admin → all, capped).
 //
+// 5 Oct 2026 (Peter's decisions on multi site reporting):
+//   • A day is the venue's BUSINESS day ("same as Back Office, Daily trading and Xero"): the
+//     Platform locations row's business_day_start, read here beside the time zone.
+//   • The currency is the Platform locations row's too. The Cabin, a dollar venue, was
+//     labelled GBP (_shared/ownerSnapshot.js venueMeta).
+//   • THE DETAIL CALL. POST { period, detail: '<ops location id>' | 'group', currency? } answers
+//     { ok, api, period, detail } with the seven reports for that venue or the group
+//     (_shared/ownerSnapshot.js buildOwnerDetail) and NO snapshot. A venue that is not this
+//     login's is a 403.
+//   • Every answer carries `api` and `features`. A function from before this change sends
+//     neither, and ignores `detail` (it answers the plain snapshot): the app must look for
+//     `detail` in the answer, and for 'compare' in `features`, before it shows either, and
+//     say "needs a ServOS update" when they are missing.
+//
 // The reads and the sums live in _shared/ownerSnapshot.js (run by `npm test` against a stand
 // in database); the date rules in _shared/ownerPeriod.js.
 
@@ -30,6 +45,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { ownerPeriod } from '../_shared/ownerPeriod.js';
 import { buildOwnerSnapshot } from '../_shared/ownerSnapshot.js';
+import { buildOwnerDetail, venueMeta, OWNER_API, OWNER_FEATURES } from '../_shared/ownerSnapshot.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -65,21 +81,29 @@ Deno.serve(async (req) => {
   }
   if (!opsIds.length) {
     const none = await buildOwnerSnapshot({ ops: opsAdmin, opsIds: [], meta: {}, period });
-    return json({ ok: true, period: none.period, locations: [], rollup: none.rollup, generated_at: new Date().toISOString() });
+    return json({ ok: true, api: OWNER_API, features: OWNER_FEATURES, period: none.period, locations: [], rollup: none.rollup, generated_at: new Date().toISOString() });
   }
 
-  // Names + timezones (platform) and currencies (ops wf_venue_settings).
-  const meta: Record<string, { name: string; tz: string; currency: string }> = {};
+  // Names, time zones, day starts and currencies from the Platform locations rows (matched on
+  // ops_location_id, then on id for the legacy rows where the two are the same); the workforce
+  // currency only as a fallback. A read that fails is an error: a venue is never put on a
+  // guessed clock or a guessed currency without a word.
   const orFilter = opsIds.flatMap(id => [`ops_location_id.eq.${id}`, `id.eq.${id}`]).join(',') || 'id.is.null';
-  const { data: plocs } = await platformAdmin.from('locations').select('id, ops_location_id, name, timezone').or(orFilter);
-  for (const p of plocs ?? []) { const k = p.ops_location_id || p.id; if (k) meta[k] = { name: p.name || 'Location', tz: p.timezone || 'Europe/London', currency: 'GBP' }; }
+  const { data: plocs, error: plocErr } = await platformAdmin.from('locations').select('id, ops_location_id, name, timezone, currency, business_day_start').or(orFilter);
+  if (plocErr) return json({ error: `Could not read the venues: ${plocErr.message}` }, 500);
   const { data: vsRows } = await opsAdmin.from('wf_venue_settings').select('location_id, currency').in('location_id', opsIds);
-  for (const v of vsRows ?? []) { if (meta[v.location_id]) meta[v.location_id].currency = v.currency || 'GBP'; else meta[v.location_id] = { name: 'Location', tz: 'Europe/London', currency: v.currency || 'GBP' }; }
-  for (const id of opsIds) { if (!meta[id]) meta[id] = { name: 'Location', tz: 'Europe/London', currency: 'GBP' }; }
+  const meta = venueMeta(opsIds, plocs ?? [], vsRows ?? []);
 
   try {
+    // The detail call: one venue or the group, and nothing else.
+    const target = typeof body?.detail === 'string' ? body.detail.trim() : '';
+    if (target) {
+      const out = await buildOwnerDetail({ ops: opsAdmin, opsIds, meta, target, currency: body?.currency, now: new Date(), period });
+      if (!out) return json({ error: 'That venue is not one of yours' }, 403);
+      return json({ ok: true, api: OWNER_API, features: OWNER_FEATURES, period: out.period, detail: out.detail, generated_at: new Date().toISOString() });
+    }
     const snap = await buildOwnerSnapshot({ ops: opsAdmin, opsIds, meta, now: new Date(), period });
-    return json({ ok: true, user: { id: user.id, email: user.email }, period: snap.period, locations: snap.locations, rollup: snap.rollup, generated_at: new Date().toISOString() });
+    return json({ ok: true, api: OWNER_API, features: OWNER_FEATURES, user: { id: user.id, email: user.email }, period: snap.period, locations: snap.locations, rollup: snap.rollup, generated_at: new Date().toISOString() });
   } catch (e) {
     // A read that failed is never shown as a day of zero sales.
     return json({ error: (e as Error)?.message || 'Could not build the snapshot' }, 500);
