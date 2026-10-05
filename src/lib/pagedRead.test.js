@@ -441,6 +441,21 @@ test('pin: the shell shares one row budget between this period and the previous 
   assert.match(shell, /slot\('prev'\), stop, budget \}/);
 });
 
+test('pin: the shell\'s comparison top up pages too, on the same budget, and a failed comparison is not a quiet one', () => {
+  // 5 Oct 2026: the previous period is topped up as the clock moves on (the one percent rule).
+  // That read asked for 5,000 rows in one request; it now pages and spends from the budget
+  // the first load used, counting the rows already on screen.
+  const shell = read('../backoffice/sections/BOReports.jsx');
+  assert.match(shell, /budget\.used = \(rangeChecks \|\| \[\]\)\.length \+ \(need\.append \? \(prevChecks \|\| \[\]\)\.length : 0\);/);
+  assert.match(shell, /fetchClosedChecksRange\(activeLocId, new Date\(need\.from\), new Date\(need\.to\), \{ stop: \(\) => seq !== prevSeq\.current, budget \}\)/);
+  assert.match(shell, /if \(res\.tooMany\) \{\s+prevHeld\.current = null;\s+setLoadFault\('too_long'\);/);
+  // too many rows on either period is the too long line; this period failing blanks the report;
+  // the previous one failing alone leaves this period standing with "Comparison did not load".
+  assert.match(shell, /const tooLong = cur\.tooMany \|\| prev\.tooMany;\s+if \(cur\.error \|\| tooLong\) \{/);
+  assert.match(shell, /const prevOk = !prev\.error && Array\.isArray\(prev\.data\);\s+setPrevLoaded\(prevOk\);/);
+  assert.match(shell, /compare \? \(prevLoaded \? compare : notLoaded\(compare\)\) : null/);
+});
+
 test('pin: Stock reports: each read has its own run number, load and fault', () => {
   const src = read('../backoffice/sections/StockReports.jsx');
   for (const name of ['moves', 'checks']) {

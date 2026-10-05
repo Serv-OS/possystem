@@ -11,7 +11,9 @@
  *      call with the process clock in Los Angeles, London, Tokyo and UTC).
  *   3. DST nights: a 25 hour and a 23 hour business day, a day start inside the spring
  *      forward gap, a US venue's own change, and a service that runs across one.
- *   4. The prev period maths is unchanged: same length, immediately before.
+ *   4. The prev period is the one percent rule (v5.11.29, src/lib/reportCompare.js): the
+ *      same weekday last week, the same days of the week or month before, or the whole
+ *      period before. Its own cases are in src/lib/reportCompare.test.js.
  *   5. fromDay/toDay are the venue business days, so Daily Trading and Bookings ask the
  *      server for London's dates, never the browser's.
  */
@@ -71,9 +73,10 @@ test('Peter in California, Leeds: Yesterday is 06:30 to 06:29 LONDON (was 14:30 
   assert.equal(r.fromDay, '2026-09-27');
   assert.equal(r.toDay, '2026-09-27');
   assert.equal(r.timeZone, 'Europe/London');
-  // prev = the same length immediately before
-  assert.equal(r.prevTo, '2026-09-27T05:29:59.999Z');
-  assert.equal(r.prevFrom, '2026-09-26T05:30:00.000Z');
+  // prev = the same weekday the week before, the whole day (was: Saturday, the day before)
+  assert.equal(r.prevFrom, '2026-09-20T05:30:00.000Z');
+  assert.equal(r.prevTo, '2026-09-21T05:29:59.999Z');
+  assert.equal(r.compare.label, 'vs the Sunday before');
 });
 
 test('after 16:00 in California the venue day is London\'s, not the browser\'s', () => {
@@ -94,25 +97,32 @@ test('after 16:00 in California the venue day is London\'s, not the browser\'s',
 test('every period for Leeds on Monday 28 Sep (BST, 06:30 start)', () => {
   const now = at('2026-09-28T16:00:00Z');
   const expect = {
-    'today':      ['2026-09-28', '2026-09-28'],
-    'yesterday':  ['2026-09-27', '2026-09-27'],
-    'this-week':  ['2026-09-28', '2026-09-28'],   // 28 Sep 2026 is a Monday
-    'last-week':  ['2026-09-21', '2026-09-27'],
-    'this-month': ['2026-09-01', '2026-09-28'],
-    'last-month': ['2026-08-01', '2026-08-31'],
-    'last-7':     ['2026-09-22', '2026-09-28'],
-    'last-30':    ['2026-08-30', '2026-09-28'],
+    // [fromDay, toDay, compared from, compared to, where the comparison stops]
+    // A period still trading stops at the same time of day (17:00 BST = 16:00Z); a
+    // finished one runs to the end of its last business day.
+    'today':      ['2026-09-28', '2026-09-28', '2026-09-21', '2026-09-21', '2026-09-21T16:00:00.000Z'],
+    'yesterday':  ['2026-09-27', '2026-09-27', '2026-09-20', '2026-09-20', '2026-09-21T05:29:59.999Z'],
+    'this-week':  ['2026-09-28', '2026-09-28', '2026-09-21', '2026-09-21', '2026-09-21T16:00:00.000Z'],   // 28 Sep 2026 is a Monday
+    'last-week':  ['2026-09-21', '2026-09-27', '2026-09-14', '2026-09-20', '2026-09-21T05:29:59.999Z'],
+    'this-month': ['2026-09-01', '2026-09-28', '2026-08-01', '2026-08-28', '2026-08-28T16:00:00.000Z'],
+    'last-month': ['2026-08-01', '2026-08-31', '2026-07-01', '2026-07-31', '2026-08-01T05:29:59.999Z'],
+    'last-7':     ['2026-09-22', '2026-09-28', '2026-09-15', '2026-09-21', '2026-09-21T16:00:00.000Z'],
+    'last-30':    ['2026-08-30', '2026-09-28', '2026-07-31', '2026-08-29', '2026-08-29T16:00:00.000Z'],
   };
   const nextDay = (ymd) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  for (const [id, [fromDay, toDay]] of Object.entries(expect)) {
+  for (const [id, [fromDay, toDay, cFrom, cTo, cStop]] of Object.entries(expect)) {
     const r = everyBrowser(() => getPeriodRange(id, null, LEEDS, now));
     assert.equal(r.fromDay, fromDay, id);
     assert.equal(r.toDay, toDay, id);
     assert.equal(r.from, `${fromDay}T05:30:00.000Z`, id);
     assert.equal(r.to, `${nextDay(toDay)}T05:29:59.999Z`, id);
-    // prev maths: same length, ends 1 ms before this one starts
-    assert.equal(Date.parse(r.prevTo), Date.parse(r.from) - 1, id);
-    assert.equal(Date.parse(r.to) - Date.parse(r.from), Date.parse(r.prevTo) - Date.parse(r.prevFrom), id);
+    // prev = the one percent rule, and prevFrom/prevTo are the compare range's instants
+    assert.equal(r.compare.fromDay, cFrom, id);
+    assert.equal(r.compare.toDay, cTo, id);
+    assert.equal(r.prevFrom, `${cFrom}T05:30:00.000Z`, id);
+    assert.equal(r.prevTo, cStop, id);
+    assert.equal(r.compare.from.toISOString(), r.prevFrom, id);
+    assert.equal(r.compare.to.toISOString(), r.prevTo, id);
   }
 });
 
@@ -132,9 +142,9 @@ test('UK clocks go back (Sun 25 Oct 2026): Saturday\'s business day is 25 hours'
   assert.equal(y.from, '2026-10-24T05:30:00.000Z');   // 06:30 BST
   assert.equal(y.to, '2026-10-25T06:29:59.999Z');     // 06:29:59.999 GMT
   assert.equal(Date.parse(y.to) + 1 - Date.parse(y.from), 25 * 3600000);
-  // prev maths kept as it was: a window of the same length straight before
-  assert.equal(y.prevTo, '2026-10-24T05:29:59.999Z');
-  assert.equal(y.prevFrom, '2026-10-23T04:30:00.000Z');
+  // prev = the Saturday before, an ordinary 24 hour day (all BST), not a 25 hour window
+  assert.equal(y.prevFrom, '2026-10-17T05:30:00.000Z');
+  assert.equal(y.prevTo, '2026-10-18T05:29:59.999Z');
   // Today (Sunday, all GMT) starts exactly where Yesterday ended.
   const t = everyBrowser(() => getPeriodRange('today', null, LEEDS, now));
   assert.equal(t.from, '2026-10-25T06:30:00.000Z');
@@ -207,8 +217,10 @@ test('service periods: today\'s Lunch and Late bar on London\'s wall clock', () 
   assert.equal(lunch.kind, 'service');
   assert.equal(lunch.shiftName, 'Lunch');
   assert.equal(lunch.fromDay, '2026-09-28');
-  assert.equal(lunch.prevTo, '2026-09-28T09:59:59.999Z');
-  assert.equal(lunch.prevFrom, '2026-09-28T05:59:00.000Z');
+  // prev = last Monday's Lunch, up to the same time of day (14:00 BST) as it is still running
+  assert.equal(lunch.prevFrom, '2026-09-21T10:00:00.000Z');
+  assert.equal(lunch.prevTo, '2026-09-21T13:00:00.000Z');
+  assert.equal(lunch.compare.label, "vs last Monday's Lunch by 2pm");
   // The late bar has not started today, so today's instance is last night's, across midnight.
   const late = everyBrowser(() => getPeriodRange('service:today:late', null, LEEDS, now));
   assert.equal(late.from, '2026-09-27T21:00:00.000Z');    // 22:00 BST Sunday
@@ -280,7 +292,11 @@ test('the reports hub fetches only once the venue config is in, and again when t
   const bo = read('../BOReports.jsx');
   assert.match(bo, /if \(!locationConfig\) return;/);
   assert.match(bo, /\}, \[period, customRange\.from, customRange\.to, locationConfig, range\]\);/);
-  assert.match(bo, /getPeriodRange\(period, customRange, locationConfig\)/);
+  // builtAt (v5.11.29): the range notes when it was worked out, so its comparison can move on.
+  assert.match(bo, /getPeriodRange\(period, customRange, locationConfig, builtAt\)/);
+  // The comparison moves with the clock without rebuilding the range (no reload each tick).
+  assert.match(bo, /compareRange\(period, range, nowMs\)/);
+  assert.match(bo, /\}, \[period, customRange, locationConfig\]\);/);
 });
 
 test('Tables Ready insights use the venue zone too', () => {

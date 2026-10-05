@@ -9,13 +9,14 @@
 //   - State: view, period, customRange, serverFilter, orderTypeFilter
 //   - Data: rangeChecks (current period), prevChecks (previous period) — fetched on period change.
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { isMock, getLocationId } from '../../lib/supabase';
 import { fetchClosedChecksRange, fetchKDSTicketsRange } from '../../lib/db';
 import { progressSum, loadingText, TOO_LONG_TEXT, rowBudget, CHECK_ROWS_ON_SCREEN } from '../../lib/pagedRead';
 import { PERIODS, buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL } from './reports/_filters';
 import { getLocationConfig } from '../../lib/locationTime';
+import { compareRange, compareMoves, prevTopUp, notLoaded, COMPARE_STEP_MS } from '../../lib/reportCompare.js';
 import Catalog, { CATEGORIES, REPORT_INDEX } from './reports/Catalog';
 import SalesSummary from './reports/SalesSummary';
 import Exceptions   from './reports/Exceptions';
@@ -104,16 +105,50 @@ export default function BOReports({ setSection } = {}) {
   const [kdsFault, setKdsFault] = useState(null);
   const [activeLocId, setActiveLocId] = useState(null); // v5.5.278: track resolved location for merge filtering
 
-  const range = useMemo(() => getPeriodRange(period, customRange, locationConfig), [period, customRange, locationConfig]);
+  // builtAt = the moment this range (and the comparison inside it) was worked out.
+  const range = useMemo(() => {
+    const builtAt = Date.now();
+    return { ...getPeriodRange(period, customRange, locationConfig, builtAt), builtAt };
+  }, [period, customRange, locationConfig]);
+
+  // v5.11.29, the one percent rule (Peter, 5 Oct 2026): a comparison cut at "the same time
+  // of day" has to MOVE with the clock. The current side grows by itself (live sales are
+  // merged in below) but the range above is only rebuilt when the period changes, so a tab
+  // opened at noon and left open to close read "+237.8% vs last Monday by 12pm" (the day's
+  // 1068.63 against last Monday's 316.34 by noon; like for like was +2.1%). So while the
+  // comparison is one that moves, the clock ticks every few minutes (and when the tab comes
+  // back into view), the comparison is rebuilt for the new time, and the effect further
+  // down fetches the extra minutes of the previous period. The range itself, and every
+  // report that does not compare, is left alone: no reload, no Loading flash.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const moves = compareMoves(range.compare);
+  useEffect(() => {
+    if (!moves) return undefined;
+    const bump  = () => setNowMs(Date.now());
+    const onVis = () => { if (document.visibilityState === 'visible') bump(); };
+    const id = setInterval(bump, COMPARE_STEP_MS);
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
+  }, [moves]);
+  const compare = useMemo(() => (
+    range.compare && nowMs > range.builtAt ? compareRange(period, range, nowMs) : range.compare
+  ), [period, range, nowMs]);
+
+  // Empty and NOT LOADED are different things. A previous period whose query failed (or
+  // that has no site to ask) must never read "New", which says the site had no sales then.
+  const [prevLoaded, setPrevLoaded] = useState(false);
+  const prevHeld = useRef(null);   // { from, to } in ms: the window prevChecks holds
+  const prevSeq  = useRef(0);      // a newer load wins over an older one still in flight
 
   const activeSessions = useMemo(() =>
     Object.fromEntries(tables.filter(t => t.session).map(t => [t.id, t.session]))
   , [tables]);
 
   useEffect(() => {
-    if (isMock) { setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); return; }
+    prevSeq.current += 1; prevHeld.current = null;
+    if (isMock) { setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(true); return; }
     if (period === 'custom' && (!customRange.from || !customRange.to)) {
-      setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); return;
+      setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(true); return;
     }
     // Until v5.10.2 this fired on mount with the range built before the config arrived
     // (browser midnight) and never again, so "Today" read the wrong window.
@@ -140,6 +175,7 @@ export default function BOReports({ setSection } = {}) {
           const localSlice = (storeChecks || []).filter(c => c.closedAt && new Date(c.closedAt) >= range.from && new Date(c.closedAt) <= range.to);
           if (stale) return;
           setRangeChecks(localSlice); setPrevChecks([]); setKdsTickets([]);
+          setPrevLoaded(false);   // no site to ask, so nothing to compare with: not "New"
           setLoadingRange(false);
           return;
         }
@@ -158,32 +194,81 @@ export default function BOReports({ setSection } = {}) {
           fetchKDSTicketsRange  (locId, range.from,     range.to,     { onProgress: slot('kds'),  stop }),
         ]);
         if (stale) return;
-        // The sales reads decide the fault. Kitchen tickets feed one report only, so a
-        // failure there leaves the sales reports standing and that one report empty.
-        const bad = [cur, prev].find(r => r.error);
-        if (bad) {
-          console.error('[BOReports] fetch failed', bad.error);
-          setLoadFault(bad.tooMany ? 'too_long' : 'failed');
+        // This period decides whether the reports can show at all. Kitchen tickets feed one
+        // report only, so a failure there leaves the sales reports standing and that one
+        // report empty. Too many rows on EITHER period is the too long line: the two share
+        // one budget, and a part read is never shown as a total.
+        // The previous period only feeds the percent chips, so when it alone failed (not too
+        // long, a page that did not come back) this period still shows, complete, and the
+        // chips read "Comparison did not load" (never "New"); the effect below tries it again.
+        const tooLong = cur.tooMany || prev.tooMany;
+        if (cur.error || tooLong) {
+          console.error('[BOReports] fetch failed', cur.error || prev.error);
+          setLoadFault(tooLong ? 'too_long' : 'failed');
           setRangeChecks([]); setPrevChecks([]); setKdsTickets([]);
+          setPrevLoaded(false);
         } else {
           if (kds.error) {
             console.error('[BOReports] kitchen tickets failed', kds.error);
             setKdsFault(kds.tooMany ? 'too_long' : 'failed');
           }
+          if (prev.error) console.error('[BOReports] previous period failed', prev.error);
           setRangeChecks(cur.data  || []);
           setPrevChecks (prev.data || []);
           setKdsTickets (kds.data  || []);
+          const prevOk = !prev.error && Array.isArray(prev.data);
+          setPrevLoaded(prevOk);
+          prevHeld.current = prevOk ? { from: range.prevFrom.getTime(), to: range.prevTo.getTime() } : null;
         }
       } catch (err) {
         if (stale) return;
         console.error('[BOReports] fetch failed', err);
         setLoadFault('failed');
-        setRangeChecks([]); setPrevChecks([]); setKdsTickets([]);
+        setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(false);
       }
       setLoadingRange(false);
     })();
     return () => { stale = true; };
   }, [period, customRange.from, customRange.to, locationConfig, range]);
+
+  // Bring the previous period up to the comparison as it moves on (see `compare` above).
+  // Only the extra minutes are read when just the end has moved, and a previous period
+  // that failed to load is tried again in full. Quiet: no Loading state.
+  // 5 Oct 2026: this read pages like every other one (it asked for 5,000 rows in one
+  // request and PostgREST answers 1,000, so a retried month came back cut). It spends from
+  // the same row budget as the first load: what this period already holds, plus the
+  // previous rows that stay when only the extra minutes are added. Past the budget the too
+  // long line shows, as it would have on the first load. A newer read stops this one.
+  useEffect(() => {
+    if (isMock || loadingRange || loadFault || !activeLocId || !compare) return;
+    const need = prevTopUp(prevHeld.current, compare);
+    if (!need) return;
+    const seq  = ++prevSeq.current;
+    const held = { from: compare.from.getTime(), to: compare.to.getTime() };
+    const fail = () => { if (seq === prevSeq.current) { prevHeld.current = null; setPrevLoaded(false); } };
+    const budget = rowBudget(CHECK_ROWS_ON_SCREEN);
+    budget.used = (rangeChecks || []).length + (need.append ? (prevChecks || []).length : 0);
+    fetchClosedChecksRange(activeLocId, new Date(need.from), new Date(need.to), { stop: () => seq !== prevSeq.current, budget }).then(res => {
+      if (seq !== prevSeq.current) return;
+      if (res.tooMany) {
+        prevHeld.current = null;
+        setLoadFault('too_long');
+        setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(false);
+        return;
+      }
+      if (res.error || !Array.isArray(res.data)) { fail(); return; }
+      prevHeld.current = held;
+      setPrevChecks(old => {
+        if (!need.append) return res.data;
+        const ids = new Set((old || []).map(c => c.id));
+        return [...res.data.filter(c => !ids.has(c.id)), ...(old || [])];
+      });
+      setPrevLoaded(true);
+    }).catch(fail);
+    // rangeChecks and prevChecks are read for the budget only: a change in them must not
+    // start another read (this effect sets prevChecks itself).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compare, activeLocId, loadingRange, loadFault]);
 
   // Merge in any live closed_checks that landed via realtime AFTER the initial
   // range fetch. Without this, a sale completed while the report is open never
@@ -206,6 +291,9 @@ export default function BOReports({ setSection } = {}) {
     return [...extras, ...base].sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
   }, [rangeChecks, storeChecks, range.from, range.to, activeLocId]);
   const allPrev   = prevChecks  || [];
+  // What the chips are handed: the live comparison, or one marked "did not load".
+  const shownCompare = useMemo(() => (compare ? (prevLoaded ? compare : notLoaded(compare)) : null), [compare, prevLoaded]);
+  const trendRange   = useMemo(() => ({ ...range, compare: shownCompare }), [range, shownCompare]);
 
   const filtered     = useMemo(() => applyFilters(allChecks, { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allChecks, serverFilter, orderTypeFilter, sourceFilter]);
   const filteredPrev = useMemo(() => applyFilters(allPrev,   { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allPrev,   serverFilter, orderTypeFilter, sourceFilter]);
@@ -330,7 +418,7 @@ export default function BOReports({ setSection } = {}) {
         </div>
       ) : (
         <>
-          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
+          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt}/>}
           {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'daypart'    && <Daypart      checks={filtered} fmt={fmt} locationConfig={locationConfig}/>}
@@ -338,13 +426,13 @@ export default function BOReports({ setSection } = {}) {
           {view === 'payroll'     && <PayrollReport fmt={fmt}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
           {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} range={range}/>}
-          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={range}/>}
+          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={trendRange}/>}
           {view === 'daily_trading' && <DailyTrading fromDay={range.fromDay} toDay={range.toDay} fmt={fmt}/>}
           {view === 'menu_eng'    && <MenuEngineering checks={filtered} fmt={fmt} fmtN={fmtN}/>}
-          {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
+          {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare}/>}
           {view === 'tips'        && <Tips         checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
-          {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
-          {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}
+          {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare}/>}
+          {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare}/>}
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} locationConfig={locationConfig} fmtN={fmtN}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig}/>}

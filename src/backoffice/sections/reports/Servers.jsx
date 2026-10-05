@@ -12,7 +12,7 @@
 
 import { useMemo, useState } from 'react';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';
-import { pctDelta, reportClock, workedTime } from './_filters';
+import { reportClock, workedTime } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { voidedValue } from '../../../lib/voidRules';
 
@@ -81,7 +81,8 @@ function formatHours(ms) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig }) {
+// compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
+export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const [sortBy, setSortBy] = useState('revenue');
   const [sortDir, setSortDir] = useState('desc');
 
@@ -148,7 +149,7 @@ export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig 
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
         <StatTile label="Staff on floor" value={fmtN(totals.staffCount)}/>
-        <StatTile label="Revenue"        value={fmt(totals.revenue)}   compare={pctDelta(totals.revenue, totals.prevRev)} color="var(--acc)"/>
+        <StatTile label="Revenue"        value={fmt(totals.revenue)}   vs={compare} values={[totals.revenue, totals.prevRev]} color="var(--acc)"/>
         <StatTile label="Tips"           value={fmt(totals.tips)}      sub={totals.revenue ? `${((totals.tips/totals.revenue)*100).toFixed(1)}% of revenue` : null} color="var(--grn)"/>
         <StatTile label="Avg per head"   value={fmt(totals.staffCount ? totals.revenue/totals.staffCount : 0)}/>
       </div>
@@ -170,14 +171,12 @@ export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig 
         </div>
 
         {sorted.map((r, i) => {
-          const prevRev = prevByServer[r.server];
-          const delta = prevRev ? pctDelta(r.revenue, prevRev) : null;
           return (
             <div key={r.server} style={{ display:'grid', gridTemplateColumns:'40px 1.3fr 80px 80px 70px 70px 100px 80px 80px 70px 70px 70px', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:6, minWidth:960, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
               <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{i + 1}</span>
               <div>
                 <div style={{ color:'var(--t1)', fontWeight:600 }}>{r.server}</div>
-                {delta !== null && <div style={{ marginTop:2 }}><CompareChip pct={delta}/></div>}
+                <div style={{ marginTop:2 }}><CompareChip vs={compare} values={[r.revenue, prevByServer[r.server]]}/></div>
               </div>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatHours(r.hoursMs)}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
