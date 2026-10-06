@@ -333,18 +333,25 @@ export default function AdminReseller() {
         const curPercent = curRate ? curRate.percent : config?.buy_percent;
         const rateChanged = live && config
           && (Number(live.buy_percent) !== Number(curPercent) || Number(live.buy_fixed_minor) !== Number(curFixed));
+        // Only live money is billed. A card that holds nothing but unflagged
+        // payments is shown for its note and never offers an invoice.
+        const billable = s.totals.count > 0 || s.totals.refunds_minor > 0;
         return (
         <div key={s.currency} style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{month} · {s.currency}</div>
             {curRate?.line && <div style={{ fontSize: 15, color: 'var(--t3)' }}>FranPOS rate: {curRate.line}</div>}
             <div style={{ flex: 1 }} />
-            <div style={{ fontSize: 15, color: 'var(--t2)' }}>
-              FranPOS owes <b style={{ color: 'var(--grn)', fontSize: 16 }}>{money(s.totals.net_due_minor, s.currency)}</b>
-            </div>
+            {billable ? (
+              <div style={{ fontSize: 15, color: 'var(--t2)' }}>
+                FranPOS owes <b style={{ color: 'var(--grn)', fontSize: 16 }}>{money(s.totals.net_due_minor, s.currency)}</b>
+              </div>
+            ) : (
+              <div style={{ fontSize: 15, color: 'var(--t3)' }}>Nothing live to invoice</div>
+            )}
             {live ? (
               <span style={{ fontSize: 15, color: 'var(--t2)' }}>Invoiced: <b>{live.invoice_number}</b> ({live.status})</span>
-            ) : (
+            ) : !billable ? null : (
               <button onClick={createInvoice} disabled={busy || tableMissing || monthOpen}
                 title={monthOpen ? 'The month is still open. Invoice after it ends so nothing is missed.' : undefined}
                 style={{ ...S.btn, ...S.btnPrimary, opacity: monthOpen ? 0.5 : 1 }}>Create invoice</button>
