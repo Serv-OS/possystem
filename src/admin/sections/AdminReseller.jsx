@@ -314,6 +314,11 @@ export default function AdminReseller() {
 
       {/* ── the month's statement ── */}
       {loading && <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center' }}>Computing…</div>}
+      {!loading && statement?.test_excluded_count > 0 && (
+        <div style={S.note}>
+          {statement.test_excluded_count} test environment payment{statement.test_excluded_count === 1 ? '' : 's'} in {month} {statement.test_excluded_count === 1 ? 'is' : 'are'} not shown and never invoiced: that money never settled on FranPOS's live account.
+        </div>
+      )}
       {!loading && statement && statement.statements?.length === 0 && (
         <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center' }}>No card payments in {month}.</div>
       )}
@@ -365,6 +370,13 @@ export default function AdminReseller() {
             <div style={S.note}>
               {s.totals.unsettled_count} payment{s.totals.unsettled_count === 1 ? '' : 's'} worth {money(s.totals.unsettled_volume_minor, s.currency)} were
               approved but never taken, so no money moved. They are left out of the invoice.
+            </div>
+          )}
+          {s.totals.unflagged_count > 0 && (
+            <div style={S.note}>
+              {s.totals.unflagged_count} payment{s.totals.unflagged_count === 1 ? '' : 's'} worth {money(s.totals.unflagged_volume_minor, s.currency)} were
+              taken before ServOS recorded whether a payment was live or test (7 Sep 2026), so they are left out of the invoice.
+              Check them against the venue's live Adyen account before billing them by hand.
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>

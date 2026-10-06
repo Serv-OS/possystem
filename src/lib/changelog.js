@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.33',
+    date: '6 Oct 2026',
+    items: [
+      "Admin, FranPOS residuals: the screen loads again. Since 26 Aug every request was refused with location_id required (the reseller actions sat behind the one venue check), so the statement, the rate and the invoice list never appeared.",
+      "Admin, FranPOS residuals and Revenue: only live money counts. Test environment card payments are never read, and payments from before ServOS recorded live or test (7 Sep 2026) are shown as left out and never invoiced. Creating an invoice for a month that holds no live money says so instead of making an empty invoice.",
+      "Admin, FranPOS residuals: marking an invoice sent, paid or void reports a database error as itself instead of saying the invoice does not exist.",
+    ],
+  },
+  {
     v: '5.11.31',
     date: '5 Oct 2026',
     items: [

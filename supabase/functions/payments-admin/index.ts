@@ -685,7 +685,7 @@ Deno.serve(async (req) => {
 
     // Payments for the month, paged. Retry ladder drops the columns whose
     // migrations have not been hand-applied yet (20260821b, then 20260820).
-    const BASE_COLS = 'location_id, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
+    const BASE_COLS = 'location_id, live, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
     const LADDER = [
       `${BASE_COLS}, rate_category, commission_minor, fee_minor`,
       `${BASE_COLS}, fee_minor`,
@@ -712,6 +712,12 @@ Deno.serve(async (req) => {
     }
     const classified = ladderIdx === 0;
     const feesLive = ladderIdx <= 1;
+    // Live money only, the twin of the reseller statement's rule: test
+    // environment payments (live=false) and rows from before the live flag
+    // (null, before 7 Sep 2026) are not revenue.
+    const rowsRead = rows.length;
+    const notLiveRows = rows.filter((r) => r.live !== true).length;
+    rows.splice(0, rows.length, ...rows.filter((r) => r.live === true));
 
     // Location names (platform) + the ops mapping for the SaaS join.
     const { data: locs, error: locErr } = await platformAdmin.from('locations')
@@ -888,7 +894,8 @@ Deno.serve(async (req) => {
       saas: { plans: planCounts, typed: saasTyped, unmapped: saasUnmapped },
       classified,
       fees_live: feesLive,
-      capped: rows.length >= CAP,
+      not_live_rows: notLiveRows,
+      capped: rowsRead >= CAP,
     });
   }
 
@@ -958,7 +965,10 @@ Deno.serve(async (req) => {
     // Column ladder so a pre-migration ledger degrades honestly instead of
     // erroring. applied_mods rides the raw jsonb (always present) because it is
     // the settlement truth for rows written before the captured_at column.
-    const BASE = 'psp_reference, location_id, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
+    // live (20260907_PLATFORM_adyen_environment, applied): the webhook stamps
+    // true on live environment payments and false on test ones; rows from
+    // before 7 Sep 2026 are null.
+    const BASE = 'psp_reference, location_id, live, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
     const LADDER = [
       `${BASE}, commission_minor, authorised_at, capture_required, captured_at`,
       `${BASE}, commission_minor`,
@@ -985,7 +995,11 @@ Deno.serve(async (req) => {
         const or = monthFilter(ladder);
         if (or) q = q.or(or);
         else q = q.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
-        return q.order('created_at', { ascending: true })
+        // Test environment payments (live=false) never settled on FranPOS's
+        // live account, so they are never read. Null (before the flag) rows are
+        // read, counted and shown below, but not invoiced.
+        return q.not('live', 'is', false)
+          .order('created_at', { ascending: true })
           .order('psp_reference', { ascending: true })
           .range(fromIdx, fromIdx + PAGE - 1);
       };
@@ -1001,6 +1015,19 @@ Deno.serve(async (req) => {
       if (rows.length > HARD_CEILING) {
         return json({ error: `More than ${HARD_CEILING} payments in ${month}. Move the aggregation into a SQL RPC before invoicing this month.` }, 500);
       }
+    }
+
+    // How many successful test environment payments the month holds, so the
+    // screen can say they were left out rather than silently not showing them.
+    let testExcludedCount = 0;
+    {
+      let c = platformAdmin.from('adyen_payments').select('psp_reference', { count: 'exact', head: true })
+        .eq('live', false).eq('success', true);
+      const or = monthFilter(ladderIdx);
+      if (or) c = c.or(or);
+      else c = c.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
+      const { count, error: countErr } = await c;
+      if (!countErr) testExcludedCount = count ?? 0;
     }
 
     const { data: locs } = await platformAdmin.from('locations').select('id, name');
@@ -1031,6 +1058,7 @@ Deno.serve(async (req) => {
       gross_commission_minor: number; buy_share_minor: number; net_due_minor: number;
       unrated_count: number; unrated_volume_minor: number;
       unsettled_count: number; unsettled_volume_minor: number; refunds_minor: number;
+      unflagged_count: number; unflagged_volume_minor: number;
     };
     const byCur = new Map<string, Map<string, VLine>>();
     for (const r of rows) {
@@ -1044,9 +1072,20 @@ Deno.serve(async (req) => {
           count: 0, volume_minor: 0, gross_commission_minor: 0, buy_share_minor: 0, net_due_minor: 0,
           unrated_count: 0, unrated_volume_minor: 0,
           unsettled_count: 0, unsettled_volume_minor: 0, refunds_minor: 0,
+          unflagged_count: 0, unflagged_volume_minor: 0,
         });
       }
       const line = perLoc.get(key)!;
+      if (r.live !== true) {
+        // Before the live flag (7 Sep 2026) nothing says whether this money moved
+        // on FranPOS's live account. Shown as left out, never invoiced, and its
+        // refunds never net against live money.
+        if (isPayment(r)) {
+          line.unflagged_count++;
+          line.unflagged_volume_minor += Number(r.amount_minor) || 0;
+        }
+        continue;
+      }
       line.refunds_minor += Number(r.amount_refunded_minor) || 0;
       if (!isPayment(r)) continue;
       const amount = Number(r.amount_minor) || 0;
@@ -1093,9 +1132,13 @@ Deno.serve(async (req) => {
           unrated_count: sum((l) => l.unrated_count), unrated_volume_minor: sum((l) => l.unrated_volume_minor),
           unsettled_count: sum((l) => l.unsettled_count), unsettled_volume_minor: sum((l) => l.unsettled_volume_minor),
           refunds_minor: sum((l) => l.refunds_minor),
+          unflagged_count: sum((l) => l.unflagged_count), unflagged_volume_minor: sum((l) => l.unflagged_volume_minor),
         },
       };
-    }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
+    }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0 || s.totals.unflagged_count > 0);
+    // Only live money makes an invoice; a currency that holds nothing but
+    // unflagged rows is shown with its note and never billed.
+    const billable = statements.filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
 
     // fixed_by_currency: the fixed fee that priced each editor currency this
     // month; rate_by_currency: the full rate and its words for every currency
@@ -1111,12 +1154,12 @@ Deno.serve(async (req) => {
       rate_by_currency: rateByCurrency,
     };
 
-    if (action === 'reseller_statement') return json({ success: true, month, config, statements });
+    if (action === 'reseller_statement') return json({ success: true, month, config, statements, test_excluded_count: testExcludedCount });
 
     // ── create: persist one invoice per currency ──
-    if (!statements.length) return json({ error: 'Nothing to invoice for that month.' }, 400);
+    if (!billable.length) return json({ error: 'Nothing to invoice for that month.' }, 400);
     const created: any[] = [];
-    for (const s of statements) {
+    for (const s of billable) {
       // Revision-aware numbering: after a void-and-regenerate, FranPOS's
       // accounts payable must never receive a SECOND document with the SAME
       // number and different totals. That reads as fraud and freezes payment.
@@ -1206,9 +1249,15 @@ Deno.serve(async (req) => {
     // threw Assignment to constant variable at runtime on that path).
     let { data: cur, error: curErr } = await platformAdmin.from('reseller_invoices')
       .select('status, status_history, notes').eq('id', id).maybeSingle();
+    if (curErr && !/does not exist|42703|PGRST204|Could not find the/i.test(String(curErr.message))) {
+      // Any other read error is reported as itself, never as a missing invoice.
+      return json({ error: `invoice read failed: ${curErr.message}` }, 500);
+    }
     if (curErr) {
-      // Pre-migration table shape: degrade to the status column alone.
-      const { data: bare } = await platformAdmin.from('reseller_invoices').select('status, notes').eq('id', id).maybeSingle();
+      // Pre-migration table shape (status_history arrived in the v5.7.66 file; a
+      // table built from v5.7.65 lacks it): degrade to the status column alone.
+      const { data: bare, error: bareErr } = await platformAdmin.from('reseller_invoices').select('status, notes').eq('id', id).maybeSingle();
+      if (bareErr) return json({ error: `invoice read failed: ${bareErr.message}` }, 500);
       if (!bare) return json({ error: 'invoice not found' }, 404);
       cur = { ...bare, status_history: null } as typeof cur;
     }
