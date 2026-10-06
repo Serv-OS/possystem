@@ -892,221 +892,9 @@ Deno.serve(async (req) => {
     });
   }
 
-  if (!location_id) return json({ error: 'location_id required' }, 400);
-
-  const loc = await resolveLocation(location_id);
-  if (!loc) return json({ error: 'location not found in platform DB' }, 404);
-
-  // ── set_processor (works for both processors; no Ryft needed) ───────────
-  if (action === 'set_processor') {
-    const processor = body?.processor;
-    if (processor !== 'stripe' && processor !== 'ryft' && processor !== 'adyen') return json({ error: "processor must be 'stripe', 'ryft' or 'adyen'" }, 400);
-    const { error } = await platformAdmin.from('locations').update({ payment_processor: processor }).eq('id', loc.id);
-    if (error) return json({ error: `processor update failed: ${error.message}` }, 500);
-    return json({ success: true, processor });
-  }
-
-  // ── ryft_pricing (our MARKUP on top: % + per-txn pence; null = platform default) ──
-  if (action === 'ryft_pricing') {
-    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
-    const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
-    const patch: Record<string, unknown> = {
-      markup_percent: numOrNull(body.markup_percent),
-      markup_fixed_pence: intOrNull(body.markup_fixed_pence),
-      pricing_notes: body.pricing_notes || null,
-    };
-    const { error } = await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('location_id', loc.id);
-    if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
-    return json({ success: true });
-  }
-
-  // ── ryft_fees: read ACTUAL fees from Ryft (cost + our markup collected) ──
-  if (action === 'ryft_fees') {
-    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
-    if (!row?.ryft_account_id) return json({ success: true, linked: false });
-    if (!ryftConfigured()) return json({ error: 'Ryft not configured' }, 500);
-    const opts = { accountId: row.ryft_account_id };
-    const [bt, pf] = await Promise.all([listBalanceTransactions(opts, 50), listPlatformFees(opts, 50)]);
-    const btItems: any[] = bt.ok ? (bt.data?.items ?? []) : [];
-    const pfItems: any[] = pf.ok ? (pf.data?.items ?? []) : [];
-    const sum = (arr: any[], f: (x: any) => number) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
-    const isCapture = (t: string) => /capture/i.test(t || '');
-    return json({
-      success: true, linked: true, currency: btItems[0]?.currency ?? pfItems[0]?.currency ?? 'GBP',
-      gmv_minor: sum(btItems.filter((x) => isCapture(x.type)), (x) => x.amount),
-      ryft_fees_minor: sum(btItems, (x) => x.feeTotal),
-      markup_collected_minor: sum(pfItems, (x) => x.amount ?? x.fee ?? 0),
-      txn_count: btItems.length, fee_count: pfItems.length,
-    });
-  }
-
-  // ── ryft_unlink: detach the account row (does NOT delete it at Ryft) ─────
-  if (action === 'ryft_unlink') {
-    const { error } = await platformAdmin.from('merchant_ryft_accounts').delete().eq('location_id', loc.id);
-    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
-    return json({ success: true });
-  }
-
-  // ── stripe_pricing (our MARKUP on top: card-present % + online %; null = platform default) ──
-  //    Mirrors ryft_pricing. merchant_stripe_accounts is RLS select-only for the
-  //    anon admin client, so this write MUST run with the service role here.
-  if (action === 'stripe_pricing') {
-    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
-    const patch: Record<string, unknown> = {
-      cardpresent_markup_percent: numOrNull(body.cardpresent),
-      online_markup_percent:      numOrNull(body.online),
-      pricing_notes: body.notes || null,
-    };
-    const { error } = await platformAdmin.from('merchant_stripe_accounts').update(patch).eq('location_id', loc.id);
-    if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
-    return json({ success: true });
-  }
-
-  // ── stripe_unlink: detach the merchant account row (mirror of ryft_unlink) ──
-  //    Same RLS reason as stripe_pricing — the client .delete() silently no-ops.
-  if (action === 'stripe_unlink') {
-    const { error } = await platformAdmin.from('merchant_stripe_accounts').delete().eq('location_id', loc.id);
-    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
-    return json({ success: true });
-  }
-
-  // Everything below talks to Ryft.
-  if (!ryftConfigured()) return json({ error: 'Ryft not configured (RYFT_SECRET_KEY missing)' }, 500);
-
-  // ── ryft_create: new Sub-Account + Hosted onboarding link ───────────────
-  if (action === 'ryft_create') {
-    // Don't silently orphan an existing merchant account.
-    const { data: existing } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
-    if (existing?.ryft_account_id) {
-      return json({ error: `This location already has Ryft account ${existing.ryft_account_id}. Use "Continue onboarding" or "Sync", or unlink first.` }, 409);
-    }
-    if (!body.email) return json({ error: 'email is required to create a Hosted merchant' }, 400);
-    const input: Record<string, unknown> = { onboardingFlow: 'Hosted', email: body.email };
-    // Ryft REJECTS entityType unless its matching block is also present, so only
-    // pre-fill when a COMPLETE block is supplied. For Hosted onboarding the
-    // merchant fills entity type + KYC/KYB in Ryft's portal regardless.
-    if (body.entity_type === 'Business' && body.business) { input.entityType = 'Business'; input.business = body.business; }
-    else if (body.entity_type === 'Individual' && body.individual) { input.entityType = 'Individual'; input.individual = body.individual; }
-    const meta = cleanMeta({ location_id: loc.id, location_name: loc.name, trading_name: body.trading_name });
-    if (Object.keys(meta).length) input.metadata = meta;
-
-    const created = await createSubAccount(input);
-    if (!created.ok || !created.data?.id) {
-      return json({ error: ryftErr(created.data) || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
-    }
-    const accountId = created.data.id as string;
-
-    const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, created.data, caller.id);
-    if (upErr) return json({ error: `merchant_ryft_accounts upsert failed: ${upErr.message}` }, 500);
-
-    // Mint the hosted onboarding link (best-effort — the account exists either way).
-    let onboarding_url: string | null = null, expires_at: number | null = null, link_error: string | null = null;
-    if (body.redirect_url) {
-      const link = await createAccountLink({ accountId, redirectUrl: body.redirect_url });
-      if (link.ok && link.data?.url) { onboarding_url = link.data.url; expires_at = link.data.expiresTimestamp ?? null; }
-      else link_error = ryftErr(link.data) || `account-link failed (${link.status})`;
-    }
-    return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled, onboarding_url, expires_at, link_error });
-  }
-
-  // ── ryft_link: attach an existing ac_… account ──────────────────────────
-  if (action === 'ryft_link') {
-    const accountId = String(body.ryft_account_id ?? '').trim();
-    if (!accountId.startsWith('ac_')) {
-      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
-      return json({ error: looksUuid
-        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is on the account's page in the Ryft dashboard."
-        : "A Ryft account id starts with 'ac_'." }, 400);
-    }
-    // A Ryft account can only belong to ONE location (ryft_account_id is unique).
-    // Catch "already linked elsewhere" BEFORE the upsert so we return a clear
-    // message instead of a raw duplicate-key DB error (this was surfacing as
-    // "it loads but doesn't link").
-    const { data: dup } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('location_id').eq('ryft_account_id', accountId).maybeSingle();
-    if (dup && dup.location_id !== loc.id) {
-      const { data: other } = await platformAdmin.from('locations').select('name').eq('id', dup.location_id).maybeSingle();
-      return json({ error: `This Ryft account is already connected to ${other?.name ? `“${other.name}”` : 'another location'}. Unlink it there first, then connect it here.` }, 409);
-    }
-    const got = await getAccount(accountId);
-    if (!got.ok || !got.data?.id) {
-      return json({ error: `Ryft couldn't find account ${accountId}. We're in TEST mode — copy the id from the Ryft SANDBOX dashboard (a live account won't be found here).`, ryft: got.data }, 400);
-    }
-    const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, got.data, caller.id);
-    if (upErr) return json({ error: `Couldn't save the connection: ${upErr.message}` }, 500);
-    return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
-  }
-
-  // ── ryft_inspect: look up an account so the admin SEES what they're about to
-  //    connect (email, status, which location its metadata points to) before
-  //    saving — removes the "is this the right account?" guesswork. Read-only.
-  if (action === 'ryft_inspect') {
-    const accountId = String(body.ryft_account_id ?? '').trim();
-    if (!accountId.startsWith('ac_')) {
-      // Most common mistake: pasting a location UUID (or some other id) instead
-      // of the Ryft account id. Say so plainly.
-      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
-      return json({ error: looksUuid
-        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is shown on the account's page in the Ryft dashboard."
-        : "A Ryft account id starts with 'ac_'." }, 400);
-    }
-    const got = await getAccount(accountId);
-    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft account not found (${got.status})` }, 404);
-    const a = got.data;
-    const d = deriveStatus(a);
-    const metaLocId = a?.metadata?.location_id ?? null;
-    // If this account is already linked to a location, surface that too.
-    let linkedTo: string | null = null;
-    const { data: existing } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
-    if (existing?.location_id) linkedTo = existing.location_id;
-    return json({
-      success: true,
-      account_id: accountId,
-      email: a?.email ?? null,
-      verification_status: d.verification_status,
-      charges_enabled: d.charges_enabled,
-      metadata_location_id: metaLocId,
-      metadata_location_name: a?.metadata?.location_name ?? a?.metadata?.trading_name ?? null,
-      matches_this_location: metaLocId ? metaLocId === loc.id : null,
-      already_linked_location_id: linkedTo,
-    });
-  }
-
-  // ── ryft_sync: refresh status from Ryft ─────────────────────────────────
-  if (action === 'ryft_sync') {
-    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
-    if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
-    const got = await getAccount(row.ryft_account_id);
-    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft fetch failed (${got.status})`, ryft: got.data }, 502);
-    const { error: upErr, derived } = await upsertRyftAccount(loc, row.ryft_account_id, got.data, caller.id);
-    if (upErr) return json({ error: `merchant_ryft_accounts update failed: ${upErr.message}` }, 500);
-    return json({ success: true, account_id: row.ryft_account_id, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
-  }
-
-  // ── ryft_onboarding_link: fresh hosted link to continue/finish KYC ──────
-  if (action === 'ryft_onboarding_link') {
-    if (!body.redirect_url) return json({ error: 'redirect_url required' }, 400);
-    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
-      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
-    if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
-    const link = await createAccountLink({ accountId: row.ryft_account_id, redirectUrl: body.redirect_url });
-    if (link.ok && link.data?.url) return json({ success: true, onboarding_url: link.data.url, expires_at: link.data.expiresTimestamp ?? null, mode: 'onboard' });
-    // A hosted onboarding link can't be minted once the merchant is fully
-    // onboarded — fall back to an authorize (sign-in) link so the button always
-    // opens their Ryft dashboard. Use the account's OWN email (the caller need
-    // not pass it) — this is why the button looked dead on a "ready" account.
-    let email = body.email as string | undefined;
-    if (!email) { const got = await getAccount(row.ryft_account_id); email = got.ok ? (got.data?.email as string | undefined) : undefined; }
-    if (email) {
-      const auth = await authorizeAccount({ email, redirectUrl: body.redirect_url });
-      if (auth.ok && auth.data?.url) return json({ success: true, onboarding_url: auth.data.url, expires_at: auth.data.expiresTimestamp ?? null, mode: 'manage' });
-    }
-    return json({ error: ryftErr(link.data) || `Couldn't create a Ryft portal link (${link.status})`, ryft: link.data }, 502);
-  }
-
+  // These five actions are platform wide (the FranPOS invoice ledger spans every
+  // venue), so they run BEFORE the single venue gate below. They sat after it
+  // from 26 Aug to 6 Oct 2026 and every call was refused with location_id required.
   // ── Reseller (FranPOS) residuals ──────────────────────────────────────────
   // We process on FranPOS's Adyen account, so every venue's card markup settles
   // to FranPOS. They keep the buy rate (0.10% + 5 minor units per transaction,
@@ -1414,13 +1202,15 @@ Deno.serve(async (req) => {
     const status = String(body.status ?? '');
     if (!id) return json({ error: 'id required' }, 400);
     if (!['sent', 'paid', 'void'].includes(status)) return json({ error: 'status must be sent, paid or void' }, 400);
-    const { data: cur, error: curErr } = await platformAdmin.from('reseller_invoices')
+    // let, not const: the pre-migration fallback below reassigns it (a const here
+    // threw Assignment to constant variable at runtime on that path).
+    let { data: cur, error: curErr } = await platformAdmin.from('reseller_invoices')
       .select('status, status_history, notes').eq('id', id).maybeSingle();
     if (curErr) {
       // Pre-migration table shape: degrade to the status column alone.
       const { data: bare } = await platformAdmin.from('reseller_invoices').select('status, notes').eq('id', id).maybeSingle();
       if (!bare) return json({ error: 'invoice not found' }, 404);
-      (cur as any) = { ...bare, status_history: null };
+      cur = { ...bare, status_history: null } as typeof cur;
     }
     if (!cur) return json({ error: 'invoice not found' }, 404);
     // Forward only, plus void from anywhere. Paid never silently un-pays.
@@ -1578,6 +1368,222 @@ Deno.serve(async (req) => {
       remit: (st as any)?.reseller_invoice_remit ?? null,
     });
   }
+
+  if (!location_id) return json({ error: 'location_id required' }, 400);
+
+  const loc = await resolveLocation(location_id);
+  if (!loc) return json({ error: 'location not found in platform DB' }, 404);
+
+  // ── set_processor (works for both processors; no Ryft needed) ───────────
+  if (action === 'set_processor') {
+    const processor = body?.processor;
+    if (processor !== 'stripe' && processor !== 'ryft' && processor !== 'adyen') return json({ error: "processor must be 'stripe', 'ryft' or 'adyen'" }, 400);
+    const { error } = await platformAdmin.from('locations').update({ payment_processor: processor }).eq('id', loc.id);
+    if (error) return json({ error: `processor update failed: ${error.message}` }, 500);
+    return json({ success: true, processor });
+  }
+
+  // ── ryft_pricing (our MARKUP on top: % + per-txn pence; null = platform default) ──
+  if (action === 'ryft_pricing') {
+    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
+    const patch: Record<string, unknown> = {
+      markup_percent: numOrNull(body.markup_percent),
+      markup_fixed_pence: intOrNull(body.markup_fixed_pence),
+      pricing_notes: body.pricing_notes || null,
+    };
+    const { error } = await platformAdmin.from('merchant_ryft_accounts').update(patch).eq('location_id', loc.id);
+    if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // ── ryft_fees: read ACTUAL fees from Ryft (cost + our markup collected) ──
+  if (action === 'ryft_fees') {
+    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!row?.ryft_account_id) return json({ success: true, linked: false });
+    if (!ryftConfigured()) return json({ error: 'Ryft not configured' }, 500);
+    const opts = { accountId: row.ryft_account_id };
+    const [bt, pf] = await Promise.all([listBalanceTransactions(opts, 50), listPlatformFees(opts, 50)]);
+    const btItems: any[] = bt.ok ? (bt.data?.items ?? []) : [];
+    const pfItems: any[] = pf.ok ? (pf.data?.items ?? []) : [];
+    const sum = (arr: any[], f: (x: any) => number) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+    const isCapture = (t: string) => /capture/i.test(t || '');
+    return json({
+      success: true, linked: true, currency: btItems[0]?.currency ?? pfItems[0]?.currency ?? 'GBP',
+      gmv_minor: sum(btItems.filter((x) => isCapture(x.type)), (x) => x.amount),
+      ryft_fees_minor: sum(btItems, (x) => x.feeTotal),
+      markup_collected_minor: sum(pfItems, (x) => x.amount ?? x.fee ?? 0),
+      txn_count: btItems.length, fee_count: pfItems.length,
+    });
+  }
+
+  // ── ryft_unlink: detach the account row (does NOT delete it at Ryft) ─────
+  if (action === 'ryft_unlink') {
+    const { error } = await platformAdmin.from('merchant_ryft_accounts').delete().eq('location_id', loc.id);
+    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // ── stripe_pricing (our MARKUP on top: card-present % + online %; null = platform default) ──
+  //    Mirrors ryft_pricing. merchant_stripe_accounts is RLS select-only for the
+  //    anon admin client, so this write MUST run with the service role here.
+  if (action === 'stripe_pricing') {
+    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const patch: Record<string, unknown> = {
+      cardpresent_markup_percent: numOrNull(body.cardpresent),
+      online_markup_percent:      numOrNull(body.online),
+      pricing_notes: body.notes || null,
+    };
+    const { error } = await platformAdmin.from('merchant_stripe_accounts').update(patch).eq('location_id', loc.id);
+    if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // ── stripe_unlink: detach the merchant account row (mirror of ryft_unlink) ──
+  //    Same RLS reason as stripe_pricing — the client .delete() silently no-ops.
+  if (action === 'stripe_unlink') {
+    const { error } = await platformAdmin.from('merchant_stripe_accounts').delete().eq('location_id', loc.id);
+    if (error) return json({ error: `unlink failed: ${error.message}` }, 500);
+    return json({ success: true });
+  }
+
+  // Everything below talks to Ryft.
+  if (!ryftConfigured()) return json({ error: 'Ryft not configured (RYFT_SECRET_KEY missing)' }, 500);
+
+  // ── ryft_create: new Sub-Account + Hosted onboarding link ───────────────
+  if (action === 'ryft_create') {
+    // Don't silently orphan an existing merchant account.
+    const { data: existing } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (existing?.ryft_account_id) {
+      return json({ error: `This location already has Ryft account ${existing.ryft_account_id}. Use "Continue onboarding" or "Sync", or unlink first.` }, 409);
+    }
+    if (!body.email) return json({ error: 'email is required to create a Hosted merchant' }, 400);
+    const input: Record<string, unknown> = { onboardingFlow: 'Hosted', email: body.email };
+    // Ryft REJECTS entityType unless its matching block is also present, so only
+    // pre-fill when a COMPLETE block is supplied. For Hosted onboarding the
+    // merchant fills entity type + KYC/KYB in Ryft's portal regardless.
+    if (body.entity_type === 'Business' && body.business) { input.entityType = 'Business'; input.business = body.business; }
+    else if (body.entity_type === 'Individual' && body.individual) { input.entityType = 'Individual'; input.individual = body.individual; }
+    const meta = cleanMeta({ location_id: loc.id, location_name: loc.name, trading_name: body.trading_name });
+    if (Object.keys(meta).length) input.metadata = meta;
+
+    const created = await createSubAccount(input);
+    if (!created.ok || !created.data?.id) {
+      return json({ error: ryftErr(created.data) || `Ryft account create failed (${created.status})`, ryft: created.data }, 502);
+    }
+    const accountId = created.data.id as string;
+
+    const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, created.data, caller.id);
+    if (upErr) return json({ error: `merchant_ryft_accounts upsert failed: ${upErr.message}` }, 500);
+
+    // Mint the hosted onboarding link (best-effort — the account exists either way).
+    let onboarding_url: string | null = null, expires_at: number | null = null, link_error: string | null = null;
+    if (body.redirect_url) {
+      const link = await createAccountLink({ accountId, redirectUrl: body.redirect_url });
+      if (link.ok && link.data?.url) { onboarding_url = link.data.url; expires_at = link.data.expiresTimestamp ?? null; }
+      else link_error = ryftErr(link.data) || `account-link failed (${link.status})`;
+    }
+    return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled, onboarding_url, expires_at, link_error });
+  }
+
+  // ── ryft_link: attach an existing ac_… account ──────────────────────────
+  if (action === 'ryft_link') {
+    const accountId = String(body.ryft_account_id ?? '').trim();
+    if (!accountId.startsWith('ac_')) {
+      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
+      return json({ error: looksUuid
+        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is on the account's page in the Ryft dashboard."
+        : "A Ryft account id starts with 'ac_'." }, 400);
+    }
+    // A Ryft account can only belong to ONE location (ryft_account_id is unique).
+    // Catch "already linked elsewhere" BEFORE the upsert so we return a clear
+    // message instead of a raw duplicate-key DB error (this was surfacing as
+    // "it loads but doesn't link").
+    const { data: dup } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+    if (dup && dup.location_id !== loc.id) {
+      const { data: other } = await platformAdmin.from('locations').select('name').eq('id', dup.location_id).maybeSingle();
+      return json({ error: `This Ryft account is already connected to ${other?.name ? `“${other.name}”` : 'another location'}. Unlink it there first, then connect it here.` }, 409);
+    }
+    const got = await getAccount(accountId);
+    if (!got.ok || !got.data?.id) {
+      return json({ error: `Ryft couldn't find account ${accountId}. We're in TEST mode — copy the id from the Ryft SANDBOX dashboard (a live account won't be found here).`, ryft: got.data }, 400);
+    }
+    const { error: upErr, derived } = await upsertRyftAccount(loc, accountId, got.data, caller.id);
+    if (upErr) return json({ error: `Couldn't save the connection: ${upErr.message}` }, 500);
+    return json({ success: true, account_id: accountId, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
+  }
+
+  // ── ryft_inspect: look up an account so the admin SEES what they're about to
+  //    connect (email, status, which location its metadata points to) before
+  //    saving — removes the "is this the right account?" guesswork. Read-only.
+  if (action === 'ryft_inspect') {
+    const accountId = String(body.ryft_account_id ?? '').trim();
+    if (!accountId.startsWith('ac_')) {
+      // Most common mistake: pasting a location UUID (or some other id) instead
+      // of the Ryft account id. Say so plainly.
+      const looksUuid = /^[0-9a-f-]{32,36}$/i.test(accountId);
+      return json({ error: looksUuid
+        ? "That looks like a location id, not a Ryft account id. The account id starts with 'ac_' and is shown on the account's page in the Ryft dashboard."
+        : "A Ryft account id starts with 'ac_'." }, 400);
+    }
+    const got = await getAccount(accountId);
+    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft account not found (${got.status})` }, 404);
+    const a = got.data;
+    const d = deriveStatus(a);
+    const metaLocId = a?.metadata?.location_id ?? null;
+    // If this account is already linked to a location, surface that too.
+    let linkedTo: string | null = null;
+    const { data: existing } = await platformAdmin.from('merchant_ryft_accounts').select('location_id').eq('ryft_account_id', accountId).maybeSingle();
+    if (existing?.location_id) linkedTo = existing.location_id;
+    return json({
+      success: true,
+      account_id: accountId,
+      email: a?.email ?? null,
+      verification_status: d.verification_status,
+      charges_enabled: d.charges_enabled,
+      metadata_location_id: metaLocId,
+      metadata_location_name: a?.metadata?.location_name ?? a?.metadata?.trading_name ?? null,
+      matches_this_location: metaLocId ? metaLocId === loc.id : null,
+      already_linked_location_id: linkedTo,
+    });
+  }
+
+  // ── ryft_sync: refresh status from Ryft ─────────────────────────────────
+  if (action === 'ryft_sync') {
+    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
+    const got = await getAccount(row.ryft_account_id);
+    if (!got.ok || !got.data?.id) return json({ error: ryftErr(got.data) || `Ryft fetch failed (${got.status})`, ryft: got.data }, 502);
+    const { error: upErr, derived } = await upsertRyftAccount(loc, row.ryft_account_id, got.data, caller.id);
+    if (upErr) return json({ error: `merchant_ryft_accounts update failed: ${upErr.message}` }, 500);
+    return json({ success: true, account_id: row.ryft_account_id, verification_status: derived.verification_status, charges_enabled: derived.charges_enabled });
+  }
+
+  // ── ryft_onboarding_link: fresh hosted link to continue/finish KYC ──────
+  if (action === 'ryft_onboarding_link') {
+    if (!body.redirect_url) return json({ error: 'redirect_url required' }, 400);
+    const { data: row } = await platformAdmin.from('merchant_ryft_accounts')
+      .select('ryft_account_id').eq('location_id', loc.id).maybeSingle();
+    if (!row?.ryft_account_id) return json({ error: 'No Ryft account linked to this location' }, 404);
+    const link = await createAccountLink({ accountId: row.ryft_account_id, redirectUrl: body.redirect_url });
+    if (link.ok && link.data?.url) return json({ success: true, onboarding_url: link.data.url, expires_at: link.data.expiresTimestamp ?? null, mode: 'onboard' });
+    // A hosted onboarding link can't be minted once the merchant is fully
+    // onboarded — fall back to an authorize (sign-in) link so the button always
+    // opens their Ryft dashboard. Use the account's OWN email (the caller need
+    // not pass it) — this is why the button looked dead on a "ready" account.
+    let email = body.email as string | undefined;
+    if (!email) { const got = await getAccount(row.ryft_account_id); email = got.ok ? (got.data?.email as string | undefined) : undefined; }
+    if (email) {
+      const auth = await authorizeAccount({ email, redirectUrl: body.redirect_url });
+      if (auth.ok && auth.data?.url) return json({ success: true, onboarding_url: auth.data.url, expires_at: auth.data.expiresTimestamp ?? null, mode: 'manage' });
+    }
+    return json({ error: ryftErr(link.data) || `Couldn't create a Ryft portal link (${link.status})`, ryft: link.data }, 502);
+  }
+
 
   return json({ error: `unknown action: ${action}` }, 400);
 });
