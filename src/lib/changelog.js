@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.35',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (one company with two sets of books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
+      "Xero, Connection tab: when the sign in can see more than one organisation, a picker shows which organisation this site posts to and lets you change it without reconnecting. Days already posted stay where they are; the Site tracking option and accounts are chosen again for the new organisation.",
+      "Xero: each posted day now records which organisation it went to.",
+    ],
+  },
+  {
     v: '5.11.31',
     date: '5 Oct 2026',
     items: [

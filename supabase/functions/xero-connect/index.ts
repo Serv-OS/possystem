@@ -19,7 +19,8 @@
 // hubrise-connect / payments-onboard. Deploy with --no-verify-jwt (GET callback is public).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { authorizeUrl, exchangeCode, getConnections, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
+import { authorizeUrl, exchangeCode, getConnections, getValidAccessToken, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
+import { pickConsentedOrg, organisationChoices } from '../_shared/xeroOrg.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { xeroUserIdFromToken } from '../_shared/xeroTokens.js';
 
@@ -89,7 +90,9 @@ Deno.serve(async (req) => {
     try {
       const t = await exchangeCode(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, code);
       const conns = await getConnections(t.access_token);
-      const org = conns.find((x: any) => x.tenantType === 'ORGANISATION') || conns[0];
+      // The organisation just chosen on Xero's consent screen, not the first one this
+      // Xero user ever authorised (a group with two organisations got the wrong one).
+      const org = pickConsentedOrg(conns);
       if (!org) return redirect(withParam(ret, 'xero', 'no_org'));
       const tokenSet = {
         access_token: t.access_token,
@@ -142,6 +145,50 @@ Deno.serve(async (req) => {
   if (action === 'status') {
     const { data: c } = await sb.from('xero_connections').select('*').eq('location_id', locationId).maybeSingle();
     return json(publicStatus(c));
+  }
+
+  // ── organisations: every Xero organisation this site's stored sign in can see ──
+  if (action === 'organisations') {
+    const { data: c } = await sb.from('xero_connections').select('tenant_id, tenant_name').eq('location_id', locationId).maybeSingle();
+    if (!c) return json({ connected: false, organisations: [] });
+    try {
+      const { accessToken } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      const conns = await getConnections(accessToken);
+      return json({ connected: true, current: c.tenant_id, organisations: organisationChoices(conns, c.tenant_id) });
+    } catch (e) {
+      return json({ connected: true, current: c.tenant_id, organisations: [{ tenantId: c.tenant_id, tenantName: c.tenant_name || c.tenant_id, current: true }], error: (e as Error)?.message || String(e) });
+    }
+  }
+
+  // ── set_organisation: post this site's sales to another organisation the same sign in can see ──
+  // The stored tokens are the Xero user's, so they work for every organisation that user has
+  // authorised; only the tenant changes. Everything cached from the old organisation (accounts,
+  // contact, tax rates, the Site tracking option, bank accounts for payments) is cleared: those
+  // ids belong to the old organisation and would post into it or fail. Days already posted stay
+  // in the old organisation's books; the sync log keeps them as posted.
+  if (action === 'set_organisation') {
+    const tenantId = String(body.tenantId || '').trim();
+    if (!tenantId) return json({ error: 'tenantId required' }, 400);
+    const { data: c } = await sb.from('xero_connections').select('tenant_id, tenant_name').eq('location_id', locationId).maybeSingle();
+    if (!c) return json({ error: 'This site is not connected to Xero.' }, 400);
+    if (c.tenant_id === tenantId) return json({ ok: true, unchanged: true, tenant_id: c.tenant_id, tenant_name: c.tenant_name });
+    const { accessToken } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    const conns = await getConnections(accessToken);
+    const org = organisationChoices(conns, c.tenant_id).find((o) => o.tenantId === tenantId);
+    if (!org) return json({ error: 'That organisation is not available to this Xero sign in. Disconnect and connect again, choosing it on Xero\'s screen.' }, 400);
+    const now = new Date().toISOString();
+    const { error: uErr } = await sb.from('xero_connections').update({ tenant_id: org.tenantId, tenant_name: org.tenantName, updated_at: now }).eq('location_id', locationId);
+    if (uErr) return json({ error: uErr.message }, 500);
+    const { data: cfg } = await sb.from('xero_config').select('mapping').eq('location_id', locationId).maybeSingle();
+    if (cfg) {
+      const mapping: Record<string, unknown> = { ...((cfg.mapping && typeof cfg.mapping === 'object') ? cfg.mapping : {}) };
+      delete mapping.tracking;
+      delete mapping.paymentMap;
+      mapping.organisationChanged = { at: now, from: c.tenant_name || c.tenant_id, to: org.tenantName };
+      const { error: cErr } = await sb.from('xero_config').update({ mapping, detail: {}, updated_at: now }).eq('location_id', locationId);
+      if (cErr) return json({ error: `Organisation changed, but the site's Xero setup could not be reset: ${cErr.message}` }, 500);
+    }
+    return json({ ok: true, tenant_id: org.tenantId, tenant_name: org.tenantName, previous: c.tenant_name || c.tenant_id });
   }
 
   if (action === 'disconnect') {

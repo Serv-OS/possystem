@@ -458,7 +458,7 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     const all = [...warnings, ...extra, ...(replaced ? [replaced] : [])];
     const ids = res.documents.map((d: any) => d.xeroId).filter(Boolean).join(',');
     const replace = run.detail?.replace ? { replace: replaceDone(run.detail.replace, { at: new Date().toISOString(), documents: res.documents }) } : {};
-    await run.finish('ok', { xero_id: ids, detail: { model: 'sales_invoice', documents: res.documents, warnings: all, error: null, notReady: null, problems: null, ...replace } }, { ok: true, auto, model: 'sales_invoice', posted: res.posted, skipped: res.skipped });
+    await run.finish('ok', { xero_id: ids, detail: { model: 'sales_invoice', tenant_id: tenantId, documents: res.documents, warnings: all, error: null, notReady: null, problems: null, ...replace } }, { ok: true, auto, model: 'sales_invoice', posted: res.posted, skipped: res.skipped });
     return json({ ok: true, ...base, model: 'sales_invoice', documents: res.documents, invoice: planView(plan), lines: [], warnings: all, summary: summaryView(summary) });
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
