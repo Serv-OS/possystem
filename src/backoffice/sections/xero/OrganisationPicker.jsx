@@ -18,6 +18,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
   const [orgs, setOrgs] = useState(null);
   const [siteName, setSiteName] = useState('');
   const [others, setOthers] = useState(0);
+  const [ask, setAsk] = useState(false);          // just signed in, and Xero did not say which organisation
   const [asked, setAsked] = useState(true);       // false: Xero could not be asked, so the list is not known
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
@@ -33,6 +34,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
       setOrgs(list);
       setSiteName(r?.siteName || '');
       setOthers(Number(r?.others) || 0);
+      setAsk(!!r?.ask);
       setAsked(!r?.lookupError);
       setPick(list.find((o) => o.current)?.tenantId || '');
       setErr(r?.lookupError ? `ServOS could not ask Xero which organisations this sign in can see (${r.lookupError}). Try again in a minute.` : '');
@@ -73,8 +75,10 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
   const signIn = () => {
     if (!onSignIn || busy) return;
     const ok = window.confirm(
-      `Sign in to Xero and choose the organisation ${site}'s books are in.\n\nIf you choose a different organisation from ${here}:\n` +
-      words('the one you choose').split('\n').slice(2).join('\n'),
+      `Sign in to Xero.\n\n` +
+      `If Xero asks which organisation, choose the one ${site}'s books are in.\n` +
+      `If Xero only says how many organisations are connected, press Continue: you then pick the organisation here, on this screen.\n\n` +
+      `Nothing changes for ${site} until you pick a different organisation from ${here}.`,
     );
     if (ok) onSignIn();
   };
@@ -95,9 +99,16 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
         <div style={text}>This site posts to <b>{here}</b>.</div>
       ) : orgs.length >= 2 ? (
         <>
-          <div style={{ ...text, marginBottom: 10 }}>
-            <b>{site}</b> posts to <b>{here}</b>. If its books are in another organisation, pick it here.
-          </div>
+          {ask ? (
+            <div style={{ ...text, marginBottom: 10, padding: 10, borderRadius: 8, background: 'rgba(200,150,40,.14)', border: '1px solid rgba(200,150,40,.45)', color: 'var(--t1)' }}>
+              <b>Which organisation are {site}&rsquo;s books in?</b> Your Xero sign in covers {orgs.length} organisations and Xero did not ask which one.
+              {' '}{site} is on <b>{here}</b> for now. If that is wrong, pick the right one and press Use this organisation.
+            </div>
+          ) : (
+            <div style={{ ...text, marginBottom: 10 }}>
+              <b>{site}</b> posts to <b>{here}</b>. If its books are in another organisation, pick it here.
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy || parentBusy}
               style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' }}>
@@ -107,12 +118,13 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
           </div>
         </>
       ) : (
-        <div style={text}><b>{site}</b> posts to <b>{here}</b>.{others > 0 ? ' Other organisations on this Xero sign in can only be chosen by signing in to Xero.' : ''}</div>
+        <div style={text}><b>{site}</b> posts to <b>{here}</b>.{others > 0 ? ' This Xero sign in covers other organisations too: press Sign in to Xero, then pick the right one here.' : ''}</div>
       )}
       {onSignIn && (
         <div style={{ ...text, marginTop: 10 }}>
           Organisation not listed?{' '}
-          <button style={{ ...(S?.ghost || {}), padding: '6px 10px' }} onClick={signIn} disabled={busy || parentBusy}>Sign in to Xero and choose it</button>
+          <button style={{ ...(S?.ghost || {}), padding: '6px 10px' }} onClick={signIn} disabled={busy || parentBusy}>Sign in to Xero</button>{' '}
+          then pick it here.
         </div>
       )}
       {err && <div style={{ marginTop: 8, fontSize: 14, color: 'var(--red)' }}>{err}</div>}
