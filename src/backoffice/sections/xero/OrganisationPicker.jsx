@@ -1,17 +1,23 @@
 // Back Office → Settings → Xero → Connection: which Xero organisation this site posts to.
 // 7 Oct 2026: Coffee Boy has two Xero organisations under one Xero sign in, and every site was
 // stored on the first. Two ways to put a site on the right one, neither needs a disconnect:
-//   - the sign in can already see the organisation: pick it from the list;
-//   - it cannot yet: Sign in to Xero and choose it on Xero's own screen.
-// Either way the site's Xero setup (accounts, VAT rates, tracking, the figures check) is
-// cleared by the server first, because those choices named things in the OLD organisation.
+//   - the organisation is in the list: pick it;
+//   - it is not: Sign in to Xero and choose it on Xero's own screen.
+// Either way the server clears the site's Xero setup first (accounts, VAT rates, payment
+// accounts, tracking, the figures check), because those choices named things in the OLD
+// organisation. The words below say exactly that, and what does and does not then happen by
+// itself (lib: supabase/functions/_shared/xeroOrg.js).
 import { useCallback, useEffect, useState } from 'react';
 import { xeroOrganisations, xeroSetOrganisation } from '../../../lib/xero';
+import { moveWords } from '../../../lib/accounting/xeroMoveWords';
 
 const dayWords = (iso) => { try { return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch { return ''; } };
 
 export default function OrganisationPicker({ locId, currentName, postMode, changed, setupTab = 'Setup', busy: parentBusy, onSignIn, onChanged, S }) {
   const [orgs, setOrgs] = useState(null);
+  const [siteName, setSiteName] = useState('');
+  const [others, setOthers] = useState(0);
+  const [asked, setAsked] = useState(true);       // false: Xero could not be asked, so the list is not known
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -24,12 +30,15 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
       const r = await xeroOrganisations(locId);
       const list = r?.organisations || [];
       setOrgs(list);
+      setSiteName(r?.siteName || '');
+      setOthers(Number(r?.others) || 0);
+      setAsked(!r?.lookupError);
       setPick(list.find((o) => o.current)?.tenantId || '');
-      setErr(r?.error ? `ServOS could not ask Xero which organisations this sign in can see: ${r.error}` : '');
+      setErr(r?.lookupError ? `ServOS could not ask Xero which organisations this sign in can see (${r.lookupError}). Try again in a minute.` : '');
     } catch (e) {
       // The server function is older than this screen (not deployed yet): show nothing.
       if (/unknown action/i.test(String(e?.message || ''))) { setSupported(false); return; }
-      setOrgs([]);
+      setOrgs([]); setAsked(false);
       setErr(e.message || 'Could not list the Xero organisations');
     }
   }, [locId]);
@@ -38,24 +47,21 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
   if (!supported || orgs === null) return null;
   const current = orgs.find((o) => o.current);
   const here = current?.tenantName || currentName || 'this organisation';
+  const site = siteName || 'this site';
   const chosen = orgs.find((o) => o.tenantId === pick);
   const invoice = postMode === 'sales_invoice';
-  const after = invoice
-    ? `Nothing posts for this site until that is done. Then it posts by itself again.`
-    : `Auto posting is turned off for this site. Turn it back on when the accounts are chosen.`;
-  const whatHappens = (to) =>
-    `Post this site's sales to ${to} instead of ${here}?\n\n` +
-    `1. This site's Xero setup is cleared: accounts, VAT rates, payment accounts and the Site tracking option. They belong to ${here}. Choose them again for ${to} under ${setupTab}, then check a day's figures.\n` +
-    `2. ${after}\n` +
-    `3. Days already posted stay in ${here}. Ask the accountant to void them there if they should not be.`;
+  const words = (to) => moveWords({ site, from: here, to, invoice, setupTab });
 
   const apply = async () => {
     if (!chosen || chosen.current || busy) return;
-    if (!window.confirm(whatHappens(chosen.tenantName))) return;
+    if (!window.confirm(words(chosen.tenantName))) return;
     setBusy(true); setErr(''); setNote('');
     try {
       const r = await xeroSetOrganisation(locId, chosen.tenantId);
-      setNote(`This site now posts to ${r?.tenant_name || chosen.tenantName}. Next: ${setupTab}, choose its accounts, VAT rates and tracking, then check a day's figures.${r?.autoTurnedOff ? ' Auto posting is off until you turn it back on.' : ''}`);
+      const to = r?.tenant_name || chosen.tenantName;
+      setNote(invoice
+        ? `${r?.siteName || site} now posts to ${to}. Next: choose its accounts, VAT rates and tracking under ${setupTab}, then check a day's figures.${r?.autoTurnedOff ? ' Auto posting was turned off: turn it back on under Posting.' : ''}`
+        : `${r?.siteName || site} now posts to ${to}. Next: choose its accounts under Posting (Account mapping). Auto posting is off until you turn it back on there.`);
       await load();
       if (onChanged) await onChanged();
     } catch (e) { setErr(e.message || 'Could not change the organisation'); } finally { setBusy(false); }
@@ -64,8 +70,8 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
   const signIn = () => {
     if (!onSignIn || busy) return;
     const ok = window.confirm(
-      `Sign in to Xero and choose the organisation this site's books are in.\n\n` +
-      `If you choose a different organisation from ${here}:\n` + whatHappens('the one you choose').split('\n\n')[1],
+      `Sign in to Xero and choose the organisation ${site}'s books are in.\n\nIf you choose a different organisation from ${here}:\n` +
+      words('the one you choose').split('\n').slice(2).join('\n'),
     );
     if (ok) onSignIn();
   };
@@ -77,13 +83,17 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
       <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Xero organisation</div>
       {changed?.at && (
         <div style={{ ...text, marginBottom: 8, color: 'var(--t1)' }}>
-          Moved here from <b>{changed.from}</b> on {dayWords(changed.at)}. Its accounts, VAT rates and tracking are chosen again under {setupTab}.
+          Moved here from <b>{changed.from}</b> on {dayWords(changed.at)}. Its Xero setup was cleared then: choose it again
+          {invoice ? <> under {setupTab} and Posting, then check a day&rsquo;s figures.</> : <> under Posting.</>}
+          {changed.autoTurnedOff && <> Auto posting was turned off then.</>}
         </div>
       )}
-      {orgs.length >= 2 ? (
+      {!asked ? (
+        <div style={text}>This site posts to <b>{here}</b>.</div>
+      ) : orgs.length >= 2 ? (
         <>
           <div style={{ ...text, marginBottom: 10 }}>
-            This Xero sign in can see {orgs.length} organisations. This site posts to <b>{here}</b>. If its books are in another one, pick it here.
+            <b>{site}</b> posts to <b>{here}</b>. If its books are in another organisation, pick it here.
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy || parentBusy}
@@ -94,7 +104,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
           </div>
         </>
       ) : (
-        <div style={text}>This site posts to <b>{here}</b>, the only organisation this Xero sign in has connected to ServOS.</div>
+        <div style={text}><b>{site}</b> posts to <b>{here}</b>.{others > 0 ? ' Other organisations on this Xero sign in can only be chosen by signing in to Xero.' : ''}</div>
       )}
       {onSignIn && (
         <div style={{ ...text, marginTop: 10 }}>

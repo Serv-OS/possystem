@@ -64,6 +64,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
+import { postedElsewhere, setupMadeForAnother } from '../_shared/xeroOrg.js';
 import { venueClock, loadAccountingDay, venueSite } from '../_shared/accountingData.ts';
 import { businessDayWindow, isYmd, isBusinessDayOver, lastCompletedBusinessDay, currentBusinessDay, wallClock, addDays } from '../_shared/businessDay.js';
 import { buildAccountingDay } from '../_shared/accountingDay.js';
@@ -291,6 +292,28 @@ async function canReplace(row: any, cfgRow: any, date: string, locationId: strin
   return replaceability({ ...args, provenInvoice: await hasInvoiceDay(locationId) });
 }
 
+// The words for a setup made for another organisation (see setupMadeForAnother).
+function otherOrganisationProblem(detail: any, tenantName: string | null, tab: string) {
+  const was = detail?.site?.orgName ? ` (${detail.site.orgName})` : '';
+  return { code: 'organisation', message: `This site's Xero setup was made for another Xero organisation${was}. Choose its accounts, VAT rates and tracking again for ${tenantName || 'the organisation it is connected to now'} under ${tab}, then check a day's figures.` };
+}
+
+// 7 Oct 2026: a day posted before this site moved to another Xero organisation is still in the
+// old one. Asked by a person, the answer says so plainly, and does not compare the day with
+// today's setup (made for the new organisation, so every line would read as changed).
+async function elsewhereWarning(prior: any, locationId: string): Promise<{ code: string; message: string } | null> {
+  try {
+    const [{ data: conn }, { data: moves }] = await Promise.all([
+      sb.from('xero_connections').select('tenant_id,tenant_name').eq('location_id', locationId).maybeSingle(),
+      sb.from(LOG).select('detail').eq('location_id', locationId).eq('kind', 'organisation').order('created_at', { ascending: false }).limit(5),
+    ]);
+    const move = (moves || []).map((r: any) => r.detail).find((d: any) => d && d.via !== 'disconnect') || null;
+    if (!conn || !postedElsewhere({ prior, currentTenantId: conn.tenant_id, move })) return null;
+    const where = move?.from ? move.from : 'the Xero organisation this site was on before';
+    return { code: 'posted_to_other_organisation', message: `This day was posted to ${where}, before this site moved to ${conn.tenant_name || 'its organisation now'}. It is still there and is not in ${conn.tenant_name || 'the new organisation'}.` };
+  } catch (e) { console.warn('[xero-sales] could not check which organisation holds the day:', (e as Error)?.message); return null; }
+}
+
 // A day already in Xero. Asked by a person, it also compares what was posted with what the
 // day comes to now, and says when checks or refunds have arrived since (they are not in Xero).
 async function alreadyAnswer(prior: any, base: any, locationId: string, date: string, venue: any, compare: boolean) {
@@ -300,6 +323,8 @@ async function alreadyAnswer(prior: any, base: any, locationId: string, date: st
   const out: any = { ok: true, already: true, ...base, model: 'bank_tx', lines: prior.detail?.lines || [], warnings: [...(prior.detail?.warnings || [])] };
   const postings = prior.detail?.postings;
   if (!compare) return out;
+  const elsewhere = await elsewhereWarning(prior, locationId);
+  if (elsewhere) { out.warnings.push(elsewhere); return out; }
   // 2 Oct 2026: asked by a person, a day in Xero the old way says whether it can be replaced
   // with a sales invoice, and why not when it cannot (Leeds 27 Sep: "I cannot find the invoice").
   const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail,post_mode').eq('location_id', locationId).maybeSingle();
@@ -349,6 +374,8 @@ async function invoiceAlreadyAnswer(prior: any, base: any, locationId: string, d
   const docs = prior.detail?.documents || [];
   const out: any = { ok: true, already: true, ...base, model: 'sales_invoice', documents: docs, lines: [], warnings: [...(prior.detail?.warnings || [])] };
   if (!compare) return out;
+  const elsewhere = await elsewhereWarning(prior, locationId);
+  if (elsewhere) { out.warnings.push(elsewhere); return out; }
   try {
     const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
     const mapping = cfgRow?.mapping || {};
@@ -436,7 +463,8 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     // Nothing is sent while the site is not Ready (the mapping-only checks, then the plan's own).
     const { notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
     if (notReady.length) throw new NotReadyError(notReady);
-    const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([otherOrganisationProblem(cfgRow?.detail, tenantName, setupTabName(addedOn))]);
     const detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
     if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
       throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
@@ -701,7 +729,8 @@ Deno.serve(async (req) => {
     const extraWarnings: any[] = [];
     let posted = 0, skipped = 0;
     try {
-      const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      if (setupMadeForAnother(cfg?.detail, tenantId)) throw new Error(`${otherOrganisationProblem(cfg?.detail, tenantName, 'the Xero setup').message} Nothing was posted.`);
       const detail = await ensureDetail(accessToken, tenantId, locationId, requiredDefaults(summary, mapping));
       const plan = planXeroDay(summary, { mapping, detail, sample, site: siteArg });
       const siblings = await siblingCount(tenantId, locationId);

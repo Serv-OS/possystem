@@ -72,9 +72,61 @@ export function mappingForNewOrganisation(mapping) {
 }
 
 // What the organisation change does to auto posting. A site on the daily sales invoice keeps
-// it: the Ready check holds every post until the site is set up again, then it resumes by
-// itself. A site on bank transactions has no such check (it posts on defaults), so auto
-// posting goes off, as it is for any newly connected site.
-export function autoDailyAfterOrganisationChange(postMode, autoDaily) {
-  return postMode === 'sales_invoice' ? !!autoDaily : false;
+// it: the Ready check holds every post until the site is set up again. That check only covers
+// days on or after the site's first invoice day (an earlier day posts as bank transactions, on
+// defaults, with no check), so auto posting is kept only when the first invoice day is safely
+// in the past: two days before today (UTC) is on or before the last completed business day in
+// every time zone. Anything else (a site on bank transactions, a first invoice day still to
+// come) has auto posting turned off, as it is for any newly connected site.
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+export function autoDailyAfterOrganisationChange(postMode, autoDaily, startDate = null, todayYmd = null) {
+  if (!autoDaily || postMode !== 'sales_invoice') return false;
+  if (!YMD.test(String(startDate || '')) || !YMD.test(String(todayYmd || ''))) return false;
+  const cut = new Date(Date.parse(`${todayYmd}T00:00:00Z`) - 2 * 86400000).toISOString().slice(0, 10);
+  return String(startDate) <= cut;
+}
+
+// Which organisations a Back Office user may move a site to from the list. A Xero sign in can
+// reach organisations of more than one ServOS company (a bookkeeper who connected two
+// customers), and Back Office access to one site must never be enough to post its sales into
+// another company's books. So the list is the organisations already used by a site of the SAME
+// company, plus the site's own. Any other organisation needs a sign in at Xero (which needs the
+// Xero login). ServOS staff (super admin) see them all.
+export function allowedOrganisations(choices, companyTenantIds, currentTenantId, isSuper = false) {
+  const list = Array.isArray(choices) ? choices : [];
+  if (isSuper) return list;
+  const ok = new Set([...(Array.isArray(companyTenantIds) ? companyTenantIds : []), currentTenantId].filter(Boolean));
+  return list.filter((o) => ok.has(o.tenantId));
+}
+
+// Which organisation a site's Xero setup was made for, when it signs in again:
+// its connection row if it has one; else the last organisation record; else the organisation
+// its cached setup names (xero_config.detail.site.tenantId, stamped when the setup was last
+// read from Xero). null when nothing says (a site that never connected).
+export function previousOrganisation({ row = null, record = null, detail = null } = {}) {
+  if (row?.tenant_id) return { id: row.tenant_id, name: row.tenant_name || null };
+  if (record?.tenant_id) return { id: record.tenant_id, name: record.tenant_name || null };
+  const site = isObj(detail) && isObj(detail.site) ? detail.site : null;
+  if (site?.tenantId) return { id: site.tenantId, name: site.orgName || null };
+  return null;
+}
+
+// Was this posted day sent to another organisation than the one the site is on now?
+// A day posted since 7 Oct 2026 says so itself (detail.tenant_id). An older day is taken to be
+// in the previous organisation when it was posted before the site's last move.
+export function postedElsewhere({ prior = null, currentTenantId = null, move = null } = {}) {
+  const stamped = prior?.detail?.tenant_id;
+  if (stamped && currentTenantId) return stamped !== currentTenantId;
+  if (!move?.at || !prior?.updated_at) return false;
+  if (move.tenant_id && currentTenantId && move.tenant_id !== currentTenantId) return false;
+  return Date.parse(prior.updated_at) < Date.parse(move.at);
+}
+
+// The setup a post is about to use was made for another organisation than the one the site is
+// connected to now (a run that read the setup just before a move, or a move made outside the
+// two guarded paths). Refused as Not Ready: nothing chosen for one organisation is ever posted
+// into another. After a real move the cached setup is empty, so this never trips.
+export function setupMadeForAnother(detail, tenantId) {
+  const made = isObj(detail) && isObj(detail.site) ? detail.site.tenantId : null;
+  return !!(made && tenantId && made !== tenantId);
 }

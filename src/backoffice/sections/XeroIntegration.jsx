@@ -15,7 +15,7 @@
 // (xero/ReplaceDay.jsx). Peter at Leeds: "these are supposed to be invoices, I cannot find the
 // invoice at all".
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getActiveLocationSync } from '../../lib/supabase';
 import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
 import { money } from '../../lib/currency';
@@ -223,9 +223,14 @@ export default function XeroIntegration() {
   const [lapsed, setLapsed] = useState(false);
   const [addedOnTax, setAddedOnTax] = useState(false);
 
+  // 7 Oct 2026: the venue is taken ONCE per visit to this screen. It used to be read again on
+  // every reload from a key every browser tab shares, so after another tab switched venue this
+  // screen could reload as that venue while the header still named this one (a venue switch in
+  // THIS tab reloads the page, so this never goes stale).
+  const venueRef = useRef(null);
   const load = useCallback(async () => {
     setLoading(true); setErr('');
-    const id = getActiveLocationSync(); setLocId(id);
+    const id = venueRef.current || getActiveLocationSync(); venueRef.current = id; setLocId(id);
     if (!id) { setLoading(false); return; }
     try {
       setStatus(await xeroStatus(id));
@@ -256,6 +261,14 @@ export default function XeroIntegration() {
       setLapsed(figuresLapsed(m.postMode, m.mapping));
     } catch { /* the next load shows it */ }
   }, [locId]);
+
+  // After the organisation box moves the site: the connection and the posting model again, with
+  // no Loading screen (that would take the box, and what it just said, off the page).
+  const refreshAfterMove = useCallback(async () => {
+    if (!locId) return;
+    try { setStatus(await xeroStatus(locId)); } catch { /* the next load shows it */ }
+    await refreshMode();
+  }, [locId, refreshMode]);
 
   // Handle the redirect back from Xero (?xero=connected|error|expired|invalid|no_org).
   useEffect(() => {
@@ -353,7 +366,7 @@ export default function XeroIntegration() {
           <div style={{ marginTop: 12, fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{status.tenant_name || 'Xero organisation'}</div>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 2 }}>Linked {status.connected_at ? new Date(status.connected_at).toLocaleDateString() : ''}</div>
           <OrganisationPicker locId={locId} currentName={status.tenant_name} postMode={postMode} changed={status.organisation_changed}
-            setupTab={tabName} busy={busy} onSignIn={connect} onChanged={load} S={S} />
+            setupTab={tabName} busy={busy} onSignIn={connect} onChanged={refreshAfterMove} S={S} />
           <div style={{ ...S.note, marginTop: 10 }}>
             {postMode === 'sales_invoice' ? 'This site posts a daily sales invoice.' : `This site posts bank transactions each day. The daily sales invoice is set up under ${tabName}.`}
             {siblings.length > 0 && <> Other sites on this organisation: {siblings.map((x) => `${x.name} (${x.postMode === 'sales_invoice' ? 'sales invoice' : 'bank transactions'})`).join(', ')}.</>}

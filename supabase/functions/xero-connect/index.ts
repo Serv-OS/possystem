@@ -29,7 +29,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { authorizeUrl, exchangeCode, getConnections, getValidAccessToken, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
-import { pickConsentedOrg, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange } from '../_shared/xeroOrg.js';
+import { pickConsentedOrg, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange, allowedOrganisations, previousOrganisation } from '../_shared/xeroOrg.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { xeroUserIdFromToken, xeroAuthEventIdFromToken } from '../_shared/xeroTokens.js';
 
@@ -46,10 +46,10 @@ const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: 
 
 const REDIRECT_URI = `${SUPABASE_URL}/functions/v1/xero-connect`;
 
-async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
+async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true; userId: string; isSuper: boolean } | { ok: false; res: Response }> {
   const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
   if (!token) return { ok: false, res: json({ error: 'Unauthorized' }, 401) };
-  if (token === SERVICE_ROLE) return { ok: true, userId: 'service' };
+  if (token === SERVICE_ROLE) return { ok: true, userId: 'service', isSuper: true };
   const { data: { user: caller } } = await sb.auth.getUser(token);
   if (!caller) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
   const [{ data: ul }, { data: prof }] = await Promise.all([
@@ -57,7 +57,7 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
     sb.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
   ]);
   if (!ul && prof?.role !== 'super_admin') return { ok: false, res: json({ error: 'No access to this location' }, 403) };
-  return { ok: true, userId: caller.id };
+  return { ok: true, userId: caller.id, isSuper: prof?.role === 'super_admin' };
 }
 
 function publicStatus(c: any, moved: any = null) {
@@ -71,7 +71,7 @@ function publicStatus(c: any, moved: any = null) {
     scopes: c.scopes,
     manager_url: 'https://go.xero.com',
     // The last time this site moved to another organisation, when it is the one it is on now.
-    organisation_changed: moved && moved.tenant_id === c.tenant_id ? { at: moved.at, from: moved.from } : null,
+    organisation_changed: moved && moved.tenant_id === c.tenant_id ? { at: moved.at, from: moved.from, autoTurnedOff: !!moved.auto_turned_off } : null,
   };
 }
 
@@ -92,9 +92,26 @@ async function logOrganisation(locationId: string, detail: Record<string, unknow
 }
 
 async function lastOrganisationRecord(locationId: string): Promise<any | null> {
-  const { data } = await sb.from('xero_sync_log').select('detail,created_at').eq('location_id', locationId).eq('kind', ORG_KIND)
+  const { data, error } = await sb.from('xero_sync_log').select('detail,created_at').eq('location_id', locationId).eq('kind', ORG_KIND)
     .order('created_at', { ascending: false }).limit(1);
+  // A read that failed is never taken as "no record": the reset it guards would be skipped.
+  if (error) throw new Error(`Could not read this site's organisation record: ${error.message}`);
   return data?.[0]?.detail || null;
+}
+
+// The Xero organisations already used by a site of the same ServOS company as this one, and
+// the site's own name (for the words on screen). See allowedOrganisations.
+async function companyOrganisations(locationId: string): Promise<{ tenantIds: string[]; siteName: string | null }> {
+  const { data: me, error } = await sb.from('locations').select('org_id,name').eq('id', locationId).maybeSingle();
+  if (error) throw new Error(`Could not read this site: ${error.message}`);
+  if (!me?.org_id) return { tenantIds: [], siteName: me?.name || null };
+  const { data: sites, error: sErr } = await sb.from('locations').select('id').eq('org_id', me.org_id);
+  if (sErr) throw new Error(`Could not read this company's sites: ${sErr.message}`);
+  const ids = (sites || []).map((r: any) => r.id);
+  if (!ids.length) return { tenantIds: [], siteName: me.name || null };
+  const { data: rows, error: cErr } = await sb.from('xero_connections').select('tenant_id').in('location_id', ids);
+  if (cErr) throw new Error(`Could not read this company's Xero connections: ${cErr.message}`);
+  return { tenantIds: [...new Set((rows || []).map((r: any) => r.tenant_id).filter(Boolean))] as string[], siteName: me.name || null };
 }
 
 // The site is about to post to another organisation. Order matters: the copy is written first
@@ -104,9 +121,10 @@ async function lastOrganisationRecord(locationId: string): Promise<any | null> {
 async function resetForNewOrganisation(locationId: string, prev: Org, next: Org, via: string, by: string | null) {
   const { data: cfg, error: readErr } = await sb.from('xero_config').select('mapping,detail,auto_daily,post_mode').eq('location_id', locationId).maybeSingle();
   if (readErr) throw new Error(`Could not read this site's Xero setup: ${readErr.message}`);
-  const autoAfter = cfg ? autoDailyAfterOrganisationChange(cfg.post_mode, cfg.auto_daily) : false;
+  const autoAfter = cfg ? autoDailyAfterOrganisationChange(cfg.post_mode, cfg.auto_daily, cfg.mapping?.invoiceStartDate, new Date().toISOString().slice(0, 10)) : false;
   await logOrganisation(locationId, {
     via, by, tenant_id: next.id, tenant_name: next.name, from: prev.name || prev.id, from_tenant_id: prev.id,
+    auto_turned_off: !!cfg?.auto_daily && !autoAfter,
     cleared: cfg ? { mapping: cfg.mapping ?? null, detail: cfg.detail ?? null, auto_daily: !!cfg.auto_daily, post_mode: cfg.post_mode ?? null } : null,
   });
   if (cfg) {
@@ -143,11 +161,6 @@ Deno.serve(async (req) => {
     if (!payload.ts || (Date.now() - Number(payload.ts)) > 10 * 60 * 1000) return redirect(withParam(ret, 'xero', 'expired'));
     try {
       const t = await exchangeCode(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, code);
-      const conns = await getConnections(t.access_token);
-      // The organisation of THIS sign in event (chosen on Xero's consent screen), not the first
-      // one this Xero user ever authorised: a group with two organisations got the wrong one.
-      const org = pickConsentedOrg(conns, xeroAuthEventIdFromToken(t.access_token));
-      if (!org) return redirect(withParam(ret, 'xero', 'no_org'));
       const tokenSet = {
         access_token: t.access_token,
         refresh_token: t.refresh_token,
@@ -156,21 +169,41 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       };
       // 1. The new set supersedes this Xero user's older one, so it goes to every row that user
-      //    signed in, on any organisation, BEFORE anything else can fail: those sites keep posting.
+      //    signed in, on any organisation, straight after the exchange and before anything that
+      //    can fail (reading the organisations, the reset): those sites keep posting whatever
+      //    happens to this sign in.
       const uid = xeroUserIdFromToken(t.access_token);
       if (uid) {
         try {
-          const { data: all } = await sb.from('xero_connections').select('location_id,access_token');
+          const { data: all, error: allErr } = await sb.from('xero_connections').select('location_id,access_token');
+          if (allErr) throw new Error(allErr.message);
           const same = (all || []).filter((r: any) => xeroUserIdFromToken(r.access_token) === uid).map((r: any) => r.location_id);
-          if (same.length) await sb.from('xero_connections').update(tokenSet).in('location_id', same);
-        } catch (e) { console.warn('[xero-connect] sibling token update', (e as Error)?.message || e); }
+          if (same.length) {
+            const { error: sErr } = await sb.from('xero_connections').update(tokenSet).in('location_id', same);
+            if (sErr) throw new Error(sErr.message);
+          }
+        } catch (e) { console.error('[xero-connect] the new token set did not reach the sites sharing this sign in:', (e as Error)?.message || e); }
       }
-      // 2. This site. If it is moving to another organisation (connected again and another one
+      const conns = await getConnections(t.access_token);
+      // The organisation of THIS sign in event (chosen on Xero's consent screen), not the first
+      // one this Xero user ever authorised: a group with two organisations got the wrong one.
+      const org = pickConsentedOrg(conns, xeroAuthEventIdFromToken(t.access_token));
+      if (!org) return redirect(withParam(ret, 'xero', 'no_org'));
+      // 2. This site. If it is moving to another organisation (signed in again and another one
       //    chosen, or disconnected from one and connected to another), its Xero setup is reset
       //    first, so nothing chosen for the old organisation is ever posted into the new one.
-      const { data: existing } = await sb.from('xero_connections').select('tenant_id,tenant_name').eq('location_id', payload.loc).maybeSingle();
-      const last = existing ? null : await lastOrganisationRecord(payload.loc);
-      const prev: Org | null = existing ? { id: existing.tenant_id, name: existing.tenant_name } : last?.tenant_id ? { id: last.tenant_id, name: last.tenant_name || null } : null;
+      //    The organisation the setup was made for: the connection row, else the last
+      //    organisation record, else the organisation the cached setup itself names.
+      const { data: existing, error: exErr } = await sb.from('xero_connections').select('tenant_id,tenant_name').eq('location_id', payload.loc).maybeSingle();
+      if (exErr) throw new Error(`Could not read the Xero connection: ${exErr.message}`);
+      let record: any = null, cached: any = null;
+      if (!existing) {
+        record = await lastOrganisationRecord(payload.loc);
+        const { data: cfg0, error: cfgErr } = await sb.from('xero_config').select('detail').eq('location_id', payload.loc).maybeSingle();
+        if (cfgErr) throw new Error(`Could not read this site's Xero setup: ${cfgErr.message}`);
+        cached = cfg0?.detail || null;
+      }
+      const prev: Org | null = previousOrganisation({ row: existing, record, detail: cached });
       const by = payload.uid && payload.uid !== 'service' ? payload.uid : null;
       if (prev && prev.id !== org.tenantId) {
         await resetForNewOrganisation(payload.loc, prev, { id: org.tenantId, name: org.tenantName || null }, 'connect', by);
@@ -218,12 +251,18 @@ Deno.serve(async (req) => {
   if (action === 'organisations') {
     const { data: c } = await sb.from('xero_connections').select('tenant_id, tenant_name').eq('location_id', locationId).maybeSingle();
     if (!c) return json({ connected: false, organisations: [] });
+    // lookupError, not error: the screen must still show where the site posts when Xero cannot
+    // be asked, and must not then say this is the only organisation (it does not know).
+    const own = [{ tenantId: c.tenant_id, tenantName: c.tenant_name || c.tenant_id, current: true }];
     try {
+      const company = await companyOrganisations(locationId);
       const { accessToken } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
       const conns = await getConnections(accessToken);
-      return json({ connected: true, current: c.tenant_id, organisations: organisationChoices(conns, c.tenant_id) });
+      const all = organisationChoices(conns, c.tenant_id);
+      const organisations = allowedOrganisations(all, company.tenantIds, c.tenant_id, acc.isSuper);
+      return json({ connected: true, current: c.tenant_id, siteName: company.siteName, organisations: organisations.length ? organisations : own, others: all.length - organisations.length });
     } catch (e) {
-      return json({ connected: true, current: c.tenant_id, organisations: [{ tenantId: c.tenant_id, tenantName: c.tenant_name || c.tenant_id, current: true }], error: (e as Error)?.message || String(e) });
+      return json({ connected: true, current: c.tenant_id, organisations: own, lookupError: (e as Error)?.message || String(e) });
     }
   }
 
@@ -242,12 +281,13 @@ Deno.serve(async (req) => {
     try {
       const { accessToken } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
       const conns = await getConnections(accessToken);
-      const org = organisationChoices(conns, c.tenant_id).find((o) => o.tenantId === tenantId);
-      if (!org) return json({ error: 'That organisation is not connected to ServOS for this Xero sign in. Use "Sign in to Xero" below and choose it on Xero\'s screen.' }, 400);
+      const company = await companyOrganisations(locationId);
+      const org = allowedOrganisations(organisationChoices(conns, c.tenant_id), company.tenantIds, c.tenant_id, acc.isSuper).find((o) => o.tenantId === tenantId);
+      if (!org) return json({ error: 'That organisation cannot be chosen from the list for this site. Use "Sign in to Xero and choose it" and pick it on Xero\'s screen.' }, 400);
       const res = await resetForNewOrganisation(locationId, { id: c.tenant_id, name: c.tenant_name }, { id: org.tenantId, name: org.tenantName }, 'picker', acc.userId === 'service' ? null : acc.userId);
       const { error: uErr } = await sb.from('xero_connections').update({ tenant_id: org.tenantId, tenant_name: org.tenantName }).eq('location_id', locationId);
       if (uErr) return json({ error: `This site's Xero setup was cleared, but the organisation could not be changed: ${uErr.message}. Press again.` }, 500);
-      return json({ ok: true, tenant_id: org.tenantId, tenant_name: org.tenantName, previous: c.tenant_name || c.tenant_id, autoTurnedOff: res.autoTurnedOff, postMode: res.postMode });
+      return json({ ok: true, tenant_id: org.tenantId, tenant_name: org.tenantName, previous: c.tenant_name || c.tenant_id, autoTurnedOff: res.autoTurnedOff, postMode: res.postMode, siteName: company.siteName });
     } catch (e) {
       return json({ error: (e as Error)?.message || String(e) }, 502);
     }

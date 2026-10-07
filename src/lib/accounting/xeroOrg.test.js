@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pickConsentedOrg, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange } from '../../../supabase/functions/_shared/xeroOrg.js';
+import { pickConsentedOrg, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange, allowedOrganisations, previousOrganisation, postedElsewhere, setupMadeForAnother } from '../../../supabase/functions/_shared/xeroOrg.js';
 import { xeroAuthEventIdFromToken, xeroUserIdFromToken, tokenFamily, pickTokenDonor } from '../../../supabase/functions/_shared/xeroTokens.js';
 import { invoiceReadiness, validateInvoiceMapping, mappingHash } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
+import { moveWords } from './xeroMoveWords.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -109,11 +110,56 @@ test('after the move a site on the daily sales invoice is Not Ready: tracking, a
   assert.ok(!failed.includes('site'), 'the site name and code are kept');
 });
 
-test('auto posting after the move: kept on the daily sales invoice (the Ready check holds it), off on bank transactions', () => {
-  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true), true);
-  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', false), false);
-  assert.equal(autoDailyAfterOrganisationChange('invoice', true), false);
-  assert.equal(autoDailyAfterOrganisationChange(null, true), false);
+test('auto posting after the move: kept only on the daily sales invoice with a first invoice day safely in the past; off everywhere else', () => {
+  const today = '2026-10-07';
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, '2026-10-05', today), true, 'Barnsley: first invoice day two days back');
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, '2026-09-27', today), true);
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, '2026-10-06', today), false, 'yesterday could still post as bank transactions somewhere: off');
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, '2026-10-20', today), false, 'a first invoice day still to come: days before it post on defaults with no Ready check');
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, null, today), false);
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', true, '2026-10-01'), false, 'no clock given: off');
+  assert.equal(autoDailyAfterOrganisationChange('sales_invoice', false, '2026-09-27', today), false, 'it was off: it stays off');
+  assert.equal(autoDailyAfterOrganisationChange('invoice', true, '2026-09-27', today), false, 'bank transactions: no Ready check at all');
+  assert.equal(autoDailyAfterOrganisationChange(null, true, '2026-09-27', today), false);
+});
+
+test('the list offers only organisations the same company already uses (plus its own); ServOS staff see all', () => {
+  const all = [{ tenantId: 'b2d3', tenantName: 'Coffeeboy Retail LTD', current: true }, { tenantId: 'td01', tenantName: 'TDNZ', current: false }, { tenantId: 'zz', tenantName: 'Another Company Ltd', current: false }];
+  assert.deepEqual(allowedOrganisations(all, ['b2d3'], 'b2d3').map((o) => o.tenantId), ['b2d3'], 'TDNZ is used by no site of the company yet: sign in at Xero for the first one');
+  assert.deepEqual(allowedOrganisations(all, ['b2d3', 'td01'], 'b2d3').map((o) => o.tenantId), ['b2d3', 'td01'], 'once one site is on TDNZ the others can pick it');
+  assert.deepEqual(allowedOrganisations(all, [], 'td01').map((o) => o.tenantId), ['td01'], 'its own organisation is always shown');
+  assert.deepEqual(allowedOrganisations(all, ['b2d3'], 'b2d3', true).map((o) => o.tenantId), ['b2d3', 'td01', 'zz']);
+  assert.deepEqual(allowedOrganisations(null, null, null), []);
+});
+
+test('which organisation a setup was made for: the connection row, then the organisation record, then the cached setup itself', () => {
+  const row = { tenant_id: 'b2d3', tenant_name: 'Coffeeboy Retail LTD' };
+  const record = { tenant_id: 'td01', tenant_name: 'TDNZ', via: 'picker' };
+  const detail = { site: { tenantId: 'old1', orgName: 'Old Co' } };
+  assert.deepEqual(previousOrganisation({ row, record, detail }), { id: 'b2d3', name: 'Coffeeboy Retail LTD' });
+  assert.deepEqual(previousOrganisation({ record, detail }), { id: 'td01', name: 'TDNZ' });
+  // Disconnected before this release (no row, no record): the cached setup still names the organisation.
+  assert.deepEqual(previousOrganisation({ detail }), { id: 'old1', name: 'Old Co' });
+  assert.equal(previousOrganisation({ detail: {} }), null, 'a site that never connected');
+  assert.equal(previousOrganisation(), null);
+});
+
+test('a setup made for one organisation is never posted into another; an empty setup (after a real move) never trips', () => {
+  assert.equal(setupMadeForAnother({ site: { tenantId: 'b2d3' } }, 'td01'), true);
+  assert.equal(setupMadeForAnother({ site: { tenantId: 'td01' } }, 'td01'), false);
+  assert.equal(setupMadeForAnother({}, 'td01'), false);
+  assert.equal(setupMadeForAnother(null, 'td01'), false);
+  assert.equal(setupMadeForAnother({ site: { tenantId: 'b2d3' } }, null), false);
+});
+
+test('a day posted before the move is in the old organisation: by its own stamp when it has one, else by when it was posted', () => {
+  const move = { at: '2026-10-07T15:00:00.000Z', tenant_id: 'td01', from: 'Coffeeboy Retail LTD', via: 'picker' };
+  assert.equal(postedElsewhere({ prior: { detail: { tenant_id: 'b2d3' }, updated_at: '2026-10-08T10:10:00Z' }, currentTenantId: 'td01', move }), true, 'the stamp decides');
+  assert.equal(postedElsewhere({ prior: { detail: { tenant_id: 'td01' }, updated_at: '2026-10-06T10:10:00Z' }, currentTenantId: 'td01', move }), false);
+  assert.equal(postedElsewhere({ prior: { detail: {}, updated_at: '2026-10-06T10:10:02Z' }, currentTenantId: 'td01', move }), true, '5 and 6 Oct, posted before the move, no stamp');
+  assert.equal(postedElsewhere({ prior: { detail: {}, updated_at: '2026-10-08T10:10:02Z' }, currentTenantId: 'td01', move }), false);
+  assert.equal(postedElsewhere({ prior: { detail: {}, updated_at: '2026-10-06T10:10:02Z' }, currentTenantId: 'td01', move: null }), false, 'a site that never moved');
+  assert.equal(postedElsewhere({ prior: { detail: {}, updated_at: '2026-10-06T10:10:02Z' }, currentTenantId: 'b2d3', move }), false, 'the record is for another organisation than the site is on now: say nothing');
 });
 
 test('xero-connect: the setup is reset BEFORE the organisation changes, the copy is written before anything is cleared, and the new tokens reach every row of the Xero user', () => {
@@ -122,6 +168,7 @@ test('xero-connect: the setup is reset BEFORE the organisation changes, the copy
   const set = src.slice(src.indexOf("if (action === 'set_organisation')"), src.indexOf("if (action === 'disconnect')"));
   assert.ok(set.indexOf('resetForNewOrganisation(') > 0 && set.indexOf('resetForNewOrganisation(') < set.indexOf(".update({ tenant_id: org.tenantId"), 'reset first, organisation second');
   assert.match(set, /catch \(e\) \{\s*return json\(\{ error:/, 'a failed refresh or Xero read answers JSON, never a bare 500');
+  assert.match(set, /allowedOrganisations\(organisationChoices\(conns, c\.tenant_id\), company\.tenantIds, c\.tenant_id, acc\.isSuper\)/, 'the server enforces the same list the screen shows');
   // resetForNewOrganisation: the copy (logOrganisation) before the clear (update).
   const reset = src.slice(src.indexOf('async function resetForNewOrganisation'), src.indexOf('function redirect('));
   assert.ok(reset.indexOf('await logOrganisation(') > 0 && reset.indexOf('await logOrganisation(') < reset.indexOf("sb.from('xero_config').update("), 'copy first');
@@ -129,14 +176,34 @@ test('xero-connect: the setup is reset BEFORE the organisation changes, the copy
   // callback: the sign in event picks the organisation; tokens to the user's rows on any organisation, before the reset can fail.
   const cb = src.slice(src.indexOf("if (req.method === 'GET')"), src.indexOf("if (req.method !== 'POST')"));
   assert.match(cb, /pickConsentedOrg\(conns, xeroAuthEventIdFromToken\(t\.access_token\)\)/);
+  assert.ok(cb.indexOf(".update(tokenSet).in('location_id', same)") < cb.indexOf('await getConnections(t.access_token)'), 'the new token set is stored before Xero is asked anything else');
+  assert.match(cb, /previousOrganisation\(\{ row: existing, record, detail: cached \}\)/);
   assert.match(cb, /\.update\(tokenSet\)\.in\('location_id', same\);/);
   assert.doesNotMatch(cb, /eq\('tenant_id', org\.tenantId\)/, 'no organisation fence on the token copy');
   assert.ok(cb.indexOf(".update(tokenSet).in('location_id', same)") < cb.indexOf('resetForNewOrganisation('), 'tokens stored before the reset');
   assert.ok(cb.indexOf('resetForNewOrganisation(') < cb.indexOf("sb.from('xero_connections').upsert("), 'reset before the site is stored on the new organisation');
 });
 
-test('every posted day records its organisation, on both posting models', () => {
+test('every posted day records its organisation, and neither model posts a setup made for another one', () => {
   const src = read('supabase/functions/xero-sales/index.ts');
+  assert.equal((src.match(/if \(setupMadeForAnother\(/g) || []).length, 2, 'the sales invoice path and the bank transactions path');
+  assert.ok(src.indexOf('if (setupMadeForAnother(cfgRow?.detail, tenantId))') < src.indexOf('const detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail'), 'checked before the cached setup is refreshed for the new organisation');
   assert.match(src, /detail: \{ model: 'sales_invoice', tenant_id: tenantId,/);
   assert.match(src, /detail: \{ sample, tenant_id: tenantId, lines,/);
+});
+
+test('the organisation box: the words say what is cleared, where to choose it again, and what does not post by itself', () => {
+  const src = read('src/backoffice/sections/xero/OrganisationPicker.jsx');
+  assert.match(src, /lookupError/, 'a list Xero could not give is told apart from a list of one');
+  assert.doesNotMatch(src, /the only organisation/, 'never claims to know there is only one');
+  const fn = moveWords;
+  const inv = fn({ site: 'Coffee Boy Headingley', from: 'Coffeeboy Retail LTD', to: 'TDNZ', invoice: true, setupTab: 'VAT and accounts' });
+  for (const w of ['Coffee Boy Headingley', 'TDNZ instead of Coffeeboy Retail LTD', 'purchases account', 'NOT posted by themselves', 'stay in Coffeeboy Retail LTD']) assert.ok(inv.includes(w), w);
+  const bank = fn({ site: 'A', from: 'X', to: 'Y', invoice: false, setupTab: 'Setup' });
+  assert.ok(bank.includes('Auto posting is turned off') && bank.includes('under Posting (Account mapping)'));
+  assert.ok(!bank.includes("check a day's figures"), 'a bank transactions site has no figures check');
+  // The screen keeps its venue for the whole visit, and the box refreshes without a Loading screen.
+  const screen = read('src/backoffice/sections/XeroIntegration.jsx');
+  assert.match(screen, /const id = venueRef\.current \|\| getActiveLocationSync\(\); venueRef\.current = id;/);
+  assert.match(screen, /onChanged=\{refreshAfterMove\}/);
 });
