@@ -292,10 +292,24 @@ async function canReplace(row: any, cfgRow: any, date: string, locationId: strin
   return replaceability({ ...args, provenInvoice: await hasInvoiceDay(locationId) });
 }
 
-// The words for a setup made for another organisation (see setupMadeForAnother).
-function otherOrganisationProblem(detail: any, tenantName: string | null, tab: string) {
+// A setup made for another organisation is never posted (see setupMadeForAnother). This run is
+// refused. If the STORED setup still names the other organisation (not only this run's copy of
+// it), the cached part is cleared and the figures tick dropped, so the refusal can clear: the
+// site is then Not Ready until a person checks a day's figures against the organisation it is
+// connected to now. Without this the refusal could never lift (nothing else rewrites the cache
+// once this check stands in front of the refresh). Returns the words for the refusal.
+async function refuseSetupMadeForAnother(locationId: string, detail: any, tenantId: string, tenantName: string | null, tab: string) {
+  try {
+    const { data: cur } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
+    if (cur && setupMadeForAnother(cur.detail, tenantId)) {
+      const mapping: Record<string, unknown> = { ...((cur.mapping && typeof cur.mapping === 'object') ? cur.mapping : {}) };
+      delete mapping.figuresChecked;
+      const { error } = await sb.from('xero_config').update({ detail: {}, mapping, updated_at: new Date().toISOString() }).eq('location_id', locationId);
+      if (error) console.warn('[xero-sales] could not clear a setup made for another organisation:', error.message);
+    }
+  } catch (e) { console.warn('[xero-sales] could not clear a setup made for another organisation:', (e as Error)?.message); }
   const was = detail?.site?.orgName ? ` (${detail.site.orgName})` : '';
-  return { code: 'organisation', message: `This site's Xero setup was made for another Xero organisation${was}. Choose its accounts, VAT rates and tracking again for ${tenantName || 'the organisation it is connected to now'} under ${tab}, then check a day's figures.` };
+  return { code: 'organisation', message: `This site's Xero setup was made for another Xero organisation${was}. Check its accounts, VAT rates and tracking for ${tenantName || 'the organisation it is connected to now'} under ${tab}, then check a day's figures.` };
 }
 
 // 7 Oct 2026: a day posted before this site moved to another Xero organisation is still in the
@@ -303,13 +317,14 @@ function otherOrganisationProblem(detail: any, tenantName: string | null, tab: s
 // today's setup (made for the new organisation, so every line would read as changed).
 async function elsewhereWarning(prior: any, locationId: string): Promise<{ code: string; message: string } | null> {
   try {
-    const [{ data: conn }, { data: moves }] = await Promise.all([
+    const [{ data: conn }, { data: rows }] = await Promise.all([
       sb.from('xero_connections').select('tenant_id,tenant_name').eq('location_id', locationId).maybeSingle(),
-      sb.from(LOG).select('detail').eq('location_id', locationId).eq('kind', 'organisation').order('created_at', { ascending: false }).limit(5),
+      sb.from(LOG).select('detail').eq('location_id', locationId).eq('kind', 'organisation').order('created_at', { ascending: false }).limit(50),
     ]);
-    const move = (moves || []).map((r: any) => r.detail).find((d: any) => d && d.via !== 'disconnect') || null;
-    if (!conn || !postedElsewhere({ prior, currentTenantId: conn.tenant_id, move })) return null;
-    const where = move?.from ? move.from : 'the Xero organisation this site was on before';
+    if (!conn) return null;
+    const other = postedElsewhere({ prior, currentTenantId: conn.tenant_id, moves: (rows || []).map((r: any) => r.detail) });
+    if (!other) return null;
+    const where = other.name || 'the Xero organisation this site was on before';
     return { code: 'posted_to_other_organisation', message: `This day was posted to ${where}, before this site moved to ${conn.tenant_name || 'its organisation now'}. It is still there and is not in ${conn.tenant_name || 'the new organisation'}.` };
   } catch (e) { console.warn('[xero-sales] could not check which organisation holds the day:', (e as Error)?.message); return null; }
 }
@@ -324,7 +339,8 @@ async function alreadyAnswer(prior: any, base: any, locationId: string, date: st
   const postings = prior.detail?.postings;
   if (!compare) return out;
   const elsewhere = await elsewhereWarning(prior, locationId);
-  if (elsewhere) { out.warnings.push(elsewhere); return out; }
+  // No replace is offered for it (the screen reads a missing answer as "needs a ServOS update").
+  if (elsewhere) { out.warnings.push(elsewhere); out.replace = replaceAnswer({ replaceable: false, reason: 'other_organisation', message: '' }); return out; }
   // 2 Oct 2026: asked by a person, a day in Xero the old way says whether it can be replaced
   // with a sales invoice, and why not when it cannot (Leeds 27 Sep: "I cannot find the invoice").
   const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail,post_mode').eq('location_id', locationId).maybeSingle();
@@ -464,7 +480,7 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     const { notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
     if (notReady.length) throw new NotReadyError(notReady);
     const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
-    if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([otherOrganisationProblem(cfgRow?.detail, tenantName, setupTabName(addedOn))]);
+    if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
     const detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
     if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
       throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
@@ -585,7 +601,9 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
     } else {
       const { notReady, addedOn } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
       if (notReady.length) throw new NotReadyError(notReady);
-      const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      // The same rule as any push: a replace never refreshes its way past a setup made for another organisation.
+      if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
       detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
       if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
         throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
@@ -730,7 +748,7 @@ Deno.serve(async (req) => {
     let posted = 0, skipped = 0;
     try {
       const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
-      if (setupMadeForAnother(cfg?.detail, tenantId)) throw new Error(`${otherOrganisationProblem(cfg?.detail, tenantName, 'the Xero setup').message} Nothing was posted.`);
+      if (setupMadeForAnother(cfg?.detail, tenantId)) throw new Error(`${(await refuseSetupMadeForAnother(locationId, cfg?.detail, tenantId, tenantName, 'Posting')).message} Nothing was posted.`);
       const detail = await ensureDetail(accessToken, tenantId, locationId, requiredDefaults(summary, mapping));
       const plan = planXeroDay(summary, { mapping, detail, sample, site: siteArg });
       const siblings = await siblingCount(tenantId, locationId);

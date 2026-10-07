@@ -111,15 +111,30 @@ export function previousOrganisation({ row = null, record = null, detail = null 
   return null;
 }
 
-// Was this posted day sent to another organisation than the one the site is on now?
-// A day posted since 7 Oct 2026 says so itself (detail.tenant_id). An older day is taken to be
-// in the previous organisation when it was posted before the site's last move.
-export function postedElsewhere({ prior = null, currentTenantId = null, move = null } = {}) {
-  const stamped = prior?.detail?.tenant_id;
-  if (stamped && currentTenantId) return stamped !== currentTenantId;
-  if (!move?.at || !prior?.updated_at) return false;
-  if (move.tenant_id && currentTenantId && move.tenant_id !== currentTenantId) return false;
-  return Date.parse(prior.updated_at) < Date.parse(move.at);
+// Which OTHER organisation holds this posted day: { id, name }, or null when it is in the one
+// the site is on now (or nothing says otherwise). A day posted since 7 Oct 2026 says so itself
+// (detail.tenant_id). An older day went to wherever the site was when it was posted: the
+// organisation the site LEFT in its first move after that day (moves: the site's organisation
+// records, each { at, tenant_id, tenant_name, from, from_tenant_id, via }). No move after the
+// day = it was posted where the site still is.
+export function postedElsewhere({ prior = null, currentTenantId = null, moves = [] } = {}) {
+  if (!prior || !currentTenantId) return null;
+  const list = (Array.isArray(moves) ? moves : [])
+    .filter((m) => isObj(m) && m.via !== 'disconnect' && Number.isFinite(Date.parse(m.at)))
+    .sort((x, y) => Date.parse(x.at) - Date.parse(y.at));
+  const nameOf = (id) => {
+    const left = list.find((m) => m.from_tenant_id === id);
+    if (left) return left.from || null;
+    const joined = list.find((m) => m.tenant_id === id);
+    return joined ? (joined.tenant_name || null) : null;
+  };
+  const stamped = prior.detail?.tenant_id;
+  if (stamped) return stamped === currentTenantId ? null : { id: stamped, name: nameOf(stamped) };
+  const posted = Date.parse(prior.updated_at || '');
+  if (!Number.isFinite(posted)) return null;
+  const next = list.find((m) => Date.parse(m.at) > posted);
+  if (!next || !next.from_tenant_id || next.from_tenant_id === currentTenantId) return null;
+  return { id: next.from_tenant_id, name: next.from || null };
 }
 
 // The setup a post is about to use was made for another organisation than the one the site is

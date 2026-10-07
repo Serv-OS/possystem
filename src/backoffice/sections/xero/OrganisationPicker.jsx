@@ -10,10 +10,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { xeroOrganisations, xeroSetOrganisation } from '../../../lib/xero';
 import { moveWords } from '../../../lib/accounting/xeroMoveWords';
+import { autoDailyAfterOrganisationChange } from '../../../../supabase/functions/_shared/xeroOrg.js';
 
 const dayWords = (iso) => { try { return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch { return ''; } };
 
-export default function OrganisationPicker({ locId, currentName, postMode, changed, setupTab = 'Setup', busy: parentBusy, onSignIn, onChanged, S }) {
+export default function OrganisationPicker({ locId, currentName, postMode, autoDaily = false, startDate = null, needsSetup = false, changed, setupTab = 'Setup', busy: parentBusy, onSignIn, onChanged, S }) {
   const [orgs, setOrgs] = useState(null);
   const [siteName, setSiteName] = useState('');
   const [others, setOthers] = useState(0);
@@ -50,7 +51,9 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
   const site = siteName || 'this site';
   const chosen = orgs.find((o) => o.tenantId === pick);
   const invoice = postMode === 'sales_invoice';
-  const words = (to) => moveWords({ site, from: here, to, invoice, setupTab });
+  // The server's own rule for what a move does to auto posting, so the words match what happens.
+  const autoKept = autoDailyAfterOrganisationChange(postMode, autoDaily, startDate, new Date().toISOString().slice(0, 10));
+  const words = (to) => moveWords({ site, from: here, to, invoice, autoKept, setupTab });
 
   const apply = async () => {
     if (!chosen || chosen.current || busy) return;
@@ -83,9 +86,9 @@ export default function OrganisationPicker({ locId, currentName, postMode, chang
       <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Xero organisation</div>
       {changed?.at && (
         <div style={{ ...text, marginBottom: 8, color: 'var(--t1)' }}>
-          Moved here from <b>{changed.from}</b> on {dayWords(changed.at)}. Its Xero setup was cleared then: choose it again
-          {invoice ? <> under {setupTab} and Posting, then check a day&rsquo;s figures.</> : <> under Posting.</>}
-          {changed.autoTurnedOff && <> Auto posting was turned off then.</>}
+          Moved here from <b>{changed.from}</b> on {dayWords(changed.at)}.
+          {needsSetup && <> Its Xero setup was cleared then: choose it again under {setupTab} and Posting, then check a day&rsquo;s figures.</>}
+          {changed.autoTurnedOff && !autoDaily && <> Auto posting was turned off then and is still off.</>}
         </div>
       )}
       {!asked ? (
