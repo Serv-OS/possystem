@@ -76,9 +76,12 @@ export async function getConnections(accessToken: string): Promise<any[]> {
  * Now the new tokens are saved with a compare and set on the refresh token we started from:
  * exactly one refresh lands. A caller that loses (its save matches no row, or Xero refuses
  * a token another call has just spent) re-reads the row and uses the winner's token.
- * 30 Sep 2026: the compare and set matches every row with that refresh token on the tenant
- * (venues sharing one Xero sign in rotate together), and a venue whose own refresh fails takes
- * over a sibling's newer set (same tenant, same Xero user) through `depth`.
+ * 30 Sep 2026: the compare and set matches every row with that refresh token (venues sharing
+ * one Xero sign in rotate together), and a venue whose own refresh fails takes over a sibling's
+ * newer set (same Xero user) through `depth`.
+ * 7 Oct 2026: neither is fenced by organisation any more. One Xero sign in can cover two
+ * organisations (Coffee Boy), and its single token chain must rotate as one: the refresh
+ * token alone identifies the set, and the organisation always comes from the caller's own row.
  */
 export async function getValidAccessToken(sb: any, locationId: string, clientId: string, clientSecret: string, depth = 0): Promise<{ accessToken: string; tenantId: string; tenantName: string | null }> {
   const readRow = async (loc: string) => {
@@ -102,12 +105,13 @@ export async function getValidAccessToken(sb: any, locationId: string, clientId:
     await new Promise((r) => setTimeout(r, 400));
     const again = await read();
     if (again.refresh_token !== c.refresh_token && fresh(again)) return out(again);
-    // 30 Sep 2026: venues on the same Xero organisation, connected by the same Xero user, share
-    // one sign in. A newer sign in at a sibling supersedes this set, so take the sibling's
-    // newest set over (refreshing it there if it needs it) instead of calling this venue
-    // disconnected. Only a sibling on the same tenant AND the same Xero user is ever used.
+    // 30 Sep 2026: venues connected by the same Xero user share one sign in. A newer sign in at
+    // a sibling supersedes this set, so take the sibling's newest set over (refreshing it there
+    // if it needs it) instead of calling this venue disconnected. Only a sibling signed in by
+    // the same Xero user is ever used (pickTokenDonor), on any organisation: the set is the
+    // user's, and this venue keeps its own organisation (again.tenant_id below).
     if (depth === 0) {
-      const { data: sibs } = await sb.from('xero_connections').select('location_id,tenant_id,access_token,refresh_token,updated_at').eq('tenant_id', again.tenant_id).neq('location_id', locationId);
+      const { data: sibs } = await sb.from('xero_connections').select('location_id,tenant_id,access_token,refresh_token,updated_at').neq('location_id', locationId);
       const donor = pickTokenDonor(sibs || [], again);
       if (donor) {
         const got = await getValidAccessToken(sb, donor.location_id, clientId, clientSecret, depth + 1);
@@ -128,7 +132,7 @@ export async function getValidAccessToken(sb: any, locationId: string, clientId:
     expires_at: new Date(Date.now() + (t.expires_in || 1800) * 1000).toISOString(),
     scopes: t.scope || c.scopes,
     updated_at: new Date().toISOString(),
-  }).eq('tenant_id', c.tenant_id).eq('refresh_token', c.refresh_token).select('location_id');
+  }).eq('refresh_token', c.refresh_token).select('location_id');
   if (error) throw new Error(`Could not save the refreshed Xero token: ${error.message}`);
   if (saved && saved.some((r: any) => r.location_id === locationId)) return out(c, t.access_token);
   // Lost the race: another call saved its rotated set first. Ours is still a valid access

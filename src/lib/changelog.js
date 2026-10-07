@@ -10,9 +10,11 @@ export const CHANGELOG = [
     v: '5.11.35',
     date: '7 Oct 2026',
     items: [
-      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (one company with two sets of books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
-      "Xero, Connection tab: when the sign in can see more than one organisation, a picker shows which organisation this site posts to and lets you change it without reconnecting. Days already posted stay where they are; the Site tracking option and accounts are chosen again for the new organisation.",
-      "Xero: each posted day now records which organisation it went to.",
+      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (two companies, each with its own books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
+      "Xero, Connection tab: a Xero organisation box shows which organisation this site posts to. When the sign in can see more than one, pick the right one there; when the right one is not listed, Sign in to Xero and choose it. No disconnect is needed either way.",
+      "Xero: when a site moves to another organisation its Xero setup is cleared first (accounts, VAT rates, payment accounts, the Site tracking option and the figures check), because those choices belonged to the old organisation. A site on the daily sales invoice posts nothing until they are chosen again and a day of figures is checked, then posts by itself. A site on bank transactions has auto posting turned off. Days already posted stay in the old organisation. A copy of the cleared setup is kept.",
+      "Xero: sites that share one Xero sign in now keep sharing it across organisations, so one site refreshing its sign in can no longer sign out a site on the other organisation.",
+      "Xero: every posted day records which organisation it went to.",
     ],
   },
   {

@@ -760,7 +760,7 @@ Deno.serve(async (req) => {
       }
       const allWarnings = [...warnings, ...extraWarnings];
       const ids = Object.values(run.postings).map((p: any) => p?.id).filter(Boolean).join(',');
-      await run.finish('ok', { xero_id: ids, detail: { sample, lines, warnings: allWarnings, error: null } }, { ok: true, auto, model: 'bank_tx', posted, skipped });
+      await run.finish('ok', { xero_id: ids, detail: { sample, tenant_id: tenantId, lines, warnings: allWarnings, error: null } }, { ok: true, auto, model: 'bank_tx', posted, skipped });
       return json({ ok: true, sample, ...base, model: 'bank_tx', lines, warnings: allWarnings, summary: summaryView(summary) });
     } catch (e) {
       const msg = (e as Error)?.message || String(e);

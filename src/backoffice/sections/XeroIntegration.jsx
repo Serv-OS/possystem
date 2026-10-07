@@ -352,7 +352,8 @@ export default function XeroIntegration() {
           <div style={S.pill('rgba(46,143,78,.16)', '#2f8f4e')}>● Connected</div>
           <div style={{ marginTop: 12, fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{status.tenant_name || 'Xero organisation'}</div>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 2 }}>Linked {status.connected_at ? new Date(status.connected_at).toLocaleDateString() : ''}</div>
-          <OrganisationPicker locId={locId} currentName={status.tenant_name} onChanged={load} S={S} />
+          <OrganisationPicker locId={locId} currentName={status.tenant_name} postMode={postMode} changed={status.organisation_changed}
+            setupTab={tabName} busy={busy} onSignIn={connect} onChanged={load} S={S} />
           <div style={{ ...S.note, marginTop: 10 }}>
             {postMode === 'sales_invoice' ? 'This site posts a daily sales invoice.' : `This site posts bank transactions each day. The daily sales invoice is set up under ${tabName}.`}
             {siblings.length > 0 && <> Other sites on this organisation: {siblings.map((x) => `${x.name} (${x.postMode === 'sales_invoice' ? 'sales invoice' : 'bank transactions'})`).join(', ')}.</>}
