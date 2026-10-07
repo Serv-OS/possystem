@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.36',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: when your Xero sign in already has every organisation connected, Xero only says how many are connected and never asks which one. ServOS no longer guesses (it connected sites to the wrong books). The site stays on the organisation it was set up for, and the Xero organisation box on the Connection tab asks which organisation the site's books are in.",
+      "Xero, Connection tab: for half an hour after you sign in to Xero from a site's screen you can pick any organisation that sign in covers, including one no other site of yours uses yet. The button is now Sign in to Xero, then pick it here.",
+    ],
+  },
+  {
     v: '5.11.35',
     date: '7 Oct 2026',
     items: [

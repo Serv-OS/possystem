@@ -31,6 +31,44 @@ export function pickConsentedOrg(conns, authEventId = null) {
   return newest(pool);
 }
 
+// Which organisation a sign in stores for a site, and whether Xero actually said which one.
+// 7 Oct 2026 (Coffee Boy, three organisations, all already connected): Xero's screen then only
+// says "3 organisations connected, Continue" and never asks which. No connection carries the
+// sign in event, so there is nothing to go on, and ServOS must NOT guess (it "auto connected to
+// the wrong one"). The site stays on the organisation its setup was made for (`previous`: its
+// connection, else its organisation record, else its cached setup) while that organisation is
+// still in the list, and Back Office then asks which one (matched false). Only a site with
+// nothing to stay on takes the newest connection, as a placeholder until the person picks.
+// Returns { org, matched }: matched true = Xero named it (or there is only one).
+export function organisationForSignIn({ conns = [], authEventId = null, previous = null } = {}) {
+  const list = (Array.isArray(conns) ? conns : []).filter((c) => isObj(c) && c.tenantId);
+  const pool = list.filter(isOrg).length ? list.filter(isOrg) : list;
+  if (!pool.length) return { org: null, matched: false };
+  if (pool.length === 1) return { org: pool[0], matched: true };
+  if (authEventId) {
+    const mine = pool.filter((c) => c.authEventId && String(c.authEventId).toLowerCase() === String(authEventId).toLowerCase());
+    if (mine.length === 1) return { org: mine[0], matched: true };
+    if (mine.length > 1) {
+      // Several authorised in one go: Xero named a set, not one. Stay put if the site's own is among them.
+      const stay = previous?.id ? mine.find((c) => c.tenantId === previous.id) : null;
+      return { org: stay || newest(mine), matched: false };
+    }
+  }
+  const stay = previous?.id ? pool.find((c) => c.tenantId === previous.id) : null;
+  return { org: stay || newest(pool), matched: false };
+}
+
+// A person who has just signed in to Xero from this site's Back Office screen may choose among
+// ALL the organisations that sign in covers, for a short while: they hold the Xero login, which
+// is exactly what Xero's own chooser would have asked for. (Without this an owner could never
+// put a site on an organisation no site of the company uses yet, once Xero stops asking.)
+export const SIGN_IN_GRANT_MINUTES = 30;
+export function signInGrantFresh(grant, userId, nowMs = Date.now()) {
+  if (!isObj(grant) || !userId || grant.by !== userId) return false;
+  const at = Date.parse(grant.at || '');
+  return Number.isFinite(at) && nowMs - at >= 0 && nowMs - at <= SIGN_IN_GRANT_MINUTES * 60000;
+}
+
 // The organisations a stored sign in can see, for the Back Office picker:
 // [{ tenantId, tenantName, current }], the current one first, then by name.
 export function organisationChoices(conns, currentTenantId) {
@@ -91,10 +129,12 @@ export function autoDailyAfterOrganisationChange(postMode, autoDaily, startDate 
 // customers), and Back Office access to one site must never be enough to post its sales into
 // another company's books. So the list is the organisations already used by a site of the SAME
 // company, plus the site's own. Any other organisation needs a sign in at Xero (which needs the
-// Xero login). ServOS staff (super admin) see them all.
-export function allowedOrganisations(choices, companyTenantIds, currentTenantId, isSuper = false) {
+// Xero login): either Xero asks which one there, or, when it has them all connected already and
+// does not ask, the person who just signed in picks here (seeAll, see signInGrantFresh). ServOS
+// staff (super admin) see them all.
+export function allowedOrganisations(choices, companyTenantIds, currentTenantId, seeAll = false) {
   const list = Array.isArray(choices) ? choices : [];
-  if (isSuper) return list;
+  if (seeAll) return list;
   const ok = new Set([...(Array.isArray(companyTenantIds) ? companyTenantIds : []), currentTenantId].filter(Boolean));
   return list.filter((o) => ok.has(o.tenantId));
 }
