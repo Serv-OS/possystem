@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.34',
+    date: '7 Oct 2026',
+    items: [
+      "Group ordering link: the venue picker now wears the look of the venue with the most complete Menu appearance (header image first, then logo, then colour). It was taking the first venue by name, so a venue without a header image gave the whole group the plain flame header while every other venue had the shop photo. The page background follows that venue's storefront background when it is a light colour.",
+      "Back Office, Online ordering: the Group ordering link card says which venue's look the page wears, and that adding a header image to any venue is enough.",
+    ],
+  },
+  {
     v: '5.11.31',
     date: '5 Oct 2026',
     items: [
