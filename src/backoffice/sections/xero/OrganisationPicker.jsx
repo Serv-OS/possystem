@@ -7,8 +7,13 @@
 // accounts, tracking, the figures check), because those choices named things in the OLD
 // organisation. The words below say exactly that, and what does and does not then happen by
 // itself (lib: supabase/functions/_shared/xeroOrg.js).
+// (One case does need a disconnect: the books are under ANOTHER Xero login that already has
+// that organisation connected. Xero then does not ask, the sign in changes nothing, and the
+// other_login banner in XeroIntegration.jsx says to Disconnect first.)
 // When Xero did not ask which organisation, the amber box asks here (ask). For a site that was
 // disconnected, the hourly job also posts nothing until the answer or half an hour (held).
+// The hold itself is kept by xero-sales, and xero-connect is what answers held, so xero-sales
+// is deployed FIRST: with only xero-connect live the hold sentence below would be false.
 import { useCallback, useEffect, useState } from 'react';
 import { xeroOrganisations, xeroSetOrganisation } from '../../../lib/xero';
 import { moveWords } from '../../../lib/accounting/xeroMoveWords';

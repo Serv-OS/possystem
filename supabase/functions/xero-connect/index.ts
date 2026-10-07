@@ -21,7 +21,8 @@
 //     (organisationForSignIn; when Xero does not ask, the site stays put and Back Office asks), and the
 //     new token set goes to that Xero user's rows on ANY organisation;
 //   - a connected site only ever moves when Xero names exactly one organisation: a sign in that
-//     cannot see the site's organisation changes nothing for it (?xero=other_login);
+//     cannot see the site's organisation changes nothing for it (?xero=other_login, or
+//     ?xero=org_gone when it is the site's own Xero login that no longer has it);
 //   - a disconnected site that signs in when Xero does not ask gets a half hour hold on auto
 //     posting (hold on the sign in note, read by xero-sales), so there is time to pick;
 //   - a site whose organisation changes (the picker, or connecting again and choosing another)
@@ -31,6 +32,11 @@
 // Tokens live only in xero_connections (service-role only) and are never returned to the
 // browser. POST actions require a signed-in Ops user WITH access to the location, mirroring
 // hubrise-connect / payments-onboard. Deploy with --no-verify-jwt (GET callback is public).
+//
+// DEPLOY ORDER (7 Oct 2026): xero-sales FIRST, this function LAST. The half hour hold is kept
+// by xero-sales (autoHeldAfterSignIn). This function only writes the note and tells the box
+// (held), and the box then says nothing is posted by itself. With this function live and an
+// older xero-sales, that sentence is false: the hourly job does not read the note, and posts.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { authorizeUrl, exchangeCode, getConnections, getValidAccessToken, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
@@ -206,12 +212,16 @@ Deno.serve(async (req) => {
       //    is what makes "nothing was changed" true for other_login below: this site's row
       //    keeps its own login's tokens. (Same login, and Xero no longer lists the site's
       //    organisation: the row does get this newer set, which that login needs anyway.)
+      //    sameLogin: this site's own row is one of that Xero user's. Only the words on screen
+      //    use it (org_gone below). Not known (no user in the token, a failed read) = false.
       const uid = xeroUserIdFromToken(t.access_token);
+      let sameLogin = false;
       if (uid) {
         try {
           const { data: all, error: allErr } = await sb.from('xero_connections').select('location_id,access_token');
           if (allErr) throw new Error(allErr.message);
           const same = (all || []).filter((r: any) => xeroUserIdFromToken(r.access_token) === uid).map((r: any) => r.location_id);
+          sameLogin = same.includes(payload.loc);
           if (same.length) {
             const { error: sErr } = await sb.from('xero_connections').update(tokenSet).in('location_id', same);
             if (sErr) throw new Error(sErr.message);
@@ -241,6 +251,12 @@ Deno.serve(async (req) => {
       // this site: no reset, no organisation change, no sign in note, and (step 1) no tokens
       // from another login. The screen says which login to use. Before this the site was
       // moved to whatever that login could see.
+      // 7 Oct 2026 (review): when it is the SAME Xero login the site is connected with, and
+      // Xero no longer lists the site's organisation for it (the app was removed from it at
+      // Xero, or the login lost it), the rule is the same and nothing changes, but "use the
+      // login that connected this site" is the login they just used. So it gets its own code,
+      // and the screen says what happened instead.
+      if (picked.otherLogin && sameLogin) return redirect(withParam(ret, 'xero', 'org_gone'));
       if (picked.otherLogin) return redirect(withParam(ret, 'xero', 'other_login'));
       const org = picked.org;
       if (!org) return redirect(withParam(ret, 'xero', 'no_org'));

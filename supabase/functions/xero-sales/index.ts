@@ -47,6 +47,8 @@
 //   figures have changed since (checks or refunds that arrived after it was posted).
 //   An auto run just after a sign in where Xero did not say which organisation answers `held`
 //   and posts nothing (7 Oct 2026, autoHeldAfterSignIn): the next hourly run tries again.
+//   Deploy this function BEFORE xero-connect: Back Office promises this hold as soon as
+//   xero-connect answers `held`, and only this function keeps it.
 //
 // REPLACE AN OLD DAY WITH A SALES INVOICE (2 Oct 2026). Peter switched Leeds to the daily sales
 // invoice from 27 Sep, pushed 27 Sep again and said "these are supposed to be invoices, I cannot

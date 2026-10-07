@@ -383,7 +383,7 @@ test('follow up 2: a connected site only moves when Xero names exactly one organ
   assert.match(screen, /\{flash === 'other_login' && \(/);
   assert.match(screen, /Nothing was changed\. The Xero login you used cannot see the organisation this site posts to/);
   assert.match(screen, /Sign in to Xero with the login that connected this site\./);
-  assert.match(screen, /\{flash && flash !== 'connected' && flash !== 'other_login' && <div style=\{S\.banner\(false\)\}>/);
+  assert.match(screen, /\{flash && flash !== 'connected' && flash !== 'other_login' && flash !== 'org_gone' && <div style=\{S\.banner\(false\)\}>/);
   assert.match(screen, /\{flash === 'connected' && <div style=\{S\.banner\(true\)\}>/, 'the other banners are as they were');
   const banner = screen.slice(screen.indexOf("{flash === 'other_login' && ("), screen.indexOf("{flash && flash !== 'connected'"));
   assert.doesNotMatch(banner, /[\u2013\u2014]/, 'no dashes in words on screen');
@@ -473,4 +473,82 @@ test('follow up 3: a disconnected site that signs in when Xero does not ask: aut
   assert.match(picker, /setHeld\(!!r\?\.held\);/);
   assert.match(picker, /\{held && autoDaily && <> Nothing is posted by itself for \{site\} in the half hour after your sign in, so there is time to pick\.<\/>\}/);
   assert.doesNotMatch(picker.slice(picker.indexOf('{ask ? ('), picker.indexOf(') : (', picker.indexOf('{ask ? ('))), /[\u2013\u2014]/, 'no dashes in words on screen');
+});
+
+// ── 7 Oct 2026, review of the three follow ups ───────────────────────────────
+test('nothing was changed: the banner names the way out for a company with two Xero logins, and the same login that lost the organisation gets its own words', () => {
+  const onRetail = { id: 'b2d3', name: 'Coffeeboy Retail LTD' };
+  // A company with two Xero logins. The site is on Retail (login 1). Its books are really in
+  // East, which only login 2 can see and already has connected for another site, so Xero does
+  // not ask. Following the box ("Sign in to Xero, then pick it here") changes nothing:
+  const login2 = [{ tenantId: 'ee55', tenantType: 'ORGANISATION', tenantName: 'East Ltd', authEventId: 'ev-old', updatedDateUtc: '2026-10-01T09:00:00Z' }];
+  const stuck = organisationForSignIn({ conns: login2, authEventId: 'ev-now', previous: onRetail, connected: true });
+  assert.deepEqual([stuck.org, stuck.otherLogin], [null, true]);
+  // and the box cannot offer East either: its list is read with login 1's tokens, even though
+  // another site of the same company already uses East.
+  assert.deepEqual(allowedOrganisations(organisationChoices(ownerSees, 'b2d3'), ['b2d3', 'ee55'], 'b2d3', false).map((o) => o.tenantId), ['b2d3']);
+  // The way out the banner names: Disconnect (the row goes, the record remembers Retail), then
+  // Connect Xero as login 2. Stored on East, and it is a move, so the setup is reset first.
+  const after = previousOrganisation({ row: null, record: { via: 'disconnect', at: at('18:30'), tenant_id: 'b2d3', tenant_name: 'Coffeeboy Retail LTD' } });
+  const out = organisationForSignIn({ conns: login2, authEventId: 'ev-now', previous: after, connected: false });
+  assert.deepEqual([out.org.tenantId, out.matched, out.otherLogin], ['ee55', true, false]);
+  assert.notEqual(after.id, out.org.tenantId, 'a move: the callback resets the setup before it stores East');
+  // Login 2 covers several: a placeholder, Back Office asks, and auto posting waits for the pick.
+  const several = organisationForSignIn({ conns: [...login2, { ...login2[0], tenantId: 'ww66', tenantName: 'West Ltd' }], authEventId: 'ev-now', previous: after, connected: false });
+  assert.deepEqual([several.matched, several.otherLogin, signInHolds({ connected: false, matched: several.matched })], [false, false, true]);
+
+  // The callback: the same rule (nothing changes), two answers. org_gone when this site's own
+  // row is one of the Xero user's who just signed in, read from the list the token copy uses.
+  const src = read('supabase/functions/xero-connect/index.ts');
+  const cb = src.slice(src.indexOf("if (req.method === 'GET')"), src.indexOf("if (req.method !== 'POST')"));
+  assert.match(cb, /let sameLogin = false;\n\s+if \(uid\) \{/, 'not known (no Xero user in the token, a failed read) reads as another login');
+  assert.match(cb, /const same = \(all \|\| \[\]\)[^\n]*\n\s+sameLogin = same\.includes\(payload\.loc\);/);
+  const gone = cb.indexOf("if (picked.otherLogin && sameLogin) return redirect(withParam(ret, 'xero', 'org_gone'));");
+  const other = cb.indexOf("if (picked.otherLogin) return redirect(withParam(ret, 'xero', 'other_login'));");
+  assert.ok(gone > cb.indexOf('organisationForSignIn(') && gone < other, 'asked first, straight before other_login: only the words differ');
+  for (const w of ['resetForNewOrganisation(', "sb.from('xero_connections').upsert(", 'await noteSignIn(']) assert.ok(gone < cb.indexOf(w), `org_gone returns before ${w}`);
+  assert.equal((cb.slice(gone, other).match(/\.(update|upsert|insert|delete)\(/g) || []).length, 0, 'nothing is written between the two answers');
+  // The list, as the callback builds it: the owner's new token names the owner's rows only.
+  const rows = [
+    { location_id: 'this-site', access_token: jwt({ xero_userid: 'u-owner' }) },
+    { location_id: 'sister', access_token: jwt({ xero_userid: 'u-owner' }) },
+    { location_id: 'other', access_token: jwt({ xero_userid: 'u-bookkeeper' }) },
+  ];
+  const sameFor = (token) => rows.filter((r) => xeroUserIdFromToken(r.access_token) === xeroUserIdFromToken(token)).map((r) => r.location_id);
+  assert.equal(sameFor(jwt({ xero_userid: 'u-owner' })).includes('this-site'), true, 'the login this site is connected with: org_gone');
+  assert.equal(sameFor(jwt({ xero_userid: 'u-bookkeeper' })).includes('this-site'), false, 'another login: other_login');
+
+  // The screen. other_login keeps its plain sentence and adds the way out, naming two buttons
+  // that are on this screen.
+  const screen = read('src/backoffice/sections/XeroIntegration.jsx');
+  const otherBanner = screen.slice(screen.indexOf("{flash === 'other_login' && ("), screen.indexOf("{flash === 'org_gone' && ("));
+  assert.match(otherBanner, /Sign in to Xero with the login that connected this site\. If this site&rsquo;s books are in an organisation only another Xero login can see, press Disconnect first, then press Connect Xero and sign in with that login\./);
+  assert.match(screen, /onClick=\{disconnect\} disabled=\{busy\}>Disconnect<\/button>/);
+  assert.match(screen, /onClick=\{connect\} disabled=\{busy\}>\{busy \? [^:]+ : 'Connect Xero'\}<\/button>/);
+  // org_gone: what happened, and never "use the login that connected this site" (they just did).
+  const goneAt = screen.indexOf("{flash === 'org_gone' && (");
+  assert.ok(goneAt > 0, 'its own banner');
+  const goneBanner = screen.slice(goneAt, screen.indexOf("{flash && flash !== 'connected'"));
+  assert.match(goneBanner, /Nothing was changed\. Xero no longer lists the organisation this site posts to/);
+  assert.match(goneBanner, /for your Xero login\. Sign in to Xero again and choose it if Xero asks which organisation\. If Xero does not offer it, press Disconnect first, then press Connect Xero and choose the organisation this site&rsquo;s books are in\./);
+  assert.doesNotMatch(goneBanner, /the login that connected this site/);
+  assert.doesNotMatch(goneBanner, /[–—]/, 'no dashes in words on screen');
+  assert.match(screen, /\?xero=connected\|error\|expired\|invalid\|no_org\|other_login\|org_gone\)/, 'the list of answers the screen handles');
+});
+
+test('deploy order: xero-sales before xero-connect, because the box promises a hold that only xero-sales keeps', () => {
+  const connect = read('supabase/functions/xero-connect/index.ts');
+  const sales = read('supabase/functions/xero-sales/index.ts');
+  const picker = read('src/backoffice/sections/xero/OrganisationPicker.jsx');
+  // Why the order matters: xero-connect writes the hold and tells the box, the box says so,
+  // and the hourly job in xero-sales is the only thing that keeps it.
+  assert.match(connect, /held: autoPostHeld\(\{ signIn, lastRecord \}\)/);
+  assert.match(picker, /\{held && autoDaily && <> Nothing is posted by itself for \{site\}/);
+  assert.match(sales, /if \(auto && !dryRun && await autoHeldAfterSignIn\(locationId\)\) \{/);
+  assert.doesNotMatch(connect, /await autoHeldAfterSignIn\(/, 'xero-connect posts nothing and holds nothing itself');
+  // So with xero-connect live and an older xero-sales the sentence would be false. The order is
+  // written where each function is deployed from.
+  assert.match(connect, /DEPLOY ORDER \(7 Oct 2026\): xero-sales FIRST, this function LAST\./);
+  assert.match(sales, /Deploy this function BEFORE xero-connect:/);
+  assert.match(picker, /xero-sales\n\/\/ is deployed FIRST/);
 });
