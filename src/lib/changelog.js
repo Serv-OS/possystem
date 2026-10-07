@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.37',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: signing in to Xero with a different Xero login can no longer move a site. If the login you used cannot see the organisation the site posts to, nothing is changed and the screen says so, with the way to move a site to another login (Disconnect first, then Connect Xero).",
+      "Xero: a site that was disconnected and signs in again, when Xero does not ask which organisation, posts nothing by itself for half an hour, so there is time to pick the right organisation before anything is sent. Pushing a day yourself is never held.",
+      "Xero, Connection tab: the question about which organisation a site's books are in is now shown to ServOS staff as well, and it goes away once you have picked.",
+    ],
+  },
+  {
     v: '5.11.36',
     date: '7 Oct 2026',
     items: [
