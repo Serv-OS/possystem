@@ -15,8 +15,8 @@
 // (xero/ReplaceDay.jsx). Peter at Leeds: "these are supposed to be invoices, I cannot find the
 // invoice at all".
 
-import { useCallback, useEffect, useState } from 'react';
-import { getActiveLocationSync } from '../../lib/supabase';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { tabVenue } from '../../store';
 import { xeroStatus, xeroOAuthStart, xeroDisconnect, xeroSyncSales, xeroOptions, xeroGetMapping, xeroSaveMapping, xeroSetAutoDaily } from '../../lib/xero';
 import { money } from '../../lib/currency';
 import { migrateTaxMapping } from '../../../supabase/functions/_shared/xeroTax.js';
@@ -27,6 +27,7 @@ import SiteSetup from './xero/SiteSetup';
 import PostingsHistory from './xero/PostingsHistory';
 import InvoicePreview from './xero/InvoicePreview';
 import SalesVat from './xero/SalesVat';
+import OrganisationPicker from './xero/OrganisationPicker';
 
 const tabsFor = (addedOn) => [
   { id: 'connection', label: 'Connection' },
@@ -222,9 +223,15 @@ export default function XeroIntegration() {
   const [lapsed, setLapsed] = useState(false);
   const [addedOnTax, setAddedOnTax] = useState(false);
 
+  // 7 Oct 2026: the venue is THIS tab's own (store tabVenue, as the menu screens since 27 Sep),
+  // taken ONCE per visit to this screen. It used to be read on every reload from a key every
+  // browser tab shares, so after another tab switched venue this screen could open or reload as
+  // that venue while the header still named this one (a venue switch in THIS tab reloads the
+  // page, so the one taken here never goes stale).
+  const venueRef = useRef(null);
   const load = useCallback(async () => {
     setLoading(true); setErr('');
-    const id = getActiveLocationSync(); setLocId(id);
+    const id = venueRef.current || tabVenue(); venueRef.current = id; setLocId(id);
     if (!id) { setLoading(false); return; }
     try {
       setStatus(await xeroStatus(id));
@@ -251,10 +258,19 @@ export default function XeroIntegration() {
     try {
       const m = await xeroGetMapping(locId);
       setPostMode(m.postMode || 'bank_tx'); setSiblings(m.siblings || []); setAutoDaily(!!m.autoDaily);
+      setTenantName(m.tenantName || '');   // the sites listed above belong to this organisation
       setStartDate(m.mapping?.invoiceStartDate || null);
       setLapsed(figuresLapsed(m.postMode, m.mapping));
     } catch { /* the next load shows it */ }
   }, [locId]);
+
+  // After the organisation box moves the site: the connection and the posting model again, with
+  // no Loading screen (that would take the box, and what it just said, off the page).
+  const refreshAfterMove = useCallback(async () => {
+    if (!locId) return;
+    try { setStatus(await xeroStatus(locId)); } catch { /* the next load shows it */ }
+    await refreshMode();
+  }, [locId, refreshMode]);
 
   // Handle the redirect back from Xero (?xero=connected|error|expired|invalid|no_org).
   useEffect(() => {
@@ -351,6 +367,9 @@ export default function XeroIntegration() {
           <div style={S.pill('rgba(46,143,78,.16)', '#2f8f4e')}>● Connected</div>
           <div style={{ marginTop: 12, fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{status.tenant_name || 'Xero organisation'}</div>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 2 }}>Linked {status.connected_at ? new Date(status.connected_at).toLocaleDateString() : ''}</div>
+          <OrganisationPicker locId={locId} currentName={status.tenant_name} postMode={postMode} autoDaily={autoDaily} startDate={startDate}
+            needsSetup={postMode === 'sales_invoice' && lapsed} changed={status.organisation_changed}
+            setupTab={tabName} busy={busy} onSignIn={connect} onChanged={refreshAfterMove} S={S} />
           <div style={{ ...S.note, marginTop: 10 }}>
             {postMode === 'sales_invoice' ? 'This site posts a daily sales invoice.' : `This site posts bank transactions each day. The daily sales invoice is set up under ${tabName}.`}
             {siblings.length > 0 && <> Other sites on this organisation: {siblings.map((x) => `${x.name} (${x.postMode === 'sales_invoice' ? 'sales invoice' : 'bank transactions'})`).join(', ')}.</>}

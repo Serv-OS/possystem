@@ -352,7 +352,9 @@ export function offerForAnswer(answer, site = {}) {
     return { show: 'note', text: `${OLD_WAY} ${before ? BEFORE_START : NEEDS_UPDATE}`, resume: false };
   }
   if (r.replaceable) return { show: 'button', text: r.pending ? REPLACE_PENDING : r.resume ? REPLACE_RESUME : REPLACE_QUESTION, resume: !!r.resume };
-  if (r.reason === 'not_old_way') return NONE;
+  // 7 Oct 2026: a day posted to another Xero organisation (before the site moved) cannot be
+  // replaced from here; the answer's own warning says where it is.
+  if (r.reason === 'not_old_way' || r.reason === 'other_organisation') return NONE;
   // A day from before ServOS recorded what it sent: only worth saying from the first invoice day on.
   if (r.reason === 'no_record' && (!site.startDate || String(answer.date || '') < String(site.startDate))) return NONE;
   if (r.reason === 'invoice_pending' || r.reason === 'no_record') return { show: 'note', text: r.message, resume: false };

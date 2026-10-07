@@ -64,6 +64,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
+import { postedElsewhere, setupMadeForAnother } from '../_shared/xeroOrg.js';
 import { venueClock, loadAccountingDay, venueSite } from '../_shared/accountingData.ts';
 import { businessDayWindow, isYmd, isBusinessDayOver, lastCompletedBusinessDay, currentBusinessDay, wallClock, addDays } from '../_shared/businessDay.js';
 import { buildAccountingDay } from '../_shared/accountingDay.js';
@@ -291,6 +292,43 @@ async function canReplace(row: any, cfgRow: any, date: string, locationId: strin
   return replaceability({ ...args, provenInvoice: await hasInvoiceDay(locationId) });
 }
 
+// A setup made for another organisation is never posted (see setupMadeForAnother). This run is
+// refused. If the STORED setup still names the other organisation (not only this run's copy of
+// it), the cached part is cleared and the figures tick dropped, so the refusal can clear: the
+// site is then Not Ready until a person checks a day's figures against the organisation it is
+// connected to now. Without this the refusal could never lift (nothing else rewrites the cache
+// once this check stands in front of the refresh). Returns the words for the refusal.
+async function refuseSetupMadeForAnother(locationId: string, detail: any, tenantId: string, tenantName: string | null, tab: string) {
+  try {
+    const { data: cur } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
+    if (cur && setupMadeForAnother(cur.detail, tenantId)) {
+      const mapping: Record<string, unknown> = { ...((cur.mapping && typeof cur.mapping === 'object') ? cur.mapping : {}) };
+      delete mapping.figuresChecked;
+      const { error } = await sb.from('xero_config').update({ detail: {}, mapping, updated_at: new Date().toISOString() }).eq('location_id', locationId);
+      if (error) console.warn('[xero-sales] could not clear a setup made for another organisation:', error.message);
+    }
+  } catch (e) { console.warn('[xero-sales] could not clear a setup made for another organisation:', (e as Error)?.message); }
+  const was = detail?.site?.orgName ? ` (${detail.site.orgName})` : '';
+  return { code: 'organisation', message: `This site's Xero setup was made for another Xero organisation${was}. Check its accounts, VAT rates and tracking for ${tenantName || 'the organisation it is connected to now'} under ${tab}, then check a day's figures.` };
+}
+
+// 7 Oct 2026: a day posted before this site moved to another Xero organisation is still in the
+// old one. Asked by a person, the answer says so plainly, and does not compare the day with
+// today's setup (made for the new organisation, so every line would read as changed).
+async function elsewhereWarning(prior: any, locationId: string): Promise<{ code: string; message: string } | null> {
+  try {
+    const [{ data: conn }, { data: rows }] = await Promise.all([
+      sb.from('xero_connections').select('tenant_id,tenant_name').eq('location_id', locationId).maybeSingle(),
+      sb.from(LOG).select('detail').eq('location_id', locationId).eq('kind', 'organisation').order('created_at', { ascending: false }).limit(50),
+    ]);
+    if (!conn) return null;
+    const other = postedElsewhere({ prior, currentTenantId: conn.tenant_id, moves: (rows || []).map((r: any) => r.detail) });
+    if (!other) return null;
+    const where = other.name || 'the Xero organisation this site was on before';
+    return { code: 'posted_to_other_organisation', message: `This day was posted to ${where}, before this site moved to ${conn.tenant_name || 'its organisation now'}. It is still there and is not in ${conn.tenant_name || 'the new organisation'}.` };
+  } catch (e) { console.warn('[xero-sales] could not check which organisation holds the day:', (e as Error)?.message); return null; }
+}
+
 // A day already in Xero. Asked by a person, it also compares what was posted with what the
 // day comes to now, and says when checks or refunds have arrived since (they are not in Xero).
 async function alreadyAnswer(prior: any, base: any, locationId: string, date: string, venue: any, compare: boolean) {
@@ -300,6 +338,9 @@ async function alreadyAnswer(prior: any, base: any, locationId: string, date: st
   const out: any = { ok: true, already: true, ...base, model: 'bank_tx', lines: prior.detail?.lines || [], warnings: [...(prior.detail?.warnings || [])] };
   const postings = prior.detail?.postings;
   if (!compare) return out;
+  const elsewhere = await elsewhereWarning(prior, locationId);
+  // No replace is offered for it (the screen reads a missing answer as "needs a ServOS update").
+  if (elsewhere) { out.warnings.push(elsewhere); out.replace = replaceAnswer({ replaceable: false, reason: 'other_organisation', message: '' }); return out; }
   // 2 Oct 2026: asked by a person, a day in Xero the old way says whether it can be replaced
   // with a sales invoice, and why not when it cannot (Leeds 27 Sep: "I cannot find the invoice").
   const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail,post_mode').eq('location_id', locationId).maybeSingle();
@@ -349,6 +390,8 @@ async function invoiceAlreadyAnswer(prior: any, base: any, locationId: string, d
   const docs = prior.detail?.documents || [];
   const out: any = { ok: true, already: true, ...base, model: 'sales_invoice', documents: docs, lines: [], warnings: [...(prior.detail?.warnings || [])] };
   if (!compare) return out;
+  const elsewhere = await elsewhereWarning(prior, locationId);
+  if (elsewhere) { out.warnings.push(elsewhere); return out; }
   try {
     const { data: cfgRow } = await sb.from('xero_config').select('mapping,detail').eq('location_id', locationId).maybeSingle();
     const mapping = cfgRow?.mapping || {};
@@ -436,7 +479,8 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     // Nothing is sent while the site is not Ready (the mapping-only checks, then the plan's own).
     const { notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
     if (notReady.length) throw new NotReadyError(notReady);
-    const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+    if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
     const detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
     if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
       throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
@@ -458,7 +502,7 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     const all = [...warnings, ...extra, ...(replaced ? [replaced] : [])];
     const ids = res.documents.map((d: any) => d.xeroId).filter(Boolean).join(',');
     const replace = run.detail?.replace ? { replace: replaceDone(run.detail.replace, { at: new Date().toISOString(), documents: res.documents }) } : {};
-    await run.finish('ok', { xero_id: ids, detail: { model: 'sales_invoice', documents: res.documents, warnings: all, error: null, notReady: null, problems: null, ...replace } }, { ok: true, auto, model: 'sales_invoice', posted: res.posted, skipped: res.skipped });
+    await run.finish('ok', { xero_id: ids, detail: { model: 'sales_invoice', tenant_id: tenantId, documents: res.documents, warnings: all, error: null, notReady: null, problems: null, ...replace } }, { ok: true, auto, model: 'sales_invoice', posted: res.posted, skipped: res.skipped });
     return json({ ok: true, ...base, model: 'sales_invoice', documents: res.documents, invoice: planView(plan), lines: [], warnings: all, summary: summaryView(summary) });
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
@@ -557,7 +601,9 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
     } else {
       const { notReady, addedOn } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
       if (notReady.length) throw new NotReadyError(notReady);
-      const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      // The same rule as any push: a replace never refreshes its way past a setup made for another organisation.
+      if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
       detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
       if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
         throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
@@ -701,7 +747,8 @@ Deno.serve(async (req) => {
     const extraWarnings: any[] = [];
     let posted = 0, skipped = 0;
     try {
-      const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
+      if (setupMadeForAnother(cfg?.detail, tenantId)) throw new Error(`${(await refuseSetupMadeForAnother(locationId, cfg?.detail, tenantId, tenantName, 'Posting')).message} Nothing was posted.`);
       const detail = await ensureDetail(accessToken, tenantId, locationId, requiredDefaults(summary, mapping));
       const plan = planXeroDay(summary, { mapping, detail, sample, site: siteArg });
       const siblings = await siblingCount(tenantId, locationId);
@@ -760,7 +807,7 @@ Deno.serve(async (req) => {
       }
       const allWarnings = [...warnings, ...extraWarnings];
       const ids = Object.values(run.postings).map((p: any) => p?.id).filter(Boolean).join(',');
-      await run.finish('ok', { xero_id: ids, detail: { sample, lines, warnings: allWarnings, error: null } }, { ok: true, auto, model: 'bank_tx', posted, skipped });
+      await run.finish('ok', { xero_id: ids, detail: { sample, tenant_id: tenantId, lines, warnings: allWarnings, error: null } }, { ok: true, auto, model: 'bank_tx', posted, skipped });
       return json({ ok: true, sample, ...base, model: 'bank_tx', lines, warnings: allWarnings, summary: summaryView(summary) });
     } catch (e) {
       const msg = (e as Error)?.message || String(e);

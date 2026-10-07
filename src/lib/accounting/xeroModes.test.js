@@ -13,7 +13,8 @@
  *      transaction keys are unchanged, a demo with no site posts exactly as before, and a
  *      transaction found by reference is adopted only when it is this site's own.
  *   5. Shared Xero sign ins: the Xero user is read from the access token, and a venue whose own
- *      refresh failed takes the newest set of a sibling on the same tenant and user only.
+ *      refresh failed takes the newest set of a sibling signed in by the same Xero user (on any
+ *      organisation since 7 Oct 2026; see xeroOrg.test.js).
  *   6. The edge functions ship the new files, and the pure files import nothing from outside.
  */
 
@@ -165,7 +166,7 @@ test('adoptable: only this site, and an older reference only when no other site 
 
 const jwt = (claims) => `h.${btoa(JSON.stringify(claims)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.s`;
 
-test('shared Xero sign ins: the Xero user from the token, and the newest sibling set on the same tenant and user', () => {
+test('shared Xero sign ins: the Xero user from the token, and the newest sibling set of the same Xero user', () => {
   assert.equal(xeroUserIdFromToken(jwt({ xero_userid: 'u-1', sub: 'x' })), 'u-1');
   assert.equal(xeroUserIdFromToken('not a token'), null);
   assert.equal(xeroUserIdFromToken(jwt({ sub: 'x' })), null);
@@ -177,8 +178,9 @@ test('shared Xero sign ins: the Xero user from the token, and the newest sibling
     { location_id: 'other-user', tenant_id: 'T', access_token: jwt({ xero_userid: 'u-2' }), refresh_token: 'r-x', updated_at: '2026-09-30T05:00:00Z' },
     { location_id: 'other-org', tenant_id: 'T2', access_token: jwt({ xero_userid: 'u-1' }), refresh_token: 'r-y', updated_at: '2026-09-30T06:00:00Z' },
   ];
-  assert.deepEqual(tokenFamily(rows, self).map((r) => r.location_id), ['hud', 'hud-older']);
-  assert.equal(pickTokenDonor(rows, self).location_id, 'hud');
+  assert.deepEqual(tokenFamily(rows, self).map((r) => r.location_id), ['hud', 'hud-older', 'other-org'], 'the same Xero user on any organisation; never another user');
+  assert.equal(pickTokenDonor(rows, self).location_id, 'other-org', 'the newest set of that user, whichever organisation its site is on');
+  assert.equal(pickTokenDonor(rows.filter((r) => r.location_id !== 'other-org'), self).location_id, 'hud');
   assert.equal(pickTokenDonor([self, { ...rows[1], refresh_token: 'r-old' }], self), null, 'already the same set');
   assert.equal(pickTokenDonor(rows, { ...self, access_token: 'bad' }), null, 'unknown user: never borrow');
 });

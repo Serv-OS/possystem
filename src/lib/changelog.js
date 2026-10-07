@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.35',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (two companies, each with its own books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
+      "Xero, Connection tab: a Xero organisation box shows which organisation this site posts to. Pick another from the list (organisations your company's sites already use), or Sign in to Xero and choose it when it is not listed. No disconnect is needed either way.",
+      "Xero: when a site moves to another organisation its Xero setup is cleared first (accounts, VAT rates, payment accounts, the purchases account, the Site tracking option and the figures check), because those choices belonged to the old organisation. A copy of the cleared setup is kept. A site on the daily sales invoice posts nothing until they are chosen again and a day of figures is checked; from then on each day posts by itself where auto posting was on (it is turned off for a site whose first invoice day is not yet two days back), and the days that passed in between are pushed one by one from Posting. A site on bank transactions has auto posting turned off. Days already posted stay in the old organisation, and pressing Push on one says so.",
+      "Xero: sites that share one Xero sign in keep sharing it across organisations, so one site refreshing its sign in can no longer sign out a site on the other organisation. A setup made for one organisation is never posted into another.",
+      "Xero: every posted day records which organisation it went to.",
+      "Xero screen: it stays on the venue it was opened for. With two Back Office tabs open on different venues it could reload as the other tab's venue.",
+    ],
+  },
+  {
     v: '5.11.31',
     date: '5 Oct 2026',
     items: [
