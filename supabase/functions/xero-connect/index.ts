@@ -20,6 +20,10 @@
 //   - the callback stores the organisation of THIS sign in event when Xero names one
 //     (organisationForSignIn; when Xero does not ask, the site stays put and Back Office asks), and the
 //     new token set goes to that Xero user's rows on ANY organisation;
+//   - a connected site only ever moves when Xero names exactly one organisation: a sign in that
+//     cannot see the site's organisation changes nothing for it (?xero=other_login);
+//   - a disconnected site that signs in when Xero does not ask gets a half hour hold on auto
+//     posting (hold on the sign in note, read by xero-sales), so there is time to pick;
 //   - a site whose organisation changes (the picker, or connecting again and choosing another)
 //     has its Xero setup reset first (resetForNewOrganisation): what named things in the old
 //     organisation is cleared and a copy is kept in the sync log (kind 'organisation').
@@ -30,7 +34,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { authorizeUrl, exchangeCode, getConnections, getValidAccessToken, signState, verifyState, XERO_SCOPES } from '../_shared/xero.ts';
-import { organisationForSignIn, signInGrantFresh, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange, allowedOrganisations, previousOrganisation } from '../_shared/xeroOrg.js';
+import { organisationForSignIn, signInGrantFresh, shouldAskWhichOrganisation, autoPostHeld, signInHolds, organisationChoices, mappingForNewOrganisation, autoDailyAfterOrganisationChange, allowedOrganisations, previousOrganisation } from '../_shared/xeroOrg.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { xeroUserIdFromToken, xeroAuthEventIdFromToken } from '../_shared/xeroTokens.js';
 
@@ -105,11 +109,15 @@ async function lastOrganisationRecord(locationId: string): Promise<any | null> {
 // that person may choose among all the organisations the sign in covers (signInGrantFresh),
 // and the screen asks them to when Xero did not say. A kind of its own, so it is never read as
 // an organisation change.
+// hold (7 Oct 2026): the site had no connection and Xero did not say which organisation, so the
+// hourly job posts nothing for it until the person has picked or the half hour is up
+// (autoPostHeld; xero-sales reads this note). `by` is null when no person is known: the note
+// then gives nobody the wider list, and still carries the hold.
 const SIGN_IN_KIND = 'organisation_sign_in';
-async function noteSignIn(locationId: string, by: string, matched: boolean, count: number) {
+async function noteSignIn(locationId: string, by: string | null, matched: boolean, count: number, hold = false) {
   const at = new Date().toISOString();
   const { error } = await sb.from('xero_sync_log').insert({
-    location_id: locationId, kind: SIGN_IN_KIND, ref_id: `${at}-${crypto.randomUUID().slice(0, 8)}`, status: 'ok', detail: { by, at, matched, organisations: count }, updated_at: at,
+    location_id: locationId, kind: SIGN_IN_KIND, ref_id: `${at}-${crypto.randomUUID().slice(0, 8)}`, status: 'ok', detail: { by, at, matched, organisations: count, hold }, updated_at: at,
   });
   if (error) console.warn('[xero-connect] sign in note', error.message);
 }
@@ -193,6 +201,11 @@ Deno.serve(async (req) => {
       //    signed in, on any organisation, straight after the exchange and before anything that
       //    can fail (reading the organisations, the reset): those sites keep posting whatever
       //    happens to this sign in.
+      //    The copy is by Xero USER (the xero_userid inside each row's stored access token), so
+      //    a sign in by another Xero login never reaches a row signed in by someone else. That
+      //    is what makes "nothing was changed" true for other_login below: this site's row
+      //    keeps its own login's tokens. (Same login, and Xero no longer lists the site's
+      //    organisation: the row does get this newer set, which that login needs anyway.)
       const uid = xeroUserIdFromToken(t.access_token);
       if (uid) {
         try {
@@ -222,15 +235,37 @@ Deno.serve(async (req) => {
       //    (every organisation already connected: Xero just says "Continue" and never asks), the
       //    site stays where its setup was made and Back Office asks which one. ServOS never
       //    guesses a move: that is how every Coffee Boy site landed on the wrong books.
-      const picked = organisationForSignIn({ conns, authEventId: xeroAuthEventIdFromToken(t.access_token), previous: prev });
+      const picked = organisationForSignIn({ conns, authEventId: xeroAuthEventIdFromToken(t.access_token), previous: prev, connected: !!existing });
+      // A connected site, Xero named nothing, and this sign in cannot see the site's
+      // organisation (the browser was signed in to Xero as another login). NOTHING changes for
+      // this site: no reset, no organisation change, no sign in note, and (step 1) no tokens
+      // from another login. The screen says which login to use. Before this the site was
+      // moved to whatever that login could see.
+      if (picked.otherLogin) return redirect(withParam(ret, 'xero', 'other_login'));
       const org = picked.org;
       if (!org) return redirect(withParam(ret, 'xero', 'no_org'));
       const by = payload.uid && payload.uid !== 'service' ? payload.uid : null;
+      const count = organisationChoices(conns, org.tenantId).length;
       // 4. Moving to another organisation: the site's Xero setup is reset first, so nothing
       //    chosen for the old organisation is ever posted into the new one.
       if (prev && prev.id !== org.tenantId) {
         await resetForNewOrganisation(payload.loc, prev, { id: org.tenantId, name: org.tenantName || null }, 'connect', by);
       }
+      // 5. A site with no connection, and Xero did not say which organisation: auto posting
+      //    waits (see noteSignIn). The note goes in AFTER the reset (the reset's own record is
+      //    not the person's answer, and a record newer than the note would read as one) and
+      //    BEFORE the site is stored, so the hourly job can never find the connection without
+      //    it. If storing then fails there is no connection, and a note about a site with no
+      //    connection does nothing.
+      //    A second sign in while that hold stands (the site is connected by now, and Xero
+      //    again did not say) keeps it: its note is the newest, so it must carry the hold on.
+      let standing = false;
+      if (existing && !picked.matched) {
+        standing = autoPostHeld({ signIn: await lastSignIn(payload.loc), lastRecord: await lastOrganisationRecord(payload.loc).catch(() => null) });
+      }
+      const hold = signInHolds({ connected: !!existing, matched: picked.matched, standing });
+      const noteFirst = hold && !existing;
+      if (noteFirst) await noteSignIn(payload.loc, by, picked.matched, count, true);
       const { error: upErr } = await sb.from('xero_connections').upsert({
         location_id: payload.loc,
         tenant_id: org.tenantId,
@@ -240,7 +275,9 @@ Deno.serve(async (req) => {
       }, { onConflict: 'location_id' });
       if (upErr) throw new Error(`Could not store the Xero connection: ${upErr.message}`);
       // The person who signed in may now pick among every organisation the sign in covers.
-      if (by) await noteSignIn(payload.loc, by, picked.matched, organisationChoices(conns, org.tenantId).length);
+      // (Written after the tokens are stored: the wider list is read with them. A hold carried
+      // on from an earlier sign in is written here too: the older note holds until this one.)
+      if (!noteFirst && (by || hold)) await noteSignIn(payload.loc, by, picked.matched, count, hold);
       return redirect(withParam(ret, 'xero', 'connected'));
     } catch (e) {
       console.error('[xero-connect] callback', (e as Error)?.message || e);
@@ -284,13 +321,22 @@ Deno.serve(async (req) => {
       const { accessToken } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
       const conns = await getConnections(accessToken);
       const all = organisationChoices(conns, c.tenant_id);
-      const signIn = acc.isSuper ? null : await lastSignIn(locationId);
+      // The note is read for ServOS staff too (7 Oct 2026): they already see every organisation,
+      // but the question was never put to them, so a super admin who signed in was never asked.
+      const signIn = await lastSignIn(locationId);
       const justSignedIn = signInGrantFresh(signIn, acc.userId);
-      const organisations = allowedOrganisations(all, company.tenantIds, c.tenant_id, acc.isSuper || justSignedIn);
-      // ask: this person has just signed in and Xero did not say which organisation.
+      const seeAll = acc.isSuper || justSignedIn;
+      const organisations = allowedOrganisations(all, company.tenantIds, c.tenant_id, seeAll);
+      // The site's last organisation record says whether the question was answered since. A
+      // record that cannot be read counts as not answered: asking once more is the safe side.
+      const lastRecord = signIn ? await lastOrganisationRecord(locationId).catch(() => null) : null;
+      // ask: this person has just signed in, Xero did not say which organisation, and they have
+      // not picked one since. held: the hourly job is waiting for that pick (autoPostHeld).
       return json({
         connected: true, current: c.tenant_id, siteName: company.siteName, organisations: organisations.length ? organisations : own,
-        others: all.length - organisations.length, ask: justSignedIn && signIn?.matched === false && all.length > 1,
+        others: all.length - organisations.length,
+        ask: shouldAskWhichOrganisation({ signIn, userId: acc.userId, lastRecord, organisationCount: all.length }),
+        held: autoPostHeld({ signIn, lastRecord }),
       });
     } catch (e) {
       return json({ connected: true, current: c.tenant_id, organisations: own, lookupError: (e as Error)?.message || String(e) });

@@ -272,7 +272,7 @@ export default function XeroIntegration() {
     await refreshMode();
   }, [locId, refreshMode]);
 
-  // Handle the redirect back from Xero (?xero=connected|error|expired|invalid|no_org).
+  // Handle the redirect back from Xero (?xero=connected|error|expired|invalid|no_org|other_login).
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     const x = p.get('xero');
@@ -341,7 +341,14 @@ export default function XeroIntegration() {
       </div>
 
       {flash === 'connected' && <div style={S.banner(true)}>✓ Connected to Xero.</div>}
-      {flash && flash !== 'connected' && <div style={S.banner(false)}>Xero connection didn’t complete ({flash}). Please try again.</div>}
+      {/* 7 Oct 2026: the browser was signed in to Xero as another login, one that cannot see this
+          site's organisation. The server changed nothing (xero-connect, other_login). */}
+      {flash === 'other_login' && (
+        <div style={S.banner(false)}>
+          Nothing was changed. The Xero login you used cannot see the organisation this site posts to{status?.tenant_name ? <> (<b>{status.tenant_name}</b>)</> : null}. Sign in to Xero with the login that connected this site.
+        </div>
+      )}
+      {flash && flash !== 'connected' && flash !== 'other_login' && <div style={S.banner(false)}>Xero connection didn’t complete ({flash}). Please try again.</div>}
       {err && <div style={S.banner(false)}>{err}</div>}
 
       {!configured ? (
