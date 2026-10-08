@@ -56,8 +56,12 @@ export function headlessTaxBreakdown(draft, ctx = {}) {
       creditDiscounts: Array.isArray(d.taxCredits) ? d.taxCredits : [],
     });
     return isUsableBreakdown(t?.tax) ? t.tax : null;
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+    // save time guard (lib/saleVatGuard.js), which repairs it from the frozen lines or refuses the
+    // save by name; it is never saved as null at a venue with rates.
+    console.error("[tax] headless close: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }
 
@@ -82,8 +86,10 @@ export function itemsTaxRecord(items, ctx = {}, { orderType = 'dine-in', share =
     const t = computeOrderTaxUnified(live, ctx.taxCtx || { taxRates: ctx.taxRates || [] }, orderType);
     if (!isUsableBreakdown(t)) return null;
     return share === 1 ? t : scaleTaxRecord(t, share);
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): logged, never silent; the save time guard repairs or refuses.
+    console.error("[tax] items tax record: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }
 
@@ -158,8 +164,10 @@ export function qrCloseTax(items, ctx = {}, { paidGoods = null } = {}) {
       taxBreakdown: rec,
       exclusiveTax,
     };
-  } catch {
-    return none;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): logged, never silent; the save time guard repairs or refuses.
+    console.error("[tax] QR close: the VAT could not be worked out:", e?.message || e);
+    return none;
   }
 }
 

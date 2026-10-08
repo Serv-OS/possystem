@@ -625,8 +625,11 @@ test('fix round 2 (HIGH): every card start on a till or kiosk checks the link FI
   // the old kiosk and in the new design. ScreenPay and submitOrder are untouched (card path guard).
   const kiosk = read('../surfaces/KioskApp.jsx');
   assert.ok(kiosk.includes("{screen === 'pay' && <KioskPayLinkGate "), 'old kiosk: the pay screen is gated');
-  assert.ok(kiosk.includes("onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal}"), 'old kiosk: ScreenPay is the gate\'s child');
-  assert.ok(kiosk.includes('return <KioskV2Root engine={engine} ScreenPay={LinkedScreenPay} />;'), 'new design: gated ScreenPay');
+  // 8 Oct 2026 (VAT audit, Fix 2): ScreenPay sits inside the VAT gate (surfaces/kiosk/KioskVatGate.jsx),
+  // itself the link gate's child, so the link is still checked FIRST and the reader still never starts
+  // until both say yes. The new design's root is inside the VAT gate's context provider.
+  assert.ok(kiosk.includes("onCancel={resetSession}><KioskVatGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal}"), 'old kiosk: ScreenPay is the VAT gate\'s child, inside the link gate');
+  assert.ok(kiosk.includes('<KioskV2Root engine={engine} ScreenPay={LinkedScreenPay} />'), 'new design: gated ScreenPay');
   assert.ok(kiosk.includes('function LinkedScreenPay(props) {'), 'a module level component (a stable type, never remounted)');
   const gate = read('../surfaces/kiosk/KioskPayLinkGate.jsx');
   assert.ok(gate.includes("if (gate.phase === 'ok') return children;"), 'the reader starts only after the server said linked');

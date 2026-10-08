@@ -36,7 +36,7 @@ export function tabBill(tab, taxCtx, creditDiscounts = []) {
     bd = computeOrderTaxUnified(items, taxCtx, 'bar-tab',
       creditDiscounts.length ? { discounts: creditDiscounts } : null);
   }
-  catch { bd = null; }   // fail toward the old behaviour, never a guessed charge
+  catch (e) { console.error("[tax] bar tab bill: the tax could not be worked out:", e?.message || e); bd = null; }   // 8 Oct 2026: logged, never silent; never a guessed charge
   const exclusiveTax = Number(bd?.exclusiveTax) || 0;
   const active = exclusiveTax > 0;
   return {
@@ -77,7 +77,10 @@ export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {} } = {
     const booked = taxForChargedGoods(t, paymentInfo);
     if (!isUsableBreakdown(booked)) return null;
     return { taxAmount: roundVat(booked.totalTax), taxBreakdown: booked };
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the save
+    // time guard (lib/saleVatGuard.js), which repairs it from the tab lines or refuses the save by name.
+    console.error("[tax] bar tab close: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }

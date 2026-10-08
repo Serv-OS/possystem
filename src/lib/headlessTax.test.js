@@ -100,8 +100,10 @@ test('v5.9.97 wiring: reader closes, the checkout draft and 100% comps (source p
   const store = read('../store/index.js');
   assert.match(store, /import \{ headlessTaxBreakdown, headlessService, taxForChargedGoods \} from '\.\.\/lib\/headlessTax';/);
   assert.match(store, /let headlessTax = null;\n\s*try \{\n\s*headlessTax = headlessTaxBreakdown\(d, \{/, 'the reader close never throws on tax');
-  assert.match(store, /\} catch \{ headlessTax = null; \}/);
-  assert.match(store, /taxAmount: headlessTax\?\.totalTax != null \? headlessTax\.totalTax : null,/);
+  // 8 Oct 2026 (VAT audit, Fix 3): the catch LOGS the error and leaves null for the save time guard
+  // (lib/saleVatGuard.js) to repair or refuse; the in memory figure is rounded like the row.
+  assert.match(store, /\} catch \(e\) \{\n(?:\s*\/\/.*\n)*\s*console\.error\(\x27\[tax\] reconciler headless record: the VAT could not be worked out:\x27, e\?\.message \|\| e\);\n\s*headlessTax = null;\n\s*\}/);
+  assert.match(store, /taxAmount: roundVat\(headlessTax\?\.totalTax\),/);
   assert.match(store, /taxBreakdown: headlessTax,/);
   assert.match(store, /subtotal, service: headlessService\(d, headlessTax\),/);
   assert.doesNotMatch(store, /total: paymentInfo\.grand \|\| subtotal/, 'a 100% comp books £0, not the full price in cash');

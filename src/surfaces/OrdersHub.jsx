@@ -544,7 +544,10 @@ export default function OrdersHub() {
         if (mr.outcome === 'error') console.warn('[closeShortQrTab] mark-collected:', mr.error?.message || mr.error);
         refs.forEach(ref => updateQueueStatus(ref, 'collected'));
       }
-      const { error: ccErr } = await supabase.from('closed_checks').insert(check);
+      // 8 Oct 2026 (VAT audit, Fix 3): through writeClosedCheckRow, the ONE way a closed_checks
+      // row is written (a missing optional column is dropped, and the save time guard repairs the
+      // VAT from the lines or refuses the save by name, lib/saleVatGuard.js).
+      const { error: ccErr } = await writeClosedCheckRow(supabase, check, { tag: 'OrdersHub short close' });
       if (ccErr && String(ccErr.code || '') !== '23505') {
         showToast(`⚠ The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
       } else {
@@ -581,6 +584,10 @@ export default function OrdersHub() {
         : linkGate.message, 'error');
       return;
     }
+    // 8 Oct 2026 (VAT audit, Fix 3): a till that cannot book the VAT neither captures nor books
+    // (lib/tillVatGate.js through store.vatGate). The tab stays open; the hold stays; the reason is shown.
+    const vatGate = useStore.getState().vatGate?.();
+    if (vatGate) { showToast(vatGate.message, 'error', 9000); return; }
     if (shortTab) { await closeShortQrTab(tab, shortTab); return; }
     // Route by processor. Default missing processor → stripe (tabs opened
     // before dual-processor). Ryft holds are addressed by payment_session_id;
@@ -900,6 +907,10 @@ export default function OrdersHub() {
     {
       const linkGate = await confirmLinkBeforeCard();
       if (!linkGate.ok) { showToast(linkGate.message, 'error'); return; }
+      // 8 Oct 2026 (VAT audit, Fix 3): and no capture on a till that cannot book the VAT
+      // (lib/tillVatGate.js through store.vatGate). The hold stays; the reason is shown.
+      const vatGate = useStore.getState().vatGate?.();
+      if (vatGate) { showToast(vatGate.message, 'error', 9000); return; }
     }
 
     // v5.5.151: auto-surcharge for left-open tabs. Config snapshotted on

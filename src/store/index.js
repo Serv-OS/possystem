@@ -10,7 +10,14 @@ import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, o
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
-import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs } from '../lib/venueTaxRates';
+import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
+// 8 Oct 2026 (VAT audit, Fix 3): the till refuses a tender while it cannot book the VAT
+// (lib/tillVatGate.js), re reads its rates until it can, and every sale meets the save time guard
+// (lib/saleVatGuard.js) with this till's rates. The in memory record is rounded like the row.
+import { tillVatGate, afterTaxRatesRead, taxRatesRetryMs, noRatesAlertDue, NO_RATES_ALERT_KEY } from '../lib/tillVatGate';
+import { venueExpectsRates } from '../lib/customerRates';
+import { setVenueTaxSource, venueTaxFromStore, onSaleVatEvent } from '../lib/saleVatGuard';
+import { roundVat } from '../lib/taxRule';
 import { venueRowsOnly } from '../lib/boVenueBoot';
 import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
 import { creditDiscountsFromPayment, chargedTaxOf } from '../lib/taxBasis';
@@ -22,7 +29,7 @@ import { kitchenOverride, receiptOverride, kitchenLineName, isSizeOnlyKitchenNam
 const tillKitchenName = (i) => (!isSizeOnlyKitchenName(i) && i.kitchenName) || i.menu_name || i.menuName || i.name;
 import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
-import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates, mapTaxRateRow } from '../lib/rowMapping';
 import { createMenuWriters, categoryInsertRetry, runItemEditWrites, putBackFollowers } from '../lib/menuWriters';
 import { deleteRowChecked, writeWithin, MENU_WAIT_MS } from '../lib/menuRowWrite';
 import { menuItemRow, categoryRow, menuRow } from '../lib/menuItemWrite';
@@ -1949,6 +1956,67 @@ export const useStore = create((set, get) => ({
   // makeCascadeResolver + computeTax need, memoised on its input slices so a
   // future consumer can call it on every render for free. See _buildTaxContext.
   getTaxContext: () => _buildTaxContext(get()),
+  // ── 8 Oct 2026 (VAT audit, Fix 3): the till books VAT or it does not sell ──────────────
+  // vatGate(): null when a tender may start; { code, message } when this till holds no tax set
+  // up although its menu names rates (lib/tillVatGate.js). Every card start asks it first
+  // (CheckoutModal, BarSurface held card capture, Orders Hub captures, MPOS), so a sale is never
+  // charged that the till cannot book with VAT. A venue whose menu names no rate is never blocked.
+  vatGate: () => tillVatGate({ taxCtx: get().getTaxContext(), menuItems: get().menuItems || [] }),
+  // refreshTaxRates(): read this venue's tax_rates again, now (Try again on the gate, and the
+  // background retry below). The same rule as the boot read (SyncBridge): rows replace the slice
+  // tagged with this venue; an empty answer is believed only from a session the database answers
+  // truthfully (lib/venueTaxRates.js); a failed read keeps what the till holds. Never throws.
+  refreshTaxRates: async ({ attempt = 0 } = {}) => {
+    const locationId = getActiveLocationSync();
+    if (!supabase || !locationId) return { res: null, trusted: false };
+    const trusted = isBackOfficeMode() || await clientTrustsEmpty(supabase);
+    let res = null;
+    try {
+      res = await supabase.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
+    } catch (e) { res = { data: null, error: e }; }
+    const rows = res && !res.error && Array.isArray(res.data) ? { data: res.data.map(mapTaxRateRow), error: null } : res;
+    set(s => ({ taxRates: ratesAfterRead(rows, locationId, s.taxRates, { trusted }) }));
+    get().afterTaxRatesRead({ res, trusted, attempt });
+    return { res, trusted };
+  },
+  // afterTaxRatesRead(): what a tax_rates read leaves the till with. While the gate is shut (the
+  // menu names rates the till does not hold) the read is repeated on its own, quick first then
+  // every five minutes (taxRatesRetryMs), and staff see one plain toast. A trusted EMPTY answer at
+  // such a venue means the venue really has no rates: the activity feed gets the owner's alert
+  // (venueTaxRates.noTaxRatesAlert) once a day. Back Office is never retried (it reads its own).
+  // On a cold boot the menu lands seconds after the rates read, so an empty menu is judged again
+  // shortly rather than read as "names no rate". `attempt` counts the retries of one gap.
+  _taxRatesRetry: null,
+  afterTaxRatesRead: ({ res = null, trusted = false, attempt = 0 } = {}) => {
+    if (isBackOfficeMode()) return;
+    const s = get();
+    if (s._taxRatesRetry) { clearTimeout(s._taxRatesRetry.timer); }
+    if (!(s.menuItems || []).length) {
+      const timer = setTimeout(() => { get().afterTaxRatesRead({ res, trusted, attempt }); }, 15000);
+      set({ _taxRatesRetry: { attempt, timer } });
+      return;
+    }
+    const next = afterTaxRatesRead({
+      res, trusted,
+      expectsRates: venueExpectsRates(s.menuItems || []),
+      hasTaxConfig: taxCtxHasConfig(s.getTaxContext()),
+    });
+    if (!next.retry) { set({ _taxRatesRetry: null }); return; }
+    if (attempt === 0) get().showToast?.('VAT rates have not loaded on this till. Loading them again. Payments wait until they load.', 'error', 9000);
+    const timer = setTimeout(() => { get().refreshTaxRates({ attempt: attempt + 1 }).catch(() => {}); }, taxRatesRetryMs(attempt));
+    set({ _taxRatesRetry: { attempt, timer } });
+    if (next.alert) {
+      const locationId = getActiveLocationSync();
+      const today = new Date().toISOString().slice(0, 10);
+      let lastDay = null;
+      try { lastDay = localStorage.getItem(NO_RATES_ALERT_KEY); } catch { lastDay = null; }
+      const alert = noTaxRatesAlert({ trusted: true, rateCount: 0, hasProfiles: (s.taxProfiles || []).length > 0, currency: s.locationConfig?.currency || 'GBP' });
+      if (alert && locationId && noRatesAlertDue(lastDay, today)) {
+        try { localStorage.setItem(NO_RATES_ALERT_KEY, today); } catch { /* latch only */ }
+        logActivity(locationId, { kind: 'ops', severity: 'urgent', title: alert.title, body: alert.body, refType: 'tax_rates', refId: locationId }).catch(() => {});
+      }
+    }
+  },
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
@@ -6352,7 +6420,11 @@ export const useStore = create((set, get) => ({
           taxCtx: get().getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
         }).tax;
-      } catch {}
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from its lines or refuses the save.
+        console.error('[tax] buildCloseRecord: the VAT could not be worked out:', e?.message || e);
+      }
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
 
@@ -6410,7 +6482,9 @@ export const useStore = create((set, get) => ({
       // 27 Sep 2026: `??`, not `||`. A 100% comp at a table charges £0, and `0 || session.total`
       // booked the undiscounted bill as taken (phantom cash in the drawer). No grand: as before.
       total:      paymentInfo.grand ?? session.total ?? 0,
-      taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
+      // v4.6.19. 8 Oct 2026: rounded once with the one rule (taxRule.roundVat), so the in memory
+      // record equals the row closedCheckRow writes; null stays null (never 0).
+      taxAmount:  roundVat(taxBreakdown?.totalTax),
       method:     paymentInfo.method || 'card',
       // v5.9.11: what paid the check, per tender (lib/accounting/tenders.js). CheckoutModal
       // hands over the exact list; other callers (MPOS card, a table closed with no payment
@@ -6656,7 +6730,13 @@ export const useStore = create((set, get) => ({
           discountRules: get().discountRules,
           timezone: get().locationConfig?.timezone,
         });
-      } catch { headlessTax = null; }
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from the frozen lines or refuses
+        // the save by name (the pending copy is kept and sent once the rates load).
+        console.error('[tax] reconciler headless record: the VAT could not be worked out:', e?.message || e);
+        headlessTax = null;
+      }
       record = {
         id: job.closed_check_id,
         ref: frozenRef || getNextOrderRefLocal(),
@@ -6676,7 +6756,7 @@ export const useStore = create((set, get) => ({
         subtotal, service: headlessService(d, headlessTax),
         tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
         total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
-        taxAmount: headlessTax?.totalTax != null ? headlessTax.totalTax : null,
+        taxAmount: roundVat(headlessTax?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
         method: priorLegs.length ? 'split' : 'card',
         tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
@@ -7128,7 +7208,11 @@ export const useStore = create((set, get) => ({
           taxCtx: get().getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
         }).tax;
-      } catch {}
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from its lines or refuses the save.
+        console.error('[tax] recordWalkInClosed: the VAT could not be worked out:', e?.message || e);
+      }
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
     // If the walk-in was reopened from orderQueue (OrdersHub openOrder) it already
@@ -7160,7 +7244,7 @@ export const useStore = create((set, get) => ({
       // 27 Sep 2026: `??`, not `||`. A 100% comp charges £0, and `0 || subtotal` booked the full
       // price as taken in cash (7 "Custom 100%" checks at Leeds showed £44.90 cash never taken).
       total: paymentInfo.grand ?? subtotal,
-      taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
+      taxAmount: roundVat(taxBreakdown?.totalTax),   // v4.6.19. 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
       tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
@@ -9224,6 +9308,29 @@ export const useStore = create((set, get) => ({
   clearPendingItem: () => set({ pendingItem:null }),
 }));
 // NOTE: these are appended but the store is defined above — we patch via the create callback
+
+// 8 Oct 2026 (VAT audit, Fix 3): the save time guard (lib/saleVatGuard.js) runs inside
+// writeClosedCheckRow for EVERY closed_checks write. Writers with no venue context of their own
+// (DataSafe's replay of a pending sale, the offline queue's MPOS recovery row, db.js) are judged
+// with this till's rates through the source registered here. The kiosk hands its own.
+setVenueTaxSource(() => venueTaxFromStore(useStore.getState()));
+// Every repair and every refusal is told to staff (toast) and kept in the activity feed, so a sale
+// whose VAT had to be filled in, or that is waiting for the rates, is never silent.
+onSaleVatEvent((ev) => {
+  const st = useStore.getState();
+  const who = ev.ref || ev.checkId || 'a sale';
+  if (ev.kind === 'refused') st.showToast?.(`${who}: ${ev.message}`, 'error', 12000);
+  else st.showToast?.(`${who}: ${ev.message}`, 'info', 6000);
+  const locationId = getActiveLocationSync();
+  if (!locationId) return;
+  logActivity(locationId, {
+    kind: 'ops',
+    severity: ev.kind === 'refused' ? 'urgent' : 'action',
+    title: ev.kind === 'refused' ? `Sale ${who} not saved: no VAT` : `Sale ${who}: VAT filled in from the item rules`,
+    body: `${ev.message} (${ev.reason || ev.kind}, ${ev.tag || 'closed_checks'})`,
+    refType: 'closed_check', refId: ev.checkId || ev.ref || null,
+  }).catch(() => {});
+});
 
 // Mock-mode-only debug handle so local preview sessions can drive store state the
 // mock DB can't reach (e.g. bind a cash drawer to test the cash flow). Never set

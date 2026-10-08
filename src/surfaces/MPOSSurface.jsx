@@ -30,6 +30,7 @@ import { taxCtxHasConfig } from '../lib/taxCompute';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
 import { chargedTaxOf, creditDiscountsFromPayment } from '../lib/taxBasis';
+import { roundVat } from '../lib/taxRule';   // 8 Oct 2026: the recovery record is rounded like the row
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { taxForChargedGoods } from '../lib/headlessTax';
 import PINScreen from './PINScreen';
@@ -412,7 +413,11 @@ function MPOSRouter() {
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
         }).tax;
       }
-      catch { /* leave VAT unsplit rather than book a guess */ }
+      catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The buffered row meets the
+        // save time guard when it is sent (lib/saleVatGuard.js through writeClosedCheckRow).
+        console.error('[mpos] recovery record: the VAT could not be worked out:', e?.message || e);
+      }
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // a 100% comp books no VAT, as recordWalkInClosed
     return {
@@ -433,7 +438,7 @@ function MPOSRouter() {
       service:    0,
       tip:        paymentInfo?.tip || 0,
       total:      paymentInfo?.grand || subtotal,
-      taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,
+      taxAmount:  roundVat(taxBreakdown?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
       taxBreakdown,
       method:     paymentInfo?.method || 'card',
       tenders:    tendersFromPaymentInfo(paymentInfo || {}, { total: paymentInfo?.grand || subtotal, tip: paymentInfo?.tip || 0 }),   // v5.9.11
@@ -803,6 +808,10 @@ function MPOSRouter() {
           else setFlow({ screen: null });
         }}
         onTakePayment={() => {
+          // 8 Oct 2026 (VAT audit, Fix 3): no tender on a handset that cannot book the VAT
+          // (lib/tillVatGate.js through store.vatGate). Nothing is charged; the reason is shown.
+          const vatGate = useStore.getState().vatGate?.();
+          if (vatGate) { showToast?.(vatGate.message, 'error', 9000); return; }
           // Walk-in or table — both go through MTender. For walk-in we keep
           // walkInOrder intact (sent items remain payable until close).
           setFlow({ screen: 'tender', context: flow.context || {} });
@@ -822,7 +831,13 @@ function MPOSRouter() {
           if (tableId) setFlow({ screen: 'tableView', context: { tableId } });
           else setFlow({ screen: 'cart', context: flow.context || {} });
         }}
-        onConfirm={(payment) => setFlow(f => ({ screen: 'card', context: { ...(f.context || {}), payment } }))}
+        onConfirm={(payment) => {
+          // 8 Oct 2026 (VAT audit, Fix 3): the belt for a gate that shut after the tender opened:
+          // the card flow never starts on a handset that cannot book the VAT. Nothing is charged.
+          const vatGate = useStore.getState().vatGate?.();
+          if (vatGate) { showToast?.(vatGate.message, 'error', 9000); return; }
+          setFlow(f => ({ screen: 'card', context: { ...(f.context || {}), payment } }));
+        }}
       />
     );
   }
