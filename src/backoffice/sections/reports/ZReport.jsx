@@ -22,6 +22,7 @@ import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js
 import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { ExportBtn } from './_charts';
+import ZReportGroups from './ZReportGroups';
 
 const ROW = { display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:11, lineHeight:1.5 };
 const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
@@ -35,7 +36,7 @@ function formatTime(ts, timeZone) {
 }
 
 // timeZone = range.timeZone (the venue's; none = London, never the browser's).
-export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN }) {
+export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN, scope }) {
   const { locationProfile, taxRates = [], shift } = useStore();
   const tz = venueZone(timeZone);
   const receiptRef = useRef(null);
@@ -159,6 +160,7 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         {stats.voids > 0     && <div style={ROW}><span>less Voids ({voidCount})</span><span style={{ color:'var(--red)' }}>−{fmt(stats.voids)}</span></div>}
         {stats.refunds > 0   && <div style={ROW}><span>less Refunds ({refundCount})</span><span style={{ color:'var(--red)' }}>−{fmt(stats.refunds)}</span></div>}
         <div style={{ ...ROW, ...BOLD }}><span>Net sales</span><span>{fmt(stats.net)}</span></div>
+        <ZReportGroups checks={checks} fmt={fmt} siteId={scope?.homeId}/>
 
         <div style={DIV}/>
 
