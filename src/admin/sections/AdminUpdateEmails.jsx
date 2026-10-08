@@ -68,6 +68,11 @@ export default function AdminUpdateEmails() {
   const [recipients, setRecipients] = useState([]);
   const [left, setLeft] = useState(null);
   const [whoLoaded, setWhoLoaded] = useState(false);
+  // The choices the list on screen was loaded for. While they differ from the current choices
+  // the list is stale and Send stays closed (8 Oct 2026, review: a tick swapped inside the
+  // debounce showed one list and sent to another of the same size).
+  const [loadedKey, setLoadedKey] = useState(null);
+  const wantKey = useRef('');
   // Sent
   const [rows, setRows] = useState([]);
   const [historyCompanies, setHistoryCompanies] = useState([]);
@@ -110,17 +115,21 @@ export default function AdminUpdateEmails() {
     }
   }, []);
 
-  const loadWho = useCallback(async (ids, owners, staff) => {
+  const loadWho = useCallback(async (ids, owners, staff, key) => {
     try {
       const res = await callUpdateEmails('recipients', { company_ids: ids, owners_only: owners, include_staff: staff });
+      // The choices moved on while this was in flight: that answer is for a list nobody wants.
+      if (key !== wantKey.current) return;
       setCompanies(res.companies || []);
       setRecipients(res.recipients || []);
       setLeft(res.left || null);
+      setLoadedKey(key);
     } catch (e) {
+      if (key !== wantKey.current) return;
       if (e.notReady) setNotReady(true);
       else setErr(e.message);
     } finally {
-      setWhoLoaded(true);
+      if (key === wantKey.current) setWhoLoaded(true);
     }
   }, []);
 
@@ -131,10 +140,13 @@ export default function AdminUpdateEmails() {
 
   // The list of people follows the choices, a moment after the last tick.
   const tickedKey = [...ticked].sort().join(',');
+  const whoKey = `${allCompanies ? 'all' : tickedKey}|${ownersOnly ? 'owners' : 'everyone'}|${includeStaff ? 'staff' : 'nostaff'}`;
+  const whoStale = loadedKey !== whoKey;
   useEffect(() => {
-    const t = setTimeout(() => loadWho(allCompanies ? null : tickedKey.split(',').filter(Boolean), ownersOnly, includeStaff), WHO_DEBOUNCE_MS);
+    wantKey.current = whoKey;
+    const t = setTimeout(() => loadWho(allCompanies ? null : tickedKey.split(',').filter(Boolean), ownersOnly, includeStaff, whoKey), WHO_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [loadWho, allCompanies, tickedKey, ownersOnly, includeStaff]);
+  }, [loadWho, whoKey, allCompanies, tickedKey, ownersOnly, includeStaff]);
 
   const sends = useMemo(() => rollupSends(rows, historyCompanies), [rows, historyCompanies]);
   const preview = useMemo(() => buildEmail({
@@ -174,25 +186,27 @@ export default function AdminUpdateEmails() {
     setErr(''); setNote('');
     if (!draft.ok) { setErr(draft.error); return; }
     if (!tested) { setErr('Send yourself a test of this text first.'); return; }
+    if (whoStale) { setErr('The list of people is still updating. Wait a moment, then Send.'); return; }
     if (!count) { setErr('Nobody matches those choices. Tick a company that has Back Office logins.'); return; }
     if (!window.confirm(sendQuestion(count))) return;
     setBusy('send');
     try {
       const res = await callUpdateEmails('send', {
         subject: draft.subject, body_md: draft.bodyMd, company_ids: companyIds, owners_only: ownersOnly, include_staff: includeStaff,
-        expect_count: count, broadcast_id: draftId.current,
+        // The count AND the people shown: the server refuses if either differs from its own list.
+        expect_count: count, expect_emails: recipients.map((r) => r.email), broadcast_id: draftId.current,
       });
       // From what the server really SENT, not what was picked: a second try after a lost reply
       // sends only to those still waiting, and must not read as a second send.
-      setNote(sendResultLine({ sent: res.sent, failed: res.failed, skipped: res.skipped }));
-      // A clean send: the draft is done. With failures the draft and its id stay, so Send again
-      // goes only to the people whose email failed.
-      if (!res.failed) resetDraft();
+      setNote(sendResultLine({ sent: res.sent, failed: res.failed, skipped: res.skipped, waiting: res.waiting }));
+      // A clean send: the draft is done. With failures, or people an earlier try still holds, the
+      // draft and its id stay, so Send again goes only to the people who have not had it.
+      if (!res.failed && !res.waiting) resetDraft();
       await loadHistory({ quiet: true });
     } catch (e) {
       if (e.notReady) setNotReady(true);
       setErr(e.message);
-      if (e.code === 'count_changed') await loadWho(companyIds, ownersOnly, includeStaff);
+      if (e.code === 'count_changed') await loadWho(companyIds, ownersOnly, includeStaff, whoKey);
       // An earlier try DID arrive (its reply was lost) and the words have changed since. That
       // send keeps its id and its words; this draft is a new email from here on.
       if (e.code === 'already_sent') { draftId.current = newBroadcastId(); await loadHistory({ quiet: true }); }
@@ -202,12 +216,13 @@ export default function AdminUpdateEmails() {
     }
   };
 
-  const sendDisabled = !!busy || notReady || !providerOk || !draft.ok || !tested || count === 0 || count > MAX_RECIPIENTS_PER_SEND;
+  const sendDisabled = !!busy || notReady || !providerOk || !draft.ok || !tested || whoStale || count === 0 || count > MAX_RECIPIENTS_PER_SEND;
   const whyNotSend = !draft.ok ? (subject.trim() || body.trim() ? draft.error : '')
     : testedHash == null ? 'Send yourself a test first. Send opens once the test has gone.'
       : !tested ? 'The text changed since the test. Send yourself a new test.'
-        : count === 0 ? 'Nobody matches those choices.'
-          : count > MAX_RECIPIENTS_PER_SEND ? `That is more than ${MAX_RECIPIENTS_PER_SEND} people in one send. Tick fewer companies.` : '';
+        : whoStale ? 'Updating the list…'
+          : count === 0 ? 'Nobody matches those choices.'
+            : count > MAX_RECIPIENTS_PER_SEND ? `That is more than ${MAX_RECIPIENTS_PER_SEND} people in one send. Tick fewer companies.` : '';
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   return (
@@ -302,6 +317,7 @@ export default function AdminUpdateEmails() {
 
           <div style={{ maxHeight: 320, overflowY: 'auto', borderTop: '1px solid var(--bdr)' }}>
             {!whoLoaded && <div style={{ fontSize: 14, color: 'var(--t3)', padding: '8px 0' }}>Loading…</div>}
+            {whoLoaded && whoStale && <div style={{ fontSize: 14, color: 'var(--t3)', padding: '8px 0' }}>Updating the list…</div>}
             {whoLoaded && count === 0 && <div style={{ fontSize: 14, color: 'var(--t3)', padding: '8px 0' }}>{allCompanies ? 'No Back Office logins match.' : 'Tick a company.'}</div>}
             {recipients.map((r) => (
               <div key={r.email} style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '7px 0', borderBottom: '1px dashed var(--bdr)', fontSize: 14 }}>

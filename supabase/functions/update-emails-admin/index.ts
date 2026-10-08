@@ -26,9 +26,9 @@
 //                -> { recipients, count, left, companies }
 //   test       { subject, body_md }                 the caller only, [TEST] on the subject
 //                -> { sent, failed, to, error? }
-//   send       { subject, body_md, company_ids?, owners_only?, include_staff?, expect_count, broadcast_id }
-//                -> { broadcast_id, sent, failed, skipped, total }
-//              409 count_changed  the server's list is not the size the screen showed
+//   send       { subject, body_md, company_ids?, owners_only?, include_staff?, expect_count, expect_emails?, broadcast_id }
+//                -> { broadcast_id, sent, failed, skipped, waiting, total }
+//              409 count_changed  the server's list is not the size (or not the people) the screen showed
 //              409 already_sent   that broadcast_id already holds a DIFFERENT text
 //              409 test_first     no test of this exact text has gone to the caller yet
 //              409 no_provider    email sending is not set up on the server
@@ -41,7 +41,8 @@ import { requireAal2, bearerToken } from '../_shared/second-step.ts';
 // @ts-ignore plain JS shared with node tests
 import {
   cleanDraft, pickRecipients, countByCompany, buildEmail, servosSender, providerRequest, providerMessageId, providerReady,
-  deliverAll, stillToSend, sameText, isUuid, isEmail, oneLine, NAME_MAX, MAX_RECIPIENTS_PER_SEND, NO_PROVIDER_LINE,
+  deliverAll, stillToSend, sortPriorRows, splitOwned, sameText, sameRecipientSet, idempotencyKey, retryDelayMs,
+  isUuid, isEmail, oneLine, NAME_MAX, MAX_RECIPIENTS_PER_SEND, NO_PROVIDER_LINE, SEND_GAP_MS, PROVIDER_TIMEOUT_MS, STALE_QUEUED_MS,
 } from '../_shared/updateEmailRules.js';
 
 const cors = {
@@ -67,7 +68,11 @@ const NOT_READY = 'Run the database update first (20261008b_OPS_update_emails.sq
 const HISTORY_DAYS = 180;
 const PAGE = 1000;       // PostgREST never returns more than 1000 rows a request, whatever the limit says
 const MAX_ROWS = 10000;
-const SEND_CONCURRENCY = 2;   // Resend allows about 2 requests a second; a 429 is retried below
+// One request at a time with SEND_GAP_MS between them (8 Oct 2026, review): two workers firing
+// back to back made 6 to 8 requests a second against Resend's 2 and failed people on our own
+// pace. 100 people (the cap) take about 90 seconds this way, inside the function's wall clock.
+const SEND_CONCURRENCY = 1;
+const TEST_ROWS_TO_CHECK = 20;   // the sender's most recent tests of this subject, compared in code
 
 // The table is not there yet: say so plainly instead of a raw database error.
 const isMissingTable = (e: any) => {
@@ -82,6 +87,7 @@ const dbRefusal = (e: any) => (isMissingTable(e)
 type Profile = { id: string; org_id: string | null; full_name: string | null; role: string | null; email: string | null; bo_access: boolean | null };
 type Org = { id: string; name: string; status: string | null };
 type Recipient = { userId: string; email: string; name: string; role: string; orgId: string | null; company: string };
+type SendOut = { ok: boolean; id?: string | null; error?: string };
 
 async function pagedSelect(table: string, columns: string, shape: (q: any) => any): Promise<{ rows: any[]; error: any }> {
   const rows: any[] = [];
@@ -134,30 +140,59 @@ function readOptions(body: any): { companyIds: string[] | null; ownersOnly: bool
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The ONE place an email leaves this function. One provider request per recipient; a 429 or a
- * network failure is tried again (three tries, a growing pause); any other refusal is that
- * recipient's error and does not stop the others (deliverAll).
+ * The ONE place an email leaves this function. One provider request per recipient, carrying an
+ * idempotency key (broadcast id and address) so a request repeated after a lost reply is the
+ * same email to Resend. A 429 is tried again at the pace Retry-After asks; a 5xx, a network
+ * failure or the timeout a few times more; any other refusal is that recipient's error and does
+ * not stop the others (retryDelayMs, deliverAll).
  */
-function makeSendOne(subject: string, bodyMd: string, test: boolean) {
-  return async (r: Recipient): Promise<{ ok: boolean; id?: string | null; error?: string }> => {
+function makeSendOne(broadcastId: string, subject: string, bodyMd: string, test: boolean) {
+  return async (r: Recipient): Promise<SendOut> => {
     const email = buildEmail({ subject, bodyMd, companyName: r.company, test });
-    const spec = providerRequest({ provider: EMAIL_PROVIDER, resendKey: RESEND_KEY, postmarkKey: POSTMARK_KEY, sender: SENDER, to: r.email, subject: email.subject, html: email.html, text: email.text });
+    const spec = providerRequest({
+      provider: EMAIL_PROVIDER, resendKey: RESEND_KEY, postmarkKey: POSTMARK_KEY, sender: SENDER, to: r.email,
+      subject: email.subject, html: email.html, text: email.text, idempotencyKey: idempotencyKey(broadcastId, r.email),
+    });
     if (!spec) return { ok: false, error: NO_PROVIDER_LINE };
     let lastError = '';
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; ; attempt++) {
+      let status: number | null = null;
+      let retryAfter: string | null = null;
       try {
-        const res = await fetch(spec.url, { method: 'POST', headers: spec.headers, body: JSON.stringify(spec.body) });
+        // A hung connection becomes this row's failure after PROVIDER_TIMEOUT_MS, never a run
+        // that sits on its queued rows until the wall clock kills it.
+        const res = await fetch(spec.url, { method: 'POST', headers: spec.headers, body: JSON.stringify(spec.body), signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
         const j = await res.json().catch(() => ({}));
         if (res.ok) return { ok: true, id: providerMessageId(EMAIL_PROVIDER, j) };
+        status = res.status;
+        retryAfter = res.headers.get('retry-after');
         lastError = String(j?.message || j?.Message || `${EMAIL_PROVIDER} HTTP ${res.status}`);
-        if (res.status !== 429 && res.status < 500) return { ok: false, error: lastError };
       } catch (e) {
         lastError = String((e as any)?.message ?? e);
       }
-      if (attempt < 3) await wait(700 * attempt);
+      const delay = retryDelayMs({ status, attempt, retryAfter });
+      if (delay == null) return { ok: false, error: lastError || 'The email provider did not answer.' };
+      await wait(delay);
     }
-    return { ok: false, error: lastError || 'The email provider did not answer.' };
   };
+}
+
+/**
+ * Send to these people and write each person's row (sent or failed, the provider's id or its
+ * error) straight after THEIR email, never after everybody's (8 Oct 2026, review: with the
+ * writes at the end, a run killed mid way left every row queued although the emails had gone).
+ * A row write that fails is logged and the email still counts as sent: the row stays queued, a
+ * try after STALE_QUEUED_MS would claim it, and the idempotency key stops a second copy.
+ */
+async function deliverAndRecord(broadcastId: string, list: Recipient[], sendOne: (r: Recipient) => Promise<SendOut>, opts: { concurrency: number; minGapMs?: number }) {
+  return await deliverAll(list, async (r: Recipient) => {
+    const out = (await sendOne(r)) || { ok: false, error: 'The email provider refused it.' };
+    const { error } = await admin.from('update_emails')
+      .update({ status: out.ok ? 'sent' : 'failed', provider_id: out.ok ? (out.id ?? null) : null, error: out.ok ? null : String(out.error ?? '').slice(0, 500), sent_at: new Date().toISOString() })
+      .eq('broadcast_id', broadcastId).eq('to_email', r.email);
+    if (error) console.error('[update-emails-admin] row not written after the email', r.email, error.message);
+    return out;
+  }, opts);
 }
 
 Deno.serve(async (req) => {
@@ -230,11 +265,7 @@ Deno.serve(async (req) => {
       org_id: me.orgId, role: 'super_admin', sent_by: user.id, sent_by_name: senderName, provider: EMAIL_PROVIDER, status: 'queued', is_test: true,
     });
     if (insErr) return dbRefusal(insErr);
-    const [r] = await deliverAll([me], makeSendOne(draft.subject, draft.bodyMd, true), { concurrency: 1 });
-    const { error: updErr } = await admin.from('update_emails')
-      .update({ status: r.ok ? 'sent' : 'failed', provider_id: r.id ?? null, error: r.ok ? null : r.error, sent_at: new Date().toISOString() })
-      .eq('broadcast_id', broadcastId).eq('to_email', to);
-    if (updErr) return dbRefusal(updErr);
+    const [r] = await deliverAndRecord(broadcastId, [me], makeSendOne(broadcastId, draft.subject, draft.bodyMd, true), { concurrency: 1 });
     if (!r.ok) return json({ error: `The test did not send: ${r.error}`, code: 'send_failed', to }, 502);
     return json({ ok: true, sent: 1, failed: 0, to });
   }
@@ -261,6 +292,11 @@ Deno.serve(async (req) => {
     if (Number(body.expect_count) !== recipients.length) {
       return json({ error: 'The list of people changed. Check it and send again.', code: 'count_changed', count: recipients.length }, 409);
     }
+    // And the same PEOPLE, when the screen says who it showed (8 Oct 2026, review: a tick swapped
+    // for another company of the same size passed the count alone).
+    if (!sameRecipientSet(body.expect_emails, recipients)) {
+      return json({ error: 'The list of people changed. Check it and send again.', code: 'count_changed', count: recipients.length }, 409);
+    }
 
     // One broadcast_id is ONE text, always. Same words = a true second try, carry on and skip
     // whoever already has it; different words = refuse, so one id can never mean two emails.
@@ -273,34 +309,57 @@ Deno.serve(async (req) => {
     }
 
     // Test first, on the server too: a test of THIS exact text must have reached the sender.
-    const { data: tested, error: testErr } = await admin.from('update_emails').select('id')
-      .eq('sent_by', user.id).eq('is_test', true).eq('status', 'sent').eq('subject', draft.subject).eq('body_md', draft.bodyMd).limit(1);
+    // The body is compared in code, never put in the filter: a filter is the request URL, and a
+    // long what's new (the screen allows 15,000 characters) overran the gateway's line limit
+    // and blocked the send as "the database refused that" (8 Oct 2026, review).
+    const { data: tested, error: testErr } = await admin.from('update_emails').select('subject, body_md')
+      .eq('sent_by', user.id).eq('is_test', true).eq('status', 'sent').eq('subject', draft.subject)
+      .order('sent_at', { ascending: false }).limit(TEST_ROWS_TO_CHECK);
     if (testErr) return dbRefusal(testErr);
-    if (!(tested ?? []).length) return json({ error: 'Send yourself a test of this text first.', code: 'test_first' }, 409);
+    if (!(tested ?? []).some((row: any) => sameText(row, draft))) return json({ error: 'Send yourself a test of this text first.', code: 'test_first' }, 409);
 
     const { todo, skipped } = stillToSend(recipients, priorRows) as { todo: Recipient[]; skipped: number };
-    if (!todo.length) return json({ ok: true, broadcast_id: broadcastId, sent: 0, failed: 0, skipped, total: recipients.length });
+    if (!todo.length) return json({ ok: true, broadcast_id: broadcastId, sent: 0, failed: 0, skipped, waiting: 0, total: recipients.length });
 
-    // Queue a row per person before anything leaves, so a crash mid way leaves a trace and a
-    // second try knows who is still waiting. A person who already has a failed row keeps it
-    // (ignoreDuplicates) and is tried again below.
-    const queuedAt = new Date().toISOString();
+    // OWN the rows before anything leaves (8 Oct 2026, review: a second Send while the first was
+    // still going emailed everyone twice). This run emails only the people whose row it made or
+    // claimed; a row another run holds (queued less than STALE_QUEUED_MS ago) is left to it.
+    //   1. Queue a row per person. ignoreDuplicates keeps every existing row, and the select gives
+    //      back only the rows THIS call inserted (the venue-messages "written" pattern).
+    const nowMs = Date.now();
+    const queuedAt = new Date(nowMs).toISOString();
     const rows = todo.map((r) => ({
       broadcast_id: broadcastId, subject: draft.subject, body_md: draft.bodyMd, to_email: r.email, to_user_id: r.userId, to_name: r.name || null,
       org_id: r.orgId, role: r.role, sent_by: user.id, sent_by_name: senderName, sent_at: queuedAt, provider: EMAIL_PROVIDER, status: 'queued', is_test: false,
     }));
-    const { error: qErr } = await admin.from('update_emails').upsert(rows, { onConflict: 'broadcast_id,to_email', ignoreDuplicates: true });
+    const { data: insertedRows, error: qErr } = await admin.from('update_emails')
+      .upsert(rows, { onConflict: 'broadcast_id,to_email', ignoreDuplicates: true }).select('to_email');
     if (qErr) return dbRefusal(qErr);
+    const inserted = (insertedRows ?? []).map((x: any) => String(x.to_email));
 
-    const results = await deliverAll(todo, makeSendOne(draft.subject, draft.bodyMd, false), { concurrency: SEND_CONCURRENCY });
+    //   2. Claim the rows a try can take again: failed, or queued so long ago that their run is
+    //      dead. ONE update with the same test in its where clause, so two runs can never both
+    //      take a row (the second sees the first's new sent_at and matches nothing). The stale
+    //      cut off is a plain timestamp in the filter, as adyen-capture-sweep's own sweep filters are.
+    const { retry } = sortPriorRows(todo, priorRows, nowMs) as { retry: Recipient[] };
+    let claimed: string[] = [];
+    if (retry.length) {
+      const staleIso = new Date(Math.floor((nowMs - STALE_QUEUED_MS) / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+      const { data: claimedRows, error: cErr } = await admin.from('update_emails')
+        .update({ status: 'queued', error: null, provider_id: null, sent_at: queuedAt, sent_by: user.id, sent_by_name: senderName })
+        .eq('broadcast_id', broadcastId).eq('is_test', false).in('to_email', retry.map((r) => r.email))
+        .or(`status.eq.failed,and(status.eq.queued,sent_at.lt.${staleIso})`)
+        .select('to_email');
+      if (cErr) return dbRefusal(cErr);
+      claimed = (claimedRows ?? []).map((x: any) => String(x.to_email));
+    }
+    const { owned, waiting } = splitOwned(todo, inserted, claimed) as { owned: Recipient[]; waiting: Recipient[] };
+
+    //   3. Send to the owned rows only, writing each row straight after its email.
+    const results = await deliverAndRecord(broadcastId, owned, makeSendOne(broadcastId, draft.subject, draft.bodyMd, false), { concurrency: SEND_CONCURRENCY, minGapMs: SEND_GAP_MS });
     let sent = 0, failed = 0;
-    await Promise.all(results.map(async (r: any) => {
-      if (r.ok) sent += 1; else failed += 1;
-      await admin.from('update_emails')
-        .update({ status: r.ok ? 'sent' : 'failed', provider_id: r.id ?? null, error: r.ok ? null : r.error, sent_at: new Date().toISOString() })
-        .eq('broadcast_id', broadcastId).eq('to_email', r.recipient.email);
-    }));
-    return json({ ok: true, broadcast_id: broadcastId, sent, failed, skipped, total: recipients.length });
+    for (const r of results) { if (r.ok) sent += 1; else failed += 1; }
+    return json({ ok: true, broadcast_id: broadcastId, sent, failed, skipped, waiting: waiting.length, total: recipients.length });
   }
 
   return json({ error: 'unknown action' }, 400);

@@ -27,6 +27,16 @@ export const SENDER_NAME = 'ServOS';
 export const DEFAULT_FROM = 'hello@posup.co.uk';
 export const TEST_PREFIX = '[TEST] ';
 export const STATUSES = Object.freeze(['queued', 'sent', 'failed']);
+// Sending pace (8 Oct 2026, review): Resend allows about 2 requests a second. One request at a
+// time with this gap between them stays under it; a 429 is still retried, honouring Retry-After.
+export const SEND_GAP_MS = 550;
+// A provider call that has not answered by now is that row's failure, never a stalled run.
+export const PROVIDER_TIMEOUT_MS = 15000;
+// A row left 'queued' this long belongs to a run that died (or is still going: the edge function
+// wall clock is shorter than this). Only after this may a second try claim it and send again.
+export const STALE_QUEUED_MS = 10 * 60 * 1000;
+export const RETRY_429_MAX = 5;     // tries on "too many requests": the pace is ours to fix
+export const RETRY_OTHER_MAX = 3;   // tries on a 5xx or a network failure
 // ServOS staff: the role on the profile, or an email on one of these domains.
 export const STAFF_DOMAINS = Object.freeze(['serv-os.app', 'posup.co.uk']);
 export const LOGIN_ROLES = Object.freeze(['owner', 'manager']);
@@ -311,13 +321,15 @@ export function servosSender(fromEnv) {
  * The provider request for one email, in the shape send-welcome and send-receipt use
  * (provider: resend or postmark; anything else, or no key, sends nothing and returns null).
  */
-export function providerRequest({ provider, resendKey, postmarkKey, sender, to, subject, html, text }) {
+export function providerRequest({ provider, resendKey, postmarkKey, sender, to, subject, html, text, idempotencyKey = null }) {
   const p = String(provider || '').toLowerCase();
   if (!isEmail(to) || !sender || !sender.from) return null;
   if (p === 'resend' && resendKey) {
     return {
       url: 'https://api.resend.com/emails',
-      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      // Idempotency-Key (8 Oct 2026, review): the same key within 24 hours is the same email to
+      // Resend, so even a request repeated after a lost reply cannot produce a second copy.
+      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': String(idempotencyKey) } : {}) },
       body: { from: sender.from, to: [to], subject, html, text, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}) },
     };
   }
@@ -327,6 +339,49 @@ export function providerRequest({ provider, resendKey, postmarkKey, sender, to, 
       headers: { 'X-Postmark-Server-Token': postmarkKey, 'Content-Type': 'application/json', Accept: 'application/json' },
       body: { From: sender.from, To: to, Subject: subject, HtmlBody: html, TextBody: text, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}) },
     };
+  }
+  return null;
+}
+
+/**
+ * One key per person per send for the provider: broadcast id and address. Resend keeps it for
+ * 24 hours and refuses to send the same key twice. Resend caps a key at 256 characters.
+ */
+export function idempotencyKey(broadcastId, email) {
+  return `${String(broadcastId || '')}/${String(email || '').trim().toLowerCase()}`.slice(0, 256);
+}
+
+/**
+ * Seconds or an HTTP date from a Retry-After header, as milliseconds from now; null when there
+ * is none or it cannot be read.
+ */
+export function parseRetryAfter(value, nowMs = Date.now()) {
+  const v = String(value == null ? '' : value).trim();
+  if (!v) return null;
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? Math.max(0, t - nowMs) : null;
+}
+
+/**
+ * How long to wait before trying one email again, or null to stop and record the failure.
+ *   429            up to RETRY_429_MAX tries, waiting what Retry-After says (1.1 to 10 seconds,
+ *                  1.1 when it says nothing): the provider's pace, not a fixed guess;
+ *   5xx or no answer (status null: a network failure or the timeout)
+ *                  up to RETRY_OTHER_MAX tries, 0.7 s then 1.4 s;
+ *   any other 4xx  final: the request itself was refused and will be refused again.
+ */
+export function retryDelayMs({ status, attempt, retryAfter, nowMs = Date.now() } = {}) {
+  const a = Math.max(1, Number(attempt) || 1);
+  const s = status == null ? null : Number(status);
+  if (s === 429) {
+    if (a >= RETRY_429_MAX) return null;
+    const asked = parseRetryAfter(retryAfter, nowMs);
+    return Math.min(10000, Math.max(1100, asked == null ? 1100 : asked));
+  }
+  if (s == null || s === 0 || s >= 500) {
+    if (a >= RETRY_OTHER_MAX) return null;
+    return 700 * a;
   }
   return null;
 }
@@ -435,23 +490,45 @@ export function sendQuestion(count) {
  * is how many already had it from an earlier try of the same send (a second try after a lost
  * reply). Never claims a send that sent nothing.
  */
-export function sendResultLine({ sent = 0, failed = 0, skipped = 0 } = {}) {
-  const s = Number(sent) || 0, f = Number(failed) || 0, k = Number(skipped) || 0;
+export function sendResultLine({ sent = 0, failed = 0, skipped = 0, waiting = 0 } = {}) {
+  const s = Number(sent) || 0, f = Number(failed) || 0, k = Number(skipped) || 0, w = Number(waiting) || 0;
   const parts = [];
   if (s > 0) parts.push(`Sent to ${peopleWord(s)}.`);
   if (f > 0) parts.push(`${f === 1 ? '1 email' : `${f} emails`} failed. See Sent below for who, then Send again: only the failed ones go.`);
   if (k > 0) parts.push(`${k === 1 ? '1 person' : `${k} people`} already had it. Nothing was sent twice.`);
+  // Rows another run of the same send still holds (queued less than STALE_QUEUED_MS ago).
+  if (w > 0) parts.push(`${w === 1 ? '1 is' : `${w} are`} still going from an earlier try. Check Sent below in 10 minutes.`);
   return parts.join(' ') || 'Nothing was sent.';
 }
 
+/**
+ * Is the list the screen showed (its emails) the list the server derived? The server refuses a
+ * send whose people differ, not only whose number differs: nobody the admin never saw gets it.
+ * An older screen that sent no list leaves the count check on its own.
+ */
+export function sameRecipientSet(shownEmails, recipients) {
+  if (!Array.isArray(shownEmails)) return true;
+  const shown = new Set(shownEmails.map((e) => String(e == null ? '' : e).trim().toLowerCase()).filter(Boolean));
+  const mine = new Set((recipients || []).map((r) => String(r.email || '').toLowerCase()));
+  if (shown.size !== mine.size) return false;
+  for (const e of mine) if (!shown.has(e)) return false;
+  return true;
+}
+
 // ── Sending ─────────────────────────────────────────────────────────────────
+
+const timeOf = (iso) => { const t = Date.parse(iso || ''); return Number.isFinite(t) ? t : 0; };
+
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Send to every recipient, a few at a time, and never stop for one failure. `sendOne(recipient)`
  * is the ONE place an email leaves (the edge function gives the real one; tests give a stub) and
  * answers { ok, id?, error? } or throws. Results come back in the recipients' order.
+ * `minGapMs` is the pause a worker takes after each email before its next one (the provider's
+ * rate limit, SEND_GAP_MS); `sleep` is only ever replaced by a test.
  */
-export async function deliverAll(recipients, sendOne, { concurrency = 4 } = {}) {
+export async function deliverAll(recipients, sendOne, { concurrency = 4, minGapMs = 0, sleep = defaultSleep } = {}) {
   const list = recipients || [];
   const results = new Array(list.length);
   let next = 0;
@@ -465,6 +542,7 @@ export async function deliverAll(recipients, sendOne, { concurrency = 4 } = {}) 
       } catch (e) {
         results[i] = { recipient: r, ok: false, id: null, error: String(e && e.message ? e.message : e).slice(0, 500) };
       }
+      if (minGapMs > 0 && next < list.length) await sleep(minGapMs);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, list.length || 1)) }, worker));
@@ -486,9 +564,44 @@ export function stillToSend(recipients, priorRows) {
   return { todo, skipped };
 }
 
-// ── The Sent list ───────────────────────────────────────────────────────────
+/**
+ * The people still to send (stillToSend's todo) sorted by what their earlier row says, so a
+ * second try only ever emails people this run OWNS (8 Oct 2026, review: a second Send while the
+ * first was still going emailed everyone twice, because a queued row looked like work to do):
+ *   fresh    no row yet: the upsert makes one, and the rows it really inserted are this run's;
+ *   retry    a failed row, or a queued row older than staleMs (its run died): claimed with one
+ *            atomic update before sending, so two runs can never both take it;
+ *   waiting  a queued row younger than staleMs: another run has it right now. Left alone.
+ */
+export function sortPriorRows(todo, priorRows, nowMs = Date.now(), staleMs = STALE_QUEUED_MS) {
+  const byEmail = new Map((priorRows || []).filter((r) => r && r.to_email).map((r) => [String(r.to_email).toLowerCase(), r]));
+  const fresh = [], retry = [], waiting = [];
+  for (const r of todo || []) {
+    const prior = byEmail.get(String(r.email).toLowerCase());
+    if (!prior) { fresh.push(r); continue; }
+    if (prior.status === 'failed') { retry.push(r); continue; }
+    if (prior.status === 'queued') {
+      const t = timeOf(prior.sent_at);
+      if (!t || nowMs - t >= staleMs) retry.push(r); else waiting.push(r);
+      continue;
+    }
+    waiting.push(r);   // 'sent' or unknown: never ours to send
+  }
+  return { fresh, retry, waiting };
+}
 
-const timeOf = (iso) => { const t = Date.parse(iso || ''); return Number.isFinite(t) ? t : 0; };
+/**
+ * After the database answered: the people whose rows this run inserted or claimed are its own to
+ * email; everyone else in todo is another run's and waits. Emails compared in lower case.
+ */
+export function splitOwned(todo, insertedEmails, claimedEmails) {
+  const mine = new Set([...(insertedEmails || []), ...(claimedEmails || [])].map((e) => String(e || '').toLowerCase()));
+  const owned = [], waiting = [];
+  for (const r of todo || []) (mine.has(String(r.email).toLowerCase()) ? owned : waiting).push(r);
+  return { owned, waiting };
+}
+
+// ── The Sent list ───────────────────────────────────────────────────────────
 
 /**
  * update_emails rows grouped into sends, newest first, each with its counts and its people.

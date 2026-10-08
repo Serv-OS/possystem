@@ -13,6 +13,8 @@ import {
   emailFooter, buildEmail, servosSender, providerRequest, providerMessageId, providerReady,
   isStaffEmail, pickRecipients, countByCompany, sendQuestion, sendResultLine, peopleWord,
   deliverAll, stillToSend, rollupSends, countsLine, formatWhen, ROLE_LABEL,
+  sortPriorRows, splitOwned, sameRecipientSet, idempotencyKey, parseRetryAfter, retryDelayMs,
+  SEND_GAP_MS, PROVIDER_TIMEOUT_MS, STALE_QUEUED_MS, RETRY_429_MAX, RETRY_OTHER_MAX,
 } from '../../supabase/functions/_shared/updateEmailRules.js';
 import * as app from './updateEmailRules.js';
 
@@ -284,6 +286,118 @@ test('deliverAll: one failure never stops the others, results keep the order, th
     ['owner@wingfest.com', false, null, 'rate limited'],
   ]);
   assert.deepEqual(await deliverAll([], sendOne), []);
+});
+
+test('cleanDraft and sameText take a body at the 15000 limit (the server compares the body in code, never in a filter)', () => {
+  const big = `# Long\n\n${'word '.repeat(2997)}the end`;   // 8 + 14985 + 7 = 15000 characters exactly
+  assert.equal([...big].length, 15000);
+  const d = cleanDraft({ subject: 'Long one', body_md: big });
+  assert.ok(d.ok);
+  assert.ok(sameText({ subject: 'Long one', body_md: big }, d), 'a stored test row matches the draft');
+  assert.ok(!sameText({ subject: 'Long one', body_md: `${big}!` }, d));
+  assert.equal(cleanDraft({ subject: 'Long one', body_md: `${big}!` }).ok, false, 'one over is refused, never cut');
+});
+
+test('deliverAll: one at a time with a gap between emails, the gap never after the last, order kept', async () => {
+  const recipients = [{ email: 'a@x.com' }, { email: 'b@x.com' }, { email: 'c@x.com' }];
+  const order = [];
+  let inFlight = 0, most = 0;
+  const sendOne = async (r) => {
+    inFlight += 1; most = Math.max(most, inFlight);
+    order.push(`start ${r.email}`);
+    await new Promise((res) => setTimeout(res, 2));
+    order.push(`end ${r.email}`);
+    inFlight -= 1;
+    return { ok: true, id: r.email };
+  };
+  const naps = [];
+  const sleep = async (ms) => { naps.push(ms); };
+  const out = await deliverAll(recipients, sendOne, { concurrency: 1, minGapMs: SEND_GAP_MS, sleep });
+  assert.equal(most, 1, 'never two provider calls at once');
+  assert.deepEqual(naps, [SEND_GAP_MS, SEND_GAP_MS], 'a gap after each email except the last');
+  assert.deepEqual(order, ['start a@x.com', 'end a@x.com', 'start b@x.com', 'end b@x.com', 'start c@x.com', 'end c@x.com']);
+  assert.deepEqual(out.map((o) => o.id), ['a@x.com', 'b@x.com', 'c@x.com']);
+  assert.equal(SEND_GAP_MS, 550, 'under Resend\'s 2 requests a second');
+  assert.equal(PROVIDER_TIMEOUT_MS, 15000);
+});
+
+test('retryDelayMs: 429 waits what Retry-After asks (clamped) up to 5 tries; 5xx or no answer 0.7 s then 1.4 s; other 4xx final', () => {
+  const now = Date.parse('2026-10-08T10:00:00Z');
+  assert.equal(retryDelayMs({ status: 429, attempt: 1 }), 1100, 'no header: 1.1 s');
+  assert.equal(retryDelayMs({ status: 429, attempt: 1, retryAfter: '3' }), 3000);
+  assert.equal(retryDelayMs({ status: 429, attempt: 2, retryAfter: '60' }), 10000, 'never longer than 10 s');
+  assert.equal(retryDelayMs({ status: 429, attempt: 1, retryAfter: '0' }), 1100, 'never shorter than 1.1 s');
+  assert.equal(retryDelayMs({ status: 429, attempt: 1, retryAfter: new Date(now + 2000).toUTCString(), nowMs: now }), 2000, 'an HTTP date works too');
+  assert.equal(retryDelayMs({ status: 429, attempt: RETRY_429_MAX - 1 }), 1100);
+  assert.equal(retryDelayMs({ status: 429, attempt: RETRY_429_MAX }), null, 'the fifth 429 is the failure');
+  assert.equal(retryDelayMs({ status: 500, attempt: 1 }), 700);
+  assert.equal(retryDelayMs({ status: 503, attempt: 2 }), 1400);
+  assert.equal(retryDelayMs({ status: 502, attempt: RETRY_OTHER_MAX }), null);
+  assert.equal(retryDelayMs({ status: null, attempt: 1 }), 700, 'a network failure or the timeout');
+  assert.equal(retryDelayMs({ status: null, attempt: 3 }), null);
+  assert.equal(retryDelayMs({ status: 422, attempt: 1 }), null, 'the request itself was refused');
+  assert.equal(retryDelayMs({ status: 400, attempt: 1 }), null);
+  assert.equal(retryDelayMs({ status: 401, attempt: 1 }), null);
+  assert.equal(parseRetryAfter('', now), null);
+  assert.equal(parseRetryAfter('garbage', now), null);
+  assert.equal(parseRetryAfter('2', now), 2000);
+  assert.equal(parseRetryAfter(new Date(now - 5000).toUTCString(), now), 0, 'a date in the past is now');
+});
+
+test('idempotencyKey: broadcast id and address, lower case, never over 256 characters; Resend gets it as a header, Postmark does not', () => {
+  const bid = '00000000-0000-4000-8000-00000000b001';
+  assert.equal(idempotencyKey(bid, 'MO@CoffeeBoy.co.uk'), `${bid}/mo@coffeeboy.co.uk`);
+  assert.ok(idempotencyKey(bid, `${'a'.repeat(300)}@x.com`).length <= 256);
+  const sender = servosSender('hello@posup.co.uk');
+  const base = { resendKey: 'rk', postmarkKey: 'pk', sender, to: 'mo@coffeeboy.co.uk', subject: 'S', html: '<p>h</p>', text: 'h' };
+  const re = providerRequest({ ...base, provider: 'resend', idempotencyKey: `${bid}/mo@coffeeboy.co.uk` });
+  assert.equal(re.headers['Idempotency-Key'], `${bid}/mo@coffeeboy.co.uk`);
+  assert.equal(providerRequest({ ...base, provider: 'resend' }).headers['Idempotency-Key'], undefined, 'no key, no header');
+  const pm = providerRequest({ ...base, provider: 'postmark', idempotencyKey: 'x' });
+  assert.equal(Object.keys(pm.headers).some((k) => /idempotency/i.test(k)), false);
+});
+
+test('sortPriorRows: no row is fresh, failed or stale queued is a retry, a fresh queued row is another run\'s (waiting)', () => {
+  const now = Date.parse('2026-10-08T10:00:00Z');
+  const todo = ['a', 'b', 'c', 'd', 'e'].map((x) => ({ email: `${x}@x.com` }));
+  const prior = [
+    { to_email: 'B@x.com', status: 'failed', sent_at: '2026-10-08T09:59:00Z' },
+    { to_email: 'c@x.com', status: 'queued', sent_at: '2026-10-08T09:49:00Z' },   // 11 minutes: its run is dead
+    { to_email: 'd@x.com', status: 'queued', sent_at: '2026-10-08T09:59:30Z' },   // 30 seconds: still going
+    { to_email: 'e@x.com', status: 'sent', sent_at: '2026-10-08T09:59:40Z' },
+  ];
+  const { fresh, retry, waiting } = sortPriorRows(todo, prior, now);
+  assert.deepEqual(fresh.map((r) => r.email), ['a@x.com']);
+  assert.deepEqual(retry.map((r) => r.email), ['b@x.com', 'c@x.com']);
+  assert.deepEqual(waiting.map((r) => r.email), ['d@x.com', 'e@x.com']);
+  assert.equal(STALE_QUEUED_MS, 10 * 60 * 1000);
+  // Exactly at the cut off counts as stale; a queued row with no time is stale too.
+  assert.deepEqual(sortPriorRows([todo[2]], [{ to_email: 'c@x.com', status: 'queued', sent_at: '2026-10-08T09:50:00Z' }], now).retry.length, 1);
+  assert.deepEqual(sortPriorRows([todo[2]], [{ to_email: 'c@x.com', status: 'queued', sent_at: null }], now).retry.length, 1);
+  assert.deepEqual(sortPriorRows(todo, [], now).fresh.length, 5);
+});
+
+test('splitOwned: only the rows the database said were inserted or claimed are this run\'s to email', () => {
+  const todo = ['a', 'b', 'c', 'd'].map((x) => ({ email: `${x}@x.com` }));
+  const { owned, waiting } = splitOwned(todo, ['A@x.com'], ['b@x.com']);
+  assert.deepEqual(owned.map((r) => r.email), ['a@x.com', 'b@x.com']);
+  assert.deepEqual(waiting.map((r) => r.email), ['c@x.com', 'd@x.com']);
+  assert.deepEqual(splitOwned(todo, [], []).owned, []);
+  assert.deepEqual(splitOwned(todo, null, undefined).waiting.length, 4);
+});
+
+test('sameRecipientSet: the people shown must be the people derived, not only as many', () => {
+  const mine = [{ email: 'mo@coffeeboy.co.uk' }, { email: 'sam@coffeeboy.co.uk' }];
+  assert.equal(sameRecipientSet(undefined, mine), true, 'an older screen sent no list: the count check stands alone');
+  assert.equal(sameRecipientSet(['SAM@coffeeboy.co.uk ', 'mo@coffeeboy.co.uk'], mine), true, 'order and case do not matter');
+  assert.equal(sameRecipientSet(['mo@coffeeboy.co.uk'], mine), false);
+  assert.equal(sameRecipientSet(['mo@coffeeboy.co.uk', 'owner@wingfest.com'], mine), false, 'same size, another person');
+  assert.equal(sameRecipientSet([], []), true);
+});
+
+test('sendResultLine: people an earlier try still holds are said plainly, and never counted as sent', () => {
+  assert.equal(sendResultLine({ sent: 5, waiting: 2 }), 'Sent to 5 people. 2 are still going from an earlier try. Check Sent below in 10 minutes.');
+  assert.equal(sendResultLine({ waiting: 1 }), '1 is still going from an earlier try. Check Sent below in 10 minutes.');
 });
 
 test('stillToSend: a second try skips those already sent and takes the failed and queued again', () => {

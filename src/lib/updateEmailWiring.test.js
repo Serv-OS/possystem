@@ -2,8 +2,8 @@
 // Reads the source and checks the shape that keeps a send safe: the screen only asks and never
 // writes the table; the server fences the caller, picks the people again, compares the count it
 // was shown, keeps one id to one text, demands a test of the exact text, queues rows before
-// anything leaves, and sends through ONE function; the migration opens no door to the API; the
-// panel sits on the Messages screen.
+// anything leaves, owns the rows it sends to, and sends through ONE function; the migration opens
+// no door to the API; the panel sits on the Messages screen.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -23,7 +23,15 @@ test('Company Admin renders the panel in the Messages section, and the panel onl
   assert.equal(count(sec, ".from('update_emails')"), 0, 'the screen never touches the table itself');
   assert.equal(count(sec, 'api.resend.com'), 0, 'the screen never talks to the mail provider');
   assert.ok(sec.includes('if (!window.confirm(sendQuestion(count))) return;'));
-  assert.ok(sec.includes('expect_count: count, broadcast_id: draftId.current,'));
+  assert.ok(sec.includes('expect_count: count, expect_emails: recipients.map((r) => r.email), broadcast_id: draftId.current,'), 'the count and the people shown');
+  // A stale list (choices changed, the new list not back yet) closes Send and is said on screen.
+  assert.ok(sec.includes('const whoStale = loadedKey !== whoKey;'));
+  assert.ok(sec.includes('if (key !== wantKey.current) return;'), 'an answer for older choices is dropped');
+  assert.ok(sec.includes("if (whoStale) { setErr('The list of people is still updating. Wait a moment, then Send.'); return; }"));
+  assert.ok(between(sec, 'const sendDisabled = ', ';').includes('|| whoStale ||'));
+  assert.ok(sec.includes('Updating the list…'));
+  // People an earlier try still holds keep the draft and its id, like failures do.
+  assert.ok(sec.includes('if (!res.failed && !res.waiting) resetDraft();'));
   // Send waits for a test of the current text, and a changed text closes it again.
   assert.ok(sec.includes('const tested = testedHash != null && testedHash === currentHash;'));
   assert.ok(sec.includes("if (!tested) { setErr('Send yourself a test of this text first.'); return; }"));
@@ -32,7 +40,7 @@ test('Company Admin renders the panel in the Messages section, and the panel onl
   assert.ok(sec.includes('buildEmail({'));
   assert.ok(sec.includes('<iframe title="Email preview" sandbox="" srcDoc={preview.html}'));
   // The note is built from what the server SENT, and a refused retry starts a new draft id.
-  assert.ok(sec.includes('setNote(sendResultLine({ sent: res.sent, failed: res.failed, skipped: res.skipped }));'));
+  assert.ok(sec.includes('setNote(sendResultLine({ sent: res.sent, failed: res.failed, skipped: res.skipped, waiting: res.waiting }));'));
   const refused = between(sec, "if (e.code === 'already_sent')", '} finally {');
   assert.ok(refused.includes('draftId.current = newBroadcastId();'));
   const lib = read('src/lib/updateEmails.js');
@@ -50,31 +58,62 @@ test('update-emails-admin: the fence is the venue-messages one, in the same orde
   assert.ok(fn.includes("from '../_shared/updateEmailRules.js'"), 'the same rules the screen previews with');
 });
 
-test('update-emails-admin send: count, one id one text, test first, queue, then ONE sender', () => {
+test('update-emails-admin send: count and people, one id one text, test first, own the rows, then ONE sender', () => {
   const fn = read('supabase/functions/update-emails-admin/index.ts');
   const send = between(fn, "if (action === 'send') {", "return json({ error: 'unknown action' }, 400);");
   const countCheck = send.indexOf('Number(body.expect_count) !== recipients.length');
-  const prior = send.indexOf(".eq('broadcast_id', broadcastId).eq('is_test', false)");
+  const setCheck = send.indexOf('!sameRecipientSet(body.expect_emails, recipients)');
+  const prior = send.indexOf(".eq('broadcast_id', broadcastId).eq('is_test', false).range(");
   const sameTextCheck = send.indexOf('!sameText(priorRows[0], draft)');
-  const testFirst = send.indexOf(".eq('sent_by', user.id).eq('is_test', true).eq('status', 'sent').eq('subject', draft.subject).eq('body_md', draft.bodyMd)");
+  const testFirst = send.indexOf(".eq('sent_by', user.id).eq('is_test', true).eq('status', 'sent').eq('subject', draft.subject)");
   const skip = send.indexOf('stillToSend(recipients, priorRows)');
-  const queue = send.indexOf(".upsert(rows, { onConflict: 'broadcast_id,to_email', ignoreDuplicates: true })");
-  const deliver = send.indexOf('await deliverAll(todo, makeSendOne(');
-  assert.ok(countCheck > 0 && prior > countCheck && sameTextCheck > prior && testFirst > sameTextCheck && skip > testFirst && queue > skip && deliver > queue,
-    'count, prior text, test first, who is left, queue the rows, then send');
+  const queue = send.indexOf(".upsert(rows, { onConflict: 'broadcast_id,to_email', ignoreDuplicates: true }).select('to_email')");
+  const claim = send.indexOf(".or(`status.eq.failed,and(status.eq.queued,sent_at.lt.${staleIso})`)");
+  const own = send.indexOf('splitOwned(todo, inserted, claimed)');
+  const deliver = send.indexOf('await deliverAndRecord(broadcastId, owned, makeSendOne(broadcastId,');
+  assert.ok(countCheck > 0 && setCheck > countCheck && prior > setCheck && sameTextCheck > prior && testFirst > sameTextCheck && skip > testFirst
+    && queue > skip && claim > queue && own > claim && deliver > own,
+    'count, the same people, prior text, test first, who is left, insert and claim the rows, then send to the owned ones only');
   assert.ok(send.includes("code: 'count_changed', count: recipients.length }, 409)"));
   assert.ok(send.includes("code: 'already_sent' }, 409)"));
   assert.ok(send.includes("code: 'test_first' }, 409)"));
   assert.ok(send.includes("code: 'too_many', count: recipients.length }, 400)"));
-  // Every email leaves through makeSendOne and nowhere else; a 4xx other than 429 is final.
+  // The test first check never puts the body in the filter (the URL): it compares in code.
+  assert.equal(count(send, ".eq('body_md'"), 0, 'the body is never a filter');
+  assert.ok(send.includes('.some((row: any) => sameText(row, draft))'));
+  assert.ok(send.includes('.order(\'sent_at\', { ascending: false }).limit(TEST_ROWS_TO_CHECK)'));
+  // The claim is one atomic update on the retryable rows, and the stale cut off has no fraction.
+  const claimBlock = between(send, 'if (retry.length) {', 'const { owned, waiting }');
+  assert.ok(claimBlock.includes(".update({ status: 'queued', error: null, provider_id: null, sent_at: queuedAt,"));
+  assert.ok(claimBlock.includes(".in('to_email', retry.map((r) => r.email))"));
+  assert.ok(claimBlock.includes(".select('to_email')"));
+  assert.ok(claimBlock.includes(".replace('.000Z', 'Z')"));
+  assert.ok(send.includes('sortPriorRows(todo, priorRows, nowMs)'));
+  assert.ok(send.includes('waiting: waiting.length, total: recipients.length'));
+  assert.equal(count(send, 'Promise.all(results.map'), 0, 'no status write after everybody: each row is written after its own email');
+  // One at a time with the gap, never two workers.
+  assert.ok(fn.includes('const SEND_CONCURRENCY = 1;'));
+  assert.ok(send.includes('{ concurrency: SEND_CONCURRENCY, minGapMs: SEND_GAP_MS }'));
+  // Every email leaves through makeSendOne and nowhere else, with a timeout, an idempotency key
+  // and the retry rule (Retry-After on a 429; other 4xx final).
   assert.equal(count(fn, 'await fetch('), 1, 'one fetch to the provider in the whole function');
-  assert.ok(between(fn, 'function makeSendOne(', 'Deno.serve(').includes('await fetch(spec.url'));
-  assert.ok(fn.includes('if (res.status !== 429 && res.status < 500) return { ok: false, error: lastError };'));
+  const sendOne = between(fn, 'function makeSendOne(', 'async function deliverAndRecord(');
+  assert.ok(sendOne.includes('await fetch(spec.url'));
+  assert.ok(sendOne.includes('signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS)'), 'a hung connection ends');
+  assert.ok(sendOne.includes('idempotencyKey: idempotencyKey(broadcastId, r.email)'));
+  assert.ok(sendOne.includes("retryAfter = res.headers.get('retry-after');"));
+  assert.ok(sendOne.includes('const delay = retryDelayMs({ status, attempt, retryAfter });'));
+  assert.ok(sendOne.includes('if (delay == null) return { ok: false, error: lastError'));
+  // Each row is written straight after its own email, inside the sender wrapper.
+  const record = between(fn, 'async function deliverAndRecord(', 'Deno.serve(');
+  assert.ok(record.includes("return await deliverAll(list, async (r: Recipient) => {"));
+  assert.ok(record.includes(".update({ status: out.ok ? 'sent' : 'failed', provider_id: out.ok ? (out.id ?? null) : null,"));
+  assert.ok(record.includes(".eq('broadcast_id', broadcastId).eq('to_email', r.email);"));
   // A test goes to the caller only, and is recorded before it is sent.
   const testAct = between(fn, "if (action === 'test') {", "if (action === 'send') {");
   assert.ok(testAct.includes('const to = String(user.email ?? profile.email ??'));
-  assert.ok(testAct.indexOf(".insert({") < testAct.indexOf('await deliverAll([me]'), 'the row first, then the email');
-  assert.ok(testAct.includes('makeSendOne(draft.subject, draft.bodyMd, true)'));
+  assert.ok(testAct.indexOf(".insert({") < testAct.indexOf('await deliverAndRecord(broadcastId, [me]'), 'the row first, then the email');
+  assert.ok(testAct.includes('makeSendOne(broadcastId, draft.subject, draft.bodyMd, true)'));
   // The sender is ServOS, never a venue's branded domain.
   assert.ok(fn.includes("servosSender(Deno.env.get('RECEIPT_EMAIL_FROM') || '')"));
   assert.equal(count(fn, 'resolveSenderForOrg'), 0);
