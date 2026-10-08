@@ -209,6 +209,21 @@ export function canEditSectionsFor({ callerRole, callerId, targetId, targetRole 
   return true;
 }
 
+/**
+ * May this person switch a login's Back Office access ON? Off is always allowed (it only takes
+ * away). On is allowed when the login opens nothing this person cannot: a person who opens
+ * everything (mySections null) may switch on any login; a limited person may not switch on an
+ * unlimited login, one whose list is not known (undefined), or one with a wider list.
+ * Review, 8 Oct 2026: without this a limited login could undo the switch off that grantBOAccess
+ * does when a new login's limit did not land, or switch an unlimited teammate login back on
+ * after the owner turned it off. The database says the same (user_profiles_bo_sections_guard in
+ * supabase/migrations/20261008a_OPS_bo_sections.sql); this is the plain word on the screen.
+ */
+export function canSwitchLoginOn(targetSections, mySections) {
+  if (mySections === null) return true;
+  return withinSections(targetSections, mySections);
+}
+
 // ── Reading the signed in login's own profile (decision 8) ──────────────────
 // Only "that column does not exist" means a feature is not installed. bo_sections missing =
 // section access is not installed, and everyone opens everything, exactly as before 8 Oct 2026.

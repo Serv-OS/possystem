@@ -9,7 +9,7 @@ import { isMissingRpc } from '../../lib/deviceFence';
 import {
   BO_SECTION_KEYS, SECTIONS, FRANCHISEE_SECTIONS, allowedKeys, isEverythingRole, canEditSectionsFor,
   sectionsToStore, sectionsToTicks, describeSections, sameSections, withinSections, sectionsFromAnswer,
-  isSectionsColumnMissing,
+  isSectionsColumnMissing, canSwitchLoginOn,
 } from '../../lib/boSections';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
@@ -530,6 +530,15 @@ export default function StaffManager({ orgCtx = null } = {}) {
     const link = authLinks[staffId];
     if (!link) return;
     const next = !link.boAccess;
+    // 8 Oct 2026 (review): switching ON is for a person who can open everything the login can.
+    // A limited login could otherwise undo the switch off grantBOAccess does when a new login's
+    // limit did not land, or switch an unlimited teammate login back on after the owner turned it
+    // off. Off is always allowed. The database refuses the same write (the guard on
+    // user_profiles); this is the plain word before the request is made.
+    if (next && !canSwitchLoginOn(link.sections, mySections)) {
+      showToast('Only the owner can switch this login on.', 'error');
+      return;
+    }
     const { error } = await supabase
       .from('user_profiles')
       .update({ bo_access: next })
@@ -792,16 +801,24 @@ export default function StaffManager({ orgCtx = null } = {}) {
                         <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Back-office access</div>
                         <div style={{ fontSize:10, color:'var(--t3)', fontFamily:'monospace' }}>{link.email}</div>
                       </div>
-                      <button
-                        onClick={()=>toggleBOAccess(sel.id)}
-                        style={{
-                          padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
-                          background: link.boAccess ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.16)',
-                          border: link.boAccess ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(239,68,68,0.4)',
-                          color: link.boAccess ? '#86efac' : '#fca5a5',
-                          fontSize:11, fontWeight:700,
-                        }}
-                      >{link.boAccess ? '✓ Enabled — click to disable' : '✗ Disabled — click to enable'}</button>
+                      {/* 8 Oct 2026 (review): a switched off login that this person may not switch
+                          on (it opens more than they do) gets plain words, not a dead button. */}
+                      {link.boAccess || canSwitchLoginOn(link.sections, mySections) ? (
+                        <button
+                          onClick={()=>toggleBOAccess(sel.id)}
+                          style={{
+                            padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+                            background: link.boAccess ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.16)',
+                            border: link.boAccess ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(239,68,68,0.4)',
+                            color: link.boAccess ? '#86efac' : '#fca5a5',
+                            fontSize:11, fontWeight:700,
+                          }}
+                        >{link.boAccess ? '✓ Enabled — click to disable' : '✗ Disabled — click to enable'}</button>
+                      ) : (
+                        <div data-testid="bo-switch-on-owner-only" style={{ padding:'6px 14px', borderRadius:8, background:'rgba(239,68,68,0.16)', border:'1px solid rgba(239,68,68,0.4)', color:'#fca5a5', fontSize:11, fontWeight:700, textAlign:'right', lineHeight:1.4 }}>
+                          Switched off.<br/>Only the owner can switch this login on.
+                        </div>
+                      )}
                     </div>
                     {sectionAccess(sel.id, link)}
                     <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>

@@ -352,6 +352,11 @@ async function resolveWritableLocation(candidate, accessibleIds) {
   return { id: null, changed: true, reason: 'not accessible' };
 }
 
+// How long the read of the signed in login's own profile may take before Back Office says
+// "Could not load your access. Try again." instead of waiting (8 Oct 2026, review). One small
+// row; 15 seconds is long for it, and the retry button is right there.
+const PROFILE_READ_MS = 15000;
+
 export default function BackOfficeApp() {
   const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
   // v5.5.328: apply the saved light/dark theme on back-office boot. The store's
@@ -446,6 +451,12 @@ export default function BackOfficeApp() {
         localStorage.removeItem('rpos-bo-location');
         clearResolvedLocationId();
         setSecondStepOk(false);
+        // 8 Oct 2026 (review): forget WHO was signed in as well. orgCtx is the previous person's
+        // role and sections. Left in place, the next person to sign in on this tab (the owner
+        // signed out in another tab, or overnight, then Mo signed in) was shown the previous
+        // person's whole Back Office from the second step until their own profile arrived.
+        setOrgCtx(null);
+        setAskedSection('overview');
       }
       // Second step: a sign in that went BACKWARDS must pass the gate again.
       // NOT simply "this token is a password one" (21 Sep 2026, live): supabase-js
@@ -505,6 +516,13 @@ export default function BackOfficeApp() {
   // (before that the database refuses a password only sign in once enforcement is on).
   useEffect(() => {
     if (!authUser || isMock || !secondStepOk) return;
+    // 8 Oct 2026 (review): nobody is known until THIS read lands. A sign in that changed without
+    // a page load (another tab, the token expiring) left the previous person's orgCtx here, and
+    // the page below rendered their sidebar and screens for the new person. Null shows the
+    // Loading screen instead. A read started for a sign in that has since changed is thrown
+    // away (`stale`), so a slow answer for the previous person can never land on the new one.
+    setOrgCtx(null);
+    let stale = false;
     (async () => {
       // v5.5.241: profile query rewrite. Previous versions used PostgREST
       // embedded resource syntax (organisations(name), locations(name)) which
@@ -522,11 +540,18 @@ export default function BackOfficeApp() {
       // very column does not exist (bo_sections missing = section access is not installed, and
       // everyone opens everything as before). Any other failure shows "Could not load your
       // access" and nothing else (lib/boSections.js readProfileRow).
-      const read = await readProfileRow((columns) => supabase
-        .from('user_profiles')
-        .select(columns)
-        .eq('id', authUser.id)
-        .single());
+      // The read has a time limit (PROFILE_READ_MS): a stalled network used to keep the Loading
+      // screen (or, before today, the previous person's Back Office) up for ever. Out of time is
+      // "could not load", with the retry button, never a guess.
+      let read;
+      try {
+        read = await withTimeout(readProfileRow((columns) => supabase
+          .from('user_profiles')
+          .select(columns)
+          .eq('id', authUser.id)
+          .single()), PROFILE_READ_MS, 'reading your access');
+      } catch (e) { read = { ok: false, error: e }; }
+      if (stale) return;
       if (!read.ok) {
         console.error('[BackOfficeApp] user_profiles query failed:', read.error?.message);
         setOrgCtx({ loadFailed: true, role: null, boAccess: false, boSections: [], sectionsInstalled: false, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, userId: authUser?.id || null, userName: authUser?.email || null });
@@ -552,6 +577,7 @@ export default function BackOfficeApp() {
         const { data: accessible } = await fetchAccessibleLocations();
         accessibleIds = new Set((accessible || []).map(l => l.id));
       } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+      if (stale) return;
 
       if (overrideLocId && accessibleIds) {
         const res = await resolveWritableLocation(overrideLocId, accessibleIds);
@@ -600,6 +626,7 @@ export default function BackOfficeApp() {
         if (orgRes.data?.name) orgName = orgRes.data.name;
         if (locRes.data?.name) locationName = locRes.data.name;
       } catch (e) { console.warn('[BackOfficeApp] org/location name lookup failed:', e?.message); }
+      if (stale) return;
 
       setOrgCtx({
         role: profile.role,
@@ -640,6 +667,7 @@ export default function BackOfficeApp() {
         loadLocationData(effectiveLocId);
       }
     })();
+    return () => { stale = true; };
   }, [authUser, secondStepOk, profileTry]);
 
   // 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board"): the menu

@@ -17,6 +17,7 @@ import {
   sectionsToStore, sectionsToTicks, describeSections, canEditSectionsFor,
   checkSections, storedSections, withinSections, sameSections, sectionsFromAnswer, isEverythingRole,
   isSectionsColumnMissing, missingProfileColumn, readProfileRow, sectionsFromProfileRow, PROFILE_COLUMNS,
+  canSwitchLoginOn,
 } from './boSections.js';
 import { planLoginSections } from '../../supabase/functions/_shared/boSectionRules.js';
 
@@ -483,8 +484,9 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.match(boCode, /const \[askedSection, setAskedSection\] = useState\('overview'\);/);
   assert.match(boCode, /const section = guardRoute\(askedSection, access\);/);
   assert.equal((boCode.match(/askedSection/g) || []).length, 2, 'the asked route is read in ONE place: the guard');
-  // SETTER GUARD: the raw setter is called in ONE place, behind canOpenRoute.
-  assert.equal((boCode.match(/setAskedSection\(/g) || []).length, 1, 'one call to the raw setter');
+  // SETTER GUARD: the raw setter is called in TWO places only: behind canOpenRoute, and the
+  // SIGNED_OUT reset to the fixed 'overview' (never a route somebody asked for).
+  assert.deepEqual([...boCode.matchAll(/setAskedSection\(([^)]*)\)/g)].map((m) => m[1]), ['next', "'overview'"], 'the raw setter');
   assert.match(boCode, /const setSection = \(next\) => \{\s+if \(!canOpenRoute\(next, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(next\);\s+\};/);
   // Who is signed in: nobody until the profile has loaded, and nobody when it failed to load.
   assert.match(boCode, /\(\) => \(isMock \? EVERYTHING : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections \} : null\)\)/);
@@ -516,7 +518,9 @@ test('BackOfficeApp: the two things in the top bar that belong to no section', (
 });
 
 test('BackOfficeApp: the profile read fails closed, and the two plain screens', () => {
-  assert.match(boCode, /const read = await readProfileRow\(\(columns\) => supabase\s+\.from\('user_profiles'\)\s+\.select\(columns\)\s+\.eq\('id', authUser\.id\)\s+\.single\(\)\);/);
+  // The read has a time limit, and out of time is "could not load" (never a guess, never a hang).
+  assert.match(boCode, /const PROFILE_READ_MS = 15000;/);
+  assert.match(boCode, /let read;\s+try \{\s+read = await withTimeout\(readProfileRow\(\(columns\) => supabase\s+\.from\('user_profiles'\)\s+\.select\(columns\)\s+\.eq\('id', authUser\.id\)\s+\.single\(\)\), PROFILE_READ_MS, 'reading your access'\);\s+\} catch \(e\) \{ read = \{ ok: false, error: e \}; \}/);
   assert.match(boCode, /if \(!read\.ok\) \{[\s\S]{0,200}?setOrgCtx\(\{ loadFailed: true, role: null, boAccess: false, boSections: \[\], sectionsInstalled: false,/);
   assert.doesNotMatch(boCode, /boAccess: true/, 'the old "carry on with everything" fallback is gone');
   assert.doesNotMatch(boCode, /retrying without bo_access/);
@@ -653,4 +657,73 @@ test('Inventory overview and Online ordering: a button to another part the login
   for (const l of online.split('\n').filter((l) => /setSection\('menu'\)/.test(l))) assert.match(l, /can\('menu'\)/, l.trim());
   assert.ok(online.includes('Ask the owner to check Location settings.'));
   assert.ok(online.includes('Ask the owner to define menus first.'));
+});
+
+// ── Review round, 8 Oct 2026 ────────────────────────────────────────────────
+
+test('BackOfficeApp: a new sign in on the same tab is never shown the previous person\'s Back Office', () => {
+  // SIGNED_OUT (another tab, the token expiring): forget who was signed in, and where they were.
+  assert.match(boCode, /if \(event === 'SIGNED_OUT'\) \{\s+localStorage\.removeItem\('rpos-bo-location'\);\s+clearResolvedLocationId\(\);\s+setSecondStepOk\(false\);\s+setOrgCtx\(null\);\s+setAskedSection\('overview'\);\s+\}/);
+  // The profile effect: nobody is known until its read lands (the Loading screen shows), and a
+  // read started for a sign in that has since changed is thrown away before it can set anything.
+  const effect = boCode.slice(boCode.indexOf("if (!authUser || isMock || !secondStepOk) return;"), boCode.indexOf('}, [authUser, secondStepOk, profileTry]);'));
+  assert.match(effect, /^if \(!authUser \|\| isMock \|\| !secondStepOk\) return;\s+setOrgCtx\(null\);\s+let stale = false;\s+\(async \(\) => \{/);
+  assert.match(effect, /return \(\) => \{ stale = true; \};\s*$/);
+  assert.match(effect, /if \(stale\) return;\s+if \(!read\.ok\) \{/, 'thrown away before "could not load"');
+  assert.match(effect, /if \(stale\) return;\s+setOrgCtx\(\{\s+role: profile\.role,/, 'thrown away before the profile lands');
+  assert.match(effect, /accessible locations check failed[^\n]*\n\s+if \(stale\) return;/, 'thrown away before the stored venue is rewritten');
+  // Every write of orgCtx inside the effect is behind the stale check.
+  const writes = [...effect.matchAll(/setOrgCtx\(\{/g)].length;
+  assert.equal(writes, 2);
+  assert.equal((effect.match(/if \(stale\) return;/g) || []).length, 3);
+  // Only null shows Loading, so the reset above is what keeps the previous person's page off screen.
+  assert.match(boCode, /if \(!isMock && authUser && orgCtx === null\) return \(/);
+});
+
+test('canSwitchLoginOn: off is anybody\'s, on is only for a person who opens everything the login can', () => {
+  const four = [...FRANCHISEE_SECTIONS];
+  // A person who opens everything switches on any login: unlimited, limited, or one whose list could not be read.
+  assert.equal(canSwitchLoginOn(null, null), true);
+  assert.equal(canSwitchLoginOn(['menu'], null), true);
+  assert.equal(canSwitchLoginOn(undefined, null), true);
+  // Mo (the four) may switch on a login inside his four, the same four, or one that opens nothing.
+  assert.equal(canSwitchLoginOn(['team'], four), true);
+  assert.equal(canSwitchLoginOn([...four], four), true);
+  assert.equal(canSwitchLoginOn([], four), true);
+  // Never an unlimited login, one with a part he has not, or one whose list is not known.
+  assert.equal(canSwitchLoginOn(null, four), false);
+  assert.equal(canSwitchLoginOn(['team', 'menu'], four), false);
+  assert.equal(canSwitchLoginOn(undefined, four), false);
+  assert.equal(canSwitchLoginOn('team', four), false);
+  // Nothing known about the person asking (no profile yet) is a person who opens nothing.
+  assert.equal(canSwitchLoginOn(null, []), false);
+  assert.equal(canSwitchLoginOn(['team'], []), false);
+  assert.equal(canSwitchLoginOn([], []), true);
+});
+
+test('Team: switching a login ON is refused, and the button is not drawn, when it opens more than this person', () => {
+  // Before the request: the rule, with the plain word. Off goes through as before.
+  assert.match(teamCode, /const next = !link\.boAccess;\s+if \(next && !canSwitchLoginOn\(link\.sections, mySections\)\) \{\s+showToast\('Only the owner can switch this login on\.', 'error'\);\s+return;\s+\}\s+const \{ error \} = await supabase\s+\.from\('user_profiles'\)\s+\.update\(\{ bo_access: next \}\)/);
+  // The card: the button only when it could work; otherwise plain words, no dead tap.
+  assert.match(teamCode, /\{link\.boAccess \|\| canSwitchLoginOn\(link\.sections, mySections\) \? \(\s+<button\s+onClick=\{\(\)=>toggleBOAccess\(sel\.id\)\}/);
+  assert.match(teamCode, /\) : \(\s+<div data-testid="bo-switch-on-owner-only"[^\n]*>\s+Switched off\.<br\/>Only the owner can switch this login on\.\s+<\/div>\s+\)\}/);
+  // mySections is the one reading of what this person opens (null = everything, [] = nothing known).
+  assert.match(teamCode, /const mySections = isMock \? null : allowedKeys\(\{ role: myRole, sections: orgCtx\?\.boSections \}\);/);
+  for (const line of team.split('\n').filter((l) => /Only the owner can switch this login on|Switched off\./.test(l)))
+    assert.doesNotMatch(line.replace(/\/\/.*$/, ''), /[–—]/, line.trim());
+});
+
+test('the migration: the guard refuses a limited person switching ON a login that opens more than they do', () => {
+  const guard = stmts.slice(stmts.indexOf('create or replace function public.user_profiles_bo_sections_guard()'), stmts.indexOf('create or replace function public.set_bo_sections'));
+  assert.ok(guard.length > 0, 'the rule lives in the guard on user_profiles, not in a new place');
+  // Off to on only (a null bo_access is on, so writing null is switching on too, and old null is not off).
+  assert.match(guard, /if old\.bo_access is false and new\.bo_access is distinct from false then/);
+  // The person asking, from their own row; no row = a person who opens nothing (fail closed).
+  assert.match(guard, /select p\.role, p\.bo_sections into v_me_role, v_me_sections\s+from public\.user_profiles p where p\.id = auth\.uid\(\);\s+if not found then\s+v_me_role := null;\s+v_me_sections := '\{\}'::text\[\];\s+end if;/);
+  // Owners and ServOS are never limited; a limited person needs the login's list inside theirs (never null).
+  assert.match(guard, /if lower\(coalesce\(v_me_role, ''\)\) not in \('owner', 'super_admin'\)\s+and v_me_sections is not null\s+and \(new\.bo_sections is null or not \(new\.bo_sections <@ v_me_sections\)\) then\s+raise exception 'Only the owner can switch this login on\.' using errcode = '42501';/);
+  // Only API requests are checked (the service role and this editor pass), as for the column itself.
+  assert.ok(guard.indexOf("if v_api_role not in ('authenticated', 'anon') then") < guard.indexOf('if old.bo_access is false'));
+  // The same words on the screen and in the database.
+  assert.ok(team.includes('Only the owner can switch this login on.'));
 });

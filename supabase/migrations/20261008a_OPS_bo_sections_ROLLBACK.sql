@@ -4,6 +4,8 @@
 -- user_profiles.bo_sections. EVERY list saved in Back Office, Team is lost, so EVERY limited
 -- login opens ALL of Back Office again from its next page load (which venues it can reach does
 -- not change). If somebody must stay out, switch their Back Office access off in Team first.
+-- The guard's rule that a limited person cannot switch an unlimited login back on goes with it,
+-- so any manager can switch a teammate's Back Office access either way again, as before.
 --
 -- Nothing else on user_profiles is touched: the read and update rules, the two older guards
 -- (user_profiles_fence_guard, user_profiles_role_guard) and the grants stay exactly as they are.

@@ -31,6 +31,10 @@
 --                                 does not come from the function below, so the rule holds even
 --                                 on a database where the grants differ. The service role
 --                                 (the create-user function) and this editor are not checked.
+--   Switching a login ON          the same guard: a limited person may switch a login's Back
+--                                 Office access back on only when that login opens nothing they
+--                                 cannot (its list is inside theirs). An owner may switch on any
+--                                 login, as today. Switching off is unchanged for everybody.
 --   public.set_bo_sections        the ONE way a person changes it. Allowed for an OWNER of the
 --                                 same company, or ServOS staff. Refused for: nobody signed in,
 --                                 an anonymous session, your own login, a login in another
@@ -121,7 +125,16 @@ revoke update (bo_sections) on table public.user_profiles from public, anon, aut
 -- ever got a table wide update grant, a manager could clear his own list with one request.
 -- This says the rule itself: through the API, bo_sections changes only inside set_bo_sections().
 -- Not checked: the service role (create-user), this editor, cron. Everything else on the row is
--- left to the guards that already own it; this one reads and changes nothing but bo_sections.
+-- left to the guards that already own it; this one reads nothing but bo_sections and bo_access.
+--
+-- It also holds ONE rule about bo_access (review, 8 Oct 2026): switching a login's Back Office
+-- access ON. The older fence guard lets any manager switch a teammate's bo_access either way,
+-- which was fine while every login opened everything. Now a LIMITED person may switch on only a
+-- login that opens nothing they cannot: never an unlimited login (null list), never one with a
+-- wider list. Without it, a limited login could undo the switch off Team does when a new
+-- login's limit did not land, or switch an unlimited teammate login back on after the owner
+-- turned it off. Switching OFF is always allowed: it only takes away. An owner and ServOS
+-- staff are never limited (their own list is ignored, as everywhere).
 create or replace function public.user_profiles_bo_sections_guard()
 returns trigger
 language plpgsql
@@ -129,6 +142,8 @@ set search_path = pg_catalog, pg_temp
 as $fn$
 declare
   v_api_role text := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '');
+  v_me_role     text;
+  v_me_sections text[];
 begin
   -- Only requests made with a person's (or the public) key through the API are checked.
   if v_api_role not in ('authenticated', 'anon') then
@@ -143,6 +158,22 @@ begin
   if new.bo_sections is distinct from old.bo_sections
      and coalesce(current_setting('servos.bo_sections_write', true), '') <> 'on' then
     raise exception 'What a login can open is changed by the owner, in Back Office, Team.' using errcode = '42501';
+  end if;
+  -- Switching ON (off to on; a null bo_access counts as on, so it is never "switching on").
+  if old.bo_access is false and new.bo_access is distinct from false then
+    -- The person asking, from their own row (which they can always read). No row = nothing known
+    -- about them, which is treated as a limited person who opens nothing (fail closed).
+    select p.role, p.bo_sections into v_me_role, v_me_sections
+      from public.user_profiles p where p.id = auth.uid();
+    if not found then
+      v_me_role := null;
+      v_me_sections := '{}'::text[];
+    end if;
+    if lower(coalesce(v_me_role, '')) not in ('owner', 'super_admin')
+       and v_me_sections is not null
+       and (new.bo_sections is null or not (new.bo_sections <@ v_me_sections)) then
+      raise exception 'Only the owner can switch this login on.' using errcode = '42501';
+    end if;
   end if;
   return new;
 end;
