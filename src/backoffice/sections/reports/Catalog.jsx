@@ -303,7 +303,19 @@ function ReportRow({ r, q, showCat, pinned, counts, onOpen, onTogglePin }) {
 }
 
 /* ── Catalog ─────────────────────────────────────────────────────────────── */
-export default function Catalog({ onOpen, counts = {} }) {
+export default function Catalog({ onOpen, counts = {}, canOpen }) {
+  // 8 Oct 2026 (Back Office section access, lib/boSections.js): two tiles open another part of
+  // Back Office (Inventory reports, Marketing report). A login that is not shown that part does
+  // not get the tile: not in a category, not in search, not from an old pin or recent.
+  const { CATS, ALL, BY_ID } = useMemo(() => {
+    const shown = (r) => !r.section || !canOpen || canOpen(r.section);
+    const all = ALL_REPORTS.filter(shown);
+    return {
+      CATS: CATEGORIES.map(c => ({ ...c, reports: c.reports.filter(shown) })).filter(c => c.reports.length > 0),
+      ALL: all,
+      BY_ID: Object.fromEntries(all.map(r => [r.id, r])),
+    };
+  }, [canOpen]);
   const [query, setQuery]   = useState('');
   const [active, setActive] = useState('all');
   const [pinned, setPinned] = useState(() => lsRead('pins'));
@@ -342,12 +354,12 @@ export default function Catalog({ onOpen, counts = {} }) {
   const q = query.trim().toLowerCase();
   const isSearch = q.length > 0;
 
-  const pinnedReports = useMemo(() => pinned.map(id => REPORT_BY_ID[id]).filter(Boolean), [pinned]);
-  const recentReports = useMemo(() => recent.map(id => REPORT_BY_ID[id]).filter(Boolean), [recent]);
+  const pinnedReports = useMemo(() => pinned.map(id => BY_ID[id]).filter(Boolean), [pinned, BY_ID]);
+  const recentReports = useMemo(() => recent.map(id => BY_ID[id]).filter(Boolean), [recent, BY_ID]);
 
   const { sections, mode } = useMemo(() => {
     if (isSearch) {
-      const matches = ALL_REPORTS.filter(r => `${r.label} ${r.desc} ${r.catLabel}`.toLowerCase().includes(q));
+      const matches = ALL.filter(r => `${r.label} ${r.desc} ${r.catLabel}`.toLowerCase().includes(q));
       return { mode:'search', sections:[{ id:'results', name:'Results', desc:'', glyph:'search', reports:matches, showCat:true }] };
     }
     if (active === 'pinned') {
@@ -357,18 +369,18 @@ export default function Catalog({ onOpen, counts = {} }) {
       return { mode:'recent', sections:[{ id:'recent', name:'Recently viewed', desc:'The last reports you opened.', glyph:'clock', reports:recentReports, showCat:true }] };
     }
     if (active !== 'all') {
-      const c = CATEGORIES.find(c => c.id === active);
+      const c = CATS.find(c => c.id === active);
       if (!c) return { mode:'all', sections:[] };
-      return { mode:'category', sections:[{ id:c.id, name:c.label, desc:c.description, glyph:c.glyph, reports:ALL_REPORTS.filter(r => r.cat === c.id), showCat:false }] };
+      return { mode:'category', sections:[{ id:c.id, name:c.label, desc:c.description, glyph:c.glyph, reports:ALL.filter(r => r.cat === c.id), showCat:false }] };
     }
     return {
       mode:'all',
-      sections: CATEGORIES.map(c => ({
+      sections: CATS.map(c => ({
         id:c.id, name:c.label, desc:c.description, glyph:c.glyph,
-        reports: ALL_REPORTS.filter(r => r.cat === c.id), showCat:false,
+        reports: ALL.filter(r => r.cat === c.id), showCat:false,
       })),
     };
-  }, [isSearch, q, active, pinnedReports, recentReports]);
+  }, [isSearch, q, active, pinnedReports, recentReports, ALL, CATS]);
 
   const resultCount = isSearch ? sections[0].reports.length : 0;
   const hasResults  = sections.some(s => s.reports.length > 0);
@@ -389,13 +401,13 @@ export default function Catalog({ onOpen, counts = {} }) {
         width:212, flex:'none', overflowY:'auto', paddingRight:14, marginRight:16,
         borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', gap:2,
       }}>
-        <RailItem active={active==='all' && !isSearch}    glyph="grid"  label="All reports" count={ALL_REPORTS.length} onClick={()=>selectRail('all')}/>
+        <RailItem active={active==='all' && !isSearch}    glyph="grid"  label="All reports" count={ALL.length} onClick={()=>selectRail('all')}/>
         <RailItem active={active==='pinned' && !isSearch} glyph="star"  label="Pinned"      count={pinnedReports.length} onClick={()=>selectRail('pinned')}/>
         <RailItem active={active==='recent' && !isSearch} glyph="clock" label="Recent"      count={recentReports.length || null} onClick={()=>selectRail('recent')}/>
 
         <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.7px', color:'var(--t4)', padding:'18px 10px 7px' }}>CATEGORIES</div>
 
-        {CATEGORIES.map(c => (
+        {CATS.map(c => (
           <RailItem key={c.id} active={active===c.id && !isSearch} glyph={c.glyph} label={c.short}
                     count={c.reports.length} onClick={()=>selectRail(c.id)}/>
         ))}
@@ -406,7 +418,7 @@ export default function Catalog({ onOpen, counts = {} }) {
         <div style={{ fontSize:11, fontWeight:700, letterSpacing:'1.4px', color:'var(--t4)' }}>REPORTS</div>
         <h1 style={{ margin:'6px 0 6px', fontSize:30, lineHeight:1.05, fontWeight:800, letterSpacing:'-.8px', color:'var(--t1)' }}>Catalog</h1>
         <p style={{ margin:0, fontSize:14, color:'var(--t3)', fontWeight:400 }}>
-          {ALL_REPORTS.length} reports across {CATEGORIES.length} categories — pick one to set its period, filters and export.
+          {ALL.length} reports across {CATS.length} categories — pick one to set its period, filters and export.
         </p>
 
         {/* Sticky search */}

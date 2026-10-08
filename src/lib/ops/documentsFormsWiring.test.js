@@ -9,6 +9,9 @@ import { DOC_CATEGORIES, MAX_FILE_BYTES, OPS_FILES_BUCKET } from './formRules.js
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const bo = read('../../backoffice/BackOfficeApp.jsx');
+// 8 Oct 2026: the sidebar list moved to lib/boSections.js (one list for the screen and the
+// section access rules). The screen imports it; the Operations row is read from there.
+const boNav = read('../boSections.js');
 const surface = read('../../surfaces/OperationsSurface.jsx');
 const tablet = read('../../surfaces/ops/OpsDocsForms.jsx');
 const boDocs = read('../../backoffice/sections/operations/OpsDocuments.jsx');
@@ -27,7 +30,8 @@ test('Back Office: Operations has Documents and Forms, and both render', () => {
   assert.match(bo, /import OpsForms from '\.\/sections\/operations\/OpsForms';/);
   assert.match(bo, /\{ id:'ops-documents',\s+label:'Documents',[^}]*group:'Operations' \}/);
   assert.match(bo, /\{ id:'ops-forms',\s+label:'Forms',[^}]*group:'Operations' \}/);
-  const ia = bo.match(/\{ label:'Operations', icon:'[^']+', children:\[(.*)\] \},/);
+  assert.match(bo, /import \{ NAV_IA,[^}]*\} from '\.\.\/lib\/boSections';/, 'the sidebar renders the list in lib/boSections.js');
+  const ia = boNav.match(/\{ label:'Operations', icon:'[^']+', children:\[(.*)\] \},/);
   assert.ok(ia, 'the Operations group is in the sidebar');
   assert.match(ia[1], /\['ops-documents','Documents'\]/);
   assert.match(ia[1], /\['ops-forms','Forms'\]/);
