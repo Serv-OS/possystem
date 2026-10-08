@@ -1038,7 +1038,7 @@ export default function BackOfficeApp() {
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
-          {section === 'stock-overview' && <StockOverview setSection={setSection} />}
+          {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}
           {section === 'stock-reports' && <StockReports />}
           {section === 'stock-counts' && <StockCounts />}
           {section === 'wastage'    && <Wastage />}
@@ -1065,7 +1065,7 @@ export default function BackOfficeApp() {
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
-          {section === 'online'     && <OnlineOrdering setSection={setSection} />}
+          {section === 'online'     && <OnlineOrdering setSection={setSection} canOpen={canOpen} />}
           {section === 'catering'   && <CateringSettings />}
           {section === 'menu-appearance' && <MenuAppearance />}
           {section === 'catering-orders' && <CateringOrders />}

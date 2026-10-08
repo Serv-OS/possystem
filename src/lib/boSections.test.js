@@ -634,3 +634,23 @@ test('it is described as a screen lock wherever the rule lives', () => {
     assert.match(read(f), /SCREEN LOCK, NOT A DATABASE LOCK/, f);
   assert.match(bo, /A SCREEN lock, not a database lock/);
 });
+
+test('Inventory overview and Online ordering: a button to another part the login is not shown is left out', () => {
+  assert.match(boCode, /\{section === 'stock-overview' && <StockOverview setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
+  assert.match(boCode, /\{section === 'online'\s+&& <OnlineOrdering setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
+  const stock = code(read('../backoffice/sections/StockOverview.jsx'));
+  assert.match(stock, /export default function StockOverview\(\{ setSection, canOpen = \(\) => true \}\)/);
+  assert.match(stock, /const can = \(s\) => !!setSection && canOpen\(s\);/);
+  // Produce and Purchasing are other sections: every button to them asks first.
+  for (const l of stock.split('\n').filter((l) => /go\('recipes'\)|go\('suppliers'\)/.test(l))) assert.match(l, /can\('(recipes|suppliers)'\) \? \(\) => go\('(recipes|suppliers)'\) : null/, l.trim());
+  assert.match(stock, /\{can\(s\.to\) && <button onClick=\{\(\) => go\(s\.to\)\}/, 'the setup checklist');
+  assert.match(stock, /\{onClick && <button onClick=\{onClick\}/, 'Attn draws no button when there is nowhere to go');
+  const online = code(read('../backoffice/sections/OnlineOrdering.jsx'));
+  assert.match(online, /export default function OnlineOrdering\(\{ setSection, canOpen = \(\) => true \}\)/);
+  assert.match(online, /const can = \(s\) => !!setSection && canOpen\(s\);/);
+  // Settings and Menu are other sections: a link to them is plain words for a login not shown them.
+  for (const l of online.split('\n').filter((l) => /setSection\('location'\)/.test(l))) assert.match(l, /can\('location'\)/, l.trim());
+  for (const l of online.split('\n').filter((l) => /setSection\('menu'\)/.test(l))) assert.match(l, /can\('menu'\)/, l.trim());
+  assert.ok(online.includes('Ask the owner to check Location settings.'));
+  assert.ok(online.includes('Ask the owner to define menus first.'));
+});
