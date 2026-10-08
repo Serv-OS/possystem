@@ -35,6 +35,9 @@ async function call(fn, body) {
 export const xeroStatus     = (locationId) => call('xero-connect', { action: 'status', locationId });
 export const xeroOAuthStart = (locationId, returnUrl) => call('xero-connect', { action: 'oauth_start', locationId, returnUrl });
 export const xeroDisconnect = (locationId) => call('xero-connect', { action: 'disconnect', locationId });
+// 7 Oct 2026: a Xero sign in that can see several organisations; which one this site posts to.
+export const xeroOrganisations   = (locationId) => call('xero-connect', { action: 'organisations', locationId });
+export const xeroSetOrganisation = (locationId, tenantId) => call('xero-connect', { action: 'set_organisation', locationId, tenantId });
 
 // Push a day's takings to Xero (Receive Money into the clearing account). date = 'YYYY-MM-DD'.
 export const xeroSyncSales  = (locationId, date, opts = {}) => call('xero-sales', { locationId, date, ...opts });

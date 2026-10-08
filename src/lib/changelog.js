@@ -7,8 +7,8 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.32',
-    date: '6 Oct 2026',
+    v: '5.11.41',
+    date: '8 Oct 2026',
     items: [
       "Reports across your sites: a Sites control now sits next to the period buttons on every report. Tick All sites, or any mix of the sites in your company, and the report shows a group total then a row or column per site. Pick one site and the report is exactly what it was. It starts on the site you are signed in to and remembers your last choice. A login with one site does not see the control.",
       "Multi site reports: Business summary, Daily trend, Order types, Order sources, Daypart, Server scorecard, Shifts, Exceptions, Payments and cash, Tables, Transactions, Product mix, Item sales trend, Menu engineering, Tax summary, Tips and Kitchen performance. Every CSV gains a Site column. Each site is counted on its own business day and clock; sites in different currencies are shown in separate blocks and never added together.",
@@ -18,6 +18,60 @@ export const CHANGELOG = [
       "Reports: item level reports (Product mix, Item trend, Menu engineering) across several sites cover up to 7 days; pick one site for longer. Business summary, Daily trend, Payments and Order types across several sites over a longer period use fast server totals once the day sums function is installed; until then they read every sale and say too long rather than show a part total.",
       "Reports: a report never shows 0 checks and zero revenue while the site list is still loading; it shows Loading until the figures are in. A sale closing while a long report was reading could drop one check from the count; the read window is now pinned so the count is the same on every reload.",
       "Kitchen performance: when the period is too long to load it now says so, instead of showing an empty kitchen.",
+    ],
+  },
+  {
+    v: '5.11.40',
+    date: '8 Oct 2026',
+    items: [
+      "Group ordering link: the venue picker now wears the look of the venue with the most complete Menu appearance (header image first, then logo, then colour). It was taking the first venue by name, so a venue without a header image gave the whole group the plain flame header while every other venue had the shop photo. The page background follows that venue's storefront background when it is a light colour.",
+      "Back Office, Online ordering: the Group ordering link card says which venue's look the page wears, and that adding a header image to any venue is enough.",
+    ],
+  },
+  {
+    v: '5.11.39',
+    date: '8 Oct 2026',
+    items: [
+      "Admin, FranPOS residuals: the screen loads again. Since 26 Aug every request was refused with location_id required (the reseller actions sat behind the one venue check), so the statement, the rate and the invoice list never appeared.",
+      "Admin, FranPOS residuals and Revenue: only live money counts. Test environment card payments are never read, and payments from before ServOS recorded live or test (7 Sep 2026) are shown as left out and never invoiced. Creating an invoice for a month that holds no live money says so instead of making an empty invoice.",
+      "Admin, FranPOS residuals: marking an invoice sent, paid or void reports a database error as itself instead of saying the invoice does not exist.",
+    ],
+  },
+  {
+    v: '5.11.38',
+    date: '8 Oct 2026',
+    items: [
+      "Orders screen: a QR order that was paid on the phone now says what its button does (Mark in prep, Mark ready, Mark collected), the same words as every other order. It said Advance at every stage. The press itself was always right; only the words were wrong.",
+      "Orders screen: a finished QR order no longer shows a button that did nothing. A ready QR order whose payment is still being checked shows only Check payment.",
+    ],
+  },
+  {
+    v: '5.11.37',
+    date: '8 Oct 2026',
+    items: [
+      "Xero: signing in to Xero with a different Xero login can no longer move a site. If the login you used cannot see the organisation the site posts to, nothing is changed and the screen says so, with the way to move a site to another login (Disconnect first, then Connect Xero).",
+      "Xero: a site that was disconnected and signs in again, when Xero does not ask which organisation, posts nothing by itself for half an hour, so there is time to pick the right organisation before anything is sent. Pushing a day yourself is never held.",
+      "Xero, Connection tab: the question about which organisation a site's books are in is now shown to ServOS staff as well, and it goes away once you have picked.",
+    ],
+  },
+  {
+    v: '5.11.36',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: when your Xero sign in already has every organisation connected, Xero only says how many are connected and never asks which one. ServOS no longer guesses (it connected sites to the wrong books). The site stays on the organisation it was set up for, and the Xero organisation box on the Connection tab asks which organisation the site's books are in.",
+      "Xero, Connection tab: for half an hour after you sign in to Xero from a site's screen you can pick any organisation that sign in covers, including one no other site of yours uses yet. The button is now Sign in to Xero, then pick it here.",
+    ],
+  },
+  {
+    v: '5.11.35',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (two companies, each with its own books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
+      "Xero, Connection tab: a Xero organisation box shows which organisation this site posts to. Pick another from the list (organisations your company's sites already use), or Sign in to Xero and choose it when it is not listed. No disconnect is needed either way.",
+      "Xero: when a site moves to another organisation its Xero setup is cleared first (accounts, VAT rates, payment accounts, the purchases account, the Site tracking option and the figures check), because those choices belonged to the old organisation. A copy of the cleared setup is kept. A site on the daily sales invoice posts nothing until they are chosen again and a day of figures is checked; from then on each day posts by itself where auto posting was on (it is turned off for a site whose first invoice day is not yet two days back), and the days that passed in between are pushed one by one from Posting. A site on bank transactions has auto posting turned off. Days already posted stay in the old organisation, and pressing Push on one says so.",
+      "Xero: sites that share one Xero sign in keep sharing it across organisations, so one site refreshing its sign in can no longer sign out a site on the other organisation. A setup made for one organisation is never posted into another.",
+      "Xero: every posted day records which organisation it went to.",
+      "Xero screen: it stays on the venue it was opened for. With two Back Office tabs open on different venues it could reload as the other tab's venue.",
     ],
   },
   {

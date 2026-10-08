@@ -17,6 +17,7 @@ import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
 import { kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
 import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
+import { NEXT_STEP_LABEL, qrCardNextStep } from '../lib/orderNextStep';
 import { money, currencySymbol } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
 import { ryftTab } from '../lib/payments/ryft';
@@ -1249,7 +1250,7 @@ export default function OrdersHub() {
                       onRelease={t.processor === 'adyen' && t.isOpenTab
                         ? () => releaseAdyenHold({ pspReference: t.payment_intent_id, locationId: t.firstRow?.location_id, rows: t.rows, label: `Table ${t.tableLabel}` })
                         : null}
-                      onAdvance={() => t.firstRow && advance(t.firstRow)}
+                      onAdvance={(row) => advance(row)}
                       paymentChecking={!t.isOpenTab && t.rows.some(isPaymentChecking)}
                       onCheckPayment={() => { const r = t.rows.find(isPaymentChecking); if (r) setPaymentCheckOrder(r); }}
                       closingTab={closingTabRef === (t.payment_intent_id || t.key)}/>
@@ -1471,6 +1472,10 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
   const shortLine = tab.isOpenTab ? qrTabShortLine(tab.rows, money) : '';
   // A pay now QR order being checked reads 'Payment short' when the server found it short (S5).
   const checkingRow = paymentChecking ? (tab.rows || []).find(r => orderPaymentState(r) === 'checking') : null;
+  // 2 Oct 2026 (Peter): "some orders are just saying advance rather than mark as ready, collected
+  // etc". The button now says what its press does, in the words every other card uses, and the
+  // press acts on the very row the words came from (lib/orderNextStep.js). No step, no button.
+  const step = qrCardNextStep(tab, { isPaid: isOrderPaid, isChecking: isPaymentChecking, formatMoney: money });
   return (
     <div style={{
       background:'var(--bg1)', borderRadius:13, overflow:'hidden',
@@ -1523,7 +1528,9 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
           <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>+{tab.allItems.length - 6} more</div>
         )}
       </div>
-      <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
+      {/* 2 Oct 2026: a pay now card's buttons keep their words on one line; on a narrow card the
+          button drops to a second row instead of breaking its words. Open tabs are as they were. */}
+      <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8, flexWrap: tab.isOpenTab ? 'nowrap' : 'wrap' }}>
         <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(tab.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : paymentChecking ? 'being checked' : 'paid'}</span>
         {tab.isOpenTab ? (
@@ -1554,19 +1561,22 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
                 marginLeft:'auto', padding:'6px 12px', borderRadius:8,
                 cursor:'pointer', fontFamily:'inherit',
                 background:'#f59e0b', border:'none', color:'#0b0c10',
-                fontSize:12, fontWeight:800,
+                fontSize:12, fontWeight:800, whiteSpace:'nowrap',
               }}>
                 Check payment
               </button>
             )}
-            <button onClick={onAdvance} style={{
-              marginLeft: paymentChecking && onCheckPayment ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
-              cursor:'pointer', fontFamily:'inherit',
-              background:'var(--acc)', border:'none', color:'#0b0c10',
-              fontSize:12, fontWeight:800,
-            }}>
-              Advance →
-            </button>
+            {/* Ready with its payment being checked: the Check payment button beside it is the step. */}
+            {step && step.kind !== 'check' && (
+              <button onClick={() => onAdvance(step.row)} style={{
+                marginLeft: paymentChecking && onCheckPayment ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
+                cursor:'pointer', fontFamily:'inherit',
+                background: step.kind === 'charge' ? '#16a34a' : 'var(--acc)', border:'none', color: step.kind === 'charge' ? '#fff' : '#0b0c10',
+                fontSize:12, fontWeight:800, whiteSpace:'nowrap',
+              }}>
+                {step.label}
+              </button>
+            )}
           </>
         )}
       </div>
@@ -1642,7 +1652,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   if (order.held) { statusText = order.firesLabel ? `Fires ${order.firesLabel}` : 'Scheduled'; statusColor = '#a855f7'; }
   if (order.status === 'active' && order._kind === 'tab')   { statusText = 'Open tab';    statusColor = '#a855f7'; }
 
-  const NEXT = { received:'Mark in prep →', prep:'Mark ready →', ready:'Mark collected →' };
+  const NEXT = NEXT_STEP_LABEL;   // the same words the QR card uses (lib/orderNextStep.js)
   // HubRise channel orders start at 'received' and must be Accepted/Rejected first
   // (which sends a confirmed prep time back to the channel) before the prep flow.
   const isHubriseNew = order.source === 'hubrise' && order.status === 'received';
