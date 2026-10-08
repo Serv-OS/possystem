@@ -44,7 +44,10 @@ const BLANK_BRANDING = {
 
 const ROOT = CUSTOMER_ROOT;
 
-export default function OnlineOrdering({ setSection }) {
+// 8 Oct 2026: canOpen is the Back Office section access rule (lib/boSections.js). A link to
+// Location settings or the Menu manager becomes plain words for a login not shown that part.
+export default function OnlineOrdering({ setSection, canOpen = () => true }) {
+  const can = (s) => !!setSection && canOpen(s);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
@@ -388,7 +391,7 @@ export default function OnlineOrdering({ setSection }) {
     <div style={S.page}>
       <div style={S.h1}>🌐 Online ordering</div>
       <div style={{ marginTop:16, padding:'12px 14px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, color:'var(--t3)', fontSize:13 }}>
-        Couldn't load this location's online settings. Open <button onClick={() => setSection('location')} style={S.link}>Location settings</button> to set up.
+        Couldn't load this location's online settings. {can('location') ? <>Open <button onClick={() => setSection('location')} style={S.link}>Location settings</button> to set up.</> : 'Ask the owner to check Location settings.'}
       </div>
     </div>
   );
@@ -408,7 +411,8 @@ export default function OnlineOrdering({ setSection }) {
       <div style={S.h1}>🌐 Online ordering</div>
       <div style={S.sub}>
         Customer-facing settings for online + QR table-side ordering at <b>{row.name}</b>.
-        {!slug && <> · <button onClick={() => setSection('location')} style={S.link}>Set a slug in Location Settings</button> to enable customer URLs.</>}
+        {!slug && can('location') && <> · <button onClick={() => setSection('location')} style={S.link}>Set a slug in Location Settings</button> to enable customer URLs.</>}
+        {!slug && !can('location') && <> · Ask the owner to set a slug in Location settings to enable customer URLs.</>}
       </div>
 
       {/* Status strip */}
@@ -430,7 +434,7 @@ export default function OnlineOrdering({ setSection }) {
         </div>
         {menus.length === 0 ? (
           <div style={{ fontSize:12, color:'var(--t4)', fontStyle:'italic' }}>
-            No menus found. Define menus in <button onClick={() => setSection('menu')} style={S.link}>Menu manager</button> first.
+            No menus found. {can('menu') ? <>Define menus in <button onClick={() => setSection('menu')} style={S.link}>Menu manager</button> first.</> : 'Ask the owner to define menus first.'}
           </div>
         ) : (
           <select value={menuId} onChange={e => setMenuId(e.target.value)} style={{ ...S.select, maxWidth:360 }}>

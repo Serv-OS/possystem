@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.42',
+    date: '8 Oct 2026',
+    items: [
+      "Back Office, Team: choose what each login can open. When you give someone a Back Office login, or edit one they already have, tick the parts of Back Office they can use (Overview, Menu, Floor plan, Inventory, Produce, Purchasing, Operations, Team, Workforce, Customers, Channels, Hardware, Reports, Card payments, Settings). Two shortcuts: Everything, and Franchisee (Workforce, Reports, Team and Customers). A part that is not ticked is gone from that person's sidebar and cannot be opened another way; they land on the first part they can use.",
+      "Back Office access: only an owner of the company (or ServOS) can change what a login can open, nobody can change their own, and owners always see everything. A login made by someone with limited access can never open more than its maker. It limits what shows on screen; it is not a change to who can see which venues.",
+      "Back Office: if your access cannot be read when you sign in, the screen says so and offers Try again, instead of showing everything. Signing out, or a new sign in in the same tab, clears the previous person's access straight away.",
+    ],
+  },
+  {
     v: '5.11.41',
     date: '8 Oct 2026',
     items: [
