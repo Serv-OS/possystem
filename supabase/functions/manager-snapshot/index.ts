@@ -15,7 +15,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
-import { SALES_CHECK_COLS, emptySales, addCheckSales } from '../_shared/snapshotSales.js';
+import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -95,6 +95,13 @@ Deno.serve(async (req) => {
     //    count for nothing (_shared/snapshotSales.js, the same reading as owner-snapshot) ──
     const sales = emptySales();
     for (const c of checks) if (ymd(new Date(c.closed_at), tz) === today) addCheckSales(sales, c);
+    // 8 Oct 2026: a refund made today comes off today, with its VAT (as Daily trading and Xero).
+    for (const c of checks) {
+      for (const e of (Array.isArray(c.refunds) ? c.refunds : [])) {
+        const at = refundMadeAt(e, c);
+        if (at != null && ymd(new Date(at), tz) === today) addRefundSales(sales, e, c);
+      }
+    }
     const { net, vat, gross, orders, tips } = sales;
     let labour = 0;
     for (const t of tsRows) {
@@ -110,6 +117,8 @@ Deno.serve(async (req) => {
       forecast: r2(forecast), forecastPct: forecast > 0 ? Math.round((net / forecast) * 100) : null,
       labour: r2(labour), labourPct: net > 0 ? r2((labour / net) * 100) : null,
       labourTargetPct: vs?.labour_target_pct != null ? Number(vs.labour_target_pct) : null,
+      // 8 Oct 2026: refunds made today (already off net and vat) and sales with no VAT recorded, named.
+      refunds: r2(sales.refunds || 0), refundVat: r2(sales.refund_vat || 0), vatMissing: sales.vat_missing || 0, vatMissingRefs: sales.vat_missing_refs || [],
     };
 
     // ── Floor (active_sessions.session jsonb → floor.js input shape) ──

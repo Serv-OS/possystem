@@ -80,6 +80,7 @@ import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { replaceability, replaceAnswer, replaceInFlight, replaceDone, replacedWarning, pendingInvoiceError, previewView, progressMessage, replaceVerdict, bankPostings, interrupted, OLD_REMOVED } from '../_shared/xeroReplacePlan.js';
 import { readOldTransactions, numbersTaken, takenMessage, removeOldDay, stopRun } from '../_shared/xeroReplaceRun.ts';
+import { scanXeroGaps, noticeXeroGaps } from '../_shared/xeroGapScan.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -706,6 +707,22 @@ Deno.serve(async (req) => {
   };
   const base: any = { date, currency: venue.currency, from: day.fromIso, to: day.toIso, venue: clock };
 
+  // 8 Oct 2026 (D5): every hourly auto run also scans the last 14 completed business days of
+  // this site for a day with sales and no ok posting, and writes the venue notice once a gap is
+  // older than two days. It never posts a missed day (a day keyed into Xero by hand would be
+  // posted twice); a person presses Push on the Postings tab. A scan that fails is logged and
+  // never stops the day's own post.
+  if (auto && !dryRun) {
+    try {
+      const scan = await scanXeroGaps(sb, platform, locationId, { now, venue });
+      if (scan.gaps.length) {
+        const { name } = await siteNameFor(locationId, null, false);
+        const wrote = await noticeXeroGaps(sb, locationId, name || 'This site', scan.gaps, venue.currency);
+        console.warn(`[xero-sales] gap scan: ${scan.gaps.map((g) => g.date).join(', ')} not posted at ${locationId}; ${wrote} new notice(s)`);
+      }
+    } catch (e) { console.warn('[xero-sales] gap scan failed:', (e as Error)?.message); }
+  }
+
   if (!dryRun && !isBusinessDayOver(date, now, venue.timezone, venue.dayStart)) {
     const ends = wallClock(day.toMs, venue.timezone);
     const hhmm = `${String(Math.floor(ends.minutes / 60)).padStart(2, '0')}:${String(ends.minutes % 60).padStart(2, '0')}`;
@@ -788,6 +805,8 @@ Deno.serve(async (req) => {
       const shortCode = detail.site?.shortCode || null;
       const warnings = [...summary.warnings, ...plan.warnings];
       await run.save({ detail: { model: 'bank_tx', date, venue: clock, window: { from: summary.fromIso, to: summary.toIso }, warnings, summary: summaryView(summary), site: siteArg, notReady: null, problems: null } });
+      // 8 Oct 2026: a sale with no VAT recorded holds the day (never posted at VAT 0).
+      if (plan.holds?.length) throw Object.assign(new Error(plan.holds.map((h: any) => h.message).join(' ')), { held: plan.holds });
       // A ServOS rate with no Xero sales rate: refused before anything is sent (no guessing).
       if (plan.blocked.length) throw Object.assign(new Error(blockedMessage(plan.blocked)), { blocked: plan.blocked });
 
@@ -849,11 +868,14 @@ Deno.serve(async (req) => {
       const status = done ? 'partial' : 'error';
       // A refused rate stops the run before anything is sent: its own message, not "press again".
       const blocked = (e as any)?.blocked || null;
+      const held = (e as any)?.held || null;
       const error = blocked ? blockedMessage(blocked, { partial: !!done })
-        : done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg;
-      const logged = blocked ? error : msg;
-      if (!run.lost) await run.finish(status, { detail: { lines, error: logged } }, { ok: false, auto, error: logged, posted, skipped }).catch(() => {});
-      return json({ ...base, error, partial: !!done, lines, ...(blocked ? { blocked } : {}) }, 500);
+        : held ? msg
+          : done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg;
+      const logged = blocked || held ? error : msg;
+      // 8 Oct 2026: a day held for a sale with no VAT is recorded as blocked (its own words), not as a failure to press again.
+      if (!run.lost) await run.finish(status, { detail: { lines, error: logged, ...(held ? { problems: held } : {}) } }, { ok: false, auto, error: logged, posted, skipped }).catch(() => {});
+      return json({ ...base, error, partial: !!done, lines, ...(blocked ? { blocked } : {}), ...(held ? { problems: held } : {}) }, held ? 400 : 500);
     }
   } catch (e) {
     const msg = (e as Error)?.message || String(e);

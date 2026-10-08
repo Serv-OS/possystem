@@ -143,7 +143,9 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     const src = fs.readFileSync(path.join(here, SOURCES[fn].file), 'utf8');
     const dir = SOURCES[fn].dir;
     assert.match(src, new RegExp(`import \\{ pagedRows(, pagedEach, limiter)? \\} from '${dir}\\/pagedRows\\.js';`));
-    assert.match(src, new RegExp(`import \\{ SALES_CHECK_COLS, emptySales, addCheckSales \\} from '${dir}\\/snapshotSales\\.js';`));
+    // 8 Oct 2026: both also read addRefundSales and refundMadeAt (refunds come off on their day).
+    assert.match(src, new RegExp(`import \\{ SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt \\} from '${dir}\\/snapshotSales\\.js';`));
+    assert.match(src, /addRefundSales\(/);
     assert.match(src, /addCheckSales\(/);
     // Sales never come from the subtotal or the total.
     assert.doesNotMatch(src, /Number\(c\.subtotal\)/);

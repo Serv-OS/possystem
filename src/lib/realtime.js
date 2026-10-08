@@ -17,8 +17,7 @@ import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
-import { bookedTaxRecord } from './taxShare';
-import { closedCheckRefundFields, serverTipFields } from './closedCheckRefundFields';
+import { closedCheckRefundFields, closedCheckTaxFields, serverTipFields } from './closedCheckRefundFields';
 import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
@@ -391,10 +390,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         items: check.items || [], discounts: check.discounts || [],
         subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
         // v5.9.12: tax as booked, so a refund or reprint on THIS till returns / shows
-        // the added-on (US) tax the check charged. Inclusive rows: no new keys at
-        // all, exactly as before. 27 Sep 2026: a scaled UK record (discounted bill, comp, QR closed
-        // short) loads too, so reports read its booked VAT (taxShare.bookedTaxRecord).
-        ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+        // the added-on (US) tax the check charged. 27 Sep 2026: a scaled UK record (discounted
+        // bill, comp, QR closed short) loads too (taxShare.bookedTaxRecord).
+        // 8 Oct 2026 (the VAT audit): EVERY copy carries the VAT the sale booked and its record,
+        // as db.js does on boot. Until now an ordinary UK sale that arrived by realtime (a kiosk
+        // sale, another till's sale) had no taxAmount here, so the till's X and Z print counted 0
+        // VAT for it and a refund made on this till saved no refund VAT (five live refunds).
+        ...closedCheckTaxFields(check),
         method: check.method,
         closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
         // Carry the occupation's seatedAt (epoch ms) so isSessionClosed can tombstone
@@ -484,8 +486,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             orderType: check.order_type, customer: check.customer,
             items: check.items || [], discounts: check.discounts || [],
             subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
-            // v5.9.12: tax as booked, only for a check that charged added-on tax
-            ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+            // 8 Oct 2026: the VAT booked and its record, on every copy (see the INSERT branch).
+            ...closedCheckTaxFields(check),
             method: check.method,
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],

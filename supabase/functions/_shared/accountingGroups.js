@@ -208,7 +208,7 @@ const orderTypeOf = (row) => row?.tax_breakdown?.taxV2?.orderType || row?.order_
 // key. MIRRORS src/lib/taxRule.js TAX_ORDER_TYPE_ALIASES (the till books with it; this file cannot
 // import src/lib): collection and drive thru read Takeaway, a bar tab reads Bar. Change both
 // together, or the Xero split by rate stops matching the VAT the till booked.
-const TAX_ORDER_TYPE_ALIASES = { collection: 'takeaway', 'drive-thru': 'takeaway', 'bar-tab': 'bar' };
+export const TAX_ORDER_TYPE_ALIASES = { collection: 'takeaway', 'drive-thru': 'takeaway', 'bar-tab': 'bar' };
 function itemOverrideFor(item, ot) {
   const ov = item?.taxOverrides;
   if (!ov || typeof ov !== 'object' || !ot) return null;

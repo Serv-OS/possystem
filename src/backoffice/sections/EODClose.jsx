@@ -88,12 +88,14 @@ export default function EODClose() {
 
   // Totals
   const totals = useMemo(() => {
-    const t = { revenue: 0, cash: 0, card: 0, other: 0, tips: 0, refunds: 0, covers: 0, checks: 0, taxes: 0 };
+    const t = { revenue: 0, cash: 0, card: 0, other: 0, tips: 0, refunds: 0, covers: 0, checks: 0, taxes: 0, taxMissing: 0, taxMissingRefs: [] };
     shiftChecks.forEach(c => {
       const total = Number(c.total) || 0;
       t.revenue += total;
       t.tips += Number(c.tip) || 0;
       t.taxes += Number(c.taxAmount) || 0;
+      // 8 Oct 2026 (the VAT audit): a sale with money taken and no VAT recorded counts 0 and is named.
+      if (c.taxAmount == null && total > 0) { t.taxMissing += 1; if (t.taxMissingRefs.length < 12) t.taxMissingRefs.push(c.ref || c.id); }
       t.covers += Number(c.covers) || 0;
       t.checks++;
       if (c.method === 'cash') t.cash += total;
@@ -273,7 +275,7 @@ export default function EODClose() {
         <Card label="Cash"     value={fmt(totals.cash)}    highlight="var(--grn)" />
         <Card label="Card"     value={fmt(totals.card)}    highlight="#3b82f6" />
         {totals.other > 0 && <Card label="Other" value={fmt(totals.other)} />}
-        <Card label="Tax"      value={fmt(totals.taxes)} />
+        <Card label="Tax"      value={fmt(totals.taxes)} sub={totals.taxMissing ? `${totals.taxMissing === 1 ? '1 sale has' : `${totals.taxMissing} sales have`} no VAT recorded: ${totals.taxMissingRefs.join(', ')}` : undefined} />
         <Card label="Tips"     value={fmt(totals.tips)} />
         <Card label="Checks"   value={String(totals.checks)} />
         <Card label="Covers"   value={String(totals.covers || 0)} />
@@ -457,11 +459,13 @@ function ShiftHeader({ shift, totals, cashDrawers }) {
   );
 }
 
-function Card({ label, value, highlight }) {
+function Card({ label, value, highlight, sub }) {
   return (
     <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:'10px 14px' }}>
       <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' }}>{label}</div>
       <div style={{ fontSize:18, fontWeight:800, color: highlight || 'var(--t1)', marginTop:4, fontFamily:'var(--font-mono)' }}>{value}</div>
+      {/* 8 Oct 2026: a red line under a figure (a sale with no VAT recorded), never a silent 0. */}
+      {sub && <div style={{ fontSize:11, fontWeight:700, color:'var(--red)', marginTop:4, lineHeight:1.4 }}>{sub}</div>}
     </div>
   );
 }

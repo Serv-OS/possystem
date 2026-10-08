@@ -24,9 +24,8 @@ import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
-import { closedCheckRefundFields } from './closedCheckRefundFields';
+import { closedCheckRefundFields, closedCheckTaxFields } from './closedCheckRefundFields';
 import { withTimeout } from './withTimeout';
-import { bookedTaxRecord } from './taxShare';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
@@ -815,13 +814,12 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
       orderType: c.order_type, customer: c.customer,
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      taxAmount: c.tax_amount,
-      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
-      // (US) tax: refunds give back each line's own tax and reprints show what was
-      // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
-      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
-      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
+      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
+      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
+      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
+      // report reads the split by rate each sale stored and names a sale with no VAT
+      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
+      ...closedCheckTaxFields(c),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
@@ -883,13 +881,12 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       orderType: c.order_type, customer: c.customer,
       items: c.items || [], discounts: c.discounts || [],
       subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      taxAmount: c.tax_amount,
-      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
-      // (US) tax: refunds give back each line's own tax and reprints show what was
-      // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
-      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
-      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
+      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
+      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
+      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
+      // report reads the split by rate each sale stored and names a sale with no VAT
+      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
+      ...closedCheckTaxFields(c),
       method: c.method,
       closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
       // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
