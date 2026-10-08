@@ -279,7 +279,8 @@ test('venue-messages-admin: second step, a real user, never anonymous, super_adm
 
 test('Company Admin shows the section, and it calls only the admin function', () => {
   const app = read('src/admin/CompanyAdminApp.jsx');
-  assert.ok(app.includes("{ id:'venue-messages', label:'Messages to venues'"));
+  // 8 Oct 2026: the section also carries Email an update, so the sidebar says both.
+  assert.ok(app.includes("{ id:'venue-messages', label:'Messages and emails'"));
   assert.ok(app.includes("{section === 'venue-messages' && <AdminVenueMessages />}"));
   const sec = read('src/admin/sections/AdminVenueMessages.jsx');
   assert.ok(sec.includes('`${FUNCTIONS_URL}/venue-messages-admin`'));

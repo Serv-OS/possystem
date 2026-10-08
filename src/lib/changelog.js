@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.43',
+    date: '8 Oct 2026',
+    items: [
+      "ServOS admin, Messages and emails: Email an update. Write a what's new in plain text (headings, bold, bullets, links), pick the companies, see exactly who will get it (owners and managers with a Back Office login) and send. A test to yourself first, always. One email per person, from ServOS, with a record of who was sent what and whether it arrived. Sending the same update again never emails anyone twice.",
+    ],
+  },
+  {
     v: '5.11.42',
     date: '8 Oct 2026',
     items: [
