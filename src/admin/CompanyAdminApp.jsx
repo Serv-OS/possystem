@@ -5,6 +5,7 @@ import BOLogin from '../backoffice/BOLogin';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import AdminSecondSteps from './sections/AdminSecondSteps';
 import AdminVenueMessages from './sections/AdminVenueMessages';
+import AdminUpdateEmails from './sections/AdminUpdateEmails';
 import { isRealLogin, sessionProvesSecondStep, MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 import { currentAccessToken } from '../lib/secondStep/client';
 import AdminBillingManager from './sections/AdminBillingManager';
@@ -485,7 +486,7 @@ function AdminPanel({ authUser }) {
           { id:'billing', label:'Processing', icon:'💳' },
           { id:'revenue', label:'Revenue', icon:'📈' },
           { id:'reseller', label:'FranPOS', icon:'🧾' },
-          { id:'venue-messages', label:'Messages to venues', icon:'📣' },
+          { id:'venue-messages', label:'Messages and emails', icon:'📣' },
           { id:'customer-import', label:'Import customers', icon:'📥' },
           { id:'second-step', label:'Sign in security', icon:'🔐' },
         ].map(n => (
@@ -531,6 +532,8 @@ function AdminPanel({ authUser }) {
         {section === 'second-step' && <AdminSecondSteps />}
         {/* 5 Oct 2026: a pop up on the tills and Back Office of chosen venues, until someone taps Got it. */}
         {section === 'venue-messages' && <AdminVenueMessages />}
+        {/* 8 Oct 2026: the weekly what's new email to every Back Office login of the chosen companies, below the pop up sender. */}
+        {section === 'venue-messages' && <AdminUpdateEmails />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (
