@@ -54,6 +54,7 @@ import { customerUrl } from '../lib/env';
 import { isOpenNow, nextOpensAt } from '../lib/openingHours';
 import { readTheme, deriveVars, readableOn } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
+import { pickBrandVenue, groupBodyBg } from '../lib/groupBrand';
 
 // ── Handoff design tokens (cream neutrals — fixed per the spec; the brand red is
 //    the ONE token deliberately swapped for the group's theme accent) ───────────
@@ -292,23 +293,22 @@ export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
-  // Brand theme from the first eligible venue that has branding — same MenuTheme
+  // Brand theme borrowed from the venue with the most complete Menu appearance
+  // (header photo, then logo, then colour; see lib/groupBrand.js), same MenuTheme
   // engine as the online/catering storefronts.
-  const brandLoc = actionable.find(v => v.online_branding)
-    || state.venues.find(v => v.online_enabled && v.online_branding)
-    || state.venues.find(v => v.online_branding)
-    || null;
+  const brandLoc = pickBrandVenue(state.venues, actionable.map(v => v.id));
   const mt = useMemo(() => readTheme(brandLoc?.online_branding), [brandLoc]);
   const vars = useMemo(() => deriveVars(mt.brandColor, mt.bodyBg), [mt.brandColor, mt.bodyBg]);
   const onBrand = readableOn(mt.brandColor);
 
-  // Shell keeps the MenuTheme CSS vars (the branded header needs them) but the
-  // page body below is the handoff's cream — deliberately NOT the storefront bg.
+  // Shell keeps the MenuTheme CSS vars (the branded header needs them). The page
+  // body wears the borrowed venue's storefront background when it is light (the
+  // venue set it in Menu appearance), else the handoff's cream.
   const shell = {
     ...vars,
     position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden',
     WebkitOverflowScrolling: 'touch', containerType: 'inline-size',
-    background: T.bg, color: T.ink, fontFamily: FIGTREE,
+    background: groupBodyBg(mt.bodyBg), color: T.ink, fontFamily: FIGTREE,
   };
 
   if (state.loading || redirecting) {
