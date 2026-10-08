@@ -75,7 +75,9 @@ function faultFor(view, loadFault, kdsFault) {
   return loadFault || null;
 }
 
-export default function BOReports({ setSection } = {}) {
+// 8 Oct 2026: canOpen is the Back Office section access rule (lib/boSections.js). A tile that
+// opens another part of Back Office is left out for a login that is not shown that part.
+export default function BOReports({ setSection, canOpen } = {}) {
   const { tables, taxRates, closedChecks: storeChecks } = useStore();
 
   const [view, setView]               = useState('catalog'); // 'catalog' or a report id
@@ -479,7 +481,7 @@ export default function BOReports({ setSection } = {}) {
   if (view === 'catalog') {
     return (
       <div style={{ flex:1, minHeight:0, display:'flex', overflow:'hidden' }}>
-        <Catalog onOpen={openReport} counts={catalogCounts}/>
+        <Catalog onOpen={openReport} counts={catalogCounts} canOpen={canOpen}/>
       </div>
     );
   }

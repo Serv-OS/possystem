@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, failedCreateIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
 import { withTimeout } from '../lib/withTimeout';
 import { pushedByName } from '../lib/pushedBy';
@@ -107,6 +107,7 @@ import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
+import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow } from '../lib/boSections';
 
 // Open-group height for the sidebar's collapse animation: rows are ~34px (8px padding, 12.8px
 // text, 1px gap) plus the list's own padding. Generous per row so nothing is ever clipped; the
@@ -178,27 +179,9 @@ const NAV = [
   { id: 'servos-messages', label: 'Messages from ServOS', icon: '\u{1F514}', group: 'Settings' },
 ];
 
-// v5.5.367 ServOS: intent-based 10-section sidebar IA. Every child keeps the
-// existing section id (route) from NAV above — this regroups, never re-wires.
-// `single` = the header navigates straight to that route; `children` = a
-// collapsible accordion of existing routes.
-const NAV_IA = [
-  { label:'Overview',   icon:'home',      single:'overview' },
-  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
-  { label:'Floor plan', icon:'floor',     single:'floorplan' },
-  { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
-  { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
-  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Orders'],['invoices','Invoices'],['price-changes','Price changes']] },
-  { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-prep','Prep schedule'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-documents','Documents'],['ops-forms','Forms'],['ops-devices','Devices']] },
-  { label:'Team',       icon:'user',      single:'staff' },
-  { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-training','Training'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
-  { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Automations'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
-  { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Advance orders'],['hubrise','3rd Party orders'],['uber-direct','Delivery'],['deliveries-live','Deliveries (live)'],['waitlist','Tables Ready'],['table-bookings','Table bookings'],['packages','Packages & events'],['menu-appearance','Appearance'],['kiosks','Kiosks'],['menuboards','Menu boards'],['order-screens','Order screens'],['print-menu','Print menu']] },
-  { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
-  { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
-  { label:'Card payments', icon:'card',   single:'card-payments' },
-  { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['security','Sign in security'],['servos-messages','Messages from ServOS'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
-];
+// 8 Oct 2026: the sidebar list (NAV_IA) moved to src/lib/boSections.js, unchanged, so the
+// section access rules and this screen read ONE list. Every child keeps the existing section
+// id (route) from NAV above. Add or move a sidebar entry THERE.
 
 // v5.5.951 — the "Premium Sauces vanished" guard. Menu writers used to log failures
 // to the console and nothing else, while the screen showed the change as saved; a
@@ -285,11 +268,16 @@ function WeakPasswordBanner({ onFix }) {
     }}>
       <span style={{ flex:1, minWidth:240 }}>
         <strong>Your password is weak.</strong> It is too short or has appeared in a data leak. Please change it now.
+        {/* 8 Oct 2026: no onFix = this login is not shown Settings, where Sign in security
+            lives. The sign in screen's own reset still works for everybody. */}
+        {!onFix && ' To change it, sign out, then tap Forgot password on the sign in screen.'}
       </span>
-      <button onClick={onFix} style={{
-        padding:'7px 14px', borderRadius:9, border:'none', background:'var(--acc)', color:'#06130C',
-        fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
-      }}>Change password</button>
+      {onFix && (
+        <button onClick={onFix} style={{
+          padding:'7px 14px', borderRadius:9, border:'none', background:'var(--acc)', color:'#06130C',
+          fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
+        }}>Change password</button>
+      )}
     </div>
   );
 }
@@ -364,6 +352,11 @@ async function resolveWritableLocation(candidate, accessibleIds) {
   return { id: null, changed: true, reason: 'not accessible' };
 }
 
+// How long the read of the signed in login's own profile may take before Back Office says
+// "Could not load your access. Try again." instead of waiting (8 Oct 2026, review). One small
+// row; 15 seconds is long for it, and the retry button is right there.
+const PROFILE_READ_MS = 15000;
+
 export default function BackOfficeApp() {
   const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
   // v5.5.328: apply the saved light/dark theme on back-office boot. The store's
@@ -388,8 +381,32 @@ export default function BackOfficeApp() {
   // reload asks again, and nothing a browser could be told to lie about decides
   // it (the fence is the database, this is only the screen).
   const passedSessionId = useRef(null);
-  const [section, setSection] = useState('overview');
-  const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
+  // The route somebody ASKED for. Never rendered as it is: `section` below is what shows.
+  const [askedSection, setAskedSection] = useState('overview');
+  const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role, boSections, sectionsInstalled, loadFailed }
+  const [profileTry, setProfileTry] = useState(0); // "Try again" on the could not load screen
+  // ── SECTION ACCESS (Peter, 8 Oct 2026: "limit what they can see via each tab") ──
+  // A SCREEN lock, not a database lock: it hides parts of Back Office from a login. What the
+  // database lets that login read and write is unchanged (lib/boSections.js has the rules).
+  // `access` is who is signed in; until the profile has loaded it is nobody, and nobody opens
+  // nothing. Demo mode has no login at all and shows everything, as it always did.
+  const access = useMemo(
+    () => (isMock ? EVERYTHING : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections } : null)),
+    [orgCtx],
+  );
+  // RENDER GUARD: every screen below is chosen by `section`, and `section` can only ever be a
+  // route this login may open (a blocked or unknown route becomes the first allowed one, or null).
+  const section = guardRoute(askedSection, access);
+  // SETTER GUARD: every link and button that changes the screen calls this, here and in the
+  // screens that are handed it. A route this login may not open is refused and they stay put.
+  const setSection = (next) => {
+    if (!canOpenRoute(next, access)) {
+      useStore.getState().showToast?.('You do not have access to that part of Back Office.', 'error');
+      return;
+    }
+    setAskedSection(next);
+  };
+  const canOpen = useCallback((routeId) => canOpenRoute(routeId, access), [access]);
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
   // v5.5.367 ServOS: which nav accordion is open (single-open); auto-opens the
@@ -434,6 +451,12 @@ export default function BackOfficeApp() {
         localStorage.removeItem('rpos-bo-location');
         clearResolvedLocationId();
         setSecondStepOk(false);
+        // 8 Oct 2026 (review): forget WHO was signed in as well. orgCtx is the previous person's
+        // role and sections. Left in place, the next person to sign in on this tab (the owner
+        // signed out in another tab, or overnight, then Mo signed in) was shown the previous
+        // person's whole Back Office from the second step until their own profile arrived.
+        setOrgCtx(null);
+        setAskedSection('overview');
       }
       // Second step: a sign in that went BACKWARDS must pass the gate again.
       // NOT simply "this token is a password one" (21 Sep 2026, live): supabase-js
@@ -493,6 +516,13 @@ export default function BackOfficeApp() {
   // (before that the database refuses a password only sign in once enforcement is on).
   useEffect(() => {
     if (!authUser || isMock || !secondStepOk) return;
+    // 8 Oct 2026 (review): nobody is known until THIS read lands. A sign in that changed without
+    // a page load (another tab, the token expiring) left the previous person's orgCtx here, and
+    // the page below rendered their sidebar and screens for the new person. Null shows the
+    // Loading screen instead. A read started for a sign in that has since changed is thrown
+    // away (`stale`), so a slow answer for the previous person can never land on the new one.
+    setOrgCtx(null);
+    let stale = false;
     (async () => {
       // v5.5.241: profile query rewrite. Previous versions used PostgREST
       // embedded resource syntax (organisations(name), locations(name)) which
@@ -503,27 +533,31 @@ export default function BackOfficeApp() {
       // makes the login query immune to PostgREST schema cache issues.
       let profile = null;
 
-      // Step 1: fetch core profile — plain columns only, no embedded resources
-      let { data, error } = await supabase
-        .from('user_profiles')
-        .select('role, org_id, location_id, bo_access')
-        .eq('id', authUser.id)
-        .single();
-      // Fallback: if bo_access column doesn't exist yet, retry without it
-      if (error) {
-        console.warn('[BackOfficeApp] profile SELECT failed:', error.message, '— retrying without bo_access');
-        ({ data, error } = await supabase
+      // Step 1: fetch core profile — plain columns only, no embedded resources.
+      // 8 Oct 2026: THIS READ FAILS CLOSED. It used to retry without bo_access on ANY error and,
+      // if that failed too (the network, no profile row), carry on with boAccess true and the
+      // whole sidebar. Now a column is dropped from the read only when the database says that
+      // very column does not exist (bo_sections missing = section access is not installed, and
+      // everyone opens everything as before). Any other failure shows "Could not load your
+      // access" and nothing else (lib/boSections.js readProfileRow).
+      // The read has a time limit (PROFILE_READ_MS): a stalled network used to keep the Loading
+      // screen (or, before today, the previous person's Back Office) up for ever. Out of time is
+      // "could not load", with the retry button, never a guess.
+      let read;
+      try {
+        read = await withTimeout(readProfileRow((columns) => supabase
           .from('user_profiles')
-          .select('role, org_id, location_id')
+          .select(columns)
           .eq('id', authUser.id)
-          .single());
-      }
-      if (error || !data) {
-        console.error('[BackOfficeApp] user_profiles query failed:', error?.message);
-        setOrgCtx({ role: null, boAccess: true, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, userId: authUser?.id || null, userName: authUser?.email || null });
+          .single()), PROFILE_READ_MS, 'reading your access');
+      } catch (e) { read = { ok: false, error: e }; }
+      if (stale) return;
+      if (!read.ok) {
+        console.error('[BackOfficeApp] user_profiles query failed:', read.error?.message);
+        setOrgCtx({ loadFailed: true, role: null, boAccess: false, boSections: [], sectionsInstalled: false, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, userId: authUser?.id || null, userName: authUser?.email || null });
         return;
       }
-      profile = data;
+      profile = read.row;
 
       // Step 2: resolve effective location
       let overrideLocId = null;
@@ -543,6 +577,7 @@ export default function BackOfficeApp() {
         const { data: accessible } = await fetchAccessibleLocations();
         accessibleIds = new Set((accessible || []).map(l => l.id));
       } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+      if (stale) return;
 
       if (overrideLocId && accessibleIds) {
         const res = await resolveWritableLocation(overrideLocId, accessibleIds);
@@ -591,10 +626,15 @@ export default function BackOfficeApp() {
         if (orgRes.data?.name) orgName = orgRes.data.name;
         if (locRes.data?.name) locationName = locRes.data.name;
       } catch (e) { console.warn('[BackOfficeApp] org/location name lookup failed:', e?.message); }
+      if (stale) return;
 
       setOrgCtx({
         role: profile.role,
         boAccess: profile.role === 'super_admin' || profile.bo_access !== false,
+        // Which parts of Back Office this login is shown: null = everything, a list = only
+        // those. Owners and ServOS staff ignore it (lib/boSections.js allowedKeys).
+        boSections: sectionsFromProfileRow(profile, read.sectionsInstalled),
+        sectionsInstalled: read.sectionsInstalled,
         orgId: profile.org_id,
         orgName,
         locationId: effectiveLocId,
@@ -627,7 +667,8 @@ export default function BackOfficeApp() {
         loadLocationData(effectiveLocId);
       }
     })();
-  }, [authUser, secondStepOk]);
+    return () => { stale = true; };
+  }, [authUser, secondStepOk, profileTry]);
 
   // 27 Sep 2026 (Peter: "I archived choc babychino but its still on the menu board"): the menu
   // comes from ONE fresh read of the database (lib/venueMenuRead.js readVenueMenu, the same
@@ -723,6 +764,24 @@ export default function BackOfficeApp() {
       <div style={{ color:'var(--t3)', fontSize:13 }}>Loading profile…</div>
     </div>
   );
+  // 8 Oct 2026: the profile could not be read (the network, a refusal, no profile row). We do
+  // not know what this login may open, so it is shown NOTHING: no sidebar, no screen, a retry.
+  // It used to carry on with the whole Back Office.
+  if (!isMock && authUser && orgCtx && orgCtx.loadFailed) return (
+    <div data-testid="bo-access-load-failed" style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t1)', padding:32, gap:18 }}>
+      <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', textAlign:'center' }}>Could not load your access. Try again.</div>
+      <div style={{ display:'flex', gap:10, flexWrap:'wrap', justifyContent:'center' }}>
+        <button onClick={() => { setOrgCtx(null); setProfileTry(n => n + 1); }}
+          style={{ padding:'10px 22px', borderRadius:8, border:'none', background:'var(--acc)', color:'#06130C', cursor:'pointer', fontFamily:'inherit', fontSize:14, fontWeight:700 }}>
+          Try again
+        </button>
+        <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut().then(() => window.location.reload()); }}
+          style={{ padding:'10px 22px', borderRadius:8, border:'1px solid var(--bdr)', background:'transparent', color:'var(--t2)', cursor:'pointer', fontFamily:'inherit', fontSize:14 }}>
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
   if (!isMock && authUser && orgCtx && !orgCtx.boAccess) return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t1)', padding:32, gap:18 }}>
       <div style={{ fontSize:36 }}>🔒</div>
@@ -737,8 +796,23 @@ export default function BackOfficeApp() {
       </button>
     </div>
   );
+  // 8 Oct 2026: a login whose list of sections is empty (or holds nothing this build knows)
+  // opens no part of Back Office. `section` is null exactly then, so nothing below can render.
+  if (!isMock && section === null) return (
+    <div data-testid="bo-access-none" style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--t1)', padding:32, gap:18 }}>
+      <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', textAlign:'center', maxWidth:420, lineHeight:1.4 }}>
+        You do not have access to any part of Back Office. Ask the owner.
+      </div>
+      <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut().then(() => window.location.reload()); }}
+        style={{ padding:'10px 22px', borderRadius:8, border:'1px solid var(--bdr)', background:'transparent', color:'var(--t2)', cursor:'pointer', fontFamily:'inherit', fontSize:14 }}>
+        Sign out
+      </button>
+    </div>
+  );
 
   const groups = [...new Set(NAV.map(n => n.group))];
+  // The sidebar this login is shown: a section it may not open is not listed at all.
+  const navRows = filterNav(NAV_IA, access);
 
   return (
     <div style={{
@@ -779,7 +853,7 @@ export default function BackOfficeApp() {
         {/* minHeight:0 lets this flex child shrink and scroll; without it the list grew to its
             content and the footer covered the last entries (Print menu). */}
         <div style={{ flex:1, minHeight:0, overflowY:'auto', padding:'10px 8px', display:'flex', flexDirection:'column', gap:2 }}>
-          {NAV_IA.map(sec => {
+          {navRows.map(sec => {
             if (sec.single) {
               const active = section === sec.single;
               return (
@@ -947,7 +1021,12 @@ export default function BackOfficeApp() {
             {/* 27 Sep 2026: a display name, never the email (config_pushes is readable with the
                 public key: lib/pushedBy.js). The raw names go down, so the button can fall back
                 to the staff name before "Manager". */}
-            <PushToPOSButton nameCandidates={[authUser?.user_metadata?.full_name, authUser?.user_metadata?.name, orgCtx?.userName]} />
+            {/* 8 Oct 2026: it belongs to no section and sends the menu, floor plan and device
+                profiles to the tills, so only a login that may open one of those sees it
+                (lib/boSections.js canPushToPos). */}
+            {canPushToPos(access) && (
+              <PushToPOSButton nameCandidates={[authUser?.user_metadata?.full_name, authUser?.user_metadata?.name, orgCtx?.userName]} />
+            )}
             <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--t3)' }}>
               <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
               <span>Live</span>
@@ -964,10 +1043,12 @@ export default function BackOfficeApp() {
             the inner page wrapper to max-width 1600px, applies fluid
             padding (16px → 48px), and overrides any per-section maxWidth
             via !important so we don't have to edit 20 files individually. */}
-        <WeakPasswordBanner onFix={() => setSection('security')} />
+        {/* 8 Oct 2026: Sign in security sits under Settings. A login that is not shown Settings
+            gets no button to it; the banner tells it the other way to change a password. */}
+        <WeakPasswordBanner onFix={canOpen('security') ? () => setSection('security') : null} />
         <OtherTabBanner key={orgCtx?.locationId || 'none'} venue={orgCtx?.locationId || null} />
         <div className="bo-page-shell">
-          {section === 'overview'   && <BOOverview setSection={setSection} orgCtx={orgCtx} />}
+          {section === 'overview'   && <BOOverview setSection={setSection} canOpen={canOpen} orgCtx={orgCtx} />}
           {section === 'security'   && <SignInSecurity orgCtx={orgCtx} />}
           {section === 'servos-messages' && <ServosMessages locationId={orgCtx?.locationId || null} />}
           {section === 'reviews'    && <ReviewManager />}
@@ -985,7 +1066,7 @@ export default function BackOfficeApp() {
           {section === 'menu'       && <MenuManager />}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
-          {section === 'stock-overview' && <StockOverview setSection={setSection} />}
+          {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}
           {section === 'stock-reports' && <StockReports />}
           {section === 'stock-counts' && <StockCounts />}
           {section === 'wastage'    && <Wastage />}
@@ -1012,7 +1093,7 @@ export default function BackOfficeApp() {
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
-          {section === 'online'     && <OnlineOrdering setSection={setSection} />}
+          {section === 'online'     && <OnlineOrdering setSection={setSection} canOpen={canOpen} />}
           {section === 'catering'   && <CateringSettings />}
           {section === 'menu-appearance' && <MenuAppearance />}
           {section === 'catering-orders' && <CateringOrders />}
@@ -1027,9 +1108,9 @@ export default function BackOfficeApp() {
           {section === 'printers'   && <PrinterRegistry />}
           {section === 'cardreaders'&& <CardReaders />}
           {section === 'cashdrawers' && <CashDrawers />}
-          {section === 'staff'      && <StaffManager />}
+          {section === 'staff'      && <StaffManager orgCtx={orgCtx} />}
           {section === 'printing'   && <PrintRouting />}
-          {section === 'reports'    && <BOReports setSection={setSection} />}
+          {section === 'reports'    && <BOReports setSection={setSection} canOpen={canOpen} />}
           {section === 'card-payments' && <CardPayments />}
           {section === 'shift'      && <Shift />}
           {section === 'eod'        && <EODClose />}
@@ -1479,7 +1560,9 @@ function SnapCard({ title, rows, onClick, empty }) {
   );
 }
 
-function BOOverview({ setSection, orgCtx }) {
+// 8 Oct 2026: canOpen says which other parts of Back Office this login is shown. A quick action
+// or a "Reports" link to a part it is not shown is left off the page, never a dead button.
+function BOOverview({ setSection, canOpen = () => true, orgCtx }) {
   const { closedChecks, tables, staff: currentStaff } = useStore();
 
   // v5.5.296: Fetch live data directly from Supabase instead of relying on the
@@ -1572,7 +1655,8 @@ function BOOverview({ setSection, orgCtx }) {
     { icon:'print',    h:38,  label:'Manage printers',    sub:'Add NT311 and other ESC/POS printers',       target:'printers' },
     { icon:'team',     h:300, label:'Manage staff',       sub:'Add servers, change PINs',                   target:'staff' },
     { icon:'print',    h:330, label:'Production printing', sub:'Route orders to kitchen & receipt printers', target:'printing' },
-  ];
+  ].filter(a => canOpen(a.target));
+  const toReports = canOpen('reports') ? () => setSection('reports') : undefined;
 
   return (
     <div style={{ flex:1, overflowY:'auto', padding:28 }}>
@@ -1581,7 +1665,10 @@ function BOOverview({ setSection, orgCtx }) {
       {/* No location warning */}
       {!orgCtx?.locationId && !isMock && (
         <div style={{ padding:'14px 18px', borderRadius:10, background:'#fef9c3', border:'1px solid #fde047', marginBottom:20, fontSize:13 }}>
-          <strong>⚠️ No location assigned to your account.</strong> Go to <button onClick={() => setSection('admin')} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--acc)', fontWeight:700, fontSize:13, padding:0, textDecoration:'underline' }}>Company Admin</button> → create an organisation and location first.
+          <strong>⚠️ No location assigned to your account.</strong>{' '}
+          {canOpen('admin')
+            ? <>Go to <button onClick={() => setSection('admin')} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--acc)', fontWeight:700, fontSize:13, padding:0, textDecoration:'underline' }}>Company Admin</button> → create an organisation and location first.</>
+            : 'Ask the owner to add you to a venue.'}
         </div>
       )}
 
@@ -1616,7 +1703,7 @@ function BOOverview({ setSection, orgCtx }) {
       </div>
 
       {/* Quick actions */}
-      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Quick actions</div>
+      {quickActions.length > 0 && <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Quick actions</div>}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:28 }}>
         {quickActions.map(a => (
           <button key={a.label} onClick={() => setSection(a.target)} style={{
@@ -1645,20 +1732,20 @@ function BOOverview({ setSection, orgCtx }) {
       {/* ── Today's snapshot (v5.5.340) ── */}
       <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:12 }}>Today's snapshot</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12, marginBottom:28 }}>
-        <SnapCard title="Sales by order source" onClick={() => setSection('reports')}
+        <SnapCard title="Sales by order source" onClick={toReports}
           rows={[
             ...SOURCE_META.filter(s => s.key !== 'delivery').map(s => { const v = snap.sources[s.key] || 0; return { label:s.label, value: s.soon ? 0 : v, color:s.color, soon:s.soon, display: s.soon ? 'Not connected' : money(v) }; }),
             // v5.5.856: one row PER delivery platform (was a single "Delivery apps" roll-up)
             ...Object.entries(snap.sources).filter(([k]) => k.startsWith('hr:')).sort((a, b) => b[1] - a[1])
               .map(([k, v]) => ({ label: k.slice(3), value: v, color:'#ef4444', display: money(v) })),
           ]}/>
-        <SnapCard title="Sales by user" onClick={() => setSection('reports')} empty="No sales yet today"
+        <SnapCard title="Sales by user" onClick={toReports} empty="No sales yet today"
           rows={Object.entries(snap.users).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([name,total]) => ({ label:name, value:total, display:money(total) }))}/>
-        <SnapCard title="Top sellers" onClick={() => setSection('reports')} empty="No items sold yet today"
+        <SnapCard title="Top sellers" onClick={toReports} empty="No items sold yet today"
           rows={Object.entries(snap.products).map(([name,v])=>({ name, ...v })).sort((a,b)=>b.qty-a.qty).slice(0,6).map(p => ({ label:p.name, value:p.qty, color:'var(--grn)', display:`${p.qty} · ${money(p.rev)}` }))}/>
-        <SnapCard title="Payment mix" onClick={() => setSection('reports')} empty="No payments yet today"
+        <SnapCard title="Payment mix" onClick={toReports} empty="No payments yet today"
           rows={Object.entries(snap.methods).sort((a,b)=>b[1]-a[1]).map(([m,total]) => ({ label:m, value:total, color:'var(--blu)', display:money(total) }))}/>
-        <SnapCard title="Sales by order type" onClick={() => setSection('reports')} empty="No sales yet today"
+        <SnapCard title="Sales by order type" onClick={toReports} empty="No sales yet today"
           rows={Object.entries(snap.types).sort((a,b)=>b[1]-a[1]).map(([t,total]) => ({ label: ORDER_TYPE_LABEL[t] || t, value:total, color:'#e8a020', display:money(total) }))}/>
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:14, padding:'16px 18px' }}>
           <div style={{ fontSize:11, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:14 }}>Discounts &amp; tips today</div>

@@ -92,7 +92,8 @@ test('Back Office mounts it once, for a signed in person at a venue, and lists w
   assert.equal(count(bo, '<VenueMessagePopup'), 1);
   assert.match(bo, /\{authUser && !isMock && orgCtx\?\.locationId && \(\s*<VenueMessagePopup host="backoffice" locationId=\{orgCtx\.locationId\} user=\{authUser\}/);
   assert.ok(bo.includes("{ id: 'servos-messages', label: 'Messages from ServOS'"));
-  assert.ok(bo.includes("['servos-messages','Messages from ServOS']"));
+  // 8 Oct 2026: the sidebar list moved to lib/boSections.js (the screen imports it).
+  assert.ok(read('src/lib/boSections.js').includes("['servos-messages','Messages from ServOS']"));
   assert.ok(bo.includes("{section === 'servos-messages' && <ServosMessages locationId={orgCtx?.locationId || null} />}"));
 });
 
@@ -278,7 +279,8 @@ test('venue-messages-admin: second step, a real user, never anonymous, super_adm
 
 test('Company Admin shows the section, and it calls only the admin function', () => {
   const app = read('src/admin/CompanyAdminApp.jsx');
-  assert.ok(app.includes("{ id:'venue-messages', label:'Messages to venues'"));
+  // 8 Oct 2026: the section also carries Email an update, so the sidebar says both.
+  assert.ok(app.includes("{ id:'venue-messages', label:'Messages and emails'"));
   assert.ok(app.includes("{section === 'venue-messages' && <AdminVenueMessages />}"));
   const sec = read('src/admin/sections/AdminVenueMessages.jsx');
   assert.ok(sec.includes('`${FUNCTIONS_URL}/venue-messages-admin`'));
