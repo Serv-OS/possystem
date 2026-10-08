@@ -16,6 +16,7 @@ import {
   kioskCartUsage,
   kioskOrderItem,
   kioskDepleteItem,
+  kioskLineTaxRefs,
 } from './kioskLine.js';
 import { kitchenOverride, receiptOverride, displayName } from './itemDisplay.js';
 import { resolveCentresForItem } from './productionRouting.js';
@@ -39,7 +40,9 @@ function line(item, child, modsArray, linePrice, qty = 1, selections = {}) {
   };
 }
 
-// The itemsPayload mapper exactly as it was inline in KioskApp.jsx before this fix.
+// The itemsPayload mapper exactly as it was inline in KioskApp.jsx before this fix, plus the two
+// tax fields every kiosk line carries since 8 Oct 2026 (VAT audit, Fix 2): the item's rate id and
+// per order type overrides, as a till line carries them (null and {} when the row has none).
 const legacyOrderItem = (l) => ({
   id: l.item.id,
   name: l.name,
@@ -49,6 +52,8 @@ const legacyOrderItem = (l) => ({
   price: l.linePrice,
   mods: Array.isArray(l.modsArray) ? l.modsArray : [],
   cat: l.item.cat,
+  taxRateId: l.item.tax_rate_id || null,
+  taxOverrides: l.item.tax_overrides || {},
   status: 'sent',
   fired: true,
   course: 1,
@@ -286,4 +291,29 @@ test('money guard: helpers never change the basket line the money paths read', (
   assert.deepEqual(cart.map(l => l.item.id), ['m-latte', 'm-latte']);
   // Order line price equals the basket line price, never size plus line.
   assert.deepEqual(cart.map(kioskOrderItem).map(o => o.price), [4, 1.5]);
+});
+
+// 8 Oct 2026 (VAT audit, Fix 2) ──────────────────────────────────────────────
+test('tax refs: a size carries its own Back Office rate; the order line stores the rate like a till line', () => {
+  // Leeds Babyccino: the parent is Standard 20%, the Milk size is Reduced 5%
+  const BAB = { ...LATTE, id: 'm-bab', name: 'Babyccino', menu_name: 'Babyccino', tax_rate_id: 'r20', tax_overrides: {} };
+  const MILK = { ...SMALL, id: 'm-milk', name: 'Milk', menu_name: 'Milk', parent_id: 'm-bab', tax_rate_id: 'r5', tax_overrides: {} };
+  const CHOC = { ...SMALL, id: 'm-choc', name: 'Choc', menu_name: 'Choc', parent_id: 'm-bab', tax_rate_id: null, tax_overrides: {} };
+  const v = kioskVariant(BAB, MILK);
+  assert.equal(v.taxRateId, 'r5');
+  assert.deepEqual(v.taxOverrides, {});
+  assert.equal(v.taxProfileId, null);
+  assert.deepEqual(kioskLineTaxRefs(line(BAB, MILK, [], 1.55)), { taxRateId: 'r5', taxOverrides: {}, taxProfileId: null });
+  assert.deepEqual(kioskLineTaxRefs(line(BAB, CHOC, [], 1.55)), { taxRateId: 'r20', taxOverrides: {}, taxProfileId: null });   // no rate of its own: the parent's
+  const o = kioskOrderItem(line(BAB, MILK, [], 1.55));
+  assert.equal(o.taxRateId, 'r5');
+  assert.deepEqual(o.taxOverrides, {});
+  // a plain item (no size) stores its own rate and overrides, {} and null when it has none
+  assert.equal(kioskOrderItem(line(TEA, null, [], 2)).taxRateId, null);
+  assert.deepEqual(kioskOrderItem(line(TEA, null, [], 2)).taxOverrides, {});
+  // the money guard still holds: nothing on the basket line changed
+  const cart = [line(BAB, MILK, [], 1.55)];
+  const snap = JSON.parse(JSON.stringify(cart));
+  cart.map(kioskOrderItem); cart.map(kioskLineTaxRefs);
+  assert.deepEqual(JSON.parse(JSON.stringify(cart)), snap);
 });

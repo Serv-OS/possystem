@@ -4,7 +4,8 @@
 // what came in (sales) and what went back out (refunds), each split into goods, tax, tip and
 // service. It knows nothing about Xero or QuickBooks; xero-sales turns the summary into Xero
 // bank transactions (_shared/xeroPostingPlan.js) and a QuickBooks integration can turn the
-// same summary into a journal entry. Pure JS with no imports, so `npm test`
+// same summary into a journal entry. Pure JS whose only import is its sibling saleVat.js (the
+// one refund VAT basis every report shares, 8 Oct 2026), so `npm test`
 // loads the file the edge function ships. The day window comes from _shared/businessDay.js.
 //
 // Money is summed in MINOR units (pence, cents) end to end so a day's lines add up exactly.
@@ -20,8 +21,14 @@
 //      day the check closed, and carry their own tip, service and tax portions.
 // And since 28 Sep 2026, given the venue's tax rates, every figure is also split BY TAX RATE
 // (byRate), so Xero gets one sales line per VAT rate (see "tax rates" below).
+// 8 Oct 2026 (the VAT audit): a check with goods and NO VAT recorded (tax_amount null) at a
+// venue that has rates is flagged tax_not_recorded once, and the day carries it in `holds`:
+// the Xero plans refuse to post a day that holds one (it would post at VAT 0.00, as Preston
+// QR-4OGI7 would have). Nothing is guessed; the sale is fixed first, then the day posts.
 
 // ── money ────────────────────────────────────────────────────────────────────
+
+import { refundTaxBasis } from './saleVat.js';
 
 /** A major unit amount (pounds, dollars; number or numeric string) to integer minor units. */
 export function toMinor(v) {
@@ -97,6 +104,24 @@ export function isVoidedCheck(row) {
 export function checkTaxMinor(row) {
   if (row?.tax_amount != null && row.tax_amount !== '') return Math.max(0, toMinor(row.tax_amount));
   return Math.max(0, toMinor(row?.total) - toMinor(row?.subtotal) - toMinor(row?.service) - toMinor(row?.tip));
+}
+
+/** True when the check booked a VAT figure at all (0 counts; null is "not recorded"). */
+export function checkTaxRecorded(row) {
+  const v = row?.tax_amount;
+  return v != null && v !== '' && Number.isFinite(Number(v));
+}
+
+/**
+ * 8 Oct 2026: the VAT booked on goods paid with loyalty or promo credit (the tenders this layer
+ * reads as discounts), in minor units. The till books it; Xero, Daily trading and the apps take
+ * it off. The Back Office Tax summary shows this amount beside its D1 line until the owner
+ * decides the rule with his accountant.
+ */
+export function creditTaxMinor(row) {
+  let out = 0;
+  for (const p of checkTenderParts(row).parts) if (p.kind === 'discount') out += p.tax;
+  return out;
 }
 
 const LIST_METHOD = /^\s*[a-z_ ]+:\s*\d+(?:\.\d+)?\s*(?:,\s*[a-z_ ]+:\s*\d+(?:\.\d+)?\s*)*$/i;
@@ -445,7 +470,11 @@ export function checkTenderParts(row, taxCtx) {
   if (!taxCtx) return { legacy, flags, parts };
   const w = checkRateWeights(row, taxCtx, billTotal - service, tax);
   for (const p of parts) p.byRate = splitByRate(p.sales, p.tax, w.weights);
-  return { legacy, flags: [...flags, ...w.flags], parts, buckets: w.weights.map((x) => x.bucket), rateSource: w.source };
+  const all = [...flags, ...w.flags];
+  // 8 Oct 2026: goods were sold and no VAT was booked at a venue that has rates. Flagged once
+  // whatever the record says (a usable breakdown beside a null figure is still "not recorded").
+  if (!checkTaxRecorded(row) && billTotal - service > 0 && taxCtx.known && taxCtx.rates.length && !all.includes('tax_not_recorded')) all.push('tax_not_recorded');
+  return { legacy, flags: all, parts, buckets: w.weights.map((x) => x.bucket), rateSource: w.source };
 }
 
 // ── refunds ──────────────────────────────────────────────────────────────────
@@ -532,9 +561,15 @@ export function refundParts(entry, row, taxCtx) {
     if (tip || service) flags.push('refund_split_estimated');
   }
   if (tip + service > amount) { const s = allocate(amount, [tip, service]); tip = s[0]; service = s[1]; }
+  // 8 Oct 2026 (review): a refund entry with no VAT figure takes its share of the sale's VAT on
+  // the SAME basis every report uses (saleVat.refundTaxBasis: the bill, or what the tenders
+  // settled less tip when that is more). A reader close part paid by gift card or loyalty stores
+  // `total` as the card part only, so pro rata on total alone gave the whole VAT back on a part
+  // refund (1.67 where the Tax summary said 0.33) and the reports disagreed by pounds.
+  const taxBasis = Math.max(1, toMinor(refundTaxBasis(row)));
   let tax = entry?.taxAmount != null && entry.taxAmount !== ''
     ? Math.max(0, toMinor(entry.taxAmount))
-    : Math.round((checkTaxMinor(row) * amount) / total);
+    : Math.min(checkTaxMinor(row), Math.round((checkTaxMinor(row) * amount) / taxBasis));
   tax = Math.min(tax, amount - tip - service);
 
   // Where the money went back.
@@ -626,7 +661,7 @@ const WARN_TEXT = {
   refund_no_time: 'Refunds with no time recorded. They are dated by the check close time.',
   voided_checks: 'Cancelled checks left out of the day.',
   tax_split_estimated: 'Checks with no VAT breakdown saved (kiosk, online, QR and catering orders). Their VAT is taken to be at the venue default rate and the rest of the sale zero rated.',
-  tax_not_recorded: 'Checks with no VAT amount recorded. They post at the venue default VAT rate.',
+  tax_not_recorded: 'Checks with no VAT amount recorded. The day is not posted to Xero until the VAT is filled in on each of them (the Back Office item rules). Nothing posts at VAT 0.',
   tax_breakdown_mismatch: 'Checks whose saved VAT breakdown does not add up to the VAT recorded on the check. The breakdown is still used to split the sale by rate.',
   tax_no_rates: 'Checks with no VAT breakdown at a venue with no default tax rate. They post at the Xero rate chosen for "Sales with no VAT breakdown" under Account mapping, as before.',
 };
@@ -747,6 +782,18 @@ export function buildAccountingDay({ day, saleRows = [], refundRows = [], venue 
   };
   const money = (g) => g.gross && MONEY_KINDS.has(g.kind);
   out.empty = !out.sales.byMethod.some(money) && !out.refunds.byMethod.some(money);
+  // 8 Oct 2026: what stops the day posting. A sale with no VAT recorded at a venue with rates
+  // is never posted at VAT 0 (plan Fix 4). The Xero plans copy each hold into `blocked`.
+  out.holds = [];
+  const notRecorded = warn.get('tax_not_recorded');
+  if (notRecorded && taxCtx && taxCtx.known && taxCtx.rates.length) {
+    const refs = saleRows.filter((r) => r && notRecorded.checkIds.includes(r.id)).map((r) => r.ref || r.id);
+    const more = notRecorded.count > refs.length ? ` and ${notRecorded.count - refs.length} more` : '';
+    out.holds.push({
+      code: 'vat_not_recorded', count: notRecorded.count, checkIds: notRecorded.checkIds,
+      message: `${notRecorded.count === 1 ? '1 sale has' : `${notRecorded.count} sales have`} no VAT recorded: ${refs.join(', ')}${more}. The day is not posted until the VAT is filled in on each sale. Nothing was posted.`,
+    });
+  }
   if (taxCtx) {
     const list = [...buckets.values()].sort(compareTaxBuckets)
       .map((b) => (b.mode === 'inclusive' && !fromBreakdown.has(b.key) ? { ...b, estimated: true } : b));

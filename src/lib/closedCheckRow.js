@@ -8,6 +8,7 @@
 // hand copy that had already drifted: the replay dropped tax_breakdown and seated_at), and it
 // maps `tenders` (lib/accounting/tenders.js). Pure: no supabase import, testable in Node.
 import { scrubDiscounts, scrubItemDiscounts } from './discountApprover.js';
+import { roundVat } from './taxRule.js';
 
 export function closedCheckRow(check, locationId) {
   const row = {
@@ -26,7 +27,11 @@ export function closedCheckRow(check, locationId) {
     subtotal:     check.subtotal,
     service:      check.service,
     tip:          check.tip,
-    tax_amount:   check.taxAmount != null ? check.taxAmount : null,  // v4.6.19 — stored explicitly
+    // v4.6.19 — stored explicitly. 8 Oct 2026: rounded here, once, with the one rule
+    // (taxRule.roundVat, half up to the penny on the true value). The till used to send the raw
+    // float (1.6749999999999998 for 10.05 at 20%) and the numeric(10,2) column rounded it DOWN,
+    // so 814 sales sitting on a half penny were a penny short. Null stays null (not recorded).
+    tax_amount:   roundVat(check.taxAmount),
     tax_breakdown: check.taxBreakdown || null,  // v5.5.853: was computed+carried but never mapped — per-rate VAT now persists
     total:        check.total,
     method:       check.method,

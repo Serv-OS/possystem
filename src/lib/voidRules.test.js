@@ -210,7 +210,9 @@ test('the till, MPOS and the Orders screen all reach the void', () => {
 
 test('closed checks load with the normalised status; the reports value a void from its lines', () => {
   const db = read('./db.js');
-  assert.equal(db.split('status: normaliseCheckStatus(c.status, c.voided)').length - 1, 2, 'both closed check loaders');
+  // 8 Oct 2026 (review): one shared row map (mapClosedCheckRow), used by every closed check loader.
+  assert.equal(db.split('status: normaliseCheckStatus(c.status, c.voided)').length - 1, 1, 'the one closed check row map');
+  assert.equal(db.split('result.data.map(mapClosedCheckRow)').length - 1, 3, 'every closed check loader uses it');
   for (const f of ['../backoffice/sections/reports/Exceptions.jsx', '../backoffice/sections/reports/Servers.jsx', '../backoffice/sections/reports/Shifts.jsx']) {
     assert.ok(read(f).includes('voidedValue(c)'), f);
   }

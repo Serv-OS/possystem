@@ -20,6 +20,7 @@
 import { supabase, getLocationId } from '../lib/supabase';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
+import { isSaleVatError } from '../lib/saleVatGuard';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { mustChangeRow } from '../lib/rowWrites';
 
@@ -56,6 +57,10 @@ export async function safeInsertClosedCheck(check, row) {
     // (tenders, before its migration) is dropped instead of failing the sale.
     const { error } = await writeClosedCheckRow(supabase, row, { tag: 'DataSafe' });
     if (error) {
+      // 8 Oct 2026 (VAT audit, Fix 3): the save time guard refused a sale with no VAT it could not
+      // work out (lib/saleVatGuard.js, code 'vat_missing'). The sale is kept here and sent again at
+      // the next reconcile, once the till holds its rates; the guard has already told staff.
+      if (isSaleVatError(error)) return { ok: false, queued: true, vat: true };
       reportWriteRefused(error);   // fence stage 1: a refused sale may mean a lost link (banner)
       console.warn('[DataSafe] Supabase write failed, check queued for retry:', error.message);
       return { ok: false, queued: true };
@@ -87,6 +92,9 @@ export async function safeUpsertClosedCheck(check, row) {
   try {
     const { data, error } = await writeClosedCheckRow(supabase, row, { upsert: true, select: 'id', tag: 'DataSafe' });
     if (error) {
+      // 8 Oct 2026 (VAT audit, Fix 3): refused by the save time guard (no VAT it could work out):
+      // kept here, sent at the next reconcile once the till holds its rates; staff already told.
+      if (isSaleVatError(error)) return { ok: false, queued: true, created: false, vat: true };
       reportWriteRefused(error);
       console.warn('[DataSafe] upsert failed, check queued for retry:', error.message);
       return { ok: false, queued: true, created: false };
@@ -189,6 +197,10 @@ export async function reconcilePendingChecks() {
         await sendLatePatch(check, locationId);
         removePendingCheck(check.id);
         console.log(`[DataSafe] Reconciled check ${check.id}`);
+      } else if (isSaleVatError(error)) {
+        // 8 Oct 2026 (VAT audit, Fix 3): still no VAT the guard could work out (the till holds no
+        // rates yet). Kept pending; tried again at the next reconcile. The guard has told staff.
+        console.warn(`[DataSafe] Check ${check.id} waits for the VAT rates:`, error.message);
       } else {
         reportWriteRefused(error);
         console.warn(`[DataSafe] Failed to reconcile check ${check.id}:`, error.message);

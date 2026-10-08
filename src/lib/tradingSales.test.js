@@ -162,7 +162,10 @@ test('trading-report reads sales and refunds per business day, paged, with the t
   }
   // Sales in the business day window; refunds from checks that closed up to 400 days before it.
   assert.match(src, /pagedRows\('closed checks', \(\) => opsAdmin\.from\('closed_checks'\)\.select\(CHECK_COLS\)\s*\.eq\('location_id', ops\)\.gte\('closed_at', fromIso\)\.lt\('closed_at', toIso\)/);
-  assert.match(src, /pagedRows\('refunds', \(\) => opsAdmin\.from\('closed_checks'\)\.select\(`\$\{CHECK_COLS\}, refunds`\)\s*\.eq\('location_id', ops\)\.gte\('closed_at', since\)\.lt\('closed_at', toIso\)\.neq\('refunds', '\[\]'\)/);
+  // 8 Oct 2026: refunds and ref are in CHECK_COLS for every read (a sale with no VAT is named; refunds come off their day).
+  assert.ok(cols.split(',').map((s) => s.trim()).includes('refunds'), 'CHECK_COLS is missing refunds');
+  assert.ok(cols.split(',').map((s) => s.trim()).includes('ref'), 'CHECK_COLS is missing ref');
+  assert.match(src, /pagedRows\('refunds', \(\) => opsAdmin\.from\('closed_checks'\)\.select\(CHECK_COLS\)\s*\.eq\('location_id', ops\)\.gte\('closed_at', since\)\.lt\('closed_at', toIso\)\.neq\('refunds', '\[\]'\)/);
   assert.match(src, /const REFUND_LOOKBACK_DAYS = 400;/);
   assert.match(src, /return tradingDays\(\{ saleRows, refundRows, dayOf: \(ms: number\) => businessDayOf\(ms, clock\.timezone, clock\.dayStart\) \}\);/);
   assert.match(src, /const clock = await venueClock\(platformAdmin, ops\);/);

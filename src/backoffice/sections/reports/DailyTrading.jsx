@@ -140,6 +140,10 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
         <div style={S.lRow}><span>Gross takings <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less Refunds <span style={S.lHint}>(inc VAT) money given back{totals.refund_count ? `, ${totals.refund_count} refund${totals.refund_count === 1 ? '' : 's'}` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.refunds || 0)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income{totals.refund_vat ? ', after refunds' : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
+        {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named here, never hidden. */}
+        {totals.no_vat > 0 && (
+          <div style={{ ...S.lRow, color: 'var(--red)', fontWeight: 700 }}><span>{totals.no_vat === 1 ? '1 sale has' : `${totals.no_vat} sales have`} no VAT recorded: {(totals.no_vat_refs || []).join(', ')}</span><span/></div>
+        )}
         <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less COGS <span style={S.lHint}>— {basis === 'recipe' ? 'recipe cost' : 'estimate'}{totals.actual_sales > 0 ? ` ${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
         {basis === 'estimate' && totals.cogs_recipe > 0 && (

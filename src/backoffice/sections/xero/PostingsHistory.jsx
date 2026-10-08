@@ -9,10 +9,17 @@
 // invoices shows "Replace with invoice" from the site's first invoice day on (xero/ReplaceDay.jsx:
 // a preview first, then a confirm). An earlier day says to move the first invoice day back.
 
+// 8 Oct 2026 (the VAT audit, D5): a day with sales and no posting shows in RED as "Not posted"
+// with a Push button (xero-config 'gaps', _shared/xeroGaps.js markGaps); a day with nothing to
+// post says so in grey. Leeds 30 Sep 2026 (143 sales) sat as a grey "Not posted" for a week, the
+// same as a quiet day. Push posts that one day through xero-sales exactly as the Posting tab
+// does; nothing posts by itself.
+
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { xeroHistory, xeroHistoryDetail } from '../../../lib/xero';
+import { xeroHistory, xeroHistoryDetail, xeroGaps, xeroSyncSales } from '../../../lib/xero';
 import { money } from '../../../lib/currency';
 import { offerForRow } from '../../../../supabase/functions/_shared/xeroReplacePlan.js';
+import { markGaps } from '../../../../supabase/functions/_shared/xeroGaps.js';
 import { S, STATUS_LABEL, STATUS_COLOUR } from './xeroUi';
 import { Bullets } from './controls';
 import ReplaceDay from './ReplaceDay';
@@ -48,9 +55,33 @@ function Detail({ d, note }) {
   );
 }
 
+/** Push one not posted day. The answer is shown under the row; the list reloads after it. */
+function GapPush({ locationId, date, onDone }) {
+  const [state, setState] = useState({ busy: false, words: '', ok: null });
+  const push = async (e) => {
+    e.stopPropagation();
+    setState({ busy: true, words: '', ok: null });
+    try {
+      const r = await xeroSyncSales(locationId, date);
+      const words = r?.already ? `Already in Xero for ${date}.` : r?.empty ? `No sales or refunds on ${date}. Nothing to post.` : `Posted ${date} to Xero.`;
+      setState({ busy: false, words, ok: true });
+      onDone?.();
+    } catch (err) {
+      setState({ busy: false, words: err?.message || 'Could not post the day', ok: false });
+    }
+  };
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button style={{ ...S.small, marginTop: 4, borderColor: '#c33', color: '#c33' }} onClick={push} disabled={state.busy}>{state.busy ? 'Pushing…' : 'Push this day'}</button>
+      {state.words && <div style={{ fontSize: 11.5, color: state.ok ? '#2f8f4e' : '#c33', marginTop: 4, maxWidth: 360 }}>{state.words}</div>}
+    </div>
+  );
+}
+
 export default function PostingsHistory({ locId, hasSiblings, currency, postMode, startDate }) {
   const [scope, setScope] = useState('site');
   const [data, setData] = useState(null);
+  const [gaps, setGaps] = useState({});
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(null);
@@ -58,7 +89,12 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
   const [replacing, setReplacing] = useState(null);   // the day whose replace panel is open
   const load = useCallback(async () => {
     setBusy(true); setErr('');
-    try { setData(await xeroHistory(locId, scope, 60)); } catch (e) { setErr(e.message || 'Could not load the postings'); } finally { setBusy(false); }
+    try {
+      // The gap scan is read beside the history; a scan that fails leaves the history as it is.
+      const [h, g] = await Promise.all([xeroHistory(locId, scope, 60), xeroGaps(locId, scope).catch(() => null)]);
+      setData(h);
+      setGaps(g?.gaps || {});
+    } catch (e) { setErr(e.message || 'Could not load the postings'); } finally { setBusy(false); }
   }, [locId, scope]);
   useEffect(() => { load(); }, [load]);
   const toggle = async (r) => {
@@ -67,8 +103,9 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
     setOpen(k); setDetail(null);
     try { setDetail(await xeroHistoryDetail(locId, r.date, r.locationId !== locId ? r.locationId : undefined)); } catch (e) { setDetail({ error: e.message || 'Could not load the day' }); }
   };
-  const rows = data?.rows || [];
+  const rows = markGaps(data?.rows || [], gaps);
   const multi = scope === 'org';
+  const gapCount = rows.filter((r) => r.status === 'missing').length;
   // Only this site's own days: its posting model and first invoice day are the ones known here.
   const offerFor = (r) => (r.locationId === locId ? offerForRow(r, { postMode, startDate }) : { show: 'none', text: '' });
   return (
@@ -87,10 +124,12 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
       </div>
       <Bullets style={{ marginBottom: 10 }} items={[
         ['The last 60 business days.', 'Open a day to see exactly what was sent.'],
-        ['No sales,', 'no posting: such a day shows as Not posted.'],
+        ['Not posted in red', 'means the day had sales and nothing reached Xero. Press Push on that day. Nothing posts by itself.'],
+        ['Nothing to post', 'means no sales that day.'],
         ['Card payouts', 'for these days are under Card payments, Payouts.'],
       ]} />
       {err && <div style={S.banner(false)}>{err}</div>}
+      {gapCount > 0 && <div style={{ ...S.banner(false), maxWidth: 'none' }}>{gapCount === 1 ? '1 day with sales is not in Xero.' : `${gapCount} days with sales are not in Xero.`} Press Push on each one below.</div>}
       {!busy && !rows.length && !err && <div style={S.note}>Nothing posted yet.</div>}
       {rows.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
@@ -108,7 +147,7 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
                 const offer = offerFor(r);
                 return (
                   <Fragment key={k}>
-                    <tr onClick={() => r.status !== 'waiting' && toggle(r)} style={{ cursor: r.status !== 'waiting' ? 'pointer' : 'default' }}>
+                    <tr onClick={() => r.status !== 'waiting' && r.status !== 'quiet' && r.status !== 'missing' && toggle(r)} style={{ cursor: r.status !== 'waiting' && r.status !== 'quiet' && r.status !== 'missing' ? 'pointer' : 'default' }}>
                       <td style={S.td}>{r.date}</td>
                       {multi && <td style={S.td}>{r.site}</td>}
                       <td style={S.td}>{r.model === 'sales_invoice' ? 'Sales invoice' : 'Bank transactions'}</td>
@@ -119,6 +158,10 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
                         ))}
                         {r.status === 'blocked' && r.notReady && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{r.notReady.map((n) => n.message).join(' ')}</div>}
                         {r.status === 'failed' && r.error && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{String(r.error).slice(0, 160)}</div>}
+                        {r.gap && (
+                          <div style={{ fontSize: 11.5, color: '#c33' }}>{r.gap.sales === 1 ? '1 sale' : `${r.gap.sales} sales`}, {money(r.gap.gross, currency)}, not in Xero</div>
+                        )}
+                        {r.gap && <GapPush locationId={r.locationId} date={r.date} onDone={load} />}
                         {offer.show === 'button' && replacing !== k && (
                           <button style={{ ...S.small, marginTop: 4 }} onClick={(e) => { e.stopPropagation(); setReplacing(k); }}>Replace with invoice</button>
                         )}

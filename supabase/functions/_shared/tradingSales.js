@@ -41,7 +41,7 @@
 //
 // PURE: imports only accountingDay.js (pure as well); runs under node --test and in Deno.
 
-import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor } from './accountingDay.js';
+import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded } from './accountingDay.js';
 
 /** The check's recorded discounts (closed_checks.discounts[].amount, major units) in minor units. */
 export function recordedDiscountMinor(row) {
@@ -112,13 +112,14 @@ function refundSalesMinor(entry, row) {
  * A sale counts on the day its check closed, a refund on the day it was made. Voided checks
  * count for neither. A row read twice counts once.
  * Per day, major units: gross (sales inc VAT, before refunds), refunds (inc VAT), sales_vat,
- * refund_vat, vat (sales_vat - refund_vat, the VAT owed), net (gross - refunds - vat), and
- * checks / refund_count.
- * @returns {Record<string, { gross: number, refunds: number, sales_vat: number, refund_vat: number, vat: number, net: number, checks: number, refund_count: number }>}
+ * refund_vat, vat (sales_vat - refund_vat, the VAT owed), net (gross - refunds - vat),
+ * checks / refund_count, and (8 Oct 2026) no_vat / no_vat_refs: sales with money taken and no
+ * VAT recorded, counted 0 and named.
+ * @returns {Record<string, { gross: number, refunds: number, sales_vat: number, refund_vat: number, vat: number, net: number, checks: number, refund_count: number, no_vat: number, no_vat_refs: string[] }>}
  */
 export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
   const acc = {};
-  const at = (key) => (acc[key] ??= { sales: 0, salesTax: 0, refunds: 0, refundTax: 0, checks: 0, refundCount: 0 });
+  const at = (key) => (acc[key] ??= { sales: 0, salesTax: 0, refunds: 0, refundTax: 0, checks: 0, refundCount: 0, noVat: 0, noVatRefs: [] });
   const seen = new Set();
   for (const row of saleRows) {
     if (!row || seen.has(row.id)) continue;
@@ -129,6 +130,9 @@ export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
     const { sales, tax } = checkSalesMinor(row);
     const d = at(dayOf(ms));
     d.sales += sales; d.salesTax += tax; d.checks += 1;
+    // 8 Oct 2026 (the VAT audit): a sale with money taken and NO VAT recorded counts 0 VAT and
+    // is NAMED, never a silent 0 (Preston QR-4OGI7 read as 4.85 of net sales in this report).
+    if (sales > 0 && !checkTaxRecorded(row)) { d.noVat += 1; if (d.noVatRefs.length < 25) d.noVatRefs.push(row.ref || row.id); }
   }
   const seenRefund = new Set();
   for (const row of refundRows) {
@@ -156,6 +160,8 @@ export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
       net: (d.sales - d.salesTax - d.refunds + d.refundTax) / 100,
       checks: d.checks,
       refund_count: d.refundCount,
+      no_vat: d.noVat,
+      no_vat_refs: d.noVatRefs,
     };
   }
   return out;

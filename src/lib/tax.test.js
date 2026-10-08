@@ -6,7 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { netOf, resolveTaxRate, purchaseNet, calculateOrderTax, taxOverrideFor } from './tax.js';
+import { netOf, resolveTaxRate, resolveLineTaxRate, purchaseNet, calculateOrderTax, taxOverrideFor, taxOrderTypeKey } from './tax.js';
+
+import { roundVat } from './taxRule.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -57,8 +59,65 @@ test('null taxRateId resolves the venue default rate ("Use default")', () => {
   assert.equal(resolveTaxRate({ taxRateId: null }, DEFAULTED, 'dine-in').id, 'vat20');
 });
 
-test('an unmatched rate id resolves NOTHING — never the default (channel unknown-ref opt-out)', () => {
-  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DEFAULTED, 'delivery'), null);
+test('8 Oct 2026 (D4): an unmatched rate id takes the venue default, and the line is flagged, never silently 0', () => {
+  // Until 8 Oct 2026 this resolved NOTHING on purpose (the channel unknown-ref opt out), which
+  // is how 17 HubRise sales booked £0 VAT on £692.71. Now: the default, with a note the sale keeps.
+  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DEFAULTED, 'delivery').id, 'vat20');
+  const r = resolveLineTaxRate({ id: 'hr-1', name: 'Double Smash Burger', taxRateId: '__not_in_menu__' }, DEFAULTED, 'delivery');
+  assert.equal(r.rate.id, 'vat20');
+  assert.deepEqual(r.fallback, { source: 'fallback', reason: 'item-not-on-menu', lineId: 'hr-1', itemId: 'hr-1', name: 'Double Smash Burger', rateId: '__not_in_menu__' });
+  // Another venue's (or a deleted) rate id: the default, flagged 'rate-not-found'.
+  const f = resolveLineTaxRate({ uid: 'u1', id: 'latte', taxRateId: 'train-station-std' }, DEFAULTED, 'dine-in');
+  assert.equal(f.rate.id, 'vat20');
+  assert.equal(f.fallback.reason, 'rate-not-found');
+  assert.equal(f.fallback.lineId, 'u1');
+  assert.equal(f.fallback.rateId, 'train-station-std');
+  // An inactive rate is not a rate this venue has: the same.
+  const inactive = [...DEFAULTED, { id: 'old', rate: 0.175, type: 'inclusive', active: false }];
+  assert.equal(resolveLineTaxRate({ taxRateId: 'old' }, inactive, 'dine-in').fallback.reason, 'rate-not-found');
+  // An override naming a rate this venue does not have: the item's OWN rate, flagged.
+  const ov = resolveLineTaxRate({ taxRateId: 'zero', taxOverrides: { takeaway: 'elsewhere' } }, DEFAULTED, 'takeaway');
+  assert.equal(ov.rate.id, 'zero');
+  assert.equal(ov.fallback.reason, 'override-rate-not-found');
+  assert.equal(ov.fallback.rateId, 'elsewhere');
+  // The item's own rule followed: no note at all.
+  assert.equal(resolveLineTaxRate({ taxRateId: 'vat20' }, DEFAULTED, 'dine-in').fallback, null);
+  assert.equal(resolveLineTaxRate({ taxRateId: null }, DEFAULTED, 'dine-in').fallback, null, '"Use default" is the item rule');
+  assert.equal(resolveLineTaxRate({ taxRateId: 'vat20', taxOverrides: { takeaway: null } }, DEFAULTED, 'takeaway').fallback, null, 'an explicit default override is the item rule');
+  // An open price item typed at the till has no Back Office rule: the default, flagged.
+  const custom = resolveLineTaxRate({ uid: 'c1', itemId: 'custom', name: 'Coffee beans', price: 7.95 }, DEFAULTED, 'dine-in');
+  assert.equal(custom.rate.id, 'vat20');
+  assert.equal(custom.fallback.reason, 'custom-item');
+  // A line the till already cleaned (venueTaxRates.lineTaxRefs stamped taxFallback) keeps its reason.
+  const cleaned = resolveLineTaxRate({ taxRateId: null, taxFallback: { reason: 'rate-not-found', rateId: 'ts-std' } }, DEFAULTED, 'dine-in');
+  assert.equal(cleaned.rate.id, 'vat20');
+  assert.deepEqual([cleaned.fallback.reason, cleaned.fallback.rateId], ['rate-not-found', 'ts-std']);
+  // No rates at all: nothing, unflagged (no tax set up is not a fallback; the close paths guard it).
+  assert.deepEqual(resolveLineTaxRate({ taxRateId: 'x' }, [], 'dine-in'), { rate: null, fallback: null });
+});
+
+test('8 Oct 2026: a venue with rates but no default resolves nothing for a line with no rate, and says so', () => {
+  const noDefault = DEFAULTED.map(r => ({ ...r, isDefault: false }));
+  const r = resolveLineTaxRate({ id: 'a', taxRateId: null }, noDefault, 'dine-in');
+  assert.equal(r.rate, null);
+  assert.equal(r.fallback.reason, 'no-default-rate');
+  const t = calculateOrderTax([{ id: 'a', price: 6, qty: 1, taxRateId: null }, { id: 'b', price: 6, qty: 1, taxRateId: 'zero' }], noDefault, 'dine-in');
+  assert.equal(t.totalTax, 0);
+  assert.deepEqual(t.fallbacks.map(f => [f.reason, f.lineId]), [['no-default-rate', 'a']]);
+});
+
+test('8 Oct 2026: calculateOrderTax carries `fallbacks` only when a line fell to the default; an ordinary sale keeps its old keys', () => {
+  const plain = calculateOrderTax([{ id: 'a', price: 6, qty: 1, taxRateId: 'vat20' }, { id: 'b', price: 6, qty: 1, taxRateId: null }], DEFAULTED, 'dine-in');
+  assert.deepEqual(Object.keys(plain).sort(), ['breakdown', 'exclusiveTax', 'hasExclusiveTax', 'subtotal', 'total', 'totalTax']);
+  const fell = calculateOrderTax([
+    { uid: 'l1', id: 'a', name: 'Latte', price: 6, qty: 1, taxRateId: 'vat20' },
+    { uid: 'l2', id: 'b', name: 'Mystery', price: 6, qty: 1, taxRateId: 'gone' },
+    { uid: 'l3', id: 'c', name: 'Voided', price: 6, qty: 1, taxRateId: 'gone', voided: true },
+  ], DEFAULTED, 'dine-in');
+  assert.equal(Math.round(fell.totalTax * 100), 200, 'both live lines at 20%: the default applied to the unmatched one');
+  assert.deepEqual(fell.fallbacks, [{ source: 'fallback', reason: 'rate-not-found', lineId: 'l2', itemId: 'b', name: 'Mystery', rateId: 'gone' }]);
+  assert.equal(fell.breakdown.length, 1, 'one rate bucket: the default');
+  assert.equal(fell.breakdown[0].items, 2);
 });
 
 test('no default configured keeps the old behaviour (null)', () => {
@@ -192,7 +251,8 @@ test('drive-thru: with neither override it takes the item rate, then the venue d
   assert.equal(taxOverrideFor({ taxRateId: 'vat5' }, 'drive-thru'), undefined);
   assert.equal(resolveTaxRate({ taxRateId: 'vat5', taxOverrides: { delivery: 'zero' } }, DT_RATES, 'drive-thru').id, 'vat5');
   assert.equal(resolveTaxRate({ taxRateId: null }, DT_RATES, 'drive-thru').id, 'vat20');            // "Use default"
-  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DT_RATES, 'drive-thru'), null);   // channel opt-out holds
+  // 8 Oct 2026 (D4): a channel line not on our menu takes the venue default too, flagged (it used to resolve nothing).
+  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DT_RATES, 'drive-thru').id, 'vat20');
 });
 
 test('drive-thru: an explicit null drive-thru override means the venue default, like any other null override', () => {
@@ -213,7 +273,9 @@ test('drive-thru: no other order type reads the drive-thru key, and nothing else
     assert.equal(resolveTaxRate(withDt, DT_RATES, ot)?.id, resolveTaxRate(without, DT_RATES, ot)?.id, ot);
   }
   assert.equal(resolveTaxRate(withDt, DT_RATES, 'dine-in').id, 'vat20');
-  assert.equal(resolveTaxRate(withDt, DT_RATES, 'collection').id, 'vat20');   // never the takeaway override
+  // 8 Oct 2026 (Peter, D2): a Collect sale follows the item's TAKEAWAY override (food taken away is
+  // takeaway for VAT). Until then it read only its own key and booked the base rate.
+  assert.equal(resolveTaxRate(withDt, DT_RATES, 'collection').id, 'zero');
   assert.equal(resolveTaxRate(withDt, DT_RATES, 'delivery').id, 'vat5');
   // a drive-thru only override never leaks to takeaway
   assert.equal(resolveTaxRate({ taxRateId: 'vat20', taxOverrides: { 'drive-thru': 'zero' } }, DT_RATES, 'takeaway').id, 'vat20');
@@ -221,6 +283,56 @@ test('drive-thru: no other order type reads the drive-thru key, and nothing else
   assert.equal(taxOverrideFor({ taxRateId: 'vat20', taxOverrides: null }, 'drive-thru'), undefined);
   assert.equal(taxOverrideFor({ taxRateId: 'vat20' }, 'takeaway'), undefined);
   assert.equal(taxOverrideFor(null, 'drive-thru'), undefined);
+});
+
+// ── 8 Oct 2026 (Peter, D2): collection follows Takeaway, a bar tab follows Bar ────────────────
+// "VAT despite the order type should follow the Tax rules set on the back office per menu item."
+// The editor offers dine-in, takeaway, delivery, bar, counter and drive-thru; sales also arrive as
+// collection (Collect button, online, catering, ezCater TAKEOUT) and bar-tab. One alias table in
+// taxRule.js says which editor key each of those reads.
+
+test('collection and online collection read the Takeaway override; a bar tab reads the Bar override', () => {
+  assert.equal(taxOrderTypeKey('collection'), 'takeaway');
+  assert.equal(taxOrderTypeKey('drive-thru'), 'takeaway');
+  assert.equal(taxOrderTypeKey('bar-tab'), 'bar');
+  for (const own of ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'catering']) assert.equal(taxOrderTypeKey(own), own);
+  // The Leeds Bueno Filled Donut: Standard 20% base, Zero Rate on takeaway and delivery (live rows).
+  const donut = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero', delivery: 'zero' } };
+  assert.equal(resolveTaxRate(donut, DT_RATES, 'takeaway').id, 'zero');
+  assert.equal(resolveTaxRate(donut, DT_RATES, 'collection').id, 'zero', 'collected: the takeaway rule, £0.00 not £0.75');
+  assert.equal(resolveTaxRate(donut, DT_RATES, 'drive-thru').id, 'zero');
+  assert.equal(resolveTaxRate(donut, DT_RATES, 'delivery').id, 'zero');
+  assert.equal(resolveTaxRate(donut, DT_RATES, 'dine-in').id, 'vat20');
+  assert.equal(calculateOrderTax([{ price: 4.5, qty: 1, ...donut }], DT_RATES, 'collection').totalTax, 0);
+  // An override under the sale's OWN key still wins over the alias.
+  const ownKey = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero', collection: 'vat5' } };
+  assert.equal(resolveTaxRate(ownKey, DT_RATES, 'collection').id, 'vat5');
+  assert.equal(resolveTaxRate(ownKey, DT_RATES, 'takeaway').id, 'zero');
+  // Bar tab: the Bar override, else the item's rate. 'bar' itself and 'counter' read their own key only.
+  const barItem = { taxRateId: 'vat20', taxOverrides: { bar: 'vat5' } };
+  assert.equal(resolveTaxRate(barItem, DT_RATES, 'bar-tab').id, 'vat5');
+  assert.equal(resolveTaxRate(barItem, DT_RATES, 'bar').id, 'vat5');
+  assert.equal(resolveTaxRate(barItem, DT_RATES, 'counter').id, 'vat20');
+  assert.equal(resolveTaxRate(barItem, DT_RATES, 'dine-in').id, 'vat20');
+  assert.equal(taxOverrideFor({ taxOverrides: { bar: null } }, 'bar-tab'), null, 'an explicit default Bar override reaches the tab');
+  // The alias never runs the other way: a bar-tab or collection key never reaches bar or takeaway.
+  assert.equal(resolveTaxRate({ taxRateId: 'vat20', taxOverrides: { 'bar-tab': 'zero' } }, DT_RATES, 'bar').id, 'vat20');
+  assert.equal(resolveTaxRate({ taxRateId: 'vat20', taxOverrides: { collection: 'zero' } }, DT_RATES, 'takeaway').id, 'vat20');
+  // No overrides at all: nothing changes for any order type.
+  for (const ot of [...OTHER_TYPES, 'drive-thru']) assert.equal(resolveTaxRate({ taxRateId: 'vat5' }, DT_RATES, ot).id, 'vat5', ot);
+});
+
+test('8 Oct 2026 (D3): one rounding rule, half up to the penny on the true value; £10.05 at 20% is £1.68', () => {
+  const rates = [{ id: 'vat20', rate: 0.20, type: 'inclusive', active: true, isDefault: true }];
+  const t = calculateOrderTax([{ price: 10.05, qty: 1, taxRateId: 'vat20' }], rates, 'dine-in');
+  // The engine keeps the raw figure in the record (1.6749999999999998 in floating point)...
+  assert.ok(Math.abs(t.totalTax - 1.675) < 1e-9);
+  // ...and the one rule books 1.68, never 1.67 (the numeric(10,2) column rounded the raw float DOWN).
+  assert.equal(roundVat(t.totalTax), 1.68);
+  assert.equal(roundVat(5.85 - 5.85 / 1.2), 0.98, '5.85 at 20% is exactly 0.975');
+  assert.equal(roundVat(3.75 - 3.75 / 1.2), 0.63, '3.75 at 20% is exactly 0.625');
+  // The added-on (US) share rounds with the same rule as the profiles engine (parity to the penny).
+  assert.equal(calculateOrderTax([{ price: 47.20, qty: 1, taxRateId: 'us' }], [{ id: 'us', rate: 0.08875, type: 'exclusive', active: true, is_default: true }], 'dine-in').exclusiveTax, 4.19);
 });
 
 test('drive-thru: an order with only takeaway overrides taxes exactly like the same takeaway order', () => {

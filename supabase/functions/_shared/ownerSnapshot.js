@@ -58,7 +58,7 @@
 // PURE apart from the client it is handed; runs under node --test and in Deno.
 
 import { pagedRows, pagedEach, limiter } from './pagedRows.js';
-import { SALES_CHECK_COLS, emptySales, addCheckSales } from './snapshotSales.js';
+import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from './snapshotSales.js';
 import { isVoidedCheck, checkTenderParts, MONEY_KINDS } from './accountingDay.js';
 import { checkSalesParts, refundSalesParts, chargedNothing, timesheetDayMs } from './tradingSales.js';
 import { wallClock, wallTimeToInstant, businessDayOf, businessDayStartMs, dayStartMinutes, venueZone, DEFAULT_DAY_START, DEFAULT_VENUE_TZ } from './businessDay.js';
@@ -79,8 +79,9 @@ const LIVE_DONE = new Set(['collected', 'cancelled', 'canceled', 'rejected', 're
 const QUARTER_HOUR = 900000;
 const MINUTE = 60000;
 const DAY_MS = 86400000;
-// A refund counts on the day it was MADE, so the detail call also looks at older checks that
-// carry one. The same reach as the Daily trading report (trading-report REFUND_LOOKBACK_DAYS).
+// A refund counts on the day it was MADE, so the snapshot and the detail call also look at older
+// checks that carry one (8 Oct 2026 review: the snapshot too, so the Today tile agrees with its own
+// detail screen). The same reach as the Daily trading report (trading-report REFUND_LOOKBACK_DAYS).
 const REFUND_LOOKBACK_DAYS = 400;
 const TOP_N = 20;
 
@@ -259,7 +260,12 @@ async function firstSaleDay(ops, id, p, gate) {
   return firstTradingDay(rows, p.dayOf);
 }
 
-const addInto = (a, v) => { a.net += v.net; a.vat += v.vat; a.gross += v.gross; a.orders += v.orders; a.tips += v.tips; };
+const addInto = (a, v) => {
+  a.net += v.net; a.vat += v.vat; a.gross += v.gross; a.orders += v.orders; a.tips += v.tips;
+  a.refunds = (a.refunds || 0) + (v.refunds || 0); a.refund_vat = (a.refund_vat || 0) + (v.refund_vat || 0);
+  a.vat_missing = (a.vat_missing || 0) + (v.vat_missing || 0);
+  if (Array.isArray(v.vat_missing_refs) && v.vat_missing_refs.length) a.vat_missing_refs = [...(a.vat_missing_refs || []), ...v.vat_missing_refs].slice(0, 25);
+};
 
 /**
  * @param {object} a
@@ -291,6 +297,28 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
 
   // What customers paid for the goods, VAT apart; voided checks count for nothing
   // (_shared/snapshotSales.js). Bucketed by the venue's business day the check closed in.
+  // 8 Oct 2026 (the VAT audit): a refund comes OFF on the business day it was MADE, with its
+  // VAT (snapshotSales.addRefundSales, the rule Daily trading and Xero use), so the app's VAT
+  // and net sales agree with them. 8 Oct 2026 (review): refunds on the checks these windows read
+  // AND on older checks that carry one (refundsOf below, the same 400 day reach as Daily trading
+  // and the detail call), so a sale from three weeks ago refunded today comes off today's tile
+  // too. Each refund counts once whichever read lands first (seenRefund).
+  const seenRefund = new Set();
+  const placeRefunds = (id, c) => {
+    const dd = byDay[id], dayOf = plan[id].dayOf, cc = cuts[id];
+    for (const [i, e] of (Array.isArray(c.refunds) ? c.refunds : []).entries()) {
+      if (!e || typeof e !== 'object') continue;
+      const key = `${c.id}|${e.id ?? i}`;
+      if (seenRefund.has(key)) continue;
+      seenRefund.add(key);
+      const at = refundMadeAt(e, c);
+      if (at == null) continue;
+      const rd = dayOf(at);
+      addRefundSales((dd[rd] ??= emptySales()), e, c);
+      const rc = cc.get(rd);
+      if (rc && at < rc.untilMs) addRefundSales(rc.sales, e, c);
+    }
+  };
   const addSales = (id, rows) => {
     const dd = byDay[id], dayOf = plan[id].dayOf, cc = cuts[id];
     for (const c of rows) {
@@ -300,8 +328,11 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
       addCheckSales((dd[d] ??= emptySales()), c);
       const cut = cc.get(d);
       if (cut && ms < cut.untilMs) addCheckSales(cut.sales, c);
+      placeRefunds(id, c);
     }
   };
+  // Older checks that carry a refund: only their refunds are placed, never their sales.
+  const addOlderRefunds = (id, rows) => { for (const c of rows) placeRefunds(id, c); };
   const addItems = (id, rows) => {
     const { dayOf, today, range } = plan[id];
     for (const c of rows) {
@@ -325,6 +356,13 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const itemsOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].today }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addItems(id, rows), opts)));
+  // 8 Oct 2026 (review): checks closed before the sales windows that carry a refund (few: a handful
+  // a day at most), back the same 400 days Daily trading reaches, so a refund made in the period on
+  // an older sale comes off the day it was made here too. The sales windows cover their own.
+  const refundsOf = (id) => pagedEach('older refunds', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
+    .eq('location_id', id).gte('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from))) - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString())
+    .lt('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from)))).toISOString()).neq('refunds', '[]')
+    .order('closed_at').order('id'), (rows) => addOlderRefunds(id, rows), opts);
 
   // Forecasts and timesheets for every venue in one read each: the widest dates any venue
   // needs, then each row is kept only if it falls in its own venue's period. A timesheet counts
@@ -336,9 +374,10 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const fcFrom = least(all.map((p) => p.range.from)), fcTo = most(all.map((p) => p.today));
   const tsFrom = new Date(least(all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(most(all.map((p) => p.endMs)) + DAY_MS).toISOString();
 
-  const [, , firstDays, fcRows, ts, oq, sess] = await Promise.all([
+  const [, , , firstDays, fcRows, ts, oq, sess] = await Promise.all([
     Promise.all(opsIds.map(salesOf)),
     Promise.all(opsIds.map(itemsOf)),
+    Promise.all(opsIds.map(refundsOf)),
     Promise.all(opsIds.map((id) => firstSaleDay(ops, id, plan[id], gate))),
     gate(() => pagedRows('forecasts', () => ops.from('wf_sales_forecast').select('location_id, forecast_date, amount').in('location_id', opsIds).gte('forecast_date', fcFrom).lte('forecast_date', fcTo).order('id'))),
     gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
@@ -406,6 +445,8 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
         last_week_sales: r2(lwT.net),
         // The same weekday last week up to the same time as now (last_week_sales is the whole day).
         last_week_sales_by_now: r2(cuts[id].get(d.lwToday)?.sales.net ?? lwT.net),
+        // 8 Oct 2026: refunds made today (off net_sales and vat above) and sales with no VAT recorded, named.
+        ...(t.refunds || t.vat_missing ? { refunds: r2(t.refunds || 0), refund_vat: r2(t.refund_vat || 0), vat_missing: t.vat_missing || 0, vat_missing_refs: t.vat_missing_refs || [] } : {}),
       },
       wtd: { net_sales: week.net_sales, last_week_net_sales: week.cmp_net_sales, vs_last_week_pct: week.pct },
       live: { orders: liveOrders[id] || 0, tables: openTables[id] || 0 },
@@ -581,6 +622,10 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
     return parts;
   };
   // A refund entry, on the business day it was made. Each one once, whichever read brought it.
+  // 8 Oct 2026 (the VAT audit): the refund comes OFF net sales and VAT on the day and at the hour
+  // it was made, exactly as a sale adds on its own (the week, the hours, the comparison and the
+  // totals), the rule Daily trading and Xero use. Before this the app's VAT and net sales were
+  // gross of refunds and only the exceptions block knew.
   const addRefunds = (id, c) => {
     if (isVoidedCheck(c) || !Array.isArray(c.refunds)) return;
     const p = plan[id];
@@ -589,7 +634,16 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       if (seenRefund.has(key)) return;
       seenRefund.add(key);
       const r = refundSalesParts(e, c);
-      if (r.skipped || r.atMs == null || !inDays(p.dayOf(r.atMs), p.range.from, p.range.to)) return;
+      if (r.skipped || r.atMs == null) return;
+      const d = p.dayOf(r.atMs), h = hourOf[id](r.atMs);
+      if (inDays(d, p.wkStart, p.today)) { const w = week[dayCount(p.wkStart, d) - 1]; w.net -= r.net; }
+      else if (inDays(d, p.lwStart, addDays(p.wkStart, -1))) { const w = week[dayCount(p.lwStart, d) - 1]; w.last_net -= r.net; }
+      if (inDays(d, p.range.from, p.range.to)) { hours[h].net -= r.net; per[id].net -= r.net; addRefundSales(sales, e, c); }
+      else if (inDays(d, p.range.cmpFrom, p.range.cmpTo)) {
+        hours[h].cmp_net -= r.net;
+        if (!p.cut || d !== p.cut.day || r.atMs < p.cut.untilMs) per[id].cmpNet -= r.net;
+      }
+      if (!inDays(d, p.range.from, p.range.to)) return;
       const amount = Math.max(0, Number(e?.amount) || 0);
       ex.refunds.count += 1; ex.refunds.amount += amount;
       bump(ex.refunds.reasons, text(e?.reason) || 'Refund', amount);
@@ -714,6 +768,8 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       totals: {
         net_sales: r2(sales.net), vat: r2(sales.vat), gross_sales: r2(sales.gross), orders: sales.orders, tips: r2(sales.tips),
         avg_check: sales.orders ? r2(sales.net / sales.orders) : 0,
+        // 8 Oct 2026: refunds made in the period (already off the figures above), and sales with no VAT recorded, named.
+        refunds: r2(sales.refunds || 0), refund_vat: r2(sales.refund_vat || 0), vat_missing: sales.vat_missing || 0, vat_missing_refs: sales.vat_missing_refs || [],
       },
       compare: scope.kind === 'venue' ? { period, ...compares[0] } : { period, ...groupCompare(compares) },
       hours: used.length ? hourRows.slice(used[0], used[used.length - 1] + 1) : [],

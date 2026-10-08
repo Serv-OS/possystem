@@ -1656,6 +1656,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // delivery and any promo / loyalty credit in the basis), so the screen shows the
   // tax actually charged. Without it, the old items-only computation.
   const taxCtx = useStore(s => s.getTaxContext());
+  // 8 Oct 2026 (VAT audit, Fix 3): may this checkout take a tender at all? Shut when the till holds
+  // no tax set up although its menu names rates (lib/tillVatGate.js through store.vatGate): no
+  // card, cash, gift or split starts, and the panel below says why with a Try again that reads the
+  // rates again. Judged once when the checkout opens (and on Try again), never mid tender, so a
+  // card screen that is up is never swapped away under a customer's tap.
+  const [vatGate, setVatGate] = useState(() => useStore.getState().vatGate?.() || null);
+  const [vatRetrying, setVatRetrying] = useState(false);
+  const retryVatRates = async () => {
+    setVatRetrying(true);
+    try { await useStore.getState().refreshTaxRates?.(); } catch { /* the gate below says */ }
+    setVatGate(useStore.getState().vatGate?.() || null);
+    setVatRetrying(false);
+  };
   const itemsTaxBreakdown = useMemo(() => {
     if (typeof taxFor === 'function' || !taxCtxHasConfig(taxCtx)) return null;
     try { return computeOrderTaxUnified(items?.filter(i=>!i.voided)||[], taxCtx, orderType); } catch { return null; }
@@ -2044,6 +2057,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // (and never debits a staged gift card for one). Nothing is charged; the reason is shown.
       const linkGate = await confirmLinkBeforeCard();
       if (!linkGate.ok) throw new Error(linkGate.message);
+      // 8 Oct 2026 (VAT audit, Fix 3): and never a card job this till cannot book with VAT
+      // (lib/tillVatGate.js). The review screen is already replaced while the gate is shut; this is
+      // the belt for a gate that shut after the checkout opened. Nothing is charged.
+      const vatGateNow = useStore.getState().vatGate?.();
+      if (vatGateNow) throw new Error(vatGateNow.message);
       const locationId = getActiveLocationSync();
       const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
       // Mint once per checkout (see checkIdRef). Table checks keep the shared
@@ -2375,6 +2393,28 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     pax_terminal:'Card machine',
     gift_card:'Gift card', loyalty_rewards:'Loyalty rewards',
   };
+
+  // 8 Oct 2026 (VAT audit, Fix 3): the till cannot book the VAT of this sale, so no tender starts.
+  // Shown in place of the whole checkout: card, cash, gift and split are all behind it. Nothing has
+  // been charged. Try again reads the rates; Close returns to the order, which stays open.
+  if (vatGate) {
+    return (
+      <div className="modal-back">
+        <div role="alert" data-till-vat-gate={vatGate.code} style={{
+          background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:24,
+          width:'100%', maxWidth:compact?380:500, padding:compact?'18px 16px':'26px 24px',
+          display:'flex', flexDirection:'column', gap:14, boxShadow:'var(--sh3)',
+        }}>
+          <div style={{ fontSize:compact?16:19, fontWeight:800, color:'var(--t1)' }}>Payment cannot start yet</div>
+          <div style={{ fontSize:14, lineHeight:1.5, color:'var(--t2)' }}>{vatGate.message}</div>
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+            <button className="btn btn-ghost" onClick={onClose}>Close</button>
+            <button className="btn btn-primary" disabled={vatRetrying} onClick={retryVatRates}>{vatRetrying ? 'Loading VAT rates…' : 'Try again'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-back">

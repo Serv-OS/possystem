@@ -38,7 +38,16 @@ import KioskCategoryTile from './kiosk/KioskCategoryTile';
 import { railTileMode } from '../lib/categoryPhoto';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
-import { kioskVariant, kioskLineStockIds, kioskLineRemaining, kioskLineRoom, kioskLineKey, kioskCartUsage, kioskOrderItem, kioskDepleteItem } from '../lib/kioskLine';
+import { kioskVariant, kioskLineStockIds, kioskLineRemaining, kioskLineRoom, kioskLineKey, kioskCartUsage, kioskOrderItem, kioskDepleteItem, kioskLineTaxRefs } from '../lib/kioskLine';
+// 8 Oct 2026 (VAT audit, Fix 2): the kiosk loads its rates like the customer pages (after its
+// session, with retries), refuses the card screen while they are missing, taxes a size at its own
+// rate, scales UK VAT by the offers as the till does, and hands its rates to the save time guard.
+import { loadCustomerRates, venueExpectsRates } from '../lib/customerRates';
+import { kioskVatGate, kioskRatesRetryMs, kioskChargedTax, kioskVenueTax } from '../lib/kioskVat';
+import { roundVat } from '../lib/taxRule';
+import { writeClosedCheckRow } from '../lib/closedCheckWrite';
+import KioskVatGate from './kiosk/KioskVatGate';
+import { KioskVatGateContext } from './kiosk/kioskVatGateContext';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
@@ -136,16 +145,14 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
         // v5.5.235: menu_category_links has no location_id column — filter via
         // the loaded menus' ids (which are already location-scoped). Previously
         // this was an unfiltered select('*') returning links from ALL locations.
-        const [iRes, cRes, mRes, tRes, pRes, tpRes, tlRes] = await Promise.all([
+        // 8 Oct 2026 (VAT audit, Fix 2): the venue's tax rates no longer ride this Promise.all. The
+        // read's error was never looked at, so one failed read left an empty list and every sale
+        // booked tax_amount null until a restart. They load in their own effect below
+        // (loadCustomerRates: after the session, with retries) and gate the card screen.
+        const [iRes, cRes, mRes, pRes, tpRes, tlRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
-          // v5.7.31: the venue's tax rates — the kiosk wrote tax: 0 on every check
-          // and never charged added-on (US exclusive) sales tax at all. Same read
-          // OnlineSurface does, plus is_default so "Use default" items resolve the
-          // venue default exactly as the POS engine promises. Rides this Promise.all,
-          // so a failure lands in the same catch as a failed menu load.
-          supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', locationId),
           // v5.5.953: instruction-group DEFINITIONS (cooking preference etc.) have no DB
           // table — they ride the config-push snapshot. Online reads it, the POS applies
           // it, but the kiosk never loaded it, so KioskProductModal's def lookup fell back
@@ -184,8 +191,6 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           categories: cRes.data || [],
           menus: mRes.data || [],
           links: lRes.data || [],
-          // v5.7.31: active rates only — same filter OnlineSurface applies.
-          taxRates: (tRes.data || []).filter(r => r.active !== false),
           // v5.7.33: both reads must have succeeded - never keep line-less profiles.
           taxProfiles: (Array.isArray(tpRes.data) && Array.isArray(tlRes.data))
             ? assembleTaxProfiles(tpRes.data, tlRes.data) : [],
@@ -216,7 +221,50 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
     timezone: tz,
   }), [data.menus, data.categories, data.links, profile?.menu_id, tick, tz]);
 
-  return { ...data, activeMenuId, loading, error };
+  // 8 Oct 2026 (VAT audit, Fix 2): the venue's tax rates, loaded the way the customer pages load
+  // them (lib/customerRates.js loadCustomerRates): AFTER this kiosk's session exists (the read
+  // policy answers an empty list to a caller with no session), retried on an error or an empty
+  // answer, and reported as a STATE ('loading' | 'ok' | 'empty' | 'error'), never a silent [].
+  // While the rates are missing at a venue whose menu names rates, the kiosk keeps re reading in
+  // the background (kioskRatesRetryMs) and the card screen stays shut (KioskVatGate). `ratesTry`
+  // is bumped by Try again on the gate and by the background timer.
+  const [rates, setRates] = useState([]);
+  const [ratesState, setRatesState] = useState('loading');
+  const [ratesTry, setRatesTry] = useState(0);
+  useEffect(() => {
+    if (!locationId) return undefined;
+    let alive = true;
+    let timer = null;
+    setRatesState('loading');
+    (async () => {
+      const res = await loadCustomerRates({
+        waitForSession: () => ensureAuthToken().catch(() => null),
+        // Same columns as before, plus location_id so each rate is tagged with its venue.
+        readRates: () => supabase.from('tax_rates').select('id, name, rate, type, active, is_default, location_id').eq('location_id', locationId),
+      });
+      if (!alive) return;
+      setRates(res.status === 'ok' ? res.rates : []);
+      setRatesState(res.status);
+      // A failed read: read again later, on its own, until it answers. (An EMPTY answer is judged
+      // below against the menu, which usually lands after this read.)
+      if (res.status === 'error') timer = setTimeout(() => { if (alive) setRatesTry(n => n + 1); }, kioskRatesRetryMs(ratesTry));
+    })();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [locationId, ratesTry]);
+  // 8 Oct 2026 (review): an empty answer is re judged whenever the MENU changes, not only at the
+  // moment the read answered. The menu loads in its own Promise.all and usually lands after the
+  // rates read, so judging with the rows held at that moment ([] on a cold boot) set no timer, and
+  // once the menu named rates the card screen shut as 'failed' until staff pressed Try again. Now
+  // the gate and this retry read the same thing: an empty list at a venue whose menu names rates
+  // is re read on the kiosk's own schedule (kioskRatesRetryMs) until the rates arrive.
+  useEffect(() => {
+    if (ratesState !== 'empty' || !venueExpectsRates(data.items)) return undefined;
+    const timer = setTimeout(() => setRatesTry(n => n + 1), kioskRatesRetryMs(ratesTry));
+    return () => clearTimeout(timer);
+  }, [ratesState, data.items, ratesTry]);
+  const retryRates = useCallback(() => setRatesTry(n => n + 1), []);
+
+  return { ...data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error };
 }
 
 // ============================================================
@@ -290,13 +338,20 @@ export default function KioskApp({ kioskId, onUnpair }) {
     const t = setInterval(read, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [locationId]);
-  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
+  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates } = useKioskMenu(profile, locationId, kioskTz);
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
   const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
     taxProfiles, menuItems: items, menuCategories: categories,
     venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
   }), [taxProfiles, items, categories, venueDefaultTaxProfileId, taxRates]);
+  // 8 Oct 2026 (VAT audit, Fix 2): may the card screen open? Shut while the rates are loading or
+  // missing at a venue whose menu names rates (lib/kioskVat.js kioskVatGate). KioskVatGate reads
+  // it through the context below, so ScreenPay never mounts (and never starts the reader) while
+  // this kiosk cannot book the VAT. The venue tax goes with every sale to the save time guard.
+  const kioskVatGateState = useMemo(() => kioskVatGate({ ratesState, items, taxCtx: kioskTaxCtx }), [ratesState, items, kioskTaxCtx]);
+  const kioskVenueTaxCtx = useMemo(() => kioskVenueTax({ taxRates, taxCtx: kioskTaxCtx }), [taxRates, kioskTaxCtx]);
+  const kioskVatGateCtx = useMemo(() => ({ gate: kioskVatGateState, onRetry: retryRates }), [kioskVatGateState, retryRates]);
 
   // Auto-discount rules — fetched live (kiosk runs anonymously, no store.discountRules). Raw DB rows
   // feed the engine directly (it reads snake_case). Channel 'kiosk'; schedule/expiry in location tz.
@@ -669,23 +724,28 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // amount (targeted by line key, the same uid evaluateAutoDiscounts saw);
   // loyalty and promo credits follow below (creditedTaxBreakdown) once they are
   // known. UK inclusive VAT never uses the basis: identical to before.
+  // 8 Oct 2026 (VAT audit, Fix 2): each line's Back Office rule comes from kioskLineTaxRefs, so a
+  // SIZE is taxed at its own rate when it has one (the parent's otherwise, the till's rule); the
+  // line id is the size's, as the stored order line names it.
   const kioskTaxLines = useMemo(() => cart.map((l, i) => ({
     uid: l.key || `l${i}`,
     price: l.linePrice,
     qty: l.qty || 1,
-    itemId: l.item?.id ?? null,
+    itemId: l.variant?.id ?? l.item?.id ?? null,
     cat: l.item?.cat ?? null,
     cats: Array.isArray(l.item?.cats) ? l.item.cats : null,
-    taxProfileId: l.item?.tax_profile_id ?? null,
-    taxRateId: l.item?.tax_rate_id || null,
-    taxOverrides: l.item?.tax_overrides || {},
+    ...kioskLineTaxRefs(l),
   })), [cart]);
   const kioskTaxType = orderType === 'dineIn' ? 'dine-in' : 'takeaway';
+  // 8 Oct 2026 (VAT audit, Fix 2): UK VAT is booked on what the offers left to pay, as the till's
+  // computeCheckTotals does (lib/kioskVat.js kioskChargedTax). No offer: the same object as before.
+  // The maths are never caught into null here: a failure is logged and the save time guard
+  // (lib/saleVatGuard.js) repairs the record from its lines or refuses the save by name.
   const taxBreakdown = useMemo(() => {
     if (!taxCtxHasConfig(kioskTaxCtx) || !kioskTaxLines.length) return null;
-    try { return computeOrderTaxUnified(kioskTaxLines, kioskTaxCtx, kioskTaxType, { discounts: autoDiscounts }); }
-    catch { return null; }
-  }, [kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts]);
+    try { return kioskChargedTax(kioskTaxLines, kioskTaxCtx, kioskTaxType, { autoDiscounts, goods: subtotal, charged: discountedSubtotal }); }
+    catch (e) { console.error('[kiosk] VAT could not be worked out for the basket:', e?.message || e); return null; }
+  }, [kioskTaxLines, kioskTaxCtx, kioskTaxType, autoDiscounts, subtotal, discountedSubtotal]);
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
   const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
@@ -1001,12 +1061,15 @@ export default function KioskApp({ kioskId, onUnpair }) {
         // tax_amount is what reports (Tax summary, Daily Trading VAT) read; the
         // legacy `tax` column gets the same figure. Full engine basis — matches
         // what the POS books for the identical order.
-        tax: chargedTaxBreakdown?.totalTax || 0,
-        tax_amount: chargedTaxBreakdown?.totalTax ?? null,
-        // v5.9.12: the named tax lines, ONLY when added-on tax was charged (so
-        // UK kiosk rows are unchanged). Reports and reprints read this rather
-        // than recompute from the items.
-        ...(chargedTaxBreakdown?.hasExclusiveTax && Number(chargedTaxBreakdown.exclusiveTax) > 0 ? { tax_breakdown: chargedTaxBreakdown } : {}),
+        // 8 Oct 2026 (VAT audit, Fix 2): rounded once with the one rule (taxRule.roundVat, half
+        // up to the penny), null stays null (the save time guard then repairs or refuses it).
+        tax: roundVat(chargedTaxBreakdown?.totalTax) ?? 0,
+        tax_amount: roundVat(chargedTaxBreakdown?.totalTax),
+        // v5.9.12: the named tax lines. 8 Oct 2026 (VAT audit, Fix 2): ALWAYS stored, UK too (it
+        // was written only for added-on tax, so 138 Barnsley sales carried VAT with no record of
+        // the rate and Xero had to estimate the split). Reports and reprints read this rather
+        // than recompute from the items. Null when the venue has no tax set up.
+        tax_breakdown: chargedTaxBreakdown || null,
         total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
@@ -1067,15 +1130,15 @@ export default function KioskApp({ kioskId, onUnpair }) {
       // the ones it does not know and retry rather than dropping the sale. The order is
       // recorded; only the extra detail is lost, and the console says exactly which column to
       // add. Same shape as the kitchen_routed_at graceful fallback in routeKioskOrderPrints.
-      let e1 = (await supabase.from('closed_checks').insert(checkRow)).error;
-      for (let attempt = 0; e1 && attempt < 4; attempt++) {
-        const missing = /Could not find the '([^']+)' column/.exec(e1.message || '')?.[1];
-        if (!missing || !(missing in checkRow)) break;
-        console.error(`[kiosk] closed_checks has no '${missing}' column — dropping it so the paid `
-          + `order still records. FIX THE DB: alter table closed_checks add column if not exists ${missing} jsonb;`);
-        delete checkRow[missing];
-        e1 = (await supabase.from('closed_checks').insert(checkRow)).error;
-      }
+      // 8 Oct 2026 (VAT audit, Fixes 2 and 3): through writeClosedCheckRow, the ONE way a
+      // closed_checks row is written. It keeps the PGRST204 loop above (a missing optional column
+      // is dropped and the insert retried, lib/closedCheckWrite.js) and adds the save time guard
+      // (lib/saleVatGuard.js): a row with goods and no VAT at this venue is repaired from its
+      // lines with the Back Office item rules, or the save is refused by name (the error below
+      // reaches the screen as submitError; the card screen stays shut while the rates are
+      // missing, so this is the belt, not the braces). The kiosk hands over its own rates
+      // (kioskVenueTaxCtx) because its store holds none.
+      const e1 = (await writeClosedCheckRow(supabase, checkRow, { tag: 'kiosk', vat: kioskVenueTaxCtx })).error;
       if (e1) throw e1;
       // The sale is booked, so its card machine job is done: approved -> reconciled, as the till
       // marks its own (terminal_pos_mark_reconciled; the kiosk's device is at the venue).
@@ -1234,7 +1297,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, chargedTaxBreakdown, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, chargedTaxBreakdown, kioskVenueTaxCtx, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -1281,7 +1344,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
       resetIdle, resetSession, idleWarning, warningCountdown,
       setIdlePaused, deviceLocationId: device?.location_id || null,
     };
-    return <KioskV2Root engine={engine} ScreenPay={LinkedScreenPay} />;
+    // 8 Oct 2026 (VAT audit, Fix 2): the VAT gate rides a context so LinkedScreenPay (a module level
+    // component, kept stable so ScreenPay never remounts) can read it. Shut = ScreenPay never mounts.
+    return (
+      <KioskVatGateContext.Provider value={kioskVatGateCtx}>
+        <KioskV2Root engine={engine} ScreenPay={LinkedScreenPay} />
+      </KioskVatGateContext.Provider>
+    );
   }
 
   // ─── Render ───
@@ -1289,6 +1358,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // on the IME overlay, NOT the React tree, so onPointerDown alone let the idle timer fire while
   // a customer was transcribing a gift-card code (or a phone number on the loyalty step).
   return (
+    <KioskVatGateContext.Provider value={kioskVatGateCtx}>
     <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
@@ -1330,7 +1400,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
       {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
           only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
-      {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskPayLinkGate>}
+      {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><KioskVatGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskVatGate></KioskPayLinkGate>}
       {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
@@ -1366,6 +1436,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         </div>
       )}
     </div>
+    </KioskVatGateContext.Provider>
   );
 }
 
@@ -3231,10 +3302,14 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
 // Database fence stage 1, fix round 2: the new design gets ScreenPay behind the same link gate as
 // the old kiosk (surfaces/kiosk/KioskPayLinkGate.jsx): the reader starts only on a kiosk the
 // server says is linked. ScreenPay itself is unchanged (kioskCardPathGuard.test.js).
+// 8 Oct 2026 (VAT audit, Fix 2): then the VAT gate (surfaces/kiosk/KioskVatGate.jsx, state from
+// KioskVatGateContext), so ScreenPay never mounts while this kiosk cannot book the VAT.
 function LinkedScreenPay(props) {
   return (
     <KioskPayLinkGate brandColor={props.brandColor} onBack={props.onBack} onCancel={props.onCancel}>
-      <ScreenPay {...props} />
+      <KioskVatGate brandColor={props.brandColor} onBack={props.onBack} onCancel={props.onCancel}>
+        <ScreenPay {...props} />
+      </KioskVatGate>
     </KioskPayLinkGate>
   );
 }

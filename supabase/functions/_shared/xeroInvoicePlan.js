@@ -27,6 +27,7 @@ import { resolveSalesTaxType, serviceTaxType, inclusiveTaxMinor, rateOf, validat
 import { allocate, MONEY_KINDS } from './accountingDay.js';
 import { accountRef, shortHash, idempotencyKey, adoptable } from './xeroPostingPlan.js';
 import { DISCOUNT_GROUPS, DISCOUNT_GROUP_NAMES, OTHER_GROUP } from './accountingGroups.js';
+import { LOYALTY_VAT_XERO_LINE } from './saleVat.js';
 
 export { adoptable };
 
@@ -668,6 +669,10 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   }
 
   // ── warnings and blocks
+  // 8 Oct 2026 (the VAT audit): a day holding a sale with no VAT recorded is never posted (it
+  // would post inside the 20% line at VAT 0.00). The accounting day names the sales; nothing is
+  // guessed, the sale is fixed first.
+  for (const h of Array.isArray(summary.holds) ? summary.holds : []) blockOnce({ code: h.code, message: h.message, checkIds: h.checkIds || [] });
   const blockedList = [...blockedRates.values()];
   if (blockedList.length) {
     const names = blockedList.map((b) => (b.pct != null && !String(b.name).includes('%') ? `${b.name} (${b.pct}%)` : b.name)).join(', ');
@@ -686,6 +691,12 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   }
   if ((summary.sales?.byMethod || []).some((r) => r.kind === 'deposit' && r.gross)) {
     warnings.push({ code: 'deposits_seen', message: 'Booking deposits were used as payment. They post as a payment from the deposits account.' });
+  }
+  // 8 Oct 2026 (D1, the owner decides with his accountant): the till books VAT on a drink given
+  // for stamps; this invoice takes it off on the Loyalty rewards line. Said plainly on every
+  // preview that has one, so the Tax summary and the invoice can be read side by side.
+  if (!exclusive && (summary.sales?.credits?.gross || 0) > 0) {
+    warnings.push({ code: 'loyalty_vat_rule', message: LOYALTY_VAT_XERO_LINE });
   }
 
   // Hooks for phase 1b and 2: the card fee bill and cash over and short. OFF in this slice.
