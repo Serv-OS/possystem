@@ -5,6 +5,9 @@
 // plain HTML with one SVG line (no chart library). Every figure is the function's own
 // (owner-snapshot's detail call); the bar lengths and the words are src/lib/ownerDetail.js.
 //   1 Sales by hour        bars per hour, the comparison as a faint line
+//   1b Sales mix           8 Oct 2026: item sales by sales group (Food, Drinks, Other sales), each
+//                          group's share, "was 59% · +3 pts" against the comparison, and the top
+//                          three categories inside each group. Hidden for a function without it.
 //   2 Week by day          Mon to Sun, this week against last week
 //   3 Payment mix          card, cash, gift card; loyalty and promo credit apart
 //   4 Order types and channels
@@ -16,6 +19,7 @@ import { useState } from 'react';
 import {
   hourChart, hoursLineWords, weekChart, shareRows, paymentMix, orderTypeLabel, channelLabel, labourView,
 } from '../../lib/ownerDetail';
+import { detailRows, noteFor } from '../../lib/ownerMix';
 import { ReportCard, Empty, BarLine, Tabs } from './ui';
 import { money, smallCaps, linkBtn } from './style';
 
@@ -26,6 +30,7 @@ export default function OwnerReports({ detail, period, range, currency }) {
   return (
     <>
       <HoursCard hours={detail.hours} period={period} range={range} m={m} />
+      <SalesMixCard mix={detail.mix} period={period} m={m} />
       <WeekCard week={detail.week} m={m} />
       <PaymentsCard payments={detail.payments} m={m} />
       <MixCard types={detail.order_types} channels={detail.channels} m={m} />
@@ -88,6 +93,43 @@ function HoursCard({ hours, period, range, m }) {
   );
 }
 
+// ── 1b. Sales mix ────────────────────────────────────────────────────────────
+// 8 Oct 2026, Peter: "what is Food/drink/other split ... in hospitality a valued piece of data".
+// Second on the screen, right after Sales by hour (the build's D4a). The shares, the points and
+// the order are the function's (src/lib/ownerMix.js only sizes the bars and finds the words). A
+// function from before the mix sends no detail.mix, and the card is not drawn at all.
+function SalesMixCard({ mix, period, m }) {
+  const [open, setOpen] = useState(false);
+  if (!mix) return null;
+  const v = detailRows(mix);
+  if (v.empty) return <ReportCard title="Sales mix"><Empty>No item sales in this period.</Empty></ReportCard>;
+  if (v.allOther) {
+    return <ReportCard title="Sales mix"><Empty>No sales groups set yet. Set them in Back Office, Reports, Sales mix. Until then every item is in Other sales.</Empty></ReportCard>;
+  }
+  return (
+    <ReportCard title="Sales mix" note={noteFor(period, mix.cmp_total != null)}>
+      {v.rows.map((r) => (
+        <div key={r.key}>
+          <BarLine label={r.name} value={m(r.money)} sub={`${r.share}%`} w={r.w} color={r.color} />
+          {r.wasText && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: -6, marginBottom: 10 }}>{r.wasText}</div>}
+          {open && (
+            <div style={{ marginTop: -4, marginBottom: 10, paddingLeft: 12 }}>
+              {(r.categories.length ? r.categories : [{ id: null, label: 'No category', money: null }]).map((c) => (
+                <div key={c.id ?? c.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5, padding: '2px 0', color: 'var(--t3)' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
+                  <span style={{ flexShrink: 0 }}>{c.money == null ? '' : m(c.money)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+      <button style={linkBtn} onClick={() => setOpen((o) => !o)} aria-expanded={open}>{open ? 'Hide categories' : 'Show categories'}</button>
+      {v.footer && <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 8 }}>{v.footer}</div>}
+    </ReportCard>
+  );
+}
+
 // ── 2. Week by day ───────────────────────────────────────────────────────────
 function WeekCard({ week, m }) {
   const c = weekChart(week);
@@ -105,7 +147,7 @@ function WeekCard({ week, m }) {
             </div>
           </div>
           <div style={{ width: 86, textAlign: 'right', flexShrink: 0, lineHeight: 1.25 }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{r.net == null ? '–' : m(r.net)}</div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{r.net == null ? '-' : m(r.net)}</div>
             <div style={{ fontSize: 11, color: 'var(--t4)' }}>{m(r.last)}</div>
           </div>
         </div>
@@ -239,7 +281,7 @@ function LabourCard({ labour, m }) {
   return (
     <ReportCard title="Labour against sales" note="Approved and paid timesheets against net sales.">
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', color: tone }}>{v.pct == null ? '–' : `${v.pct}%`}</span>
+        <span style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', color: tone }}>{v.pct == null ? '-' : `${v.pct}%`}</span>
         <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>{v.target != null ? `of sales · target ${v.target}%` : 'of sales'}</span>
       </div>
       {v.pct != null && (
