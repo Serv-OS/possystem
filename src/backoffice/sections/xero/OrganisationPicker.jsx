@@ -7,6 +7,13 @@
 // accounts, tracking, the figures check), because those choices named things in the OLD
 // organisation. The words below say exactly that, and what does and does not then happen by
 // itself (lib: supabase/functions/_shared/xeroOrg.js).
+// (One case does need a disconnect: the books are under ANOTHER Xero login that already has
+// that organisation connected. Xero then does not ask, the sign in changes nothing, and the
+// other_login banner in XeroIntegration.jsx says to Disconnect first.)
+// When Xero did not ask which organisation, the amber box asks here (ask). For a site that was
+// disconnected, the hourly job also posts nothing until the answer or half an hour (held).
+// The hold itself is kept by xero-sales, and xero-connect is what answers held, so xero-sales
+// is deployed FIRST: with only xero-connect live the hold sentence below would be false.
 import { useCallback, useEffect, useState } from 'react';
 import { xeroOrganisations, xeroSetOrganisation } from '../../../lib/xero';
 import { moveWords } from '../../../lib/accounting/xeroMoveWords';
@@ -19,6 +26,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
   const [siteName, setSiteName] = useState('');
   const [others, setOthers] = useState(0);
   const [ask, setAsk] = useState(false);          // just signed in, and Xero did not say which organisation
+  const [held, setHeld] = useState(false);        // the hourly job is waiting for that answer (autoPostHeld)
   const [asked, setAsked] = useState(true);       // false: Xero could not be asked, so the list is not known
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
@@ -35,6 +43,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
       setSiteName(r?.siteName || '');
       setOthers(Number(r?.others) || 0);
       setAsk(!!r?.ask);
+      setHeld(!!r?.held);
       setAsked(!r?.lookupError);
       setPick(list.find((o) => o.current)?.tenantId || '');
       setErr(r?.lookupError ? `ServOS could not ask Xero which organisations this sign in can see (${r.lookupError}). Try again in a minute.` : '');
@@ -103,6 +112,7 @@ export default function OrganisationPicker({ locId, currentName, postMode, autoD
             <div style={{ ...text, marginBottom: 10, padding: 10, borderRadius: 8, background: 'rgba(200,150,40,.14)', border: '1px solid rgba(200,150,40,.45)', color: 'var(--t1)' }}>
               <b>Which organisation are {site}&rsquo;s books in?</b> Your Xero sign in covers {orgs.length} organisations and Xero did not ask which one.
               {' '}{site} is on <b>{here}</b> for now. If that is wrong, pick the right one and press Use this organisation.
+              {held && autoDaily && <> Nothing is posted by itself for {site} in the half hour after your sign in, so there is time to pick.</>}
             </div>
           ) : (
             <div style={{ ...text, marginBottom: 10 }}>
