@@ -7,6 +7,40 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.40',
+    date: '8 Oct 2026',
+    items: [
+      "Group ordering link: the venue picker now wears the look of the venue with the most complete Menu appearance (header image first, then logo, then colour). It was taking the first venue by name, so a venue without a header image gave the whole group the plain flame header while every other venue had the shop photo. The page background follows that venue's storefront background when it is a light colour.",
+      "Back Office, Online ordering: the Group ordering link card says which venue's look the page wears, and that adding a header image to any venue is enough.",
+    ],
+  },
+  {
+    v: '5.11.39',
+    date: '8 Oct 2026',
+    items: [
+      "Admin, FranPOS residuals: the screen loads again. Since 26 Aug every request was refused with location_id required (the reseller actions sat behind the one venue check), so the statement, the rate and the invoice list never appeared.",
+      "Admin, FranPOS residuals and Revenue: only live money counts. Test environment card payments are never read, and payments from before ServOS recorded live or test (7 Sep 2026) are shown as left out and never invoiced. Creating an invoice for a month that holds no live money says so instead of making an empty invoice.",
+      "Admin, FranPOS residuals: marking an invoice sent, paid or void reports a database error as itself instead of saying the invoice does not exist.",
+    ],
+  },
+  {
+    v: '5.11.38',
+    date: '8 Oct 2026',
+    items: [
+      "Orders screen: a QR order that was paid on the phone now says what its button does (Mark in prep, Mark ready, Mark collected), the same words as every other order. It said Advance at every stage. The press itself was always right; only the words were wrong.",
+      "Orders screen: a finished QR order no longer shows a button that did nothing. A ready QR order whose payment is still being checked shows only Check payment.",
+    ],
+  },
+  {
+    v: '5.11.37',
+    date: '8 Oct 2026',
+    items: [
+      "Xero: signing in to Xero with a different Xero login can no longer move a site. If the login you used cannot see the organisation the site posts to, nothing is changed and the screen says so, with the way to move a site to another login (Disconnect first, then Connect Xero).",
+      "Xero: a site that was disconnected and signs in again, when Xero does not ask which organisation, posts nothing by itself for half an hour, so there is time to pick the right organisation before anything is sent. Pushing a day yourself is never held.",
+      "Xero, Connection tab: the question about which organisation a site's books are in is now shown to ServOS staff as well, and it goes away once you have picked.",
+    ],
+  },
+  {
     v: '5.11.36',
     date: '7 Oct 2026',
     items: [
