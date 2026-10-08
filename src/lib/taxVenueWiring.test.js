@@ -80,7 +80,8 @@ test('a product is stamped with, and a till line charged at, this venue\'s own r
   const addItem = between(store, 'addItem: (item, mods=[], pizzaConfig=null, opts={}) => {', 'seat: \'shared\'');
   assert.match(addItem, /const refs = lineTaxRefs\(txRate, txOv, useStore\.getState\(\)\.taxRates\);/);
   assert.match(addItem, /console\.warn\('\[tax\] product', item\.id, 'names rate id\(s\)'/);
-  assert.match(addItem, /return \{ taxRateId: refs\.taxRateId, taxOverrides: refs\.taxOverrides \};/);
+  // 8 Oct 2026 (D4): the line carries WHY a rate was cleaned away, so the sale records it.
+  assert.match(addItem, /return \{ taxRateId: refs\.taxRateId, taxOverrides: refs\.taxOverrides, \.\.\.\(refs\.taxFallback \? \{ taxFallback: refs\.taxFallback \} : \{\}\) \};/);
 });
 
 test('a push carries only its own venue\'s rates, and a till takes only its own', () => {

@@ -19,10 +19,16 @@
 //                          so receipts + reports read one field for every source)
 //   service             Σ remaining charges (bag fee, service fee, …) — NEVER delivery
 //   tip                 Σ tip/gratuity-type charges
-//   tax_amount          our tax engine over matched lines (unknown refs book 0, never guessed)
+//   tax_amount          our tax engine over the lines, rounded once (taxRule.roundVat). 8 Oct 2026
+//                       (D4): a line whose ref is not one of our products takes the VENUE DEFAULT
+//                       rate and the record says so (tax_breakdown.fallbacks, reason
+//                       'item-not-on-menu'). It used to book 0 on purpose: 17 HubRise sales at
+//                       Provo booked £0 VAT on £692.71 that way. With no tax set up at all the
+//                       sale books null (not recorded), never 0.00.
 //   total               the channel's headline total (already nets all of the above)
 
-import { computeOrderTaxUnified } from './taxCompute.js';
+import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
+import { roundVat, NOT_IN_MENU } from './taxRule.js';
 
 /** Modifier total for one line, per unit — includes modifier quantity. */
 export const modsTotal = (mods) =>
@@ -81,7 +87,7 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
   const service = +charges.filter(c => !isDeliveryCharge(c) && !isTipCharge(c)).reduce((s, c) => s + Number(c.amount), 0).toFixed(2);
 
   // Tax — OUR rates. sku_ref == our menu_item id; modifiers inherit the parent line's
-  // rate by folding into the line gross. Unknown refs resolve no rate -> 0 for that line.
+  // rate by folding into the line gross.
   const svc = order.channel || order.type;
   const hrOrderType = channelOrderTypeForTax(svc);
   const taxItems = items.map(it => {
@@ -90,23 +96,31 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
       price: Number(it.price) || 0,   // already folded above — mods inherit the line's rate
       qty: Number(it.qty) || 1,
       // Matched item: its rate (null = venue default, resolved by the engine v5.5.857).
-      // UNKNOWN ref: a sentinel id that matches no rate → resolves null → books ZERO.
-      // A line that isn't in our menu must never inherit our default rate — we don't
-      // guess tax for items we don't recognise (also the sheet answer to HubRise).
+      // UNKNOWN ref: the sentinel id. 8 Oct 2026 (D4): the engine resolves it to the venue
+      // default and notes the line in tax_breakdown.fallbacks ('item-not-on-menu'), so the sale
+      // carries VAT and the owner sees which line needs mapping. Until then it resolved NO rate
+      // and booked zero on purpose, which is wrong at a venue where everything is standard rated.
       // v5.7.34: matched items also carry their profile cascade inputs; unknown
       // refs carry NO itemId/cat so no profile can ever apply to them either.
       itemId: mi ? mi.id : null,
       cat: mi ? (mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null)) : null,
       taxProfileId: mi ? (mi.taxProfileId ?? mi.tax_profile_id ?? null) : null,
-      taxRateId: mi ? (mi.taxRateId ?? null) : '__not_in_menu__',
+      taxRateId: mi ? (mi.taxRateId ?? null) : NOT_IN_MENU,
       taxOverrides: mi?.taxOverrides || {},
+      // So a fallback note names the channel line (its own id and name, not our item's).
+      lineId: it.uid ?? it.id ?? it.itemId ?? null,
+      name: it.name ?? null,
     };
   });
   let taxBreakdown = null;
-  if (taxRates.length || taxCtx) {
+  // 8 Oct 2026: only with tax set up (rates or profiles). A till holding no rates used to run the
+  // seam over an empty list and book 0.00, which every report reads as zero rated; now it books
+  // null (not recorded), which the close guard refuses at a venue that has tax set up.
+  const ctx = taxCtx || { taxRates };
+  if (taxCtxHasConfig(ctx)) {
     // v5.7.34: through the unified seam — legacy-equivalent venues get
     // calculateOrderTax byte-identical; profile venues get the cascade.
-    try { taxBreakdown = computeOrderTaxUnified(taxItems, taxCtx || { taxRates }, hrOrderType); } catch { /* conservative: null */ }
+    try { taxBreakdown = computeOrderTaxUnified(taxItems, ctx, hrOrderType); } catch { /* conservative: null */ }
   }
 
   // Paid/due — from the decoded channel payments, same rule as the queue decode.
@@ -117,7 +131,7 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
   return {
     items, subtotal, discounts, discountTotal,
     deliveryFee, service, tip, charges,
-    taxAmount: taxBreakdown ? +taxBreakdown.totalTax.toFixed(2) : null,
+    taxAmount: taxBreakdown ? roundVat(taxBreakdown.totalTax) : null,   // the one rounding rule (8 Oct 2026)
     taxBreakdown,
     total, payments, paidAmount, due,
     channelPaid: payments.length > 0 && paidAmount >= total - 0.005,

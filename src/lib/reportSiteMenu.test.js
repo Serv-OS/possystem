@@ -189,10 +189,12 @@ test('tax: the check\'s own booked record first, then ITS OWN site\'s rates, nev
   assert.equal(own.source, 'rates');
   assert.ok(Math.abs(own.totalTax - 0.5714) < 0.001);
   assert.equal(own.breakdown[0].rate.id, 'r-preston-red');
-  // the same row through the signed in site's (Leeds) context knows no such rate and books
-  // NOTHING (and a line on "use default" would book Leeds' 20%): the fault this file removes
+  // the same row through the signed in site's (Leeds) context knows no such rate: it books Leeds'
+  // 20% default and flags the line (8 Oct 2026, D4; until then it booked NOTHING), and a line on
+  // "use default" books Leeds' 20% too. Either way the wrong site's answer: the fault this file removes
   const wrong = recordedCheckTax(c, leeds.taxCtx);
-  assert.equal(wrong.totalTax, 0);
+  assert.ok(Math.abs(wrong.totalTax - 2) < 0.001);
+  assert.deepEqual(wrong.fallbacks.map((f) => [f.reason, f.rateId]), [['rate-not-found', 'r-preston-red']]);
   assert.ok(Math.abs(recordedCheckTax(check({ items: [{ qty: 1, price: 12 }] }), leeds.taxCtx).totalTax - 2) < 0.001);
   // a booked record (US added-on, a scaled UK record) wins over any rates
   const booked = siteCheckTax(check({ items: [line], taxBreakdown: { totalTax: 0.99, subtotal: 11.01, hasExclusiveTax: true, breakdown: [{ rate: { id: 'x', label: 'Sales Tax', rate: 0.09, type: 'exclusive' }, tax: 0.99, net: 11.01, gross: 12, items: 1 }] } }), preston);

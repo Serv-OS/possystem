@@ -126,9 +126,17 @@ test('a till line never books no VAT because its product names another venue\'s 
   assert.deepEqual(r.dropped.sort(), [tsRed.id, tsStd.id].sort());
   const t = calculateOrderTax([{ price: 3.6, qty: 1, taxRateId: r.taxRateId, taxOverrides: r.taxOverrides }], rates, 'dine-in');
   assert.equal(Math.round(t.totalTax * 100), 60, 'the venue default, never zero');
-  const before = calculateOrderTax([{ price: 3.6, qty: 1, taxRateId: tsStd.id }], rates, 'dine-in');
-  assert.equal(before.totalTax, 0, 'what the till did before: no VAT');
-  assert.deepEqual(lineTaxRefs('leeds-zero', {}, rates), { taxRateId: 'leeds-zero', taxOverrides: {}, dropped: [] }, 'a known rate is untouched');
+  // 8 Oct 2026 (D4): the engine itself now gives a foreign id the venue default and flags the
+  // line (before 8 Oct it resolved no rate and booked no VAT; this cleaning was the only guard).
+  const raw = calculateOrderTax([{ uid: 'l1', price: 3.6, qty: 1, taxRateId: tsStd.id }], rates, 'dine-in');
+  assert.equal(Math.round(raw.totalTax * 100), 60, 'the engine agrees without the cleaning');
+  assert.deepEqual(raw.fallbacks.map((f) => [f.reason, f.rateId, f.lineId]), [['rate-not-found', tsStd.id, 'l1']]);
+  // ...and a cleaned line carries WHY, so the engine records it on the sale too.
+  assert.deepEqual(r.taxFallback, { reason: 'rate-not-found', rateId: tsStd.id });
+  const cleaned = calculateOrderTax([{ uid: 'l2', price: 3.6, qty: 1, taxRateId: r.taxRateId, taxOverrides: r.taxOverrides, taxFallback: r.taxFallback }], rates, 'dine-in');
+  assert.deepEqual(cleaned.fallbacks.map((f) => [f.reason, f.rateId, f.lineId]), [['rate-not-found', tsStd.id, 'l2']]);
+  assert.equal(lineTaxRefs('leeds-std', { takeaway: tsRed.id }, rates).taxFallback.reason, 'override-rate-not-found', 'only an override dropped: the item rate stands');
+  assert.deepEqual(lineTaxRefs('leeds-zero', {}, rates), { taxRateId: 'leeds-zero', taxOverrides: {}, dropped: [] }, 'a known rate is untouched, and carries no flag');
   assert.deepEqual(lineTaxRefs(tsStd.id, { takeaway: tsRed.id }, []).taxRateId, tsStd.id, 'with no rates loaded yet, nothing is judged');
   assert.equal(lineTaxRefs('leeds-std', {}, [{ ...toStoreRate(leedsStd), active: false }]).taxRateId, 'leeds-std', 'only inactive rates held: nothing to judge by');
   assert.equal(lineTaxRefs('gone', {}, [toStoreRate(leedsStd), { ...toStoreRate(leedsStd), id: 'gone', active: false }]).taxRateId, null, 'an inactive rate charges nothing, so it is not held');

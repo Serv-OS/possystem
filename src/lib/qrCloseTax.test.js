@@ -42,9 +42,16 @@ test('lines take their modifier prices and their product rate from the menu', ()
   // A variant whose own row is not on the menu takes its parent's rate.
   const v = qrTaxLines([{ itemId: 'cake-slice', parentId: 'cake', price: 3, qty: 1 }], menuItems)[0];
   assert.equal(v.taxRateId, 'zero');
-  // A line not on this till's menu keeps what it carries (none: the venue default).
+  // A line not on this till's menu keeps what it carries (none: the venue default), and since
+  // 8 Oct 2026 (D4) says so, so the record flags it instead of taking the default quietly.
   const u = qrTaxLines([{ itemId: 'gone', price: 5, qty: 1, taxRateId: null }], menuItems)[0];
   assert.equal(u.taxRateId, null);
+  assert.deepEqual(u.taxFallback, { reason: 'item-not-on-menu', rateId: null });
+  const gone = qrCloseTax([{ itemId: 'gone', name: 'Gone', price: 6, qty: 1 }], ctx, { paidGoods: 6 });
+  assert.equal(gone.taxAmount, 1, 'the venue default, never 0 or null');
+  assert.deepEqual(gone.taxBreakdown.fallbacks.map((f) => [f.reason, f.itemId]), [['item-not-on-menu', 'gone']]);
+  // one that carries its own rate from the page is left alone
+  assert.equal('taxFallback' in qrTaxLines([{ itemId: 'gone', price: 5, qty: 1, taxRateId: 'zero' }], menuItems)[0], false);
   // Voided lines drop out.
   assert.equal(qrTaxLines([{ itemId: 'burger', price: 1, qty: 1, voided: true }], menuItems).length, 0);
 });
@@ -52,7 +59,11 @@ test('lines take their modifier prices and their product rate from the menu', ()
 test('a force close that took the whole bill books the VAT on every line with its modifiers', () => {
   const t = qrCloseTax(qrItems(), ctx, { paidGoods: 18 });
   assert.equal(t.taxAmount, 2);                // £12 burger at 20% = £2.00; the zero rated cake adds nothing
-  assert.equal(t.taxBreakdown, null, 'a UK whole bill writes no tax_breakdown, as every surface');
+  // 8 Oct 2026: the record is written for a UK whole bill too (it was written only for added-on
+  // tax or a share): the Xero daily invoice reads the split by rate from it instead of estimating.
+  assert.equal(t.taxBreakdown.totalTax, 2);
+  assert.deepEqual(t.taxBreakdown.breakdown.map((b) => [b.rate.id, Math.round(b.tax * 100)]), [['std', 200], ['zero', 0]]);
+  assert.equal('share' in t.taxBreakdown, false, 'the whole bill: not a share');
   assert.equal(t.exclusiveTax, 0);
   // The dropped attempt: base prices, venue default on every line.
   assert.notEqual(pence(t.taxAmount), pence((10 + 6) - (10 + 6) / 1.2));

@@ -246,8 +246,13 @@ async function archiveVariantRow(id) {
 // Drive thru (16 Sep 2026): an explicit 'drive-thru' override wins. With none set, both tax
 // engines (src/lib/tax.js and src/lib/taxEngine.js) fall back to the takeaway override, then
 // the item default, so a venue that never sets one taxes drive thru as takeaway.
+// 8 Oct 2026 (Peter): a Collect sale and an online collection read the Takeaway override too,
+// and a bar tab reads the Bar override (src/lib/taxRule.js taxOrderTypeKey, the one rule). The
+// notes below say so next to the rows. Counter stays for now (nothing sells under it; a later
+// clean up decides).
 const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive-thru'];
 const ORDER_TYPE_TAX_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', delivery:'Delivery', bar:'Bar', counter:'Counter', 'drive-thru':'Drive thru' };
+const ORDER_TYPE_TAX_NOTE = { takeaway:'Collection and online collection use the Takeaway rate.', bar:'Bar tabs use the Bar rate.' };
 
 // ── Item codes (v5.8.100) ────────────────────────────────────────────────────
 // Every product's code at this venue, read once and shared by every editor that
@@ -389,7 +394,7 @@ function TaxSection({ item, onUpdate, markBOChange }) {
         </span>
         <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.6 }}>
           Override the tax rate for specific order types. Common UK use: set takeaway to Zero Rate for food items.
-          Drive thru uses the takeaway override unless you set its own.
+          Drive thru, collection and online collection use the takeaway override unless they have their own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
           <div key={ot} style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
@@ -401,6 +406,9 @@ function TaxSection({ item, onUpdate, markBOChange }) {
               {notOffered(item.taxOverrides?.[ot])}
               {rateOptions}
             </select>
+            {ORDER_TYPE_TAX_NOTE[ot] && (
+              <span style={{ gridColumn:'2', fontSize:11, color:'var(--t4)', lineHeight:1.5 }}>{ORDER_TYPE_TAX_NOTE[ot]}</span>
+            )}
           </div>
         ))}
       </div>

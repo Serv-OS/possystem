@@ -19,15 +19,19 @@
  *     line has taxable=false, so the levy's base is untouched by it - inclusive
  *     lines join later compounding bases ONLY when taxable=true.
  *
- * PURE MODULE: no imports, runs under `node --test`. Nothing calls it in
- * production yet - no consumer is switched in this slice.
+ * PURE MODULE: imports only taxRule.js (itself import free), runs under `node --test`.
+ * It is the engine behind taxCompute.computeOrderTaxUnified on every venue that
+ * has tax profiles, and it synthesises the v2 named lines record for every venue.
  *
  * ROUNDING: raw amounts accumulate per tax line across the whole order, then
  * each tax line's ORDER-LEVEL total is rounded once, half-up at the currency
  * minor unit (profile rounding {"mode":"half_up","level":"invoice"}). Level
  * 'item' instead rounds each order-line's contribution and sums. This matches
- * the legacy engine's order-level `exclusiveTax` rounding (v5.7.31).
+ * the legacy engine's order-level `exclusiveTax` rounding (v5.7.31); since
+ * 8 Oct 2026 both read the one rule, taxRule.roundHalfUpMinor.
  */
+
+import { taxOverrideFor, taxOrderTypeKey, roundHalfUpMinor, TAX_FALLBACK_REASONS, NOT_IN_MENU } from './taxRule.js';
 
 /** True when any ACTIVE line of the profile is tagged with this order type (mirrors costing.js recipeNamesOrderType). */
 export function profileNamesOrderType(profileLines, orderType) {
@@ -37,21 +41,23 @@ export function profileNamesOrderType(profileLines, orderType) {
 
 /**
  * Does this profile line apply to the given order type?
- * Drive thru (16 Sep 2026) is takeaway by another door: a line tagged 'drive-thru' applies
- * to a drive-thru sale, and so does a line tagged 'takeaway' UNLESS an active line on the
- * same profile names 'drive-thru', in which case the profile has its own drive thru line and
- * only lines tagged 'drive-thru' (or 'all') apply. Pass the profile's lines as `profileLines`
- * for that check; with no profile context (a single line asked on its own) the takeaway line
- * applies. Lines tagged 'all' apply as they always have. Only the literal 'drive-thru' order
- * type takes this branch; every other order type reads exactly its own tag, and a 'drive-thru'
- * tag never reaches takeaway. Same rule as costing.js lineAppliesToOrderType for recipe lines.
+ * A line tagged with the sale's own order type applies. So does a line tagged with the order
+ * type's ALIAS (taxRule.taxOrderTypeKey: a 'takeaway' line applies to a drive-thru sale, 16 Sep
+ * 2026, and to a collection sale, 8 Oct 2026; a 'bar' line applies to a bar tab) UNLESS an
+ * active line on the same profile names the sale's order type itself, in which case the profile
+ * has its own line for it and only lines tagged with it (or 'all') apply. Pass the profile's
+ * lines as `profileLines` for that check; with no profile context (a single line asked on its
+ * own) the alias line applies. Lines tagged 'all' apply as they always have. An alias tag never
+ * reaches the other way: a 'drive-thru' tag never applies to a takeaway sale. Same shape of rule
+ * as costing.js lineAppliesToOrderType for recipe lines (drive thru only, there).
  */
 export function lineAppliesToOrderType(profileLine, orderType, profileLines = null) {
   const types = profileLine.orderTypes;
   if (!Array.isArray(types) || types.length === 0) return true;
   if (types.includes('all')) return true;
   if (types.includes(orderType)) return true;
-  return orderType === 'drive-thru' && types.includes('takeaway') && !profileNamesOrderType(profileLines, 'drive-thru');
+  const alias = taxOrderTypeKey(orderType);
+  return alias !== orderType && types.includes(alias) && !profileNamesOrderType(profileLines, orderType);
 }
 
 /**
@@ -115,10 +121,15 @@ export function lineBasisSettings(profileLine) {
  * Build the BINDING resolution cascade as a resolveProfileId function.
  * Order (first hit wins):
  *   1. item tax_profile_id
- *   2. item legacy taxRateId / taxOverrides - via the per-rate adapter profiles
- *      (a SET rate id that maps to nothing resolves NO TAX and stops the
- *      cascade: that is how channel lines whose ref is not in our menu - the
- *      __not_in_menu__ sentinel - opt out; never guess someone else's tax)
+ *   2. item legacy taxRateId / taxOverrides - via the per-rate adapter profiles.
+ *      8 Oct 2026 (D4): a SET rate id that maps to nothing (another venue's,
+ *      deleted, switched off, or the __not_in_menu__ sentinel of a channel line)
+ *      no longer stops the cascade at NO TAX. It falls through to the venue
+ *      default like a line with no rate, and the fall is REPORTED through
+ *      cfg.onFallback so the sale records it (tax.js resolveLineTaxRate is the
+ *      same rule for the legacy engine; both read taxRule.js). Before this, 17
+ *      HubRise sales booked £0 VAT on £692.71 because every line was "not in
+ *      our menu".
  *   3. category tax_profile_id
  *   4. venue default profile
  *   5. legacy default rate (adapter profile for the is_default tax_rates row)
@@ -128,10 +139,7 @@ export function lineBasisSettings(profileLine) {
  * (1, 3, 4) whose id matches NO loaded profile FALLS THROUGH to the next step
  * instead of resolving. Without this, an assignment pointing at a deleted or
  * unloaded profile reached computeTax, hit `if (!profile) continue` and booked
- * ZERO tax - a dangling assignment must never create a tax-free sale. Step 2
- * keeps its deliberate stop semantics (a SET legacy rate id that maps to
- * nothing is the channel opt-out and MUST resolve no tax); its targets are
- * built alongside profilesById so they can never dangle anyway.
+ * ZERO tax - a dangling assignment must never create a tax-free sale.
  *
  * @param {Object} cfg
  * @param {Object} cfg.itemProfileIds       itemId -> tax_profile_id
@@ -141,6 +149,9 @@ export function lineBasisSettings(profileLine) {
  * @param {string} cfg.legacyDefaultProfileId adapter profile id for the legacy default rate
  * @param {Object} [cfg.profilesById]       loaded profiles - enables the dangling-id
  *                                          fall-through above (omitted = old behaviour)
+ * @param {Function} [cfg.onFallback]       (orderLine, { reason, rateId }, profileId) called
+ *                                          once per line that did not follow its own rule
+ *                                          (reason: taxRule.TAX_FALLBACK_REASONS)
  * @returns {Function} (orderLine, orderType) -> profileId | null
  */
 export function makeCascadeResolver({
@@ -150,6 +161,7 @@ export function makeCascadeResolver({
   legacyRateToProfileId = {},
   legacyDefaultProfileId = null,
   profilesById = null,
+  onFallback = null,
 } = {}) {
   // With no profilesById supplied every id counts as loaded (legacy call shape).
   const loaded = (pid) => !!pid && (!profilesById || !!profilesById[pid]);
@@ -158,31 +170,55 @@ export function makeCascadeResolver({
     const itemProfile = orderLine.itemId != null ? itemProfileIds[orderLine.itemId] : null;
     if (loaded(itemProfile)) return itemProfile;
 
-    // 2. item legacy rate (same override semantics as resolveTaxRate in tax.js:
-    //    an override present for this order type wins even when null/falsy -
-    //    falsy falls through the cascade, truthy must map or the line is untaxed)
-    //    Mirrors taxOverrideFor in tax.js (this module imports nothing): a drive-thru
-    //    sale with no override of its own takes the takeaway override. Change both together.
+    // 2. item legacy rate: the same rule as tax.js resolveLineTaxRate, step by step.
+    //    The override for this order type (its own key, else the alias: taxRule.taxOverrideFor)
+    //    wins even when null (an explicit "Use default" falls through the cascade). A SET id
+    //    that maps to nothing falls through too, noted; an unmatched override falls to the
+    //    item's own rate first.
     const legacy = orderLine.legacy || {};
-    let overrideId = legacy.taxOverrides?.[orderType];
-    if (overrideId === undefined && orderType === 'drive-thru') overrideId = legacy.taxOverrides?.takeaway;
-    const rateId = overrideId !== undefined ? overrideId : legacy.taxRateId;
+    let note = null;
+    let rateId;
+    const overrideId = taxOverrideFor(legacy, orderType);
+    if (overrideId !== undefined) {
+      if (overrideId) {
+        const mapped = legacyRateToProfileId[overrideId];
+        if (mapped) return mapped;
+        note = { reason: TAX_FALLBACK_REASONS.OVERRIDE_RATE_NOT_FOUND, rateId: overrideId };
+        rateId = legacy.taxRateId;
+      } else {
+        rateId = null;
+      }
+    } else {
+      rateId = legacy.taxRateId;
+    }
+    const done = (pid) => {
+      if (note && typeof onFallback === 'function') onFallback(orderLine, note, pid);
+      return pid;
+    };
     if (rateId) {
-      return legacyRateToProfileId[rateId] || null;   // unmapped SET id = NO tax, cascade stops
+      const mapped = legacyRateToProfileId[rateId];
+      if (mapped) return done(mapped);
+      note = { reason: rateId === NOT_IN_MENU ? TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU : TAX_FALLBACK_REASONS.RATE_NOT_FOUND, rateId };
+    } else if (!note) {
+      const cleaned = legacy.taxFallback && typeof legacy.taxFallback === 'object' ? legacy.taxFallback : null;
+      if (cleaned) note = { reason: cleaned.reason || TAX_FALLBACK_REASONS.RATE_NOT_FOUND, rateId: cleaned.rateId ?? null };
+      else if (overrideId === undefined && orderLine.custom) note = { reason: TAX_FALLBACK_REASONS.CUSTOM_ITEM, rateId: null };
     }
 
     // 3. category profile (dangling id falls through)
     const catProfile = orderLine.categoryId != null ? categoryProfileIds[orderLine.categoryId] : null;
-    if (loaded(catProfile)) return catProfile;
+    if (loaded(catProfile)) return done(catProfile);
 
     // 4. venue default profile (dangling id falls through to the legacy default)
-    if (loaded(venueDefaultProfileId)) return venueDefaultProfileId;
+    if (loaded(venueDefaultProfileId)) return done(venueDefaultProfileId);
 
     // 5. legacy default rate
-    if (legacyDefaultProfileId) return legacyDefaultProfileId;
+    if (legacyDefaultProfileId) return done(legacyDefaultProfileId);
 
-    // 6. no tax
-    return null;
+    // 6. no tax. A venue with legacy rates but no default is told so (tax.js says the same);
+    //    a venue with no tax set up at all is not a fallback, the close paths guard that.
+    if (!note && Object.keys(legacyRateToProfileId).length) note = { reason: TAX_FALLBACK_REASONS.NO_DEFAULT_RATE, rateId: rateId || null };
+    return done(null);
   };
 }
 
@@ -193,7 +229,10 @@ export function makeCascadeResolver({
  * @param {Array}    args.lines  order lines:
  *   { price, qty, discountedPrice?, itemId, categoryId?, voided?,
  *     netValue?, serviceShare?, deliveryShare?,
- *     legacy: { taxRateId, taxOverrides } }
+ *     lineId?, name?, custom?,                      (8 Oct 2026: for the fallback note; custom =
+ *                                                   an open price till item with no Back Office rule)
+ *     legacy: { taxRateId, taxOverrides, taxFallback? } }   (taxFallback: stamped by the till when
+ *                                                   it cleaned a rate id it does not hold)
  *   v5.9.12 check-level basis (taxBasis.js allocateCheckBasis fills these):
  *     netValue      the line's value after item AND check discounts (whole line,
  *                   not per unit) - taxed by post_discount added-on rate lines
@@ -226,11 +265,11 @@ export function computeTax({
   orderType = 'dine-in',
   currencyMinorUnit = 2,
 } = {}) {
-  const factor = Math.pow(10, currencyMinorUnit);
   // Half-up at the minor unit, FP-safe: clamp the scaled value to 6dp first so
   // a decimal half boundary (3 x 0.99 inclusive extraction = 0.495 exactly)
   // cannot arrive as 0.49499999999999994 and round DOWN (review ADV6).
-  const roundMinor = x => Math.round(Number((x * factor).toFixed(6))) / factor;
+  // 8 Oct 2026: the one rule, shared with tax.js (taxRule.roundHalfUpMinor).
+  const roundMinor = x => roundHalfUpMinor(x, currencyMinorUnit);
 
   // Accumulator per profile line id: raw order-level total + per-order-line-rounded total.
   const acc = new Map();

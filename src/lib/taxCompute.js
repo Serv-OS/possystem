@@ -36,6 +36,13 @@
  *             the same jsonb; old readers never see it. null if the engine
  *             refused the config (seam fails toward legacy, never a guess).
  *   source  - 'legacy' | 'profiles' | 'legacy-fallback' (engine threw).
+ *   fallbacks - 8 Oct 2026 (D4), ONLY when present: [{ source: 'fallback', reason,
+ *             lineId, itemId, name, rateId }], one per line that took the venue
+ *             default (or its own rate) instead of its Back Office rule, because
+ *             its rate id matched nothing at this venue, it is not on our menu,
+ *             or it is an open price item (taxRule.TAX_FALLBACK_REASONS). The
+ *             money is the default rate's; the note is so a report can flag it.
+ *             Absent on an ordinary sale, so its record keeps exactly its old keys.
  *
  * exclusiveTax remains the ONLY amount a surface may add to the payable;
  * inclusive stays extraction-only (display / records). Invariant unchanged.
@@ -48,6 +55,12 @@ import { buildLegacyProfiles, legacyProfileId } from './taxAdapter.js';
 import { calculateOrderTax } from './tax.js';
 import { allocateCheckBasis, recordCheckBasis } from './taxBasis.js';
 import { bookedTaxRecord } from './taxShare.js';
+import { taxFallbackNote, taxFallbacksOf } from './taxRule.js';
+
+// 8 Oct 2026: the fallbacks a tax record carries (lines that took the venue default instead of
+// their own rule), for the Tax report and the activity feed. Re-exported so report code reads it
+// from the seam it already imports.
+export { taxFallbacksOf };
 
 /**
  * Build a tax context OUTSIDE the store - the customer surfaces (online, QR,
@@ -225,19 +238,27 @@ export function taxCtxHasConfig(taxCtx) {
  *  pre-mapped {price, qty, taxRateId, taxOverrides} shapes surfaces build. */
 function toEngineLine(i, remap) {
   const rawProfile = i.taxProfileId ?? i.tax_profile_id ?? null;
+  const itemId = i.itemId ?? i.id ?? null;
   return {
     price: Number(i.price) || 0,
     qty: i.qty || 1,
     voided: !!i.voided,
     discountedPrice: i.discountedPrice,
-    itemId: i.itemId ?? i.id ?? null,
+    itemId,
     categoryId: i.categoryId ?? i.cat ?? (Array.isArray(i.cats) && i.cats.length ? i.cats[0] : null),
     // Line-level snapshot (order lines copy taxProfileId at add time, exactly
     // like they snapshot taxRateId) - remapped like every other assignment.
     taxProfileId: rawProfile ? (remap[rawProfile] || rawProfile) : null,
+    // 8 Oct 2026: so a fallback note can name the line (taxRule.taxFallbackNote), and so the
+    // cascade knows an open price till item (itemId 'custom') has no Back Office rule.
+    lineId: i.uid ?? i.id ?? null,
+    name: typeof i.name === 'string' ? i.name : null,
+    custom: itemId === 'custom',
     legacy: {
       taxRateId: i.taxRateId ?? i.tax_rate_id ?? null,
       taxOverrides: i.taxOverrides ?? i.tax_overrides ?? undefined,
+      // Stamped by venueTaxRates.lineTaxRefs when the till cleaned a rate id it does not hold.
+      taxFallback: i.taxFallback && typeof i.taxFallback === 'object' ? i.taxFallback : undefined,
     },
   };
 }
@@ -302,6 +323,11 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
   // identical parity path.
   const anyLineProfile = engineLines.some(l => l.taxProfileId && prep.profilesById[l.taxProfileId]);
 
+  // 8 Oct 2026 (D4): a line that could not follow its own Back Office rule (a rate id this venue
+  // does not have, a channel line not on our menu, an open price item) takes the venue default
+  // and is NOTED here, so the record carries `fallbacks` and a report can flag it. On the parity
+  // path below calculateOrderTax notes the same lines itself (one rule, taxRule.js).
+  const engineFallbacks = [];
   const baseResolve = makeCascadeResolver({
     itemProfileIds: prep.itemProfileIds,
     categoryProfileIds: prep.categoryProfileIds,
@@ -309,6 +335,7 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
     legacyRateToProfileId: prep.legacyRateToProfileId,
     legacyDefaultProfileId: prep.legacyDefaultProfileId,
     profilesById: prep.profilesById,   // dangling ids fall through, never zero
+    onFallback: (ol, note) => engineFallbacks.push(taxFallbackNote(note.reason, ol, note.rateId)),
   });
   const resolveProfileId = (ol, ot) =>
     (ol.taxProfileId && prep.profilesById[ol.taxProfileId]) ? ol.taxProfileId : baseResolve(ol, ot);
@@ -382,6 +409,9 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
     taxV2: v2Record(eng, 'profiles', orderType),
     source: 'profiles',
     ...extras,
+    // 8 Oct 2026: only when a line fell to the default (the key is absent otherwise, as on the
+    // parity path, so an ordinary record keeps exactly its old keys).
+    ...(engineFallbacks.length ? { fallbacks: engineFallbacks } : {}),
   };
 }
 

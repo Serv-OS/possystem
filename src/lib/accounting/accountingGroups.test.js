@@ -177,6 +177,35 @@ test('a check scope discount splits over rates by the items it was taken off', (
   assert.deepEqual(g2.groups.discountLabels['Staff meal'], { group: 'staff', amount: 200, count: 1 });
 });
 
+test('8 Oct 2026 (D2): a collection sale places an item with a Takeaway override in its override\'s bucket, as the till booked it', () => {
+  // The till books a collected Leeds donut (Standard base, takeaway Zero Rate) at the Zero Rate
+  // since 8 Oct 2026 (src/lib/taxRule.js: collection reads Takeaway). The Xero split must read the
+  // override the same way, or the donut's goods land in the 20% bucket and the invoice no longer
+  // matches the VAT the till booked.
+  const row = {
+    id: 'C1', closed_at: at(2), total: 8.2, tip: 0, service: 0, tax_amount: 0.62,
+    tax_breakdown: breakdown([{ id: 'r20', gross: 3.7, tax: 0.62 }, { id: 'r0', gross: 4.5, tax: 0 }], 'collection'),
+    items: [
+      { uid: 'c1', cat: 'cat-food_1e945c26', itemId: 'donut', qty: 1, price: 4.5, taxRateId: 'r20', taxOverrides: { takeaway: 'r0', delivery: 'r0' } },
+      { uid: 'c2', cat: 'cat-hot_1e945c26', itemId: 'latte', qty: 1, price: 3.7, taxRateId: 'r20' },
+    ],
+    discounts: [],
+    tenders: [{ method: 'card', amount: 8.2, tip: 0, processor: 'adyen' }],
+  };
+  const g = buildGroupedDay({ day: DAY, saleRows: [row], venue: UK, taxRates: UK_TAX, resolver: makeGroupResolver(mapping(), CATEGORIES) });
+  assertTies(g, 'collection');
+  assert.deepEqual(g.groups.sales['rate:r0'].goods, { food: 450 }, 'the donut sits in the Zero Rate bucket, not estimated');
+  assert.deepEqual(g.groups.sales['rate:r20'].goods, { 'hot-drinks': 370 });
+  const estimated = (x) => x.groups.flags.some((f) => f.code === 'group_rate_estimated');
+  assert.equal(estimated(g), false);
+  // a bar tab reads the Bar override; an order type with no alias reads only its own key
+  const tab = { ...row, id: 'C2', tax_breakdown: breakdown([{ id: 'r20', gross: 3.7, tax: 0.62 }, { id: 'r0', gross: 4.5, tax: 0 }], 'bar-tab'),
+    items: [{ ...row.items[0], taxOverrides: { bar: 'r0' } }, row.items[1]] };
+  const gt = buildGroupedDay({ day: DAY, saleRows: [tab], venue: UK, taxRates: UK_TAX, resolver: makeGroupResolver(mapping(), CATEGORIES) });
+  assert.deepEqual(gt.groups.sales['rate:r0'].goods, { food: 450 });
+  assert.equal(estimated(gt), false);
+});
+
 test("an item's own discount (items[].discount) is a discount line, and each group keeps its full sales", () => {
   // Reviewer's case, 30 Sep: a latte 3.80 (Hot drinks) and a muffin 3.00 (Food) with the staff
   // 50% on the muffin, paid 5.30 by card. Before, the muffin's discount was never seen: Hot

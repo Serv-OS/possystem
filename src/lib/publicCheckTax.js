@@ -32,27 +32,21 @@
 // Both stamp `share`, as the till's discounted record does, so the Z and Tax reports read the
 // VAT that was booked instead of working out the full price's VAT again (taxShare.js).
 //
-// PURE: no imports beyond taxShare.js, runs under node --test.
+// PURE: no imports beyond taxShare.js and taxRule.js, runs under node --test.
 
 import { isUsableBreakdown, inclusiveTaxOnCharged } from './taxShare.js';
+import { roundVat } from './taxRule.js';
 
 /**
- * A money figure rounded to pence the way Postgres numeric(10,2) rounds the same JSON number:
- * half away from zero on its shortest decimal form. Math.round(x * 100) / 100 is not the same
- * (1.005 * 100 is 100.49999999999999 in floating point, so it gives 1.00; the column gives
- * 1.01). Null when the figure is not a finite number.
+ * A money figure rounded to pence. 8 Oct 2026: the one rounding rule every channel uses
+ * (taxRule.roundVat, half up on the true value, so 5.85 at 20% inside the price, exactly 0.975,
+ * gives 0.98 whatever floating point noise it arrives with). Until then this rounded the
+ * shortest decimal form the way the closed_checks column would, which read 0.9749999999999996
+ * as 0.97: the same sale was a penny apart depending on which path booked it. Null when the
+ * figure is not a finite number. Kept under its old name for the pages that import it.
  */
 export function roundToPence(n) {
-  if (n == null || n === '') return null;
-  const x = Number(n);
-  if (!Number.isFinite(x)) return null;
-  const s = String(Math.abs(x));
-  if (/e/i.test(s)) return Math.round(x * 100) / 100;   // far outside any money figure
-  const [whole, frac = ''] = s.split('.');
-  let minor = Number(whole) * 100 + Number((frac + '00').slice(0, 2));
-  if (frac.length > 2 && frac.charCodeAt(2) >= 53) minor += 1;   // third decimal is 5 or more
-  const out = minor / 100;
-  return x < 0 && out !== 0 ? -out : out;
+  return roundVat(n);
 }
 
 /**

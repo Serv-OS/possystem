@@ -3015,9 +3015,11 @@ export const useStore = create((set, get) => ({
         // venue's, or a deleted rate) resolved to NO rate and the line booked no VAT, silently.
         // It is dropped here, so the line takes this venue's default rate like any product with no
         // rate, on every till (lib/venueTaxRates.js lineTaxRefs), and the till says so in its log.
+        // 8 Oct 2026 (D4): the line also carries WHY (taxFallback), so the tax engine records it on
+        // the sale (tax_breakdown.fallbacks) and the owner sees it, not only the console.
         const refs = lineTaxRefs(txRate, txOv, useStore.getState().taxRates);
         if (refs.dropped.length) console.warn('[tax] product', item.id, 'names rate id(s)', refs.dropped.join(', '), 'that this venue does not have: charged at the venue default instead');
-        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides };
+        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, ...(refs.taxFallback ? { taxFallback: refs.taxFallback } : {}) };
       })(),
       seat: 'shared',
       course: (() => {

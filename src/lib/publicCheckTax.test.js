@@ -39,7 +39,11 @@ test('QR-FAUOB: the raw VAT the page used to send is read as 0 by the old server
 });
 
 test('the nine sales the server booked with 0 VAT, as the till books the same line', () => {
-  const cases = [[5.6, 0.93], [4.85, 0.81], [5.85, 0.97], [4.4, 0.73], [4.4, 0.73], [5.15, 0.86], [1.95, 0.32], [1.0, 0.17], [1.0, 0.17]];
+  // 8 Oct 2026 (D3): 5.85 at 20% is exactly 0.975 and 1.95 at 20% exactly 0.325; the one rounding
+  // rule books 0.98 and 0.33 (half up). The 2 Oct backfill wrote 0.97 and 0.32 for them (the floats
+  // 0.9749999999999996 and 0.32499999999999996 rounded down); history is left alone, every new sale
+  // on a half penny rounds up.
+  const cases = [[5.6, 0.93], [4.85, 0.81], [5.85, 0.98], [4.4, 0.73], [4.4, 0.73], [5.15, 0.86], [1.95, 0.33], [1.0, 0.17], [1.0, 0.17]];
   for (const [price, vat] of cases) assert.equal(publicCheckTaxFields(qrTax(price)).tax_amount, vat, `${price}`);
   assert.equal(publicCheckTaxFields(qrTax(3.75)).tax_amount, 0.63, 'QR-N2IYX at Huddersfield, which did get through (0.625)');
 });
@@ -88,9 +92,10 @@ test('a scaled record (an online order with an offer) is sent as it stands', () 
   assert.equal(f.tax_breakdown, scaled);
 });
 
-test('roundToPence rounds like the closed_checks column, not like Math.round', () => {
+test('roundToPence is the one rounding rule (half up on the true value), not Math.round and not the column\'s float reading', () => {
   assert.equal(roundToPence(0.9333333333333327), 0.93);
-  assert.equal(roundToPence(0.9749999999999996), 0.97, '5.85 at 20%: the till books 0.97');
+  assert.equal(roundToPence(0.9749999999999996), 0.98, '5.85 at 20% is exactly 0.975: half up (8 Oct 2026, D3); the column read the float as 0.97');
+  assert.equal(roundToPence(1.6749999999999998), 1.68, '10.05 at 20% is exactly 1.675');
   assert.equal(roundToPence(0.625), 0.63);
   assert.equal(roundToPence(1.005), 1.01, 'Math.round(1.005 * 100) / 100 is 1');
   assert.equal(roundToPence(1.7750000000000001), 1.78);
