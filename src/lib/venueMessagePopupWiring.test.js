@@ -92,7 +92,8 @@ test('Back Office mounts it once, for a signed in person at a venue, and lists w
   assert.equal(count(bo, '<VenueMessagePopup'), 1);
   assert.match(bo, /\{authUser && !isMock && orgCtx\?\.locationId && \(\s*<VenueMessagePopup host="backoffice" locationId=\{orgCtx\.locationId\} user=\{authUser\}/);
   assert.ok(bo.includes("{ id: 'servos-messages', label: 'Messages from ServOS'"));
-  assert.ok(bo.includes("['servos-messages','Messages from ServOS']"));
+  // 8 Oct 2026: the sidebar list moved to lib/boSections.js (the screen imports it).
+  assert.ok(read('src/lib/boSections.js').includes("['servos-messages','Messages from ServOS']"));
   assert.ok(bo.includes("{section === 'servos-messages' && <ServosMessages locationId={orgCtx?.locationId || null} />}"));
 });
 
