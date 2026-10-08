@@ -45,6 +45,10 @@
 //   A business day that has not ended yet is never posted (it would lock out the rest of it).
 //   A day already posted answers `already`; asked by a person, it also says when the day's
 //   figures have changed since (checks or refunds that arrived after it was posted).
+//   An auto run just after a sign in where Xero did not say which organisation answers `held`
+//   and posts nothing (7 Oct 2026, autoHeldAfterSignIn): the next hourly run tries again.
+//   Deploy this function BEFORE xero-connect: Back Office promises this hold as soon as
+//   xero-connect answers `held`, and only this function keeps it.
 //
 // REPLACE AN OLD DAY WITH A SALES INVOICE (2 Oct 2026). Peter switched Leeds to the daily sales
 // invoice from 27 Sep, pushed 27 Sep again and said "these are supposed to be invoices, I cannot
@@ -64,7 +68,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi } from '../_shared/xero.ts';
-import { postedElsewhere, setupMadeForAnother } from '../_shared/xeroOrg.js';
+import { postedElsewhere, setupMadeForAnother, autoPostHeld } from '../_shared/xeroOrg.js';
 import { venueClock, loadAccountingDay, venueSite } from '../_shared/accountingData.ts';
 import { businessDayWindow, isYmd, isBusinessDayOver, lastCompletedBusinessDay, currentBusinessDay, wallClock, addDays } from '../_shared/businessDay.js';
 import { buildAccountingDay } from '../_shared/accountingDay.js';
@@ -310,6 +314,27 @@ async function refuseSetupMadeForAnother(locationId: string, detail: any, tenant
   } catch (e) { console.warn('[xero-sales] could not clear a setup made for another organisation:', (e as Error)?.message); }
   const was = detail?.site?.orgName ? ` (${detail.site.orgName})` : '';
   return { code: 'organisation', message: `This site's Xero setup was made for another Xero organisation${was}. Check its accounts, VAT rates and tracking for ${tenantName || 'the organisation it is connected to now'} under ${tab}, then check a day's figures.` };
+}
+
+// 7 Oct 2026: the short hold on AUTO posting after a sign in (autoPostHeld). A site that was
+// disconnected and signs in again when Xero does not ask is stored back on the organisation its
+// setup was made for, still Ready and still on auto posting, and Back Office asks the person
+// which organisation it should be. Until they have picked (or half an hour has passed) the
+// hourly job posts nothing for the site: xero-connect's sign in note carries hold, and an
+// organisation record newer than the note is the pick. The second read is only made when the
+// note says hold. A read that fails means NOT held: the hold is a courtesy, and the Ready
+// checks and setupMadeForAnother remain the real guards.
+async function autoHeldAfterSignIn(locationId: string): Promise<boolean> {
+  try {
+    const last = async (kind: string) => {
+      const { data, error } = await sb.from(LOG).select('detail').eq('location_id', locationId).eq('kind', kind).order('created_at', { ascending: false }).limit(1);
+      if (error) throw new Error(error.message);
+      return data?.[0]?.detail || null;
+    };
+    const signIn = await last('organisation_sign_in');
+    if (!autoPostHeld({ signIn, lastRecord: null })) return false;
+    return autoPostHeld({ signIn, lastRecord: await last('organisation') });
+  } catch (e) { console.warn('[xero-sales] could not read the sign in hold:', (e as Error)?.message); return false; }
 }
 
 // 7 Oct 2026: a day posted before this site moved to another Xero organisation is still in the
@@ -685,6 +710,14 @@ Deno.serve(async (req) => {
     const ends = wallClock(day.toMs, venue.timezone);
     const hhmm = `${String(Math.floor(ends.minutes / 60)).padStart(2, '0')}:${String(ends.minutes % 60).padStart(2, '0')}`;
     return json({ ...base, error: `The ${date} business day is still trading. It ends at ${hhmm} on ${ends.ymd} venue time. Post it after that.`, code: 'day_open' }, 400);
+  }
+
+  // 7 Oct 2026: the hourly job waits while a person is being asked which organisation this
+  // site's books are in (autoHeldAfterSignIn). Before anything is read, claimed or posted, and
+  // with NO row written for the day, so the next hourly run simply tries again. A push by a
+  // person (auto false) is never held.
+  if (auto && !dryRun && await autoHeldAfterSignIn(locationId)) {
+    return json({ ok: true, held: true, ...base, reason: 'Someone has just signed in to Xero for this site and Xero did not say which organisation. Auto posting waits up to half an hour for them to pick it in Back Office. Nothing was posted. The next hourly run tries again.' });
   }
 
   const key = { table: LOG, locationId, kind: 'daily_sales', refDate: date };

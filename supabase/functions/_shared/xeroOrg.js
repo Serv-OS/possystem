@@ -39,23 +39,43 @@ export function pickConsentedOrg(conns, authEventId = null) {
 // connection, else its organisation record, else its cached setup) while that organisation is
 // still in the list, and Back Office then asks which one (matched false). Only a site with
 // nothing to stay on takes the newest connection, as a placeholder until the person picks.
-// Returns { org, matched }: matched true = Xero named it (or there is only one).
-export function organisationForSignIn({ conns = [], authEventId = null, previous = null } = {}) {
+//
+// 7 Oct 2026, later the same day (review of v5.11.36): a site that IS connected only ever moves
+// when Xero's sign in event names exactly one organisation (`named`). "There is only one in the
+// list" is not that: someone presses Sign in to Xero while their browser is signed in to Xero as
+// ANOTHER Xero login, one that cannot see this site's organisation, and the site was silently
+// moved to whatever that login could see (setup cleared, tokens replaced). So for a connected
+// site (`connected`: it has a connection row, and `previous` is that row's organisation):
+//   - Xero named one: that one;
+//   - Xero named nothing and the site's own is in the list: it stays;
+//   - Xero named nothing and the site's own is NOT in the list: nothing at all changes
+//     (`otherLogin`, org null), and the screen says which login to use.
+// A site with no connection row keeps the rule above (its setup's organisation while that is in
+// the list, else a placeholder, and Back Office asks).
+// Returns { org, matched, named, otherLogin }:
+//   matched     nothing to ask: Xero named it, or there is only one;
+//   named       this sign in event is on exactly one organisation in the list;
+//   otherLogin  a connected site whose organisation this sign in cannot see.
+export function organisationForSignIn({ conns = [], authEventId = null, previous = null, connected = false } = {}) {
   const list = (Array.isArray(conns) ? conns : []).filter((c) => isObj(c) && c.tenantId);
   const pool = list.filter(isOrg).length ? list.filter(isOrg) : list;
-  if (!pool.length) return { org: null, matched: false };
-  if (pool.length === 1) return { org: pool[0], matched: true };
-  if (authEventId) {
-    const mine = pool.filter((c) => c.authEventId && String(c.authEventId).toLowerCase() === String(authEventId).toLowerCase());
-    if (mine.length === 1) return { org: mine[0], matched: true };
-    if (mine.length > 1) {
-      // Several authorised in one go: Xero named a set, not one. Stay put if the site's own is among them.
-      const stay = previous?.id ? mine.find((c) => c.tenantId === previous.id) : null;
-      return { org: stay || newest(mine), matched: false };
-    }
+  if (!pool.length) return { org: null, matched: false, named: false, otherLogin: false };
+  const mine = authEventId
+    ? pool.filter((c) => c.authEventId && String(c.authEventId).toLowerCase() === String(authEventId).toLowerCase())
+    : [];
+  if (mine.length === 1) return { org: mine[0], matched: true, named: true, otherLogin: false };
+  const own = previous?.id ? pool.find((c) => c.tenantId === previous.id) : null;
+  if (connected) {
+    if (!own) return { org: null, matched: false, named: false, otherLogin: true };
+    return { org: own, matched: pool.length === 1, named: false, otherLogin: false };
   }
-  const stay = previous?.id ? pool.find((c) => c.tenantId === previous.id) : null;
-  return { org: stay || newest(pool), matched: false };
+  if (pool.length === 1) return { org: pool[0], matched: true, named: false, otherLogin: false };
+  if (mine.length > 1) {
+    // Several authorised in one go: Xero named a set, not one. Stay put if the site's own is among them.
+    const stay = previous?.id ? mine.find((c) => c.tenantId === previous.id) : null;
+    return { org: stay || newest(mine), matched: false, named: false, otherLogin: false };
+  }
+  return { org: own || newest(pool), matched: false, named: false, otherLogin: false };
 }
 
 // A person who has just signed in to Xero from this site's Back Office screen may choose among
@@ -67,6 +87,59 @@ export function signInGrantFresh(grant, userId, nowMs = Date.now()) {
   if (!isObj(grant) || !userId || grant.by !== userId) return false;
   const at = Date.parse(grant.at || '');
   return Number.isFinite(at) && nowMs - at >= 0 && nowMs - at <= SIGN_IN_GRANT_MINUTES * 60000;
+}
+
+// Has the question been answered since this sign in? Yes when the site's last organisation
+// record (lastRecord: { at, via, ... }) was written after the sign in note: the person picked
+// here ('picker'), or signed in again and Xero named one ('connect'). A disconnect note is not
+// an answer. A record with no clock, or an older one, is not one either.
+function answeredSince(signIn, lastRecord) {
+  if (!isObj(signIn) || !isObj(lastRecord) || lastRecord.via === 'disconnect') return false;
+  const noted = Date.parse(signIn.at || '');
+  const recorded = Date.parse(lastRecord.at || '');
+  return Number.isFinite(noted) && Number.isFinite(recorded) && recorded > noted;
+}
+
+// Does Back Office ask this person "which organisation are this site's books in?" (the amber
+// box). Only the person who just signed in, only while their half hour runs, only when Xero did
+// not say which one and there is more than one to choose from, and only until they have
+// answered. 7 Oct 2026 (review of v5.11.36): ServOS staff (super admin) are asked like anyone
+// else, and the question stops once an organisation has been picked.
+export function shouldAskWhichOrganisation({ signIn = null, userId = null, lastRecord = null, organisationCount = 0, nowMs = Date.now() } = {}) {
+  if (!signInGrantFresh(signIn, userId, nowMs)) return false;
+  if (signIn.matched !== false) return false;
+  if (!(Number(organisationCount) > 1)) return false;
+  return !answeredSince(signIn, lastRecord);
+}
+
+// A short hold on AUTO posting after a sign in. 7 Oct 2026 (review of v5.11.36): a site that
+// was disconnected and signs in again when Xero does not ask is stored back on the organisation
+// its setup was made for, with its Ready setup and auto posting untouched. The hourly job could
+// then post the last completed day there before the person has answered the question. So the
+// sign in note carries hold: true (a site with no connection row, Xero did not say which), and
+// while it stands the hourly job posts nothing for the site. It ends by itself: after the same
+// half hour the person has to pick in, or as soon as an organisation is picked. There is no
+// switch to turn back on. A push by a person is never held.
+// A note stamped up to a minute ahead of this clock is still a hold (two servers, two clocks).
+const HOLD_CLOCK_SLACK_MS = 60000;
+export function autoPostHeld({ signIn = null, lastRecord = null, nowMs = Date.now() } = {}) {
+  if (!isObj(signIn) || signIn.hold !== true) return false;
+  const at = Date.parse(signIn.at || '');
+  if (!Number.isFinite(at)) return false;
+  const age = nowMs - at;
+  if (age < -HOLD_CLOCK_SLACK_MS || age > SIGN_IN_GRANT_MINUTES * 60000) return false;
+  return !answeredSince(signIn, lastRecord);
+}
+
+// Does THIS sign in put the hold on its note? Yes for a site with no connection row when Xero
+// did not say which organisation. Yes too for a site that is connected by now, when a hold from
+// an earlier sign in still stands (`standing`: autoPostHeld on the note before this one) and
+// Xero again did not say: the person pressed Sign in to Xero a second time, which is what the
+// box itself offers, and that must not quietly end the wait. Never when Xero said which one (or
+// there is only one): then there is nothing to wait for.
+export function signInHolds({ connected = false, matched = false, standing = false } = {}) {
+  if (matched) return false;
+  return !connected || !!standing;
 }
 
 // The organisations a stored sign in can see, for the Back Office picker:
