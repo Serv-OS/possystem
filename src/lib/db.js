@@ -10,7 +10,7 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
 import { normaliseCheckStatus } from './voidRules.js';
-import { readAllPagesResult, progressSum, isTooManyRows, rowBudget, CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES } from './pagedRead.js';
+import { readAllPagesResult, progressSum, isTooManyRows, rowBudget, pinnedEnd, CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES } from './pagedRead.js';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
 import { copiesNeedingMasterRate } from './venueTaxRates';
@@ -623,6 +623,9 @@ export const bumpKDSTicket = async (id) => {
 export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
   const o = (opts && typeof opts === 'object') ? opts : {};
+  // 6 Oct 2026: a window still trading ends at the moment the read starts, so a ticket sent
+  // while the pages are in flight cannot shift the offsets (pinnedEnd in lib/pagedRead.js).
+  const to = pinnedEnd(toDate);
   const result = await readAllPagesResult('kitchen tickets', (first) => {
     let query = supabase
       .from('kds_tickets')
@@ -631,7 +634,7 @@ export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, 
       .order('sent_at', { ascending: false })
       .order('id', { ascending: false });
     if (fromDate) query = query.gte('sent_at', fromDate.toISOString());
-    if (toDate)   query = query.lte('sent_at', toDate.toISOString());
+    if (to)       query = query.lte('sent_at', to.toISOString());
     return query;
   }, { onProgress: o.onProgress, stop: o.stop, maxPages: TICKET_MAX_PAGES });
   if (result.data) {
@@ -855,6 +858,12 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
 export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
   const o = (opts && typeof opts === 'object') ? opts : {};
+  // 6 Oct 2026 (multi site review): a window still trading ends at the moment the read
+  // starts. The pages go out together by offset, so a sale closing between them pushed every
+  // older row down a place, and when a later page was answered before an earlier one, one
+  // check fell between them and was lost (pinnedEnd in lib/pagedRead.js has the story). The
+  // signed in site's live sales are merged in by the shell, so Today still fills in.
+  const to = pinnedEnd(toDate);
   const result = await readAllPagesResult('closed checks', (first) => {
     let query = supabase
       .from('closed_checks')
@@ -863,7 +872,7 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
       .order('closed_at', { ascending: false })
       .order('id', { ascending: false });
     if (fromDate) query = query.gte('closed_at', fromDate.toISOString());
-    if (toDate)   query = query.lte('closed_at', toDate.toISOString());
+    if (to)       query = query.lte('closed_at', to.toISOString());
     return query;
   }, { onProgress: o.onProgress, stop: o.stop, maxPages: CHECK_MAX_PAGES, budget: o.budget || null });
   if (result.data) {
@@ -1213,7 +1222,9 @@ export const fetchClosedChecksMultiRange = async (windows = [], opts = {}) => {
   const slot = o.onProgress ? progressSum(o.onProgress) : null;
   let failed = false;
   const stop = () => failed || !!o.stop?.();
-  const budget = rowBudget(CHECK_ROWS_ON_SCREEN);
+  // opts.budget: a caller that reads twice for one screen (this period, then the one it is
+  // compared to) hands the SAME budget to both, so the two together stay under the ceiling.
+  const budget = o.budget || rowBudget(CHECK_ROWS_ON_SCREEN);
   try {
     const results = await Promise.all(windows.map(({ locationId: id, from, to }) =>
       fetchClosedChecksRange(id, from, to, { onProgress: slot ? slot(id) : null, stop, budget }).then(r => {

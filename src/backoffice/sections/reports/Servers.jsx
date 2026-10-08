@@ -12,9 +12,12 @@
 
 import { useMemo, useState } from 'react';
 import { StatTile, CompareChip, ExportBtn, EmptyState } from './_charts';
-import { pctDelta, reportClock, workedTime } from './_filters';
+import { reportClock, workedTime } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { voidedValue } from '../../../lib/voidRules';
+import { isSplit, sumFields, tagPartRows } from '../../../lib/reportSplit.js';
+import { useParts, exportSites, titleSt } from './_siteSplit';
+import { SplitHeader, Blocks, GroupChange, SiteChange, SiteRows, SiteCell } from './SiteSplit';
 
 const SORT_COLS = [
   { id:'revenue',  label:'Revenue',  fmt: r => r.revenue },
@@ -81,7 +84,15 @@ function formatHours(ms) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file. One site is the report exactly as it was.
+export default function Servers(props) {
+  return isSplit(props.sites) ? <ServersSites {...props}/> : <ServersOne {...props}/>;
+}
+
+// compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
+function ServersOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const [sortBy, setSortBy] = useState('revenue');
   const [sortDir, setSortDir] = useState('desc');
 
@@ -148,7 +159,7 @@ export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig 
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
         <StatTile label="Staff on floor" value={fmtN(totals.staffCount)}/>
-        <StatTile label="Revenue"        value={fmt(totals.revenue)}   compare={pctDelta(totals.revenue, totals.prevRev)} color="var(--acc)"/>
+        <StatTile label="Revenue"        value={fmt(totals.revenue)}   vs={compare} values={[totals.revenue, totals.prevRev]} color="var(--acc)"/>
         <StatTile label="Tips"           value={fmt(totals.tips)}      sub={totals.revenue ? `${((totals.tips/totals.revenue)*100).toFixed(1)}% of revenue` : null} color="var(--grn)"/>
         <StatTile label="Avg per head"   value={fmt(totals.staffCount ? totals.revenue/totals.staffCount : 0)}/>
       </div>
@@ -170,14 +181,12 @@ export default function Servers({ checks, prevChecks, fmt, fmtN, locationConfig 
         </div>
 
         {sorted.map((r, i) => {
-          const prevRev = prevByServer[r.server];
-          const delta = prevRev ? pctDelta(r.revenue, prevRev) : null;
           return (
             <div key={r.server} style={{ display:'grid', gridTemplateColumns:'40px 1.3fr 80px 80px 70px 70px 100px 80px 80px 70px 70px 70px', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:6, minWidth:960, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
               <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{i + 1}</span>
               <div>
                 <div style={{ color:'var(--t1)', fontWeight:600 }}>{r.server}</div>
-                {delta !== null && <div style={{ marginTop:2 }}><CompareChip pct={delta}/></div>}
+                <div style={{ marginTop:2 }}><CompareChip vs={compare} values={[r.revenue, prevByServer[r.server]]}/></div>
               </div>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatHours(r.hoursMs)}</span>
               <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
@@ -209,5 +218,105 @@ function SortBtn({ id, label, sortBy, sortDir, onClick }) {
       textAlign:'right', background:'transparent', border:'none', padding:0, cursor:'pointer', fontFamily:'inherit',
       fontSize:10, fontWeight:700, color: active ? 'var(--acc)' : 'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em',
     }}>{label} {arrow}</button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the group and each site on top, then everyone in one list with a Site
+// column. A person is keyed by SITE PLUS NAME (rollUp runs once per site), so two people
+// called Sam at two sites are two rows and never merge. Hours are worked out on each
+// person's own site's business day.
+// ─────────────────────────────────────────────────────────────────────────────
+const SITE_COLS = '36px 1.2fr 1.1fr 70px 64px 64px 84px 96px 80px 64px 64px 64px';
+
+function ServersSites(props) {
+  const { fmtN } = props;
+  const { parts, blocks } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const prev = {};
+    rollUp(p.prevRows, p.clock).forEach(r => { prev[r.server] = r.revenue; });
+    const rows = tagPartRows(p, rollUp(p.rows, p.clock)).map(r => ({ ...r, part: p, prevRevenue: prev[r.server] }));
+    return [p.id, { rows, prevTotal: Object.values(prev).reduce((s, v) => s + v, 0), ...sumFields(rows, ['revenue', 'tips', 'checks', 'covers']), staff: rows.length }];
+  })), [parts]);
+
+  const onExport = () => {
+    const rows = parts.flatMap(p => [...bySite.get(p.id).rows].sort((a, b) => b.revenue - a.revenue));
+    exportSites('server-scorecard', rows, [
+      { label:'Currency',   key: r => r.part.currency || '' },
+      { label:'Server',     key:'server' },
+      { label:'Days worked',key:'daysWorked' },
+      { label:'Hours',      key: r => formatHours(r.hoursMs) },
+      { label:'Checks',     key:'checks' },
+      { label:'Covers',     key:'covers' },
+      { label:'Revenue',    key: r => r.revenue.toFixed(2) },
+      { label:'Tips',       key: r => r.tips.toFixed(2) },
+      { label:'Avg check',  key: r => r.avgCheck.toFixed(2) },
+      { label:'Avg cover',  key: r => r.avgCover.toFixed(2) },
+      { label:'Tip %',      key: r => r.tipPct.toFixed(2) },
+      { label:'Discount %', key: r => r.discPct.toFixed(2) },
+      { label:'Void %',     key: r => r.voidPct.toFixed(2) },
+      { label:'Void value', key: r => r.voidValue.toFixed(2) },
+    ]);
+  };
+
+  if (parts.every(p => bySite.get(p.id).staff === 0)) return <EmptyState icon="👥" message="No server activity at these sites in this period."/>;
+
+  return (
+    <div>
+      <SplitHeader parts={parts} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const site = b.parts.map(p => ({ part: p, cells: bySite.get(p.id) }));
+        const all = sumFields(site.map(x => x.cells), ['revenue', 'tips', 'checks', 'covers', 'staff']);
+        const people = b.parts.flatMap(p => bySite.get(p.id).rows).sort((x, y) => y.revenue - x.revenue);
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
+              <StatTile label="Staff on floor" value={fmtN(all.staff)} sub={`${b.parts.length} sites`}/>
+              <StatTile label="Revenue"        value={b.fmt(all.revenue)} color="var(--acc)"
+                sub={<GroupChange block={b} pairs={site.map(x => ({ current: x.cells.revenue, previous: x.cells.prevTotal }))}/>}/>
+              <StatTile label="Tips"           value={b.fmt(all.tips)} sub={all.revenue ? `${((all.tips / all.revenue) * 100).toFixed(1)}% of revenue` : null} color="var(--grn)"/>
+              <StatTile label="Avg per head"   value={b.fmt(all.staff ? all.revenue / all.staff : 0)}/>
+            </div>
+            <SiteRows block={b} rows={site} total={all} columns={[
+              { label:'Staff',   cell: c => fmtN(c.staff) },
+              { label:'Checks',  cell: c => fmtN(c.checks) },
+              { label:'Covers',  cell: c => fmtN(c.covers) },
+              { label:'Tips',    cell: (c, f) => f(c.tips), color:'var(--grn)' },
+              { label:'Revenue', cell: (c, f) => f(c.revenue), color:'var(--acc)' },
+              { label:'Change',  cell: (c, f, part) => (part ? <SiteChange part={part} values={[c.revenue, c.prevTotal]}/> : '') },
+            ]}/>
+            <div style={titleSt}>Everyone, by revenue</div>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'auto', marginBottom:14 }}>
+              <div style={{ display:'grid', gridTemplateColumns:SITE_COLS, padding:'9px 14px', background:'var(--bg3)', borderBottom:'1px solid var(--bdr)', fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', gap:6, minWidth:1040 }}>
+                <span>#</span><span>Server</span><span>Site</span>
+                {['Hours', 'Checks', 'Covers', 'Tips', 'Revenue', 'Avg chk', 'Tip %', 'Disc %', 'Void %'].map(h => <span key={h} style={{ textAlign:'right' }}>{h}</span>)}
+              </div>
+              {people.map((r, i) => (
+                <div key={r.siteKey} style={{ display:'grid', gridTemplateColumns:SITE_COLS, padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:6, minWidth:1040, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
+                  <span style={{ color:'var(--t4)', fontFamily:'var(--font-mono)' }}>{i + 1}</span>
+                  <div>
+                    <div style={{ color:'var(--t1)', fontWeight:600 }}>{r.server}</div>
+                    {r.part.compare && <div style={{ marginTop:2 }}><CompareChip vs={r.part.compare} values={[r.revenue, r.prevRevenue]}/></div>}
+                  </div>
+                  <SiteCell name={r.siteName}/>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{formatHours(r.hoursMs)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.checks}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.covers}</span>
+                  <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{b.fmt(r.tips)}</span>
+                  <span style={{ textAlign:'right', color:'var(--acc)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{b.fmt(r.revenue)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{b.fmt(r.avgCheck)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{r.tipPct.toFixed(1)}%</span>
+                  <span style={{ textAlign:'right', color: r.discPct > 5 ? 'var(--acc)' : 'var(--t3)', fontFamily:'var(--font-mono)' }}>{r.discPct.toFixed(1)}%</span>
+                  <span style={{ textAlign:'right', color: r.voidPct > 5 ? 'var(--red)' : 'var(--t3)', fontFamily:'var(--font-mono)' }}>{r.voidPct.toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      }}</Blocks>
+      <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
+        ⓘ One row per person per site: the same name at two sites is two people here. Hours are first check to last check on each site's own business day.
+      </div>
+    </div>
   );
 }

@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.41',
+    date: '8 Oct 2026',
+    items: [
+      "Reports across your sites: a Sites control now sits next to the period buttons on every report. Tick All sites, or any mix of the sites in your company, and the report shows a group total then a row or column per site. Pick one site and the report is exactly what it was. It starts on the site you are signed in to and remembers your last choice. A login with one site does not see the control.",
+      "Multi site reports: Business summary, Daily trend, Order types, Order sources, Daypart, Server scorecard, Shifts, Exceptions, Payments and cash, Tables, Transactions, Product mix, Item sales trend, Menu engineering, Tax summary, Tips and Kitchen performance. Every CSV gains a Site column. Each site is counted on its own business day and clock; sites in different currencies are shown in separate blocks and never added together.",
+      "Multi site reports: Product mix, Item trend and Menu engineering use each site's own menu (a shared product is one row across sites). Tax summary uses each site's own VAT rates, so one site's sales are never taxed on another's rates. Kitchen performance uses each site's own station names. Transactions lists every site, but refunds, receipts and reversal retries can only be done from the site you are signed in to, and the row says so.",
+      "Reports: the percent chip is the same rule everywhere and says what it compares to. Today compares to the same weekday last week up to the same time of day (+4% vs last Monday by 2pm), This week to the same days of the week before, This month to the same days of the month before. Across several sites the group percent only counts sites that can be compared; when the sites' comparisons cut at different points the chip says each site against its own same days.",
+      "Location compare is now All sites overview: every site in your company, one block per currency, a Change column per site and a like for like group line (5 of 6 sites, 1 new).",
+      "Reports: item level reports (Product mix, Item trend, Menu engineering) across several sites cover up to 7 days; pick one site for longer. Business summary, Daily trend, Payments and Order types across several sites over a longer period use fast server totals once the day sums function is installed; until then they read every sale and say too long rather than show a part total.",
+      "Reports: a report never shows 0 checks and zero revenue while the site list is still loading; it shows Loading until the figures are in. A sale closing while a long report was reading could drop one check from the count; the read window is now pinned so the count is the same on every reload.",
+      "Kitchen performance: when the period is too long to load it now says so, instead of showing an empty kitchen.",
+    ],
+  },
+  {
     v: '5.11.40',
     date: '8 Oct 2026',
     items: [

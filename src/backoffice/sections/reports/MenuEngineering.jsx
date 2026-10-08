@@ -17,6 +17,14 @@ import { useMemo } from 'react';
 import { useStore } from '../../../store';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
+import { isSplit } from '../../../lib/reportSplit.js';
+import { siteEngineeringItems, classifyItems } from '../../../lib/reportSiteMenu.js';
+import { useParts, exportSites, titleSt } from './_siteSplit';
+import { useSiteMenus, useOtherSiteMenu } from './_siteMenus';
+import { SplitHeader, Blocks, SiteRows } from './SiteSplit';
+
+// One empty list, so a view with nothing to show does not rebuild its tables every render.
+const NONE = Object.freeze([]);
 
 const QUADRANTS = {
   star:   { label:'Stars',       blurb:'High popularity, high contribution.', color:'var(--grn)', bg:'var(--grn-d)', action:'Promote, feature, protect.' },
@@ -41,8 +49,20 @@ function classify(item, popMed, contribMed) {
   return 'dog';
 }
 
-export default function MenuEngineering({ checks, fmt, fmtN }) {
-  const { menuCategories = [] } = useStore();
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file, each site's lines read against ITS OWN menu (src/lib/reportSiteMenu.js). One site is
+// the report exactly as it was.
+export default function MenuEngineering(props) {
+  return isSplit(props.sites) ? <MenuEngineeringSites {...props}/> : <MenuEngineeringOne {...props}/>;
+}
+
+function MenuEngineeringOne({ checks, fmt, fmtN, sites }) {
+  const store = useStore();
+  // 5 Oct 2026: one OTHER site ticked. Its categories are its own, read fresh (the store holds
+  // the signed in site's). The signed in site reads the store as it always has.
+  const other = useOtherSiteMenu(sites);
+  const menuCategories = other.other ? (other.menu?.categories || NONE) : (store.menuCategories || NONE);
   const catLabel = useMemo(() => {
     const map = {};
     menuCategories.forEach(c => { map[c.id] = c.label || c.name || c.id; });
@@ -96,6 +116,7 @@ export default function MenuEngineering({ checks, fmt, fmtN }) {
     downloadCsv(`menu-engineering-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
 
+  if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's menu…</div>;
   if (items.length === 0) return <EmptyState icon="🎯" message="No items sold in this period. Widen the date range."/>;
 
   return (
@@ -224,6 +245,100 @@ function MatrixChart({ items, popMed, contribMed, fmt }) {
       </svg>
       <div style={{ marginTop:8, fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
         Median popularity: {popMed.toFixed(1)} units · Median avg price: {fmt(contribMed)} · Dot size ∝ √revenue · Hover a dot for details.
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the matrix and the quadrants for the GROUP (one per currency: a price in
+// pounds and a price in dollars are never one median), a shared product one dot, with each
+// site's own quadrant counts underneath. Each site's lines are read against its own menu, so
+// a category id names the right category and a product shared across sites is one item.
+// ─────────────────────────────────────────────────────────────────────────────
+function MenuEngineeringSites(props) {
+  const { fmtN } = props;
+  const { parts, blocks } = useParts(props);
+  const { menus, loading, failed } = useSiteMenus(parts);
+
+  // Each site's items, classified on that site's own medians (what its single site report says).
+  const bySite = useMemo(() => new Map(parts.map(p => [p.id, classifyItems(siteEngineeringItems(p.rows, menus[p.id] || null))])), [parts, menus]);
+  // The group of one currency block: the same items added up across its sites, then classified on the group's medians.
+  const groupOf = (block) => {
+    const map = {};
+    for (const p of block.parts) {
+      for (const it of bySite.get(p.id).items) {
+        const g = map[it.key] || (map[it.key] = { key: it.key, name: it.name, catLabel: it.catLabel, qty: 0, rev: 0, bySite: {} });
+        g.qty += it.qty; g.rev += it.rev; g.bySite[p.id] = it;
+      }
+    }
+    return classifyItems(Object.values(map).map(it => ({ ...it, avgPrice: it.qty ? it.rev / it.qty : 0 })));
+  };
+  const counts = (items) => {
+    const g = { star: 0, plow: 0, puzzle: 0, dog: 0 };
+    for (const it of items) g[it.quadrant] += 1;
+    return g;
+  };
+
+  const onExport = () => {
+    const line = (it, siteName, currency) => ({ siteName, currency, item: it.name, category: it.catLabel || '', quadrant: QUADRANTS[it.quadrant].label, qty: it.qty, avgPrice: it.avgPrice.toFixed(2), revenue: it.rev.toFixed(2) });
+    const rows = [];
+    for (const p of parts) for (const it of bySite.get(p.id).items) rows.push(line(it, p.name, p.currency || ''));
+    for (const b of blocks) if (b.parts.length > 1) for (const it of groupOf(b).items) rows.push(line(it, `All ${b.parts.length} sites`, b.currency || ''));
+    exportSites('menu-engineering', rows, [
+      { label:'Currency',           key:'currency' },
+      { label:'Item',               key:'item' },
+      { label:'Category',           key:'category' },
+      { label:'Quadrant',           key:'quadrant' },
+      { label:'Units sold',         key:'qty' },
+      { label:'Avg price (contrib proxy)', key:'avgPrice' },
+      { label:'Revenue',            key:'revenue' },
+    ]);
+  };
+
+  if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's menu…</div>;
+  if (parts.every(p => bySite.get(p.id).items.length === 0)) return <EmptyState icon="🎯" message="No items sold at these sites in this period. Widen the date range."/>;
+
+  return (
+    <div>
+      <SplitHeader parts={parts} chips={false} onExport={onExport}>
+        {failed.map(id => <div key={id} style={{ color:'var(--amber)' }}>{parts.find(x => x.id === id)?.name || id}: the menu could not be read, so its products are matched by name.</div>)}
+      </SplitHeader>
+      <Blocks blocks={blocks}>{b => {
+        const group = groupOf(b);
+        const byQ = { star: [], plow: [], puzzle: [], dog: [] };
+        group.items.forEach(i => byQ[i.quadrant].push(i));
+        const site = b.parts.map(p => ({ part: p, cells: { ...counts(bySite.get(p.id).items), items: bySite.get(p.id).items.length } }));
+        const all = { ...counts(group.items), items: group.items.length };
+        if (!group.items.length) return <EmptyState icon="🎯" message="No items sold at these sites in this period."/>;
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
+              <StatTile label="Stars"       value={fmtN(all.star)}   color={QUADRANTS.star.color}/>
+              <StatTile label="Plow Horses" value={fmtN(all.plow)}   color={QUADRANTS.plow.color}/>
+              <StatTile label="Puzzles"     value={fmtN(all.puzzle)} color={QUADRANTS.puzzle.color}/>
+              <StatTile label="Dogs"        value={fmtN(all.dog)}    color={QUADRANTS.dog.color}/>
+            </div>
+            <SiteRows block={b} rows={site} total={all} title="Quadrants by site (each on its own medians)" columns={[
+              { label:'Items',       cell: c => fmtN(c.items) },
+              { label:'Stars',       cell: c => fmtN(c.star),   color: QUADRANTS.star.color },
+              { label:'Plow horses', cell: c => fmtN(c.plow),   color: QUADRANTS.plow.color },
+              { label:'Puzzles',     cell: c => fmtN(c.puzzle), color: QUADRANTS.puzzle.color },
+              { label:'Dogs',        cell: c => fmtN(c.dog),    color: QUADRANTS.dog.color },
+            ]}/>
+            <div style={titleSt}>All {b.parts.length} sites together</div>
+            <MatrixChart items={group.items} popMed={group.popMed} contribMed={group.contribMed} fmt={b.fmt}/>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:16, marginBottom:14 }}>
+              <QuadrantCard id="star"   rows={byQ.star}   fmt={b.fmt}/>
+              <QuadrantCard id="puzzle" rows={byQ.puzzle} fmt={b.fmt}/>
+              <QuadrantCard id="plow"   rows={byQ.plow}   fmt={b.fmt}/>
+              <QuadrantCard id="dog"    rows={byQ.dog}    fmt={b.fmt}/>
+            </div>
+          </>
+        );
+      }}</Blocks>
+      <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
+        ⓘ The group row of "All sites" classifies each product on the group's medians; the site rows classify each site's products on its own medians, as its single site report does, so the counts need not add up. Contribution is proxied by average price per unit. The CSV has every item per site, then the group.
       </div>
     </div>
   );

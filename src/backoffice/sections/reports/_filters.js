@@ -14,11 +14,19 @@
 // v5.11.1: and the rest: mixSeries (Order types, Order sources), daySlot (Product mix),
 //          workedTime (Servers, Tips), sumByVenueHour (Tips, KDS performance).
 //
+// v5.11.29: the previous period is THE ONE PERCENT RULE (src/lib/reportCompare.js; Peter,
+//          5 Oct 2026: "same day last week, then for the week the week before and the month
+//          view the month before"). Until then prev was the same length of time straight
+//          before, so Today was set against all of yesterday. getPeriodRange now hands back
+//          `compare` (the range, its days and the words for the chip) and prevFrom/prevTo
+//          are that range, so the loader in BOReports.jsx needed no change.
+//
 // Used by every report in the reporting suite.
 
 import {
-  venueZone, businessDayOf, businessDayStartMs, wallTimeToInstant, wallClock, addDays, isYmd,
+  venueZone, businessDayOf, wallTimeToInstant, wallClock, addDays, isYmd,
 } from '../../../../supabase/functions/_shared/businessDay.js';
+import { compareRange, dayWindow, serviceWindow } from '../../../lib/reportCompare.js';
 
 export const PERIODS = [
   { id:'today',      label:'Today'        },
@@ -102,29 +110,21 @@ export function rangeDays(range) {
   return out;
 }
 
-// The same number of business days immediately before the range: the compare axis.
+// The compare axis: the business days the range is compared to (range.compare, the one
+// percent rule). It can be SHORTER than the range: 1 to 31 March is set against 1 to 28
+// February. A range with no compare on it falls back to the same number of days before.
 export function prevRangeDays(range) {
+  if (range?.compare) return rangeDays(range.compare);
   const days = rangeDays(range);
   return days.map((_, i) => addDays(range.fromDay, i - days.length));
 }
 
-// Instants of whole business days fromDay..toDay (to is the last ms before the next day).
-function dayWindow(fromDay, toDay, tz, bds) {
-  return [businessDayStartMs(fromDay, tz, bds), businessDayStartMs(addDays(toDay, 1), tz, bds) - 1];
-}
-
-// Instants of one service on `day`'s wall clock. The end minute is included (15:00 means
-// up to 15:00:59.999), and a service that ends before it starts runs past midnight.
-function serviceWindow(day, sMin, eMin, tz) {
-  const from = wallTimeToInstant(day, sMin, tz);
-  let to = wallTimeToInstant(day, eMin, tz) + 59999;
-  if (to <= from) to = wallTimeToInstant(addDays(day, 1), eMin, tz) + 59999;
-  return [from, to];
-}
-
-// Returns { from, to, prevFrom, prevTo, fromDay, toDay, timeZone, dayStart }. from/to are real instants
-// (to is inclusive, the last ms before the next day starts); prev period is same length,
-// immediately preceding. fromDay/toDay are the venue business days the range covers
+// Returns { from, to, prevFrom, prevTo, compare, fromDay, toDay, timeZone, dayStart }. from/to
+// are real instants (to is inclusive, the last ms before the next day starts). compare is
+// what the period is measured against (compareRange in src/lib/reportCompare.js: the same
+// weekday last week up to the same time of day, the same days of the week or month
+// before, or the whole period before a finished one) with the words for the chip, and
+// prevFrom/prevTo are its instants. fromDay/toDay are the venue business days the range covers
 // ('YYYY-MM-DD'): pass THOSE to anything that asks for dates, never format from/to.
 // config = { businessDayStart: 'HH:MM', shifts: [{id,name,start,end}], timezone }
 // (getLocationConfig). No timezone = Europe/London, the venue default, never the browser's
@@ -133,10 +133,13 @@ export function getPeriodRange(periodId, custom, config = {}, nowMs = Date.now()
   const { timeZone: tz, dayStart: bds } = reportClock(config);
   const today = businessDayOf(nowMs, tz, bds);
   const withPrev = ([fromMs, toMs], extra) => {
-    const lengthMs = toMs - fromMs;
-    const prevTo   = new Date(fromMs - 1);
-    const prevFrom = new Date(prevTo.getTime() - lengthMs);
-    return { from: new Date(fromMs), to: new Date(toMs), prevFrom, prevTo, timeZone: tz, dayStart: bds, ...extra };
+    const range = { from: new Date(fromMs), to: new Date(toMs), timeZone: tz, dayStart: bds, ...extra };
+    const compare = compareRange(periodId, range, nowMs);
+    // No compare only when the dates are unusable (a custom range typed backwards): keep
+    // the old answer, the same length straight before, so the loader still has a window.
+    const prevTo   = compare ? compare.to   : new Date(fromMs - 1);
+    const prevFrom = compare ? compare.from : new Date(fromMs - 1 - (toMs - fromMs));
+    return { ...range, prevFrom, prevTo, compare };
   };
   // Whole business days fromDay..toDay (inclusive).
   const days = (fromDay, toDay) => withPrev(dayWindow(fromDay, toDay, tz, bds), { fromDay, toDay });

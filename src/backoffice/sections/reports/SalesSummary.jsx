@@ -10,14 +10,25 @@
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
-import { pctDelta, classifyShift } from './_filters';
+import { classifyShift } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
+import { isSplit, sumFields } from '../../../lib/reportSplit.js';
+import { useParts, exportSites } from './_siteSplit';
+import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
 
 // The figures live in lib/salesStats.js (28 Sep 2026) so the till can print them too.
 export { computeSalesStats } from '../../../lib/salesStats';
 import { computeSalesStats } from '../../../lib/salesStats';
 
-export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationConfig }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split below. One site is
+// the report exactly as it was.
+export default function SalesSummary(props) {
+  return isSplit(props.sites) ? <SalesSummarySites {...props}/> : <SalesSummaryOne {...props}/>;
+}
+
+// compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
+function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
   const cur  = useMemo(() => computeSalesStats(checks),     [checks]);
   const prev = useMemo(() => computeSalesStats(prevChecks), [prevChecks]);
   const avgCheck     = cur.count  ? cur.net  / cur.count  : 0;
@@ -90,10 +101,10 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
       <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}><ExportBtn onClick={onExport}/></div>
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
-        <StatTile label="Net sales"  value={fmt(cur.net)}      compare={pctDelta(cur.net, prev.net)}         sub={`${cur.count} checks`} color="var(--acc)"/>
-        <StatTile label="Covers"     value={fmtN(cur.covers)}  compare={pctDelta(cur.covers, prev.covers)}   sub={`${fmt(avgCover)} / cover`}/>
-        <StatTile label="Avg check"  value={fmt(avgCheck)}     compare={pctDelta(avgCheck, prevAvgCheck)}/>
-        <StatTile label="Tips"       value={fmt(cur.tips)}     compare={pctDelta(cur.tips, prev.tips)}       sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
+        <StatTile label="Net sales"  value={fmt(cur.net)}      vs={compare} values={[cur.net, prev.net]} sub={`${cur.count} checks`} color="var(--acc)"/>
+        <StatTile label="Covers"     value={fmtN(cur.covers)}  vs={compare} values={[cur.covers, prev.covers]} noun="covers" sub={`${fmt(avgCover)} / cover`}/>
+        <StatTile label="Avg check"  value={fmt(avgCheck)}     vs={compare} values={[avgCheck, prevAvgCheck]}/>
+        <StatTile label="Tips"       value={fmt(cur.tips)}     vs={compare} values={[cur.tips, prev.tips]} noun="tips" sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
       </div>
 
       {servicePeriods && servicePeriods.rows.length > 0 && (
@@ -191,6 +202,87 @@ function ExceptionsSnapshot({ cur, fmt }) {
       <div style={{ marginTop:10, padding:'9px 12px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.6 }}>
         ⓘ Open the <strong style={{ color:'var(--t2)' }}>Exceptions</strong> tab to audit every event by server, time and approval.
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the group's ladder on top, then a column per site.
+// Each site's figures are computeSalesStats over its own rows (the same sums as one site),
+// or the server day sums for a long period (stats is the same shape, added by the database).
+// ─────────────────────────────────────────────────────────────────────────────
+const STAT_FIELDS = ['gross', 'discounts', 'voids', 'refunds', 'refundsItems', 'refundsTip', 'refundsService', 'refundsTax',
+  'service', 'tips', 'deliveryFees', 'tax', 'total', 'covers', 'count', 'net'];
+const perCheck = (s) => (s.count ? s.net / s.count : 0);
+const perCover = (s) => (s.covers ? s.net / s.covers : 0);
+// The ladder, top to bottom. The CSV has the same lines.
+const SITE_LINES = [
+  { label:'Gross sales',      v: s => s.gross,         strong:true },
+  { label:'less Discounts',   v: s => -s.discounts },
+  { label:'less Voids',       v: s => -s.voids },
+  { label:'less Refunds',     v: s => -s.refundsItems },
+  { label:'Net sales',        v: s => s.net,           strong:true },
+  { label:'plus Tax',         v: s => s.tax },
+  { label:'plus Service',     v: s => s.service },
+  { label:'plus Delivery charges', v: s => s.deliveryFees },
+  { label:'plus Tips',        v: s => s.tips },
+  { label:'Total collected',  v: s => s.total,         strong:true },
+  { label:'Covers',           v: s => s.covers, kind:'count' },
+  { label:'Checks',           v: s => s.count,  kind:'count' },
+  { label:'Avg check (net)',  v: perCheck },
+  { label:'Avg cover (net)',  v: perCover },
+];
+
+function SalesSummarySites(props) {
+  const { fmtN } = props;
+  const { parts, blocks, fromSums } = useParts(props);
+  const stats = useMemo(() => new Map(parts.map(p => [p.id, {
+    cur:  p.sums ? p.sums.totals.stats : computeSalesStats(p.rows),
+    prev: p.sums ? (p.prevSums?.totals.stats || computeSalesStats([])) : computeSalesStats(p.prevRows),
+  }])), [parts]);
+
+  const onExport = () => {
+    const rows = [];
+    for (const p of parts) {
+      const { cur, prev } = stats.get(p.id);
+      for (const l of SITE_LINES) rows.push({ siteName: p.name, currency: p.currency || '', metric: l.label.replace(/^(less|plus) /, ''), current: Math.abs(l.v(cur)), previous: Math.abs(l.v(prev)), compared: !!p.compare && p.compare.loaded !== false });
+    }
+    exportSites('sales-summary', rows, [
+      { label:'Currency', key:'currency' },
+      { label:'Metric',   key:'metric' },
+      { label:'Current',  key: r => (r.current || 0).toFixed(2) },
+      { label:'Previous', key: r => (r.compared ? (r.previous || 0).toFixed(2) : '') },
+      { label:'Change %', key: r => (r.compared && r.previous ? (((r.current - r.previous) / r.previous) * 100).toFixed(2) : '') },
+    ]);
+  };
+
+  if (parts.every(p => { const c = stats.get(p.id).cur; return c.count === 0 && c.voids === 0; })) {
+    return <EmptyState icon="📊" message="No sales at these sites in this period. Try widening the date range."/>;
+  }
+
+  return (
+    <div>
+      <SplitHeader parts={parts} fromSums={fromSums} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const all = sumFields(b.parts.map(p => stats.get(p.id).cur), STAT_FIELDS);
+        const rows = SITE_LINES.map(l => ({
+          key: l.label, kind: l.kind, strong: l.strong, total: l.v(all),
+          bySite: Object.fromEntries(b.parts.map(p => [p.id, l.v(stats.get(p.id).cur)])),
+        }));
+        rows.push({ key:'Net sales change', render: p => <SiteChange part={p} values={[stats.get(p.id).cur.net, stats.get(p.id).prev.net]}/> });
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
+              <StatTile label="Net sales" value={b.fmt(all.net)} color="var(--acc)"
+                sub={<>{all.count} checks <GroupChange block={b} pairs={b.parts.map(p => ({ current: stats.get(p.id).cur.net, previous: stats.get(p.id).prev.net }))}/></>}/>
+              <StatTile label="Covers"    value={fmtN(all.covers)} sub={`${b.fmt(perCover(all))} / cover`}/>
+              <StatTile label="Avg check" value={b.fmt(perCheck(all))}/>
+              <StatTile label="Tips"      value={b.fmt(all.tips)} sub={all.net > 0 ? `${((all.tips / all.net) * 100).toFixed(1)}% of net` : null} color="var(--grn)"/>
+            </div>
+            <SiteMatrix block={b} rows={rows} first="Revenue breakdown" fmtN={fmtN}/>
+          </>
+        );
+      }}</Blocks>
     </div>
   );
 }

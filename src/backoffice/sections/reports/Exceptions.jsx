@@ -8,6 +8,9 @@ import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { plainText, checkCustomerText } from '../../../lib/reportText';
 import { voidedValue } from '../../../lib/voidRules';
+import { isSplit, sumFields, siteNameKey } from '../../../lib/reportSplit.js';
+import { useParts, exportSites, titleSt } from './_siteSplit';
+import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
 
 // Flatten closed checks into a single event list sorted by time (newest first).
 // A single check can produce multiple events (one void + two discounts, for example).
@@ -47,13 +50,30 @@ function flattenEvents(checks) {
   return events.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 }
 
+const headerRow = {
+  display:'grid', gridTemplateColumns:'70px 80px 1fr 1.4fr 1.2fr 120px', padding:'10px 16px', gap:10,
+  background:'var(--bg3)', borderBottom:'1px solid var(--bdr)',
+  fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em',
+};
+const dataRow = {
+  display:'grid', gridTemplateColumns:'70px 80px 1fr 1.4fr 1.2fr 120px', padding:'10px 16px', gap:10,
+  borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center',
+};
+
 const TYPE_STYLE = {
   void:     { color:'var(--red)', bg:'var(--red-d)',                 label:'VOID' },
   discount: { color:'var(--acc)', bg:'var(--acc-d)',                 label:'DISC' },
   refund:   { color:'#a78bfa',    bg:'rgba(167,139,250,.1)',         label:'REF'  },
 };
 
-export default function Exceptions({ checks, fmt }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file. One site is the report exactly as it was.
+export default function Exceptions(props) {
+  return isSplit(props.sites) ? <ExceptionsSites {...props}/> : <ExceptionsOne {...props}/>;
+}
+
+function ExceptionsOne({ checks, fmt }) {
   const [filter, setFilter] = useState('all');
 
   const events    = useMemo(() => flattenEvents(checks), [checks]);
@@ -177,12 +197,122 @@ export default function Exceptions({ checks, fmt }) {
   );
 }
 
-const headerRow = {
-  display:'grid', gridTemplateColumns:'70px 80px 1fr 1.4fr 1.2fr 120px', padding:'10px 16px', gap:10,
-  background:'var(--bg3)', borderBottom:'1px solid var(--bdr)',
-  fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.06em',
-};
-const dataRow = {
-  display:'grid', gridTemplateColumns:'70px 80px 1fr 1.4fr 1.2fr 120px', padding:'10px 16px', gap:10,
-  borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center',
-};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: each site's voids, discounts and refunds on top (the owner's first
+// question: which site is leaking), then one audit trail with a Site column. Times are
+// each event's own site's wall clock. Staff are keyed by site plus name, so the same name
+// at two sites is two people.
+// ─────────────────────────────────────────────────────────────────────────────
+const EX_FIELDS = ['voids', 'discounts', 'refunds', 'voidCount', 'discCount', 'refundCount'];
+const exHead = { ...headerRow, gridTemplateColumns:'70px 110px 1fr 1fr 1.2fr 1.1fr 110px', minWidth:980 };
+const exRow  = { ...dataRow,   gridTemplateColumns:'70px 110px 1fr 1fr 1.2fr 1.1fr 110px', minWidth:980 };
+const whenAt = (ts, timeZone) => (ts ? new Date(ts).toLocaleString('en-GB', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', timeZone }) : '—');
+
+function ExceptionsSites(props) {
+  const [filter, setFilter] = useState('all');
+  const { parts, blocks } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const events = flattenEvents(p.rows).map(e => ({ ...e, part: p, siteName: p.name }));
+    const cells = Object.fromEntries(EX_FIELDS.map(f => [f, 0]));
+    const staff = {};
+    for (const e of events) {
+      const s = (staff[e.server] ||= { server: e.server, part: p, siteName: p.name, siteKey: siteNameKey(p.id, e.server), ...Object.fromEntries(EX_FIELDS.map(f => [f, 0])) });
+      const [amt, n] = e.type === 'void' ? ['voids', 'voidCount'] : e.type === 'discount' ? ['discounts', 'discCount'] : ['refunds', 'refundCount'];
+      cells[amt] += e.amount; cells[n] += 1; s[amt] += e.amount; s[n] += 1;
+    }
+    return [p.id, { events, staff: Object.values(staff), ...cells }];
+  })), [parts]);
+  const all = useMemo(() => parts.flatMap(p => bySite.get(p.id).events).sort((a, b) => (b.ts || 0) - (a.ts || 0)), [parts, bySite]);
+  const displayed = all.filter(e => filter === 'all' || e.type === filter);
+
+  const onExport = () => {
+    exportSites('exceptions', displayed.map(e => ({ ...e, when: e.ts ? new Date(e.ts).toISOString() : '' })), [
+      { label:'Currency',    key: e => e.part.currency || '' },
+      { label:'Time',        key:'when' },
+      { label:'Site time',   key: e => whenAt(e.ts, e.part.clock.timeZone) },
+      { label:'Type',        key:'type' },
+      { label:'Amount',      key: e => (e.amount || 0).toFixed(2) },
+      { label:'Ref',         key:'ref' },
+      { label:'Table',       key:'tableLabel' },
+      { label:'Server',      key:'server' },
+      { label:'Reason',      key:'reason' },
+      { label:'Approved by', key:'approvedBy' },
+    ]);
+  };
+
+  if (all.length === 0) return <EmptyState icon="🛡" message="No exceptions at these sites in this period. Clean shift."/>;
+
+  const amount = (v, n, f) => <>{f(v)}<span style={{ color:'var(--t4)', marginLeft:6, fontSize:10 }}>×{n}</span></>;
+  return (
+    <div>
+      <SplitHeader parts={parts} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const site = b.parts.map(p => ({ part: p, cells: bySite.get(p.id) }));
+        const total = sumFields(site.map(x => x.cells), EX_FIELDS);
+        const staff = b.parts.flatMap(p => bySite.get(p.id).staff)
+          .sort((x, y) => (y.voids + y.discounts + y.refunds) - (x.voids + x.discounts + x.refunds));
+        return (
+          <>
+            <SiteRows block={b} rows={site} total={total} columns={[
+              { label:'Voids',     cell: (c, f) => amount(c.voids, c.voidCount, f),     color:'var(--red)' },
+              { label:'Discounts', cell: (c, f) => amount(c.discounts, c.discCount, f), color:'var(--acc)' },
+              { label:'Refunds',   cell: (c, f) => amount(c.refunds, c.refundCount, f), color:'#a78bfa' },
+              { label:'Total',     cell: (c, f) => f(c.voids + c.discounts + c.refunds), color:'var(--t1)' },
+            ]}/>
+            {staff.length > 0 && (
+              <SiteRows block={{ ...b, parts: [] }} title="By staff member" total={null}
+                rows={staff.map(s => ({ part: { id: s.siteKey, name: `${s.server} · ${s.siteName}` }, cells: s }))}
+                columns={[
+                  { label:'Voids',     cell: (c, f) => amount(c.voids, c.voidCount, f),     color:'var(--red)' },
+                  { label:'Discounts', cell: (c, f) => amount(c.discounts, c.discCount, f), color:'var(--acc)' },
+                  { label:'Refunds',   cell: (c, f) => amount(c.refunds, c.refundCount, f), color:'#a78bfa' },
+                  { label:'Total',     cell: (c, f) => f(c.voids + c.discounts + c.refunds), color:'var(--t1)' },
+                ]}/>
+            )}
+          </>
+        );
+      }}</Blocks>
+
+      <div style={{ ...titleSt, marginTop:6 }}>Every event</div>
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {['all','void','discount','refund'].map(f => (
+          <button key={f} onClick={() => setFilter(f)} style={{
+            padding:'6px 14px', borderRadius:8,
+            border:`1px solid ${filter === f ? 'var(--acc-b)' : 'var(--bdr)'}`,
+            background: filter === f ? 'var(--acc-d)' : 'var(--bg3)',
+            color: filter === f ? 'var(--acc)' : 'var(--t3)',
+            fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textTransform:'capitalize',
+          }}>{f === 'all' ? 'All' : f + 's'}</button>
+        ))}
+      </div>
+      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'auto' }}>
+        <div style={exHead}>
+          <span>Type</span><span>Time</span><span>Site</span><span>Ref · Table</span><span>Reason</span><span>Staff / Approved</span>
+          <span style={{ textAlign:'right' }}>Amount</span>
+        </div>
+        {displayed.length === 0 ? (
+          <div style={{ padding:32, textAlign:'center', color:'var(--t4)', fontSize:12 }}>No {filter}s in this period.</div>
+        ) : displayed.slice(0, 200).map((e, i) => {
+          const st = TYPE_STYLE[e.type];
+          return (
+            <div key={i} style={exRow}>
+              <span style={{ padding:'3px 7px', background:st.bg, border:`1px solid ${st.color}55`, borderRadius:5, fontSize:10, fontWeight:800, color:st.color, fontFamily:'var(--font-mono)', textAlign:'center', alignSelf:'center' }}>{st.label}</span>
+              <span style={{ color:'var(--t3)', fontFamily:'var(--font-mono)', fontSize:11 }}>{whenAt(e.ts, e.part.clock.timeZone)}</span>
+              <SiteCell name={e.siteName}/>
+              <span style={{ color:'var(--t2)' }}>{e.ref} · <span style={{ color:'var(--t3)' }}>{e.tableLabel}</span></span>
+              <span style={{ color:'var(--t2)' }}>{e.reason || '—'}</span>
+              <span style={{ color:'var(--t3)', fontSize:11 }}>{e.server}{e.approvedBy ? ` · by ${e.approvedBy}` : ''}</span>
+              <span style={{ textAlign:'right', fontFamily:'var(--font-mono)', fontWeight:700, color:st.color }}>{e.part.fmt(e.amount)}</span>
+            </div>
+          );
+        })}
+        {displayed.length > 200 && (
+          <div style={{ padding:'10px 16px', fontSize:11, color:'var(--t4)', textAlign:'center' }}>
+            Showing first 200 of {displayed.length}. Export CSV for the full list.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
