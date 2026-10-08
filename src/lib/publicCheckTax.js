@@ -20,6 +20,13 @@
 // till does. With no rate resolved at all (a venue with no tax set up) nothing is claimed:
 // null, as before.
 //
+// 8 Oct 2026 (VAT audit, Preston QR-4OGI7 booked with NO VAT): a page that has tax set up
+// (rates or profiles in its context) and still has no usable VAT figure for goods above zero is
+// a page that cannot book the sale right. publicCheckTaxFields then THROWS PublicCheckTaxError,
+// named so the checkout can show its words, instead of quietly sending tax_amount null. The
+// checkouts gate payment on the rates being loaded first (lib/customerRates.js), so this is the
+// last line, never the first. Pages that pass no `hasTaxConfig` keep the old answer (null).
+//
 //
 // AN AUTOMATIC OFFER (review of this fix, 2 Oct 2026). The record sent must describe the bill
 // that was CHARGED, in full, or the fix above books a wrong figure where it used to book none:
@@ -32,10 +39,11 @@
 // Both stamp `share`, as the till's discounted record does, so the Z and Tax reports read the
 // VAT that was booked instead of working out the full price's VAT again (taxShare.js).
 //
-// PURE: no imports beyond taxShare.js and taxRule.js, runs under node --test.
+// PURE: no imports beyond taxShare.js, taxRule.js and customerRates.js (the words), runs under node --test.
 
 import { isUsableBreakdown, inclusiveTaxOnCharged } from './taxShare.js';
 import { roundVat } from './taxRule.js';
+import { CUSTOMER_RATES_WORDS } from './customerRates.js';
 
 /**
  * A money figure rounded to pence. 8 Oct 2026: the one rounding rule every channel uses
@@ -50,16 +58,43 @@ export function roundToPence(n) {
 }
 
 /**
+ * The error a checkout shows when the page cannot book the VAT of a sale at a venue that has tax
+ * set up (8 Oct 2026). `code` is 'vat_not_loaded'; `message` is the plain words the customer sees.
+ */
+export class PublicCheckTaxError extends Error {
+  constructor(message, code = 'vat_not_loaded') {
+    super(message);
+    this.name = 'PublicCheckTaxError';
+    this.code = code;
+  }
+}
+
+/** The same words the checkout shows while the rates are not loaded (one source: lib/customerRates.js). */
+export const VAT_NOT_LOADED_MESSAGE = CUSTOMER_RATES_WORDS.failed;
+
+/**
  * The tax fields of the closed check a customer page sends to place_public_order (and writes
  * itself on the legacy path): { tax_amount } and, when a rate was resolved, { tax_breakdown }.
  * `tax` is a computeOrderTaxUnified result (or a scaled copy of one).
+ *
+ * `opts.hasTaxConfig` (8 Oct 2026): taxCtxHasConfig of the page's context. When true, a result
+ * that would book tax_amount null for goods above zero (`opts.goods`, the lines at full price;
+ * unknown counts as above zero) throws PublicCheckTaxError instead: a venue with tax set up never
+ * has a sale saved without VAT. A zero rated basket (a real 0 with its record) is not a throw.
+ * Without `hasTaxConfig` the answer is exactly what it was.
  */
-export function publicCheckTaxFields(tax) {
-  if (!isUsableBreakdown(tax)) return { tax_amount: null };
+export function publicCheckTaxFields(tax, opts = {}) {
+  const guard = opts && opts.hasTaxConfig === true && (opts.goods == null || Number(opts.goods) > 0);
+  const refuse = () => { throw new PublicCheckTaxError(VAT_NOT_LOADED_MESSAGE); };
+  if (!isUsableBreakdown(tax)) return guard ? refuse() : { tax_amount: null };
   const amount = roundToPence(tax.totalTax);
   const rated = Array.isArray(tax.breakdown) && tax.breakdown.length > 0;
-  if (!rated) return { tax_amount: amount > 0 ? amount : null };
-  return { tax_amount: amount == null ? null : Math.max(0, amount), tax_breakdown: tax };
+  if (!rated) {
+    if (amount > 0) return { tax_amount: amount };
+    return guard ? refuse() : { tax_amount: null };
+  }
+  if (amount == null) return guard ? refuse() : { tax_amount: null, tax_breakdown: tax };
+  return { tax_amount: Math.max(0, amount), tax_breakdown: tax };
 }
 
 /**

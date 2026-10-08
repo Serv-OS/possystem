@@ -1,0 +1,7595 @@
+[
+ {
+  "ref": "R6126",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 8.65,
+  "total": 6.92,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 20,
+    "amount": 1.73,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.15,
+  "share": 0.7999999999999999,
+  "stored_total_tax": 1.15,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:53:15.537+00",
+  "items": [
+   {
+    "itemId": "m-1790000307615_8e52e0fa",
+    "parentId": "m-1790000263473_8e52e0fa",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 4.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790684399225_8e52e0fa",
+    "parentId": null,
+    "name": "Kinder Cookie Cup",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16728",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 6.15,
+  "total": 6.45,
+  "tip": 0.3,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.02,
+  "share": null,
+  "stored_total_tax": 1.0249999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:42:51.248+00",
+  "items": [
+   {
+    "itemId": "m-1789994351850_5c26956b",
+    "parentId": "m-1789994343378_5c26956b",
+    "name": "Iced Matcha — Big Boy",
+    "price": 6.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9614",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.5,
+  "total": 3.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.58,
+  "share": null,
+  "stored_total_tax": 0.583333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:40:55.636+00",
+  "items": [
+   {
+    "itemId": "m-impmumnjwf6-2_74d78e2a",
+    "parentId": null,
+    "name": "Milkybar Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16727",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.45,
+  "total": 3.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.57,
+  "share": null,
+  "stored_total_tax": 0.5749999999999997,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:40:05.319+00",
+  "items": [
+   {
+    "itemId": "m-1790501910926",
+    "parentId": "m-1790501864145",
+    "name": "Tea — Big Boy",
+    "price": 3.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16726",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:39:39.291+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5872",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 8.5,
+  "total": 6.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 20,
+    "amount": 1.7,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.13,
+  "share": 0.7999999999999999,
+  "stored_total_tax": 1.13,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:38:53.402+00",
+  "items": [
+   {
+    "itemId": "m-1789994546281_8e52e0fa",
+    "parentId": "m-1789994537049_8e52e0fa",
+    "name": "Iced White Chocolate Matcha — XL Boy",
+    "price": 6.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790250644248_8e52e0fa",
+    "parentId": null,
+    "name": "Flapjack - Mixed Berry",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9387",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:37:01.061+00",
+  "items": [
+   {
+    "itemId": "m-1789998955031_74d78e2a",
+    "parentId": "m-1789998799887_74d78e2a",
+    "name": "English Breakfast Tea — Small Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16464",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.85,
+  "total": 3.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.64,
+  "share": null,
+  "stored_total_tax": 0.6416666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:36:15.265+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_5c26956b",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5871",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 8.4,
+  "tip": 0.4,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.33,
+  "share": null,
+  "stored_total_tax": 1.333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:34:18.516+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R7030",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.3,
+  "total": 4.3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.72,
+  "share": null,
+  "stored_total_tax": 0.7166666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:31:18.999+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — Small Boy",
+    "price": 4.3,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5870",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 10.05,
+  "total": 10.55,
+  "tip": 0.5,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.67,
+  "share": null,
+  "stored_total_tax": 1.6749999999999994,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:29:57.308+00",
+  "items": [
+   {
+    "itemId": "m-1789993679436_8e52e0fa",
+    "parentId": "m-1789993663299_8e52e0fa",
+    "name": "Raspberry Iced Tea — Big Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumnerwc-7_8e52e0fa",
+    "parentId": null,
+    "name": "Kinder Cookie Pie",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5869",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4.25,
+  "total": 4.46,
+  "tip": 0.21,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.71,
+  "share": null,
+  "stored_total_tax": 0.708333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:28:24.47+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_8e52e0fa",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 4.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9386",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 6.25,
+  "total": 6.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.04,
+  "share": null,
+  "stored_total_tax": 1.041666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:24:39.84+00",
+  "items": [
+   {
+    "itemId": "m-1790138909598_74d78e2a",
+    "parentId": null,
+    "name": "Chorizo & Cheese Toastie",
+    "price": 6.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9385",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 6.25,
+  "total": 6.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.04,
+  "share": null,
+  "stored_total_tax": 1.041666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:24:01.734+00",
+  "items": [
+   {
+    "itemId": "m-1790140092254_74d78e2a",
+    "parentId": null,
+    "name": "Ham & Cheese Toastie",
+    "price": 6.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R7029",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 10.6,
+  "total": 10.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.77,
+  "share": null,
+  "stored_total_tax": 1.7666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:22:49.9+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — Big Boy ",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789160867300_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — Big Boy ",
+    "price": 5.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 1,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16463",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.9,
+  "total": 3.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.65,
+  "share": null,
+  "stored_total_tax": 0.6499999999999999,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:22:26.857+00",
+  "items": [
+   {
+    "itemId": "m-1790000023794_5c26956b",
+    "parentId": "m-1790000017202_5c26956b",
+    "name": "Chai Latte — Small Boy",
+    "price": 3.9,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9384",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 7.35,
+  "total": 7.35,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.23,
+  "share": null,
+  "stored_total_tax": 1.225,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:22:26.264+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790251719606_74d78e2a",
+    "parentId": null,
+    "name": "Barebells - Salty Peanut",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R7028",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 12.5,
+  "total": 12.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.08,
+  "share": null,
+  "stored_total_tax": 2.083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:21:30.104+00",
+  "items": [
+   {
+    "itemId": "m-1790046311125_42820abf",
+    "parentId": null,
+    "name": "Breakfast Shake",
+    "price": 6.25,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5868",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 5.2,
+  "total": 5.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.87,
+  "share": null,
+  "stored_total_tax": 0.8666666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:21:23.266+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Big Boy ",
+    "price": 5.2,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9383",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 6.65,
+  "total": 6.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.11,
+  "share": null,
+  "stored_total_tax": 1.1083333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:21:18.479+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790249997856_74d78e2a",
+    "parentId": null,
+    "name": "Chocolonely - Milk Choc",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16462",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.95,
+  "total": 4.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.83,
+  "share": null,
+  "stored_total_tax": 0.8250000000000002,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:21:13.808+00",
+  "items": [
+   {
+    "itemId": "m-1789994769154_5c26956b",
+    "parentId": "m-1789994756839_5c26956b",
+    "name": "Blended Mocha — Big Boy",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16461",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 5.65,
+  "total": 5.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.94,
+  "share": null,
+  "stored_total_tax": 0.9416666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:20:47.846+00",
+  "items": [
+   {
+    "itemId": "m-1789995806749_5c26956b",
+    "parentId": "m-1789995795209_5c26956b",
+    "name": "Pumpkin Vanilla Chai Iced Latte — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9382",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 10.55,
+  "total": 10.55,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.76,
+  "share": null,
+  "stored_total_tax": 1.7583333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:19:45.811+00",
+  "items": [
+   {
+    "itemId": "m-1790138085868_74d78e2a",
+    "parentId": null,
+    "name": "Acai Bowl",
+    "price": 6.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789993681338_74d78e2a",
+    "parentId": "m-1789993663299_74d78e2a",
+    "name": "Raspberry Iced Tea — XL Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11318",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 5.2,
+  "total": 5.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.87,
+  "share": null,
+  "stored_total_tax": 0.8666666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:17:04.411+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 5.2,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16460",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.4,
+  "total": 4.62,
+  "tip": 0.22,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.73,
+  "share": null,
+  "stored_total_tax": 0.7333333333333334,
+  "loyalty": true,
+  "closed_at": "2026-10-08 16:16:43.219+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — XL Boy ",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R7027",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 10.15,
+  "total": 10.65,
+  "tip": 0.5,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.69,
+  "share": null,
+  "stored_total_tax": 1.691666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:16:26.483+00",
+  "items": [
+   {
+    "itemId": "m-1789995727971_42820abf",
+    "parentId": "m-1789995719475_42820abf",
+    "name": "Spiced Maple & Pecan Latte — Big Boy",
+    "price": 6.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790142867504_42820abf",
+    "parentId": null,
+    "name": "Homer Ring Donut",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9381",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 9.6,
+  "total": 9.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.6,
+  "share": null,
+  "stored_total_tax": 1.5999999999999996,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:16:01.327+00",
+  "items": [
+   {
+    "itemId": "m-1789993277739_74d78e2a",
+    "parentId": "m-1789993262178_74d78e2a",
+    "name": "Iced White Mocha — XL Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789993277739_74d78e2a",
+    "parentId": "m-1789993262178_74d78e2a",
+    "name": "Iced White Mocha — XL Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11372",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 10.75,
+  "total": 11.42,
+  "tip": 0.67,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.79,
+  "share": null,
+  "stored_total_tax": 1.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:15:57.3+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790250594084_5c9bdaa9",
+    "parentId": null,
+    "name": "Flapjack - Blueberry",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R7026",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 6.35,
+  "total": 6.35,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.06,
+  "share": null,
+  "stored_total_tax": 1.0583333333333327,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:15:47.357+00",
+  "items": [
+   {
+    "itemId": "m-1789995550912_42820abf",
+    "parentId": "m-1789995542460_42820abf",
+    "name": "Toffee Apple Matcha — XL Boy",
+    "price": 6.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5867",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:14:18.934+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9380",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 8.15,
+  "total": 8.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.36,
+  "share": null,
+  "stored_total_tax": 1.358333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:12:14.891+00",
+  "items": [
+   {
+    "itemId": "m-1790002933030_74d78e2a",
+    "parentId": null,
+    "name": "Choc Babyccino",
+    "price": 0.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790245757184_74d78e2a",
+    "parentId": null,
+    "name": "Fruit Shoot - Blackcurrant & Apple",
+    "price": 1.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumnerwc-7_74d78e2a",
+    "parentId": null,
+    "name": "Kinder Cookie Pie",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6950",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 7.25,
+  "total": 8.33,
+  "tip": 1.08,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.21,
+  "share": null,
+  "stored_total_tax": 1.2083333333333335,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:11:47.901+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — XL Boy ",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790841004775",
+    "parentId": "m-1790840990830",
+    "name": "Tea — XL Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11317",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 5,
+  "total": 5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.83,
+  "share": null,
+  "stored_total_tax": 0.833333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:11:36.332+00",
+  "items": [
+   {
+    "itemId": "m-1789162667181_5c9bdaa9",
+    "parentId": "m-1789161808958_5c9bdaa9",
+    "name": "Iced Latte — XL Boy",
+    "price": 5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5866",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 2.25,
+  "total": 2.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.38,
+  "share": null,
+  "stored_total_tax": 0.375,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:11:28.779+00",
+  "items": [
+   {
+    "itemId": "m-1790245974766_8e52e0fa",
+    "parentId": null,
+    "name": "Oasis - Summer Fruits",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16459",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 6.2,
+  "total": 6.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.03,
+  "share": null,
+  "stored_total_tax": 1.0333333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:10:05.495+00",
+  "items": [
+   {
+    "itemId": "m-1790173828018_5c26956b",
+    "parentId": null,
+    "name": "Victoria Sponge Traybake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790246050838_5c26956b",
+    "parentId": null,
+    "name": "Vit-Hit - Berry Boost",
+    "price": 2.55,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5865",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 3.65,
+  "total": 3.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.61,
+  "share": null,
+  "stored_total_tax": 0.6083333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:09:12.376+00",
+  "items": [
+   {
+    "itemId": "m-1790173612285_8e52e0fa",
+    "parentId": null,
+    "name": "GF Chocolate Fudge Cake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16458",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:08:47.051+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_5c26956b",
+    "parentId": "m-1789161808958_5c26956b",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6949",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.35,
+  "total": 4.35,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.72,
+  "share": null,
+  "stored_total_tax": 0.7249999999999996,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:08:45.566+00",
+  "items": [
+   {
+    "itemId": "m-1790000024118_42820abf",
+    "parentId": "m-1790000017202_42820abf",
+    "name": "Chai Latte — Big Boy",
+    "price": 4.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16457",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 6.1,
+  "total": 6.4,
+  "tip": 0.3,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.02,
+  "share": null,
+  "stored_total_tax": 1.0166666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:08:02.715+00",
+  "items": [
+   {
+    "itemId": "m-1790246165775_5c26956b",
+    "parentId": null,
+    "name": "Harrogate Sparkling",
+    "price": 1.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790143146122_5c26956b",
+    "parentId": null,
+    "name": "Lemon Cheesecake Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16456",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:05:56.159+00",
+  "items": [
+   {
+    "itemId": "m-1790246675142_5c26956b",
+    "parentId": null,
+    "name": "Poppi - Raspberry & Rose",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16455",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:02:57.742+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16454",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:02:35.19+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9379",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:02:30.192+00",
+  "items": [
+   {
+    "itemId": "m-1789998956065_74d78e2a",
+    "parentId": "m-1789998799887_74d78e2a",
+    "name": "English Breakfast Tea — XL Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6948",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 6.35,
+  "total": 6.35,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.06,
+  "share": null,
+  "stored_total_tax": 1.0583333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:00:43.776+00",
+  "items": [
+   {
+    "itemId": "m-1790246675142_42820abf",
+    "parentId": null,
+    "name": "Poppi - Raspberry & Rose",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumnjwf6-3_42820abf",
+    "parentId": null,
+    "name": "Smarties Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9378",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 11.3,
+  "total": 11.3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.88,
+  "share": null,
+  "stored_total_tax": 1.8833333333333329,
+  "loyalty": false,
+  "closed_at": "2026-10-08 16:00:39.766+00",
+  "items": [
+   {
+    "itemId": "m-1790000307615_74d78e2a",
+    "parentId": "m-1790000263473_74d78e2a",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790000307615_74d78e2a",
+    "parentId": "m-1790000263473_74d78e2a",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5862",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 2.45,
+  "total": 2.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.41,
+  "share": null,
+  "stored_total_tax": 0.4083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:57:03.38+00",
+  "items": [
+   {
+    "itemId": "m-1790246130188_8e52e0fa",
+    "parentId": null,
+    "name": "Vit-Hit - Mango & Passionfruit",
+    "price": 2.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6947",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 10.2,
+  "total": 10.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.7,
+  "share": null,
+  "stored_total_tax": 1.7000000000000002,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:55:49.297+00",
+  "items": [
+   {
+    "itemId": "m-1789994276688_42820abf",
+    "parentId": "m-1789994263373_42820abf",
+    "name": "Blueberry Iced Matcha — Big Boy",
+    "price": 5.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790045879934_42820abf",
+    "parentId": null,
+    "name": "Kale Kick",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6946",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 10.7,
+  "total": 10.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.78,
+  "share": null,
+  "stored_total_tax": 1.7833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:55:11.999+00",
+  "items": [
+   {
+    "itemId": "m-1789668579492_42820abf",
+    "parentId": "m-1789668505175_42820abf",
+    "name": "The Coffee Boy — Big Boy",
+    "price": 5.05,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789995806749_42820abf",
+    "parentId": "m-1789995795209_42820abf",
+    "name": "Pumpkin Vanilla Chai Iced Latte — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16453",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 17.8,
+  "total": 17.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.97,
+  "share": null,
+  "stored_total_tax": 2.9666666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:55:04.577+00",
+  "items": [
+   {
+    "itemId": "m-1790048593116_5c26956b",
+    "parentId": "m-1790048576951_5c26956b",
+    "name": "Snickers Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790047035390_5c26956b",
+    "parentId": "m-1790047017480_5c26956b",
+    "name": "Banana Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789667369279_5c26956b",
+    "parentId": "m-1789667243900_5c26956b",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790142536462_5c26956b",
+    "parentId": null,
+    "name": "Biscoff Ring Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11371",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 12.2,
+  "total": 12.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.03,
+  "share": null,
+  "stored_total_tax": 2.033333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:54:22.219+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790680287686",
+    "parentId": "m-1790680254038",
+    "name": "Tea — Big Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790140314218_5c9bdaa9",
+    "parentId": null,
+    "name": "Cheese and Onion Toastie",
+    "price": 5.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16452",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.5,
+  "total": 4.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.75,
+  "share": null,
+  "stored_total_tax": 0.75,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:53:48.693+00",
+  "items": [
+   {
+    "itemId": "m-1790858711541",
+    "parentId": null,
+    "name": "Sticky Toffee Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5861",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 4.4,
+  "total": 4.62,
+  "tip": 0.22,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.73,
+  "share": null,
+  "stored_total_tax": 0.7333333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:53:19.739+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11370",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.33,
+  "share": null,
+  "stored_total_tax": 1.333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:53:03.007+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9377",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 10.05,
+  "total": 10.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.67,
+  "share": null,
+  "stored_total_tax": 1.6749999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:51:42.847+00",
+  "items": [
+   {
+    "itemId": "m-1789994545703_74d78e2a",
+    "parentId": "m-1789994537049_74d78e2a",
+    "name": "Iced White Chocolate Matcha — Big Boy",
+    "price": 5.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789993177374_74d78e2a",
+    "parentId": "m-1789993157263_74d78e2a",
+    "name": "Iced Mocha — XL Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16451",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.8,
+  "total": 3.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.63,
+  "share": null,
+  "stored_total_tax": 0.6333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:48:39.981+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_5c26956b",
+    "parentId": "m-1789667243900_5c26956b",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5860",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 9.65,
+  "total": 9.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.61,
+  "share": null,
+  "stored_total_tax": 1.6083333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:48:21.259+00",
+  "items": [
+   {
+    "itemId": "m-1790847098972",
+    "parentId": "m-1790847062618",
+    "name": "Tea — Big Boy",
+    "price": 2.85,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumntkbp-3_8e52e0fa",
+    "parentId": null,
+    "name": "Kinder Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9376",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.5,
+  "total": 3.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.58,
+  "share": null,
+  "stored_total_tax": 0.583333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:48:16.457+00",
+  "items": [
+   {
+    "itemId": "m-impmumnjwf6-3_74d78e2a",
+    "parentId": null,
+    "name": "Smarties Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16450",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 13.1,
+  "total": 9.83,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 25,
+    "amount": 3.275,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.64,
+  "share": 0.75,
+  "stored_total_tax": 1.64,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:47:56.876+00",
+  "items": [
+   {
+    "itemId": "m-1789995806749_5c26956b",
+    "parentId": "m-1789995795209_5c26956b",
+    "name": "Pumpkin Vanilla Chai Iced Latte — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790000307237_5c26956b",
+    "parentId": "m-1790000263473_5c26956b",
+    "name": "Hot Chocolate — Small Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790173582694_5c26956b",
+    "parentId": null,
+    "name": "GF Carrot Cake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11316",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 5.15,
+  "total": 5.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.86,
+  "share": null,
+  "stored_total_tax": 0.8583333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:47:12.824+00",
+  "items": [
+   {
+    "itemId": "m-1789992404353_5c9bdaa9",
+    "parentId": "m-1789992386503_5c9bdaa9",
+    "name": "Honey Oat Iced Latte — Big Boy",
+    "price": 5.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11315",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 9.4,
+  "total": 9.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.57,
+  "share": null,
+  "stored_total_tax": 1.5666666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:46:09.566+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_5c9bdaa9",
+    "parentId": "m-1789161808958_5c9bdaa9",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.7,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16449",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.95,
+  "total": 4.46,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 10,
+    "amount": 0.495,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 0.74,
+  "share": 0.9,
+  "stored_total_tax": 0.74,
+  "loyalty": true,
+  "closed_at": "2026-10-08 15:45:58.412+00",
+  "items": [
+   {
+    "itemId": "m-1790045799485_5c26956b",
+    "parentId": null,
+    "name": "Detox Zing",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9375",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 17,
+  "total": 17,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.83,
+  "share": null,
+  "stored_total_tax": 2.833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:44:45.476+00",
+  "items": [
+   {
+    "itemId": "m-1789994546281_74d78e2a",
+    "parentId": "m-1789994537049_74d78e2a",
+    "name": "Iced White Chocolate Matcha — XL Boy",
+    "price": 5.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790138780954_74d78e2a",
+    "parentId": null,
+    "name": "BBQ Chicken & Cheese Toastie",
+    "price": 6.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789162667181_74d78e2a",
+    "parentId": "m-1789161808958_74d78e2a",
+    "name": "Iced Latte — XL Boy",
+    "price": 5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16448",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 10.5,
+  "total": 10.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.75,
+  "share": null,
+  "stored_total_tax": 1.75,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:42:04.515+00",
+  "items": [
+   {
+    "itemId": "m-1790143482360_5c26956b",
+    "parentId": null,
+    "name": "Box of 3 Donuts",
+    "price": 10.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": 2
+     },
+     {
+      "price": 0,
+      "qty": 1
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9374",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 6.25,
+  "total": 6.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.04,
+  "share": null,
+  "stored_total_tax": 1.0416666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:41:39.171+00",
+  "items": [
+   {
+    "itemId": "m-1789648729606_74d78e2a",
+    "parentId": "m-1789647980622_74d78e2a",
+    "name": "Cappuccino — Big Boy",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790250594084_74d78e2a",
+    "parentId": null,
+    "name": "Flapjack - Blueberry",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9373",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.81,
+  "share": null,
+  "stored_total_tax": 0.8083333333333327,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:38:59.887+00",
+  "items": [
+   {
+    "itemId": "m-1790045914908_74d78e2a",
+    "parentId": null,
+    "name": "Pash 'n' Shoot",
+    "price": 4.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11369",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 21.1,
+  "total": 21.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 3.52,
+  "share": null,
+  "stored_total_tax": 3.516666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:38:55.403+00",
+  "items": [
+   {
+    "itemId": "m-1789648738340_5c9bdaa9",
+    "parentId": "m-1789647980622_5c9bdaa9",
+    "name": "Cappuccino — XL Boy",
+    "price": 4.3,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790140092254_5c9bdaa9",
+    "parentId": null,
+    "name": "Ham & Cheese Toastie",
+    "price": 6.25,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11368",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 13.25,
+  "total": 13.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.21,
+  "share": null,
+  "stored_total_tax": 2.2083333333333335,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:38:08.434+00",
+  "items": [
+   {
+    "itemId": "m-1789992900545_5c9bdaa9",
+    "parentId": "m-1789992885697_5c9bdaa9",
+    "name": "Iced Chai — Big Boy",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790047942546_5c9bdaa9",
+    "parentId": "m-1790047922838_5c9bdaa9",
+    "name": "Caramel Boy — Big Boy",
+    "price": 4.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790173517329_5c9bdaa9",
+    "parentId": null,
+    "name": "Banana & Caramel Traybake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16447",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 8.3,
+  "total": 8.71,
+  "tip": 0.41,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.38,
+  "share": null,
+  "stored_total_tax": 1.3833333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:37:47.05+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_5c26956b",
+    "parentId": "m-1789667243900_5c26956b",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790142763443_5c26956b",
+    "parentId": null,
+    "name": "Dubai Chocolate Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6945",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.1,
+  "total": 4.3,
+  "tip": 0.2,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.68,
+  "share": null,
+  "stored_total_tax": 0.6833333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:37:16.565+00",
+  "items": [
+   {
+    "itemId": "m-1789668338211_42820abf",
+    "parentId": "m-1789668325556_42820abf",
+    "name": "White Mocha — Small Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9372",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 4.7,
+  "total": 4.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.78,
+  "share": null,
+  "stored_total_tax": 0.7833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:36:57.182+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16446",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 5.9,
+  "total": 5.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.98,
+  "share": null,
+  "stored_total_tax": 0.9833333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:36:53.75+00",
+  "items": [
+   {
+    "itemId": "m-1790501910926",
+    "parentId": "m-1790501864145",
+    "name": "Tea — Big Boy",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790173744821_5c26956b",
+    "parentId": null,
+    "name": "Raspberry & White Choc Muffin",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16445",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.95,
+  "total": 4.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.83,
+  "share": null,
+  "stored_total_tax": 0.8250000000000002,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:35:50.24+00",
+  "items": [
+   {
+    "itemId": "m-1790045624834_5c26956b",
+    "parentId": null,
+    "name": "Blueberry Thrill",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9371",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 9.1,
+  "total": 4.55,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 50,
+    "amount": 4.550000000000001,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 0.76,
+  "share": 0.5,
+  "stored_total_tax": 0.76,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:34:58.626+00",
+  "items": [
+   {
+    "itemId": "m-1790104800581_74d78e2a",
+    "parentId": null,
+    "name": "Fruit Bread",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumnpavq-1_74d78e2a",
+    "parentId": null,
+    "name": "Bueno Muffin",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790173681686_74d78e2a",
+    "parentId": null,
+    "name": "Lemon Drizzle Muffin",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11367",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:34:53.84+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16444",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.8,
+  "total": 3.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.63,
+  "share": null,
+  "stored_total_tax": 0.6333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:32:07.713+00",
+  "items": [
+   {
+    "itemId": "m-1790000307237_5c26956b",
+    "parentId": "m-1790000263473_5c26956b",
+    "name": "Hot Chocolate — Small Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6944",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 11.65,
+  "total": 11.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.94,
+  "share": null,
+  "stored_total_tax": 1.9416666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:31:27.349+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_42820abf",
+    "parentId": "m-1789161808958_42820abf",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789995550912_42820abf",
+    "parentId": "m-1789995542460_42820abf",
+    "name": "Toffee Apple Matcha — XL Boy",
+    "price": 6.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5859",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 12.5,
+  "total": 10.5,
+  "tip": 0.5,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 20,
+    "amount": 2.5,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.67,
+  "share": 0.8,
+  "stored_total_tax": 1.67,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:30:20.639+00",
+  "items": [
+   {
+    "itemId": "m-1790477109738_8e52e0fa",
+    "parentId": null,
+    "name": "Margherita Pizza",
+    "price": 7.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160871459_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — XL Boy ",
+    "price": 5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16443",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 3.65,
+  "total": 3.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.61,
+  "share": null,
+  "stored_total_tax": 0.6083333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:28:13.992+00",
+  "items": [
+   {
+    "itemId": "m-1790117773874_5c26956b",
+    "parentId": null,
+    "name": "Beans on Toast",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5858",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 2.65,
+  "total": 2.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.44,
+  "share": null,
+  "stored_total_tax": 0.44166666666666643,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:27:14.158+00",
+  "items": [
+   {
+    "itemId": "m-1790245876097_8e52e0fa",
+    "parentId": null,
+    "name": "Lemonaid - Blood Orange",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16442",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 7.6,
+  "total": 7.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.27,
+  "share": null,
+  "stored_total_tax": 1.2666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:26:48.517+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_5c26956b",
+    "parentId": "m-1789667243900_5c26956b",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789667369279_5c26956b",
+    "parentId": "m-1789667243900_5c26956b",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11366",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 3.05,
+  "total": 3.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.51,
+  "share": null,
+  "stored_total_tax": 0.5083333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:25:15.213+00",
+  "items": [
+   {
+    "itemId": "m-1790246189519_5c9bdaa9",
+    "parentId": null,
+    "name": "Harrogate Still",
+    "price": 1.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790250915244_5c9bdaa9",
+    "parentId": null,
+    "name": "Loacker - Cremkakao",
+    "price": 1.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6943",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.1,
+  "total": 4.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.68,
+  "share": null,
+  "stored_total_tax": 0.6833333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:24:16.546+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — Big Boy ",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9370",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:22:57.927+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16441",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.4,
+  "total": 4.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.73,
+  "share": null,
+  "stored_total_tax": 0.7333333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:22:44.932+00",
+  "items": [
+   {
+    "itemId": "m-1789162667181_5c26956b",
+    "parentId": "m-1789161808958_5c26956b",
+    "name": "Iced Latte — XL Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9369",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 4.45,
+  "total": 4.67,
+  "tip": 0.22,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.74,
+  "share": null,
+  "stored_total_tax": 0.7416666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:22:29.288+00",
+  "items": [
+   {
+    "itemId": "m-1790246165775_74d78e2a",
+    "parentId": null,
+    "name": "Harrogate Sparkling",
+    "price": 1.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789669842174_74d78e2a",
+    "parentId": "m-1789667587081_74d78e2a",
+    "name": "Espresso — Double",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9368",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 10.05,
+  "total": 10.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.67,
+  "share": null,
+  "stored_total_tax": 1.6749999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:21:20.069+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_74d78e2a",
+    "parentId": "m-1789161808958_74d78e2a",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790140210970_74d78e2a",
+    "parentId": null,
+    "name": "Mushroom & Cheese Toastie",
+    "price": 5.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6942",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.5,
+  "total": 4.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.75,
+  "share": null,
+  "stored_total_tax": 0.75,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:20:19.465+00",
+  "items": [
+   {
+    "itemId": "m-1790684399225_42820abf",
+    "parentId": null,
+    "name": "Kinder Cookie Cup",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6941",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.1,
+  "total": 4.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.68,
+  "share": null,
+  "stored_total_tax": 0.6833333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:18:59.195+00",
+  "items": [
+   {
+    "itemId": "m-1789648729606_42820abf",
+    "parentId": "m-1789647980622_42820abf",
+    "name": "Cappuccino — Big Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6940",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 5.95,
+  "total": 5.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.99,
+  "share": null,
+  "stored_total_tax": 0.9916666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:18:34.116+00",
+  "items": [
+   {
+    "itemId": "m-1789995894519_42820abf",
+    "parentId": "m-1789995885680_42820abf",
+    "name": "Spiced Maple & Pecan Iced Latte — XL Boy",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5857",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 13.45,
+  "total": 12.89,
+  "tip": 0.61,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.05,
+  "share": 0.9126394052044611,
+  "stored_total_tax": 2.05,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:17:14.186+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789648091127_8e52e0fa",
+    "parentId": "m-1789647980622_8e52e0fa",
+    "name": "Cappuccino — Small Boy",
+    "price": 3.7,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790140485099_8e52e0fa",
+    "parentId": null,
+    "name": "Croissant",
+    "price": 2.35,
+    "qty": 1,
+    "voided": false,
+    "discount": {
+     "id": "disc-i50",
+     "type": "percent",
+     "label": "Custom 50%",
+     "value": 50
+    },
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9367",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 10.55,
+  "total": 9.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 10,
+    "amount": 1.055,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.58,
+  "share": 0.9,
+  "stored_total_tax": 1.58,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:15:34.585+00",
+  "items": [
+   {
+    "itemId": "m-1790138085868_74d78e2a",
+    "parentId": null,
+    "name": "Acai Bowl",
+    "price": 6.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789993681338_74d78e2a",
+    "parentId": "m-1789993663299_74d78e2a",
+    "name": "Raspberry Iced Tea — XL Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9366",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.81,
+  "share": null,
+  "stored_total_tax": 0.8083333333333327,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:14:49.892+00",
+  "items": [
+   {
+    "itemId": "m-1790045970703_74d78e2a",
+    "parentId": null,
+    "name": "Strawberry Split",
+    "price": 4.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9365",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.81,
+  "share": null,
+  "stored_total_tax": 0.8083333333333336,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:14:32.218+00",
+  "items": [
+   {
+    "itemId": "m-1790000629590_74d78e2a",
+    "parentId": "m-1790000609619_74d78e2a",
+    "name": "White Hot Chocolate — Big Boy",
+    "price": 4.8500000000000005,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9364",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:14:00.819+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11365",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 5.15,
+  "total": 5.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.86,
+  "share": null,
+  "stored_total_tax": 0.8583333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:13:11.924+00",
+  "items": [
+   {
+    "itemId": "m-1789994276688_5c9bdaa9",
+    "parentId": "m-1789994263373_5c9bdaa9",
+    "name": "Blueberry Iced Matcha — Big Boy",
+    "price": 5.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9363",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:13:05.889+00",
+  "items": [
+   {
+    "itemId": "m-1789998956065_74d78e2a",
+    "parentId": "m-1789998799887_74d78e2a",
+    "name": "English Breakfast Tea — XL Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6939",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 9.1,
+  "total": 9.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.52,
+  "share": null,
+  "stored_total_tax": 1.5166666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:12:45.385+00",
+  "items": [
+   {
+    "itemId": "m-1789648729606_42820abf",
+    "parentId": "m-1789647980622_42820abf",
+    "name": "Cappuccino — Big Boy",
+    "price": 4.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790250145672_42820abf",
+    "parentId": null,
+    "name": "Ombar - Peanut Butter",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790250097167_42820abf",
+    "parentId": null,
+    "name": "Ombar - Hazelnut Brownie",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9362",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 6.05,
+  "total": 6.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.01,
+  "share": null,
+  "stored_total_tax": 1.0083333333333329,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:12:35.6+00",
+  "items": [
+   {
+    "itemId": "m-1790046800060_74d78e2a",
+    "parentId": null,
+    "name": "Special Post Workout",
+    "price": 6.05,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9361",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.33,
+  "share": null,
+  "stored_total_tax": 1.333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:12:07.725+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9360",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:10:39.014+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_74d78e2a",
+    "parentId": "m-1789667243900_74d78e2a",
+    "name": "Americano — Big Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11364",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4.65,
+  "total": 4.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.77,
+  "share": null,
+  "stored_total_tax": 0.7749999999999999,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:10:12.622+00",
+  "items": [
+   {
+    "itemId": "m-1790048779028_5c9bdaa9",
+    "parentId": "m-1790048767468_5c9bdaa9",
+    "name": "Strawberry Boy — Big Boy",
+    "price": 4.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6938",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:07:31.385+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_42820abf",
+    "parentId": "m-1789161808958_42820abf",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11363",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 2.75,
+  "total": 2.88,
+  "tip": 0.13,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.46,
+  "share": null,
+  "stored_total_tax": 0.45833333333333304,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:07:13.85+00",
+  "items": [
+   {
+    "itemId": "m-1790245593048_5c9bdaa9",
+    "parentId": null,
+    "name": "F&S - Elderflower Lemonade",
+    "price": 2.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16440",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 1.6,
+  "total": 1.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.27,
+  "share": null,
+  "stored_total_tax": 0.2666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:05:12.035+00",
+  "items": [
+   {
+    "itemId": "m-1790246189519_5c26956b",
+    "parentId": null,
+    "name": "Harrogate Still",
+    "price": 1.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11362",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.33,
+  "share": null,
+  "stored_total_tax": 1.333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:04:33.971+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16439",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.75,
+  "total": 4.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.79,
+  "share": null,
+  "stored_total_tax": 0.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:02:52.923+00",
+  "items": [
+   {
+    "itemId": "m-1790047035390_5c26956b",
+    "parentId": "m-1790047017480_5c26956b",
+    "name": "Banana Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5856",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 5,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 20,
+    "amount": 1,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 0.67,
+  "share": 0.8,
+  "stored_total_tax": 0.67,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:02:45.495+00",
+  "items": [
+   {
+    "itemId": "m-1789668338211_8e52e0fa",
+    "parentId": "m-1789668325556_8e52e0fa",
+    "name": "White Mocha — Small Boy",
+    "price": 5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 1,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11361",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "takeaway",
+  "subtotal": 4.65,
+  "total": 4.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.77,
+  "share": null,
+  "stored_total_tax": 0.7749999999999999,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:02:10.937+00",
+  "items": [
+   {
+    "itemId": "m-1790048270390_5c9bdaa9",
+    "parentId": "m-1790048260747_5c9bdaa9",
+    "name": "Choc Boy — Big Boy",
+    "price": 4.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11360",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 2.65,
+  "total": 2.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.44,
+  "share": null,
+  "stored_total_tax": 0.44166666666666643,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:01:12.853+00",
+  "items": [
+   {
+    "itemId": "m-1790245876097_5c9bdaa9",
+    "parentId": null,
+    "name": "Lemonaid - Blood Orange",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6937",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 10.7,
+  "total": 10.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.78,
+  "share": null,
+  "stored_total_tax": 1.7833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 15:00:09.043+00",
+  "items": [
+   {
+    "itemId": "m-1789667367817_42820abf",
+    "parentId": "m-1789667243900_42820abf",
+    "name": "Americano — Small Boy",
+    "price": 3.6,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumnpavq-4_42820abf",
+    "parentId": null,
+    "name": "Milky Bar Muffins",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11359",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 5.55,
+  "total": 5.55,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.92,
+  "share": null,
+  "stored_total_tax": 0.9249999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:59:57.891+00",
+  "items": [
+   {
+    "itemId": "m-1790048270971_5c9bdaa9",
+    "parentId": "m-1790048260747_5c9bdaa9",
+    "name": "Choc Boy — XL Boy",
+    "price": 5.55,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9359",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 4.4,
+  "total": 4.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.73,
+  "share": null,
+  "stored_total_tax": 0.7333333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:59:30.399+00",
+  "items": [
+   {
+    "itemId": "m-1789668138737_74d78e2a",
+    "parentId": "m-1789668078448_74d78e2a",
+    "name": "Mocha — Big Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11358",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4.3,
+  "total": 4.3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.72,
+  "share": null,
+  "stored_total_tax": 0.7166666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:59:00.966+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — XL Boy ",
+    "price": 4.3,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11357",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "takeaway",
+  "subtotal": 3.75,
+  "total": 3.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.63,
+  "share": null,
+  "stored_total_tax": 0.625,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:57:45.601+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_5c9bdaa9",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11314",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 5.6,
+  "total": 5.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.93,
+  "share": null,
+  "stored_total_tax": 0.9333333333333336,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:57:39.282+00",
+  "items": [
+   {
+    "itemId": "m-1789993275989_5c9bdaa9",
+    "parentId": "m-1789993262178_5c9bdaa9",
+    "name": "Iced White Mocha — Big Boy",
+    "price": 5.6000000000000005,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5855",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 3.15,
+  "total": 3.3,
+  "tip": 0.15,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.52,
+  "share": null,
+  "stored_total_tax": 0.5249999999999999,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:56:24.421+00",
+  "items": [
+   {
+    "itemId": "m-1789670074623_8e52e0fa",
+    "parentId": "m-1789670062398_8e52e0fa",
+    "name": "Macchiato — Single",
+    "price": 3.1500000000000004,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11356",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:55:48.757+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5854",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4.25,
+  "total": 4.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.71,
+  "share": null,
+  "stored_total_tax": 0.708333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:55:26.397+00",
+  "items": [
+   {
+    "itemId": "m-1789992900545_8e52e0fa",
+    "parentId": "m-1789992885697_8e52e0fa",
+    "name": "Iced Chai — Big Boy",
+    "price": 4.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6936",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.6,
+  "total": 4.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.77,
+  "share": null,
+  "stored_total_tax": 0.7666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:54:55.64+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_42820abf",
+    "parentId": "m-1789160788884_42820abf",
+    "name": "Latte — Big Boy ",
+    "price": 4.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5853",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 2.95,
+  "total": 2.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.49,
+  "share": null,
+  "stored_total_tax": 0.4916666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:54:51.603+00",
+  "items": [
+   {
+    "itemId": "m-1790251859206_8e52e0fa",
+    "parentId": null,
+    "name": "Protein Ball - Lemon & Pistachio",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16438",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 2.95,
+  "total": 2.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.49,
+  "share": null,
+  "stored_total_tax": 0.4916666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:53:46.97+00",
+  "items": [
+   {
+    "itemId": "m-1790501910926",
+    "parentId": "m-1790501864145",
+    "name": "Tea — Big Boy",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6935",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 5.45,
+  "total": 5.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.91,
+  "share": null,
+  "stored_total_tax": 0.9083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:52:18.897+00",
+  "items": [
+   {
+    "itemId": "m-1790138858131_42820abf",
+    "parentId": null,
+    "name": "Cheese & Tomato Toastie",
+    "price": 5.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16437",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 10.45,
+  "total": 10.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.74,
+  "share": null,
+  "stored_total_tax": 1.7416666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:52:02.23+00",
+  "items": [
+   {
+    "itemId": "m-1790142763443_5c26956b",
+    "parentId": null,
+    "name": "Dubai Chocolate Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789992404353_5c26956b",
+    "parentId": "m-1789992386503_5c26956b",
+    "name": "Honey Oat Iced Latte — Big Boy",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5852",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 11.1,
+  "total": 9.99,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 10,
+    "amount": 1.11,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.66,
+  "share": 0.9,
+  "stored_total_tax": 1.66,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:51:24.367+00",
+  "items": [
+   {
+    "itemId": "m-1789994351850_8e52e0fa",
+    "parentId": "m-1789994343378_8e52e0fa",
+    "name": "Iced Matcha — Big Boy",
+    "price": 5.55,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6934",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.8,
+  "total": 4.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.8,
+  "share": null,
+  "stored_total_tax": 0.7999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:50:17.55+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_42820abf",
+    "parentId": "m-1789161808958_42820abf",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16436",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 5.4,
+  "total": 5.67,
+  "tip": 0.27,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.9,
+  "share": null,
+  "stored_total_tax": 0.8999999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:49:24.388+00",
+  "items": [
+   {
+    "itemId": "m-1789993277739_5c26956b",
+    "parentId": "m-1789993262178_5c26956b",
+    "name": "Iced White Mocha — XL Boy",
+    "price": 5.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11313",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 8.3,
+  "total": 7.47,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 10,
+    "amount": 0.83,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.24,
+  "share": 0.9,
+  "stored_total_tax": 1.24,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:48:58.798+00",
+  "items": [
+   {
+    "itemId": "m-1790246732873_5c9bdaa9",
+    "parentId": null,
+    "name": "Red Bull - Original",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789994276688_5c9bdaa9",
+    "parentId": "m-1789994263373_5c9bdaa9",
+    "name": "Blueberry Iced Matcha — Big Boy",
+    "price": 5.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9358",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 3.75,
+  "total": 3.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.63,
+  "share": null,
+  "stored_total_tax": 0.625,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:48:22.422+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_74d78e2a",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11355",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "takeaway",
+  "subtotal": 7.4,
+  "total": 7.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.23,
+  "share": null,
+  "stored_total_tax": 1.2333333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:48:05.6+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789648091127_5c9bdaa9",
+    "parentId": "m-1789647980622_5c9bdaa9",
+    "name": "Cappuccino — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9357",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:47:38.778+00",
+  "items": [
+   {
+    "itemId": "m-1789669842174_74d78e2a",
+    "parentId": "m-1789667587081_74d78e2a",
+    "name": "Espresso — Double",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11354",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 12.15,
+  "total": 12.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.02,
+  "share": null,
+  "stored_total_tax": 2.0249999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:46:25.173+00",
+  "items": [
+   {
+    "itemId": "m-1790000307615_5c9bdaa9",
+    "parentId": "m-1790000263473_5c9bdaa9",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 4.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 2,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6933",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 9.15,
+  "total": 10.06,
+  "tip": 0.91,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.53,
+  "share": null,
+  "stored_total_tax": 1.525,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:45:00.6+00",
+  "items": [
+   {
+    "itemId": "m-1789994459895_42820abf",
+    "parentId": "m-1789994450829_42820abf",
+    "name": "Iced Strawberry Matcha — Big Boy",
+    "price": 5.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789667369279_42820abf",
+    "parentId": "m-1789667243900_42820abf",
+    "name": "Americano — Big Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9356",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 2.15,
+  "total": 2.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.36,
+  "share": null,
+  "stored_total_tax": 0.35833333333333317,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:43:52.822+00",
+  "items": [
+   {
+    "itemId": "m-1790245845320_74d78e2a",
+    "parentId": null,
+    "name": "Juice Burst - Orange",
+    "price": 2.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16435",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 10.1,
+  "total": 10.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.68,
+  "share": null,
+  "stored_total_tax": 1.6833333333333336,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:43:28.718+00",
+  "items": [
+   {
+    "itemId": "m-1790000307615_5c26956b",
+    "parentId": "m-1790000263473_5c26956b",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790173765146_5c26956b",
+    "parentId": null,
+    "name": "Raspberry Eton Mess Traybake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790249873888_5c26956b",
+    "parentId": null,
+    "name": "Savoursmith - Desert Salt",
+    "price": 1.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6932",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 5.45,
+  "total": 5.72,
+  "tip": 0.27,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.91,
+  "share": null,
+  "stored_total_tax": 0.9083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:43:16.464+00",
+  "items": [
+   {
+    "itemId": "m-1789995018615_42820abf",
+    "parentId": "m-1789995009853_42820abf",
+    "name": "Coffee Caramel Boy — XL Boy",
+    "price": 5.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11353",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4.7,
+  "total": 4.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.78,
+  "share": null,
+  "stored_total_tax": 0.7833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:42:27.255+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_5c9bdaa9",
+    "parentId": "m-1789161808958_5c9bdaa9",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6931",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.1,
+  "total": 4.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.68,
+  "share": null,
+  "stored_total_tax": 0.6833333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:42:09.881+00",
+  "items": [
+   {
+    "itemId": "m-1789648729606_42820abf",
+    "parentId": "m-1789647980622_42820abf",
+    "name": "Cappuccino — Big Boy",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6930",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 13.6,
+  "total": 13.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.27,
+  "share": null,
+  "stored_total_tax": 2.2666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:40:51.054+00",
+  "items": [
+   {
+    "itemId": "m-1790841004032",
+    "parentId": "m-1790840990830",
+    "name": "Tea — Big Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790841004032",
+    "parentId": "m-1790840990830",
+    "name": "Tea — Big Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumntkbp-3_42820abf",
+    "parentId": null,
+    "name": "Kinder Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumntkbp-4_42820abf",
+    "parentId": null,
+    "name": "Milky Bar Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6929",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 8.65,
+  "total": 8.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.44,
+  "share": null,
+  "stored_total_tax": 1.4416666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:38:04.783+00",
+  "items": [
+   {
+    "itemId": "m-1789162656034_42820abf",
+    "parentId": "m-1789161808958_42820abf",
+    "name": "Iced Latte — Big Boy",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789992513968_42820abf",
+    "parentId": "m-1789992488872_42820abf",
+    "name": "Iced Americano — Big Boy",
+    "price": 3.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9355",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 5.55,
+  "total": 5.55,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.92,
+  "share": null,
+  "stored_total_tax": 0.9249999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:37:01.623+00",
+  "items": [
+   {
+    "itemId": "m-1789995727971_74d78e2a",
+    "parentId": "m-1789995719475_74d78e2a",
+    "name": "Spiced Maple & Pecan Latte — Big Boy",
+    "price": 5.55,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11352",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "takeaway",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:36:37.532+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Small Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9354",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 11.4,
+  "total": 11.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.9,
+  "share": null,
+  "stored_total_tax": 1.8999999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:36:25.548+00",
+  "items": [
+   {
+    "itemId": "m-1790138780954_74d78e2a",
+    "parentId": null,
+    "name": "BBQ Chicken & Cheese Toastie",
+    "price": 6.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790140353264_74d78e2a",
+    "parentId": null,
+    "name": "Cheese Toastie",
+    "price": 5.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6928",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 2.85,
+  "total": 2.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.48,
+  "share": null,
+  "stored_total_tax": 0.4750000000000001,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:36:17.443+00",
+  "items": [
+   {
+    "itemId": "m-1790841004775",
+    "parentId": "m-1790840990830",
+    "name": "Tea — XL Boy",
+    "price": 2.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11351",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 9,
+  "total": 9.45,
+  "tip": 0.45,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.5,
+  "share": null,
+  "stored_total_tax": 1.5,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:36:16.324+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16434",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 5.45,
+  "total": 5.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.91,
+  "share": null,
+  "stored_total_tax": 0.9083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:36:16.148+00",
+  "items": [
+   {
+    "itemId": "m-1789994228841_5c26956b",
+    "parentId": "m-1789994213294_5c26956b",
+    "name": "Blended Banoffee Matcha — Big Boy",
+    "price": 5.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9353",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 9.9,
+  "total": 9.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.65,
+  "share": null,
+  "stored_total_tax": 1.6499999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:35:47.942+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 5.2,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789648729606_74d78e2a",
+    "parentId": "m-1789647980622_74d78e2a",
+    "name": "Cappuccino — Big Boy",
+    "price": 4.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11250",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 7.95,
+  "total": 7.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.32,
+  "share": null,
+  "stored_total_tax": 1.3249999999999997,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:35:03.494+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumntkbp-0",
+    "parentId": null,
+    "name": "Biscoff Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11312",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 7.05,
+  "total": 7.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.17,
+  "share": null,
+  "stored_total_tax": 1.1749999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:34:25.818+00",
+  "items": [
+   {
+    "itemId": "m-1789993275989_5c9bdaa9",
+    "parentId": "m-1789993262178_5c9bdaa9",
+    "name": "Iced White Mocha — Big Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790246732873_5c9bdaa9",
+    "parentId": null,
+    "name": "Red Bull - Original",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6927",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 15.55,
+  "total": 15.55,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.59,
+  "share": null,
+  "stored_total_tax": 2.591666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:33:42.056+00",
+  "items": [
+   {
+    "itemId": "m-1789995623319_42820abf",
+    "parentId": "m-1789995615007_42820abf",
+    "name": "Pumpkin Vanilla Chai Latte — XL Boy",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790048499434_42820abf",
+    "parentId": "m-1790048468665_42820abf",
+    "name": "Pistachio & White Chocolate Milkshake — Big Boy",
+    "price": 5.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790142536462_42820abf",
+    "parentId": null,
+    "name": "Biscoff Ring Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5851",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4.75,
+  "total": 4.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.79,
+  "share": null,
+  "stored_total_tax": 0.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:33:24.769+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_8e52e0fa",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 1,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5775",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4.3,
+  "total": 4.3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.72,
+  "share": null,
+  "stored_total_tax": 0.7166666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:31:04.864+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — XL Boy ",
+    "price": 4.3,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6926",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 3.8,
+  "total": 3.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.63,
+  "share": null,
+  "stored_total_tax": 0.6333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:29:25.981+00",
+  "items": [
+   {
+    "itemId": "m-1790000307237_42820abf",
+    "parentId": "m-1790000263473_42820abf",
+    "name": "Hot Chocolate — Small Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16433",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 10.6,
+  "total": 10.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.77,
+  "share": null,
+  "stored_total_tax": 1.7666666666666657,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:29:07.142+00",
+  "items": [
+   {
+    "itemId": "m-1790000307615_5c26956b",
+    "parentId": "m-1790000263473_5c26956b",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 4.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790140092254_5c26956b",
+    "parentId": null,
+    "name": "Ham & Cheese Toastie",
+    "price": 6.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5774",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:28:53.446+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6925",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.7,
+  "total": 4.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.78,
+  "share": null,
+  "stored_total_tax": 0.7833333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:28:38.172+00",
+  "items": [
+   {
+    "itemId": "m-1789993495324_42820abf",
+    "parentId": "m-1789993480779_42820abf",
+    "name": "Peach Iced Tea — XL Boy",
+    "price": 4.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9352",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 8.6,
+  "total": 8.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.43,
+  "share": null,
+  "stored_total_tax": 1.4333333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:28:26.148+00",
+  "items": [
+   {
+    "itemId": "m-1790047942546_74d78e2a",
+    "parentId": "m-1790047922838_74d78e2a",
+    "name": "Caramel Boy — Big Boy",
+    "price": 4.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790117848398_74d78e2a",
+    "parentId": null,
+    "name": "Cheese on Toast",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16432",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.75,
+  "total": 4.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.79,
+  "share": null,
+  "stored_total_tax": 0.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:28:23.374+00",
+  "items": [
+   {
+    "itemId": "m-1790048682557_5c26956b",
+    "parentId": "m-1790048576895_5c26956b",
+    "name": "Raspberry & White Choc Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11249",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.33,
+  "share": null,
+  "stored_total_tax": 1.333333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:28:00.795+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5773",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 7.65,
+  "total": 7.65,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.28,
+  "share": null,
+  "stored_total_tax": 1.275,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:27:59.058+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_8e52e0fa",
+    "parentId": "m-1789667243900_8e52e0fa",
+    "name": "Americano — Big Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumntkbp-1_8e52e0fa",
+    "parentId": null,
+    "name": "Creme Egg Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6924",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 5.35,
+  "total": 5.61,
+  "tip": 0.26,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.89,
+  "share": null,
+  "stored_total_tax": 0.8916666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:27:35.602+00",
+  "items": [
+   {
+    "itemId": "m-1789994545703_42820abf",
+    "parentId": "m-1789994537049_42820abf",
+    "name": "Iced White Chocolate Matcha — Big Boy",
+    "price": 5.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11248",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 11.4,
+  "total": 11.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.9,
+  "share": null,
+  "stored_total_tax": 1.8999999999999997,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:27:05.333+00",
+  "items": [
+   {
+    "itemId": "m-1790246436804_5c9bdaa9",
+    "parentId": null,
+    "name": "Hip Pop - Apple & Elderflower",
+    "price": 2.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790246401800_5c9bdaa9",
+    "parentId": null,
+    "name": "Fanta - Orange",
+    "price": 1.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumntkbp-0",
+    "parentId": null,
+    "name": "Biscoff Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790173807308_5c9bdaa9",
+    "parentId": null,
+    "name": "Triple Chocolate Traybake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16431",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 4.75,
+  "total": 4.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.79,
+  "share": null,
+  "stored_total_tax": 0.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:26:25.246+00",
+  "items": [
+   {
+    "itemId": "m-1790048101473_5c26956b",
+    "parentId": "m-1790048061766_5c26956b",
+    "name": "Chai Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5772",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 2.45,
+  "total": 2.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.41,
+  "share": null,
+  "stored_total_tax": 0.4083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:25:27.61+00",
+  "items": [
+   {
+    "itemId": "m-1790052932827_8e52e0fa",
+    "parentId": null,
+    "name": "Sprite",
+    "price": 2.45,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9351",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 14.2,
+  "total": 14.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.37,
+  "share": null,
+  "stored_total_tax": 2.366666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:25:22.994+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — XL Boy ",
+    "price": 4.3,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumnerwc-6_74d78e2a",
+    "parentId": null,
+    "name": "Kinder & Nutella Cookie Pie",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumntkbp-0_74d78e2a",
+    "parentId": null,
+    "name": "Biscoff Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6923",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 4.95,
+  "total": 4.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.83,
+  "share": null,
+  "stored_total_tax": 0.8250000000000002,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:24:55.368+00",
+  "items": [
+   {
+    "itemId": "m-1790045449905_42820abf",
+    "parentId": null,
+    "name": "Avo Go Go",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9350",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 15.15,
+  "total": 15.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.53,
+  "share": null,
+  "stored_total_tax": 2.5250000000000004,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:24:28.293+00",
+  "items": [
+   {
+    "itemId": "m-1790048682956_74d78e2a",
+    "parentId": "m-1790048576895_74d78e2a",
+    "name": "Raspberry & White Choc Boy — XL Boy",
+    "price": 5.05,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790048270971_74d78e2a",
+    "parentId": "m-1790048260747_74d78e2a",
+    "name": "Choc Boy — XL Boy",
+    "price": 5.05,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790048961406_74d78e2a",
+    "parentId": "m-1790048948921_74d78e2a",
+    "name": "Vanilla Boy — XL Boy",
+    "price": 5.05,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6922",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 3.5,
+  "total": 1.83,
+  "tip": 0.08,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 50,
+    "amount": 1.75,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 0.29,
+  "share": 0.5,
+  "stored_total_tax": 0.29,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:24:21.912+00",
+  "items": [
+   {
+    "itemId": "m-impmumnjwf6-2_42820abf",
+    "parentId": null,
+    "name": "Milkybar Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6921",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.5,
+  "total": 4.72,
+  "tip": 0.22,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.75,
+  "share": null,
+  "stored_total_tax": 0.75,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:23:51.089+00",
+  "items": [
+   {
+    "itemId": "m-1789668339217_42820abf",
+    "parentId": "m-1789668325556_42820abf",
+    "name": "White Mocha — Big Boy",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16430",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.1,
+  "total": 4.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.68,
+  "share": null,
+  "stored_total_tax": 0.6833333333333331,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:23:42.605+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16429",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 1.6,
+  "total": 1.6,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.27,
+  "share": null,
+  "stored_total_tax": 0.2666666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:23:25.608+00",
+  "items": [
+   {
+    "itemId": "m-1790246189519_5c26956b",
+    "parentId": null,
+    "name": "Harrogate Still",
+    "price": 1.6,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6920",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 2.95,
+  "total": 2.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.49,
+  "share": null,
+  "stored_total_tax": 0.4916666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:21:28.84+00",
+  "items": [
+   {
+    "itemId": "m-1790251790038_42820abf",
+    "parentId": null,
+    "name": "Protein Ball - Choc Chip Muffin",
+    "price": 2.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16428",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.5,
+  "total": 4.5,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.75,
+  "share": null,
+  "stored_total_tax": 0.75,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:21:17.934+00",
+  "items": [
+   {
+    "itemId": "m-1790142784341_5c26956b",
+    "parentId": null,
+    "name": "Ferrero Roche Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16427",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 6.1,
+  "total": 6.1,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.02,
+  "share": null,
+  "stored_total_tax": 1.0166666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:20:46.684+00",
+  "items": [
+   {
+    "itemId": "m-1789993277739_5c26956b",
+    "parentId": "m-1789993262178_5c26956b",
+    "name": "Iced White Mocha — XL Boy",
+    "price": 6.1000000000000005,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0.5,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6919",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 10.9,
+  "total": 10.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.82,
+  "share": null,
+  "stored_total_tax": 1.8166666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:20:07.148+00",
+  "items": [
+   {
+    "itemId": "m-1790045624834_42820abf",
+    "parentId": null,
+    "name": "Blueberry Thrill",
+    "price": 4.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumnerwc-a_42820abf",
+    "parentId": null,
+    "name": "Twix Cookie Pie",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16426",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 5.25,
+  "total": 5.25,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.88,
+  "share": null,
+  "stored_total_tax": 0.875,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:20:03.795+00",
+  "items": [
+   {
+    "itemId": "m-1789992404353_5c26956b",
+    "parentId": "m-1789992386503_5c26956b",
+    "name": "Honey Oat Iced Latte — Big Boy",
+    "price": 5.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5771",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 8.8,
+  "total": 8.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.47,
+  "share": null,
+  "stored_total_tax": 1.4666666666666668,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:19:05.661+00",
+  "items": [
+   {
+    "itemId": "m-1790173612285_8e52e0fa",
+    "parentId": null,
+    "name": "GF Chocolate Fudge Cake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789992404353_8e52e0fa",
+    "parentId": "m-1789992386503_8e52e0fa",
+    "name": "Honey Oat Iced Latte — Big Boy",
+    "price": 5.15,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16425",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 7.05,
+  "total": 7.05,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.17,
+  "share": null,
+  "stored_total_tax": 1.1749999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:18:41.465+00",
+  "items": [
+   {
+    "itemId": "m-1790246010613_5c26956b",
+    "parentId": null,
+    "name": "Plenish - Ginger",
+    "price": 2.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790140485099_5c26956b",
+    "parentId": null,
+    "name": "Croissant",
+    "price": 2.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790140485099_5c26956b",
+    "parentId": null,
+    "name": "Croissant",
+    "price": 2.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11247",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4.4,
+  "total": 4.84,
+  "tip": 0.44,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.73,
+  "share": null,
+  "stored_total_tax": 0.7333333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:18:15.619+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9349",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 4.3,
+  "total": 4.3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.72,
+  "share": null,
+  "stored_total_tax": 0.7166666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:17:21.641+00",
+  "items": [
+   {
+    "itemId": "m-1789648738340_74d78e2a",
+    "parentId": "m-1789647980622_74d78e2a",
+    "name": "Cappuccino — XL Boy",
+    "price": 4.3,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9348",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "takeaway",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:16:08.935+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6918",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 11.7,
+  "total": 12.28,
+  "tip": 0.58,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.95,
+  "share": null,
+  "stored_total_tax": 1.9499999999999993,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:15:49.911+00",
+  "items": [
+   {
+    "itemId": "m-1790138909598_42820abf",
+    "parentId": null,
+    "name": "Chorizo & Cheese Toastie",
+    "price": 6.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789669490611_42820abf",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790249849753_42820abf",
+    "parentId": null,
+    "name": "Savoursmith - Cheddar & Shallot",
+    "price": 1.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16424",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 4.75,
+  "total": 4.75,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.79,
+  "share": null,
+  "stored_total_tax": 0.7916666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:15:28.634+00",
+  "items": [
+   {
+    "itemId": "m-1790048779028_5c26956b",
+    "parentId": "m-1790048767468_5c26956b",
+    "name": "Strawberry Boy — Big Boy",
+    "price": 4.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16423",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 12.45,
+  "total": 14.31,
+  "tip": 1.86,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.07,
+  "share": null,
+  "stored_total_tax": 2.0749999999999993,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:13:53.671+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790000307615_5c26956b",
+    "parentId": "m-1790000263473_5c26956b",
+    "name": "Hot Chocolate — Big Boy",
+    "price": 4.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11246",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 3,
+  "total": 3,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.5,
+  "share": null,
+  "stored_total_tax": 0.5,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:13:52.717+00",
+  "items": [
+   {
+    "itemId": "m-1790249635620_5c9bdaa9",
+    "parentId": null,
+    "name": "Pringles - Salt & Vinegar",
+    "price": 1.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790249673458_5c9bdaa9",
+    "parentId": null,
+    "name": "Pringles - Salted",
+    "price": 1.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16422",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 12.1,
+  "total": 12.7,
+  "tip": 0.6,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.02,
+  "share": null,
+  "stored_total_tax": 2.0166666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:12:28.155+00",
+  "items": [
+   {
+    "itemId": "m-1790173582694_5c26956b",
+    "parentId": null,
+    "name": "GF Carrot Cake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790173582694_5c26956b",
+    "parentId": null,
+    "name": "GF Carrot Cake",
+    "price": 3.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R5770",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 7.8,
+  "total": 7.8,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.3,
+  "share": null,
+  "stored_total_tax": 1.2999999999999998,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:12:19.854+00",
+  "items": [
+   {
+    "itemId": "m-1789670235095_8e52e0fa",
+    "parentId": "m-1789670214282_8e52e0fa",
+    "name": "Dirty Chai — Small Boy",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790000023794_8e52e0fa",
+    "parentId": "m-1790000017202_8e52e0fa",
+    "name": "Chai Latte — Small Boy",
+    "price": 3.8,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11245",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 4.8,
+  "total": 2.4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 50,
+    "amount": 2.4,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 0.4,
+  "share": 0.5,
+  "stored_total_tax": 0.4,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:10:38.114+00",
+  "items": [
+   {
+    "itemId": "m-1790246754720_5c9bdaa9",
+    "parentId": null,
+    "name": "Red Bull - Sugar Free",
+    "price": 2.55,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790250568459_5c9bdaa9",
+    "parentId": null,
+    "name": "Flapjack -Banana Yoghurt",
+    "price": 2.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5769",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "takeaway",
+  "subtotal": 8.8,
+  "total": 9.24,
+  "tip": 0.44,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.47,
+  "share": null,
+  "stored_total_tax": 1.466666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:10:22.35+00",
+  "items": [
+   {
+    "itemId": "m-1790045624834_8e52e0fa",
+    "parentId": null,
+    "name": "Blueberry Thrill",
+    "price": 4.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   },
+   {
+    "itemId": "m-impmumntkbp-4_8e52e0fa",
+    "parentId": null,
+    "name": "Milky Bar Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11244",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 6.65,
+  "total": 6.98,
+  "tip": 0.33,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.11,
+  "share": null,
+  "stored_total_tax": 1.108333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:09:48.572+00",
+  "items": [
+   {
+    "itemId": "m-1790245876097_5c9bdaa9",
+    "parentId": null,
+    "name": "Lemonaid - Blood Orange",
+    "price": 2.65,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789648729606_5c9bdaa9",
+    "parentId": "m-1789647980622_5c9bdaa9",
+    "name": "Cappuccino — Big Boy",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6917",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:09:47.82+00",
+  "items": [
+   {
+    "itemId": "m-1789993679436_42820abf",
+    "parentId": "m-1789993663299_42820abf",
+    "name": "Raspberry Iced Tea — Big Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R9347",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 8.15,
+  "total": 8.15,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.36,
+  "share": null,
+  "stored_total_tax": 1.3583333333333334,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:09:36.123+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": [
+     {
+      "price": 0.7,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1789669490611_74d78e2a",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.75,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11311",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "drive-thru",
+  "subtotal": 3.7,
+  "total": 3.7,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.62,
+  "share": null,
+  "stored_total_tax": 0.6166666666666667,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:09:35.446+00",
+  "items": [
+   {
+    "itemId": "m-1789667369279_5c9bdaa9",
+    "parentId": "m-1789667243900_5c9bdaa9",
+    "name": "Americano — Big Boy",
+    "price": 3.7,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R11243",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 8.45,
+  "total": 8.45,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.41,
+  "share": null,
+  "stored_total_tax": 1.4083333333333332,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:08:55.548+00",
+  "items": [
+   {
+    "itemId": "m-1789648729606_5c9bdaa9",
+    "parentId": "m-1789647980622_5c9bdaa9",
+    "name": "Cappuccino — Big Boy",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-impmumntkbp-1",
+    "parentId": null,
+    "name": "Creme Egg Slice",
+    "price": 3.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R6916",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "dine-in",
+  "subtotal": 4.9,
+  "total": 4.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.82,
+  "share": null,
+  "stored_total_tax": 0.8166666666666664,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:08:38.4+00",
+  "items": [
+   {
+    "itemId": "m-1789648738340_42820abf",
+    "parentId": "m-1789647980622_42820abf",
+    "name": "Cappuccino — XL Boy",
+    "price": 4.9,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0.5,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R9346",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "order_type": "dine-in",
+  "subtotal": 8,
+  "total": 7.2,
+  "tip": 0,
+  "service": 0,
+  "discounts": [
+   {
+    "type": "percent",
+    "value": 10,
+    "amount": 0.8,
+    "scope": "check"
+   }
+  ],
+  "tax_amount": 1.2,
+  "share": 0.9,
+  "stored_total_tax": 1.2,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:08:26.378+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_74d78e2a",
+    "parentId": "m-1789160788884_74d78e2a",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R5768",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "order_type": "dine-in",
+  "subtotal": 4,
+  "total": 4,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.67,
+  "share": null,
+  "stored_total_tax": 0.6666666666666665,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:08:14.199+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "229a7558-c675-47e9-bb16-c756815591d9",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R16421",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "takeaway",
+  "subtotal": 3.85,
+  "total": 4.04,
+  "tip": 0.19,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.64,
+  "share": null,
+  "stored_total_tax": 0.6416666666666666,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:07:32.245+00",
+  "items": [
+   {
+    "itemId": "m-1789992513968_5c26956b",
+    "parentId": "m-1789992488872_5c26956b",
+    "name": "Iced Americano — Big Boy",
+    "price": 3.85,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "R6915",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "order_type": "takeaway",
+  "subtotal": 5.95,
+  "total": 5.95,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 0.99,
+  "share": null,
+  "stored_total_tax": 0.9916666666666663,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:07:10.533+00",
+  "items": [
+   {
+    "itemId": "m-impmumnerwc-8_42820abf",
+    "parentId": null,
+    "name": "Milkybar Cookie Pie",
+    "price": 5.95,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R11242",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "order_type": "dine-in",
+  "subtotal": 9.9,
+  "total": 9.9,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 1.65,
+  "share": null,
+  "stored_total_tax": 1.6499999999999995,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:06:57.195+00",
+  "items": [
+   {
+    "itemId": "m-1789160867300_5c9bdaa9",
+    "parentId": "m-1789160788884_5c9bdaa9",
+    "name": "Latte — Big Boy ",
+    "price": 4,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790117773874_5c9bdaa9",
+    "parentId": null,
+    "name": "Beans on Toast",
+    "price": 3.55,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   },
+   {
+    "itemId": "m-1790245370729_5c9bdaa9",
+    "parentId": null,
+    "name": "Coke Zero",
+    "price": 2.35,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "b4c75881-8771-4780-bac4-afc501f4a77e",
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "R16420",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "order_type": "dine-in",
+  "subtotal": 13.85,
+  "total": 13.85,
+  "tip": 0,
+  "service": 0,
+  "discounts": [],
+  "tax_amount": 2.31,
+  "share": null,
+  "stored_total_tax": 2.308333333333333,
+  "loyalty": false,
+  "closed_at": "2026-10-08 14:05:05.119+00",
+  "items": [
+   {
+    "itemId": "m-1789992404353_5c26956b",
+    "parentId": "m-1789992386503_5c26956b",
+    "name": "Honey Oat Iced Latte — Big Boy",
+    "price": 5.25,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1790142700776_5c26956b",
+    "parentId": null,
+    "name": "Bueno Filled Donut",
+    "price": 4.5,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   },
+   {
+    "itemId": "m-1789160867300_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Big Boy ",
+    "price": 4.1,
+    "qty": 1,
+    "voided": false,
+    "discount": null,
+    "taxRateId": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+    "mods": []
+   }
+  ]
+ }
+]
