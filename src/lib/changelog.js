@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.38',
+    date: '8 Oct 2026',
+    items: [
+      "Orders screen: a QR order that was paid on the phone now says what its button does (Mark in prep, Mark ready, Mark collected), the same words as every other order. It said Advance at every stage. The press itself was always right; only the words were wrong.",
+      "Orders screen: a finished QR order no longer shows a button that did nothing. A ready QR order whose payment is still being checked shows only Check payment.",
+    ],
+  },
+  {
     v: '5.11.36',
     date: '7 Oct 2026',
     items: [
