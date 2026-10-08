@@ -19,12 +19,18 @@ const zero = toStoreRate({ id: 'zero', name: 'Zero Rate', code: 'ZERO', rate: 0,
 const salesTax = toStoreRate({ id: 'us', name: 'Sales Tax', code: 'US', rate: 0.1, type: 'exclusive', is_default: true, active: true, location_id: 'provo' });
 const pence = (n) => Math.round(n * 100);
 
+const red = toStoreRate({ id: 'red', name: 'Reduced Rate', code: 'VAT5', rate: 0.05, type: 'inclusive', is_default: false, active: true, location_id: 'leeds' });
 const menuItems = [
   { id: 'burger', name: 'Burger', price: 10, taxRateId: 'std', taxOverrides: {} },
   { id: 'cake', name: 'Cake', price: 6, taxRateId: 'zero', taxOverrides: {} },
   { id: 'latte', name: 'Latte', price: 3, taxRateId: null, taxOverrides: { takeaway: 'zero' } },
+  // Leeds Babyccino: the parent carries the 5% rate; its Milk size row was saved with Tax rate
+  // "Use default" (null) and no overrides, as the item editor writes a size (8 Oct 2026 review).
+  { id: 'babyccino', name: 'Babyccino', price: 1.55, taxRateId: 'red', taxOverrides: { takeaway: 'zero' } },
+  { id: 'babyccino-milk', name: 'Milk', price: 1.55, parentId: 'babyccino', taxRateId: null, taxOverrides: {} },
+  { id: 'babyccino-oat', name: 'Oat', price: 1.85, parentId: 'babyccino', taxRateId: 'std', taxOverrides: {} },
 ];
-const ctx = { menuItems, taxRates: [std, zero] };
+const ctx = { menuItems, taxRates: [std, zero, red] };
 
 // Two order_queue lines as QrCheckout writes them: base price, mods apart, no tax fields.
 const qrItems = () => ([
@@ -129,4 +135,21 @@ test('wiring: all three Orders Hub QR closes book VAT (none books tax_amount nul
   assert.equal((hub.match(/tax_amount: qrTax\.taxAmount,/g) || []).length, 2);
   assert.equal((hub.match(/\.\.\.\(qrTax\.taxBreakdown \? \{ tax_breakdown: qrTax\.taxBreakdown \} : \{\}\),/g) || []).length, 2);
   assert.match(hub, /menuItems: st\.menuItems \|\| \[\], taxRates: st\.taxRates \|\| \[\], taxCtx, hasTaxConfig: taxCtxHasConfig\(taxCtx\)/);
+});
+
+test('8 Oct 2026 (review): a size ON the menu with no rate of its own takes its parent rate and overrides, as the till and the kiosk do', () => {
+  // Milk: null rate, no overrides -> the parent's 5% and the parent's takeaway override.
+  const milk = qrTaxLines([{ itemId: 'babyccino-milk', parentId: 'babyccino', price: 1.55, qty: 1 }], menuItems)[0];
+  assert.equal(milk.taxRateId, 'red');
+  assert.deepEqual(milk.taxOverrides, { takeaway: 'zero' });
+  assert.equal(milk.taxFallback, undefined);
+  // Oat: its own rate stands (a size at its own Back Office rate), the parent's overrides fill the gap.
+  const oat = qrTaxLines([{ itemId: 'babyccino-oat', parentId: 'babyccino', price: 1.85, qty: 1 }], menuItems)[0];
+  assert.equal(oat.taxRateId, 'std');
+  assert.deepEqual(oat.taxOverrides, { takeaway: 'zero' });
+  // The force close books 0.07 on 1.55 at 5%, the same as settle_qr_tab and the till, not 0.26 at the default 20%.
+  const t = qrCloseTax([{ itemId: 'babyccino-milk', parentId: 'babyccino', name: 'Babyccino Milk', price: 1.55, qty: 1, mods: [] }], ctx);
+  assert.equal(t.taxAmount, 0.07);
+  assert.equal(t.taxBreakdown.breakdown[0].rate.id, 'red');
+  assert.equal(t.taxBreakdown.fallbacks, undefined);
 });

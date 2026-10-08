@@ -91,7 +91,10 @@ const PROVO = { name: 'Provo', tz: 'America/Denver', currency: 'USD', dayStart: 
 // The sales and items reads. The one small "first ever sale" read per venue is its own thing.
 const isFirstSaleRead = (q) => q.table === 'closed_checks' && q.select === 'id, closed_at, status, voided';
 const firstSaleReads = (ops) => ops.log.filter(isFirstSaleRead);
-const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
+// 8 Oct 2026 (review): the one read per venue of OLDER checks that carry a refund (refunds <> '[]').
+const isRefundRead = (q) => q.table === 'closed_checks' && q.filters.some((f) => f.col === 'refunds' && f.op === 'neq');
+const refundReads = (ops) => ops.log.filter(isRefundRead);
+const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && !isRefundRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
 const bound = (q, op) => q.filters.find((f) => f.col === 'closed_at' && f.op === op)?.val;
 
 // Friday 2 Oct 2026, 12:00 in Leeds (BST, UTC+1). The week began Monday 28 Sep.
@@ -181,11 +184,39 @@ test('Today (and an older app that sends no period) answers what the function al
   }
 });
 
+test('8 Oct 2026 (review): a sale from three weeks ago refunded TODAY comes off today, as Daily trading and the detail screen take it off', async () => {
+  const t = leeds();
+  // Closed 10 Sep (outside every window the snapshot reads for sales), refunded in full this morning.
+  const old = chk('L', '2026-09-10T10:00:00Z', {
+    refunds: [{ id: 'f-old', amount: 12, taxAmount: 2, tipAmount: 0, serviceAmount: 0, timestamp: '2026-10-02T09:30:00Z', tenderMethod: 'card', cardStatus: 'succeeded', isFullRefund: true, legs: [{ status: 'succeeded', amountMinor: 1200 }] }],
+  });
+  t.closed_checks.push(old);
+  const snap = await build(fakeOps(t), 'today');
+  const { period_totals } = split(snap.locations[0]).old;
+  // Before: 30 net, 6 VAT (three sales of 12). The refund takes its 10 net and 2 VAT off today.
+  assert.equal(period_totals.net_sales, 20);
+  assert.equal(period_totals.vat, 4);
+  assert.equal(period_totals.orders, 3, 'the old sale is not one of today\'s orders');
+  // A refund made on a day outside the period changes nothing here (it belongs to that day).
+  const t2 = leeds();
+  t2.closed_checks.push(chk('L', '2026-09-10T10:00:00Z', { refunds: [{ id: 'f-old2', amount: 12, taxAmount: 2, timestamp: '2026-09-12T09:30:00Z', tenderMethod: 'card', cardStatus: 'succeeded', legs: [{ status: 'succeeded', amountMinor: 1200 }] }] }));
+  const snap2 = await build(fakeOps(t2), 'today');
+  assert.equal(split(snap2.locations[0]).old.period_totals.vat, 6);
+});
+
 test('Today reads one sales window and one items window for the venue, as before the filters', async () => {
   const ops = fakeOps(leeds());
   await build(ops, 'today');
   const sales = checkReads(ops, 'sales'), items = checkReads(ops, 'items');
   assert.equal(sales.length, 1);
+  // 8 Oct 2026 (review): plus ONE read of older checks that carry a refund, 400 days before the
+  // sales window up to its start, fenced to the venue and paged like every other check read.
+  const older = refundReads(ops);
+  assert.equal(older.length, 1);
+  assert.equal(bound(older[0], 'gte'), new Date(Date.parse('2026-09-20T23:00:00.000Z') - 400 * 86400000).toISOString());
+  assert.equal(bound(older[0], 'lt'), '2026-09-20T23:00:00.000Z');
+  assert.deepEqual(older[0].filters.find((f) => f.col === 'location_id'), { op: 'eq', col: 'location_id', val: 'L' });
+  assert.deepEqual(older[0].orders, ['closed_at', 'id']);
   // Monday of last week to the end of today, midnight to midnight on the venue's clock (BST).
   assert.equal(bound(sales[0], 'gte'), '2026-09-20T23:00:00.000Z');
   assert.equal(bound(sales[0], 'lt'), '2026-10-02T23:00:00.000Z');

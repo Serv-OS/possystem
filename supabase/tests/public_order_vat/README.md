@@ -44,8 +44,10 @@ server instead (a socket folder works as the host). Exit code 0 only when every 
    rule (half up) gives 0.98, as the page now sends.
 4. The 200 till sales re derive from their lines, each venue's menu rows and rates, with the
    share of the goods charged (the till's rule: item and check discounts off, loyalty and promo
-   credits not): 183 to the penny, 17 one penny above. Every one of the 17 sits on a half penny
-   that the till of those days stored as a float rounded down (`1.6749999999999998` became 1.67);
+   credits not): 182 to the penny, 18 one penny above. Every one of the 18 sits on a half penny
+   that the till of those days stored as a float rounded down (`1.6749999999999998` became 1.67;
+   R11313, 8.30 with 10% off, is exactly 1.245 and was stored 1.24). 8 Oct 2026 review: the share
+   goes to SQL as an exact ratio of pence, as the server derives it, never as a JS float;
    under the one rule it is 1.68, which is what the till books since Lane A. None is further off,
    none is below. Till lines carry their modifiers inside `price`, order queue lines keep them
    apart; the harness passes the till lines without mods for that reason.
@@ -57,4 +59,7 @@ server instead (a socket folder works as the host). Exit code 0 only when every 
 6. The ROLLBACK file puts both functions back byte for byte (the live md5s again), drops the four
    helpers, and the migration applies again after it.
 
-8 Oct 2026: all checks passing (183 of 200 till sales exact, 17 half pennies, 0 misses).
+8 Oct 2026: all checks passing (182 of 200 till sales exact, 18 half pennies, 0 misses). The review
+of the same day found `_vat_round` a hair under a true half penny on a discounted bill (a numeric
+quotient keeps 16 digits: 8.30 at 20% with a 10% deal gave 1.24, the till 1.25); it now clamps to
+8 decimals first, as the till clamps pence to 6, and the self test and this harness pin 1.25.

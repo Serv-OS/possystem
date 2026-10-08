@@ -111,6 +111,11 @@ export function paidShare(paidGoods, items) {
  * variant's parent), as channelMoney.buildChannelCloseFields does. A line not on this till's menu
  * keeps whatever it carries; one that carries no rate of its own takes the venue default and is
  * flagged 'item-not-on-menu' (8 Oct 2026, D4), never quietly.
+ * 8 Oct 2026 (review): a SIZE row that is on the menu inherits exactly as the till's addItem and
+ * the kiosk's kioskLineTaxRefs do: with no overrides of its own it reads its parent's overrides,
+ * and with no rate of its own its parent's rate. Before this a Babyccino size saved with "Use
+ * default" under a 5% parent booked 20% when its tab was force closed in Orders, and 5% on the
+ * phone or the till. One sale, one rate, whichever screen closes it.
  */
 export function qrTaxLines(items, menuItems = []) {
   const byId = new Map();
@@ -125,8 +130,15 @@ export function qrTaxLines(items, menuItems = []) {
       itemId: i.itemId ?? i.id ?? null,
     };
     if (mi) {
-      out.taxRateId = mi.taxRateId ?? mi.tax_rate_id ?? null;
-      out.taxOverrides = mi.taxOverrides ?? mi.tax_overrides ?? {};
+      let rate = mi.taxRateId ?? mi.tax_rate_id ?? null;
+      let ov = mi.taxOverrides ?? mi.tax_overrides ?? {};
+      const parent = find(mi.parentId ?? mi.parent_id);
+      if (parent && (!ov || typeof ov !== 'object' || Object.keys(ov).length === 0)) {
+        ov = parent.taxOverrides ?? parent.tax_overrides ?? ov;
+        if (!rate) rate = parent.taxRateId ?? parent.tax_rate_id ?? null;
+      }
+      out.taxRateId = rate;
+      out.taxOverrides = ov && typeof ov === 'object' ? ov : {};
       out.taxProfileId = mi.taxProfileId ?? mi.tax_profile_id ?? null;
       if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
     } else if (!(i.taxRateId ?? i.tax_rate_id) && !i.taxFallback) {

@@ -16,7 +16,7 @@ import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs, ratesAfterRead, 
 // (lib/saleVatGuard.js) with this till's rates. The in memory record is rounded like the row.
 import { tillVatGate, afterTaxRatesRead, taxRatesRetryMs, noRatesAlertDue, NO_RATES_ALERT_KEY } from '../lib/tillVatGate';
 import { venueExpectsRates } from '../lib/customerRates';
-import { setVenueTaxSource, venueTaxFromStore, onSaleVatEvent } from '../lib/saleVatGuard';
+import { setVenueTaxSource, venueTaxFromStore, onSaleVatEvent, isSaleVatError } from '../lib/saleVatGuard';
 import { roundVat } from '../lib/taxRule';
 import { venueRowsOnly } from '../lib/boVenueBoot';
 import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
@@ -9255,6 +9255,15 @@ export const useStore = create((set, get) => ({
   bookChannelSale: async (o) => {
     if (!o || o.source !== 'hubrise' || !supabase || isTrainingMode()) return;
     try {
+      // 8 Oct 2026 (review): Accept is not a tender, so no card gate stood in the way of booking a
+      // prepaid channel sale on a till that holds no tax rates yet (a failed or empty read the store
+      // keeps retrying). The same gate every tender asks: while it is shut the order is left in the
+      // queue, staff are told, and the 'collected' safety net books it once the rates have loaded.
+      const gate = get().vatGate();
+      if (gate) {
+        get().showToast?.(`Channel order ${o.ref} is not booked to sales yet. ${gate.message}`, 'error', 8000);
+        return;
+      }
       const locId = getActiveLocationSync();
       const { menuItems = [], taxRates = [] } = get();
       const f = buildChannelCloseFields(o, { menuItems, taxRates, taxCtx: get().getTaxContext() });
@@ -9281,7 +9290,9 @@ export const useStore = create((set, get) => ({
       // an unbooked channel sale is revenue missing from every report. Only 23505
       // (deterministic id already booked) is the expected, harmless outcome.
       if (error && error.code !== '23505') {
-        reportSave('channel sale', error);
+        // A refusal by the save time guard (no VAT the till could book) is not a database fault:
+        // the guard has told staff; the order stays in the queue for the next accept or 'collected'.
+        if (!isSaleVatError(error)) reportSave('channel sale', error);
         get().showToast?.(`Channel order ${o.ref} was NOT booked to sales — ${error.message}`, 'error');
       } else if (!error) {
         reportSave('channel sale', null);

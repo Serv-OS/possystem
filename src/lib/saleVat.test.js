@@ -13,17 +13,18 @@
 // addRefundSales, and the accounting day Xero posts from. Where two figures differ on purpose
 // (the loyalty VAT, D1) the difference is exactly the credit VAT the accounting layer names.
 import { test } from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   readSale, saleVatAmount, saleVatRecorded, saleVatFlags, saleVatLedger, refundVatOf, refundInRange, refundTaxBasis,
   noVatLine, noRecordLine, flaggedLines, toAccountingRow, roundPence, isUsableRecord, hasRateLines, SALE_VAT_FLAGS, LOYALTY_VAT_LINE,
 } from '../../supabase/functions/_shared/saleVat.js';
-import { buildAccountingDay, creditTaxMinor, checkTaxRecorded } from '../../supabase/functions/_shared/accountingDay.js';
+import { buildAccountingDay, creditTaxMinor, checkTaxRecorded, refundParts } from '../../supabase/functions/_shared/accountingDay.js';
 import { tradingDays } from '../../supabase/functions/_shared/tradingSales.js';
 import { emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../../supabase/functions/_shared/snapshotSales.js';
 import { businessDayWindow, businessDayOf } from '../../supabase/functions/_shared/businessDay.js';
 import { computeSalesStats, vatMissingLine } from './salesStats.js';
-import { taxAnalysisOf } from './reportSiteMenu.js';
+import { taxAnalysisOf, siteTaxAnalysis } from './reportSiteMenu.js';
 import { refundTaxAmount } from './payments/refundMath.js';
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg || ''} ${a} != ${b}`);
@@ -206,4 +207,78 @@ test('toAccountingRow: a store copy reads as a database row for the accounting l
   assert.deepEqual(r.tenders, [{ method: 'loyalty', amount: 4.8, tip: 0 }]);
   assert.equal(r.closed_at, '2026-10-04T10:00:00.000Z');
   assert.equal(toAccountingRow(rows[2]), rows[2], 'a database row is returned as it is');
+});
+
+// ── 8 Oct 2026 (review): two refund rules that still disagreed ───────────────────────────────────
+
+test('a cross day refund: made in the range on a sale closed before it comes off the Tax summary too (refundRows), as Daily trading takes it off', () => {
+  // Fixture from the review: a 6.00 sale closed 6 Oct, refunded in full on 7 Oct with taxAmount 1.00
+  // saved on the entry; two 10.00 sales on 7 Oct (VAT 1.67 each).
+  const sixth = { id: 'o1', ref: 'R100', closed_at: '2026-10-06T10:00:00Z', subtotal: 6, total: 6, tip: 0, service: 0, tax_amount: 1, tax_breakdown: record(6, 1), tenders: [card(6)], items: [{ price: 6, qty: 1 }],
+    refunds: [{ id: 'f9', amount: 6, taxAmount: 1, tipAmount: 0, serviceAmount: 0, timestamp: '2026-10-07T12:00:00Z', tenderMethod: 'card', cardStatus: 'succeeded', isFullRefund: true, legs: [{ status: 'succeeded', amountMinor: 600 }] }] };
+  const seventh = [1, 2].map((n) => ({ id: `s${n}`, ref: `R20${n}`, closed_at: `2026-10-07T1${n}:00:00Z`, subtotal: 10, total: 10, tip: 0, service: 0, tax_amount: 1.67, tax_breakdown: record(10, 1.67), tenders: [card(10)], items: [{ price: 10, qty: 1 }], refunds: [] }));
+  const w7 = businessDayWindow('2026-10-07', UK.timezone, UK.dayStart);
+  const w6 = businessDayWindow('2026-10-06', UK.timezone, UK.dayStart);
+  const dayOf = (ms) => businessDayOf(ms, UK.timezone, UK.dayStart);
+  const taxOf = (c) => (c.taxBreakdown ? { ...c.taxBreakdown, source: 'booked' } : { totalTax: 0, subtotal: c.total, breakdown: [], source: 'rates' });
+
+  // Daily trading for 7 Oct: the refund's VAT comes off that day.
+  const td = tradingDays({ saleRows: [...seventh, sixth], refundRows: [sixth], dayOf });
+  near(td['2026-10-07'].refund_vat, 1, 'Daily trading takes the 1.00 off on 7 Oct');
+  near(td['2026-10-07'].vat, 3.34 - 1, 'Daily trading VAT for 7 Oct');
+
+  // The Tax summary given only the checks CLOSED in the range (what BOReports hands it): the refund is missing.
+  const without = taxAnalysisOf(seventh.map(camel), taxOf, { range: w7, hasRates: true });
+  near(without.refundVat, 0, 'without the lookback the cross day refund is in none of its rows');
+  // With the older refund bearing check handed over as refundRows: taken off on 7 Oct, not counted as a sale.
+  const withRows = taxAnalysisOf(seventh.map(camel), taxOf, { range: w7, hasRates: true, refundRows: [camel(sixth)] });
+  near(withRows.refundVat, 1, "the lookback row refund comes off");
+  near(withRows.salesVat, 3.34, "its sale is not a sale of the range");
+  assert.equal(withRows.ledger.count, 2);
+  near(withRows.vatDue, td['2026-10-07'].vat, 'Tax summary VAT due equals Daily trading');
+  // Viewing 6 Oct: the sale counts, the refund (made 7 Oct) does not; a refundRow that is also a range row is read once.
+  const sixthView = taxAnalysisOf([camel(sixth)], taxOf, { range: w6, hasRates: true, refundRows: [camel(sixth)] });
+  near(sixthView.salesVat, 1);
+  near(sixthView.refundVat, 0);
+  assert.equal(sixthView.ledger.count, 1);
+  // The site split seam carries refundRows through too.
+  const site = siteTaxAnalysis(seventh.map(camel), { hasRates: true, taxLoaded: true, taxRates: RATES, taxCtx: { taxRates: RATES } }, { range: w7, refundRows: [camel(sixth)] });
+  near(site.refundVat, 1);
+});
+
+test('one refund VAT basis: a reader close part paid by gift card (total is the card part only) pro rates on what the tenders settled, in the Tax summary AND the accounting day', () => {
+  // 10.00 of goods, VAT 1.67, paid 8.00 gift card + 2.00 card through the reader: total stored 2.00,
+  // the tenders settle 10.00. The 2.00 card leg is refunded with no taxAmount on the entry.
+  const row = { id: 'g1', ref: 'R1677', closed_at: '2026-10-04T10:00:00Z', subtotal: 10, total: 2, tip: 0, service: 0, tax_amount: 1.67, tax_breakdown: record(10, 1.67),
+    tenders: [{ method: 'gift_card', amount: 8, tip: 0 }, card(2)], items: [{ price: 10, qty: 1 }], refunds: [] };
+  const entry = { id: 'f1', amount: 2, timestamp: '2026-10-04T11:00:00Z', tenderMethod: 'card', cardStatus: 'succeeded', legs: [{ status: 'succeeded', amountMinor: 200 }] };
+  assert.equal(refundTaxBasis(row), 10);
+  assert.deepEqual(refundVatOf(entry, row), { amount: 0.33, estimated: true, noVat: false });
+  const parts = refundParts(entry, row);
+  assert.equal(parts.parts.reduce((a, p) => a + p.tax, 0), 33, 'the accounting day gives 0.33 back too, not the whole 1.67');
+  // The entry's own figure, when the till saved one, wins on both sides.
+  assert.deepEqual(refundVatOf({ ...entry, taxAmount: 0.3 }, row).amount, 0.3);
+  assert.equal(refundParts({ ...entry, taxAmount: 0.3 }, row).parts.reduce((a, p) => a + p.tax, 0), 30);
+  // A plain till sale (total is the bill) is unchanged by the shared basis: 4.15 of 20.10 -> 0.69.
+  const plain = { total: 20.1, subtotal: 20.1, tip: 0, service: 0, tax_amount: 3.35, tenders: [card(20.1)], items: [{ price: 20.1, qty: 1 }] };
+  const e2 = { amount: 4.15, legs: [{ status: 'succeeded', amountMinor: 415 }], cardStatus: 'succeeded' };
+  assert.equal(refundVatOf(e2, plain).amount, 0.69);
+  assert.equal(refundParts(e2, plain).parts.reduce((a, p) => a + p.tax, 0), 69);
+});
+
+test('PIN: the Tax report reads the older refund bearing checks of each site, and the accounting day imports the one basis', () => {
+  const tax = fs.readFileSync(new URL('../backoffice/sections/reports/Tax.jsx', import.meta.url), 'utf8');
+  assert.match(tax, /import \{ fetchRefundChecksBefore \} from '\.\.\/\.\.\/\.\.\/lib\/db';/);
+  assert.match(tax, /const lookback = useRefundLookback\(siteId \? \[siteId\] : \[\], rangeFrom\);/);
+  assert.match(tax, /taxAnalysisOf\(checks, taxOf, \{ range, hasRates: taxRates\.length > 0, refundRows \}\)/);
+  assert.match(tax, /const lookback = useRefundLookback\(parts\.map\(p => p\.id\), rangeFrom\);/);
+  assert.match(tax, /siteTaxAnalysis\(p\.rows, menus\[p\.id\] \|\| null, \{ range, refundRows: lookback\.rows\[String\(p\.id\)\] \|\| NONE \}\)/);
+  const bo = fs.readFileSync(new URL('../backoffice/sections/BOReports.jsx', import.meta.url), 'utf8');
+  assert.match(bo, /<Tax {10}checks=\{filtered\} fmt=\{fmt\} fmtN=\{fmtN\} rangeFrom=\{range\.from\} rangeTo=\{range\.to\} locationId=\{activeLocId\}/);
+  const db = fs.readFileSync(new URL('./db.js', import.meta.url), 'utf8');
+  assert.match(db, /export const REFUND_LOOKBACK_DAYS = 400;/);
+  assert.match(db, /\.gte\('closed_at', since\.toISOString\(\)\)\n\s*\.lt\('closed_at', from\.toISOString\(\)\)\n\s*\.neq\('refunds', '\[\]'\)/);
+  const acc = fs.readFileSync(new URL('../../supabase/functions/_shared/accountingDay.js', import.meta.url), 'utf8');
+  assert.match(acc, /import \{ refundTaxBasis \} from '\.\/saleVat\.js';/);
+  assert.match(acc, /const taxBasis = Math\.max\(1, toMinor\(refundTaxBasis\(row\)\)\);/);
 });

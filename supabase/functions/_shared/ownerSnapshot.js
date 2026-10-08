@@ -79,8 +79,9 @@ const LIVE_DONE = new Set(['collected', 'cancelled', 'canceled', 'rejected', 're
 const QUARTER_HOUR = 900000;
 const MINUTE = 60000;
 const DAY_MS = 86400000;
-// A refund counts on the day it was MADE, so the detail call also looks at older checks that
-// carry one. The same reach as the Daily trading report (trading-report REFUND_LOOKBACK_DAYS).
+// A refund counts on the day it was MADE, so the snapshot and the detail call also look at older
+// checks that carry one (8 Oct 2026 review: the snapshot too, so the Today tile agrees with its own
+// detail screen). The same reach as the Daily trading report (trading-report REFUND_LOOKBACK_DAYS).
 const REFUND_LOOKBACK_DAYS = 400;
 const TOP_N = 20;
 
@@ -298,9 +299,26 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   // (_shared/snapshotSales.js). Bucketed by the venue's business day the check closed in.
   // 8 Oct 2026 (the VAT audit): a refund comes OFF on the business day it was MADE, with its
   // VAT (snapshotSales.addRefundSales, the rule Daily trading and Xero use), so the app's VAT
-  // and net sales agree with them. Refunds on the checks these windows read; an older check
-  // refunded today is the detail call's (it reads 400 days back for them).
+  // and net sales agree with them. 8 Oct 2026 (review): refunds on the checks these windows read
+  // AND on older checks that carry one (refundsOf below, the same 400 day reach as Daily trading
+  // and the detail call), so a sale from three weeks ago refunded today comes off today's tile
+  // too. Each refund counts once whichever read lands first (seenRefund).
   const seenRefund = new Set();
+  const placeRefunds = (id, c) => {
+    const dd = byDay[id], dayOf = plan[id].dayOf, cc = cuts[id];
+    for (const [i, e] of (Array.isArray(c.refunds) ? c.refunds : []).entries()) {
+      if (!e || typeof e !== 'object') continue;
+      const key = `${c.id}|${e.id ?? i}`;
+      if (seenRefund.has(key)) continue;
+      seenRefund.add(key);
+      const at = refundMadeAt(e, c);
+      if (at == null) continue;
+      const rd = dayOf(at);
+      addRefundSales((dd[rd] ??= emptySales()), e, c);
+      const rc = cc.get(rd);
+      if (rc && at < rc.untilMs) addRefundSales(rc.sales, e, c);
+    }
+  };
   const addSales = (id, rows) => {
     const dd = byDay[id], dayOf = plan[id].dayOf, cc = cuts[id];
     for (const c of rows) {
@@ -310,20 +328,11 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
       addCheckSales((dd[d] ??= emptySales()), c);
       const cut = cc.get(d);
       if (cut && ms < cut.untilMs) addCheckSales(cut.sales, c);
-      for (const [i, e] of (Array.isArray(c.refunds) ? c.refunds : []).entries()) {
-        if (!e || typeof e !== 'object') continue;
-        const key = `${c.id}|${e.id ?? i}`;
-        if (seenRefund.has(key)) continue;
-        seenRefund.add(key);
-        const at = refundMadeAt(e, c);
-        if (at == null) continue;
-        const rd = dayOf(at);
-        addRefundSales((dd[rd] ??= emptySales()), e, c);
-        const rc = cc.get(rd);
-        if (rc && at < rc.untilMs) addRefundSales(rc.sales, e, c);
-      }
+      placeRefunds(id, c);
     }
   };
+  // Older checks that carry a refund: only their refunds are placed, never their sales.
+  const addOlderRefunds = (id, rows) => { for (const c of rows) placeRefunds(id, c); };
   const addItems = (id, rows) => {
     const { dayOf, today, range } = plan[id];
     for (const c of rows) {
@@ -347,6 +356,13 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const itemsOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].today }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addItems(id, rows), opts)));
+  // 8 Oct 2026 (review): checks closed before the sales windows that carry a refund (few: a handful
+  // a day at most), back the same 400 days Daily trading reaches, so a refund made in the period on
+  // an older sale comes off the day it was made here too. The sales windows cover their own.
+  const refundsOf = (id) => pagedEach('older refunds', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
+    .eq('location_id', id).gte('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from))) - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString())
+    .lt('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from)))).toISOString()).neq('refunds', '[]')
+    .order('closed_at').order('id'), (rows) => addOlderRefunds(id, rows), opts);
 
   // Forecasts and timesheets for every venue in one read each: the widest dates any venue
   // needs, then each row is kept only if it falls in its own venue's period. A timesheet counts
@@ -358,9 +374,10 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const fcFrom = least(all.map((p) => p.range.from)), fcTo = most(all.map((p) => p.today));
   const tsFrom = new Date(least(all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(most(all.map((p) => p.endMs)) + DAY_MS).toISOString();
 
-  const [, , firstDays, fcRows, ts, oq, sess] = await Promise.all([
+  const [, , , firstDays, fcRows, ts, oq, sess] = await Promise.all([
     Promise.all(opsIds.map(salesOf)),
     Promise.all(opsIds.map(itemsOf)),
+    Promise.all(opsIds.map(refundsOf)),
     Promise.all(opsIds.map((id) => firstSaleDay(ops, id, plan[id], gate))),
     gate(() => pagedRows('forecasts', () => ops.from('wf_sales_forecast').select('location_id, forecast_date, amount').in('location_id', opsIds).gte('forecast_date', fcFrom).lte('forecast_date', fcTo).order('id'))),
     gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),

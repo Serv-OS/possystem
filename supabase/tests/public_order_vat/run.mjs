@@ -18,7 +18,8 @@
 //      13 with a discount) re derive from their lines, each venue's rates and menu rows, with the
 //      share of the goods charged, and the match rate is printed with every miss explained;
 //   5. settle_qr_tab end to end: a tab with no figure from the phone books the server's VAT and
-//      says so; a figure within 1p is kept; a round with an automatic deal scales the VAT;
+//      says so; a figure within 1p is kept; a round with an automatic deal scales the VAT, and a
+//      deal landing on a half penny rounds up as the till does (8 Oct 2026 review);
 //   6. the ROLLBACK file puts both functions back byte for byte (md5) and drops the helpers.
 // Exit code 0 only when everything above holds.
 
@@ -142,10 +143,16 @@ try {
     }, 0);
     const checkOff = (s.discounts || []).reduce((a, d) => a + (Number(d.amount) || 0), 0);
     const share = goods > 0 ? Math.max(0, Math.min(1, (goods - lineOff - checkOff) / goods)) : 1;
+    // 8 Oct 2026 (review): the share goes to SQL as an exact ratio of pence (what the server itself
+    // derives from order_pricing goods_minor and auto_minor), never as a JS float. 7.47 / 8.30 in JS
+    // is 0.9000000000000001, which masked a half penny the server rounded down.
+    const goodsPence = Math.round(goods * 100);
+    const chargedPence = Math.max(0, Math.min(goodsPence, Math.round((goods - lineOff - checkOff) * 100)));
+    const shareSql = goodsPence > 0 ? `${chargedPence}::numeric / ${goodsPence}::numeric` : '1';
     // A till line's price already INCLUDES its modifiers (the store folds them in; mods ride along
     // for display), unlike an order_queue line, so the mods are not passed again.
     const lines = s.items.map((i) => ({ itemId: i.itemId, parentId: i.parentId, name: i.name, price: i.price, qty: i.qty, voided: i.voided, mods: [] }));
-    const r = sqlJson(`select public._public_order_vat(${lit(s.location_id)}, ${jlit(lines)}, ${lit(s.order_type)}, ${share})`);
+    const r = sqlJson(`select public._public_order_vat(${lit(s.location_id)}, ${jlit(lines)}, ${lit(s.order_type)}, ${shareSql})`);
     const got = Number(r.total_tax);
     if (got === s.tax_amount) hit++;
     else {
@@ -217,9 +224,15 @@ try {
   res = settleViaFile('pi_d', { table_label: 'Table 4' });
   row = sqlJson(`select to_jsonb(c) from public.closed_checks c where c.id = ${lit(res.check_id)}`);
   ok(Number(row.total) === 5 && Number(row.tax_amount) === 0.83 && Number(row.tax_breakdown.share) === 0.5, `a deal on the round: 5.00 booked, VAT 0.83, share 0.5 (${row.total}, ${row.tax_amount}, ${row.tax_breakdown.share})`);
+  // (d2) 8 Oct 2026 (review): the same deal on a half penny. 8.30 of goods, 0.83 off (share 0.9, an exact
+  //      ratio of pence on the server): VAT exactly 1.245, booked 1.25 as the till books it, never 1.24.
+  openTab('pi_d2', [{ items: [{ ...cooler, price: 8.3 }], auto: 0.83 }]);
+  res = settleViaFile('pi_d2', { table_label: 'Table 4' });
+  row = sqlJson(`select to_jsonb(c) from public.closed_checks c where c.id = ${lit(res.check_id)}`);
+  ok(Number(row.total) === 7.47 && Number(row.tax_amount) === 1.25 && row.tax_breakdown.booked === 'server', `a deal on a half penny: 7.47 booked, VAT 1.25 half up (${row.total}, ${row.tax_amount})`);
   // (e) a second close of the same tab is "already closed", no second check
   res = settleViaFile('pi_a', {});
-  ok(res.ok === true && res.reason === 'already_closed' && Number(sql('select count(*) from public.closed_checks')) === 4, 'closing a closed tab again writes nothing');
+  ok(res.ok === true && res.reason === 'already_closed' && Number(sql('select count(*) from public.closed_checks')) === 5, 'closing a closed tab again writes nothing');
 
   console.log('6. the rollback');
   const rolled = file(ROLLBACK, { allowFail: true });

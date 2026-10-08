@@ -776,6 +776,44 @@ export const fetchClosedCheckCardRow = async (checkId) => {
   return data;
 };
 
+/**
+ * One closed_checks row as the store holds it: the map the boot loader, every range read and the
+ * refund lookback share (8 Oct 2026 review: three hand copies had already drifted once, v5.9.11).
+ */
+export function mapClosedCheckRow(c) {
+  return {
+      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
+      staffId: c.staff_id,
+      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
+      orderType: c.order_type, customer: c.customer,
+      items: c.items || [], discounts: c.discounts || [],
+      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
+      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
+      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
+      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
+      // report reads the split by rate each sale stored and names a sale with no VAT
+      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
+      ...closedCheckTaxFields(c),
+      method: c.method,
+      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
+      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
+      // device before this one booted/refreshed/woke has no seatedAt key, so
+      // isSessionClosed can't tombstone it and the paid table climbs back onto the
+      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
+      // Epoch ms, matching the live session's seatedAt.
+      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
+      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
+      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
+      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
+      tableId: c.table_id, tableLabel: c.table_label,
+      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
+      // the fields a refund reads, through the one row map realtime and MasterSync use too
+      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
+      ...closedCheckRefundFields(c),
+  };
+}
+
 // How far back a till loads sales history at boot. The POS history panel offers
 // Today / Week / 30 days, so the boot load has to cover the widest of those or the
 // filter silently shows nothing.
@@ -806,39 +844,8 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
     .gte('closed_at', since.toISOString())
     .order('closed_at', { ascending: false })
     .limit(limit);
-  if (result.data) {
-    result.data = result.data.map(c => ({
-      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
-      staffId: c.staff_id,
-      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
-      orderType: c.order_type, customer: c.customer,
-      items: c.items || [], discounts: c.discounts || [],
-      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
-      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
-      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
-      // report reads the split by rate each sale stored and names a sale with no VAT
-      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
-      ...closedCheckTaxFields(c),
-      method: c.method,
-      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
-      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
-      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
-      // device before this one booted/refreshed/woke has no seatedAt key, so
-      // isSessionClosed can't tombstone it and the paid table climbs back onto the
-      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
-      // Epoch ms, matching the live session's seatedAt.
-      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
-      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
-      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
-      tableId: c.table_id, tableLabel: c.table_label,
-      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
-      // the fields a refund reads, through the one row map realtime and MasterSync use too
-      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
-      ...closedCheckRefundFields(c),
-    }));
-  }
+  // 8 Oct 2026 (review): the one row map every closed_checks read shares (mapClosedCheckRow).
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
   return result;
 };
 
@@ -873,41 +880,42 @@ export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate
     if (to)       query = query.lte('closed_at', to.toISOString());
     return query;
   }, { onProgress: o.onProgress, stop: o.stop, maxPages: CHECK_MAX_PAGES, budget: o.budget || null });
-  if (result.data) {
-    result.data = result.data.map(c => ({
-      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
-      staffId: c.staff_id,
-      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
-      orderType: c.order_type, customer: c.customer,
-      items: c.items || [], discounts: c.discounts || [],
-      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
-      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
-      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
-      // report reads the split by rate each sale stored and names a sale with no VAT
-      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
-      ...closedCheckTaxFields(c),
-      method: c.method,
-      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
-      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
-      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
-      // device before this one booted/refreshed/woke has no seatedAt key, so
-      // isSessionClosed can't tombstone it and the paid table climbs back onto the
-      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
-      // Epoch ms, matching the live session's seatedAt.
-      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
-      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
-      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
-      tableId: c.table_id, tableLabel: c.table_label,
-      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
-      // the fields a refund reads, through the one row map realtime and MasterSync use too
-      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
-      ...closedCheckRefundFields(c),
-    }));
-  }
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
   return result;
 };
+
+// 8 Oct 2026 (review): a refund is taken off on the day it was MADE, and that day can be weeks after
+// the sale closed. The Tax report reads the checks closed in its range, so a refund made inside the
+// range on an older sale was in none of its rows (and outside the range when the earlier period was
+// viewed): a cross day refund was never taken off anywhere in the Tax summary, while Daily trading,
+// the Owner app and Xero took it off. The same 400 day reach those use (trading-report
+// REFUND_LOOKBACK_DAYS). Only checks that carry a refund are read: a handful a day at most.
+export const REFUND_LOOKBACK_DAYS = 400;
+
+/**
+ * The checks of a venue closed BEFORE `fromDate` (back REFUND_LOOKBACK_DAYS) that carry a refund,
+ * in the store's camelCase shape. Their refunds are what a report places on the refund's day; their
+ * sales are not the range's. Empty in mock mode or with nothing to read.
+ */
+export const fetchRefundChecksBefore = async (locationId, fromDate, opts = {}) => {
+  if (isMock || !locationId || !fromDate) return { data: [], error: null };
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const from = fromDate instanceof Date ? fromDate : new Date(fromDate);
+  if (!Number.isFinite(from.getTime())) return { data: [], error: null };
+  const since = new Date(from.getTime() - (o.lookbackDays || REFUND_LOOKBACK_DAYS) * 86400000);
+  const result = await readAllPagesResult('refund checks', (first) => supabase
+    .from('closed_checks')
+    .select('*', first ? { count: 'exact' } : undefined)
+    .eq('location_id', locationId)
+    .gte('closed_at', since.toISOString())
+    .lt('closed_at', from.toISOString())
+    .neq('refunds', '[]')
+    .order('closed_at', { ascending: false })
+    .order('id', { ascending: false }), { stop: o.stop, maxPages: CHECK_MAX_PAGES });
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
+  return result;
+};
+
 
 // ── Config pushes ─────────────────────────────────────────────────────────────
 export const insertConfigPush = async (push, locationId = null) => {

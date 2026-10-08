@@ -101,6 +101,11 @@ export const TAX_FALLBACK_REASONS = Object.freeze({
   ITEM_NOT_ON_MENU: 'item-not-on-menu',               // the line is not a product on this venue's menu (a delivery partner line, a stale QR line)
   CUSTOM_ITEM: 'custom-item',                         // an open price item typed at the till: it has no Back Office rule
   NO_DEFAULT_RATE: 'no-default-rate',                 // the venue has rates but none flagged default, so a line with no rate books no VAT
+  // 8 Oct 2026 (review): the save time guard's two "whole sale" fallbacks. A PAID sale whose
+  // lines cannot be taxed (the row carries no lines, or the maths threw on them) is booked at the
+  // venue default on its goods and flagged, never refused for ever (lib/saleVatGuard.js).
+  NO_LINES: 'no-lines',                               // the sale carries no lines to tax: the venue default on its goods
+  MATHS_FAILED: 'maths-failed',                       // the tax maths threw on the lines: the venue default on its goods
 });
 
 /** Plain words for a fallback reason, for the Tax report and the activity feed. */
@@ -110,6 +115,8 @@ export const TAX_FALLBACK_WORDS = Object.freeze({
   'item-not-on-menu': 'item not on this menu, venue default used',
   'custom-item': 'open price item, venue default used',
   'no-default-rate': 'no default rate at this venue, no VAT booked',
+  'no-lines': 'no lines on the sale, venue default used on the goods',
+  'maths-failed': 'the VAT maths failed on the lines, venue default used on the goods',
 });
 
 /**

@@ -110,6 +110,12 @@ set local lock_timeout = '3s';
 -- 1. The one rounding rule: half up to the penny, applied ONCE per check
 --    (src/lib/taxRule.js roundHalfUpMinor). Postgres round(numeric, 2) is half
 --    away from zero on the exact value, which is half up for VAT.
+--    8 Oct 2026 (review): the figure is clamped to 8 decimals FIRST, exactly as the till clamps
+--    pence to 6 decimals before it rounds. A numeric quotient keeps 16 significant digits, so
+--    8.30 / 1.2 arrives as 6.9166666666666667 and the line's VAT as 1.3833333333333333, a hair
+--    UNDER the true third; scaled by a 10% deal (share 0.9) the true half penny 1.245 arrived as
+--    1.24499999999999997 and round(.., 2) booked 1.24 while the till books 1.25. The clamp pulls
+--    it back onto the boundary, so both sides give 1.25 on every discounted bill.
 -- ============================================================================
 create or replace function public._vat_round(p numeric)
 returns numeric
@@ -117,7 +123,7 @@ language sql
 immutable
 set search_path = pg_catalog
 as $fn$
-  select round(coalesce(p, 0), 2);
+  select round(round(coalesce(p, 0), 8), 2);
 $fn$;
 
 -- ============================================================================
@@ -988,7 +994,11 @@ begin
      or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":10,"qty":1}]', v_menu, v_rates, 'dine-in', 0.5) ->> 'total_tax')::numeric <> 0.83
      or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":4.1,"qty":2,"mods":[{"price":0.5}]}]', v_menu, v_rates, 'dine-in') ->> 'total_tax')::numeric <> 1.53
      or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":4.1,"qty":1,"mods":[{"price":0.5,"qty":2}]}]', v_menu, v_rates, 'dine-in') ->> 'total_tax')::numeric <> 0.85
-     or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":10,"qty":1,"voided":true},{"itemId":"m-1790046914854_8e52e0fa","price":5,"qty":1}]', v_menu, v_rates, 'dine-in') ->> 'total_tax')::numeric <> 0.83 then
+     or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":10,"qty":1,"voided":true},{"itemId":"m-1790046914854_8e52e0fa","price":5,"qty":1}]', v_menu, v_rates, 'dine-in') ->> 'total_tax')::numeric <> 0.83
+     -- 8 Oct 2026 (review): a discounted bill on a half penny. 8.30 at 20% with a 10% deal is
+     -- exactly 1.245 (the till books 1.25); the numeric quotient alone gave 1.24. Both shapes.
+     or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":8.3,"qty":1}]', v_menu, v_rates, 'dine-in', 0.9) ->> 'total_tax')::numeric <> 1.25
+     or (public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":4.65,"qty":1},{"itemId":"m-1790046914854_8e52e0fa","price":3.65,"qty":1}]', v_menu, v_rates, 'dine-in', 0.9) ->> 'total_tax')::numeric <> 1.25 then
     raise exception 'Self test 5: the rounding or the share is not the till''s. Nothing was changed.';
   end if;
   r := public._vat_for_lines('[{"itemId":"m-1790046914854_8e52e0fa","price":10,"qty":1}]', v_menu, v_rates, 'dine-in', 0.5);
@@ -1093,6 +1103,14 @@ begin
            '{"order_pricing": {"goods_minor": 1000, "auto_minor": 500}}'::jsonb);
     if (r ->> 'tax_amount')::numeric is distinct from 0.83 or (r -> 'tax_breakdown' ->> 'share')::numeric <> 0.5 then
       raise exception 'Self test 7: an automatic deal must come off the VAT as the till books a discounted bill (got %). Nothing was changed.', r ->> 'tax_amount';
+    end if;
+    -- 8 Oct 2026 (review): the same deal on a half penny, with no figure from the page: 8.30 of
+    -- goods, 0.83 off (share 0.9), VAT exactly 1.245, booked 1.25 as the till books it, never 1.24.
+    r := public._public_order_check_row('ab45c80b-416d-4631-93e2-05048e52e0fa', 'QR-D2', 'qr', 'dine-in', '{}'::jsonb,
+           '[{"itemId":"m-1790046914854_8e52e0fa","price":8.3,"qty":1}]'::jsonb,
+           '{"order_pricing": {"goods_minor": 830, "auto_minor": 83}}'::jsonb);
+    if (r ->> 'tax_amount')::numeric is distinct from 1.25 or r -> 'tax_breakdown' ->> 'booked' <> 'server' then
+      raise exception 'Self test 7: a deal on a half penny must round up as the till does (got %). Nothing was changed.', r ->> 'tax_amount';
     end if;
   end if;
 end

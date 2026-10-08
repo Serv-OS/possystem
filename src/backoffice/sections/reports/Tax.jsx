@@ -5,7 +5,8 @@
 // shares (supabase/functions/_shared/saleVat.js):
 //   - VAT on sales is what each sale BOOKED (tax_amount), never a recompute;
 //   - refunds take their VAT off on the day the refund was made (the app's refund VAT rule),
-//     so this screen, Daily trading, the Owner app and Xero agree;
+//     so this screen, Daily trading, the Owner app and Xero agree; a refund made in the range on
+//     a sale closed before it is read too (useRefundLookback, 8 Oct 2026 review);
 //   - a sale with no VAT recorded counts 0 AND is named in red, never a silent 0;
 //   - a sale whose VAT did not come straight from its item rule (a line that took the venue
 //     default, a record the save guard repaired, a figure the server booked) is named;
@@ -15,8 +16,9 @@
 // Until the owner decides the loyalty question with his accountant (D1), the figures include the
 // VAT booked on goods given as loyalty rewards, and the screen says so with the amount.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../store';
+import { fetchRefundChecksBefore } from '../../../lib/db';
 import { recordedCheckTax } from '../../../lib/taxCompute';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
@@ -32,6 +34,35 @@ import { SplitHeader, Blocks, SiteRows, SiteMatrix } from './SiteSplit';
 const NONE = Object.freeze([]);
 // The report range as ms (BOReports hands Dates), so a refund is placed on the day it was made.
 const toMs = (v) => (v == null ? null : typeof v === 'number' ? v : v instanceof Date ? v.getTime() : Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
+
+/**
+ * 8 Oct 2026 (review): the checks of each site closed BEFORE the range that carry a refund
+ * (lib/db.js fetchRefundChecksBefore, 400 days back as Daily trading and Xero reach). The rows
+ * BOReports hands this report are the checks CLOSED in the range, so a refund made inside the
+ * range on an older sale was in none of them and was never taken off here, while Daily trading,
+ * the Owner app and Xero took it off on the refund's day. Only their refunds are read (the shared
+ * ledger's refundRows); their sales are not the range's. { rows: { [siteId]: checks[] }, failed:
+ * siteId[] } for the ids given; an empty id list reads nothing.
+ */
+function useRefundLookback(siteIds, rangeFrom) {
+  const key = (siteIds || []).filter(Boolean).map(String).join(',');
+  const fromMs = toMs(rangeFrom);
+  const [read, setRead] = useState({ key: '', fromMs: null, rows: {}, failed: [] });
+  useEffect(() => {
+    if (!key || fromMs == null) { setRead({ key, fromMs, rows: {}, failed: [] }); return undefined; }
+    let alive = true;
+    const ids = key.split(',');
+    Promise.all(ids.map((id) => fetchRefundChecksBefore(id, new Date(fromMs), { stop: () => !alive }).catch((e) => ({ data: null, error: e })))).then((results) => {
+      if (!alive) return;
+      const rows = {}, failed = [];
+      results.forEach((r, i) => { if (r && Array.isArray(r.data) && !r.error) rows[ids[i]] = r.data; else failed.push(ids[i]); });
+      setRead({ key, fromMs, rows, failed });
+    });
+    return () => { alive = false; };
+  }, [key, fromMs]);
+  const ready = read.key === key && read.fromMs === fromMs;
+  return { rows: ready ? read.rows : {}, failed: ready ? read.failed : [], loading: !ready };
+}
 
 // 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
 // together"): with more than one site on screen this is the site split at the foot of the
@@ -69,7 +100,7 @@ function VatNotes({ ledger, loyaltyVat, fmt, hasRates }) {
   );
 }
 
-function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo }) {
+function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo, locationId = null }) {
   const store = useStore();
   // v5.7.34: recompute through the UNIFIED SEAM — identical numbers on
   // legacy-equivalent venues, profile-cascade numbers on profile venues.
@@ -82,13 +113,18 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo }) {
   const taxCtx = other.other ? (other.menu?.taxCtx || null) : homeCtx;
   const taxOf = other.other ? (c) => siteCheckTax(c, other.menu) : (c) => recordedCheckTax(c, taxCtx);
   const range = useMemo(() => ({ fromMs: toMs(rangeFrom), toMs: toMs(rangeTo) }), [rangeFrom, rangeTo]);
+  // The site these rows belong to: the one other site ticked, else the signed in site (BOReports
+  // hands its id). Its older refund bearing checks feed the refund side of the ledger.
+  const siteId = other.other ? String(other.site.id) : (locationId ? String(locationId) : null);
+  const lookback = useRefundLookback(siteId ? [siteId] : [], rangeFrom);
+  const refundRows = (siteId && lookback.rows[siteId]) || NONE;
 
   const analysis = useMemo(() => {
-    const a = taxAnalysisOf(checks, taxOf, { range, hasRates: taxRates.length > 0 });
+    const a = taxAnalysisOf(checks, taxOf, { range, hasRates: taxRates.length > 0, refundRows });
     return { ...a, loyaltyVat: loyaltyVatOf(checks) };
     // taxOf follows taxCtx and other.menu
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checks, taxCtx, other.menu, range, taxRates.length]);
+  }, [checks, taxCtx, other.menu, range, taxRates.length, refundRows]);
 
   const onExportRates = () => {
     const csv = toCsv(analysis.rateRows, [
@@ -125,6 +161,9 @@ function TaxOne({ checks, fmt, sites, rangeFrom, rangeTo }) {
     <div>
       {other.other && (other.failed || !other.menu?.taxLoaded) && (
         <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>{other.site.name}: the tax rates could not be read, so each check shows the tax stored on it with no rate breakdown.</div>
+      )}
+      {siteId && lookback.failed.includes(siteId) && (
+        <div style={{ marginBottom:10, fontSize:11, color:'var(--amber)' }}>Refunds made in this period on sales closed before it could not be read, so VAT refunded may be short.</div>
       )}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:12 }}>
         <StatTile label="VAT on sales"     value={fmt(ledger.salesVat)} color="var(--acc)" sub={`${ledger.count} sales${ledger.noVatCount ? ` · ${ledger.noVatCount} with no VAT` : ''}`}/>
@@ -215,7 +254,9 @@ function TaxSites(props) {
   const { parts, blocks } = useParts(props);
   const { menus, loading, failed } = useSiteMenus(parts);
   const range = useMemo(() => ({ fromMs: toMs(rangeFrom), toMs: toMs(rangeTo) }), [rangeFrom, rangeTo]);
-  const bySite = useMemo(() => new Map(parts.map(p => [p.id, { ...siteTaxAnalysis(p.rows, menus[p.id] || null, { range }), loyaltyVat: loyaltyVatOf(p.rows) }])), [parts, menus, range]);
+  // Each site's older refund bearing checks (8 Oct 2026 review), for the refund side only.
+  const lookback = useRefundLookback(parts.map(p => p.id), rangeFrom);
+  const bySite = useMemo(() => new Map(parts.map(p => [p.id, { ...siteTaxAnalysis(p.rows, menus[p.id] || null, { range, refundRows: lookback.rows[String(p.id)] || NONE }), loyaltyVat: loyaltyVatOf(p.rows) }])), [parts, menus, range, lookback.rows]);
 
   const onExport = () => {
     const rows = parts.flatMap(p => bySite.get(p.id).rateRows.map(r => ({ ...r, siteName: p.name, currency: p.currency || '' })));
@@ -246,6 +287,7 @@ function TaxSites(props) {
     return [noVatLine(l), noRecordLine(l)].filter(Boolean).map((line) => `${p.name}: ${line}`);
   });
   const amberNotes = parts.flatMap(p => flaggedLines(bySite.get(p.id).ledger).map((line) => `${p.name}: ${line}`));
+  const lookbackNotes = parts.filter(p => lookback.failed.includes(String(p.id))).map(p => `${p.name}: refunds made in this period on sales closed before it could not be read, so VAT refunded may be short.`);
 
   return (
     <div>
@@ -253,6 +295,7 @@ function TaxSites(props) {
         {notes.map(n => <div key={n} style={{ color:'var(--amber)' }}>{n}</div>)}
         {redNotes.map(n => <div key={n} style={{ color:'var(--red)', fontWeight:700 }}>{n}</div>)}
         {amberNotes.map(n => <div key={n} style={{ color:'var(--amber)' }}>{n}</div>)}
+        {lookbackNotes.map(n => <div key={n} style={{ color:'var(--amber)' }}>{n}</div>)}
         <div style={{ color:'var(--t4)' }}>{LOYALTY_VAT_LINE}</div>
       </SplitHeader>
       <Blocks blocks={blocks}>{b => {

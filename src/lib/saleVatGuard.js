@@ -21,9 +21,12 @@
 //   - a figure the channel booked itself is kept when it is within 1p of the rule (the record
 //     is filled in beside it); further off, the rule's figure is booked and the channel's is
 //     kept in the note (the same rule the server applies to a page's figure, 20261009a);
-//   - when the VAT cannot be worked out at all (no lines, the maths throws, no default rate):
-//     the save is REFUSED with a named error (SaleVatError, code 'vat_missing'). Never a silent
-//     null. The caller keeps the sale (DataSafe's pending copy, the offline queue) and says so.
+//   - when the lines cannot be taxed (the row carries none, or the maths throw on them) the
+//     venue default is booked on the goods and the record says so (8 Oct 2026 review, so a paid
+//     card sale is never stranded); only when there is no rate to book at all (the till has not
+//     loaded them: venueTaxFromStore answers `true`) is the save REFUSED with a named error
+//     (SaleVatError, code 'vat_missing'). Never a silent null. The caller keeps the sale
+//     (DataSafe's pending copy, the offline queue) and says so, once per sale (the event latch).
 // Voided rows (tombstones) and rows with no goods are never touched.
 //
 // The surfaces gate BEFORE a card tender starts (lib/tillVatGate.js, lib/kioskVat.js), so this
@@ -35,15 +38,17 @@
 // venue context of their own (the offline replays, db.js).
 
 import { computeCheckTotals } from './payments/checkTotals.js';
-import { taxCtxHasConfig } from './taxCompute.js';
-import { isUsableBreakdown, linesGoods } from './taxShare.js';
+import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
+import { inclusiveTaxOnCharged, isUsableBreakdown, linesGoods } from './taxShare.js';
 import { taxForChargedGoods } from './headlessTax.js';
-import { roundVat } from './taxRule.js';
+import { roundVat, TAX_FALLBACK_REASONS, taxFallbackNote, taxFallbacksOf } from './taxRule.js';
+import { venueExpectsRates } from './customerRates.js';
 
 /** Plain words for staff. Short, no dashes. */
 export const SALE_VAT_WORDS = Object.freeze({
   refused: 'This sale has no VAT and it could not be worked out from its lines. The sale is kept on this device and will be saved once the VAT rates load.',
   repaired: 'VAT was filled in from the Back Office item rules before this sale was saved.',
+  defaulted: 'This sale had no lines to tax, so VAT was booked at the venue default rate on the goods. It is flagged in the Tax report.',
 });
 
 /** The error a refused save carries: named, so every caller can tell it from a network fault. */
@@ -64,6 +69,10 @@ export const SALE_VAT_REPAIR_REASONS = Object.freeze({
   TAX_FROM_RECORD: 'tax-from-record',  // tax_amount was null but the record carried the figure
   RECORD_MISSING: 'record-missing',    // the figure was booked with no split by rate: filled in
   TAX_DIFFERS: 'tax-differs',          // the booked figure was more than 1p from the item rules: the rule's figure booked
+  // 8 Oct 2026 (review): the lines could not be taxed, so the venue default was booked on the goods
+  // (the record also carries a fallback note with the same reason). A paid sale is never stranded.
+  NO_LINES: TAX_FALLBACK_REASONS.NO_LINES,          // the row carries no lines
+  MATHS_FAILED: TAX_FALLBACK_REASONS.MATHS_FAILED,  // the maths threw on the lines
 });
 
 // ── venue tax: what the guard needs to know about the venue ───────────────────────────────────
@@ -97,17 +106,26 @@ export function normaliseVenueTax(venueTax) {
   };
 }
 
-/** The venue tax of a store state (the till's rates and context). Pure given the state. */
+/**
+ * The venue tax of a store state (the till's rates and context). Pure given the state.
+ * 8 Oct 2026 (review): a till holding NO tax set up whose menu names rates answers `true` (the
+ * venue has rates, this till has not loaded them: a failed or empty read the store keeps retrying),
+ * so every writer judged through the store (DataSafe's replay, the offline queue, bookChannelSale)
+ * REFUSES a row with goods and no VAT by name and keeps the sale until the rates load. Before this
+ * it answered null ("nothing known") and a prepaid Deliveroo order accepted during that window was
+ * saved with tax_amount null, silently. A menu naming no rate is a venue with no tax set up: null.
+ */
 export function venueTaxFromStore(state) {
   if (!state) return null;
   let taxCtx = null;
   try { taxCtx = typeof state.getTaxContext === 'function' ? state.getTaxContext() : null; } catch { taxCtx = null; }
   const taxRates = Array.isArray(state.taxRates) ? state.taxRates : [];
-  if (!taxCtx && !taxRates.length) return null;
+  const hasTaxConfig = taxCtx ? taxCtxHasConfig(taxCtx) : taxRates.length > 0;
+  if (!hasTaxConfig) return venueExpectsRates(state.menuItems) ? true : null;
   return {
     taxRates,
     taxCtx: taxCtx || { taxRates },
-    hasTaxConfig: taxCtx ? taxCtxHasConfig(taxCtx) : taxRates.length > 0,
+    hasTaxConfig: true,
     deviceConfig: state.deviceConfig,
     discountRules: state.discountRules,
     timezone: state.locationConfig?.timezone,
@@ -138,8 +156,25 @@ export function onSaleVatEvent(fn) {
   return () => _subs.delete(fn);
 }
 
+// 8 Oct 2026 (review): each sale is told ONCE per outcome. DataSafe retries a kept sale every
+// minute (and on boot, reconnect and relink); before this every retry raised a 12 second red toast
+// and an urgent activity row, about 1,440 a day for one sale. A repeat is logged quietly instead.
+const _told = new Set();
+const TOLD_CAP = 5000;
 function emit(ev) {
+  const key = `${ev.checkId ?? ev.ref ?? ''}|${ev.kind}|${ev.reason ?? ''}`;
+  if (_told.has(key)) {
+    if (typeof console !== 'undefined') console.warn(`[${ev.tag || 'closed_checks'}] ${ev.ref || ev.checkId || 'a sale'}: ${ev.kind} again (${ev.reason || ev.kind}), staff were told already`);
+    return;
+  }
+  if (_told.size >= TOLD_CAP) _told.clear();
+  _told.add(key);
   for (const fn of _subs) { try { fn(ev); } catch { /* the subscriber's problem */ } }
+}
+
+/** Forget which sales have been told about (tests; a venue switch). */
+export function resetSaleVatEvents() {
+  _told.clear();
 }
 
 // ── reading a row of either shape ────────────────────────────────────────────────────────────
@@ -224,6 +259,34 @@ export function rederiveSaleTax(row, venue) {
 }
 
 /**
+ * 8 Oct 2026 (review): the VAT of a sale whose LINES cannot be taxed (the row carries none, or the
+ * maths threw on them), booked at the venue's default rate on the goods it sold, scaled to what was
+ * charged for them (total less tip and service) and flagged with `why` (tax_breakdown.fallbacks, D4
+ * for the whole sale). This is how a PAID sale always lands: refusing it for ever stranded a card
+ * sale whose frozen draft carried no items (the money taken, nothing in closed_checks), and the
+ * reports could never flag what they never saw. Null when the venue has no default rate to book,
+ * or the maths throw even on one plain line.
+ */
+export function defaultRateTax(row, venue, why) {
+  const rates = Array.isArray(venue?.taxRates) && venue.taxRates.length ? venue.taxRates : (Array.isArray(venue?.taxCtx?.taxRates) ? venue.taxCtx.taxRates : []);
+  const def = rates.find((x) => x && x.active !== false && (x.isDefault === true || x.is_default === true)) || null;
+  if (!def || !venue?.taxCtx) return null;
+  const r = readRow(row);
+  const goods = saleGoods(row);
+  if (!(goods > 0)) return null;
+  try {
+    const line = { uid: 'sale', id: 'sale', itemId: 'sale', name: 'Sale (no lines recorded)', price: goods, qty: 1, taxRateId: def.id, taxOverrides: {} };
+    const t = computeOrderTaxUnified([line], venue.taxCtx, r.orderType);
+    if (!isUsableBreakdown(t)) return null;
+    const charged = r.total != null ? Math.max(0, r.total - r.tip - r.service) : null;
+    const scaled = charged != null ? inclusiveTaxOnCharged(t, goods, charged) : t;
+    return { ...scaled, fallbacks: [...taxFallbacksOf(scaled), taxFallbackNote(why, { lineId: null, itemId: null, name: null }, def.id)] };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * THE GUARD. Returns the row to write: the same object when nothing was needed, a repaired copy
  * otherwise. Throws SaleVatError when the venue has rates and the VAT cannot be worked out.
  *   row       a closed_checks row (snake, as writeClosedCheckRow gets it) or a store record (camel)
@@ -266,15 +329,22 @@ export function assertSaleVat(row, venueTax, opts = {}) {
   let fresh = null;
   let failure = null;
   try { fresh = rederiveSaleTax(row, venue); } catch (e) { failure = e; }
+  let landed = null;   // the lines could not be taxed: the venue default was booked on the goods, and why
   if (!fresh) {
+    const why = failure ? SALE_VAT_REPAIR_REASONS.MATHS_FAILED : SALE_VAT_REPAIR_REASONS.NO_LINES;
     if (failure && typeof console !== 'undefined') console.error(`[${tag}] VAT could not be worked out for ${r.ref || r.id}:`, failure?.message || failure);
-    return refuse(failure ? 'maths-failed' : 'no-lines');
+    // 8 Oct 2026 (review): a paid sale is never stranded. With a default rate to book, the sale
+    // lands at that rate on its goods, flagged (defaultRateTax); refused only when there is no rate
+    // to book at all (the till has not loaded them yet: kept and sent again once they load).
+    fresh = defaultRateTax(row, venue, why);
+    if (!fresh) return refuse(why);
+    landed = why;
   }
   const ruleAmount = roundVat(fresh.totalTax);
   if (ruleAmount == null) return refuse('no-figure');
 
   let amount = ruleAmount;
-  let reason = SALE_VAT_REPAIR_REASONS.TAX_MISSING;
+  let reason = landed || SALE_VAT_REPAIR_REASONS.TAX_MISSING;
   if (!needs.taxMissing) {
     // The channel booked a figure with no record of the rate. Within 1p of the item rules it
     // stands and the split is filled in beside it; further off, the rule's figure is booked.
@@ -290,7 +360,7 @@ export function assertSaleVat(row, venueTax, opts = {}) {
     source: 'repair',
     repair: { reason, at, was: needs.taxMissing ? null : r.taxAmount, engine: fresh.source ?? null },
   };
-  emit({ kind: 'repaired', ref: r.ref, checkId: r.id, reason, message: SALE_VAT_WORDS.repaired, tag });
+  emit({ kind: 'repaired', ref: r.ref, checkId: r.id, reason, message: landed ? SALE_VAT_WORDS.defaulted : SALE_VAT_WORDS.repaired, tag });
   return withTax(row, r.snake, amount, rec);
 }
 

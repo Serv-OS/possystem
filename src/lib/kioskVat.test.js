@@ -126,6 +126,12 @@ test('PIN: the kiosk loads its rates on their own, after the session, with retri
   assert.match(app, /setRatesState\(res\.status\);/);
   assert.match(app, /kioskRatesRetryMs\(ratesTry\)/);
   assert.match(app, /return \{ \.\.\.data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error \};/);
+  // 8 Oct 2026 (review): an EMPTY answer is re judged against the menu whenever the menu changes
+  // (it usually lands after the rates read), so an empty list at a venue whose menu names rates is
+  // always re read; the decision no longer hangs on the rows held at the moment the read answered.
+  assert.doesNotMatch(app, /itemsRef/, 'the empty answer is not judged with a ref snapshot of the menu');
+  assert.match(app, /if \(ratesState !== 'empty' \|\| !venueExpectsRates\(data\.items\)\) return undefined;\n\s*const timer = setTimeout\(\(\) => setRatesTry\(n => n \+ 1\), kioskRatesRetryMs\(ratesTry\)\);/);
+  assert.match(app, /\}, \[ratesState, data\.items, ratesTry\]\);/);
 });
 
 test('PIN: ScreenPay mounts only inside the VAT gate (under the link gate), in both kiosk designs', () => {

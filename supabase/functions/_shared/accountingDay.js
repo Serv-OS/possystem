@@ -4,7 +4,8 @@
 // what came in (sales) and what went back out (refunds), each split into goods, tax, tip and
 // service. It knows nothing about Xero or QuickBooks; xero-sales turns the summary into Xero
 // bank transactions (_shared/xeroPostingPlan.js) and a QuickBooks integration can turn the
-// same summary into a journal entry. Pure JS with no imports, so `npm test`
+// same summary into a journal entry. Pure JS whose only import is its sibling saleVat.js (the
+// one refund VAT basis every report shares, 8 Oct 2026), so `npm test`
 // loads the file the edge function ships. The day window comes from _shared/businessDay.js.
 //
 // Money is summed in MINOR units (pence, cents) end to end so a day's lines add up exactly.
@@ -26,6 +27,8 @@
 // QR-4OGI7 would have). Nothing is guessed; the sale is fixed first, then the day posts.
 
 // ── money ────────────────────────────────────────────────────────────────────
+
+import { refundTaxBasis } from './saleVat.js';
 
 /** A major unit amount (pounds, dollars; number or numeric string) to integer minor units. */
 export function toMinor(v) {
@@ -558,9 +561,15 @@ export function refundParts(entry, row, taxCtx) {
     if (tip || service) flags.push('refund_split_estimated');
   }
   if (tip + service > amount) { const s = allocate(amount, [tip, service]); tip = s[0]; service = s[1]; }
+  // 8 Oct 2026 (review): a refund entry with no VAT figure takes its share of the sale's VAT on
+  // the SAME basis every report uses (saleVat.refundTaxBasis: the bill, or what the tenders
+  // settled less tip when that is more). A reader close part paid by gift card or loyalty stores
+  // `total` as the card part only, so pro rata on total alone gave the whole VAT back on a part
+  // refund (1.67 where the Tax summary said 0.33) and the reports disagreed by pounds.
+  const taxBasis = Math.max(1, toMinor(refundTaxBasis(row)));
   let tax = entry?.taxAmount != null && entry.taxAmount !== ''
     ? Math.max(0, toMinor(entry.taxAmount))
-    : Math.round((checkTaxMinor(row) * amount) / total);
+    : Math.min(checkTaxMinor(row), Math.round((checkTaxMinor(row) * amount) / taxBasis));
   tax = Math.min(tax, amount - tip - service);
 
   // Where the money went back.

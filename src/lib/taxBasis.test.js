@@ -571,7 +571,8 @@ test('review: every closed-check door carries the VAT booked and its record (8 O
   const ms = fs.readFileSync(new URL('../sync/MasterSync.js', import.meta.url), 'utf8');
   assert.equal((ms.match(door) || []).length, 1);   // force sync
   const db = fs.readFileSync(new URL('./db.js', import.meta.url), 'utf8');
-  assert.equal((db.match(door) || []).length, 2);   // boot and the range read
+  assert.equal((db.match(door) || []).length, 1);   // the one row map (mapClosedCheckRow, 8 Oct 2026 review)
+  assert.equal((db.match(/result\.data\.map\(mapClosedCheckRow\)/g) || []).length, 3);   // boot, the range read, the refund lookback
   for (const src of [rt, ms, db]) {
     assert.doesNotMatch(src, /tax_breakdown\?\.hasExclusiveTax \?/);
     assert.doesNotMatch(src, /bookedTaxRecord\(/, 'the doors no longer gate the record themselves');

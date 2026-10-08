@@ -220,7 +220,10 @@ test('realtime INSERT and UPDATE copies, MasterSync and both boot loaders use cl
   assert.equal((checks.match(/\.\.\.closedCheckRefundFields\(check\)/g) || []).length, 2, 'INSERT and UPDATE append');
   assert.ok(read('../../sync/MasterSync.js').includes('...closedCheckRefundFields(c)'));
   const db = read('../db.js');
-  assert.equal((db.match(/\.\.\.closedCheckRefundFields\(c\)/g) || []).length, 2, 'fetchClosedChecks and fetchClosedChecksRange');
+  // 8 Oct 2026 (review): ONE row map (mapClosedCheckRow) shared by the boot loader, the range read
+  // and the refund lookback, instead of two hand copies that had drifted once already.
+  assert.equal((db.match(/\.\.\.closedCheckRefundFields\(c\)/g) || []).length, 1, 'the one shared row map');
+  assert.equal((db.match(/result\.data\.map\(mapClosedCheckRow\)/g) || []).length, 3, 'fetchClosedChecks, fetchClosedChecksRange and fetchRefundChecksBefore');
   assert.ok(!db.includes("stripePaymentIntentId: c.stripe_payment_intent_id"), 'no hand copy left in db.js');
 });
 

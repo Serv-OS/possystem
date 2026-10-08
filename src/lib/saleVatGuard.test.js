@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   assertSaleVat, SaleVatError, isSaleVatError, saleVatNeeds, saleGoods, rederiveSaleTax,
-  normaliseVenueTax, venueTaxFromStore, setVenueTaxSource, venueTaxNow, onSaleVatEvent,
+  normaliseVenueTax, venueTaxFromStore, setVenueTaxSource, venueTaxNow, onSaleVatEvent, resetSaleVatEvents, defaultRateTax,
   SALE_VAT_WORDS, SALE_VAT_REPAIR_REASONS,
 } from './saleVatGuard.js';
 import { writeClosedCheckRow } from './closedCheckWrite.js';
@@ -115,11 +115,30 @@ test('a void tombstone and a row with no goods are never touched', () => {
   assert.equal(assertSaleVat(empty, venue), empty);
 });
 
-test('REFUSE: no lines to work from, or a venue said to have rates with no maths handed over: SaleVatError, named, never null', async () => {
+test('8 Oct 2026 (review): a PAID sale with no lines LANDS at the venue default on its goods, flagged, never stranded', async () => {
+  // The reader reconciler's headless record from a frozen draft with no items array: goods from the
+  // subtotal, tax_amount null. Before this it was refused for ever (retried every minute, never saved).
   const r = row({ items: [], subtotal: 4.85 });
+  const out = await quiet(() => assertSaleVat(r, venue));
+  assert.equal(out.tax_amount, 0.81);
+  assert.equal(out.tax_breakdown.source, 'repair');
+  assert.equal(out.tax_breakdown.repair.reason, 'no-lines');
+  assert.deepEqual(out.tax_breakdown.fallbacks, [{ source: 'fallback', reason: 'no-lines', lineId: null, itemId: null, name: null, rateId: 'r20' }]);
+  assert.equal(out.tax_breakdown.breakdown[0].rate.id, 'r20');
+  // Scaled to what was charged for the goods (a discounted bill with no lines): 4.85 of goods, 2.425 charged + 1.00 tip.
+  const half = await quiet(() => assertSaleVat(row({ items: [], subtotal: 4.85, total: 3.43, tip: 1 }), venue));
+  assert.equal(half.tax_amount, 0.41);
+  // defaultRateTax on its own: null with no default rate to book, or with no goods.
+  assert.equal(defaultRateTax(r, { taxRates: [RED, ZERO], taxCtx: { taxRates: [RED, ZERO] }, hasRates: true }, 'no-lines'), null);
+  assert.equal(defaultRateTax(row({ items: [], subtotal: 0 }), venue, 'no-lines'), null);
+});
+
+test('REFUSE: a venue said to have rates with no maths handed over (the till has not loaded them): SaleVatError, named, never null', async () => {
   await quiet(() => {
-    assert.throws(() => assertSaleVat(r, venue), (e) => e instanceof SaleVatError && e.name === 'SaleVatError' && e.code === 'vat_missing' && e.ref === 'R1' && e.message === SALE_VAT_WORDS.refused);
-    assert.throws(() => assertSaleVat(row(), true), (e) => isSaleVatError(e) && e.reason === 'no-lines');
+    assert.throws(() => assertSaleVat(row(), true), (e) => e instanceof SaleVatError && e.name === 'SaleVatError' && e.code === 'vat_missing' && e.ref === 'R1' && e.reason === 'no-lines' && e.message === SALE_VAT_WORDS.refused);
+    assert.throws(() => assertSaleVat(row({ items: [] }), true), (e) => isSaleVatError(e) && e.reason === 'no-lines');
+    // a venue with rates but none flagged default has nothing to book for a sale with no lines
+    assert.throws(() => assertSaleVat(row({ items: [] }), { taxRates: [RED, ZERO], taxCtx: { taxRates: [RED, ZERO] }, hasTaxConfig: true }), (e) => isSaleVatError(e) && e.reason === 'no-lines');
     return null;
   });
 });
@@ -127,9 +146,31 @@ test('REFUSE: no lines to work from, or a venue said to have rates with no maths
 test('REFUSE: the maths throw (a poisoned context) is logged and refused, not swallowed into null', async () => {
   const bad = { taxRates: RATES, get taxCtx() { throw new Error('boom'); }, hasTaxConfig: true };
   await quiet(() => { assert.throws(() => assertSaleVat(row(), bad), (e) => isSaleVatError(e) && e.reason === 'venue-unreadable'); return null; });
-  // and a context that is readable but whose maths throw on the lines
+  // and a context that is readable but whose maths throw on the lines (and on the one plain line
+  // the default rate landing tries: nothing can be booked, so it is refused)
   const poisoned = { taxRates: RATES, taxCtx: { get taxRates() { throw new Error('boom'); } }, hasTaxConfig: true };
   await quiet(() => { assert.throws(() => assertSaleVat(row(), poisoned), (e) => isSaleVatError(e) && e.reason === 'maths-failed'); return null; });
+});
+
+test('8 Oct 2026 (review): a till whose MENU names rates but holds none is judged "rates known, no maths": a VAT less row is refused, not passed', async () => {
+  const menuItems = [{ id: 'm1', name: 'Latte', tax_rate_id: 'r20' }];
+  const noRatesYet = { taxRates: [], menuItems, getTaxContext: () => ({ taxRates: [] }) };
+  assert.equal(venueTaxFromStore(noRatesYet), true);
+  assert.equal(venueTaxFromStore({ taxRates: [], menuItems: [{ id: 'm1', name: 'Latte' }], getTaxContext: () => ({ taxRates: [] }) }), null, 'a menu naming no rate: no tax set up, nothing judged');
+  assert.equal(venueTaxFromStore({ taxRates: [], menuItems: [{ id: 'm1', tax_overrides: { takeaway: 'r0' } }], getTaxContext: () => null }), true, 'an override names a rate too');
+  await quiet(() => { assert.throws(() => assertSaleVat(row(), venueTaxFromStore(noRatesYet)), (e) => isSaleVatError(e) && e.reason === 'no-lines'); return null; });
+  // through the registered source, as bookChannelSale's write and DataSafe's replay are judged
+  const log = [];
+  setVenueTaxSource(() => venueTaxFromStore(noRatesYet));
+  try {
+    const res = await quiet(() => writeClosedCheckRow(fakeClient(log), row(), { tag: 'bookChannelSale' }));
+    assert.equal(log.length, 0, 'nothing was sent');
+    assert.ok(isSaleVatError(res.error));
+  } finally { setVenueTaxSource(null); }
+  // once the rates land the same row is repaired and saved
+  const loaded = { ...noRatesYet, taxRates: RATES, getTaxContext: () => ({ taxRates: RATES }) };
+  assert.equal(venueTaxFromStore(loaded).hasTaxConfig, true);
+  assert.equal((await quiet(() => assertSaleVat(row(), venueTaxFromStore(loaded)))).tax_amount, 0.81);
 });
 
 test('a camel store record is read and written in camel (buildCloseRecord shape)', () => {
@@ -174,13 +215,42 @@ test('venueTaxFromStore reads the till store; the registered source feeds venueT
 });
 
 test('every repair and refusal is told to the subscriber', async () => {
+  resetSaleVatEvents();
   const seen = [];
   const off = onSaleVatEvent((ev) => seen.push(ev));
   assertSaleVat(row(), venue);
-  await quiet(() => { assert.throws(() => assertSaleVat(row({ items: [] }), venue)); return null; });
+  await quiet(() => assertSaleVat(row({ items: [] }), venue));
+  await quiet(() => { assert.throws(() => assertSaleVat(row({ id: 'chk-2', ref: 'R2' }), true)); return null; });
   off();
-  assertSaleVat(row(), venue);
-  assert.deepEqual(seen.map((e) => [e.kind, e.ref, e.reason]), [['repaired', 'R1', 'tax-missing'], ['refused', 'R1', 'no-lines']]);
+  assertSaleVat(row({ id: 'chk-3' }), venue);
+  assert.deepEqual(seen.map((e) => [e.kind, e.ref, e.reason, e.message]), [
+    ['repaired', 'R1', 'tax-missing', SALE_VAT_WORDS.repaired],
+    ['repaired', 'R1', 'no-lines', SALE_VAT_WORDS.defaulted],
+    ['refused', 'R2', 'no-lines', SALE_VAT_WORDS.refused],
+  ]);
+});
+
+test('8 Oct 2026 (review): a sale is told about ONCE per outcome; a retry (DataSafe every minute) is logged quietly, not toasted again', async () => {
+  resetSaleVatEvents();
+  const seen = [];
+  const warned = [];
+  const off = onSaleVatEvent((ev) => seen.push(ev));
+  const origWarn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await quiet(() => { for (let i = 0; i < 5; i++) assert.throws(() => assertSaleVat(row({ id: 'chk-9', ref: 'R9' }), true)); return null; });
+    console.warn = (...a) => warned.push(a.join(' '));
+    for (let i = 0; i < 3; i++) assertSaleVat(row({ id: 'chk-9', ref: 'R9' }), venue);
+  } finally { console.warn = origWarn; off(); }
+  assert.deepEqual(seen.map((e) => [e.kind, e.reason]), [['refused', 'no-lines'], ['repaired', 'tax-missing']], 'one event per sale and outcome');
+  assert.ok(warned.some((w) => /R9: repaired again \(tax-missing\), staff were told already/.test(w)), 'the retry is in the console, not on the screen');
+  // a different sale, or the same sale with a different outcome, is told
+  resetSaleVatEvents();
+  const again = [];
+  const off2 = onSaleVatEvent((ev) => again.push(ev));
+  assertSaleVat(row({ id: 'chk-9', ref: 'R9' }), venue);
+  off2();
+  assert.equal(again.length, 1, 'after a reset the sale is told again');
 });
 
 // ── writeClosedCheckRow runs the guard ──────────────────────────────────────────────────────────
@@ -201,11 +271,16 @@ test('writeClosedCheckRow repairs a row with no VAT before the insert and sends 
 
 test('writeClosedCheckRow refuses by name: nothing is sent, the error is the SaleVatError', async () => {
   const log = [];
-  const res = await quiet(() => writeClosedCheckRow(fakeClient(log), row({ items: [] }), { tag: 't', vat: venue }));
+  const res = await quiet(() => writeClosedCheckRow(fakeClient(log), row({ items: [] }), { tag: 't', vat: true }));
   assert.equal(log.length, 0);
   assert.ok(isSaleVatError(res.error));
   assert.equal(res.error.code, 'vat_missing');
   assert.deepEqual(res.dropped, []);
+  // 8 Oct 2026 (review): with the rates in hand a sale with no lines is SAVED at the default, flagged
+  const res2 = await quiet(() => writeClosedCheckRow(fakeClient(log), row({ items: [] }), { tag: 't', vat: venue }));
+  assert.equal(res2.error, null);
+  assert.equal(log[0][2].tax_amount, 0.81);
+  assert.equal(log[0][2].tax_breakdown.repair.reason, 'no-lines');
 });
 
 test('writeClosedCheckRow with vat null judges nothing (the customer pages guard themselves before payment)', async () => {
@@ -271,6 +346,15 @@ test('PIN: the call sites the audit found all write through writeClosedCheckRow'
   assert.doesNotMatch(read('../sync/OfflineQueue.js'), /missingColumnOf\(/);
   // MPOS buffers its recovery row for that replay
   assert.match(read('../surfaces/MPOSSurface.jsx'), /table: 'closed_checks',\n\s*onConflict: 'id',\n\s*kind: 'closed_check',/);
+});
+
+test('PIN: bookChannelSale asks the till VAT gate before it books a prepaid channel sale, and a guard refusal is not a save fault', () => {
+  const store = read('../store/index.js');
+  const fn = store.slice(store.indexOf('bookChannelSale: async (o) => {'), store.indexOf('rejectOrderByRef:'));
+  assert.ok(fn.indexOf('const gate = get().vatGate();') > 0 && fn.indexOf('const gate = get().vatGate();') < fn.indexOf('buildChannelCloseFields('), 'the gate is asked before the money fields are built');
+  assert.match(fn, /if \(gate\) \{\n\s*get\(\)\.showToast\?\.\(`Channel order \$\{o\.ref\} is not booked to sales yet\. \$\{gate\.message\}`, 'error', 8000\);\n\s*return;/);
+  assert.match(fn, /if \(!isSaleVatError\(error\)\) reportSave\('channel sale', error\);/);
+  assert.match(store, /import \{ setVenueTaxSource, venueTaxFromStore, onSaleVatEvent, isSaleVatError \} from '\.\.\/lib\/saleVatGuard';/);
 });
 
 test('PIN: the store registers the venue tax source and hears every repair and refusal', () => {

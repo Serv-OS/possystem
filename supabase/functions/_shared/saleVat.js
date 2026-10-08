@@ -243,16 +243,29 @@ const MAX_NAMED = 40;
  *   flagged    [{ id, ref, code, words, reason, name }] every other flag (fallback, repair, server)
  *   mismatched [{ id, ref, reason }] records that do not add up to the figure booked
  * Voided sales count for nothing. Lists are capped at MAX_NAMED names; the counts are exact.
+ * `refundRows` (8 Oct 2026 review): sales closed BEFORE the range that carry a refund. Only their
+ * refunds made inside the range are taken off; they are not the range's sales and count for
+ * nothing else. A row already in `rows` is not read twice.
  */
-export function saleVatLedger(rows, { range = null, hasRates = true } = {}) {
+export function saleVatLedger(rows, { range = null, hasRates = true, refundRows = null } = {}) {
   const out = {
     count: 0, salesVat: 0, refundVat: 0, vatDue: 0, refundsEstimated: 0,
     noVat: [], noVatCount: 0, noRecord: [], noRecordCount: 0, flagged: [], flaggedCount: 0, mismatched: [], mismatchedCount: 0,
   };
   const name = (list, countKey, entry) => { out[countKey] += 1; if (list.length < MAX_NAMED) list.push(entry); };
+  const seen = new Set();
+  const takeRefunds = (row, r) => {
+    for (const e of r.refunds) {
+      if (!refundInRange(e, row, range)) continue;
+      const v = refundVatOf(e, row);
+      out.refundVat += v.amount;
+      if (v.estimated && !v.noVat) out.refundsEstimated += 1;
+    }
+  };
   for (const row of Array.isArray(rows) ? rows : []) {
     const r = readSale(row);
     if (!row || r.voided) continue;
+    if (r.id != null) seen.add(r.id);
     out.count += 1;
     if (r.taxAmount != null) out.salesVat += r.taxAmount;
     for (const f of saleVatFlags(row, { hasRates })) {
@@ -261,12 +274,13 @@ export function saleVatLedger(rows, { range = null, hasRates = true } = {}) {
       else if (f.code === SALE_VAT_FLAGS.MISMATCH) name(out.mismatched, 'mismatchedCount', { id: r.id, ref: r.ref, reason: f.reason });
       else name(out.flagged, 'flaggedCount', { id: r.id, ref: r.ref, code: f.code, words: f.words, reason: f.reason || null, name: f.name || null });
     }
-    for (const e of r.refunds) {
-      if (!refundInRange(e, row, range)) continue;
-      const v = refundVatOf(e, row);
-      out.refundVat += v.amount;
-      if (v.estimated && !v.noVat) out.refundsEstimated += 1;
-    }
+    takeRefunds(row, r);
+  }
+  for (const row of Array.isArray(refundRows) ? refundRows : []) {
+    const r = readSale(row);
+    if (!row || r.voided || (r.id != null && seen.has(r.id))) continue;
+    if (r.id != null) seen.add(r.id);
+    takeRefunds(row, r);
   }
   out.salesVat = roundPence(out.salesVat);
   out.refundVat = roundPence(out.refundVat);

@@ -68,7 +68,12 @@ test('the SQL alias table mirrors taxRule.js TAX_ORDER_TYPE_ALIASES (change both
 
 test('the rule is written where it must be: one rounding, one share, never null at a venue with rates', () => {
   // one rounding (D3): half up to the penny, once, on the summed raw VAT after the share
-  assert.ok(MIG.includes('select round(coalesce(p, 0), 2);'), '_vat_round is round half up to 2 places');
+  // 8 Oct 2026 (review): clamped to 8 decimals first (the till clamps pence to 6), so a numeric
+  // quotient a hair under a half penny (8.30 at 20% with a 10% deal: 1.24499999999999997) rounds UP
+  // to 1.25 as the till does, never down to 1.24.
+  assert.ok(MIG.includes('select round(round(coalesce(p, 0), 8), 2);'), '_vat_round clamps to 8 decimals, then rounds half up to 2 places');
+  assert.ok(MIG.includes(`'[{"itemId":"m-1790046914854_8e52e0fa","price":8.3,"qty":1}]', v_menu, v_rates, 'dine-in', 0.9) ->> 'total_tax')::numeric <> 1.25`), 'the self test pins the discounted half penny at 1.25');
+  assert.ok(MIG.includes(`'{"order_pricing": {"goods_minor": 830, "auto_minor": 83}}'::jsonb);`), 'and the check row books it from the server\'s own order_pricing');
   assert.ok(MIG.includes('v_total_tax := public._vat_round(v_sum_tax * v_share);'), 'rounded once, after the share (taxShare.scaleTaxRecord then roundVat)');
   // the within 1p rule, and the server's figure otherwise, said so (D8)
   assert.equal((MIG.match(/abs\(v_page - \(v_srv ->> 'total_tax'\)::numeric\) <= 0\.01/g) || []).length, 2, 'both functions keep a page figure within 1p');

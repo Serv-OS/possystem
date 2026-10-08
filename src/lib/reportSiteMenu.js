@@ -432,7 +432,7 @@ export function rateFamilyKey(b) {
  *     totalDerivedTax, hasStoredCount, derivedOnlyCount, totalNet, totalGross, effectiveTaxRate,
  *     variance, varianceSales, sources }
  */
-export function taxAnalysisOf(checks, taxOf, { range = null, hasRates = true, keyOf = (b) => (b.rate?.id || '__unrated') } = {}) {
+export function taxAnalysisOf(checks, taxOf, { range = null, hasRates = true, refundRows = null, keyOf = (b) => (b.rate?.id || '__unrated') } = {}) {
   const byRate = {};
   const byOrderType = {};
   const sources = { booked: 0, rates: 0, stored: 0 };
@@ -469,7 +469,9 @@ export function taxAnalysisOf(checks, taxOf, { range = null, hasRates = true, ke
     byOrderType[ot].gross += c.total || 0;
     byOrderType[ot].checks += 1;
   }
-  const ledger = saleVatLedger(live, { range, hasRates });
+  // refundRows (8 Oct 2026 review): sales closed before the range that carry a refund, so a refund
+  // made in the range on an older sale comes off here as it does in Daily trading and Xero.
+  const ledger = saleVatLedger(live, { range, hasRates, refundRows });
   diffs.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   return {
     rateRows: Object.values(byRate).sort((a, b) => b.tax - a.tax),
@@ -491,9 +493,9 @@ export function taxAnalysisOf(checks, taxOf, { range = null, hasRates = true, ke
  * (siteCheckTax). Same figures as the single site report, with rates matched across sites on
  * what they are (rateFamilyKey), plus how many checks came from each source.
  */
-export function siteTaxAnalysis(checks, siteMenu, { range = null } = {}) {
+export function siteTaxAnalysis(checks, siteMenu, { range = null, refundRows = null } = {}) {
   const hasRates = !siteMenu || siteMenu.hasRates !== false;
-  return taxAnalysisOf(checks, (c) => siteCheckTax(c, siteMenu), { range, hasRates, keyOf: rateFamilyKey });
+  return taxAnalysisOf(checks, (c) => siteCheckTax(c, siteMenu), { range, hasRates, refundRows, keyOf: rateFamilyKey });
 }
 
 /** The line under a site whose rates could not be read, or null. */

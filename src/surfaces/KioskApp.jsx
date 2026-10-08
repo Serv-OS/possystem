@@ -231,8 +231,6 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
   const [rates, setRates] = useState([]);
   const [ratesState, setRatesState] = useState('loading');
   const [ratesTry, setRatesTry] = useState(0);
-  const itemsRef = useRef(data.items);
-  itemsRef.current = data.items;
   useEffect(() => {
     if (!locationId) return undefined;
     let alive = true;
@@ -247,12 +245,23 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
       if (!alive) return;
       setRates(res.status === 'ok' ? res.rates : []);
       setRatesState(res.status);
-      // Missing at a venue that names rates: read again later, on its own, until they load.
-      const missing = res.status === 'error' || (res.status === 'empty' && venueExpectsRates(itemsRef.current));
-      if (missing) timer = setTimeout(() => { if (alive) setRatesTry(n => n + 1); }, kioskRatesRetryMs(ratesTry));
+      // A failed read: read again later, on its own, until it answers. (An EMPTY answer is judged
+      // below against the menu, which usually lands after this read.)
+      if (res.status === 'error') timer = setTimeout(() => { if (alive) setRatesTry(n => n + 1); }, kioskRatesRetryMs(ratesTry));
     })();
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [locationId, ratesTry]);
+  // 8 Oct 2026 (review): an empty answer is re judged whenever the MENU changes, not only at the
+  // moment the read answered. The menu loads in its own Promise.all and usually lands after the
+  // rates read, so judging with the rows held at that moment ([] on a cold boot) set no timer, and
+  // once the menu named rates the card screen shut as 'failed' until staff pressed Try again. Now
+  // the gate and this retry read the same thing: an empty list at a venue whose menu names rates
+  // is re read on the kiosk's own schedule (kioskRatesRetryMs) until the rates arrive.
+  useEffect(() => {
+    if (ratesState !== 'empty' || !venueExpectsRates(data.items)) return undefined;
+    const timer = setTimeout(() => setRatesTry(n => n + 1), kioskRatesRetryMs(ratesTry));
+    return () => clearTimeout(timer);
+  }, [ratesState, data.items, ratesTry]);
   const retryRates = useCallback(() => setRatesTry(n => n + 1), []);
 
   return { ...data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error };
