@@ -159,6 +159,9 @@ test('the group words name a day and a time only when every venue shares them', 
 test('features: an older function sends no list', () => {
   assert.equal(hasFeature({ features: ['period', 'detail'] }, 'detail'), true);
   assert.equal(hasFeature({ features: ['period'] }, 'detail'), false);
+  // 8 Oct 2026: the sales mix is its own feature word.
+  assert.equal(hasFeature({ features: ['period', 'detail', 'mix'] }, 'mix'), true);
+  assert.equal(hasFeature({ features: ['period', 'detail'] }, 'mix'), false);
   assert.equal(hasFeature({}, 'detail'), false);
   assert.equal(hasFeature(null, 'detail'), false);
 });
@@ -205,6 +208,13 @@ test('the Owner screen draws the line always, and keeps the old line for an old 
   assert.ok(src.includes('{!line && rv.vs_pct != null && ('));
   // One group card per currency.
   assert.ok(src.includes('const groups = groupCards(data);') && src.includes('{groups.map((g) => ('));
+  // 8 Oct 2026: the sales mix bars draw only from a function that sends the mix, the venue cards
+  // of a currency with nothing set up stay quiet, and the group card carries the one hint.
+  assert.ok(src.includes('const mixOn = canMix(data);'));
+  assert.ok(src.includes('const quietBy = allOtherByCurrency(groups);'));
+  assert.ok(src.includes('bar={mixOn ? cardBar(g.rollup.mix, { hint: true }) : null}'));
+  assert.ok(src.includes('bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null}'));
+  assert.ok(src.includes('<MixBar bar={bar} size="group"/>') && src.includes('<MixBar bar={bar}/>'));
   // No percent is worked out on the screen.
   assert.doesNotMatch(src, /vsPct\(|\/ *100\)/);
 });

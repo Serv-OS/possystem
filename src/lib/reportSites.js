@@ -94,7 +94,7 @@ const _siteMenus = new Map();   // siteId -> { at, promise }
 
 const cols = {
   items: 'id, name, menu_name, kitchen_name, receipt_name, cat, parent_id, master_id, scope, tax_rate_id, tax_profile_id, tax_overrides, archived',
-  categories: 'id, label, master_id, scope, tax_profile_id, parent_id, sort_order',
+  categories: 'id, label, master_id, scope, tax_profile_id, parent_id, sort_order, accounting_group',
   rates: 'id, name, code, rate, type, applies_to, is_default, active, location_id',
 };
 

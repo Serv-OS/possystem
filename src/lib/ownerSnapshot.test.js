@@ -14,13 +14,17 @@
  *   * A week or a month is every check in its dates once: none lost to the 1000 row cap, none
  *     counted twice where the ranges that are read overlap.
  *   * Each venue is on its own clock.
- *   * Items (the heavy column) are read for the period's own days only.
+ *   * Items (the heavy column) are read for the period's own days, and (8 Oct 2026, the Sales
+ *     mix) for the comparison span, never for the whole sales window.
  *   * A read that fails is an error, never a quiet zero.
+ *   * 8 Oct 2026: each venue's sales mix (item sales by sales group) is the venue's own menu
+ *     categories plus its Xero mapping through the one shared resolver (_shared/salesMix.js).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOwnerSnapshot, buildOwnerDetail, detailScope, venueMeta, cmpCut, firstTradingDay, hasOpeningDay, MAX_READS, OWNER_FEATURES, OPENING_MIN_SALES } from '../../supabase/functions/_shared/ownerSnapshot.js';
+import { buildOwnerSnapshot, buildOwnerDetail, detailScope, venueMeta, cmpCut, firstTradingDay, hasOpeningDay, MAX_READS, OWNER_FEATURES, OPENING_MIN_SALES, MIX_CMP_PERIODS } from '../../supabase/functions/_shared/ownerSnapshot.js';
 import { pagedEach, limiter } from '../../supabase/functions/_shared/pagedRows.js';
+import { SALES_CHECK_COLS } from '../../supabase/functions/_shared/snapshotSales.js';
 import { periodRange, addDays } from '../../supabase/functions/_shared/ownerPeriod.js';
 
 // ── a PostgREST stand in ─────────────────────────────────────────────────────
@@ -84,7 +88,7 @@ const chk = (loc, closedAt, { gross = 12, items = [{ name: 'Latte', qty: 1, pric
   items, ...rest,
 });
 const many = (n, loc, at, extra) => Array.from({ length: n }, () => chk(loc, at, extra));
-const tables = (t) => ({ closed_checks: [], wf_sales_forecast: [], wf_timesheets: [], order_queue: [], active_sessions: [], menu_categories: [], wf_venue_settings: [], ...t });
+const tables = (t) => ({ closed_checks: [], wf_sales_forecast: [], wf_timesheets: [], order_queue: [], active_sessions: [], menu_categories: [], wf_venue_settings: [], xero_config: [], ...t });
 // A day that starts at midnight (Barnsley Train Station's does). The 06:30 venues are further down.
 const LEEDS = { name: 'Leeds', tz: 'Europe/London', currency: 'GBP', dayStart: '00:00' };
 const PROVO = { name: 'Provo', tz: 'America/Denver', currency: 'USD', dayStart: '00:00' };
@@ -154,9 +158,9 @@ const TODAY_AS_BEFORE = {
   live: { orders: 2, tables: 1 },
   top_items: [{ name: 'Latte', qty: 6, rev: 21 }, { name: 'Brownie', qty: 3, rev: 15 }],
 };
-// What 5 Oct 2026 added to a venue: taken off before the old shape is compared.
-const split = ({ day_start, first_sale_date, compare, week_compare, week_range, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range } });
-const splitRollup = ({ compare, week_compare, currency, currencies, by_currency, ...old }) => ({ old, added: { compare, week_compare, currency, currencies, by_currency } });
+// What 5 Oct 2026 (and the 8 Oct 2026 sales mix) added to a venue: taken off before the old shape is compared.
+const split = ({ day_start, first_sale_date, compare, week_compare, week_range, mix, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range, mix } });
+const splitRollup = ({ compare, week_compare, currency, currencies, by_currency, mix, ...old }) => ({ old, added: { compare, week_compare, currency, currencies, by_currency, mix } });
 
 test('Today (and an older app that sends no period) answers what the function always answered', async () => {
   for (const period of [undefined, 'today', 'nonsense']) {
@@ -181,7 +185,7 @@ test('Today (and an older app that sends no period) answers what the function al
   }
 });
 
-test('Today reads one sales window and one items window for the venue, as before the filters', async () => {
+test('Today reads one sales window, and items for today and for the same day last week only', async () => {
   const ops = fakeOps(leeds());
   await build(ops, 'today');
   const sales = checkReads(ops, 'sales'), items = checkReads(ops, 'items');
@@ -189,10 +193,12 @@ test('Today reads one sales window and one items window for the venue, as before
   // Monday of last week to the end of today, midnight to midnight on the venue's clock (BST).
   assert.equal(bound(sales[0], 'gte'), '2026-09-20T23:00:00.000Z');
   assert.equal(bound(sales[0], 'lt'), '2026-10-02T23:00:00.000Z');
-  // Items are today's only: they are the heavy column.
-  assert.equal(items.length, 1);
-  assert.equal(bound(items[0], 'gte'), '2026-10-01T23:00:00.000Z');
-  assert.equal(bound(items[0], 'lt'), '2026-10-02T23:00:00.000Z');
+  // Items are the heavy column: today's own day, and (8 Oct 2026, the Sales mix) last Friday's
+  // for each group's change in share. Never the whole sales window.
+  assert.deepEqual(items.map((q) => [bound(q, 'gte'), bound(q, 'lt')]).sort(), [
+    ['2026-09-24T23:00:00.000Z', '2026-09-25T23:00:00.000Z'],
+    ['2026-10-01T23:00:00.000Z', '2026-10-02T23:00:00.000Z'],
+  ]);
   // Every check read is fenced to the venue and ordered on a unique key.
   for (const q of [...sales, ...items]) {
     assert.deepEqual(q.filters.find((f) => f.col === 'location_id'), { op: 'eq', col: 'location_id', val: 'L' });
@@ -222,10 +228,12 @@ test('This week: Monday to today against the same days last week, and today is s
   // The week's sellers: today's lattes and brownies, the flat whites from 1 Oct, three plain lattes.
   assert.deepEqual(period_top_items, [{ name: 'Latte', qty: 9, rev: 57 }, { name: 'Flat White', qty: 4, rev: 12 }, { name: 'Brownie', qty: 3, rev: 15 }]);
   assert.equal(period_totals.net_sales, before.wtd.net_sales);
-  // Items were read from Monday, not from last week.
-  const items = checkReads(ops, 'items');
-  assert.equal(items.length, 1);
-  assert.equal(bound(items[0], 'gte'), '2026-09-27T23:00:00.000Z');
+  // Items were read from Monday, and for the same days last week (the mix points): never the
+  // week before that, which the sales read covers.
+  assert.deepEqual(checkReads(ops, 'items').map((q) => [bound(q, 'gte'), bound(q, 'lt')]).sort(), [
+    ['2026-09-20T23:00:00.000Z', '2026-09-25T23:00:00.000Z'],
+    ['2026-09-27T23:00:00.000Z', '2026-10-02T23:00:00.000Z'],
+  ]);
   assert.equal(checkReads(ops, 'sales').length, 1);
 });
 
@@ -249,7 +257,7 @@ test('This month: the 1st to today against the same number of days into last mon
   assert.deepEqual(snap.rollup.period_totals, { net_sales: 40, forecast: 150, orders: 4, tips: 0, labour: 15, cmp_net_sales: 60, forecast_pct: 27, labour_pct: 37.5, like_net_sales: 40, cmp_locations: 1, vs_cmp_pct: -33 });
 });
 
-test('This month reads only the days it needs: the comparison span, not the whole of last month; items never for the comparison', async () => {
+test('This month reads only the days it needs: the comparison span, not the whole of last month; items for the period and that span only', async () => {
   const ops = fakeOps(leeds());
   await build(ops, 'month');
   const sales = checkReads(ops, 'sales').map((q) => [bound(q, 'gte'), bound(q, 'lt')]).sort();
@@ -260,8 +268,11 @@ test('This month reads only the days it needs: the comparison span, not the whol
   ]);
   // No two windows share an instant: a check cannot be read twice.
   for (let i = 1; i < sales.length; i += 1) assert.ok(sales[i][0] >= sales[i - 1][1]);
-  const items = checkReads(ops, 'items').map((q) => [bound(q, 'gte'), bound(q, 'lt')]);
-  assert.deepEqual(items, [['2026-09-30T23:00:00.000Z', '2026-10-02T23:00:00.000Z']]);
+  const items = checkReads(ops, 'items').map((q) => [bound(q, 'gte'), bound(q, 'lt')]).sort();
+  assert.deepEqual(items, [
+    ['2026-08-31T23:00:00.000Z', '2026-09-02T23:00:00.000Z'],   // 1 and 2 Sep: the comparison, for the mix points
+    ['2026-09-30T23:00:00.000Z', '2026-10-02T23:00:00.000Z'],
+  ]);
   // The sales read never drags the heavy column along.
   for (const q of checkReads(ops, 'sales')) assert.ok(!q.select.includes('items'));
 });
@@ -295,8 +306,11 @@ test('a busy month is every check once: nothing lost to the 1000 row cap, nothin
   // checks took a second request each.
   assert.ok(checkReads(ops, 'sales').some((q) => q.range[0] === 1000));
   assert.ok(checkReads(ops, 'items').some((q) => q.range[0] === 1000));
-  // Items were read for October only: half the checks, never September's.
-  for (const q of checkReads(ops, 'items')) assert.ok(bound(q, 'gte') >= '2026-09-30T23:00:00.000Z');
+  // Items were read for October and for the comparison span (1 to 30 Sep, the mix points): never
+  // the week to date's own days before the period, and never a day twice.
+  const itemWindows = [...new Set(checkReads(ops, 'items').map((q) => `${bound(q, 'gte')}|${bound(q, 'lt')}`))].sort().map((s) => s.split('|'));
+  for (const [from, to] of itemWindows) assert.ok(from >= '2026-09-30T23:00:00.000Z' || (from >= '2026-08-31T23:00:00.000Z' && to <= '2026-09-30T23:00:00.000Z'), `${from} to ${to}`);
+  for (let i = 1; i < itemWindows.length; i += 1) assert.ok(itemWindows[i][0] >= itemWindows[i - 1][1]);
   // Never more than MAX_READS requests in flight.
   assert.ok(ops.state.peak <= MAX_READS, `peak ${ops.state.peak}`);
   assert.ok(ops.state.peak > 1, 'the weeks are read side by side');
@@ -371,9 +385,11 @@ test('a UK venue already in October and a US venue still in September each get t
   assert.equal(leedsV.period_totals.orders, 1);
   // Leeds' September forecast is not this month's.
   assert.equal(leedsV.period_totals.forecast, 20);
-  // Provo's month starts at ITS midnight: 06:00 UTC on 1 Sep (MDT).
+  // Provo's month starts at ITS midnight: 06:00 UTC on 1 Sep (MDT); its comparison (August,
+  // read with items for the mix points) from 1 Aug 06:00 UTC.
   const provoItems = checkReads(ops, 'items').filter((q) => q.filters.some((f) => f.val === 'P')).map((q) => bound(q, 'gte')).sort();
-  assert.equal(provoItems[0], '2026-09-01T06:00:00.000Z');
+  assert.equal(provoItems[0], '2026-08-01T06:00:00.000Z');
+  assert.ok(provoItems.includes('2026-09-01T06:00:00.000Z'));
 });
 
 test('a venue with a time zone nobody recognises is read on UK time, not a crash', async () => {
@@ -517,11 +533,12 @@ test('a day is the venue business day: a sale after midnight belongs to the nigh
 test('the reads run from day start to day start on the venue clock', async () => {
   const ops = fakeOps(leeds());
   await one(ops, { L: CB }, NOW);
-  const [sales] = checkReads(ops, 'sales'), [items] = checkReads(ops, 'items');
+  const [sales] = checkReads(ops, 'sales'), items = checkReads(ops, 'items');
   // Monday of last week 06:30 BST to tomorrow 06:30 BST.
   assert.equal(bound(sales, 'gte'), '2026-09-21T05:30:00.000Z');
   assert.equal(bound(sales, 'lt'), '2026-10-03T05:30:00.000Z');
-  assert.equal(bound(items, 'gte'), '2026-10-02T05:30:00.000Z');
+  // Today's items from its 06:30, and last Friday's (the mix points) from its own 06:30.
+  assert.deepEqual(items.map((q) => bound(q, 'gte')).sort(), ['2026-09-25T05:30:00.000Z', '2026-10-02T05:30:00.000Z']);
   // One small read for the first ever sale, the oldest rows of that venue only.
   const [first] = firstSaleReads(ops);
   assert.equal(firstSaleReads(ops).length, 1);
@@ -740,11 +757,17 @@ test('pounds and dollars are never one total: one group per currency', async () 
   const uk = await one(fakeOps(tables({ closed_checks: rows })), { L: LEEDS }, '2026-10-02T18:00:00Z');
   assert.equal(uk.rollup.currency, 'GBP');
   const { old } = splitRollup(uk.rollup);
-  const { currency, compare, week_compare, ...group } = uk.rollup.by_currency[0];
+  const { currency, compare, week_compare, mix, ...group } = uk.rollup.by_currency[0];
   assert.equal(currency, 'GBP');
   assert.deepEqual(group, old);
   assert.deepEqual(compare, uk.rollup.compare);
   assert.deepEqual(week_compare, uk.rollup.week_compare);
+  // 8 Oct 2026: one currency, the sales mix is the one group's. Two currencies: the plain rollup
+  // has none (item sales in pounds and dollars are never added), each group carries its own.
+  assert.deepEqual(mix, uk.rollup.mix);
+  assert.equal(uk.rollup.mix.total, 36);
+  assert.equal(snap.rollup.mix, null);
+  assert.deepEqual(snap.rollup.by_currency.map((g) => [g.currency, g.mix.total]), [['GBP', 36], ['USD', 24]]);
 });
 
 test('the currency and the day start come from the Platform locations row', () => {
@@ -777,6 +800,135 @@ test('top items by pounds never add the extras twice: the line price already hol
   // 4.40 x 2 = 8.80, the same as the check's subtotal. Adding the mods made it 11.20.
   assert.deepEqual(snap.locations[0].top_items, [{ name: 'Latte', qty: 2, rev: 8.8 }, { name: 'Brownie', qty: 1, rev: 3 }]);
   assert.deepEqual(snap.locations[0].period_top_items, snap.locations[0].top_items);
+});
+
+// ── 8 Oct 2026: the sales mix ────────────────────────────────────────────────
+//
+// Peter: "the ability to report on bigger categories like say what is Food/drink/other split".
+// Each venue's items are rolled up by sales group (_shared/salesMix.js) over the venue's OWN
+// menu categories plus its Xero mapping: the one resolver the Back Office report and the Xero
+// invoice build too (D2). The money is till price times qty (D3). A line whose category has no
+// group is "Other sales", never an error (D6). The comparison span is read with items and cut at
+// the same time of day as the percent beside it.
+
+function mixTables() {
+  seq = 0;
+  const line = (name, cat, qty, price, extra = {}) => ({ name, itemId: `m-${name.toLowerCase()}`, cat, qty, price, ...extra });
+  return tables({
+    closed_checks: [
+      // Friday 2 Oct (today; it is 12:00). Lattes sit under Coffee, a child of Hot drinks (Drinks).
+      chk('L', '2026-10-02T08:00:00Z', { gross: 7, items: [line('Latte', 'cat-coffee_L', 2, 3.5)] }),
+      chk('L', '2026-10-02T08:30:00Z', { gross: 6, items: [line('Bagel', 'cat-food_L', 1, 6)] }),
+      // A gift wrap under Misc: no accounting group, but Xero step 3 puts Misc in 'retail'.
+      chk('L', '2026-10-02T09:00:00Z', { gross: 3, items: [line('Wrap', 'cat-misc_L', 1, 3)] }),
+      // A loose item with no category at all: Other sales, not resolved.
+      chk('L', '2026-10-02T09:30:00Z', { gross: 4, items: [line('Loose', null, 1, 4)] }),
+      // A voided check, and a voided line on a live check: neither counts.
+      chk('L', '2026-10-02T10:00:00Z', { gross: 50, voided: true, status: 'void', items: [line('Bagel', 'cat-food_L', 5, 10)] }),
+      chk('L', '2026-10-02T10:30:00Z', { gross: 0, items: [line('Bagel', 'cat-food_L', 1, 6, { voided: true })] }),
+      // Last Friday (the comparison): before 12:00 a latte and two bagels; after 12:00 ten bagels the cut leaves out.
+      chk('L', '2026-09-25T08:00:00Z', { gross: 3.5, items: [line('Latte', 'cat-coffee_L', 1, 3.5)] }),
+      chk('L', '2026-09-25T09:00:00Z', { gross: 12, items: [line('Bagel', 'cat-food_L', 2, 6)] }),
+      chk('L', '2026-09-25T14:00:00Z', { gross: 60, items: [line('Bagel', 'cat-food_L', 10, 6)] }),
+      // Long ago: the venue is not new.
+      chk('L', '2026-08-01T10:00:00Z'),
+    ],
+    menu_categories: [
+      { id: 'cat-hot_L', location_id: 'L', parent_id: null, label: 'Hot drinks', accounting_group: 'Drinks', master_id: 'cat-hot' },
+      { id: 'cat-coffee_L', location_id: 'L', parent_id: 'cat-hot_L', label: 'Coffee', accounting_group: '', master_id: 'cat-coffee' },
+      { id: 'cat-food_L', location_id: 'L', parent_id: null, label: 'Food', accounting_group: 'Food', master_id: 'cat-food' },
+      { id: 'cat-misc_L', location_id: 'L', parent_id: null, label: 'Misc', accounting_group: '', master_id: 'cat-misc' },
+      // Another venue's row is never read into Leeds' resolver.
+      { id: 'cat-food_M', location_id: 'M', parent_id: null, label: 'Food', accounting_group: 'Kitchen', master_id: 'cat-food' },
+    ],
+    xero_config: [
+      { location_id: 'L', mapping: { groups: { retail: { name: 'Retail shelf', account: '220' } }, categoryGroups: { 'cat-misc_L': 'retail' } } },
+    ],
+  });
+}
+const mixOf = (ops, period = 'today', extra = {}) => buildOwnerSnapshot({ ops, opsIds: ['L'], meta: { L: LEEDS }, now: NOW, period, ...extra });
+
+test('the sales mix: item sales by group, shares that add to 100, the comparison cut at the same time of day', async () => {
+  const snap = await mixOf(fakeOps(mixTables()));
+  const mix = snap.locations[0].mix;
+  assert.equal(mix.basis, 'item_sales');
+  // 7 + 6 + 3 + 4: the voided check and the voided line add nothing; the check with only a voided line is still a check.
+  assert.deepEqual([mix.total, mix.cmp_total, mix.qty, mix.lines, mix.checks, mix.items, mix.unresolved, mix.unresolved_share], [20, 15.5, 5, 4, 5, 4, 4, 20]);
+  // Money desc, "Other sales" last whatever its size. Coffee resolves through its parent; Misc
+  // through Xero step 3 (named there); the loose line is Other sales and counts as unresolved.
+  // The comparison is last Friday by 12:00 (3.50 of drinks, 12 of food; the 60 after noon is cut).
+  assert.deepEqual(mix.groups.map((g) => [g.key, g.name, g.tone, g.money, g.share, g.cmp_money, g.cmp_share, g.pts]), [
+    ['drinks', 'Drinks', 'blu', 7, 35, 3.5, 23, 12],
+    ['food', 'Food', 'acc', 6, 30, 12, 77, -47],
+    ['retail', 'Retail shelf', 'orn', 3, 15, 0, 0, 15],
+    ['other', 'Other sales', 't3', 4, 20, 0, 0, 20],
+  ]);
+  assert.equal(mix.groups.reduce((s, g) => s + g.share, 0), 100);
+  assert.equal(mix.groups.reduce((s, g) => s + g.cmp_share, 0), 100);
+  assert.deepEqual(mix.groups.map((g) => g.categories), [
+    [{ id: 'cat-coffee_L', label: 'Coffee', money: 7, qty: 2, share: 100 }],
+    [{ id: 'cat-food_L', label: 'Food', money: 6, qty: 1, share: 100 }],
+    [{ id: 'cat-misc_L', label: 'Misc', money: 3, qty: 1, share: 100 }],
+    [{ id: null, label: 'No category', money: 4, qty: 1, share: 100 }],
+  ]);
+  assert.deepEqual(mix.groups.map((g) => [g.qty, g.items, g.avg_price, g.unresolved]), [[2, 1, 3.5, 0], [1, 1, 6, 0], [1, 1, 3, 0], [1, 1, 4, 4]]);
+  // One currency: the rollup's mix is the venue's, added per group, with the categories left out.
+  assert.deepEqual(snap.rollup.mix.groups.map((g) => [g.key, g.name, g.money, g.share, g.pts]), mix.groups.map((g) => [g.key, g.name, g.money, g.share, g.pts]));
+  assert.deepEqual(snap.rollup.mix.groups.map((g) => g.categories), [[], [], [], []]);
+  assert.deepEqual(snap.rollup.by_currency[0].mix, snap.rollup.mix);
+  // This week compares with the same rows (last Monday to Friday by 12:00); this month with 1 and
+  // 2 Sep, where nothing sold: the comparison was read, so cmp_total is 0 and there are no points.
+  const week = (await mixOf(fakeOps(mixTables()), 'week')).locations[0].mix;
+  assert.deepEqual([week.total, week.cmp_total, week.groups[0].pts], [20, 15.5, 12]);
+  const month = (await mixOf(fakeOps(mixTables()), 'month')).locations[0].mix;
+  assert.equal(month.cmp_total, 0);
+  assert.ok(month.groups.every((g) => g.pts === null && g.cmp_share === 0));
+});
+
+test('no groups set anywhere: every line is Other sales with the whole share, never an error', async () => {
+  // leeds() has no menu categories and no xero_config row at all.
+  const snap = await build(fakeOps(leeds()), 'today');
+  const mix = snap.locations[0].mix;
+  assert.equal(mix.total, 36);                             // 3 x (2 x 3.50 + 5), what the till rang
+  assert.equal(mix.unresolved_share, 100);
+  // Last Friday was all Other sales too: the comparison exists and nothing moved, so 0 points, not none.
+  assert.deepEqual(mix.groups.map((g) => [g.key, g.name, g.share, g.cmp_share, g.pts]), [['other', 'Other sales', 100, 100, 0]]);
+  assert.deepEqual(mix.groups[0].categories, [{ id: null, label: 'No category', money: 36, qty: 9, share: 100 }]);
+  assert.equal(snap.rollup.mix.unresolved_share, 100);
+});
+
+test('a venue with no xero_config row resolves from its categories alone; a failed read of either table is an error', async () => {
+  const t = mixTables();
+  t.xero_config = [];
+  const snap = await mixOf(fakeOps(t));
+  // Without Xero step 3, Misc has no group: the wrap joins the loose line in Other sales.
+  assert.deepEqual(snap.locations[0].mix.groups.map((g) => [g.key, g.money]), [['drinks', 7], ['food', 6], ['other', 7]]);
+  assert.equal(snap.locations[0].mix.unresolved, 7);
+  await assert.rejects(mixOf(fakeOps(mixTables(), { failWhen: (q) => q.table === 'xero_config' })), /Could not read sales groups: canceling statement/);
+  await assert.rejects(mixOf(fakeOps(mixTables(), { failWhen: (q) => q.table === 'menu_categories' })), /Could not read menu categories: canceling statement/);
+  // The two reads happen once each, for every venue at once, through the queue.
+  const ops = fakeOps(mixTables());
+  await mixOf(ops, 'today', { opsIds: ['L', 'M'], meta: { L: LEEDS, M: { ...LEEDS, name: 'Morley' } } });
+  const cats = ops.log.filter((q) => q.table === 'menu_categories'), cfg = ops.log.filter((q) => q.table === 'xero_config');
+  assert.equal(cats.length, 1);
+  assert.equal(cats[0].select, 'id, location_id, parent_id, label, accounting_group, master_id');
+  assert.deepEqual(cats[0].filters, [{ op: 'in', col: 'location_id', val: ['L', 'M'] }]);
+  assert.equal(cfg.length, 1);
+  assert.equal(cfg[0].select, 'location_id, mapping');
+  assert.deepEqual(cfg[0].filters, [{ op: 'in', col: 'location_id', val: ['L', 'M'] }]);
+  assert.ok(ops.state.peak <= MAX_READS);
+});
+
+test('the comparison items are read for every period in MIX_CMP_PERIODS', async () => {
+  // The coordinator may take 'month' out after a live timing; a period left out sends
+  // cmp_total null and no points (mixView with no comparison, src/lib/salesMix.test.js).
+  assert.deepEqual(MIX_CMP_PERIODS, ['today', 'week', 'month']);
+  for (const period of MIX_CMP_PERIODS) {
+    const ops = fakeOps(mixTables());
+    const snap = await mixOf(ops, period);
+    assert.notEqual(snap.locations[0].mix.cmp_total, null, period);
+    assert.ok(checkReads(ops, 'items').length >= 2, `${period}: the period and its comparison`);
+  }
 });
 
 // ── the detail call ──────────────────────────────────────────────────────────
@@ -823,7 +975,11 @@ function detailTables() {
       // Last Tuesday.
       chk('L', '2026-09-22T08:00:00Z'),
     ],
-    menu_categories: [{ id: 'cat-hot_L', location_id: 'L', label: 'Hot drinks' }, { id: 'cat-food_L', location_id: 'L', label: 'Food' }, { id: 'cat-x', location_id: 'ELSEWHERE', label: 'Not ours' }],
+    menu_categories: [
+      { id: 'cat-hot_L', location_id: 'L', parent_id: null, label: 'Hot drinks', accounting_group: 'Drinks', master_id: null },
+      { id: 'cat-food_L', location_id: 'L', parent_id: null, label: 'Food', accounting_group: 'Food', master_id: null },
+      { id: 'cat-x', location_id: 'ELSEWHERE', label: 'Not ours' },
+    ],
     wf_venue_settings: [{ location_id: 'L', labour_target_pct: '0.2800' }],
   });
 }
@@ -890,17 +1046,24 @@ test('detail, one venue, Today: the seven reports', async () => {
 });
 const r2sum = (xs) => Math.round(xs.reduce((a, b) => a + b, 0) * 100) / 100;
 
-test('detail reads the period with the heavy columns once, and every other day with the sales columns', async () => {
+test('detail reads the period with the heavy columns once, the comparison span with items for the mix, and every other day with the sales columns', async () => {
   const ops = fakeOps(detailTables());
   await detailOf(ops);
   const reads = ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q));
-  const heavy = reads.filter((q) => q.select.includes('items'));
   const refunds = reads.filter((q) => q.filters.some((f) => f.op === 'neq'));
+  const heavy = reads.filter((q) => q.select.includes('items') && !refunds.includes(q));
   const light = reads.filter((q) => !q.select.includes('items') && !refunds.includes(q));
-  // Today, 06:30 to 06:30.
-  assert.deepEqual(heavy.map((q) => [bound(q, 'gte'), bound(q, 'lt')]), [['2026-10-02T05:30:00.000Z', '2026-10-03T05:30:00.000Z']]);
-  // Monday of last week up to today's start: never today again.
-  assert.deepEqual(light.map((q) => [bound(q, 'gte'), bound(q, 'lt')]), [['2026-09-21T05:30:00.000Z', '2026-10-02T05:30:00.000Z']]);
+  // Today, 06:30 to 06:30, with every detail column; and last Friday (the comparison) with the
+  // sales columns and items, for the Sales mix points (8 Oct 2026).
+  assert.deepEqual(heavy.map((q) => [bound(q, 'gte'), bound(q, 'lt'), q.select]).sort(), [
+    ['2026-09-25T05:30:00.000Z', '2026-09-26T05:30:00.000Z', `${SALES_CHECK_COLS}, items`],
+    ['2026-10-02T05:30:00.000Z', '2026-10-03T05:30:00.000Z', `${SALES_CHECK_COLS}, order_type, refunds, items`],
+  ]);
+  // Monday of last week up to today's start, less the comparison day: never a day twice.
+  assert.deepEqual(light.map((q) => [bound(q, 'gte'), bound(q, 'lt')]).sort(), [
+    ['2026-09-21T05:30:00.000Z', '2026-09-25T05:30:00.000Z'],
+    ['2026-09-26T05:30:00.000Z', '2026-10-02T05:30:00.000Z'],
+  ]);
   // Older checks only where they carry a refund, and only before the period (its own days bring theirs).
   assert.equal(refunds.length, 1);
   assert.equal(bound(refunds[0], 'lt'), '2026-10-02T05:30:00.000Z');
@@ -969,6 +1132,50 @@ test('detail for the group: one currency added up, each venue on its own day, ne
   assert.equal(detailScope({ target: 'group', opsIds: [], meta: {} }), null);
 });
 
+test('detail: the sales mix for one venue with its top categories, and for the group with each venue\'s copies merged', async () => {
+  // Today at Leeds (detailTables): lattes under Hot drinks (Drinks), bagels under Food. Last
+  // Friday's two sales before noon carry no category (Other sales); the three after noon are cut.
+  const { detail: d } = await detailOf(fakeOps(detailTables()));
+  assert.deepEqual([d.mix.basis, d.mix.total, d.mix.cmp_total, d.mix.checks, d.mix.unresolved_share], ['item_sales', 44, 24, 5, 0]);
+  assert.deepEqual(d.mix.groups.map((g) => [g.key, g.name, g.tone, g.money, g.share, g.cmp_share, g.pts]), [
+    ['food', 'Food', 'acc', 24, 55, 0, 55],
+    ['drinks', 'Drinks', 'blu', 20, 45, 0, 45],
+    // Sold then, not now: it stays in the list at nothing, so the points add up.
+    ['other', 'Other sales', 't3', 0, 0, 100, -100],
+  ]);
+  assert.deepEqual(d.mix.groups[0].categories, [{ id: 'cat-food_L', label: 'Food', money: 24, qty: 4, share: 100 }]);
+  assert.deepEqual(d.mix.groups[1].categories, [{ id: 'cat-hot_L', label: 'Hot drinks', money: 20, qty: 5, share: 100 }]);
+  assert.deepEqual(d.mix.groups[2].categories, []);
+  // Till prices: the 1.20 staff discount, the 6.00 comp and the 4.00 loyalty reward (2.60 of VAT in) are not taken off (D3).
+  assert.equal(d.mix.total, r2sum([d.totals.gross_sales, 1.2, 6, 2.6]));
+
+  // The group: each venue's own copy of one category (cat-food_L, cat-food_M, one master) is ONE
+  // line in the group's top three, and a key is named by whichever venue names it in Xero.
+  seq = 0;
+  const rows = [
+    chk('L', '2026-10-02T09:00:00Z', { gross: 6, items: [{ name: 'Bagel', itemId: 'm-bagel_L', cat: 'cat-food_L', qty: 1, price: 6 }] }),
+    chk('M', '2026-10-02T09:30:00Z', { gross: 9, items: [{ name: 'Bagel', itemId: 'm-bagel_M', cat: 'cat-food_M', qty: 1, price: 9 }] }),
+    chk('M', '2026-10-02T09:40:00Z', { gross: 2, items: [{ name: 'Tea', itemId: 'm-tea_M', cat: 'cat-tea_M', qty: 1, price: 2 }] }),
+  ];
+  const cats = [
+    { id: 'cat-food_L', location_id: 'L', parent_id: null, label: 'Food', accounting_group: 'Food', master_id: 'cat-food' },
+    { id: 'cat-food_M', location_id: 'M', parent_id: null, label: 'Kitchen', accounting_group: 'Food', master_id: 'cat-food' },
+    { id: 'cat-tea_M', location_id: 'M', parent_id: null, label: 'Tea', accounting_group: '', master_id: null },
+  ];
+  const cfg = [{ location_id: 'M', mapping: { groups: { food: { name: 'Kitchen sales', account: '200' } } } }];
+  const meta = { L: CB, M: { ...CB, name: 'Morley' } };
+  const { detail: g } = await buildOwnerDetail({ ops: fakeOps(tables({ closed_checks: rows, menu_categories: cats, xero_config: cfg })), opsIds: ['L', 'M'], meta, target: 'group', now: new Date(NOON), period: 'today' });
+  assert.deepEqual(g.mix.groups.map((x) => [x.key, x.name, x.money, x.share]), [['food', 'Kitchen sales', 15, 88], ['other', 'Other sales', 2, 12]]);
+  assert.equal(g.mix.groups[0].categories.length, 1, 'one line for the two copies');
+  const [fam] = g.mix.groups[0].categories;
+  assert.deepEqual([fam.money, fam.qty, fam.share], [15, 2, 100]);
+  assert.ok(['Food', 'Kitchen'].includes(fam.label));
+  assert.deepEqual(g.mix.groups[1].categories, [{ id: 'cat-tea_M', label: 'Tea', money: 2, qty: 1, share: 100 }]);
+  // The group was asked for with items for the comparison too, and nothing then: no points.
+  assert.equal(g.mix.cmp_total, 0);
+  assert.ok(g.mix.groups.every((x) => x.pts === null));
+});
+
 test('detail pages like the snapshot: a busy week is every check once, and a failed read is an error', async () => {
   seq = 0;
   const rows = [];
@@ -984,10 +1191,11 @@ test('detail pages like the snapshot: a busy week is every check once, and a fai
   assert.ok(ops.state.peak <= MAX_READS);
   await assert.rejects(detailOf(fakeOps(tables({ closed_checks: rows }), { failWhen: (q) => q.table === 'closed_checks' && q.range?.[0] === 1000 }), { period: 'week' }), /Could not read closed checks: canceling statement/);
   await assert.rejects(detailOf(fakeOps(detailTables(), { failWhen: (q) => q.table === 'menu_categories' })), /Could not read menu categories/);
+  await assert.rejects(detailOf(fakeOps(detailTables(), { failWhen: (q) => q.table === 'xero_config' })), /Could not read sales groups/);
 });
 
 test('the function says what it can do, so an app can tell an old one', () => {
   // An owner-snapshot from before 5 Oct 2026 sends no `features`, no `compare` and ignores
   // `detail`. The app looks for these names before it shows the screens that need them.
-  for (const f of ['period', 'business_day', 'compare', 'by_currency', 'detail']) assert.ok(OWNER_FEATURES.includes(f), f);
+  for (const f of ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix']) assert.ok(OWNER_FEATURES.includes(f), f);
 });

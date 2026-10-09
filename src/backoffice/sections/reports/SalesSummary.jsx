@@ -15,6 +15,7 @@ import { toCsv, downloadCsv } from './_csv';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
+import SalesMixStrip from './SalesMixStrip';
 
 // The figures live in lib/salesStats.js (28 Sep 2026) so the till can print them too.
 export { computeSalesStats } from '../../../lib/salesStats';
@@ -28,7 +29,7 @@ export default function SalesSummary(props) {
 }
 
 // compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
-function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
+function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport }) {
   const cur  = useMemo(() => computeSalesStats(checks),     [checks]);
   const prev = useMemo(() => computeSalesStats(prevChecks), [prevChecks]);
   const avgCheck     = cur.count  ? cur.net  / cur.count  : 0;
@@ -106,6 +107,7 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
         <StatTile label="Avg check"  value={fmt(avgCheck)}     vs={compare} values={[avgCheck, prevAvgCheck]}/>
         <StatTile label="Tips"       value={fmt(cur.tips)}     vs={compare} values={[cur.tips, prev.tips]} noun="tips" sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
       </div>
+      <SalesMixStrip checks={checks} fmt={fmt} sites={sites} scope={scope} onOpen={onOpenReport ? () => onOpenReport('sales_mix') : null}/>
 
       {servicePeriods && servicePeriods.rows.length > 0 && (
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px', marginBottom:12 }}>
@@ -279,6 +281,7 @@ function SalesSummarySites(props) {
               <StatTile label="Avg check" value={b.fmt(perCheck(all))}/>
               <StatTile label="Tips"      value={b.fmt(all.tips)} sub={all.net > 0 ? `${((all.tips / all.net) * 100).toFixed(1)}% of net` : null} color="var(--grn)"/>
             </div>
+            <SalesMixStrip block={b} fromSums={fromSums} onOpen={props.onOpenReport ? () => props.onOpenReport('sales_mix') : null}/>
             <SiteMatrix block={b} rows={rows} first="Revenue breakdown" fmtN={fmtN}/>
           </>
         );

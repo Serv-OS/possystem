@@ -65,6 +65,7 @@ export const CATEGORIES = [
     reports: [
       { id:'daily_trading', label:'Daily trading (P&L)', desc:'Set a forecast per day (learns from last year), then sales vs theoretical vs actual costs → real operating profit' },
       { id:'summary',     label:'Business summary', desc:'Period stats with compare chips + net/gross ladder' },
+      { id:'sales_mix',   label:'Sales mix',        desc:'Food, drinks and other: each sales group with its share, by day and by service period' },
       { id:'daily_trend', label:'Daily trend',      desc:'Revenue / covers / avg check / tips per day with vs-prev compare' },
       { id:'item_trend',  label:'Item sales trend', desc:'Items × days matrix with category + day-of-week filters' },
       { id:'items',       label:'Product mix',      desc:'Items, categories, modifiers and 86\'d — with time of day' },

@@ -14,6 +14,9 @@
 //                                 for the same days (wf_sales_forecast added up), labour and
 //                                 labour % of sales, and the comparison
 //   period_top_items              best sellers over the period
+//   mix                           8 Oct 2026: item sales by sales group (Food, Drinks, Other
+//                                 sales) with each group's share, and the comparison span's
+//                                 share for the change in points (_shared/salesMix.js)
 // Live orders and open tables are always "now".
 //
 // A DAY IS THE VENUE'S BUSINESS DAY. 5 Oct 2026, Peter's decision on the Owner app day: "the
@@ -66,12 +69,18 @@ import {
   ownerPeriod, periodRange, addDays, weekStartOf, dayCount, inDays, mergeDayRanges, sliceDayRange, subtractDayRange,
   addCheckItems, topItems, rankItems, periodTotals, rollupTotals, compareOf, groupCompare, hhmm, r2,
 } from './ownerPeriod.js';
+import { makeMixResolver, categoriesOfSite, newMix, addCheckToMix, mixView, mixRollup, catFamilyKey, nameAcross } from './salesMix.js';
 
 /** Requests in flight at once, for the whole snapshot. */
 export const MAX_READS = 8;
 /** What this function can answer. An app checks for a name here before it shows the screen for it. */
 export const OWNER_API = 2;
-export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail'];
+export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix'];
+// 8 Oct 2026, Sales mix: the periods whose comparison span is read WITH items, for each group's
+// change in share ("Food +3 pts"). Today adds a day of the heavy column, a week up to seven, a
+// month up to 31 per venue. The coordinator may drop 'month' after a live timing: a period left
+// out sends cmp_total null and the app shows no points for it.
+export const MIX_CMP_PERIODS = ['today', 'week', 'month'];
 // Today and This week need at most 14 days of sales (Monday of last week to today): one
 // window per venue, as before the filters. This month is cut into weeks read side by side.
 const SLICE_DAYS = { today: 14, week: 14, month: 7 };
@@ -283,11 +292,27 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const cuts = {};        // venue -> comparison day -> { untilMs, sales }: that day up to the same time
   const todayItems = {};  // venue -> Map of item name -> { name, qty, rev }
   const periodItems = {};
+  const periodMix = {};   // venue -> the period's item sales by sales group (8 Oct 2026, _shared/salesMix.js)
+  const cmpMix = {};      // venue -> the comparison span's, cut at the same time of day
   for (const id of opsIds) {
     byDay[id] = {}; todayItems[id] = new Map(); periodItems[id] = new Map();
+    periodMix[id] = newMix(); cmpMix[id] = newMix();
     cuts[id] = new Map();
     for (const c of [plan[id].cut, plan[id].weekCut]) if (c && !cuts[id].has(c.day)) cuts[id].set(c.day, { untilMs: c.untilMs, sales: emptySales() });
   }
+
+  // One queue for every request this snapshot makes.
+  const gate = limiter(maxReads);
+  const opts = { gate };
+  // 8 Oct 2026, Sales mix (D2): every venue's menu categories and its Xero mapping, read before
+  // the checks, make ONE resolver per venue, the very resolver the Back Office report and the
+  // Xero invoice build, so an item sits in the same group on every surface. A venue with no
+  // xero_config row resolves from its categories alone; a category with no group is Other sales.
+  const [catRows, cfgRows] = await Promise.all([
+    gate(() => pagedRows('menu categories', () => ops.from('menu_categories').select('id, location_id, parent_id, label, accounting_group, master_id').in('location_id', opsIds).order('id'))),
+    gate(() => pagedRows('sales groups', () => ops.from('xero_config').select('location_id, mapping').in('location_id', opsIds).order('location_id'))),
+  ]);
+  const resolver = mixResolvers(opsIds, catRows, cfgRows);
 
   // What customers paid for the goods, VAT apart; voided checks count for nothing
   // (_shared/snapshotSales.js). Bucketed by the venue's business day the check closed in.
@@ -312,12 +337,25 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
       if (!inDays(d, range.from, today)) continue;
       addCheckItems(periodItems[id], c.items);
       if (d === today) addCheckItems(todayItems[id], c.items);
+      addCheckToMix(periodMix[id], c, resolver[id]);
+    }
+  };
+  // The comparison span's lines, for each group's change in share: whole days up to its last,
+  // then that day up to the same time as now (the rule cmpSales works to, so "Food +3 pts" sits
+  // beside a percent worked out over the same hours).
+  const addCmpItems = (id, rows) => {
+    const { dayOf, range, cut } = plan[id];
+    for (const c of rows) {
+      if (isVoidedCheck(c) || !Array.isArray(c.items)) continue;
+      const ms = Date.parse(c.closed_at);
+      if (!Number.isFinite(ms)) continue;
+      const d = dayOf(ms);
+      if (!inDays(d, range.cmpFrom, range.cmpTo)) continue;
+      if (cut && d === cut.day && ms >= cut.untilMs) continue;
+      addCheckToMix(cmpMix[id], c, resolver[id]);
     }
   };
 
-  // One queue for every request this snapshot makes.
-  const gate = limiter(maxReads);
-  const opts = { gate };
   const salesOf = (id) => Promise.all(windowsOf(plan[id], plan[id].salesDays, SLICE_DAYS[period]).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addSales(id, rows), opts)));
@@ -325,6 +363,12 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const itemsOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].today }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addItems(id, rows), opts)));
+  // 8 Oct 2026: the comparison span's items too, for the mix points, under MIX_CMP_PERIODS. The
+  // span never overlaps the period, so no row is read twice with the heavy column; the same rows
+  // were read with the sales columns by salesOf, which is cheap.
+  const cmpItemsOf = (id) => (!MIX_CMP_PERIODS.includes(period) ? Promise.resolve([]) : Promise.all(windowsOf(plan[id], [{ from: plan[id].range.cmpFrom, to: plan[id].range.cmpTo }], SLICE_DAYS[period]).map((w) =>
+    pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addCmpItems(id, rows), opts))));
 
   // Forecasts and timesheets for every venue in one read each: the widest dates any venue
   // needs, then each row is kept only if it falls in its own venue's period. A timesheet counts
@@ -336,9 +380,10 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const fcFrom = least(all.map((p) => p.range.from)), fcTo = most(all.map((p) => p.today));
   const tsFrom = new Date(least(all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(most(all.map((p) => p.endMs)) + DAY_MS).toISOString();
 
-  const [, , firstDays, fcRows, ts, oq, sess] = await Promise.all([
+  const [, , , firstDays, fcRows, ts, oq, sess] = await Promise.all([
     Promise.all(opsIds.map(salesOf)),
     Promise.all(opsIds.map(itemsOf)),
+    Promise.all(opsIds.map(cmpItemsOf)),
     Promise.all(opsIds.map((id) => firstSaleDay(ops, id, plan[id], gate))),
     gate(() => pagedRows('forecasts', () => ops.from('wf_sales_forecast').select('location_id, forecast_date, amount').in('location_id', opsIds).gte('forecast_date', fcFrom).lte('forecast_date', fcTo).order('id'))),
     gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
@@ -415,6 +460,9 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
         sales: periodSales, cmpNet: compare.cmp_net_sales, forecast: periodForecast, labour: labourPeriod[id] ?? 0, reason: compare.reason,
       }),
       period_top_items: topItems(periodItems[id]),
+      // 8 Oct 2026, Sales mix (D4a): item sales by sales group for the period, with the
+      // comparison span's share and the change in points where that span was read (MIX_CMP_PERIODS).
+      mix: mixView(periodMix[id], MIX_CMP_PERIODS.includes(period) ? cmpMix[id] : null, resolver[id]),
       // 5 Oct 2026: the business day start this venue's days were cut on, its first trading
       // day, and the comparison with its reason word, for the period and for the week to date.
       day_start: hhmm(dayStartMinutes(d.dayStart)), first_sale_date: first,
@@ -430,6 +478,9 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   rollup.currency = currencies.length === 1 ? currencies[0] : null;
   rollup.currencies = currencies;
   rollup.by_currency = currencies.map((c) => ({ currency: c, ...rollupOf(locations.filter((l) => l.currency === c)) }));
+  // The plain rollup's mix would add pounds to dollars: it is kept only when every venue shares
+  // a currency (the one group card then reads the whole rollup); each by_currency entry has its own.
+  if (!rollup.currency) rollup.mix = null;
 
   return { period, locations, rollup };
 }
@@ -459,7 +510,24 @@ function rollupOf(locations) {
   rollup.period_totals = rollupTotals(locations.map((l) => l.period_totals), compares);
   rollup.compare = groupCompare(compares);
   rollup.week_compare = week;
+  // 8 Oct 2026: the venues' sales mix added per group (names from the first venue that names a
+  // key, "Other sales" last, shares and points worked out again from the sums). rollupOf runs per
+  // currency; the plain rollup's mix is set null in buildOwnerSnapshot when currencies differ.
+  rollup.mix = mixRollup(locations.map((l) => l.mix));
   return rollup;
+}
+
+// One Sales mix resolver per venue (8 Oct 2026, D2): makeGroupResolver over the venue's OWN
+// menu_categories rows plus its xero_config mapping, exactly what the Back Office report and
+// the Xero daily invoice build, so an item is in the same group on every surface. A venue with
+// no xero_config row, or a null mapping, resolves from its categories alone (D6).
+function mixResolvers(ids, catRows, cfgRows) {
+  const out = {};
+  for (const id of ids) {
+    const cfg = (cfgRows || []).find((r) => String(r?.location_id) === String(id));
+    out[id] = makeMixResolver(cfg?.mapping && typeof cfg.mapping === 'object' ? cfg.mapping : {}, categoriesOfSite(catRows, id));
+  }
+  return out;
 }
 
 // ── the detail call ──────────────────────────────────────────────────────────
@@ -484,8 +552,12 @@ function rollupOf(locations) {
 //               with its category, and the categories added up
 //   labour      approved and paid timesheets against net sales, with the venue's own target.
 //               null when the period has no timesheets, so the screen hides it.
-// Reads: the period's own days once, with the heavy columns; every other day that is needed
-// (the comparison span, this week and last) with the sales columns only; older checks only
+//   mix         8 Oct 2026: item sales by sales group for the scope, each group's share, the
+//               comparison span's share and the change in points, and the top three categories
+//               inside each group (merged across venues by master id for the group).
+// Reads: the period's own days once, with the heavy columns; the comparison span with the sales
+// columns AND items (for the mix points, cut at the same time of day as the percent); every
+// other day that is needed (this week and last) with the sales columns only; older checks only
 // where they carry a refund. Everything pages and nothing is held but running totals.
 
 // What the detail reads for the period's own days, on top of the sales columns.
@@ -567,6 +639,24 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
   const payments = new Map(), types = new Map(), channels = new Map(), items = new Map();
   const ex = { discounts: emptyExceptions(), voids: emptyExceptions(), refunds: emptyExceptions() };
   const seenRefund = new Set();
+  // 8 Oct 2026, Sales mix: the scope's item sales by group, this period and the comparison span.
+  const periodMix = newMix(), cmpMix = newMix();
+
+  const gate = limiter(maxReads);
+  const opts = { gate };
+  const slice = SLICE_DAYS[period];
+  // Category names for the items (a line carries the category id, and ids differ venue to venue)
+  // and, 8 Oct 2026, the rows the Sales mix resolver wants plus each venue's Xero mapping: one
+  // resolver per venue (D2), and one family key per venue so a category's copies at several
+  // venues roll up as one line in the group's top three.
+  const [catRows, cfgRows] = await Promise.all([
+    gate(() => pagedRows('menu categories', () => ops.from('menu_categories').select('id, location_id, parent_id, label, accounting_group, master_id').in('location_id', ids).order('id'))),
+    gate(() => pagedRows('sales groups', () => ops.from('xero_config').select('location_id, mapping').in('location_id', ids).order('location_id'))),
+  ]);
+  const catName = new Map(catRows.map((r) => [r.id, text(r.label) || null]));
+  const catOf = (id) => catName.get(id) ?? null;
+  const resolver = mixResolvers(ids, catRows, cfgRows);
+  const famKeyOf = Object.fromEntries(ids.map((id) => [id, catFamilyKey(resolver[id])]));
 
   // Every check that is not voided, from either read: the hour, the week and the comparison.
   const addSale = (id, c, ms, d) => {
@@ -604,6 +694,19 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       if (Number.isFinite(ms) && !isVoidedCheck(c)) addSale(id, c, ms, dayOf(ms));
     }
   };
+  // The comparison span, read WITH items (8 Oct 2026): the sale as addOther, and its lines into
+  // the comparison mix under the same time of day cut as per[id].cmpNet, so "Food +3 pts" sits
+  // beside a percent worked out over the same hours.
+  const addCmp = (id, rows) => {
+    const p = plan[id];
+    for (const c of rows) {
+      const ms = Date.parse(c.closed_at);
+      if (!Number.isFinite(ms) || isVoidedCheck(c)) continue;
+      const d = p.dayOf(ms);
+      addSale(id, c, ms, d);
+      if (inDays(d, p.range.cmpFrom, p.range.cmpTo) && (!p.cut || d !== p.cut.day || ms < p.cut.untilMs)) addCheckToMix(cmpMix, c, resolver[id], famKeyOf[id]);
+    }
+  };
   const addPeriod = (id, rows, catOf) => {
     const dayOf = plan[id].dayOf;
     for (const c of rows) {
@@ -637,22 +740,21 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
         if (by) bump(ex.discounts.by, by, amount);
       }
       addCheckItems(items, c.items, catOf);
+      addCheckToMix(periodMix, c, resolver[id], famKeyOf[id]);
       addRefunds(id, c);
     }
   };
 
-  const gate = limiter(maxReads);
-  const opts = { gate };
-  const slice = SLICE_DAYS[period];
-  // Category names for the items (a line carries the category id, and ids differ venue to venue).
-  const catRows = await gate(() => pagedRows('menu categories', () => ops.from('menu_categories').select('id, label').in('location_id', ids).order('id')));
-  const catName = new Map(catRows.map((r) => [r.id, text(r.label) || null]));
-  const catOf = (id) => catName.get(id) ?? null;
-
   const periodOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].range.to }], slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(DETAIL_CHECK_COLS)
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addPeriod(id, rows, catOf), opts)));
-  const otherOf = (id) => Promise.all(windowsOf(plan[id], subtractDayRange(plan[id].salesDays, plan[id].range), slice).map((w) =>
+  // The comparison span, with items for the mix points (8 Oct 2026); it never overlaps the period.
+  const cmpSpan = (p) => ({ from: p.range.cmpFrom, to: p.range.cmpTo });
+  const cmpOf = (id) => Promise.all(windowsOf(plan[id], [cmpSpan(plan[id])], slice).map((w) =>
+    pagedEach('closed checks', () => ops.from('closed_checks').select(`${SALES_CHECK_COLS}, items`)
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addCmp(id, rows), opts)));
+  // Every other day that is needed (this week and last), with the sales columns only.
+  const otherOf = (id) => Promise.all(windowsOf(plan[id], subtractDayRange(subtractDayRange(plan[id].salesDays, plan[id].range), cmpSpan(plan[id])), slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addOther(id, rows), opts)));
   // Older checks that carry a refund: the refund may have been made in this period.
@@ -662,8 +764,9 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
 
   const all = ids.map((id) => plan[id]);
   const tsFrom = new Date(Math.min(...all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(Math.max(...all.map((p) => p.endMs)) + DAY_MS).toISOString();
-  const [, , , firstDays, ts, vs] = await Promise.all([
+  const [, , , , firstDays, ts, vs] = await Promise.all([
     Promise.all(ids.map(periodOf)),
+    Promise.all(ids.map(cmpOf)),
     Promise.all(ids.map(otherOf)),
     Promise.all(ids.map(refundsOf)),
     Promise.all(ids.map((id) => firstSaleDay(ops, id, plan[id], gate))),
@@ -732,6 +835,9 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       channels: mixRows(channels, 'channel'),
       exceptions: { discounts: exOut(ex.discounts), voids: exOut(ex.voids, false), refunds: exOut(ex.refunds) },
       items: rankItems(items, TOP_N),
+      // 8 Oct 2026, Sales mix (D4a): each group's money, share, comparison share and points, and
+      // the top three categories inside it. A key is named by whichever venue in the scope names it.
+      mix: mixView(periodMix, cmpMix, resolver[ids[0]], { nameOf: (key) => nameAcross(ids.map((i) => resolver[i]), key) }),
       labour: lab.shifts ? {
         cost: r2(lab.cost), hours: r2(lab.hours), shifts: lab.shifts, net_sales: r2(sales.net),
         pct: sales.net > 0 ? r2(lab.cost / sales.net * 100) : null, target_pct: targetPct,

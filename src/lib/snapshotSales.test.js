@@ -167,8 +167,8 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     assert.ok(checkReads.some((p) => p.q.includes('.select(SALES_CHECK_COLS)')), 'no closed_checks read with SALES_CHECK_COLS');
     for (const p of checkReads) assert.match(p.q, /\.order\('closed_at'\)\.order\('id'\)$/);
     // Every read that pages is ordered on a unique key (order_queue's is location_id + ref).
-    // (wf_venue_settings has one row a venue: its key is location_id.)
-    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('wf_venue_settings'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
+    // (wf_venue_settings and xero_config have one row a venue: their key is location_id.)
+    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('(wf_venue_settings|xero_config)'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
     // PostgREST returns at most 1000 rows a request: a .limit() of 1000 or more is a lie.
     for (const m of src.replace(/\/\/[^\n]*/g, '').matchAll(/\.limit\((\d+)\)/g)) assert.ok(Number(m[1]) < 1000, `${fn} still has .limit(${m[1]})`);
   });
@@ -183,8 +183,9 @@ test('owner-snapshot answers VAT with net, and a failed read is a 500, not £0',
   assert.match(src, /const snap = await buildOwnerSnapshot\(\{ ops: opsAdmin, opsIds, meta, now: new Date\(\), period \}\);/);
   assert.doesNotMatch(src, /\.from\('closed_checks'\)/, 'a closed_checks read outside the shared build');
   assert.match(src, /return json\(\{ error: \(e as Error\)\?\.message \|\| 'Could not build the snapshot' \}, 500\);/);
-  // Items (the heavy column) are read for the period's own days only (today's, under Today),
-  // never the comparison or the whole sales window. ownerSnapshot.test.js checks the dates asked for.
+  // Items (the heavy column) are read for the period's own days (today's, under Today) and, since
+  // 8 Oct 2026 (the Sales mix points), for the comparison span in its own read (cmpItemsOf), never
+  // the whole sales window. ownerSnapshot.test.js checks the dates asked for.
   assert.match(core, /const itemsOf = \(id\) => Promise\.all\(windowsOf\(plan\[id\], \[\{ from: plan\[id\]\.range\.from, to: plan\[id\]\.today \}\], SLICE_DAYS\[period\]\)/);
   // 5 Oct 2026: the detail call goes through the shared build too, and every answer says what
   // the function can do, so an app can tell it from one that cannot.

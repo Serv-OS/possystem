@@ -37,6 +37,8 @@ export function detailKey(target, period) {
 
 /** True when the snapshot's own function says it has the detail call. */
 export const canDetail = (snapshot) => hasFeature(snapshot, 'detail');
+/** True when the function sends the Sales mix (8 Oct 2026): the bars on the cards and the Sales mix card draw only then. */
+export const canMix = (snapshot) => hasFeature(snapshot, 'mix');
 
 /**
  * What an answer to a detail request holds.

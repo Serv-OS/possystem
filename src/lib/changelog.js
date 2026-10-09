@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.45',
+    date: '9 Oct 2026',
+    items: [
+      "Reports, Sales mix (new): your sales split into groups such as Food, Drinks and Other, each with its share, the change against the period before, quantity and average price. Open a group to see its categories. A share chart by day, or by hour for one day, a table by service period or time of day, and across your sites a share by site. CSV exports of groups, categories and sites. The groups are the same ones the Xero invoice uses, so the two always agree.",
+      "Sales mix, Set up groups: a panel lists your top level categories with a dropdown (Food, Drinks, Alcohol, Retail, Other, or a name of your own). Sub categories follow their parent. It writes the Accounting group of each category, the same field as Menu Manager, Edit category, and it opens by itself when most sales have no group yet. A login without Menu access can read the report but not change the groups.",
+      "Business summary: a Sales mix strip under the headline tiles with each group's share and money, and a link to the full report. Z report: a Sales by group block with each group's item sales and share.",
+      "Owner app: a Food, Drinks, Other bar on every venue card and on the group card, for today, this week or this month, with the change in share in points. Tap a card for a Sales mix card second on the screen: each group's money, share, the share before, and the top categories inside. Shows once the ServOS team has updated the owner app function.",
+      "Gift cards sold show as their own group, Gift cards, never as Food or Drinks. Sales mix figures are item sales before check discounts and refunds, the same basis as Product mix, so the groups, categories and items always add up to the same total.",
+    ],
+  },
+  {
     v: '5.11.43',
     date: '8 Oct 2026',
     items: [
