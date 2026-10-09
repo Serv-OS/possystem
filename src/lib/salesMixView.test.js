@@ -12,16 +12,16 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { makeMixResolver, mixView, mixFromChecks, mixSeriesLines, setupRows } from '../../supabase/functions/_shared/salesMix.js';
+import { makeMixResolver, mixView, mixFromChecks, mixSeriesLines, setupRows, NEGATIVE_NOTE } from '../../supabase/functions/_shared/salesMix.js';
 import {
   BASIS_CSV, STRIP_NOTE, SUMS_NOTE, CUSTOM_OPTION, KPI_MAX_GROUPS,
-  toneVar, csvDate, seenKey, isOneDay, joinNames, cutName, changePct,
+  toneVar, csvDate, seenKey, isOneDay, joinNames, cutName, changePct, compareUsable, negativeNote,
   kpiTiles, groupTableRows, groupTotals, allGroupKeys, reconcileWords,
   calloutFor, mappingHasOverrides, shouldAutoOpen, needsSetupNames,
   mergeSeries, siteMatrixRows,
   GROUPS_CSV_COLUMNS, groupsCsvRows, CATEGORIES_CSV_COLUMNS, categoriesCsvRows, GROUPS_BY_SITE_CSV_COLUMNS, groupsBySiteCsvRows,
-  stripModel, slipModel,
-  setupOptionList, setupValueFor, stagedChanges, saveLabel, savedToast, notSavedToast, saveFailure, setupStatus, subWords, subOwnWords,
+  stripModel, slipModel, SLIP_VOID_NOTE,
+  setupOptionList, setupRowsAsShown, setupValueFor, stagedChanges, saveLabel, savedToast, notSavedToast, saveFailure, setupStatus, subWords, subOwnWords,
 } from './salesMixView.js';
 import { toCsv } from '../backoffice/sections/reports/_csv.js';
 
@@ -123,16 +123,64 @@ test('groupTableRows: groups in order, categories only under an open group, shar
   const all = groupTableRows(v, new Set(allGroupKeys(v)));
   assert.equal(all.filter((r) => r.kind === 'cat').length, 5);
   assert.deepEqual(groupTableRows(null), []);
+  // 8 Oct 2026 (review finding 4): a group's categories take the group's whole share between them,
+  // so a group with one category shows it at the group's own share (Drinks 16, Coffee 16: not
+  // 7.30 of 44.50 rounded on its own), and every group's categories add up to the group.
+  const siteA = mixView(mixFromChecks([check(T0, [line('c-food', 37.2), line('c-coffee', 7.3)])], resolver), null, resolver, { topCats: Infinity });
+  const rowsA = groupTableRows(siteA, new Set(allGroupKeys(siteA)));
+  const drinksA = rowsA.find((r) => r.kind === 'group' && r.key === 'drinks');
+  const coffeeA = rowsA.find((r) => r.kind === 'cat' && r.label === 'Coffee');
+  assert.equal(coffeeA.shareOfTotal, drinksA.share);
+  assert.equal(coffeeA.shareOfGroup, 100);
+  for (const g of rowsA.filter((r) => r.kind === 'group')) {
+    const cats = rowsA.filter((r) => r.kind === 'cat' && r.groupKey === g.key);
+    assert.equal(cats.reduce((t, c) => t + c.shareOfTotal, 0), g.share, `${g.key}: the categories add up to the group`);
+  }
+  // Three equal categories under a group at 10: 4, 3, 3 (never 3, 3, 3 against a group that reads 10).
+  const r3 = makeMixResolver({}, [{ id: 'f', parent_id: null, label: 'Food', accounting_group: 'Food' }, { id: 'a', parent_id: 'f', label: 'A' }, { id: 'b', parent_id: 'f', label: 'B' }, { id: 'c', parent_id: 'f', label: 'C' }, { id: 'd', parent_id: null, label: 'Drinks', accounting_group: 'Drinks' }]);
+  const v3 = mixView(mixFromChecks([check(T0, [line('a', 1), line('b', 1), line('c', 1), line('d', 27)])], r3), null, r3, { topCats: Infinity });
+  assert.equal(v3.groups.find((g) => g.key === 'food').share, 10);
+  const food3 = groupTableRows(v3, new Set(['food'])).filter((r) => r.kind === 'cat');
+  assert.deepEqual(food3.map((r) => r.shareOfTotal), [4, 3, 3]);
 });
 
 test('groupTotals and the reconcile words', () => {
   const v = view();
   assert.deepEqual(groupTotals(v), { total: 100, qty: 8, avg: 12.5, items: 5 });   // 5 distinct items
   assert.deepEqual(groupTotals({ total: 0, qty: 0, items: 0 }), { total: 0, qty: 0, avg: null, items: 0 });
-  assert.equal(reconcileWords({ subtotal: 100, off: 0, diff: 0 }, fmt), 'Equals Gross sales on the Z report: £100.00.');
-  assert.equal(reconcileWords({ subtotal: 108, off: 1, diff: 8 }, fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).');
-  assert.equal(reconcileWords({ subtotal: 108, off: 2, diff: 8 }, fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (2 checks whose stored subtotal is not the sum of their lines).');
+  const rec = (o) => ({ gross: o.subtotal, voided: 0, voidedSubtotal: 0, ...o });
+  assert.equal(reconcileWords(rec({ subtotal: 100, off: 0, diff: 0 }), fmt), 'Equals Gross sales on the Z report: £100.00.');
+  assert.equal(reconcileWords(rec({ subtotal: 108, off: 1, diff: 8 }), fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).');
+  assert.equal(reconcileWords(rec({ subtotal: 108, off: 2, diff: 8 }), fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (2 checks whose stored subtotal is not the sum of their lines).');
   assert.equal(reconcileWords(null, fmt), '');
+  // 8 Oct 2026 (review finding 2): with a void in the period the Z report's Gross sales holds it and the
+  // groups do not, so the line names the voided checks as the known difference, never a false "Equals".
+  const oneVoid = { gross: 144.5, voided: 1, voidedSubtotal: 100, subtotal: 44.5, off: 0, diff: 0 };
+  assert.equal(reconcileWords(oneVoid, fmt), 'Gross sales on the Z report is £144.50; less 1 voided check (£100.00), the lines equal £44.50.');
+  assert.equal(reconcileWords({ gross: 164.5, voided: 2, voidedSubtotal: 120, subtotal: 44.5, off: 0, diff: 0 }, fmt),
+    'Gross sales on the Z report is £164.50; less 2 voided checks (£120.00), the lines equal £44.50.');
+  assert.equal(reconcileWords({ gross: 152.5, voided: 1, voidedSubtotal: 100, subtotal: 52.5, off: 1, diff: 8 }, fmt),
+    'Gross sales on the Z report is £152.50; less 1 voided check (£100.00) it is £52.50, and the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).');
+  assert.doesNotMatch(reconcileWords(oneVoid, fmt), /^Equals/, 'no "Equals" when a void is in the period');
+});
+
+test('compareUsable and negativeNote: no comparison when the previous period did not load; the negative line only when needed', () => {
+  // 8 Oct 2026 (review finding 5): the chips say "Not loaded", so the mix must have no comparison at all.
+  assert.equal(compareUsable({ label: 'vs last week', loaded: false }), false);
+  assert.equal(compareUsable({ label: 'vs last week' }), true);
+  assert.equal(compareUsable({ label: 'vs last week', loaded: true }), true);
+  assert.equal(compareUsable(null), false);
+  assert.equal(compareUsable(undefined), false);
+  // A view built with no comparison writes blank previous cells (the CSV test above pins the columns).
+  const noCmp = mixView(mixFromChecks(CHECKS, resolver), null, resolver);
+  assert.ok(groupsCsvRows(noCmp, {}).every((r) => r.hasCmp === false && r.pts === null));
+  // (review finding 9): wholeShares counts a negative line as 0, and the footnote says so only then.
+  assert.equal(negativeNote(view()), null);
+  const neg = mixView(mixFromChecks([check(T0, [line('c-food', 100), line('c-drinks', -40)])], resolver), null, resolver);
+  assert.deepEqual(neg.groups.map((g) => [g.key, g.money, g.share]), [['food', 100, 100], ['drinks', -40, 0]]);
+  assert.equal(negativeNote(neg), NEGATIVE_NOTE);
+  assert.equal(NEGATIVE_NOTE, 'Lines with a negative price count in the money, not in the shares.');
+  assert.equal(negativeNote(null), null);
 });
 
 // ── callout, notes, auto open ─────────────────────────────────────────────────
@@ -297,6 +345,11 @@ test('slipModel: a row per group with the name cut to the slip, the total, and t
   assert.equal(slipModel(null), null);
   const all = mixView(mixFromChecks([check(T0, [line('c-misc', 60)])], resolver), null, resolver);
   assert.equal(slipModel(all).allOther, true);
+  // 8 Oct 2026 (review finding 2): the slip's Gross sales above holds voided checks; one fine print line says why these lines do not.
+  assert.equal(s.voidNote, null);
+  assert.equal(slipModel(view(), { voided: 0 }).voidNote, null);
+  assert.equal(slipModel(view(), { voided: 2 }).voidNote, SLIP_VOID_NOTE);
+  assert.equal(SLIP_VOID_NOTE, 'voided checks are not in these lines');
 });
 
 // ── the setup panel ───────────────────────────────────────────────────────────
@@ -311,6 +364,21 @@ test('setupOptionList: the suggested words, Other sales (writes Other), the cust
   assert.equal(setupValueFor('food'), 'Food');
   assert.equal(setupValueFor('Other'), 'Other');
   assert.equal(setupValueFor('Hot drinks'), 'Hot drinks');
+  // 8 Oct 2026 (review finding 10): the options come from the rows AS SHOWN, staged texts in, so a
+  // custom name typed a moment ago is an option at once (else the controlled select falls back to
+  // "No group yet") and can be picked on another row before Save.
+  const stored = [{ id: 'c-hot', label: 'Hot', text: '' }, { id: 'c-cold', label: 'Cold', text: 'Drinks' }];
+  const shown = setupRowsAsShown(stored, { 'c-hot': 'Hot drinks' });
+  assert.deepEqual(shown.map((r) => [r.id, r.text]), [['c-hot', 'Hot drinks'], ['c-cold', 'Drinks']]);
+  assert.equal(stored[0].text, '', 'the stored rows are not changed');
+  assert.ok(setupOptionList(shown).some((o) => o.value === 'Hot drinks'), 'the staged word is an option');
+  assert.ok(!setupOptionList(stored).some((o) => o.value === 'Hot drinks'), 'it was not before');
+  assert.equal(setupValueFor('Hot drinks'), 'Hot drinks', 'and the select shows it');
+  assert.deepEqual(setupRowsAsShown(stored, {}), stored);
+  assert.deepEqual(setupRowsAsShown(stored, null), stored);
+  assert.deepEqual(setupRowsAsShown(null, { x: 'y' }), []);
+  // The staged word still saves as typed.
+  assert.deepEqual(stagedChanges(stored, { 'c-hot': 'Hot drinks' }), [{ id: 'c-hot', label: 'Hot', text: 'Hot drinks' }]);
 });
 
 test('stagedChanges, the save button words and the toasts', () => {
@@ -349,6 +417,9 @@ test('setupStatus and the sub category words', () => {
 
 // ── words ─────────────────────────────────────────────────────────────────────
 
+// The two long dashes, built from their codes so this file carries neither of them itself.
+const LONG_DASHES = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+
 test('no long dashes and no "N/A" in the Sales mix screens or their view maths', () => {
   const files = [
     './salesMixView.js',
@@ -360,7 +431,7 @@ test('no long dashes and no "N/A" in the Sales mix screens or their view maths',
   ];
   for (const f of files) {
     const src = read(f);
-    assert.doesNotMatch(src, /—|–/, `${f} has a long dash`);
+    assert.doesNotMatch(src, LONG_DASHES, `${f} has a long dash`);
     assert.doesNotMatch(src, /\bN\/A\b/, `${f} says N/A`);
   }
 });

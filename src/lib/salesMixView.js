@@ -15,7 +15,7 @@
 
 import { OTHER_GROUP, groupKeyOf } from '../../supabase/functions/_shared/accountingGroups.js';
 import {
-  OTHER_NAME, SETUP_OPTIONS, allOther, needsSetup, mixWords, optionFor, r2, toneVar,
+  OTHER_NAME, NEGATIVE_NOTE, SETUP_OPTIONS, allOther, needsSetup, mixWords, optionFor, r2, toneVar, splitWhole,
 } from '../../supabase/functions/_shared/salesMix.js';
 
 export const BASIS_CSV = 'Item sales before check discounts and refunds';
@@ -36,6 +36,17 @@ export const seenKey = (siteId) => `salesmix.setup.seen.${siteId}`;
 
 /** The range is one business day: the share chart runs by hour. */
 export const isOneDay = (range) => !!(range?.fromDay && range.fromDay === range.toDay);
+
+/**
+ * 8 Oct 2026 (review): the previous period's rows are only a comparison when the shell says they
+ * loaded. BOReports hands prevChecks [] with compare.loaded false when that read failed, and the
+ * chips then say "Not loaded"; the mix must say nothing too (no points, blank CSV cells), never
+ * "0.00 before". No compare at all (a custom range with nothing to compare to) is the same.
+ */
+export const compareUsable = (compare) => !!compare && compare.loaded !== false;
+
+/** The one extra footnote line, only when a group's money is below zero (see NEGATIVE_NOTE). */
+export const negativeNote = (view) => ((view?.groups || []).some((g) => Number(g.money) < 0) ? NEGATIVE_NOTE : null);
 
 /** 'A', 'A and B', 'A, B and C'. */
 export function joinNames(names) {
@@ -86,11 +97,12 @@ export function kpiTiles(view, { maxGroups = KPI_MAX_GROUPS } = {}) {
  * Flat rows for the groups table: a row per group in the view's order (money desc, Other sales
  * last), each followed by its categories when its key is in `expanded`. Category shares are
  * of the TOTAL, so the column keeps one meaning; the share of the group rides along for the
- * title attribute.
+ * title attribute. 8 Oct 2026 (review): a group's whole share is split among its categories by
+ * largest remainder (splitWhole), never rounded again on its own, so a group's categories add up
+ * to the group and a group with one category shows that category at the group's own share.
  */
 export function groupTableRows(view, expanded = new Set()) {
   if (!view) return [];
-  const total = Number(view.total) || 0;
   const rows = [];
   for (const g of view.groups || []) {
     const cats = Array.isArray(g.categories) ? g.categories : [];
@@ -101,10 +113,11 @@ export function groupTableRows(view, expanded = new Set()) {
       cmp_money: g.cmp_money, pts: g.pts, unresolved: g.unresolved, open, catCount: cats.length,
     });
     if (!open) continue;
+    const ofTotal = splitWhole(cats.map((c) => c.money), g.share);
     cats.forEach((c, i) => rows.push({
       id: `c:${g.key}:${c.id ?? i}`, kind: 'cat', groupKey: g.key, groupName: g.name, catId: c.id,
       label: c.label, money: c.money, qty: c.qty,
-      shareOfTotal: total > 0 ? Math.round((c.money / total) * 100) : 0,
+      shareOfTotal: ofTotal[i],
       shareOfGroup: c.share,
       avg: c.qty ? r2(c.money / c.qty) : null,
     }));
@@ -122,12 +135,27 @@ export function groupTotals(view) {
 /** Every group's key, for "Show categories". */
 export const allGroupKeys = (view) => (view?.groups || []).map((g) => g.key);
 
-/** The reconcile line under the table: how the groups tie to the Z report's Gross sales. */
+/**
+ * The reconcile line under the table: how the groups tie to the Z report's Gross sales. 8 Oct
+ * 2026 (review): that figure holds voided checks too (salesStats.js), the groups do not, so when
+ * the period has a void the line names the voided checks as the known difference instead of
+ * claiming an equality the Z report contradicts.
+ */
 export function reconcileWords(recon, fmt) {
   if (!recon) return '';
-  if (recon.diff === 0) return `Equals Gross sales on the Z report: ${fmt(recon.subtotal)}.`;
+  const gross = fmt(recon.gross ?? recon.subtotal);
+  const v = Number(recon.voided) || 0;
+  const voids = v ? `less ${v} voided check${v === 1 ? '' : 's'} (${fmt(recon.voidedSubtotal)})` : '';
+  if (recon.diff === 0) {
+    return v
+      ? `Gross sales on the Z report is ${gross}; ${voids}, the lines equal ${fmt(recon.subtotal)}.`
+      : `Equals Gross sales on the Z report: ${gross}.`;
+  }
   const n = recon.off;
-  return `Gross sales on the Z report is ${fmt(recon.subtotal)}; the lines differ by ${fmt(recon.diff)} (${n} check${n === 1 ? '' : 's'} whose stored subtotal is not the sum of their lines).`;
+  const off = `(${n} check${n === 1 ? '' : 's'} whose stored subtotal is not the sum of their lines)`;
+  return v
+    ? `Gross sales on the Z report is ${gross}; ${voids} it is ${fmt(recon.subtotal)}, and the lines differ by ${fmt(recon.diff)} ${off}.`
+    : `Gross sales on the Z report is ${gross}; the lines differ by ${fmt(recon.diff)} ${off}.`;
 }
 
 // ── callout and notes ─────────────────────────────────────────────────────────
@@ -340,14 +368,21 @@ export function stripModel(view, { failed = false } = {}) {
 
 // ── the Z report block ────────────────────────────────────────────────────────
 
-/** The slip's lines: a row per group with its name cut to the slip width, and the total. */
-export function slipModel(view) {
+export const SLIP_VOID_NOTE = 'voided checks are not in these lines';
+
+/**
+ * The slip's lines: a row per group with its name cut to the slip width, and the total. `voided`
+ * is how many checks in the list the mix skipped (8 Oct 2026, review): the slip's Gross sales a
+ * few lines above holds them, so one fine print line says why the two figures differ.
+ */
+export function slipModel(view, { voided = 0 } = {}) {
   if (!view || !(view.total > 0 || view.lines > 0)) return null;
   return {
     rows: (view.groups || []).filter((g) => g.money > 0 || g.share > 0)
       .map((g) => ({ key: g.key, name: cutName(g.name), share: g.share, money: g.money })),
     total: view.total,
     allOther: allOther(view),
+    voidNote: (Number(voided) || 0) > 0 ? SLIP_VOID_NOTE : null,
   };
 }
 
@@ -369,6 +404,17 @@ export function setupOptionList(rows, base = SETUP_OPTIONS) {
   }
   out.push({ value: CUSTOM_OPTION, label: 'Custom…' });
   return out;
+}
+
+/**
+ * 8 Oct 2026 (review): the rows as the panel SHOWS them, each row's text replaced by what is
+ * staged for it. The dropdown's options are built from these, not from the stored texts, so a
+ * custom name typed a moment ago is an option at once (a controlled select whose value is not
+ * among its options falls back to the first option, "No group yet", and the manager reads that
+ * the name did not take) and can be picked on another row before Save.
+ */
+export function setupRowsAsShown(rows, staged) {
+  return (rows || []).map((r) => (staged && r && r.id in staged ? { ...r, text: staged[r.id] } : r));
 }
 
 /** The select value a stored text shows as: '' for none, the suggested word, else the text itself. */

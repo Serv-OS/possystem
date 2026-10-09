@@ -12,6 +12,11 @@
 //
 // THE BASIS (D3): till price times qty before check discounts and refunds, as Product mix, so
 // the groups add up to Product mix's items and categories and to the Z report's Gross sales.
+//
+// WHO MAY SET UP GROUPS (8 Oct 2026, review): the panel writes menu categories, so it carries the
+// Menu section's lock (lib/boSections.js, canOpen('menu')). A Reports only login (Peter's
+// franchisee: "he cannot mess with menus") reads the report, the strip and the slip, but never
+// sees the Set up groups button, the callout's button, or the panel opening by itself.
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
@@ -34,7 +39,7 @@ import {
   kpiTiles, groupTableRows, groupTotals, allGroupKeys, reconcileWords, calloutFor, mappingHasOverrides,
   shouldAutoOpen, seenKey, isOneDay, toneVar, csvDate, groupsCsvRows, GROUPS_CSV_COLUMNS, categoriesCsvRows,
   CATEGORIES_CSV_COLUMNS, groupsBySiteCsvRows, GROUPS_BY_SITE_CSV_COLUMNS, mergeSeries, siteMatrixRows,
-  needsSetupNames, joinNames,
+  needsSetupNames, joinNames, compareUsable, negativeNote,
 } from '../../../lib/salesMixView.js';
 
 const NONE = Object.freeze([]);
@@ -42,7 +47,10 @@ const cardSt = { background:'var(--bg1)', border:'1px solid var(--bdr)', borderR
 const capsSt = { fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' };
 const noteSt = { fontSize:11.5, color:'var(--t4)', lineHeight:1.5 };
 const greySt = { fontSize:11, color:'var(--t4)' };
-const amberSt = { fontSize:11, color:'var(--amber, #F5A623)' };
+// A warning sentence in readable text (var(--t2)) with an amber edge: amber text on the light
+// theme's white is 2:1, far too faint for a line a manager must read (8 Oct 2026, review).
+const warnLineSt = { fontSize:11, color:'var(--t2)', borderLeft:'3px solid var(--amber, #F5A623)', paddingLeft:8 };
+const NO_MENU_ACCESS = 'Groups are set in Menu. Ask the owner.';
 const linkBtn = { background:'none', border:'none', padding:0, color:'var(--t3)', textDecoration:'underline', cursor:'pointer', fontFamily:'inherit', fontSize:12 };
 const centreSt = { textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 };
 const numSt = { fontVariantNumeric:'tabular-nums' };
@@ -64,29 +72,35 @@ export default function SalesMix(props) {
 
 // ── one site ──────────────────────────────────────────────────────────────────
 
-function SalesMixOne({ checks, prevChecks = NONE, fmt, fmtN, locationConfig, compare, range, sites, scope }) {
+function SalesMixOne({ checks, prevChecks = NONE, fmt, fmtN, locationConfig, compare, range, sites, scope, canOpen }) {
   const one = useOneSiteMix({ sites, scope });
   const { resolver, categories, mapping } = one;
   const mix = useMemo(() => mixFromChecks(checks, resolver), [checks, resolver]);
-  const cmpMix = useMemo(() => mixFromChecks(prevChecks, resolver), [prevChecks, resolver]);
+  // No comparison at all when the previous period did not load (the chips say "Not loaded"; the
+  // points and the CSV's previous cells must say nothing, not 0).
+  const hasCmp = compareUsable(compare);
+  const cmpMix = useMemo(() => (hasCmp ? mixFromChecks(prevChecks, resolver) : null), [hasCmp, prevChecks, resolver]);
   // Every category of every group, so the table can open each group fully and the CSV has them all.
   const view = useMemo(() => mixView(mix, cmpMix, resolver, { topCats: Infinity }), [mix, cmpMix, resolver]);
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const shifts = locationConfig?.shifts || NONE;
+  // A boolean, never null: a week with one trading day is still drawn by day (8 Oct 2026, review).
   const oneDay = isOneDay(range);
-  const series = useMemo(() => mixSeriesLines(checks, resolver, clock, { hourly: oneDay || null }), [checks, resolver, clock, oneDay]);
+  const series = useMemo(() => mixSeriesLines(checks, resolver, clock, { hourly: oneDay }), [checks, resolver, clock, oneDay]);
   const share = useMemo(() => shareSeries(series), [series]);
   const dayparts = useMemo(() => daypartSplit(checks, resolver, clock, shifts), [checks, resolver, clock, shifts]);
   const recon = useMemo(() => reconcile(checks, view.total), [checks, view.total]);
   const setup = useMemo(() => setupRows(categories, mapping || {}, mix, resolver), [categories, mapping, mix, resolver]);
 
+  // The signed in site AND a login that may open Menu: the panel edits menu categories.
+  const canSetup = one.isHome && (!canOpen || canOpen('menu'));
   const [expanded, setExpanded] = useState(() => new Set());
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedFor, setDismissedFor] = useState(null);
   const seen = useMemo(() => readSeen(one.siteId), [one.siteId]);
-  const wantAuto = dismissedFor !== one.siteId
+  const wantAuto = canSetup && dismissedFor !== one.siteId
     && shouldAutoOpen({ isHome: one.isHome, menuLoading: one.menuLoading, hasCategories: categories.length > 0, view, seen });
-  const panelOpen = manualOpen || wantAuto;
+  const panelOpen = canSetup && (manualOpen || wantAuto);
   const openPanel = () => setManualOpen(true);
   const closePanel = () => { writeSeen(one.siteId); setManualOpen(false); setDismissedFor(one.siteId); };
 
@@ -102,7 +116,7 @@ function SalesMixOne({ checks, prevChecks = NONE, fmt, fmtN, locationConfig, com
 
   return (
     <div>
-      {one.menuFailed && <div style={{ ...amberSt, marginBottom:10 }}>{site}: the menu could not be read, so every sale shows as Other sales.</div>}
+      {one.menuFailed && <div style={{ ...warnLineSt, marginBottom:10 }}>{site}: the menu could not be read, so every sale shows as Other sales.</div>}
 
       <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:12, flexWrap:'wrap' }}>
         <div>
@@ -113,28 +127,41 @@ function SalesMixOne({ checks, prevChecks = NONE, fmt, fmtN, locationConfig, com
         <div style={{ flex:1 }}/>
         <ExportBtn label="Export groups" onClick={exportGroups}/>
         <ExportBtn label="Export by category" onClick={exportCategories}/>
-        {one.isHome
+        {canSetup
           ? <PrimaryBtn onClick={openPanel}>Set up groups</PrimaryBtn>
-          : <span style={greySt}>Groups are set at each site. Sign in at {site} to change them.</span>}
+          : one.isHome
+            ? <span style={greySt}>{NO_MENU_ACCESS}</span>
+            : <span style={greySt}>Groups are set at each site. Sign in at {site} to change them.</span>}
       </div>
 
       {view.total === 0 ? (
         <EmptyState icon="📊" message="No item sales in this period. Try widening the date range."/>
       ) : (
         <>
-          {callout && <MixCallout callout={callout} onOpen={openPanel}/>}
+          {callout && <MixCallout callout={callout} onOpen={canSetup ? openPanel : null}/>}
           <KpiBand items={kpiItems(view, { fmt, fmtN, change })}/>
-          <div style={{ ...noteSt, marginTop:-8, marginBottom:14 }}>{BASIS_NOTE}</div>
+          <Footnote view={view}/>
           <ChartCard series={series} share={share} view={view} fmt={fmt}/>
           <GroupsCard view={view} expanded={expanded} setExpanded={setExpanded} fmt={fmt} fmtN={fmtN} compare={compare} recon={recon}/>
           <DaypartCard dayparts={dayparts} view={view} fmt={fmt}/>
         </>
       )}
 
-      {one.isHome && (
+      {canSetup && (
         <SalesMixSetup open={panelOpen} onClose={closePanel} siteName={one.siteName} categories={categories}
           mapping={mapping || {}} setup={setup} fmt={fmt} auto={wantAuto && !manualOpen}/>
       )}
+    </div>
+  );
+}
+
+// The basis under the band, and the one extra line when a group's money is below zero.
+function Footnote({ view }) {
+  const neg = negativeNote(view);
+  return (
+    <div style={{ ...noteSt, marginTop:-8, marginBottom:14 }}>
+      <div>{BASIS_NOTE}</div>
+      {neg && <div>{neg}</div>}
     </div>
   );
 }
@@ -155,6 +182,7 @@ function kpiItems(view, { fmt, fmtN, change }) {
     }));
 }
 
+// onOpen null: the signed in site, but a login that may not open Menu; the words say who can.
 function MixCallout({ callout, onOpen }) {
   const { kind, n, siteName } = callout;
   if (kind === 'other') {
@@ -165,16 +193,17 @@ function MixCallout({ callout, onOpen }) {
       <Callout>
         <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <div style={{ flex:1, minWidth:240 }}>
-            <b>Most sales have no group yet.</b> {`${n}% of item sales show as Other sales. Set up groups takes about two minutes: pick Food, Drinks or another group for each top level category.`}
+            <b>Most sales have no group yet.</b> {`${n}% of item sales show as Other sales. `}
+            {onOpen ? 'Set up groups takes about two minutes: pick Food, Drinks or another group for each top level category.' : NO_MENU_ACCESS}
           </div>
-          <PrimaryBtn onClick={onOpen}>Set up groups</PrimaryBtn>
+          {onOpen && <PrimaryBtn onClick={onOpen}>Set up groups</PrimaryBtn>}
         </div>
       </Callout>
     );
   }
   return (
     <Callout>
-      {`${n}% of item sales are in categories with no group yet. They show as Other sales.`} <button onClick={onOpen} style={linkBtn}>Set up groups</button>
+      {`${n}% of item sales are in categories with no group yet. They show as Other sales.`} {onOpen ? <button onClick={onOpen} style={linkBtn}>Set up groups</button> : NO_MENU_ACCESS}
     </Callout>
   );
 }
@@ -202,7 +231,7 @@ function ChartCard({ series, share, view, fmt }) {
 
 function GroupCell({ r, onToggle }) {
   return (
-    <button onClick={onToggle} aria-expanded={r.open} aria-label={`Show ${r.name} categories`}
+    <button onClick={onToggle} aria-expanded={r.open} aria-label={`${r.open ? 'Hide' : 'Show'} ${r.name} categories`}
       style={{ display:'inline-flex', alignItems:'center', gap:8, background:'none', border:'none', padding:0, cursor:'pointer', fontFamily:'inherit', fontSize:13, color:'var(--t1)' }}>
       <span style={{ color:'var(--t4)', width:10, display:'inline-block' }}>{r.open ? '▾' : '▸'}</span>
       <span style={{ width:8, height:8, borderRadius:2, background: toneVar(r.tone), flexShrink:0 }}/>
@@ -246,6 +275,7 @@ function GroupsCard({ view, expanded, setExpanded, fmt, fmtN, compare, recon }) 
         avg: totals.avg == null ? 'none' : fmt(totals.avg), items: fmtN(totals.items), change: '',
       }}/>
       <div style={{ ...noteSt, marginTop:8 }}>{BASIS_NOTE}</div>
+      {negativeNote(view) && <div style={noteSt}>{negativeNote(view)}</div>}
       <div style={noteSt}>{reconcileWords(recon, fmt)}</div>
     </div>
   );
@@ -296,11 +326,12 @@ function DaypartCard({ dayparts, view, fmt }) {
 // The service period table and the categories are one site's: pick one site for them.
 
 function SalesMixSites(props) {
-  const { fmtN, range } = props;
+  const { fmtN, range, canOpen } = props;
   const { parts, blocks } = useParts(props);
   const pr = usePartResolvers(parts);
   const storeCategories = useStore((s) => s.menuCategories) || NONE;
   const homePart = parts.find((p) => p.site?.isHome) || null;
+  const canSetup = !!homePart && (!canOpen || canOpen('menu'));
   const oneDay = isOneDay(range);
   const [panel, setPanel] = useState(false);
 
@@ -308,7 +339,8 @@ function SalesMixSites(props) {
     const out = {};
     for (const p of parts) {
       const r = pr.resolvers[p.id];
-      if (r) out[p.id] = mixView(mixFromChecks(p.rows, r), mixFromChecks(p.prevRows, r), r, { topCats: Infinity });
+      // A part whose comparison did not load has no comparison (GroupChange says so on the tile).
+      if (r) out[p.id] = mixView(mixFromChecks(p.rows, r), compareUsable(p.compare) ? mixFromChecks(p.prevRows, r) : null, r, { topCats: Infinity });
     }
     return out;
   }, [parts, pr.resolvers]);
@@ -347,11 +379,11 @@ function SalesMixSites(props) {
   return (
     <div>
       <SplitHeader parts={parts} chips={false} onExport={exportBySite}>
-        {pr.menusFailed.map((id) => <div key={`m${id}`} style={{ color:'var(--amber, #F5A623)' }}>{nameOfPart(id)}: the menu could not be read, so its sales show as Other sales.</div>)}
+        {pr.menusFailed.map((id) => <div key={`m${id}`} style={warnLineSt}>{nameOfPart(id)}: the menu could not be read, so its sales show as Other sales.</div>)}
         {unsetNames.length > 0 && <div style={{ color:'var(--t4)' }}>{joinNames(unsetNames)} have no sales groups set yet. Set them at each site.</div>}
         {pr.mappingsFailed.map((id) => <div key={`x${id}`} style={{ color:'var(--t4)' }}>Xero groups could not be read for {nameOfPart(id)}. Groups come from the menu categories alone.</div>)}
       </SplitHeader>
-      {homePart && (
+      {canSetup && (
         <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
           <PrimaryBtn onClick={() => setPanel(true)}>Set up groups at {homePart.name}</PrimaryBtn>
         </div>
@@ -371,7 +403,7 @@ function SalesMixSites(props) {
         return (
           <>
             <KpiBand items={kpiItems(bv, { fmt: b.fmt, fmtN, change })}/>
-            <div style={{ ...noteSt, marginTop:-8, marginBottom:14 }}>{BASIS_NOTE}</div>
+            <Footnote view={bv}/>
             <ChartCard series={s.series} share={s.share} view={bv} fmt={b.fmt}/>
             <SiteMatrix block={b} title="Item sales by site" first="Group" fmtN={fmtN} rows={matrix.money}/>
             <SiteMatrix block={b} title="Share by site" first="Group" fmtN={fmtN} rows={matrix.share.map((r) => ({
@@ -383,7 +415,7 @@ function SalesMixSites(props) {
         );
       }}</Blocks>
 
-      {homePart && homeSetup && (
+      {canSetup && homeSetup && (
         <SalesMixSetup open={panel} onClose={() => setPanel(false)} siteName={homePart.name} categories={storeCategories}
           mapping={pr.mappings[homePart.id] || {}} setup={homeSetup} fmt={homePart.fmt} auto={false}/>
       )}

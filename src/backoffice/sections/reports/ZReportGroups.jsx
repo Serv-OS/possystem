@@ -12,7 +12,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../../../store';
 import { useSiteMappings } from './_siteMappings';
-import { makeMixResolver, mixView, mixFromChecks } from '../../../../supabase/functions/_shared/salesMix.js';
+import { makeMixResolver, mixView, mixFromChecks, isLiveCheck } from '../../../../supabase/functions/_shared/salesMix.js';
 import { slipModel } from '../../../lib/salesMixView.js';
 
 // Copied from ZReport.jsx so that file stays small on the conflict branch.
@@ -30,7 +30,9 @@ export default function ZReportGroups({ checks, fmt, siteId }) {
   const mapping = siteId ? mappings[String(siteId)] : null;
   const resolver = useMemo(() => makeMixResolver(mapping || {}, categories), [mapping, categories]);
   const view = useMemo(() => mixView(mixFromChecks(checks, resolver), null, resolver), [checks, resolver]);
-  const model = slipModel(view);
+  // 8 Oct 2026 (review): the slip's Gross sales above holds voided checks, these lines do not.
+  const voided = useMemo(() => (Array.isArray(checks) ? checks.filter((c) => !isLiveCheck(c)).length : 0), [checks]);
+  const model = slipModel(view, { voided });
   if (!model) return null;
   return (
     <>
@@ -39,8 +41,10 @@ export default function ZReportGroups({ checks, fmt, siteId }) {
       {model.rows.map((r) => (
         <div key={r.key} style={ROW}><span>{r.name} ({r.share}%)</span><span>{fmt(r.money)}</span></div>
       ))}
-      <div style={{ ...ROW, ...BOLD }}><span>Item sales</span><span>{fmt(model.total)}</span></div>
+      {/* "(gross)": the same figure as Gross sales above when nothing was voided, so the two names read as one. */}
+      <div style={{ ...ROW, ...BOLD }}><span>Item sales (gross)</span><span>{fmt(model.total)}</span></div>
       <div style={FINE}>before check discounts and refunds</div>
+      {model.voidNote && <div style={FINE}>{model.voidNote}</div>}
       {model.allOther && <div style={FINE}>No sales groups set. Set them up in Reports, Sales mix.</div>}
     </>
   );

@@ -127,10 +127,68 @@ test('the report draws from salesMix.js and never works out a percent in its JSX
   }
 });
 
+// 8 Oct 2026, the review's fixes, pinned as source text so they stay fixed.
+test('review fixes: the Menu lock on the setup, the shell passes canOpen, the day chart on a range, the aria labels', () => {
+  const src = read('./SalesMix.jsx');
+  // finding 17: the write surface carries the Menu section's lock; the report itself stays readable
+  assert.ok(src.includes("canOpen('menu')"), 'the setup is gated on canOpen(menu)');
+  assert.match(src, /const canSetup = one\.isHome && \(!canOpen \|\| canOpen\('menu'\)\);/, 'one site');
+  assert.match(src, /const canSetup = !!homePart && \(!canOpen \|\| canOpen\('menu'\)\);/, 'several sites');
+  assert.equal((src.match(/\{canSetup && \(\n\s*<SalesMixSetup/g) || []).length, 1, 'the one site panel mounts only when the login may set up');
+  assert.ok(src.includes('{canSetup && homeSetup && ('), 'the several sites panel too');
+  assert.ok(src.includes('const wantAuto = canSetup &&'), 'the panel never opens by itself for a Reports only login');
+  assert.ok(src.includes('onOpen={canSetup ? openPanel : null}'), 'the callout button follows the lock');
+  assert.ok(src.includes('Groups are set in Menu. Ask the owner.'));
+  const shell = read('../BOReports.jsx');
+  const mount = shell.split('\n').find((l) => l.includes("view === 'sales_mix'"));
+  assert.ok(mount.includes('canOpen={canOpen}'), 'the shell hands the report canOpen');
+  // finding 6: a range of more than one day is always drawn by day
+  assert.ok(src.includes('{ hourly: oneDay }'), 'a boolean, never null');
+  assert.ok(!src.includes('oneDay || null'));
+  // finding 5: no comparison when the previous period did not load
+  assert.ok(src.includes('compareUsable(compare)'));
+  assert.ok(src.includes('compareUsable(p.compare)'));
+  // finding 15: the chevron says what it does
+  assert.ok(src.includes("aria-label={`${r.open ? 'Hide' : 'Show'} ${r.name} categories`}"));
+  // finding 13: warning sentences are readable text with an amber edge, never amber text
+  assert.ok(src.includes("color:'var(--t2)', borderLeft:'3px solid var(--amber, #F5A623)'"));
+  assert.ok(!src.includes('const amberSt'));
+  // finding 9: the one extra footnote line
+  assert.ok(src.includes('negativeNote(view)'));
+});
+
+test('review fixes: the setup panel unmounts on close, swallows Escape in the name box, builds options from the rows as shown, takes focus', () => {
+  const src = read('./SalesMixSetup.jsx');
+  // finding 11: Cancel means cancel (fresh state on every open)
+  assert.match(src, /export default function SalesMixSetup\(\{ open, \.\.\.rest \}\) \{\s*return open \? <SetupDialog \{\.\.\.rest\}\/> : null;/);
+  // finding 12: Escape in the name box backs out of the box only; the window Escape never closes mid save
+  assert.ok(src.includes("if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dropCustom(row); }"));
+  assert.ok(src.includes("if (e.key === 'Escape' && !saving) onClose?.();"));
+  // finding 10: the dropdown's options come from the rows as shown
+  assert.ok(src.includes('setupOptionList(setupRowsAsShown(rows, staged), SETUP_OPTIONS)'));
+  // finding 14: the dialog takes focus when it opens and gives it back
+  assert.ok(src.includes('ref={dialogRef} tabIndex={-1} role="dialog"'));
+  assert.ok(src.includes('dialogRef.current?.focus?.()'));
+  assert.ok(src.includes('opener.focus()'));
+  // finding 13: the status sentence is readable text, only the count carries the colour
+  assert.ok(src.includes("<b style={{ color: status.ok ? 'var(--grn)' : 'var(--amber, #F5A623)' }}>{status.strong}</b>{status.rest}"));
+});
+
+test('review fixes: the Z report block names voided checks and reads Item sales (gross)', () => {
+  const z = read('./ZReportGroups.jsx');
+  assert.ok(z.includes('Item sales (gross)'), 'finding 16: one figure, one name family with Gross sales above');
+  assert.ok(z.includes('slipModel(view, { voided })'), 'finding 2: the slip counts the checks the mix skipped');
+  assert.ok(z.includes('{model.voidNote && <div style={FINE}>{model.voidNote}</div>}'));
+  assert.ok(z.includes('isLiveCheck'));
+});
+
+// The two long dashes, built from their codes so this file carries neither of them itself.
+const LONG_DASHES = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+
 test('plain words: no long dashes and no N/A in the new files', () => {
   for (const f of ['./SalesMix.jsx', './SalesMixChart.jsx', './SalesMixSetup.jsx', './SalesMixStrip.jsx', './ZReportGroups.jsx', '../../../lib/salesMixView.js']) {
     const src = read(f);
-    assert.doesNotMatch(src, /—|–/, `${f} has a long dash`);
+    assert.doesNotMatch(src, LONG_DASHES, `${f} has a long dash`);
     assert.doesNotMatch(src, /\bN\/A\b/, `${f} says N/A`);
   }
 });

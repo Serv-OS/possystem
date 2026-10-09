@@ -72,6 +72,26 @@ test('the card bar: the top two named groups, one fold, the words and the points
   assert.equal(two.words, 'Food 80%  Other sales 20%');
 });
 
+// 8 Oct 2026 (review finding 1): the bar's points and the Sales mix card's points for one block
+// are the same numbers. A group that sold in the comparison and nothing now (Misc here) leaves the
+// bar, but its comparison money stays in the denominator, so Food reads +10 pts on the card and
+// "was 50% · +10 pts" on the detail card, never -3 against +10.
+test('the card bar and the Sales mix card never disagree on the points for one block', () => {
+  const now = mixOf([line('c-food', 60, 'pie'), line('c-drinks', 40, 'tea')]);
+  const then = mixOf([line('c-food', 50, 'pie'), line('c-drinks', 30, 'tea'), line('c-misc', 20, 'odd')]);
+  const block = mixView(now, then, resolver);
+  const bar = cardBar(block);
+  const rows = detailRows(block);
+  assert.deepEqual(bar.segments.map((s) => [s.name, s.share, s.ptsText]), [['Food', 60, '+10 pts'], ['Drinks', 40, '+10 pts']]);
+  assert.deepEqual(rows.rows.map((r) => [r.name, r.wasText]), [['Food', 'was 50% · +10 pts'], ['Drinks', 'was 30% · +10 pts'], ['Other sales', 'was 20% · -20 pts']]);
+  for (const s of bar.segments) assert.equal(s.pts, rows.rows.find((r) => r.key === s.key).pts, `${s.key}`);
+  // The same with a named group (Retail) dropping to nothing.
+  const then2 = mixOf([line('c-food', 50, 'pie'), line('c-drinks', 30, 'tea'), line('c-retail', 20, 'beans')]);
+  const block2 = mixView(now, then2, resolver);
+  assert.deepEqual(cardBar(block2).segments.map((s) => [s.key, s.pts]), [['food', 10], ['drinks', 10]]);
+  assert.deepEqual(detailRows(block2).rows.map((r) => [r.key, r.pts]), [['food', 10], ['drinks', 10], ['retail', -20]]);
+});
+
 test('nothing set up: one grey Other sales segment, no points noise, and the hint only when asked', () => {
   const bar = cardBar(ALL_OTHER);
   assert.equal(bar.allOther, true);

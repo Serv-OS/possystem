@@ -18,13 +18,13 @@
 //   auto             the panel opened by itself (more than half of item sales had no group)
 //   onSaved          optional: runs after a full save, before onClose
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../../store';
 import { Callout, PrimaryBtn, Tag } from './reportKit';
 import { SETUP_OPTIONS } from '../../../../supabase/functions/_shared/salesMix.js';
 import { groupKeyOf } from '../../../../supabase/functions/_shared/accountingGroups.js';
 import {
-  CUSTOM_OPTION, setupOptionList, setupValueFor, stagedChanges, saveLabel, savedToast, notSavedToast,
+  CUSTOM_OPTION, setupOptionList, setupRowsAsShown, setupValueFor, stagedChanges, saveLabel, savedToast, notSavedToast,
   saveFailure, setupStatus, subWords, subOwnWords,
 } from '../../../lib/salesMixView.js';
 
@@ -36,7 +36,14 @@ const small = { fontSize:11, color:'var(--t4)', marginTop:3, lineHeight:1.4 };
 const secondaryBtn = { padding:'9px 14px', borderRadius:12, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13, fontWeight:600 };
 
 // `mapping` is not read here: a Xero override is already flagged on each setup row (row.xero).
-export default function SalesMixSetup({ open, onClose, siteName = '', categories = [], setup, fmt, auto = false, onSaved }) {
+// The dialog is MOUNTED only while open (8 Oct 2026, review): Cancel, the cross, the backdrop
+// and Escape all unmount it, so its staged rows, open name boxes and red lines never come back on
+// the next open. Cancel means cancel.
+export default function SalesMixSetup({ open, ...rest }) {
+  return open ? <SetupDialog {...rest}/> : null;
+}
+
+function SetupDialog({ onClose, siteName = '', categories = [], setup, fmt, auto = false, onSaved }) {
   const updateCategory = useStore((s) => s.updateCategory);
   const markBOChange = useStore((s) => s.markBOChange);
   const showToast = useStore((s) => s.showToast);
@@ -46,29 +53,42 @@ export default function SalesMixSetup({ open, onClose, siteName = '', categories
   const [custom, setCustom] = useState({});
   const [failures, setFailures] = useState({});
   const [saving, setSaving] = useState(false);
+  const dialogRef = useRef(null);
   // SETUP_OPTIONS: No group yet, Food, Drinks, Alcohol, Retail, Other sales (writes the text 'Other').
-  const options = useMemo(() => setupOptionList(rows, SETUP_OPTIONS), [rows]);
+  // Built from the rows AS SHOWN (staged texts in), so a custom name typed a moment ago is an
+  // option at once and can be picked on another row (8 Oct 2026, review).
+  const options = useMemo(() => setupOptionList(setupRowsAsShown(rows, staged), SETUP_OPTIONS), [rows, staged]);
   const changes = useMemo(() => stagedChanges(rows, staged), [rows, staged]);
   const status = setupStatus(setup);
 
-  // Escape closes, as every Back Office modal does.
+  // Never while a save runs: the cross, Cancel, the backdrop and Escape all come through here.
+  const close = () => { if (!saving) onClose?.(); };
+
+  // Escape closes, as every Back Office modal does, but not mid save, and the custom name box
+  // swallows its own Escape (8 Oct 2026, review).
   useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const onKey = (e) => { if (e.key === 'Escape' && !saving) onClose?.(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [onClose, saving]);
 
-  if (!open) return null;
+  // The dialog takes focus when it opens (it can open by itself, with no click to bring focus
+  // near) and hands it back to where it was when it closes.
+  useEffect(() => {
+    const opener = typeof document !== 'undefined' ? document.activeElement : null;
+    dialogRef.current?.focus?.();
+    return () => { if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus(); };
+  }, []);
 
   const valueOf = (row) => (row.id in staged ? staged[row.id] : row.text);
   const pick = (row, value) => {
     if (value === CUSTOM_OPTION) { setCustom((c) => ({ ...c, [row.id]: valueOf(row) })); return; }
     setStaged((s) => ({ ...s, [row.id]: value }));
   };
+  const dropCustom = (row) => setCustom((c) => { const n = { ...c }; delete n[row.id]; return n; });
   const commitCustom = (row) => {
     const text = String(custom[row.id] ?? '').trim();
-    setCustom((c) => { const n = { ...c }; delete n[row.id]; return n; });
+    dropCustom(row);
     if (!text) return;                       // empty: back to the previous value
     if (groupKeyOf(text) === '') return;     // refused in the box already (see below)
     setStaged((s) => ({ ...s, [row.id]: text }));
@@ -106,11 +126,9 @@ export default function SalesMixSetup({ open, onClose, siteName = '', categories
     showToast?.(notSavedToast(k, changes.length), 'warn', 5000);
   };
 
-  const close = () => { if (!saving) onClose?.(); };
-
   return (
     <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div role="dialog" aria-modal="true" aria-label="Set up sales groups" style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:640, maxHeight:'88vh', overflow:'auto', padding:20, boxShadow:'var(--sh3)' }}>
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Set up sales groups" style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:640, maxHeight:'88vh', overflow:'auto', padding:20, boxShadow:'var(--sh3)', outline:'none' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
           <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Set up sales groups</div>
           <button onClick={close} aria-label="Close" style={{ background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:20, lineHeight:1 }}>×</button>
@@ -128,8 +146,9 @@ export default function SalesMixSetup({ open, onClose, siteName = '', categories
           </>
         ) : (
           <>
-            <div style={{ fontSize:12.5, margin:'14px 0 10px', color: status.ok ? 'var(--grn)' : 'var(--amber, #F5A623)' }}>
-              <b>{status.strong}</b>{status.rest}
+            {/* Readable text; only the count carries the colour (amber on white is 2:1, too faint for a sentence). */}
+            <div style={{ fontSize:12.5, margin:'14px 0 10px', color:'var(--t2)' }}>
+              <b style={{ color: status.ok ? 'var(--grn)' : 'var(--amber, #F5A623)' }}>{status.strong}</b>{status.rest}
             </div>
 
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
@@ -170,8 +189,12 @@ export default function SalesMixSetup({ open, onClose, siteName = '', categories
                               placeholder="Group name, for example Hot drinks"
                               aria-label={`Group name for ${row.label}`}
                               onChange={(e) => setCustom((c) => ({ ...c, [row.id]: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bad) commitCustom(row); } }}
-                              onBlur={() => { if (!bad) commitCustom(row); }}
+                              // Escape backs out of the name box only, never out of the whole panel.
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); if (!bad) commitCustom(row); }
+                                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dropCustom(row); }
+                              }}
+                              onBlur={() => { if (row.id in custom && !bad) commitCustom(row); }}
                             />
                             <button onClick={() => { if (!bad) commitCustom(row); }} style={{ ...secondaryBtn, padding:'7px 10px', fontSize:12 }}>Done</button>
                           </div>

@@ -41,9 +41,21 @@ export const SETUP_OPTIONS = [
   { value: 'Other', label: 'Other sales' },
 ];
 export const BASIS_NOTE = 'Item sales before check discounts and refunds, as Product mix. Share is the figure that matters.';
+/** Shown only when a group's money is below zero (a refund line stored at a negative price): wholeShares counts such a line as 0. */
+export const NEGATIVE_NOTE = 'Lines with a negative price count in the money, not in the shares.';
+/**
+ * 8 Oct 2026 (review): a sold gift card is money taken for goods not yet sold. The Xero daily
+ * invoice carves it out before grouping (accountingGroups.js isGift), and it has no category to
+ * set a group on, so here it is its own resolved group: never "no group", never a reason to open
+ * the setup panel, and the Food and Drinks shares read the way the invoice's split does. It stays
+ * in the total (D3: the groups add up to Product mix, which counts it).
+ */
+export const GIFT_GROUP = 'gift-cards';
+export const GIFT_NAME = 'Gift cards';
 // Colours BY KEY, never by rank, so Food keeps its colour when Drinks overtakes it on another
 // period. Token names, drawn as var(--tone); all of them exist in both skins and both themes.
-export const GROUP_TONES = { food: 'acc', drinks: 'blu', alcohol: 'red', retail: 'orn', other: 't3' };
+// Gift cards take the spare grey: a liability, not a sales group a manager chose.
+export const GROUP_TONES = { food: 'acc', drinks: 'blu', alcohol: 'red', retail: 'orn', other: 't3', [GIFT_GROUP]: 't4' };
 /** Custom keys, in money order, skipping tones a fixed key in the list already holds. */
 export const TONE_CYCLE = ['acc', 'blu', 'orn', 'red'];
 export const TONE_SPARE = 't4';
@@ -115,7 +127,9 @@ export function lineQty(i) {
  * subtotal 7,708.70 = price times qty 7,708.70). The line's own discount is NOT applied (the
  * till does not net it from the stored subtotal either). Modifier prices are already inside
  * price (cartUnitPrice, reprice modSum); adding mods would count every syrup twice. A negative
- * price stays negative, as Product mix shows it. A price that is not a number counts 0.
+ * price stays negative, as Product mix shows it. A price that is not a number counts 0. A qty of
+ * 0 counts as 1, as Product mix (i.qty || 1); the Xero invoice drops such a line (qtyOf > 0), so
+ * the groups agree with the invoice on WHERE a line sits, and with Product mix on HOW MUCH.
  */
 export function lineSales(i) {
   return (Number(i?.price) || 0) * lineQty(i);
@@ -163,14 +177,24 @@ export function fallbackName(key) {
   return String(key ?? '').replace(/-/g, ' ').replace(/^./, (ch) => ch.toUpperCase());
 }
 
+// A local copy of accountingGroups.isGift (not exported there): a sold gift card on a ticket.
+const isGiftLine = (i) => !!(i?.isGiftCard || i?.giftCard === true || i?.is_gift_card);
+const GIFT_RESULT = Object.freeze({ key: GIFT_GROUP, catId: null, resolved: true });
+
 /**
  * The resolver every Sales mix surface uses: makeGroupResolver over the site's own rows, with
- * one change: key 'other' is ALWAYS named "Other sales", even when a category's text says
- * 'Other' (the dropdown's "Other sales" option writes that text).
+ * two changes. Key 'other' is ALWAYS named "Other sales", even when a category's text says
+ * 'Other' (the dropdown's "Other sales" option writes that text). A sold gift card is the
+ * "Gift cards" group before any category or Xero rule is asked, as the invoice carves it out
+ * first (see GIFT_GROUP).
  */
 export function makeMixResolver(mapping, rows) {
   const base = makeGroupResolver(mapping && typeof mapping === 'object' ? mapping : {}, toResolverCategories(rows));
-  return { ...base, groupName: (key) => (key === OTHER_GROUP ? OTHER_NAME : base.groupName(key)) };
+  return {
+    ...base,
+    itemGroup: (line) => (isGiftLine(line) ? GIFT_RESULT : base.itemGroup(line)),
+    groupName: (key) => (key === OTHER_GROUP ? OTHER_NAME : key === GIFT_GROUP ? GIFT_NAME : base.groupName(key)),
+  };
 }
 
 /** A group's name across several sites: the first resolver that names it with more than the fallback words, else those words. */
@@ -250,20 +274,48 @@ export function mixFromChecks(checks, resolver, catKeyOf = null) {
 // ── shares ────────────────────────────────────────────────────────────────────
 
 /**
- * Whole percents of the sum that add to exactly 100 (largest remainder: floor each exact share,
- * then hand the missing points one each to the largest fractions, the earlier index winning a
- * tie). All zeros when the sum is 0. A negative value counts as 0.
+ * Whole numbers that add to exactly `total`, each in proportion to its value (largest remainder:
+ * floor each exact part, then hand the missing points one each to the largest fractions, the
+ * earlier index winning a tie). All zeros when the values sum to 0 or total is 0. A negative
+ * value counts as 0. wholeShares is this with a total of 100; a group's categories take its
+ * whole share as their total, so they add up to the group (8 Oct 2026, review).
  */
-export function wholeShares(values) {
+export function splitWhole(values, total) {
   const vals = (Array.isArray(values) ? values : []).map((v) => Math.max(0, Number(v) || 0));
   const sum = vals.reduce((s, v) => s + v, 0);
-  if (sum <= 0) return vals.map(() => 0);
-  const exact = vals.map((v) => (v / sum) * 100);
+  const whole = Math.max(0, Math.round(Number(total) || 0));
+  if (sum <= 0 || whole <= 0) return vals.map(() => 0);
+  const exact = vals.map((v) => (v / sum) * whole);
   const out = exact.map((x) => Math.floor(x));
-  let left = 100 - out.reduce((s, v) => s + v, 0);
+  let left = whole - out.reduce((s, v) => s + v, 0);
   const order = exact.map((x, i) => ({ i, frac: x - out[i] })).sort((a, b) => (b.frac - a.frac) || (a.i - b.i));
   for (let k = 0; k < order.length && left > 0; k++, left--) out[order[k].i] += 1;
   return out;
+}
+
+/** Whole percents of the sum that add to exactly 100 (see splitWhole). */
+export function wholeShares(values) {
+  return splitWhole(values, 100);
+}
+
+/**
+ * 8 Oct 2026 (review): the share of item sales with no group, by the SAME largest remainder pass
+ * as the group shares, so the callout's figure and the Other sales tile never differ by a point
+ * at the setup threshold. Unresolved money is always inside the 'other' group (the resolver's
+ * fallback), so the pass runs over the groups with 'other' split into its chosen and its
+ * unresolved parts; the unresolved part's whole percent is the answer. When every penny of
+ * 'other' is unresolved this is exactly that group's share.
+ */
+function unresolvedShare(groups, unresolved) {
+  if (!(unresolved > 0)) return 0;
+  const vals = [];
+  let at = -1;
+  for (const g of groups) {
+    if (g.key === OTHER_GROUP) { vals.push(Math.max(0, (g.money || 0) - unresolved)); at = vals.length; vals.push(unresolved); }
+    else vals.push(g.money || 0);
+  }
+  if (at < 0) { at = vals.length; vals.push(unresolved); }
+  return wholeShares(vals)[at];
 }
 
 /** '+3 pts', '-2 pts', '0 pts'; '' when there is no comparison. */
@@ -344,11 +396,13 @@ export function mixView(mix, cmpMix = null, resolver, { topCats = 3, nameOf = nu
   orderGroups(groups);
   const total = m.total;
   const cmpTotal = hasCmp ? cmpMix.total : null;
+  // Before finishGroups rounds the money: the same raw figures the group shares are cut from.
+  const unresolved_share = total > 0 ? unresolvedShare(groups, m.unresolved) : 0;
   return {
     basis: MIX_BASIS,
     total: r2(total), cmp_total: hasCmp ? r2(cmpTotal) : null,
     qty: m.qty, lines: m.lines, checks: m.checks, items: allItems.size,
-    unresolved: r2(m.unresolved), unresolved_share: total > 0 ? Math.round((m.unresolved / total) * 100) : 0,
+    unresolved: r2(m.unresolved), unresolved_share,
     groups: finishGroups(groups, { cmpTotal, hasCmp }),
   };
 }
@@ -378,11 +432,12 @@ export function mixRollup(blocks, { nameOf = null } = {}) {
   orderGroups(groups);
   const hasCmp = sum.cmp_total != null;
   const cmpTotal = sum.cmp_total;
+  const unresolved_share = sum.total > 0 ? unresolvedShare(groups, sum.unresolved) : 0;
   return {
     basis: MIX_BASIS,
     total: r2(sum.total), cmp_total: hasCmp ? r2(sum.cmp_total) : null,
     qty: sum.qty, lines: sum.lines, checks: sum.checks, items: sum.items,
-    unresolved: r2(sum.unresolved), unresolved_share: sum.total > 0 ? Math.round((sum.unresolved / sum.total) * 100) : 0,
+    unresolved: r2(sum.unresolved), unresolved_share,
     groups: finishGroups(groups, { cmpTotal, hasCmp }),
   };
 }
@@ -391,26 +446,33 @@ export function mixRollup(blocks, { nameOf = null } = {}) {
  * The owner card's thin bar: the top named groups by money plus one folded segment. The fold
  * takes the single group's own name and tone when it holds exactly one group with sales, else
  * it is "Other" in grey. Nothing named at all gives one "Other sales" segment.
+ *
+ * 8 Oct 2026 (review): a segment's share and points are the block's OWN whole shares added up,
+ * never a second rounding over the segments alone. A group that sold in the comparison and
+ * nothing now is not drawn, but its comparison money stays in the block's denominator, so the
+ * points on the card are the very points the Sales mix detail card and the Back Office tile show
+ * for that group (D2: every surface agrees). The drawn shares still add to 100: a group that is
+ * not drawn has no money, so its share is 0.
  */
 export function barSegments(block, max = 3) {
   if (!block || !(block.total > 0)) return [];
   const groups = Array.isArray(block.groups) ? block.groups : [];
   const named = groups.filter((g) => g.key !== OTHER_GROUP);
-  if (!named.length) return [{ key: OTHER_GROUP, name: OTHER_NAME, share: 100, pts: null, tone: GROUP_TONES.other }];
-  const head = named.slice(0, Math.max(1, max - 1));
-  const rest = [...named.slice(Math.max(1, max - 1)), ...groups.filter((g) => g.key === OTHER_GROUP)].filter((g) => g.money > 0);
-  const segs = head.filter((g) => g.money > 0).map((g) => ({ key: g.key, name: g.name, tone: g.tone, money: g.money, cmp: g.cmp_money }));
-  if (rest.length === 1) {
-    const g = rest[0];
-    segs.push({ key: g.key, name: g.name, tone: g.tone, money: g.money, cmp: g.cmp_money });
-  } else if (rest.length > 1) {
-    segs.push({ key: 'rest', name: 'Other', tone: GROUP_TONES.other, money: rest.reduce((s, g) => s + g.money, 0), cmp: rest.reduce((s, g) => s + g.cmp_money, 0) });
-  }
-  if (!segs.length) return [{ key: OTHER_GROUP, name: OTHER_NAME, share: 100, pts: null, tone: GROUP_TONES.other }];
-  const shares = wholeShares(segs.map((s) => s.money));
+  const single = [{ key: OTHER_GROUP, name: OTHER_NAME, share: 100, pts: null, tone: GROUP_TONES.other }];
+  if (!named.length) return single;
+  const headN = Math.max(1, max - 1);
+  const head = named.slice(0, headN).filter((g) => g.money > 0);
+  const rest = [...named.slice(headN), ...groups.filter((g) => g.key === OTHER_GROUP)].filter((g) => g.money > 0);
   const hasPts = block.cmp_total > 0;
-  const cmpShares = hasPts ? wholeShares(segs.map((s) => s.cmp)) : null;
-  return segs.map((s, i) => ({ key: s.key, name: s.name, share: shares[i], pts: hasPts ? shares[i] - cmpShares[i] : null, tone: s.tone }));
+  const seg = (list, key, name, tone) => {
+    const share = list.reduce((s, g) => s + (g.share || 0), 0);
+    const was = list.reduce((s, g) => s + (g.cmp_share || 0), 0);
+    return { key, name, share, pts: hasPts ? share - was : null, tone };
+  };
+  const segs = head.map((g) => seg([g], g.key, g.name, g.tone));
+  if (rest.length === 1) segs.push(seg(rest, rest[0].key, rest[0].name, rest[0].tone));
+  else if (rest.length > 1) segs.push(seg(rest, 'rest', 'Other', GROUP_TONES.other));
+  return segs.length ? segs : single;
 }
 
 /** "Food 62%  Drinks 31%  Other 7%" (two spaces between). */
@@ -585,20 +647,26 @@ export function daypartSplit(checks, resolver, clock, shifts) {
 // ── reconcile (Back Office only) ──────────────────────────────────────────────
 
 /**
- * How the groups tie to the stored check subtotals (the Z report's Gross sales): their sum, how
- * many live checks have a stored subtotal that is not the sum of their live lines, and the
- * difference from the mix total.
+ * How the groups tie to the Z report's Gross sales. 8 Oct 2026 (review): the Z report's Gross
+ * sales is the stored subtotal of EVERY check in the list, voided ones too (salesStats.js
+ * computeSalesStats adds c.subtotal for each check and takes voids off later), while the mix
+ * skips voided checks. So: gross = every check's subtotal (the Z report's figure), voided and
+ * voidedSubtotal = the voided checks and what they held, subtotal = the live checks' subtotals
+ * (gross less voidedSubtotal), off = live checks whose stored subtotal is not the sum of their
+ * live lines, diff = subtotal less the mix total.
  */
 export function reconcile(checks, mixTotal) {
-  let subtotal = 0, off = 0;
+  let gross = 0, subtotal = 0, voidedSubtotal = 0, voided = 0, off = 0;
   for (const c of Array.isArray(checks) ? checks : []) {
-    if (!isLiveCheck(c)) continue;
+    if (!c) continue;
     const sub = Number(c.subtotal) || 0;
+    gross += sub;
+    if (!isLiveCheck(c)) { voided += 1; voidedSubtotal += sub; continue; }
     subtotal += sub;
     const lines = (Array.isArray(c.items) ? c.items : []).reduce((s, i) => s + (isLiveLine(i) ? lineSales(i) : 0), 0);
     if (r2(sub) !== r2(lines)) off += 1;
   }
-  return { subtotal: r2(subtotal), off, diff: r2(subtotal - (Number(mixTotal) || 0)) };
+  return { gross: r2(gross), voided, voidedSubtotal: r2(voidedSubtotal), subtotal: r2(subtotal), off, diff: r2(subtotal - (Number(mixTotal) || 0)) };
 }
 
 // ── the setup list ────────────────────────────────────────────────────────────

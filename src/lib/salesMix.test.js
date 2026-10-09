@@ -17,8 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  MIX_BASIS, OTHER_NAME, OTHER_TEXT, SUGGESTED_GROUPS, SETUP_OPTIONS, BASIS_NOTE, GROUP_TONES, TONE_CYCLE, TONE_SPARE,
-  DAY_BANDS, BANDS_NOTE, OUTSIDE_ID, OUTSIDE_NAME, NO_CAT_LABEL, UNKNOWN_CAT_LABEL, r2,
+  MIX_BASIS, OTHER_NAME, OTHER_TEXT, SUGGESTED_GROUPS, SETUP_OPTIONS, BASIS_NOTE, NEGATIVE_NOTE, GIFT_GROUP, GIFT_NAME,
+  GROUP_TONES, TONE_CYCLE, TONE_SPARE,
+  DAY_BANDS, BANDS_NOTE, OUTSIDE_ID, OUTSIDE_NAME, NO_CAT_LABEL, UNKNOWN_CAT_LABEL, r2, splitWhole,
   isLiveCheck, isLiveLine, closedMsOf, lineQty, lineSales,
   toResolverCategories, categoriesOfSite, fallbackName, makeMixResolver, nameAcross, catFamilyKey,
   newMix, addLineToMix, addCheckToMix, mixFromChecks,
@@ -28,6 +29,7 @@ import {
 import { OTHER_GROUP, groupKeyOf, makeGroupResolver } from '../../supabase/functions/_shared/accountingGroups.js';
 import { CATEGORIES, mapping as xeroMapping, generatedCheck, rng } from './accounting/xeroInvoiceFixtures.js';
 import { sharedDepsOf } from '../../scripts/edgeFnDeps.mjs';
+import { computeSalesStats } from './salesStats.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 // One site's categories as the resolver wants them (ids with the site suffix, bare master ids).
@@ -187,9 +189,17 @@ test('mixFromChecks: voided checks and lines add nothing, refunds count in full,
   assert.equal(all.checks, 2, 'only live checks are counted');
   assert.equal(all.lines, 12);
   assert.equal(all.qty, 13);
-  assert.equal(r2(all.unresolved), 26, 'misc 4 + no category 2 + gift card 20; the chosen Other (sweet) is resolved');
+  assert.equal(r2(all.unresolved), 6, 'misc 4 + no category 2; the chosen Other (sweet) is resolved, and the gift card is its own group');
   const money = Object.fromEntries([...all.groups.values()].map((g) => [g.key, r2(g.money)]));
-  assert.deepEqual(money, { 'hot-drinks': 7.30, food: 22.20, drinks: 0, other: 27.20, retail: 7 });
+  assert.deepEqual(money, { 'hot-drinks': 7.30, food: 22.20, drinks: 0, other: 7.20, retail: 7, [GIFT_GROUP]: 20 });
+  // A sold gift card (review finding 7): resolved, in "Gift cards", never a reason to open the setup; still in the total (D3).
+  assert.equal(all.groups.get(GIFT_GROUP).unresolved, 0);
+  assert.deepEqual([...all.groups.get(GIFT_GROUP).cats.values()].map((c) => [c.id, c.label, c.money]), [[null, NO_CAT_LABEL, 20]]);
+  assert.deepEqual(XR().itemGroup(L.gift), { key: GIFT_GROUP, catId: null, resolved: true });
+  assert.deepEqual(XR().itemGroup({ ...L.gift, cat: 'c-misc_aaaa1111' }), { key: GIFT_GROUP, catId: null, resolved: true }, 'a gift card in a category is still a gift card, as the invoice carves it out first');
+  assert.deepEqual(XR().itemGroup({ ...L.gift, isGiftCard: false, is_gift_card: true }).key, GIFT_GROUP);
+  assert.equal(XR().groupName(GIFT_GROUP), GIFT_NAME);
+  assert.equal(nameAcross([XR()], GIFT_GROUP), GIFT_NAME);
   assert.equal(all.groups.get('food').items.size, 3, 'm-cake, the foreign copy, m-pizza');
   assert.equal(all.groups.get('hot-drinks').lines, 2);
   assert.deepEqual([...all.groups.get('food').cats.values()].map((c) => [c.id, c.label, r2(c.money)]).sort(), [['c-cakes_aaaa1111', 'Cakes', 10.20], ['c-food_aaaa1111', 'Food', 12]]);
@@ -244,6 +254,30 @@ test('wholeShares adds to exactly 100 by largest remainder', () => {
   assert.equal(ptsText(undefined), '');
 });
 
+// 8 Oct 2026 (review finding 4): a group's whole share split among its categories by the same
+// largest remainder, so the categories add up to the group and one category alone shows the
+// group's own share (not 7.30 of 44.50 rounded on its own to 16 under a group that reads 17).
+test('splitWhole: whole numbers in proportion that add to the total given; wholeShares is the 100 case', () => {
+  assert.deepEqual(splitWhole([7.3], 17), [17]);
+  assert.deepEqual(splitWhole([50, 12], 62), [50, 12]);
+  assert.deepEqual(splitWhole([21, 10], 31), [21, 10]);
+  assert.deepEqual(splitWhole([1, 1, 1], 10), [4, 3, 3]);
+  assert.deepEqual(splitWhole([5, 5], 0), [0, 0]);
+  assert.deepEqual(splitWhole([0, 0], 40), [0, 0]);
+  assert.deepEqual(splitWhole([-3, 9], 50), [0, 50], 'a negative value counts as 0');
+  assert.deepEqual(splitWhole([], 12), []);
+  assert.deepEqual(splitWhole(null, 12), []);
+  const r = rng(11);
+  for (let n = 0; n < 200; n++) {
+    const vals = Array.from({ length: 1 + Math.floor(r() * 6) }, () => Math.round(r() * 5000) / 100);
+    const total = Math.floor(r() * 100);
+    const out = splitWhole(vals, total);
+    assert.equal(sum(out), sum(vals) > 0 ? total : 0, `${vals} to ${total}`);
+    assert.ok(out.every((x) => Number.isInteger(x) && x >= 0));
+  }
+  assert.deepEqual(wholeShares([62.4, 30.6, 7]), splitWhole([62.4, 30.6, 7], 100));
+});
+
 // ── 7 mixView ─────────────────────────────────────────────────────────────────
 
 test('mixView: money desc with Other sales last even when biggest, whole shares, tones by key', () => {
@@ -251,15 +285,15 @@ test('mixView: money desc with Other sales last even when biggest, whole shares,
   assert.equal(v.basis, 'item_sales');
   assert.equal(v.total, 63.70);
   assert.equal(v.cmp_total, null);
-  assert.deepEqual(v.groups.map((g) => g.key), ['food', 'hot-drinks', 'retail', 'drinks', 'other']);
-  assert.deepEqual(v.groups.map((g) => g.name), ['Food', 'Hot drinks', 'Retail', 'Drinks', 'Other sales']);
-  assert.deepEqual(v.groups.map((g) => g.share), [35, 11, 11, 0, 43]);
+  assert.deepEqual(v.groups.map((g) => g.key), ['food', GIFT_GROUP, 'hot-drinks', 'retail', 'drinks', 'other']);
+  assert.deepEqual(v.groups.map((g) => g.name), ['Food', 'Gift cards', 'Hot drinks', 'Retail', 'Drinks', 'Other sales']);
+  assert.deepEqual(v.groups.map((g) => g.share), [35, 31, 12, 11, 0, 11]);
   assert.equal(sum(v.groups.map((g) => g.share)), 100);
-  assert.deepEqual(v.groups.map((g) => g.pts), [null, null, null, null, null], 'no comparison, no points');
-  assert.deepEqual(v.groups.map((g) => g.cmp_share), [null, null, null, null, null]);
-  assert.deepEqual(v.groups.map((g) => g.tone), ['acc', 'red', 'orn', 'blu', 't3'], 'fixed tones by key; hot-drinks takes the first cycle tone no fixed key holds');
-  assert.equal(v.unresolved, 26);
-  assert.equal(v.unresolved_share, 41);
+  assert.deepEqual(v.groups.map((g) => g.pts), [null, null, null, null, null, null], 'no comparison, no points');
+  assert.deepEqual(v.groups.map((g) => g.cmp_share), [null, null, null, null, null, null]);
+  assert.deepEqual(v.groups.map((g) => g.tone), ['acc', 't4', 'red', 'orn', 'blu', 't3'], 'fixed tones by key (gift cards the spare grey); hot-drinks takes the first cycle tone no fixed key holds');
+  assert.equal(v.unresolved, 6);
+  assert.equal(v.unresolved_share, 9, '6 of 63.70 by the same largest remainder pass as the group shares');
   assert.equal(v.items, 10);
   assert.equal(v.qty, 13);
   assert.equal(v.lines, 12);
@@ -271,12 +305,13 @@ test('mixView: money desc with Other sales last even when biggest, whole shares,
   assert.equal(food.avg_price, 4.44);
   assert.equal(food.unresolved, 0);
   assert.deepEqual(food.categories, [{ id: 'c-food_aaaa1111', label: 'Food', money: 12, qty: 1, share: 54 }, { id: 'c-cakes_aaaa1111', label: 'Cakes', money: 10.20, qty: 4, share: 46 }]);
-  const drinks = v.groups[3];
+  const drinks = v.groups[4];
   assert.equal(drinks.money, 0);
   assert.equal(drinks.avg_price, 0, 'water at 0 over one unit');
-  const other = v.groups[4];
-  assert.equal(other.unresolved, 26);
-  assert.equal(other.money, 27.20);
+  const other = v.groups[5];
+  assert.equal(other.unresolved, 6);
+  assert.equal(other.money, 7.20);
+  assert.equal(other.share, 11);
   // An empty mix is a sound, empty block.
   const empty = mixView(newMix(), null, XR());
   assert.deepEqual(empty, { basis: 'item_sales', total: 0, cmp_total: null, qty: 0, lines: 0, checks: 0, items: 0, unresolved: 0, unresolved_share: 0, groups: [] });
@@ -317,8 +352,37 @@ test('mixView comparison: shares against the comparison period, points, a group 
   assert.equal(mixView(mixFromChecks([chk([line(null, 1)])], r), null, r, { nameOf: () => 'nope' }).groups[0].name, OTHER_NAME);
 });
 
+// 8 Oct 2026 (review finding 3): unresolved_share comes from the SAME largest remainder pass as
+// the group shares. At 50.5% unresolved the callout, needsSetup, the Other sales tile, the strip
+// and the slip all say 50, never 51 against 50.
+test('mixView: unresolved_share is the Other sales share when every penny of Other sales has no group', () => {
+  const r = PLAIN();
+  const v = mixView(mixFromChecks([chk([line('c-food_aaaa1111', 49.5), line('c-misc_aaaa1111', 50.5)])], r), null, r);
+  assert.deepEqual(v.groups.map((g) => [g.key, g.share]), [['food', 50], ['other', 50]]);
+  assert.equal(v.unresolved_share, 50, 'not Math.round(50.5) = 51');
+  assert.equal(v.unresolved_share, v.groups.find((g) => g.key === OTHER_GROUP).share);
+  assert.equal(needsSetup(v), false, 'exactly half is not "most"');
+  // A chosen 'Other' (Sweets) shares the Other sales group with unresolved lines: the unresolved
+  // part is its own slice of the pass, below the group's share.
+  const mixed = mixView(mixFromChecks([chk([line('c-food_aaaa1111', 49.5), line('c-misc_aaaa1111', 40), line('c-sweets_aaaa1111', 10.5)])], r), null, r);
+  assert.deepEqual(mixed.groups.map((g) => [g.key, g.share]), [['food', 50], ['other', 50]]);
+  assert.equal(mixed.unresolved_share, 40);
+  // The pass never changes an answer that was already whole, and a rollup takes the same rule.
+  const whole = mixView(mixFromChecks([chk([line('c-food_aaaa1111', 60), line('c-misc_aaaa1111', 40)])], r), null, r);
+  assert.equal(whole.unresolved_share, 40);
+  assert.equal(mixRollup([whole, v]).unresolved_share, mixRollup([whole, v]).groups.find((g) => g.key === OTHER_GROUP).share);
+  // 200 random mixes: unresolved_share is always within 0..100 and never above the Other sales share.
+  const rr = rng(5);
+  for (let n = 0; n < 200; n++) {
+    const items = [line('c-food_aaaa1111', Math.round(rr() * 10000) / 100), line('c-misc_aaaa1111', Math.round(rr() * 10000) / 100), line('c-sweets_aaaa1111', Math.round(rr() * 3000) / 100)];
+    const x = mixView(mixFromChecks([chk(items)], r), null, r);
+    const other = x.groups.find((g) => g.key === OTHER_GROUP);
+    assert.ok(x.unresolved_share >= 0 && x.unresolved_share <= (other ? other.share : 0), `${items.map((i) => i.price)}`);
+  }
+});
+
 test('tonesFor: fixed by key, custom keys take the first free cycle tone, then the spare', () => {
-  assert.deepEqual(GROUP_TONES, { food: 'acc', drinks: 'blu', alcohol: 'red', retail: 'orn', other: 't3' });
+  assert.deepEqual(GROUP_TONES, { food: 'acc', drinks: 'blu', alcohol: 'red', retail: 'orn', other: 't3', 'gift-cards': 't4' });
   assert.deepEqual(tonesFor(['food', 'drinks', 'other']), { food: 'acc', drinks: 'blu', other: 't3' });
   assert.deepEqual(tonesFor(['food', 'hot-drinks', 'other']), { food: 'acc', 'hot-drinks': 'blu', other: 't3' });
   assert.deepEqual(tonesFor(['a', 'b', 'c', 'd', 'e']), { a: 'acc', b: 'blu', c: 'orn', d: 'red', e: TONE_SPARE });
@@ -437,7 +501,7 @@ test('mixRollup adds venues of one currency per key, keeps the first proper name
   assert.equal(r.lines, 5);
   assert.equal(r.checks, 2);
   assert.equal(r.unresolved, 10);
-  assert.equal(r.unresolved_share, 7);
+  assert.equal(r.unresolved_share, 6, 'the Other sales share below, not 10 of 150 rounded on its own (7)');
   assert.deepEqual(r.groups.map((g) => [g.key, g.name, g.money, g.cmp_money]), [['food', 'Food', 90, 70], ['hot-drinks', 'Hot beverages', 40, 50], ['drinks', 'Drinks', 10, 20], ['other', OTHER_NAME, 10, 0]]);
   assert.equal(sum(r.groups.map((g) => g.share)), 100);
   assert.deepEqual(r.groups.map((g) => g.share), [60, 27, 7, 6]);
@@ -503,6 +567,41 @@ test('barSegments folds everything past the top two into one segment; mixWords a
   assert.equal(mixWords([]), '');
   // max 2: one head group plus the fold.
   assert.deepEqual(barSegments(five, 2).map((s) => [s.name, s.share]), [['Food', 50], ['Other', 50]]);
+});
+
+// 8 Oct 2026 (review finding 1): the card's points are the block's own points. A group that sold
+// in the comparison and nothing now is not drawn, but its comparison money stays in the
+// denominator, so the card never flips the sign against the Sales mix detail card and the Back
+// Office tile for the same venue and period (D2).
+test('barSegments: points against the whole comparison, never against the drawn segments alone', () => {
+  const r = makeMixResolver({}, [{ id: 'f', label: 'Food', accounting_group: 'Food' }, { id: 'd', label: 'Drinks', accounting_group: 'Drinks' }, { id: 'r', label: 'Shop', accounting_group: 'Retail' }]);
+  // Then: Food 50, Drinks 30, Misc 20 (no group). Now: Food 60, Drinks 40, nothing in Misc.
+  const blk = mixView(mixFromChecks([chk([line('f', 60), line('d', 40)])], r), mixFromChecks([chk([line('f', 50), line('d', 30), line(null, 20)])], r), r);
+  assert.deepEqual(blk.groups.map((g) => [g.key, g.share, g.cmp_share, g.pts]), [['food', 60, 50, 10], ['drinks', 40, 30, 10], ['other', 0, 20, -20]]);
+  const segs = barSegments(blk, 3);
+  assert.deepEqual(segs.map((s) => [s.key, s.share, s.pts]), [['food', 60, 10], ['drinks', 40, 10]], 'not -3 and +3');
+  assert.equal(sum(segs.map((s) => s.share)), 100);
+  for (const s of segs) assert.equal(s.pts, blk.groups.find((g) => g.key === s.key).pts, `${s.key}: the card and the detail card agree`);
+  // A NAMED group dropping to nothing (Retail sold last period only) is the same story.
+  const blk2 = mixView(mixFromChecks([chk([line('f', 60), line('d', 40)])], r), mixFromChecks([chk([line('f', 50), line('d', 30), line('r', 20)])], r), r);
+  assert.deepEqual(barSegments(blk2, 3).map((s) => [s.key, s.share, s.pts]), [['food', 60, 10], ['drinks', 40, 10]]);
+  // The fold's points are the folded groups' points added up (their shares and comparison shares added).
+  const r5 = makeMixResolver({}, [
+    { id: 'f', label: 'Food', accounting_group: 'Food' }, { id: 'd', label: 'Drinks', accounting_group: 'Drinks' },
+    { id: 'a', label: 'Bar', accounting_group: 'Alcohol' }, { id: 'r', label: 'Shop', accounting_group: 'Retail' },
+  ]);
+  const five = mixView(
+    mixFromChecks([chk([line('f', 50), line('d', 30), line('a', 10), line('r', 5), line(null, 5)])], r5),
+    mixFromChecks([chk([line('f', 45), line('d', 30), line('a', 15), line('r', 5), line(null, 5)])], r5), r5,
+  );
+  const fold = barSegments(five, 3)[2];
+  const folded = five.groups.filter((g) => ['alcohol', 'retail', 'other'].includes(g.key));
+  assert.deepEqual([fold.key, fold.share, fold.pts], ['rest', sum(folded.map((g) => g.share)), sum(folded.map((g) => g.pts))]);
+  // The drawn shares are the block's own shares: no second rounding over the segments.
+  const head = barSegments(five, 3).slice(0, 2);
+  assert.deepEqual(head.map((s) => s.share), five.groups.slice(0, 2).map((g) => g.share));
+  // No comparison, or an empty one: no points at all, as before.
+  assert.ok(barSegments(mixView(mixFromChecks([chk([line('f', 60), line('d', 40)])], r), newMix(), r)).every((s) => s.pts === null));
 });
 
 // ── 11 the nudges ─────────────────────────────────────────────────────────────
@@ -663,13 +762,33 @@ test('reconcile: the stored subtotals against the lines', () => {
   const r = PLAIN();
   const even = [chk([line('c-food_aaaa1111', 6.65)], { subtotal: 6.65 }), chk([line('c-food_aaaa1111', 2), line('c-food_aaaa1111', 3)], { subtotal: 5 })];
   const mix = mixView(mixFromChecks(even, r), null, r);
-  assert.deepEqual(reconcile(even, mix.total), { subtotal: 11.65, off: 0, diff: 0 });
+  assert.deepEqual(reconcile(even, mix.total), { gross: 11.65, voided: 0, voidedSubtotal: 0, subtotal: 11.65, off: 0, diff: 0 });
   const off = [chk([line('c-food_aaaa1111', 6.65)], { subtotal: 14.65 })];
-  assert.deepEqual(reconcile(off, mixView(mixFromChecks(off, r), null, r).total), { subtotal: 14.65, off: 1, diff: 8 });
-  // Voided checks and lines play no part; a missing subtotal reads 0.
+  assert.deepEqual(reconcile(off, mixView(mixFromChecks(off, r), null, r).total), { gross: 14.65, voided: 0, voidedSubtotal: 0, subtotal: 14.65, off: 1, diff: 8 });
+  // Voided checks are counted and named, never in the live lines; a voided line plays no part; a missing subtotal reads 0.
   const mixed = [...off, { status: 'void', subtotal: 50, items: [line('c-food_aaaa1111', 50)] }, chk([line('c-food_aaaa1111', 1, { voided: true })], { subtotal: 0 })];
-  assert.deepEqual(reconcile(mixed, 6.65), { subtotal: 14.65, off: 1, diff: 8 });
-  assert.deepEqual(reconcile([], 0), { subtotal: 0, off: 0, diff: 0 });
+  assert.deepEqual(reconcile(mixed, 6.65), { gross: 64.65, voided: 1, voidedSubtotal: 50, subtotal: 14.65, off: 1, diff: 8 });
+  assert.deepEqual(reconcile([], 0), { gross: 0, voided: 0, voidedSubtotal: 0, subtotal: 0, off: 0, diff: 0 });
+  assert.deepEqual(reconcile([null, undefined], 0), { gross: 0, voided: 0, voidedSubtotal: 0, subtotal: 0, off: 0, diff: 0 });
+});
+
+// 8 Oct 2026 (review finding 2): the Z report's Gross sales is computeSalesStats(checks).gross, the
+// stored subtotal of EVERY check, voided ones too. reconcile().gross must be that very figure, so
+// the report can name the voided checks as the known difference instead of claiming an equality
+// the Z report contradicts.
+test('reconcile: gross is the Z report Gross sales (voided checks in), subtotal is the live checks', () => {
+  const r = PLAIN();
+  const paid = chk([line('c-food_aaaa1111', 44.5)], { subtotal: 44.5, total: 53.4 });
+  const voided = { id: 'v', status: 'voided', closedAt: NOON, subtotal: 100, total: 120, items: [line('c-food_aaaa1111', 100)] };
+  const checks = [paid, voided];
+  const stats = computeSalesStats(checks);
+  const view = mixView(mixFromChecks(checks, r), null, r);
+  const rec = reconcile(checks, view.total);
+  assert.equal(stats.gross, 144.5, 'the Z report prints Gross sales 144.50');
+  assert.equal(view.total, 44.5, 'the groups hold the live check only');
+  assert.equal(rec.gross, stats.gross);
+  assert.deepEqual([rec.voided, rec.voidedSubtotal, rec.subtotal, rec.off, rec.diff], [1, 100, 44.5, 0, 0]);
+  assert.equal(r2(rec.gross - rec.voidedSubtotal), rec.subtotal, 'gross less the voided subtotals is the live subtotal');
 });
 
 // ── 17 the setup list ─────────────────────────────────────────────────────────
@@ -734,7 +853,7 @@ test('words: no long dash and no shorthand for not applicable anywhere in salesM
   const src = read('supabase/functions/_shared/salesMix.js');
   assert.doesNotMatch(src, LONG_DASHES, 'no long dashes (Peter reads with commas and full stops)');
   assert.doesNotMatch(src, NOT_APPLICABLE, 'never the shorthand for not applicable');
-  for (const w of [OTHER_NAME, BASIS_NOTE, BANDS_NOTE, OUTSIDE_NAME, NO_CAT_LABEL, UNKNOWN_CAT_LABEL, ...DAY_BANDS.map((b) => b.sub), ...SETUP_OPTIONS.map((o) => o.label)]) {
+  for (const w of [OTHER_NAME, BASIS_NOTE, NEGATIVE_NOTE, GIFT_NAME, BANDS_NOTE, OUTSIDE_NAME, NO_CAT_LABEL, UNKNOWN_CAT_LABEL, ...DAY_BANDS.map((b) => b.sub), ...SETUP_OPTIONS.map((o) => o.label)]) {
     assert.doesNotMatch(w, LONG_DASHES, w);
   }
   // And none of the Sales mix library files written for this build.
