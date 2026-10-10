@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.46',
+    date: '10 Oct 2026',
+    items: [
+      "ServOS admin, go live step 5, Payouts: the screen now says how fast the venue is paid out, fast (same day) or regular (1 to 2 working days), with a Faster payouts switch. Fast uses Faster Payments and costs more per transfer; ask FranPOS for the fee. Flipping the switch changes the payout that is already there; it never makes a second one.",
+      "Payouts on a UK venue (GBP) are set up fast from now on, as Adyen advises for the UK. Other currencies stay regular until the switch is flipped. Pay out daily can be told a speed as well, and the audit log keeps the speed asked for and what Adyen holds.",
+    ],
+  },
+  {
     v: '5.11.43',
     date: '8 Oct 2026',
     items: [

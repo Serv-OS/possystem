@@ -721,7 +721,7 @@ const LIVE_CAPS = {
 };
 
 // The daily push to the venue's bank, as sweepSummary answers it.
-const SWEEP = { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: 'daily', status: 'active', transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1', currency: 'GBP' };
+const SWEEP = { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: 'daily', status: 'active', transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1', currency: 'GBP', priorities: ['regular', 'fast'], speed: 'regular' };
 
 // The venue row of a venue that is live and fully linked (its own
 // environment, so step 5 computes; a null row means the flow looks at the
@@ -1425,6 +1425,7 @@ import {
   commissionFromRates, splitLogicFor, splitRule, buildCommissionProfile, profileCommission, commissionLine,
   tieredCommissionRules, buildTieredProfile, flatRateCard, rateCardPriced, pickPayoutInstrument,
   sweepRows, sweepSummary, findPushSweep, sweepPayload, payoutCapabilityState,
+  sweepSpeedOf, sweepPriorities, defaultSweepSpeed, resolveSweepSpeed, SWEEP_SPEEDS, SWEEP_SPEED_LABELS,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
 } from './adyenLink.js';
 
@@ -1445,7 +1446,7 @@ const SWEEPS = { sweeps: [
   { id: 'SWPC_PULL', type: 'pull', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
   { id: 'SWPC_OFF', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'inactive', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
   { id: 'SWPC_OTHER_BANK', type: 'push', category: 'bank', schedule: { type: 'weekly' }, status: 'active', counterparty: { transferInstrumentId: 'SI_SOMEONE_ELSE' }, currency: 'GBP' },
-  { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' }, currency: 'GBP' },
+  { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' }, currency: 'GBP', priorities: ['regular', 'fast'] },
 ] };
 // The live row, 9 Sep 2026 22:20 UTC: the store saved, nothing on the money side.
 const PROVO_ROW = { store_id: PROVO.id, merchant_account: 'FranPOS_QSR_UK', account_holder_id: null, balance_account_id: null, legal_entity_id: null, split_profile_id: null, transfer_instrument_id: null, payouts_ok: false, markup_percent: 0.8, markup_fixed_pence: 5 };
@@ -1942,13 +1943,81 @@ test('sweeps: rows, summary, the push to THIS bank, and the payload that pays it
   assert.equal(findPushSweep(SWEEPS).id, 'SWPC_OTHER_BANK');
   assert.equal(findPushSweep({ sweeps: [] }, 'SI1'), null);
   assert.equal(findPushSweep(null), null);
+  // a GBP payout goes fast by default (10 Oct 2026, Adyen's UK guidance)
   assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), {
-    counterparty: { transferInstrumentId: 'SI1' }, currency: 'GBP', category: 'bank', priorities: ['regular', 'fast'],
+    counterparty: { transferInstrumentId: 'SI1' }, currency: 'GBP', category: 'bank', priorities: ['fast', 'regular'],
     schedule: { type: 'daily' }, status: 'active', type: 'push', description: 'ServOS daily payout, Provo',
   });
   assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', schedule: 'cron', cronExpression: '0 7 * * 1' }).schedule, { type: 'cron', cronExpression: '0 7 * * 1' });
   assert.equal(sweepPayload({ transferInstrumentId: 'SI1', schedule: 'hourly' }).schedule.type, 'daily');
   assert.equal(sweepPayload({ transferInstrumentId: 'SI1' }).description, 'ServOS daily payout');
+});
+
+// ── PAYOUT SPEED (10 Oct 2026) ───────────────────────────────────────────────
+// Adyen support told Peter to put the venue sweeps on priority fast (Faster
+// Payments, same day, a higher fee per transfer). The list's ORDER is the
+// setting; one speed word stands for it on the screen and in the actions.
+test('payout speed: the priorities list and the one speed word, both ways', () => {
+  assert.deepEqual(SWEEP_SPEEDS, ['fast', 'regular']);
+  assert.equal(SWEEP_SPEED_LABELS.fast, 'fast (same day)');
+  assert.equal(SWEEP_SPEED_LABELS.regular, 'regular (1 to 2 working days)');
+  // the word from the list: what comes FIRST decides
+  assert.equal(sweepSpeedOf(['fast', 'regular']), 'fast');
+  assert.equal(sweepSpeedOf(['Fast']), 'fast');
+  assert.equal(sweepSpeedOf(['instant', 'regular']), 'fast');
+  assert.equal(sweepSpeedOf(['regular', 'fast']), 'regular');
+  assert.equal(sweepSpeedOf(['wire']), 'regular');
+  assert.equal(sweepSpeedOf([]), 'regular');
+  assert.equal(sweepSpeedOf(undefined), 'regular');
+  assert.equal(sweepSpeedOf('fast'), 'regular');   // not a list
+  // the list from the word
+  assert.deepEqual(sweepPriorities('fast'), ['fast', 'regular']);
+  assert.deepEqual(sweepPriorities('FAST'), ['fast', 'regular']);
+  assert.deepEqual(sweepPriorities('regular'), ['regular', 'fast']);
+  assert.deepEqual(sweepPriorities(undefined), ['regular', 'fast']);
+  assert.deepEqual(sweepPriorities('quick'), ['regular', 'fast']);
+  // GBP goes fast by default (Adyen's UK guidance), the rest regular
+  assert.equal(defaultSweepSpeed('GBP'), 'fast');
+  assert.equal(defaultSweepSpeed('gbp'), 'fast');
+  assert.equal(defaultSweepSpeed('USD'), 'regular');
+  assert.equal(defaultSweepSpeed('EUR'), 'regular');
+  assert.equal(defaultSweepSpeed(null), 'regular');
+  assert.equal(resolveSweepSpeed('regular', 'GBP'), 'regular');
+  assert.equal(resolveSweepSpeed('FAST', 'USD'), 'fast');
+  assert.equal(resolveSweepSpeed('quick', 'USD'), 'regular');
+  assert.equal(resolveSweepSpeed(undefined, 'GBP'), 'fast');
+  assert.equal(resolveSweepSpeed('', 'GBP'), 'fast');
+});
+
+test('payout speed: the summary carries the list, lower case, and the word; a missing list is regular', () => {
+  const raw = SWEEPS.sweeps[3];
+  assert.deepEqual(sweepSummary(raw).priorities, ['regular', 'fast']);
+  assert.equal(sweepSummary(raw).speed, 'regular');
+  const fastFirst = sweepSummary({ ...raw, priorities: ['Fast', 'Regular'] });
+  assert.deepEqual(fastFirst.priorities, ['fast', 'regular']);
+  assert.equal(fastFirst.speed, 'fast');
+  const noList = sweepSummary({ ...raw, priorities: undefined });
+  assert.deepEqual(noList.priorities, []);
+  assert.equal(noList.speed, 'regular');
+  assert.deepEqual(sweepSummary({ ...raw, priorities: 'fast' }).priorities, []);
+  assert.deepEqual(sweepSummary({ ...raw, priorities: ['', null, 'fast'] }).priorities, ['fast']);
+  // findPushSweep hands the same shape to the screen (golive_state payouts.sweep)
+  assert.equal(findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1').speed, 'regular');
+  assert.deepEqual(findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1').priorities, ['regular', 'fast']);
+});
+
+test('payout speed: the payload takes the speed asked for, else the currency default', () => {
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP', speed: 'regular' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' }).priorities, ['fast', 'regular']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'EUR' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP' }).priorities, ['fast', 'regular']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP', speed: 'quick' }).priorities, ['fast', 'regular']);
+  // no currency is GBP, so fast
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1' }).priorities, ['fast', 'regular']);
+  // the speed never touches the rest of the payload
+  const fast = sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' });
+  assert.deepEqual({ ...fast, priorities: undefined }, { ...sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD' }), priorities: undefined });
 });
 
 test('payoutCapabilityState: one word for the payout capability', () => {
@@ -2562,6 +2631,23 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
   assert.deepEqual(ts.RATE_TIER_LABELS, RATE_TIER_LABELS);
   assert.deepEqual(ts.findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'), findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'));
   assert.deepEqual(ts.sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }));
+  // the payout speed (10 Oct 2026) reads the same on both sides of the wire
+  for (const p of [
+    { transferInstrumentId: 'SI1', currency: 'GBP' }, { transferInstrumentId: 'SI1', currency: 'USD' }, { transferInstrumentId: 'SI1' },
+    { transferInstrumentId: 'SI1', currency: 'GBP', speed: 'regular' }, { transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' }, { transferInstrumentId: 'SI1', currency: 'USD', speed: 'quick' },
+  ]) assert.deepEqual(ts.sweepPayload(p), sweepPayload(p));
+  for (const s of [SWEEPS.sweeps[3], { ...SWEEPS.sweeps[3], priorities: ['Fast', 'Regular'] }, { ...SWEEPS.sweeps[3], priorities: undefined }, { id: 'S', schedule: 'weekly' }]) {
+    assert.deepEqual(ts.sweepSummary(s), sweepSummary(s));
+  }
+  assert.deepEqual(ts.findPushSweep(SWEEPS, null), findPushSweep(SWEEPS, null));
+  assert.deepEqual(ts.SWEEP_SPEEDS, SWEEP_SPEEDS);
+  assert.deepEqual(ts.SWEEP_SPEED_LABELS, SWEEP_SPEED_LABELS);
+  for (const l of [['fast', 'regular'], ['regular', 'fast'], ['instant'], ['wire'], [], undefined, 'fast']) assert.equal(ts.sweepSpeedOf(l), sweepSpeedOf(l));
+  for (const w of ['fast', 'FAST', 'regular', 'quick', undefined]) assert.deepEqual(ts.sweepPriorities(w), sweepPriorities(w));
+  for (const c of ['GBP', 'gbp', 'USD', 'EUR', null]) {
+    assert.equal(ts.defaultSweepSpeed(c), defaultSweepSpeed(c));
+    for (const w of ['fast', 'regular', 'quick', undefined]) assert.equal(ts.resolveSweepSpeed(w, c), resolveSweepSpeed(w, c));
+  }
   assert.equal(ts.payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))), payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))));
   assert.equal(ts.HOLDER_NOT_SAVED_DETAIL, HOLDER_NOT_SAVED_DETAIL);
   assert.equal(ts.liableBalanceAccountSecretName('live', 'UK'), liableBalanceAccountSecretName('live', 'UK'));
