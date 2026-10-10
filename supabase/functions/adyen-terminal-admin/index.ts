@@ -111,7 +111,15 @@
 //                  venue's bank, once Adyen allows payouts and the bank is
 //                  there. One sweep, repointed rather than doubled. Writes
 //                  payouts_ok (the capability) and payout_sweep_id (the
-//                  sweep, PAID OUT)
+//                  sweep, PAID OUT). Takes an optional { speed: 'fast' |
+//                  'regular' } (10 Oct 2026); nothing given means the
+//                  currency's default, GBP fast
+//   set_payout_speed → ADMIN. { speed: 'fast' | 'regular' } how fast the
+//                  venue is paid out: fast is Faster Payments, same day, a
+//                  higher fee per transfer; regular is 1 to 2 working days.
+//                  Changes the payout that is there (PATCH priorities, same
+//                  bank, same schedule), never makes a second one. Needs the
+//                  payout to exist. Logged like setup_sweep
 //   request_payouts → ADMIN. step 5b: ask Adyen for the payout capability
 //                  on a holder that was never asked for it
 //   The three step 5 writes and request_payouts act on the venue's OWN
@@ -247,7 +255,7 @@ import {
   merchantRows, merchantSummary, accountHolderRows, matchAccountHolderByReference, accountHolderCandidates,
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
-  summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
+  summariseCapabilities, findPushSweep, sweepRows, pickPayoutInstrument, PAYOUT_CAPABILITY,
   buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
   rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint, debitTiersApart,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
@@ -1126,6 +1134,16 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
   out.storeNeeded = storeStillNeeded(out);
   if (out.storeNeeded) notes.push(out.storeNeeded);
   return out;
+}
+
+// body.speed for setup_sweep and set_payout_speed (10 Oct 2026): 'fast' or
+// 'regular', undefined when nothing was given, false for a word we do not
+// know (the action answers 400 rather than guess).
+function payoutSpeedFromBody(body: Dict): 'fast' | 'regular' | undefined | false {
+  const raw = body?.speed;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+  const s = String(raw).trim().toLowerCase();
+  return s === 'fast' || s === 'regular' ? s : false;
 }
 
 // Durable audit trail for the link actions, the ledger adyen-onboard and the
@@ -3716,6 +3734,10 @@ Deno.serve(async (req) => {
       if (!isServosAdmin) return adminOnly();
       const wrongEnv = envGuard();
       if (wrongEnv) return wrongEnv;
+      // 10 Oct 2026: how fast the venue is paid out, optional. Nothing given
+      // means the currency's default (GBP fast); an unknown word is refused.
+      const speedWanted = payoutSpeedFromBody(body);
+      if (speedWanted === false) return json({ error: 'speed must be fast or regular' }, 400);
       const balanceAccountId = String(maa?.balance_account_id ?? '').trim();
       const holderId = String(maa?.account_holder_id ?? '').trim();
       if (!balanceAccountId || !holderId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
@@ -3751,7 +3773,7 @@ Deno.serve(async (req) => {
       if (!pick) return json({ ok: false, error: 'The venue has not added an approved bank account yet. Send the bank details link first.' }, 200);
       const transferInstrumentId = pick.transferInstrumentId;
       const outcome = await ensurePushSweep(payoutApi, {
-        balanceAccountId, transferInstrumentId, currency: stepCurrency, schedule: 'daily',
+        balanceAccountId, transferInstrumentId, currency: stepCurrency, schedule: 'daily', speed: speedWanted,
         description: `ServOS daily payout, ${loc.name ?? 'venue'}`,
         // The key names the BANK: a create for a different bank inside Adyen's
         // replay window is a new request, never a replay of the old one.
@@ -3759,6 +3781,7 @@ Deno.serve(async (req) => {
       });
       logLink('setup_sweep', loc.id, {
         environment: env, region, balanceAccountId, transferInstrumentId, bankChosenBy: pick.source, stage: outcome.stage, httpStatus: outcome.status,
+        speedAsked: speedWanted ?? null, speed: outcome.sweep?.speed ?? null, updatedPriorities: outcome.updatedPriorities,
         sweep: outcome.sweep, created: outcome.created, existed: outcome.existed, updated: outcome.updated, retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
       });
       if (!outcome.ok || !outcome.sweep?.id) {
@@ -3772,8 +3795,61 @@ Deno.serve(async (req) => {
       console.log(`[adyen-terminal-admin] ${caller.id} setup_sweep for ${loc.id} (${region} ${env}): sweep ${outcome.sweep.id} ${outcome.created ? 'created' : outcome.retargeted ? 'repointed' : outcome.updated ? 'updated' : 'existed'} on ${balanceAccountId} to ${transferInstrumentId} (${pick.source})${outcome.deactivated.length ? `, ${outcome.deactivated.length} other switched off` : ''}`);
       return json({
         ok: true, sweep: outcome.sweep, created: outcome.created, existed: outcome.existed, updated: outcome.updated,
+        updatedPriorities: outcome.updatedPriorities, speed: outcome.sweep.speed,
         retargeted: outcome.retargeted, deactivated: outcome.deactivated, transferInstrumentId, bankChosenBy: pick.source,
         warnings, warning: warnings.join(' ') || null,
+      });
+    }
+
+    // ── set_payout_speed: how fast the venue is paid out (10 Oct 2026) ───────
+    // The payout that is there is changed through the shared ensurePushSweep
+    // (PATCH priorities on the same bank and the same schedule; never a
+    // second sweep). fast is Faster Payments, same day, a higher fee per
+    // transfer; regular is 1 to 2 working days. Needs the payout to exist:
+    // with none, the answer says to pay out daily first. Same gate and same
+    // audit trail as setup_sweep: ServOS admin, the venue's own environment,
+    // one logLink row, payout_sweep_id kept on the row.
+    if (action === 'set_payout_speed') {
+      if (!isServosAdmin) return adminOnly();
+      const wrongEnv = envGuard();
+      if (wrongEnv) return wrongEnv;
+      const speed = payoutSpeedFromBody(body);
+      if (!speed) return json({ error: 'speed must be fast or regular' }, 400);
+      const balanceAccountId = String(maa?.balance_account_id ?? '').trim();
+      if (!balanceAccountId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
+      const sweepsNow = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(balanceAccountId)}/sweeps`);
+      if (!sweepsNow.ok) return json({ ok: false, error: 'The payout schedule could not be read, so the speed was not changed.', detail: refusalText(cfg, sweepsNow, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      const existing = findPushSweep(sweepsNow.data, null);
+      if (!existing?.id || !existing.transferInstrumentId) {
+        return json({ ok: false, not_paid_out: true, error: 'The venue is not paid out yet. Pay out daily first, then choose the speed.' }, 200);
+      }
+      // The bank and the schedule the payout has stay as they are: only the
+      // priorities change. A cron schedule keeps its expression.
+      const existingRaw = sweepRows(sweepsNow.data).find((s) => String(s?.id ?? '') === existing.id) as Dict | undefined;
+      const transferInstrumentId = existing.transferInstrumentId;
+      const scheduleNow = existing.schedule ?? 'daily';
+      const outcome = await ensurePushSweep(payoutApi, {
+        balanceAccountId, transferInstrumentId, currency: stepCurrency, speed,
+        schedule: scheduleNow, cronExpression: String(existingRaw?.schedule?.cronExpression ?? '') || null,
+        description: `ServOS ${scheduleNow} payout, ${loc.name ?? 'venue'}`,
+        idempotencyKey: `sweep:${cfg.env}:${loc.id}:${transferInstrumentId}`,
+      });
+      logLink('set_payout_speed', loc.id, {
+        environment: env, region, balanceAccountId, transferInstrumentId, speedAsked: speed, prioritiesBefore: existing.priorities, speed: outcome.sweep?.speed ?? null,
+        stage: outcome.stage, httpStatus: outcome.status, sweep: outcome.sweep, updated: outcome.updated, updatedPriorities: outcome.updatedPriorities,
+        retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
+      });
+      if (!outcome.ok || !outcome.sweep?.id) {
+        return json({ ok: false, stage: outcome.stage, error: 'Adyen would not change the payout speed.', detail: adyenRefusalMessage(outcome.status, outcome.data) }, 200);
+      }
+      const warnings: string[] = [];
+      const sweepWarning = await rememberPayoutSweepOnVenue(loc.id, outcome.sweep.id);
+      if (sweepWarning) warnings.push(sweepWarning);
+      console.log(`[adyen-terminal-admin] ${caller.id} set_payout_speed ${speed} for ${loc.id} (${region} ${env}): sweep ${outcome.sweep.id} ${outcome.updatedPriorities ? 'changed' : 'already there'} on ${balanceAccountId} to ${transferInstrumentId}${outcome.deactivated.length ? `, ${outcome.deactivated.length} other switched off` : ''}`);
+      return json({
+        ok: true, sweep: outcome.sweep, speed: outcome.sweep.speed, changed: outcome.updatedPriorities,
+        updated: outcome.updated, updatedPriorities: outcome.updatedPriorities, retargeted: outcome.retargeted, deactivated: outcome.deactivated,
+        transferInstrumentId, warnings, warning: warnings.join(' ') || null,
       });
     }
 

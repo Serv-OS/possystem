@@ -164,7 +164,7 @@ import {
   walletLinesView, applePayAttemptView,
 } from '../../lib/payments/adyenAdminRows';
 import { registrationLines } from '../../lib/payments/adyenOrigins';
-import { isPlatformSettingsMissingWarning, rateCardProblems } from '../../lib/payments/adyenLink';
+import { isPlatformSettingsMissingWarning, rateCardProblems, SWEEP_SPEED_LABELS } from '../../lib/payments/adyenLink';
 import { cardToState, stateToCard, cardsEqual, serverKnowsDebit } from '../../lib/payments/rateCard';
 import RateCardRows from './RateCardRows';
 
@@ -397,6 +397,7 @@ function whatFailed(key) {
   if (key === 'rates') return 'The rates could not be saved';
   if (key === 'bank_link') return 'The bank details link could not be made';
   if (key === 'sweep') return 'The daily payout could not be switched on';
+  if (key === 'speed') return 'The payout speed could not be changed';
   if (key === 'request') return 'Adyen could not be asked for payouts';
   if (key === 'golive') return 'Live payments could not be turned on';
   if (key === 'origins') return 'The web addresses could not be added';
@@ -1118,6 +1119,22 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
         ids: [{ label: 'Daily payout', value: str(r.sweep?.id) }, { label: 'Bank account', value: str(r.transferInstrumentId) }],
       },
       problem: str(r.warning) ? { text: 'It is on. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
+      changed: true,
+    };
+  });
+
+  // STEP 5b: how fast the venue is paid out (10 Oct 2026). The payout that is
+  // there is changed on the server (never a second one); the flow then reads
+  // the sweep again, so the line and the switch show what Adyen holds.
+  const setPayoutSpeed = (speed) => act('speed', async () => {
+    const r = await callAdmin('set_payout_speed', { environment: target, speed });
+    if (r?.ok === false) {
+      setProblem({ text: str(r.error) || 'The payout speed could not be changed.', detail: str(r.detail) || null });
+      return { stop: true };
+    }
+    return {
+      notice: { text: speed === 'fast' ? 'Payouts now go out the same day.' : 'Payouts now take 1 to 2 working days.' },
+      problem: str(r.warning) ? { text: 'The speed is set. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
       changed: true,
     };
   });
@@ -1906,6 +1923,16 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                         )}
                         {part.id === 'payout' && part.done && (
                           <Secondary busy={anyBusy} onClick={() => act('look5', async () => ({}))}>{busy === 'look5' ? 'Checking' : 'Check again'}</Secondary>
+                        )}
+                        {part.id === 'payout' && SWEEP_SPEED_LABELS[state.payouts?.sweep?.speed] && (
+                          <div style={{ marginTop: 12 }}>
+                            <p style={{ ...S.say, margin: '0 0 8px' }}>Payouts: {SWEEP_SPEED_LABELS[state.payouts.sweep.speed]}</p>
+                            <label style={{ ...S.aside, display: 'inline-flex', alignItems: 'center', gap: 8, cursor: anyBusy ? 'default' : 'pointer' }}>
+                              <input type="checkbox" role="switch" checked={state.payouts.sweep.speed === 'fast'} disabled={anyBusy} onChange={(e) => setPayoutSpeed(e.target.checked ? 'fast' : 'regular')} />
+                              Faster payouts
+                            </label>
+                            <p style={{ ...S.quiet, margin: '6px 0 0' }}>Fast payouts cost more per transfer. Ask FranPOS for the fee.</p>
+                          </div>
                         )}
                         {part.id === 'payout' && (
                           <div style={{ marginTop: 12 }}>
