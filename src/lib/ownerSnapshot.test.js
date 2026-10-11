@@ -1185,7 +1185,9 @@ test('detail: the sales mix for one venue with its top categories, and for the g
   assert.deepEqual(d.mix.groups[1].categories, [{ id: 'cat-hot_L', label: 'Hot drinks', money: 20, qty: 5, share: 100 }]);
   assert.deepEqual(d.mix.groups[2].categories, []);
   // Till prices: the 1.20 staff discount, the 6.00 comp and the 4.00 loyalty reward (2.60 of VAT in) are not taken off (D3).
-  assert.equal(d.mix.total, r2sum([d.totals.gross_sales, 1.2, 6, 2.6]));
+  // 11 Oct 2026 (v5.11.48): refunds made in the period come off gross_sales on the day they were made;
+  // the mix is item sales BEFORE refunds, so they go back on here (d.totals.refunds, as the payments tie above).
+  assert.equal(d.mix.total, r2sum([d.totals.gross_sales, d.totals.refunds, 1.2, 6, 2.6]));
 
   // The group: each venue's own copy of one category (cat-food_L, cat-food_M, one master) is ONE
   // line in the group's top three, and a key is named by whichever venue names it in Xero.
