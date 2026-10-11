@@ -740,21 +740,27 @@ Deno.serve(async (req) => {
         schedule.cronExpression = String(body.cron_expression);
       }
 
+      // 10 Oct 2026: an optional payout speed. Nothing given means the
+      // currency's default (GBP fast, _shared/adyenLink.ts sweepPayload).
+      const speedWord = String(body.speed ?? '').trim().toLowerCase();
+      const speed = speedWord === 'fast' || speedWord === 'regular' ? speedWord : undefined;
+
       // Idempotent, and SHARED with the go live flow's setup_sweep
       // (_shared/adyenPayouts.ts ensurePushSweep): the existing push to this
-      // bank is reused (rescheduled when the schedule differs), else one is
-      // made with no triggerAmount or targetAmount, so the schedule fires and
-      // pushes the FULL available balance to the venue's bank.
+      // bank is reused (rescheduled when the schedule differs, its priorities
+      // changed when the speed differs), else one is made with no
+      // triggerAmount or targetAmount, so the schedule fires and pushes the
+      // FULL available balance to the venue's bank.
       const outcome = await ensurePushSweep({ mgmt, bcl }, {
         balanceAccountId: maa.balance_account_id, transferInstrumentId: ti, currency: String(loc.currency || 'GBP').toUpperCase(),
-        schedule: scheduleType, cronExpression: scheduleType === 'cron' ? String(schedule.cronExpression) : null,
+        schedule: scheduleType, cronExpression: scheduleType === 'cron' ? String(schedule.cronExpression) : null, speed,
         description: `ServOS ${scheduleType} payout, ${loc.name}`.slice(0, 140),
         // The key names the BANK (9 Sep 2026): a create for a different bank
         // inside Adyen's replay window is a new request, never a replay.
         idempotencyKey: `sweep:${cfg.env}:${loc.id}:${ti}`,
       });
       logStep(outcome.created ? 'sweep_create' : outcome.updated ? 'sweep_update' : outcome.ok ? 'sweep_exists' : 'sweep_failed', loc.id, {
-        httpStatus: outcome.status, stage: outcome.stage, sweepId: outcome.sweep?.id ?? null, schedule, retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
+        httpStatus: outcome.status, stage: outcome.stage, sweepId: outcome.sweep?.id ?? null, schedule, speed: outcome.sweep?.speed ?? null, updatedPriorities: outcome.updatedPriorities, retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
       });
       if (!outcome.ok || !outcome.sweep?.id) { const c = classify({ ok: false, status: outcome.status, data: outcome.data }); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
       // payouts_ok is the CAPABILITY (9 Sep 2026); the sweep that now exists
@@ -764,7 +770,7 @@ Deno.serve(async (req) => {
         if (ah.ok) await stamp(loc.id, { payouts_ok: capabilityFlags(ah.data?.capabilities).payouts_ok });
       }
       await stampPayoutSweep(loc.id, outcome.sweep.id);
-      const sweep = { id: outcome.sweep.id, schedule: outcome.sweep.schedule ?? scheduleType, status: outcome.sweep.status ?? 'active' };
+      const sweep = { id: outcome.sweep.id, schedule: outcome.sweep.schedule ?? scheduleType, status: outcome.sweep.status ?? 'active', speed: outcome.sweep.speed };
       if (outcome.updated) return json({ ok: true, sweep, updated: true, retargeted: outcome.retargeted, deactivated: outcome.deactivated, warning: warning() });
       if (outcome.existed) return json({ ok: true, sweep, existed: true, deactivated: outcome.deactivated, warning: warning() });
       return json({ ok: true, sweep, created: true, deactivated: outcome.deactivated, warning: warning() });

@@ -12,7 +12,8 @@
 //   DELETE {mgmt}/merchants/{m}/splitConfigurations/{id}            ONLY the profile made seconds ago when the
 //                                                                   store PATCH is refused (never the old one)
 //   GET    {bcl}/balanceAccounts/{id}/sweeps                        idempotency: reuse the push to this bank
-//   PATCH  {bcl}/balanceAccounts/{id}/sweeps/{sweepId}              { schedule } or { counterparty, schedule } or { status }
+//   PATCH  {bcl}/balanceAccounts/{id}/sweeps/{sweepId}              { schedule } or { counterparty, schedule } or { status },
+//                                                                   plus { priorities } in the SAME call when the speed differs
 //   POST   {bcl}/balanceAccounts/{id}/sweeps                        sweepPayload (push, bank, daily, full balance)
 // A profile on the store is enough on its own: Adyen applies it to every
 // payment through the store, no request needs split instructions, and with
@@ -34,10 +35,18 @@
 // that points at another bank (PATCH counterparty) instead of creating a
 // second, and switches any further ones off.
 //
+// THE SPEED IS THE SAME PATCH (10 Oct 2026). Adyen pays by the first priority
+// in the sweep's list (fast is Faster Payments, same day, a higher fee per
+// transfer; regular is 1 to 2 working days). ensurePushSweep compares the
+// kept sweep's priorities with the wanted ones (the speed asked for, else the
+// currency's default: GBP fast, see adyenLink.ts) and sends { priorities } in
+// the same PATCH as a schedule or bank change, so a speed change can never
+// make a second sweep either. A sweep with no list at all gets the PATCH.
+//
 // PURE of Supabase and Deno: the callers pass their own Adyen callers (the
 // venue's config, keys and hosts are theirs) and log what came back.
 
-import { findPushSweep, sweepRows, sweepSummary, sweepPayload, type SweepSummary } from './adyenLink.ts';
+import { findPushSweep, sweepRows, sweepSummary, sweepPayload, sweepSpeedOf, type SweepSummary } from './adyenLink.ts';
 
 export interface AdyenAnswer<T = any> { ok: boolean; status: number; data: T }
 export interface AdyenApi {
@@ -124,6 +133,9 @@ export interface SweepOutcome {
   created: boolean;
   existed: boolean;
   updated: boolean;
+  // 10 Oct 2026: the PATCH carried { priorities } (the payout speed changed).
+  // False on a create: the new sweep is made with the wanted list.
+  updatedPriorities: boolean;
   // An active push sweep to ANOTHER bank was repointed at the chosen one
   // (its id), and any further ones were switched off (their ids).
   retargeted: string | null;
@@ -134,22 +146,30 @@ export interface SweepOutcome {
 
 // The daily push of the full balance to the venue's bank, idempotent and
 // SINGLE: the existing push to THIS bank is reused (rescheduled when the
-// schedule differs); an active push to ANOTHER bank is repointed at this one
-// (never a second sweep); any further active pushes are switched off; only
-// with none at all is one created. The caller's idempotency key names the
-// bank (sweep:<env>:<venue>:<SI...>), so a create for a different bank
-// inside Adyen's replay window is a new request, not a replay.
+// schedule differs, its priorities changed when the speed differs); an
+// active push to ANOTHER bank is repointed at this one (never a second
+// sweep); any further active pushes are switched off; only with none at all
+// is one created. Every change to the kept sweep is ONE PATCH. The caller's
+// idempotency key names the bank (sweep:<env>:<venue>:<SI...>), so a create
+// for a different bank inside Adyen's replay window is a new request, not a
+// replay.
 export async function ensurePushSweep(api: AdyenApi, opts: {
   balanceAccountId: string; transferInstrumentId: string; currency: string;
   schedule?: string; cronExpression?: string | null; description?: string; idempotencyKey?: string;
+  // 'fast' | 'regular'; anything else means the currency's default (10 Oct 2026).
+  speed?: string | null;
 }): Promise<SweepOutcome> {
   const ba = enc(opts.balanceAccountId);
   const payload = sweepPayload({
     transferInstrumentId: opts.transferInstrumentId, currency: opts.currency,
-    schedule: opts.schedule, cronExpression: opts.cronExpression, description: opts.description,
+    schedule: opts.schedule, cronExpression: opts.cronExpression, description: opts.description, speed: opts.speed,
   });
   const wanted = payload.schedule as Dict;
-  const none = { created: false, existed: false, updated: false, retargeted: null as string | null, deactivated: [] as string[] };
+  const wantedPriorities = payload.priorities as string[];
+  // The kept sweep's list must match in every position; a missing list differs.
+  const samePriorities = (have: unknown): boolean => Array.isArray(have) && have.length === wantedPriorities.length
+    && have.every((p, i) => String(p ?? '').toLowerCase() === wantedPriorities[i]);
+  const none = { created: false, existed: false, updated: false, updatedPriorities: false, retargeted: null as string | null, deactivated: [] as string[] };
   const list = await api.bcl('GET', `/balanceAccounts/${ba}/sweeps`);
   if (!list.ok) return { ok: false, stage: 'list', status: list.status, sweep: null, ...none, data: list.data ?? null };
   const rawOf = (id: string): Dict | null => (sweepRows(list.data).find((s) => String(s?.id ?? '') === id) as Dict | undefined) ?? null;
@@ -172,8 +192,12 @@ export async function ensurePushSweep(api: AdyenApi, opts: {
     const sameBank = keep.transferInstrumentId === opts.transferInstrumentId;
     const sameCron = wanted.type !== 'cron' || String(raw?.schedule?.cronExpression ?? '') === String(wanted.cronExpression ?? '');
     const sameSchedule = keep.schedule === wanted.type && sameCron;
-    if (!sameBank || !sameSchedule) {
-      const change: Dict = sameBank ? { schedule: wanted } : { counterparty: { transferInstrumentId: opts.transferInstrumentId }, schedule: wanted };
+    const sameSpeed = samePriorities(keep.priorities);
+    if (!sameBank || !sameSchedule || !sameSpeed) {
+      // ONE PATCH: a bank change carries the schedule too (as before), a
+      // schedule change goes alone, and the priorities ride whenever they differ.
+      const change: Dict = !sameBank ? { counterparty: { transferInstrumentId: opts.transferInstrumentId }, schedule: wanted } : !sameSchedule ? { schedule: wanted } : {};
+      if (!sameSpeed) change.priorities = wantedPriorities;
       const up = await api.bcl('PATCH', `/balanceAccounts/${ba}/sweeps/${enc(keepId)}`, change);
       if (!up.ok) return { ok: false, stage: 'update', status: up.status, sweep: keep, ...none, existed: true, deactivated, data: up.data ?? null };
       return {
@@ -181,11 +205,12 @@ export async function ensurePushSweep(api: AdyenApi, opts: {
         sweep: {
           ...keep, schedule: String(wanted.type), transferInstrumentId: opts.transferInstrumentId,
           status: String((up.data as Dict)?.status ?? keep.status ?? 'active').toLowerCase(),
+          priorities: wantedPriorities, speed: sweepSpeedOf(wantedPriorities),
         },
-        created: false, existed: true, updated: true, retargeted: sameBank ? null : keepId, deactivated, data: up.data ?? null,
+        created: false, existed: true, updated: true, updatedPriorities: !sameSpeed, retargeted: sameBank ? null : keepId, deactivated, data: up.data ?? null,
       };
     }
-    return { ok: true, stage: 'done', status: list.status, sweep: keep, created: false, existed: true, updated: false, retargeted: null, deactivated, data: null };
+    return { ok: true, stage: 'done', status: list.status, sweep: keep, created: false, existed: true, updated: false, updatedPriorities: false, retargeted: null, deactivated, data: null };
   }
   const r = await api.bcl('POST', `/balanceAccounts/${ba}/sweeps`, payload, opts.idempotencyKey);
   const id = String((r.data as Dict | null)?.id ?? '').trim();
@@ -196,7 +221,8 @@ export async function ensurePushSweep(api: AdyenApi, opts: {
       id, type: 'push', category: 'bank', schedule: String(wanted.type),
       status: String((r.data as Dict)?.status ?? 'active').toLowerCase(),
       transferInstrumentId: opts.transferInstrumentId, currency: String(payload.currency),
+      priorities: wantedPriorities, speed: sweepSpeedOf(wantedPriorities),
     },
-    created: true, existed: false, updated: false, retargeted: null, deactivated, data: r.data ?? null,
+    created: true, existed: false, updated: false, updatedPriorities: false, retargeted: null, deactivated, data: r.data ?? null,
   };
 }
