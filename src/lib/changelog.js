@@ -7,8 +7,8 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.44',
-    date: '9 Oct 2026',
+    v: '5.11.48',
+    date: '11 Oct 2026',
     items: [
       "VAT: every sale books the VAT of each item's own Back Office tax rule, whatever the order type or channel. Till, kiosk, QR, online, phone orders, bar tabs and delivery apps now use one rule and one rounding (a half penny rounds up, once per sale). Collection and drive thru use the item's Takeaway rate, bar tabs its Bar rate, and the item editor says so.",
       "VAT: a sale can no longer be saved without VAT. A till or kiosk that has not loaded its VAT rates refuses to take payment, says so (VAT rates have not loaded) and loads them again on its own. Customer QR and online pages wait for the rates before Pay. A sale whose VAT had to be filled in from the item rules at save time is flagged, and the activity feed names it.",
@@ -16,6 +16,14 @@ export const CHANGELOG = [
       "Reports: Tax summary, Business summary, Daily trading, Z report, End of day, the Owner app, the Manager app and Xero now agree on VAT and net sales to the penny. Refunds come off on the day they were made, including a refund on a sale from an earlier period. A sale with no VAT recorded is named in red on every one of them. Each VAT rate is shown by its name.",
       "Xero: a day with a sale that has no VAT is held and never posted at VAT 0; Check figures and the Postings tab say which sale. A business day that was never posted shows as Not posted in red on the Postings tab, and the venue gets a notice once it is two days old. Nothing is posted for a missed day on its own; you choose.",
       "VAT check: every morning ServOS re checks yesterday's sales at every venue against the item rules and names any sale whose VAT does not match. (The ServOS team switches it on.)",
+    ],
+  },
+  {
+    v: '5.11.47',
+    date: '11 Oct 2026',
+    items: [
+      "Ops tablet: adding a photo to a checklist task works again on a paired tablet. The photo store had only been letting Back Office logins upload, so a tablet saw a raw database message under the checklist. (The ServOS team runs one database file.)",
+      "Ops tablet: when a photo cannot be saved the message is now plain words instead of a database error.",
     ],
   },
   {
