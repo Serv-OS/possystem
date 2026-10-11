@@ -290,7 +290,11 @@ export function planXeroDay(summary, { mapping = {}, detail = {}, sample = false
   if (differs.length) {
     warnings.push({ code: 'vat_differs', message: `The VAT Xero works out from these lines differs from the VAT ServOS booked (rounding per line, discounts, or checks whose VAT was estimated): ${differs.join('; ')}.` });
   }
-  return { transactions, warnings, blocked: blockedList };
+  // 8 Oct 2026: a day holding a sale with no VAT recorded is never posted (xero-sales refuses
+  // the day with these words before anything is sent). Kept apart from `blocked`, whose entries
+  // are rates with no Xero match.
+  const holds = (Array.isArray(summary.holds) ? summary.holds : []).map((h) => ({ code: h.code, message: h.message, checkIds: h.checkIds || [] }));
+  return { transactions, warnings, blocked: blockedList, holds };
 }
 
 /**

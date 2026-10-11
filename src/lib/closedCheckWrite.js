@@ -11,10 +11,19 @@
 // A column found missing is remembered for 10 minutes, so a till does not pay a failing
 // round trip on every sale; after that it tries again and picks the column up once it exists.
 //
+// 8 Oct 2026 (VAT audit): this is also where every sale meets the save time guard
+// (lib/saleVatGuard.js assertSaleVat). A row with goods above 0 and no VAT, or no record of the
+// rate, at a venue that has rates is repaired from its lines with the Back Office item rules and
+// tagged source 'repair'; one that cannot be repaired is REFUSED with a named error (SaleVatError,
+// code 'vat_missing') handed back as `error`, never saved with tax_amount null. The venue's rates
+// come from the caller (`vat`) or, for writers with no venue context of their own (the offline
+// replays, db.js), from the source the store registers (saleVatGuard.setVenueTaxSource).
+//
 // Pure apart from the client passed in (no import of the supabase module), so it is tested
 // under `npm test` with a fake client.
 
 import { scrubDiscounts, scrubItemDiscounts } from './discountApprover.js';
+import { assertSaleVat, isSaleVatError, venueTaxNow } from './saleVatGuard.js';
 
 const MISSING_TTL_MS = 10 * 60 * 1000;
 const _missing = new Map();   // column -> until (ms)
@@ -37,11 +46,27 @@ export function resetMissingColumns() { _missing.clear(); }
  * columns left out because the database does not have them. Never throws for a missing
  * column; any other error comes back as `error`, exactly as before.
  *
- * opts: { upsert?: boolean, select?: string, tag?: string, now?: () => number }
+ * opts: { upsert?: boolean, select?: string, tag?: string, now?: () => number,
+ *         vat?: venue tax for the save time guard (saleVatGuard.normaliseVenueTax shapes);
+ *              left out = the source the store registered; null/false = judge nothing }
+ * 8 Oct 2026: a row the guard refuses comes back as { data: null, error: SaleVatError, dropped: [] }
+ * (error.code 'vat_missing'), so every caller's existing error handling keeps the sale and says so.
  */
 export async function writeClosedCheckRow(client, row, opts = {}) {
   const { upsert = false, select = null, tag = 'closed_checks', now = () => Date.now() } = opts;
-  const payload = { ...row };
+  let payload = { ...row };
+  // 8 Oct 2026: the save time guard. Repairs the VAT from the lines (tagged) or refuses by name.
+  try {
+    const guarded = assertSaleVat(payload, 'vat' in opts ? opts.vat : venueTaxNow(), { tag, now });
+    if (guarded !== payload) {
+      console.warn(`[${tag}] closed_checks ${payload.ref || payload.id}: VAT ${guarded.tax_breakdown?.repair?.reason || 'repaired'} from the Back Office item rules before the save`);
+      payload = guarded;
+    }
+  } catch (e) {
+    if (!isSaleVatError(e)) throw e;
+    console.error(`[${tag}] closed_checks ${payload.ref || payload.id} NOT saved: ${e.message}`);
+    return { data: null, error: e, dropped: [] };
+  }
   // v5.10.0: never a staff record (with its PIN) on a discount, whichever writer built the row.
   if ('discounts' in payload) payload.discounts = scrubDiscounts(payload.discounts);
   if ('items' in payload) payload.items = scrubItemDiscounts(payload.items);

@@ -1,4 +1,5 @@
 import { money } from './currency.js';
+import { taxOverrideFor, taxOrderTypeKey, roundHalfUpMinor, taxFallbackNote, TAX_FALLBACK_REASONS, NOT_IN_MENU } from './taxRule.js';
 /**
  * Tax calculation engine — handles UK VAT (inclusive) and US sales tax (exclusive)
  *
@@ -13,43 +14,73 @@ import { money } from './currency.js';
  *   item_gross = net + tax
  */
 
+// 8 Oct 2026: which override key a sale reads (collection and drive thru read Takeaway, a bar
+// tab reads Bar) lives in taxRule.js, shared with taxEngine.js so the two engines cannot drift.
+export { taxOverrideFor, taxOrderTypeKey };
+
 /**
- * The per order type override an item carries for this order type, or undefined when it
- * has none (undefined means "no override", so the caller falls to the item's own rate; an
- * explicit null is a real override that means the venue default, as the item editor writes it).
- *
- * Drive thru (16 Sep 2026) is takeaway by another door: an explicit taxOverrides['drive-thru']
- * wins, else the takeaway override applies to a drive-thru sale, else the item's own rate.
- * Every other order type reads exactly its own key, as before. taxEngine.makeCascadeResolver
- * mirrors this rule (it is a pure module and cannot import it): change both together.
+ * THE rule for one line (8 Oct 2026, Peter: "VAT despite the order type should follow the Tax
+ * rules set on the back office per menu item"). Returns { rate, fallback }:
+ *   rate      the tax_rates row that applies, or null (no rates at this venue, or no default)
+ *   fallback  null when the line followed its own Back Office rule; otherwise a taxFallbackNote
+ *             saying why the venue default (or the item's own rate) was used instead, which the
+ *             sale records in tax_breakdown.fallbacks so a report can flag it.
+ * In order:
+ *   1. the item's override for this order type (its own key, else the alias: collection and
+ *      drive thru read Takeaway, bar tab reads Bar). An override naming a rate this venue does
+ *      not have falls to the item's own rate and is flagged. An explicit null override is the
+ *      item editor's "Use default": the venue default, by the item's own rule.
+ *   2. the item's own rate. A rate id this venue does not have (another venue's, deleted,
+ *      switched off, or the channel sentinel for a line not on our menu) falls to the venue
+ *      default and is flagged. Before 8 Oct 2026 such a line resolved NO rate and booked 0,
+ *      which is how 17 HubRise sales booked £0 VAT on £692.71 (D4: never silently 0).
+ *   3. no rate set: the item editor's "Use default" (v5.5.857), the venue default, unflagged;
+ *      except an open price item typed at the till (itemId 'custom', no Back Office rule) and a
+ *      line the till already cleaned (taxFallback stamped by venueTaxRates.lineTaxRefs), which
+ *      take the default flagged.
+ *   4. a venue with rates but none flagged default resolves nothing, flagged 'no-default-rate'.
+ * A venue with no rates at all resolves nothing, unflagged: that is "no tax set up", which the
+ * close paths guard separately.
  */
-export function taxOverrideFor(item, orderType) {
-  const overrides = item?.taxOverrides;
-  if (!overrides) return undefined;
-  const own = overrides[orderType];
-  if (own !== undefined) return own;
-  if (orderType === 'drive-thru') return overrides.takeaway;
-  return undefined;
+export function resolveLineTaxRate(item, taxRates = [], orderType = 'dine-in') {
+  const none = { rate: null, fallback: null };
+  if (!item || !Array.isArray(taxRates) || !taxRates.length) return none;
+  const byId = (id) => taxRates.find(r => r && r.id === id && r.active !== false) || null;
+  const def = taxRates.find(r => r && (r.isDefault || r.is_default) && r.active !== false) || null;
+  let note = null;
+  let rateId;
+  const overrideId = taxOverrideFor(item, orderType);
+  if (overrideId !== undefined) {
+    if (overrideId) {
+      const r = byId(overrideId);
+      if (r) return { rate: r, fallback: null };
+      note = [TAX_FALLBACK_REASONS.OVERRIDE_RATE_NOT_FOUND, overrideId];
+      rateId = item.taxRateId;   // the override cannot be matched: the item's own rate
+    } else {
+      rateId = null;             // an explicit "Use default" override
+    }
+  } else {
+    rateId = item.taxRateId;
+  }
+  if (rateId) {
+    const r = byId(rateId);
+    if (r) return { rate: r, fallback: note ? taxFallbackNote(note[0], item, note[1]) : null };
+    note = [rateId === NOT_IN_MENU ? TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU : TAX_FALLBACK_REASONS.RATE_NOT_FOUND, rateId];
+  } else if (!note) {
+    const cleaned = item.taxFallback && typeof item.taxFallback === 'object' ? item.taxFallback : null;
+    if (cleaned) note = [cleaned.reason || TAX_FALLBACK_REASONS.RATE_NOT_FOUND, cleaned.rateId ?? null];
+    else if (overrideId === undefined && (item.itemId ?? item.id) === 'custom') note = [TAX_FALLBACK_REASONS.CUSTOM_ITEM, null];
+  }
+  if (def) return { rate: def, fallback: note ? taxFallbackNote(note[0], item, note[1]) : null };
+  return { rate: null, fallback: taxFallbackNote(TAX_FALLBACK_REASONS.NO_DEFAULT_RATE, item, rateId || null) };
 }
 
 /**
- * Resolve which tax rate applies to an item for a given order type.
- * Checks per-order-type overrides first, then falls back to the item's default rate.
+ * Resolve which tax rate applies to an item for a given order type (the rate alone, for the
+ * Back Office GP maths and anything else that only needs the row). The rule is resolveLineTaxRate.
  */
 export function resolveTaxRate(item, taxRates = [], orderType = 'dine-in') {
-  if (!item || !taxRates.length) return null;
-  // Check for order-type specific override (e.g. takeaway = zero-rated)
-  const overrideId = taxOverrideFor(item, orderType);
-  const rateId = overrideId !== undefined ? overrideId : item.taxRateId;
-  // v5.5.857: no rate set = the item editor's "Use default" — which the engine NEVER
-  // honoured: it returned null and the line booked £0 VAT (live repro: a £36 ribeye on
-  // "Use default" booked zero on a real check). Now it resolves the venue's default
-  // rate, as the UI has always promised. Deliberate zero-tax stays the explicit Zero
-  // Rate. A rate id that matches nothing still returns null (that's how channel lines
-  // whose ref isn't in our menu opt OUT of the default — never guess someone else's
-  // tax), and a venue with no default rate configured behaves exactly as before.
-  if (!rateId) return taxRates.find(r => (r.isDefault || r.is_default) && r.active !== false) || null;
-  return taxRates.find(r => r.id === rateId && r.active !== false) || null;
+  return resolveLineTaxRate(item, taxRates, orderType).rate;
 }
 
 /**
@@ -82,6 +113,9 @@ export function calculateLineTax(price, qty = 1, taxRate = null) {
  * @param {Array} taxRates — all tax rates for this location
  * @param {string} orderType — 'dine-in' | 'takeaway' | 'delivery' | 'bar' etc.
  * @returns {Object} { subtotal, totalTax, total, breakdown: [{rate, tax, net, gross}] }
+ *   plus, ONLY when a line fell to the venue default instead of its own rule (8 Oct 2026),
+ *   fallbacks: [taxFallbackNote]. The key is left out otherwise, so the record of an ordinary
+ *   sale is byte for byte what it always was.
  */
 export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-in') {
   const breakdownMap = {};
@@ -89,11 +123,13 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
   let totalTax = 0;
   let totalNet = 0;
   let exclusiveTaxRaw = 0;
+  const fallbacks = [];
 
   items
     .filter(i => !i.voided)
     .forEach(item => {
-      const rate = resolveTaxRate(item, taxRates, orderType);
+      const { rate, fallback } = resolveLineTaxRate(item, taxRates, orderType);
+      if (fallback) fallbacks.push(fallback);
       const { gross, net, tax } = calculateLineTax(item.price, item.qty || 1, rate);
 
       totalGross += gross;
@@ -125,9 +161,11 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
     // at ORDER level (8.875% on 47.20 → 4.189 → 4.19) so every channel charges
     // the same penny. Inclusive-only checks: 0 exactly. Never use totalTax for
     // the charge — on a mixed check that would re-charge the inclusive VAT.
-    exclusiveTax: Math.round(exclusiveTaxRaw * 100) / 100,
+    // 8 Oct 2026: the one rounding rule (taxRule.roundHalfUpMinor), as the profiles engine.
+    exclusiveTax: roundHalfUpMinor(exclusiveTaxRaw, 2),
     breakdown: Object.values(breakdownMap).sort((a, b) => b.rate.rate - a.rate.rate),
     hasExclusiveTax: Object.values(breakdownMap).some(b => b.rate.type === 'exclusive'),
+    ...(fallbacks.length ? { fallbacks } : {}),
   };
 }
 

@@ -45,7 +45,41 @@ export function kioskVariant(parent, child) {
     itemName: typeof child.name === 'string' ? child.name : '',
     kitchenName: kitchenOverride(child),
     receiptName: receiptOverride(child),
+    // 8 Oct 2026 (VAT audit, Fix 2): the size's own Back Office tax rule rides with it, so a size
+    // is taxed at its own rate when it has one (Leeds Babyccino Milk, 1.55 at 5%, booked 0.07 not
+    // 0.26). Null when the size row carries none (kioskLineTaxRefs then falls to the parent).
+    taxRateId: child.tax_rate_id ?? child.taxRateId ?? null,
+    taxOverrides: child.tax_overrides ?? child.taxOverrides ?? null,
+    taxProfileId: child.tax_profile_id ?? child.taxProfileId ?? null,
   };
+}
+
+/**
+ * The tax references a kiosk basket line carries: { taxRateId, taxOverrides, taxProfileId }.
+ * 8 Oct 2026 (VAT audit, Fix 2): exactly the till's rule for a size (store addItem, v5.5.338).
+ * A size uses its own rate and overrides; when its overrides are empty it takes the parent's
+ * overrides and, if it has no rate of its own, the parent's rate. A plain line takes its item's.
+ * Every value is read from either casing (l.item is a raw snake row; an older variant from before
+ * this fix carries no tax fields and falls to the parent, exactly as before).
+ */
+export function kioskLineTaxRefs(l) {
+  const item = l?.item || {};
+  const v = l?.variant || null;
+  const own = (row) => ({
+    rate: row?.taxRateId ?? row?.tax_rate_id ?? null,
+    ov: row?.taxOverrides ?? row?.tax_overrides ?? null,
+    profile: row?.taxProfileId ?? row?.tax_profile_id ?? null,
+  });
+  const parent = own(item);
+  if (!v) return { taxRateId: parent.rate || null, taxOverrides: parent.ov || {}, taxProfileId: parent.profile || null };
+  const child = own(v);
+  let taxRateId = child.rate || null;
+  let taxOverrides = child.ov && typeof child.ov === 'object' ? child.ov : {};
+  if (Object.keys(taxOverrides).length === 0) {
+    taxOverrides = parent.ov && typeof parent.ov === 'object' ? parent.ov : {};
+    if (!taxRateId) taxRateId = parent.rate || null;
+  }
+  return { taxRateId, taxOverrides, taxProfileId: child.profile || parent.profile || null };
 }
 
 /** The id whose RECIPE this line depletes: the size when picked, else the item. */
@@ -174,6 +208,12 @@ export function kioskOrderItem(l) {
     // POS expects mods as array of { label, price, groupLabel }
     mods: Array.isArray(l.modsArray) ? l.modsArray : [],
     cat: l.item.cat,
+    // 8 Oct 2026 (VAT audit, Fix 2): the line's Back Office tax rule, as a till line carries it
+    // (store addItem): the rate id and the per order type overrides, a size's own first
+    // (kioskLineTaxRefs). Reports and the save time guard read the rate from the line; before this
+    // a kiosk line carried none, so 138 Barnsley sales had VAT with no record of which rate.
+    taxRateId: kioskLineTaxRefs(l).taxRateId,
+    taxOverrides: kioskLineTaxRefs(l).taxOverrides,
     // The item's "Also in" categories, as online, QR and catering lines carry them. An Also in
     // category inside the Primary one decides the production centre (lib/productionRouting.js
     // routingCategoryOf), and the master till must route this line the same way even before

@@ -7,14 +7,34 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.45',
-    date: '9 Oct 2026',
+    v: '5.11.49',
+    date: '11 Oct 2026',
     items: [
       "Reports, Sales mix (new): your sales split into groups such as Food, Drinks and Other, each with its share, the change against the period before, quantity and average price. Open a group to see its categories. A share chart by day, or by hour for one day, a table by service period or time of day, and across your sites a share by site. CSV exports of groups, categories and sites. The groups are the same ones the Xero invoice uses, so the two always agree.",
       "Sales mix, Set up groups: a panel lists your top level categories with a dropdown (Food, Drinks, Alcohol, Retail, Other, or a name of your own). Sub categories follow their parent. It writes the Accounting group of each category, the same field as Menu Manager, Edit category, and it opens by itself when most sales have no group yet. A login without Menu access can read the report but not change the groups.",
       "Business summary: a Sales mix strip under the headline tiles with each group's share and money, and a link to the full report. Z report: a Sales by group block with each group's item sales and share.",
       "Owner app: a Food, Drinks, Other bar on every venue card and on the group card, for today, this week or this month, with the change in share in points. Tap a card for a Sales mix card second on the screen: each group's money, share, the share before, and the top categories inside. Shows once the ServOS team has updated the owner app function.",
       "Gift cards sold show as their own group, Gift cards, never as Food or Drinks. Sales mix figures are item sales before check discounts and refunds, the same basis as Product mix, so the groups, categories and items always add up to the same total.",
+    ],
+  },
+  {
+    v: '5.11.48',
+    date: '11 Oct 2026',
+    items: [
+      "VAT: every sale books the VAT of each item's own Back Office tax rule, whatever the order type or channel. Till, kiosk, QR, online, phone orders, bar tabs and delivery apps now use one rule and one rounding (a half penny rounds up, once per sale). Collection and drive thru use the item's Takeaway rate, bar tabs its Bar rate, and the item editor says so.",
+      "VAT: a sale can no longer be saved without VAT. A till or kiosk that has not loaded its VAT rates refuses to take payment, says so (VAT rates have not loaded) and loads them again on its own. Customer QR and online pages wait for the rates before Pay. A sale whose VAT had to be filled in from the item rules at save time is flagged, and the activity feed names it.",
+      "VAT: the server books the VAT itself for QR and online orders, so an order placed from a page that had not loaded the rates still records the right VAT. A line whose rate cannot be matched takes the venue's default rate and is marked, never zero.",
+      "Reports: Tax summary, Business summary, Daily trading, Z report, End of day, the Owner app, the Manager app and Xero now agree on VAT and net sales to the penny. Refunds come off on the day they were made, including a refund on a sale from an earlier period. A sale with no VAT recorded is named in red on every one of them. Each VAT rate is shown by its name.",
+      "Xero: a day with a sale that has no VAT is held and never posted at VAT 0; Check figures and the Postings tab say which sale. A business day that was never posted shows as Not posted in red on the Postings tab, and the venue gets a notice once it is two days old. Nothing is posted for a missed day on its own; you choose.",
+      "VAT check: every morning ServOS re checks yesterday's sales at every venue against the item rules and names any sale whose VAT does not match. (The ServOS team switches it on.)",
+    ],
+  },
+  {
+    v: '5.11.47',
+    date: '11 Oct 2026',
+    items: [
+      "Ops tablet: adding a photo to a checklist task works again on a paired tablet. The photo store had only been letting Back Office logins upload, so a tablet saw a raw database message under the checklist. (The ServOS team runs one database file.)",
+      "Ops tablet: when a photo cannot be saved the message is now plain words instead of a database error.",
     ],
   },
   {

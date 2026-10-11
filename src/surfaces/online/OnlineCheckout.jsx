@@ -42,8 +42,9 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/qu
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
-import { computeOrderTaxUnified, chargesAddedOnRate } from '../../lib/taxCompute';
+import { computeOrderTaxUnified, chargesAddedOnRate, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerScaledTax } from '../../lib/publicCheckTax';
+import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
@@ -87,7 +88,9 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null, categories = [] }) {
+// vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
+// tax rates are in) and the way to load them again. Payment never opens while it is shut.
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -341,6 +344,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.5.787 breakdown exactly (UK unchanged).
   const chargedTaxBreakdown = (basisTaxBreakdown && (basisTaxBreakdown.checkBasisApplied || chargesAddedOnRate(basisTaxBreakdown)))
     ? basisTaxBreakdown : discountedTaxBreakdown;
+  // 8 Oct 2026: does this page hold tax set up (rates or profiles)? With it, a sale is never sent
+  // without VAT (publicCheckTaxFields throws a named error instead; the gate stops payment first).
+  const hasTaxConfig = useMemo(() => taxCtxHasConfig(taxCtx || { taxRates }), [taxCtx, taxRates]);
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is part of what the customer
   // pays — the tax lines were rendered but never charged. Scaled by the goods
   // discount like the rest of the breakdown; UK inclusive VAT contributes 0 so
@@ -806,6 +812,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   };
 
   const startPayment = async () => {
+    // 8 Oct 2026 (VAT audit): no payment while this venue's tax rates are not loaded, and never a
+    // card charged for a sale the page cannot book with its VAT (publicCheckTaxFields throws).
+    if (vatGate) { setError(vatGate.message); setStep('details'); return; }
+    try { publicCheckTaxFields(chargedTaxBreakdown, { hasTaxConfig, goods: subtotal }); }
+    catch (e) { setError(e?.message || 'Could not work out the VAT. Try again.'); setStep('details'); return; }
     const gate = deliveryGateError();
     if (gate) { setError(gate); setStep('details'); return; }
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
@@ -1092,6 +1103,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // ── Gift-only payment (no Stripe) ─────────────────────────────────────
   const onGiftOnlyPayment = async () => {
+    // 8 Oct 2026: this path books a check too (paid by gift card or reward): same gate as a card.
+    if (vatGate) { setError(vatGate.message); setStep('details'); return; }
+    try { publicCheckTaxFields(chargedTaxBreakdown, { hasTaxConfig, goods: subtotal }); }
+    catch (e) { setError(e?.message || 'Could not work out the VAT. Try again.'); setStep('details'); return; }
     const gate = deliveryGateError();
     if (gate) { setError(gate); setStep('details'); return; }
     try {
@@ -1176,7 +1191,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           tip: tipMinor / 100,
           // VAT on the discounted amount (v5.5.787). 2 Oct 2026: in pence, with the tax record by
           // rate whenever a rate was resolved (lib/publicCheckTax.js; the raw figure booked 0).
-          ...publicCheckTaxFields(chargedTaxBreakdown),
+          // 8 Oct 2026: with tax set up this throws rather than sending null (checked before paying).
+          ...publicCheckTaxFields(chargedTaxBreakdown, { hasTaxConfig, goods: subtotal }),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
           // v5.9.11: what paid the order, per tender: the gift card as DEBITED and the loyalty
@@ -1390,7 +1406,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           // VAT for reports and the receipt, on the discounted amount (v5.5.154, v5.5.787).
           // 2 Oct 2026: in pence, with the tax record by rate whenever a rate was resolved
           // (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
-          ...publicCheckTaxFields(chargedTaxBreakdown),
+          // 8 Oct 2026: with tax set up this throws rather than sending null (checked before paying).
+          ...publicCheckTaxFields(chargedTaxBreakdown, { hasTaxConfig, goods: subtotal }),
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
           // v5.9.11: what paid the order, per tender. `total` above is the CARD amount (tip
@@ -2100,6 +2117,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
             background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
+            <VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={theme}/>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
             <button onClick={continueToGift} disabled={!valid || working} className="op-btn-primary" style={{
               width: '100%', padding: '16px 22px', borderRadius: 14,

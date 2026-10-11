@@ -20,6 +20,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
 import { creditDiscountsFromPayment } from './taxBasis.js';
 import { taxForChargedGoods } from './headlessTax.js';
 import { isUsableBreakdown } from './taxShare.js';
+import { roundVat } from './taxRule.js';
 
 /**
  * What a bar tab's bill comes to (moved unchanged out of BarSurface tabBillWithTax, 27 Sep 2026).
@@ -35,7 +36,7 @@ export function tabBill(tab, taxCtx, creditDiscounts = []) {
     bd = computeOrderTaxUnified(items, taxCtx, 'bar-tab',
       creditDiscounts.length ? { discounts: creditDiscounts } : null);
   }
-  catch { bd = null; }   // fail toward the old behaviour, never a guessed charge
+  catch (e) { console.error("[tax] bar tab bill: the tax could not be worked out:", e?.message || e); bd = null; }   // 8 Oct 2026: logged, never silent; never a guessed charge
   const exclusiveTax = Number(bd?.exclusiveTax) || 0;
   const active = exclusiveTax > 0;
   return {
@@ -53,11 +54,12 @@ export function tabBill(tab, taxCtx, creditDiscounts = []) {
  * @param {object} [opts.bill]         BarSurface tabBillWithTax(tab, credits): { taxBreakdown, ... }
  * @param {object} [opts.paymentInfo]  what the checkout or the held card capture handed over
  * @returns {{ taxAmount: number|null, taxBreakdown: object }|null}  null = stamp nothing (as before)
+ *   taxAmount is rounded once with the one rule (taxRule.roundVat, 8 Oct 2026); the record stays raw.
  */
 export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {} } = {}) {
   try {
     // Added-on (US) tax: the record the bill charged, unchanged since v5.9.12.
-    if (bill?.taxBreakdown) return { taxAmount: bill.taxBreakdown.totalTax ?? null, taxBreakdown: bill.taxBreakdown };
+    if (bill?.taxBreakdown) return { taxAmount: roundVat(bill.taxBreakdown.totalTax), taxBreakdown: bill.taxBreakdown };
     if (!taxCtxHasConfig(taxCtx)) return null;
     const live = (Array.isArray(items) ? items : []).filter((i) => i && !i.voided);
     if (!live.length) return null;
@@ -74,8 +76,11 @@ export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {} } = {
     if (!isUsableBreakdown(t) || (Number(t.exclusiveTax) || 0) > 0) return null;
     const booked = taxForChargedGoods(t, paymentInfo);
     if (!isUsableBreakdown(booked)) return null;
-    return { taxAmount: booked.totalTax, taxBreakdown: booked };
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+    return { taxAmount: roundVat(booked.totalTax), taxBreakdown: booked };
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the save
+    // time guard (lib/saleVatGuard.js), which repairs it from the tab lines or refuses the save by name.
+    console.error("[tax] bar tab close: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }

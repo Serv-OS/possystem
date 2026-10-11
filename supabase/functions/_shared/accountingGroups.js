@@ -204,15 +204,28 @@ function checkDiscountMinor(d, subtotalAfter) {
 // The check's order type, for items whose rate depends on it (taxOverrides { 'dine-in': id, takeaway: id }).
 const orderTypeOf = (row) => row?.tax_breakdown?.taxV2?.orderType || row?.order_type || row?.orderType || null;
 
+// 8 Oct 2026: which override key a sale's order type reads when the item has none under its own
+// key. MIRRORS src/lib/taxRule.js TAX_ORDER_TYPE_ALIASES (the till books with it; this file cannot
+// import src/lib): collection and drive thru read Takeaway, a bar tab reads Bar. Change both
+// together, or the Xero split by rate stops matching the VAT the till booked.
+export const TAX_ORDER_TYPE_ALIASES = { collection: 'takeaway', 'drive-thru': 'takeaway', 'bar-tab': 'bar' };
+function itemOverrideFor(item, ot) {
+  const ov = item?.taxOverrides;
+  if (!ov || typeof ov !== 'object' || !ot) return null;
+  if (ov[ot] !== undefined) return ov[ot];
+  const alias = TAX_ORDER_TYPE_ALIASES[ot];
+  return alias && ov[alias] !== undefined ? ov[alias] : null;
+}
+
 /**
  * Which of the check's tax buckets an item sits in: its own rate (the order type override
- * first) when the check has that bucket, else a bucket at the same percentage, else null
- * (estimated: spread over the check's buckets by their goods).
+ * first, read as the till reads it) when the check has that bucket, else a bucket at the same
+ * percentage, else null (estimated: spread over the check's buckets by their goods).
  */
 function itemBucket(item, row, keys, bucketList, taxCtx) {
   if (keys.length === 1) return keys[0];
   const ot = orderTypeOf(row);
-  const ov = item?.taxOverrides && typeof item.taxOverrides === 'object' && ot ? item.taxOverrides[ot] : null;
+  const ov = itemOverrideFor(item, ot);
   const rateId = ov || item?.taxRateId || null;
   if (rateId == null) return null;
   if (keys.includes(`rate:${rateId}`)) return `rate:${rateId}`;
