@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.47',
+    date: '11 Oct 2026',
+    items: [
+      "Ops tablet: adding a photo to a checklist task works again on a paired tablet. The photo store had only been letting Back Office logins upload, so a tablet saw a raw database message under the checklist. (The ServOS team runs one database file.)",
+      "Ops tablet: when a photo cannot be saved the message is now plain words instead of a database error.",
+    ],
+  },
+  {
     v: '5.11.43',
     date: '8 Oct 2026',
     items: [
