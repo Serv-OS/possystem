@@ -717,7 +717,15 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     // v5.5.756: persist the PRIVATE-bucket PATH (signed URLs expire); use the returned
     // signed url only for the immediate on-screen thumbnail.
     const { url, path, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
-    if (error || !path) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
+    if (error || !path) {
+      setUploadingId(null);
+      // 11 Oct 2026: the photo store's refusal arrives as the raw "new row violates row-level
+      // security policy" (no table name: it is Storage, not a table). Staff cannot act on that;
+      // say what it means. The cause at Huddersfield was the bucket policy (20261011a).
+      const refused = /row-level security/i.test(String(error?.message || ''));
+      setErr(refused ? 'Photo not saved: this tablet is not allowed to upload photos for this venue. Tell ServOS.' : (error?.message || 'Photo upload failed — check signal and try again'));
+      return;
+    }
     const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: path, by: operator?.name, byId: operator?.id }, loc);
     reportSave('checklist photo task', saveErr);
     if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); showToast?.('Completion NOT recorded — try the photo again', 'error'); return; }
