@@ -21,6 +21,7 @@ import { recordedCheckTax } from '../../../lib/taxCompute';
 import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js';
 import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
+import { vatMissingLine } from '../../../lib/salesStats';
 import { ExportBtn } from './_charts';
 
 const ROW = { display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:11, lineHeight:1.5 };
@@ -86,7 +87,8 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         if (!m[key]) {
           const src = b.rate ? (taxRates.find(r => r.id === b.rate.id) || b.rate) : null;
           m[key] = {
-            label: src ? (src.label || `${((Number(src.rate) || 0) * 100).toFixed(0)}%`) : 'Per-unit levy',
+            // 8 Oct 2026: a rate is named by its name (rows carry name, never label: every line read as a bare "20%").
+            label: src ? (src.name || src.label || `${((Number(src.rate) || 0) * 100).toFixed(0)}%`) : 'Per-unit levy',
             rate: src ? Number(src.rate) || 0 : null,
             tax: 0, net: 0, gross: 0,
           };
@@ -169,6 +171,8 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
           <div key={r.label} style={ROW}><span>{r.label} on {fmt(r.net)}</span><span>{fmt(r.tax)}</span></div>
         ))}
         {taxByRate.length > 0 && <div style={{ ...ROW, ...BOLD, marginTop:4 }}><span>Total tax</span><span>{fmt(stats.tax)}</span></div>}
+        {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named, never hidden. */}
+        {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats)}</span><span/></div>}
 
         {(stats.service > 0 || stats.tips > 0) && (
           <>

@@ -74,7 +74,8 @@ async function pagedRows(what: string, build: () => any): Promise<any[]> {
 
 // The columns the accounting layer reads a check's tenders from (legacy rows included), plus
 // discounts for a 100% comp (_shared/tradingSales.js).
-const CHECK_COLS = 'id, closed_at, subtotal, total, tax_amount, service, tip, status, voided, discounts, tenders, method, payment_method, source, processor, gift_card, loyalty, promo, payment_intents';
+// 8 Oct 2026: ref (to name a sale with no VAT) and refunds (off on the day they were made) read with every check, the same list as snapshotSales.SALES_CHECK_COLS.
+const CHECK_COLS = 'id, ref, closed_at, subtotal, total, tax_amount, service, tip, status, voided, discounts, refunds, tenders, method, payment_method, source, processor, gift_card, loyalty, promo, payment_intents';
 
 // How far back a refunded check can have closed and still have a refund inside the range
 // (the same lookback the accounting layer uses, _shared/accountingData.ts).
@@ -82,7 +83,7 @@ const REFUND_LOOKBACK_DAYS = 400;
 const DAY_MS = 86400000;
 
 type Clock = { timezone: string; dayStart: string };
-type DaySales = { gross: number; refunds: number; sales_vat: number; refund_vat: number; vat: number; net: number; checks: number; refund_count: number };
+type DaySales = { gross: number; refunds: number; sales_vat: number; refund_vat: number; vat: number; net: number; checks: number; refund_count: number; no_vat?: number; no_vat_refs?: string[] };
 
 // The real instants a run of business days covers: [fromIso, toIso).
 function rangeWindow(fromYmd: string, toYmd: string, clock: Clock) {
@@ -102,7 +103,7 @@ async function salesByDay(ops: string, fromYmd: string, toYmd: string, clock: Cl
     pagedRows('closed checks', () => opsAdmin.from('closed_checks').select(CHECK_COLS)
       .eq('location_id', ops).gte('closed_at', fromIso).lt('closed_at', toIso)
       .order('closed_at').order('id')),
-    pagedRows('refunds', () => opsAdmin.from('closed_checks').select(`${CHECK_COLS}, refunds`)
+    pagedRows('refunds', () => opsAdmin.from('closed_checks').select(CHECK_COLS)
       .eq('location_id', ops).gte('closed_at', since).lt('closed_at', toIso).neq('refunds', '[]')
       .order('closed_at').order('id')),
   ]);
@@ -226,6 +227,8 @@ Deno.serve(async (req) => {
         forecast: r2(forecast), actual_sales: r2(actualSales), last_year: r2(lastYear),
         vat: r2(vat), gross_sales: r2(grossSales), refunds: r2(refunds), refund_vat: r2(s?.refund_vat ?? 0),
         refund_count: s?.refund_count ?? 0,
+        // 8 Oct 2026: sales with money taken and no VAT recorded, counted 0 and named on screen.
+        no_vat: s?.no_vat ?? 0, no_vat_refs: s?.no_vat_refs ?? [],
         sales_variance: r2(actualSales - forecast),
         labour_theo: r2(lt), labour_actual: r2(la),
         labour_pct_theo: forecast > 0 ? r2(lt / forecast * 100) : null,
@@ -245,6 +248,8 @@ Deno.serve(async (req) => {
       forecast: sum('forecast'), actual_sales: sum('actual_sales'), last_year: sum('last_year'),
       vat: sum('vat'), gross_sales: sum('gross_sales'), refunds: sum('refunds'), refund_vat: sum('refund_vat'),
       refund_count: rows.reduce((n, r) => n + r.refund_count, 0),
+      no_vat: rows.reduce((n, r) => n + (r.no_vat || 0), 0),
+      no_vat_refs: rows.flatMap((r) => r.no_vat_refs || []).slice(0, 25),
       labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
       cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'),
       cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), waste: sum('waste'), overhead: sum('overhead'),

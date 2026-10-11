@@ -91,7 +91,10 @@ const PROVO = { name: 'Provo', tz: 'America/Denver', currency: 'USD', dayStart: 
 // The sales and items reads. The one small "first ever sale" read per venue is its own thing.
 const isFirstSaleRead = (q) => q.table === 'closed_checks' && q.select === 'id, closed_at, status, voided';
 const firstSaleReads = (ops) => ops.log.filter(isFirstSaleRead);
-const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
+// 8 Oct 2026 (review): the one read per venue of OLDER checks that carry a refund (refunds <> '[]').
+const isRefundRead = (q) => q.table === 'closed_checks' && q.filters.some((f) => f.col === 'refunds' && f.op === 'neq');
+const refundReads = (ops) => ops.log.filter(isRefundRead);
+const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && !isRefundRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
 const bound = (q, op) => q.filters.find((f) => f.col === 'closed_at' && f.op === op)?.val;
 
 // Friday 2 Oct 2026, 12:00 in Leeds (BST, UTC+1). The week began Monday 28 Sep.
@@ -181,11 +184,39 @@ test('Today (and an older app that sends no period) answers what the function al
   }
 });
 
+test('8 Oct 2026 (review): a sale from three weeks ago refunded TODAY comes off today, as Daily trading and the detail screen take it off', async () => {
+  const t = leeds();
+  // Closed 10 Sep (outside every window the snapshot reads for sales), refunded in full this morning.
+  const old = chk('L', '2026-09-10T10:00:00Z', {
+    refunds: [{ id: 'f-old', amount: 12, taxAmount: 2, tipAmount: 0, serviceAmount: 0, timestamp: '2026-10-02T09:30:00Z', tenderMethod: 'card', cardStatus: 'succeeded', isFullRefund: true, legs: [{ status: 'succeeded', amountMinor: 1200 }] }],
+  });
+  t.closed_checks.push(old);
+  const snap = await build(fakeOps(t), 'today');
+  const { period_totals } = split(snap.locations[0]).old;
+  // Before: 30 net, 6 VAT (three sales of 12). The refund takes its 10 net and 2 VAT off today.
+  assert.equal(period_totals.net_sales, 20);
+  assert.equal(period_totals.vat, 4);
+  assert.equal(period_totals.orders, 3, 'the old sale is not one of today\'s orders');
+  // A refund made on a day outside the period changes nothing here (it belongs to that day).
+  const t2 = leeds();
+  t2.closed_checks.push(chk('L', '2026-09-10T10:00:00Z', { refunds: [{ id: 'f-old2', amount: 12, taxAmount: 2, timestamp: '2026-09-12T09:30:00Z', tenderMethod: 'card', cardStatus: 'succeeded', legs: [{ status: 'succeeded', amountMinor: 1200 }] }] }));
+  const snap2 = await build(fakeOps(t2), 'today');
+  assert.equal(split(snap2.locations[0]).old.period_totals.vat, 6);
+});
+
 test('Today reads one sales window and one items window for the venue, as before the filters', async () => {
   const ops = fakeOps(leeds());
   await build(ops, 'today');
   const sales = checkReads(ops, 'sales'), items = checkReads(ops, 'items');
   assert.equal(sales.length, 1);
+  // 8 Oct 2026 (review): plus ONE read of older checks that carry a refund, 400 days before the
+  // sales window up to its start, fenced to the venue and paged like every other check read.
+  const older = refundReads(ops);
+  assert.equal(older.length, 1);
+  assert.equal(bound(older[0], 'gte'), new Date(Date.parse('2026-09-20T23:00:00.000Z') - 400 * 86400000).toISOString());
+  assert.equal(bound(older[0], 'lt'), '2026-09-20T23:00:00.000Z');
+  assert.deepEqual(older[0].filters.find((f) => f.col === 'location_id'), { op: 'eq', col: 'location_id', val: 'L' });
+  assert.deepEqual(older[0].orders, ['closed_at', 'id']);
   // Monday of last week to the end of today, midnight to midnight on the venue's clock (BST).
   assert.equal(bound(sales[0], 'gte'), '2026-09-20T23:00:00.000Z');
   assert.equal(bound(sales[0], 'lt'), '2026-10-02T23:00:00.000Z');
@@ -839,17 +870,21 @@ test('detail, one venue, Today: the seven reports', async () => {
     locations: [{
       ops_location_id: 'L', name: 'Coffee Boy Leeds',
       range: { from: '2026-10-02', to: '2026-10-02', cmp_from: '2026-09-25', cmp_to: '2026-09-25', days: 1, cmp_days: 1, cmp_until: '2026-09-25T11:00:00.000Z', cmp_time: '12:00' },
-      compare: { period: 'today', reason: 'ok', pct: 44, net_sales: 28.9, cmp_net_sales: 20, first_sale_date: '2026-08-10' },
+      // 8 Oct 2026: today's refund (5.00 of net sales) comes off net sales and the comparison.
+      compare: { period: 'today', reason: 'ok', pct: 19, net_sales: 23.9, cmp_net_sales: 20, first_sale_date: '2026-08-10' },
     }],
   });
   assert.deepEqual(d.range, d.scope.locations[0].range);
   assert.deepEqual(d.compare, d.scope.locations[0].compare);
   // Gross 5.40 + 12 + 10.80 + 6 = 34.20; five orders (the comp is one, at £0); the void is none.
-  assert.deepEqual(d.totals, { net_sales: 28.9, vat: 5.3, gross_sales: 34.2, orders: 5, tips: 0, avg_check: 5.78 });
+  // 8 Oct 2026: the refund made today (6.00 with 1.00 of VAT) comes off today's sales and VAT, as
+  // Daily trading and Xero take it; the sales with no VAT recorded are counted and named (none here).
+  assert.deepEqual(d.totals, { net_sales: 23.9, vat: 4.3, gross_sales: 28.2, orders: 5, tips: 0, avg_check: 4.78, refunds: 6, refund_vat: 1, vat_missing: 0, vat_missing_refs: [] });
   // 1. By hour, on the venue's clock, with last Friday's whole day beside it (not cut at now).
+  // 8 Oct 2026: the refund made at 09:00 (5.00 of net sales) comes off that hour, as its sale added at its own.
   assert.deepEqual(d.hours, [
     { hour: 8, net: 14.5, orders: 2, cmp_net: 20 },
-    { hour: 9, net: 0, orders: 0, cmp_net: 0 },
+    { hour: 9, net: -5, orders: 0, cmp_net: 0 },
     { hour: 10, net: 0, orders: 1, cmp_net: 0 },
     { hour: 11, net: 14.4, orders: 2, cmp_net: 0 },
     { hour: 12, net: 0, orders: 0, cmp_net: 0 }, { hour: 13, net: 0, orders: 0, cmp_net: 0 }, { hour: 14, net: 0, orders: 0, cmp_net: 0 },
@@ -858,7 +893,8 @@ test('detail, one venue, Today: the seven reports', async () => {
   // 2. Monday to Sunday against last week. Saturday and Sunday have not happened: null, not £0.
   assert.deepEqual(d.week.map((w) => [w.dow, w.date, w.net, w.last_date, w.last_net]), [
     ['Mon', '2026-09-28', 0, '2026-09-21', 0], ['Tue', '2026-09-29', 20, '2026-09-22', 10], ['Wed', '2026-09-30', 0, '2026-09-23', 0],
-    ['Thu', '2026-10-01', 0, '2026-09-24', 0], ['Fri', '2026-10-02', 28.9, '2026-09-25', 50], ['Sat', '2026-10-03', null, '2026-09-26', 0], ['Sun', '2026-10-04', null, '2026-09-27', 0],
+    // last Thursday: the 12.00 refund made that day (10.00 of net sales) comes off it, as a sale would add (8 Oct 2026)
+    ['Thu', '2026-10-01', 0, '2026-09-24', -10], ['Fri', '2026-10-02', 23.9, '2026-09-25', 50], ['Sat', '2026-10-03', null, '2026-09-26', 0], ['Sun', '2026-10-04', null, '2026-09-27', 0],
   ]);
   // 3. Payment mix: the money kinds add up to gross sales; the loyalty reward is listed apart.
   assert.deepEqual(d.payments, [
@@ -867,7 +903,8 @@ test('detail, one venue, Today: the seven reports', async () => {
     { kind: 'gift_card', amount: 5.4, checks: 1, money: true },
     { kind: 'loyalty', amount: 4, checks: 1, money: false },
   ]);
-  assert.equal(r2sum(d.payments.filter((p) => p.money).map((p) => p.amount)), d.totals.gross_sales);
+  // The money kinds are what the tenders TOOK; the refund went back after, so they add up to gross sales plus refunds (8 Oct 2026).
+  assert.equal(r2sum(d.payments.filter((p) => p.money).map((p) => p.amount)), r2sum([d.totals.gross_sales, d.totals.refunds]));
   // 4. Order types and channels. The reader's payment stamp is a till sale.
   assert.deepEqual(d.order_types, [{ type: 'takeaway', net: 13.5, orders: 2 }, { type: 'dine-in', net: 10, orders: 2 }, { type: 'drive-thru', net: 5.4, orders: 1 }]);
   assert.deepEqual(d.channels, [{ channel: 'pos', net: 19.9, orders: 4 }, { channel: 'kiosk', net: 9, orders: 1 }]);
@@ -924,16 +961,17 @@ test('detail, This week: every day of the week, hours added up, labour against t
   ];
   const { detail: d } = await detailOf(fakeOps(t), { period: 'week' });
   assert.equal(d.range.from, '2026-09-28');
-  assert.equal(d.totals.net_sales, 48.9);                     // Tuesday's 20 and today's 28.90
-  // Last week Monday to Friday by 12:00: Tuesday's 10 and the two before noon on Friday.
-  assert.deepEqual(d.compare, { period: 'week', reason: 'ok', pct: 63, net_sales: 48.9, cmp_net_sales: 30, first_sale_date: '2026-08-10' });
-  // 09:00 is Tuesday's sale this week and last Tuesday's beside it.
-  assert.deepEqual(d.hours.find((h) => h.hour === 9), { hour: 9, net: 20, orders: 1, cmp_net: 10 });
+  assert.equal(d.totals.net_sales, 43.9);                     // Tuesday's 20 and today's 28.90, less today's refund of 5.00 net (8 Oct 2026)
+  // Last week Monday to Friday by 12:00: Tuesday's 10 and the two before noon on Friday, less the
+  // 12.00 refund made last Thursday (10.00 of net sales): a refund comes off the week it was made in (8 Oct 2026).
+  assert.deepEqual(d.compare, { period: 'week', reason: 'ok', pct: 119, net_sales: 43.9, cmp_net_sales: 20, first_sale_date: '2026-08-10' });
+  // 09:00 is Tuesday's sale this week less Friday's 09:00 refund, and last Tuesday's sale less last Thursday's 09:00 refund beside it.
+  assert.deepEqual(d.hours.find((h) => h.hour === 9), { hour: 9, net: 15, orders: 1, cmp_net: 0 });
   // The refund made on Friday on Tuesday's check is counted once, though Tuesday is in the period too.
   assert.equal(d.exceptions.refunds.count, 1);
   assert.equal(d.items.by_qty[0].name, 'Bagel');
   // The opener who clocked in at 06:00 for a 06:30 day is on that day (the middle of the shift).
-  assert.deepEqual(d.labour, { cost: 10.5, hours: 12, shifts: 2, net_sales: 48.9, pct: 21.47, target_pct: 28 });
+  assert.deepEqual(d.labour, { cost: 10.5, hours: 12, shifts: 2, net_sales: 43.9, pct: 23.92, target_pct: 28 });
 });
 
 test('detail for the group: one currency added up, each venue on its own day, never a venue that is not yours', async () => {

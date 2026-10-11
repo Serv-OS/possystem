@@ -512,6 +512,15 @@ export default function SyncBridge({ onSyncPulse }) {
               const taxRows = taxRes && !taxRes.error && Array.isArray(taxRes.data) ? { data: taxRes.data.map(mapTaxRateRow), error: null } : taxRes;
               useStore.setState(s => ({ taxRates: ratesAfterRead(taxRows, locationId, s.taxRates, { trusted: isBackOfficeMode() }) }));
             }
+            // 8 Oct 2026 (VAT audit, Fix 3): a till left without rates although its menu names
+            // some (a failed read, or an empty answer) reads again on its own until it has them,
+            // staff see one plain toast, and a venue that really has none alerts the owner once a
+            // day (store afterTaxRatesRead, lib/tillVatGate.js). Payments wait at the gate meanwhile.
+            // The store waits for the menu itself before judging whether it names rates.
+            if (!isBackOfficeMode()) {
+              const ratesTrusted = await clientTrustsEmpty(sb);
+              try { useStore.getState().afterTaxRatesRead?.({ res: taxRes, trusted: ratesTrusted }); } catch { /* the gate says */ }
+            }
           }
 
           // Load discount presets + auto-discount rules

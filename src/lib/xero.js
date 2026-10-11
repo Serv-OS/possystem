@@ -62,6 +62,8 @@ export const xeroFiguresChecked = (locationId, date, hash) => call('xero-config'
 // One row per site per business day; scope 'org' adds the other sites on this Xero you can open.
 export const xeroHistory = (locationId, scope = 'site', days = 60) => call('xero-config', { action: 'history', locationId, scope, days });
 export const xeroHistoryDetail = (locationId, date, forLocationId) => call('xero-config', { action: 'history_detail', locationId, date, ...(forLocationId ? { forLocationId } : {}) });
+// 8 Oct 2026 (D5): days with sales and no ok posting over the last 14 completed business days, per site. Nothing posts.
+export const xeroGaps = (locationId, scope = 'site') => call('xero-config', { action: 'gaps', locationId, scope });
 // "Copy my Lightspeed setup": reads Lightspeed's invoices in Xero, suggests the choices. Nothing is saved.
 // option { optionId, optionName }: this site's tracking option, so only its own invoices are read.
 export const xeroLightspeedSuggest = (locationId, contactName, option) => call('xero-config', {

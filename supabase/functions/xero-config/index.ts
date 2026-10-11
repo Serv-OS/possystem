@@ -26,6 +26,9 @@
 //                 choices as they are now (it lapses when they change)
 //     history     { locationId, scope: 'site' | 'org', days } -> one row per site per day
 //     history_detail { locationId, date, forLocationId? } -> exactly what was sent that day
+//     gaps        { locationId, scope } -> days with sales and no ok posting over the last 14
+//                 completed business days (8 Oct 2026, D5), per site; writes the venue notice
+//                 for a gap older than two days. Nothing posts: the Postings tab offers Push.
 //     lightspeed_suggest { locationId, contactName?, optionId?, optionName? } -> "Copy my
 //                 Lightspeed setup" (read only); the tracking option picks this site's invoices
 //     site_create { locationId, kind: 'accounts' | 'tracking', keys?, categoryName?, optionName? }
@@ -49,6 +52,8 @@ import {
 } from '../_shared/xeroInvoicePlan.js';
 import { suggestFromLightspeed, xeroDate } from '../_shared/lightspeedSuggest.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { scanXeroGaps, noticeXeroGaps } from '../_shared/xeroGapScan.ts';
+import { GAP_SCAN_DAYS } from '../_shared/xeroGaps.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -477,6 +482,32 @@ Deno.serve(async (req) => {
       }
       out.sort((a, b) => b.date.localeCompare(a.date) || String(a.site).localeCompare(String(b.site)));
       return json({ rows: out, days, scope: body.scope === 'org' ? 'org' : 'site', sites: ids.map((id) => ({ locationId: id, name: names[id] || '' })) });
+    }
+
+    // 8 Oct 2026 (D5): the gap scan behind the Postings tab. Days with sales and no ok posting
+    // over the last 14 completed business days, this site or every site on this Xero the caller
+    // may open. A gap older than two days also gets its notice written (once). Nothing posts.
+    if (action === 'gaps') {
+      const conn = body.scope === 'org' ? await connectionOf(locationId) : null;
+      let ids = [locationId];
+      const names: Record<string, string> = {};
+      if (conn?.tenant_id) {
+        const sibs = await siblingsOf(locationId, conn.tenant_id);
+        ids = [locationId, ...(await accessible(caller, sibs.map((x: any) => x.locationId)))];
+        for (const x of sibs) names[x.locationId] = x.name;
+      }
+      const gaps: Record<string, any[]> = {};
+      let noticed = 0;
+      const errors: Record<string, string> = {};
+      await Promise.all(ids.map(async (id) => {
+        try {
+          const res = await scanXeroGaps(sb, platform, id);
+          gaps[id] = res.gaps;
+          if (!names[id]) { try { names[id] = siteNameFrom((await venueSite(platform, id)).name); } catch { names[id] = ''; } }
+          noticed += await noticeXeroGaps(sb, id, names[id] || 'This site', res.gaps, res.venue?.currency);
+        } catch (e) { errors[id] = (e as Error)?.message || String(e); gaps[id] = []; }
+      }));
+      return json({ gaps, noticed, errors, days: GAP_SCAN_DAYS, sites: ids.map((id) => ({ locationId: id, name: names[id] || '' })) });
     }
 
     if (action === 'history_detail') {

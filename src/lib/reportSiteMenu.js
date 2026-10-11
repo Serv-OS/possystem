@@ -31,6 +31,7 @@
 
 import { buildLocalTaxCtx, recordedCheckTax } from './taxCompute.js';
 import { bookedTaxRecord } from './taxShare.js';
+import { saleVatLedger, hasRateLines, roundPence } from '../../supabase/functions/_shared/saleVat.js';
 import { stationNameMap, stationLabel } from './kdsStationNames.js';
 import { sumByVenueHour } from '../backoffice/sections/reports/_filters.js';
 
@@ -380,6 +381,18 @@ export function classifyItems(items) {
 }
 
 // ── tax ───────────────────────────────────────────────────────────────────────
+//
+// 8 Oct 2026 (the VAT audit): the tax of a check is read by the ONE rule every report shares
+// (supabase/functions/_shared/saleVat.js). The split by rate comes from the record the check
+// STORED (what was booked) whenever it has one; an older check with no record is worked out
+// again through its own site's engine, as before. Each rate is named by its name (rate rows
+// carry `name`, never `label`, so every row used to read "Unrated").
+
+/** The name of a rate as the Tax report shows it: its name, else its code, else "No rate". */
+export function taxRateLabel(rate) {
+  if (!rate || typeof rate !== 'object') return 'No rate';
+  return rate.name || rate.label || rate.code || 'No rate';
+}
 
 /**
  * The tax one closed check carries, read against ITS OWN site (rule 3). Same shape as
@@ -389,6 +402,8 @@ export function classifyItems(items) {
 export function siteCheckTax(check, siteMenu) {
   const booked = bookedTaxRecord(check);
   if (booked) return { ...booked, source: 'booked' };
+  const own = check?.taxBreakdown;
+  if (hasRateLines(own)) return { ...own, source: 'booked' };
   if (siteMenu?.taxCtx) return { ...recordedCheckTax(check, siteMenu.taxCtx), source: 'rates' };
   const tax = Number(check?.taxAmount) || 0;
   const gross = Number(check?.total) || 0;
@@ -397,56 +412,90 @@ export function siteCheckTax(check, siteMenu) {
 
 /**
  * Two sites' rates are two rows (different ids), so a rate is matched across sites on what it
- * IS: its label, its percentage and whether it is inclusive. "Standard Rate 20% inclusive" at
+ * IS: its name, its percentage and whether it is inclusive. "Standard Rate 20% inclusive" at
  * Leeds and at Preston is one line.
  */
 export function rateFamilyKey(b) {
   const r = b?.rate || null;
   if (!r) return '__unrated';
-  return `${lower(r.label || 'Unrated')}|${Number(r.rate) || 0}|${r.type === 'inclusive' ? 'inc' : 'exc'}`;
+  return `${lower(taxRateLabel(r))}|${Number(r.rate) || 0}|${r.type === 'inclusive' ? 'inc' : 'exc'}`;
 }
 
 /**
- * The Tax report's roll up of one site's checks, through the site's own tax source. Same
- * figures as the single site report (byRate, byOrderType, stored vs derived, net, gross),
- * plus how many checks came from each source.
+ * The Tax report's roll up of a list of checks (one site or the signed in site), through
+ * `taxOf(check)` for the split by rate. 8 Oct 2026: the report's figures are the shared VAT
+ * ledger (saleVatLedger): VAT on sales is what each check booked, refunds come off on the day
+ * they were made (inside `range` when given), a check with no VAT is named. `variance` is the
+ * VAT booked against the item rules as they are today (the recompute), and `varianceSales`
+ * names the checks behind it, biggest first.
+ *   { rateRows, orderTypeRows, ledger, salesVat, refundVat, vatDue, displayTax, totalStoredTax,
+ *     totalDerivedTax, hasStoredCount, derivedOnlyCount, totalNet, totalGross, effectiveTaxRate,
+ *     variance, varianceSales, sources }
  */
-export function siteTaxAnalysis(checks, siteMenu) {
+export function taxAnalysisOf(checks, taxOf, { range = null, hasRates = true, refundRows = null, keyOf = (b) => (b.rate?.id || '__unrated') } = {}) {
   const byRate = {};
   const byOrderType = {};
   const sources = { booked: 0, rates: 0, stored: 0 };
+  const diffs = [];
   let totalStoredTax = 0, totalDerivedTax = 0, hasStoredCount = 0, derivedOnlyCount = 0, totalNet = 0, totalGross = 0;
+  const live = [];
   for (const c of checks || []) {
     if (!c || c.status === 'voided') continue;
-    const result = siteCheckTax(c, siteMenu);
-    sources[result.source] = (sources[result.source] || 0) + 1;
-    totalDerivedTax += result.totalTax || 0;
+    live.push(c);
+    let result;
+    try { result = taxOf(c) || {}; } catch { result = {}; }
+    const src = result.source === 'rates' ? 'rates' : result.source === 'stored' ? 'stored' : (result.source === 'booked' || hasRateLines(c.taxBreakdown) || bookedTaxRecord(c)) ? 'booked' : 'rates';
+    sources[src] += 1;
+    const derived = Number(result.totalTax) || 0;
+    totalDerivedTax += derived;
     totalNet        += result.subtotal || result.totalNet || 0;
-    if (c.taxAmount != null) { totalStoredTax += c.taxAmount; hasStoredCount++; } else { derivedOnlyCount++; }
+    if (c.taxAmount != null) {
+      totalStoredTax += c.taxAmount; hasStoredCount++;
+      const d = roundPence(c.taxAmount - derived);
+      if (Math.abs(d) > 0.01 + 1e-9) diffs.push({ id: c.id, ref: c.ref, diff: d });
+    } else { derivedOnlyCount++; }
     totalGross += c.total || 0;
     for (const b of result.breakdown || []) {
-      const key = rateFamilyKey(b);
+      const key = keyOf(b);
       if (!byRate[key]) {
-        byRate[key] = { key, rateId: b.rate?.id || '__unrated', label: b.rate?.label || 'Unrated', rate: b.rate?.rate || 0, type: b.rate?.type || '', tax: 0, net: 0, gross: 0, items: 0 };
+        byRate[key] = { key, rateId: b.rate?.id || '__unrated', label: taxRateLabel(b.rate), rate: b.rate?.rate || 0, type: b.rate?.type || '', tax: 0, net: 0, gross: 0, items: 0 };
       }
       byRate[key].tax += b.tax || 0; byRate[key].net += b.net || 0; byRate[key].gross += b.gross || 0; byRate[key].items += b.items || 0;
     }
     const ot = c.orderType || 'dine-in';
     if (!byOrderType[ot]) byOrderType[ot] = { orderType: ot, tax: 0, net: 0, gross: 0, checks: 0 };
-    byOrderType[ot].tax += result.totalTax || 0;
+    byOrderType[ot].tax += derived;
     byOrderType[ot].net += result.subtotal || result.totalNet || 0;
     byOrderType[ot].gross += c.total || 0;
     byOrderType[ot].checks += 1;
   }
-  const displayTax = hasStoredCount > derivedOnlyCount ? totalStoredTax : totalDerivedTax;
+  // refundRows (8 Oct 2026 review): sales closed before the range that carry a refund, so a refund
+  // made in the range on an older sale comes off here as it does in Daily trading and Xero.
+  const ledger = saleVatLedger(live, { range, hasRates, refundRows });
+  diffs.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   return {
     rateRows: Object.values(byRate).sort((a, b) => b.tax - a.tax),
     orderTypeRows: Object.values(byOrderType).sort((a, b) => b.tax - a.tax),
-    totalStoredTax, totalDerivedTax, hasStoredCount, derivedOnlyCount, totalNet, totalGross, displayTax,
+    ledger,
+    salesVat: ledger.salesVat, refundVat: ledger.refundVat, vatDue: ledger.vatDue,
+    // The headline VAT: what was booked, less refunds (the shared rule). Kept under its old name too.
+    displayTax: ledger.vatDue,
+    totalStoredTax, totalDerivedTax, hasStoredCount, derivedOnlyCount, totalNet, totalGross,
     effectiveTaxRate: totalNet > 0 ? (totalDerivedTax / totalNet) * 100 : 0,
     variance: totalStoredTax > 0 ? totalStoredTax - totalDerivedTax : 0,
+    varianceSales: diffs.slice(0, 5),
     sources,
   };
+}
+
+/**
+ * The Tax report's roll up of one site's checks, through the site's own tax source
+ * (siteCheckTax). Same figures as the single site report, with rates matched across sites on
+ * what they are (rateFamilyKey), plus how many checks came from each source.
+ */
+export function siteTaxAnalysis(checks, siteMenu, { range = null, refundRows = null } = {}) {
+  const hasRates = !siteMenu || siteMenu.hasRates !== false;
+  return taxAnalysisOf(checks, (c) => siteCheckTax(c, siteMenu), { range, hasRates, refundRows, keyOf: rateFamilyKey });
 }
 
 /** The line under a site whose rates could not be read, or null. */

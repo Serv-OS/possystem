@@ -26,6 +26,7 @@ import { normaliseTaxProfileLineRow } from './rowMapping.js';
 import { computeCheckTotals } from './payments/checkTotals.js';
 import { refundBreakdown, refundedSoFar, addedOnTaxOf, r2 } from './payments/refundMath.js';
 import { scaleTaxRecord, bookedTaxRecord } from './taxShare.js';
+import { closedCheckTaxFields } from './closedCheckRefundFields.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -557,17 +558,29 @@ test('review: the kiosk V2 gift card is sized on the bill after the tax relief',
   assert.match(src, /giftDueMinor\(\{ total: giftTotal,/);
 });
 
-test('review: every closed-check door carries the booked US tax, and (27 Sep 2026) a scaled UK record, nothing else', () => {
-  // The gate is taxShare.bookedTaxRecord: added-on (US) tax, or a scaled record (a discounted
-  // UK bill, a comp, a QR tab closed short). Every other inclusive row loads exactly as before.
-  const gate = /\.\.\.\(bookedTaxRecord\(\{ taxBreakdown: \w+\.tax_breakdown \}\) \? \{ taxAmount: \w+\.tax_amount \?\? null, taxBreakdown: \w+\.tax_breakdown \} : \{\}\)/g;
+test('review: every closed-check door carries the VAT booked and its record (8 Oct 2026), and bookedTaxRecord still gates what reports take as booked', () => {
+  // 8 Oct 2026 (the VAT audit): every door maps the VAT booked and a usable record through ONE
+  // helper (closedCheckRefundFields.closedCheckTaxFields), so the Tax report reads the split by
+  // rate each sale stored and a realtime copy carries its VAT (the till's X and Z print counted 0
+  // for a kiosk sale, a refund made on another till saved no refund VAT). What a report takes as
+  // BOOKED (and never recomputes) is still gated by taxShare.bookedTaxRecord: added-on (US) tax,
+  // or a scaled record (a discounted UK bill, a comp, a QR tab closed short).
+  const door = /\.\.\.closedCheckTaxFields\(\w+\),/g;
   const rt = fs.readFileSync(new URL('./realtime.js', import.meta.url), 'utf8');
-  assert.equal((rt.match(gate) || []).length, 2);   // realtime INSERT + UPDATE-append
+  assert.equal((rt.match(door) || []).length, 2);   // realtime INSERT + UPDATE-append
   const ms = fs.readFileSync(new URL('../sync/MasterSync.js', import.meta.url), 'utf8');
-  assert.equal((ms.match(gate) || []).length, 1);   // force sync
+  assert.equal((ms.match(door) || []).length, 1);   // force sync
   const db = fs.readFileSync(new URL('./db.js', import.meta.url), 'utf8');
-  assert.equal((db.match(/\.\.\.\(bookedTaxRecord\(\{ taxBreakdown: c\.tax_breakdown \}\) \? \{ taxBreakdown: c\.tax_breakdown \} : \{\}\)/g) || []).length, 2);
-  for (const src of [rt, ms, db]) assert.doesNotMatch(src, /tax_breakdown\?\.hasExclusiveTax \?/);
+  assert.equal((db.match(door) || []).length, 1);   // the one row map (mapClosedCheckRow, 8 Oct 2026 review)
+  assert.equal((db.match(/result\.data\.map\(mapClosedCheckRow\)/g) || []).length, 3);   // boot, the range read, the refund lookback
+  for (const src of [rt, ms, db]) {
+    assert.doesNotMatch(src, /tax_breakdown\?\.hasExclusiveTax \?/);
+    assert.doesNotMatch(src, /bookedTaxRecord\(/, 'the doors no longer gate the record themselves');
+  }
+  // The helper: the VAT booked always (null stays null), the record only when it is usable.
+  assert.deepEqual(closedCheckTaxFields({ tax_amount: 1, tax_breakdown: { totalTax: 1, breakdown: [] } }), { taxAmount: 1, taxBreakdown: { totalTax: 1, breakdown: [] } });
+  assert.deepEqual(closedCheckTaxFields({ tax_amount: null, tax_breakdown: [] }), { taxAmount: null });
+  assert.deepEqual(closedCheckTaxFields({ tax_amount: 0.81 }), { taxAmount: 0.81 });
   // The gate itself: US yes, scaled UK yes, plain UK no.
   assert.ok(bookedTaxRecord({ taxBreakdown: { hasExclusiveTax: true, totalTax: 1 } }));
   assert.ok(bookedTaxRecord({ taxBreakdown: { hasExclusiveTax: false, totalTax: 1, share: 0.5, breakdown: [] } }));
