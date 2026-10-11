@@ -208,16 +208,28 @@ test('the venue screen: tap to open, a clear back, and never another venue\'s or
     assert.ok(reports.includes(`title="${title}"`), title);
   }
   assert.ok(reports.includes('if (!v) return null;'));
+  // 8 Oct 2026: the Sales mix card sits second, right after Sales by hour, and a function from
+  // before the mix (no detail.mix) gets no card at all.
+  const hoursAt = reports.indexOf('<HoursCard hours={detail.hours} period={period} range={range} m={m} />');
+  const mixAt = reports.indexOf('<SalesMixCard mix={detail.mix} period={period} m={m} />');
+  const weekAt = reports.indexOf('<WeekCard week={detail.week} m={m} />');
+  assert.ok(hoursAt > 0 && hoursAt < mixAt && mixAt < weekAt, 'Sales mix is the second card');
+  assert.ok(reports.includes('title="Sales mix"'));
+  assert.ok(reports.includes('if (!mix) return null;'));
   // Void reasons are not in the database: the card says so and never makes one up.
   assert.ok(reports.includes('if (e.reasons == null) {'));
   // No chart library: nothing imported but React and the app's own files.
-  for (const src of [screen, reports]) {
+  const bar = read('../surfaces/owner/MixBar.jsx');
+  for (const src of [screen, reports, bar]) {
     for (const m of src.matchAll(/from '([^']+)'/g)) assert.ok(m[1] === 'react' || m[1].startsWith('.'), `unexpected import ${m[1]}`);
   }
 });
 
+// The two long dashes, built from their codes so this file carries neither of them itself.
+const LONG_DASHES = new RegExp(`[${String.fromCharCode(0x2013)}${String.fromCharCode(0x2014)}]`);
+
 test('no em or en dash is used as punctuation in the words on screen', () => {
-  for (const p of ['./ownerCompare.js', './ownerDetail.js', '../surfaces/owner/OwnerDetail.jsx']) {
-    assert.doesNotMatch(read(p), /[—]| – /, p);
+  for (const p of ['./ownerCompare.js', './ownerDetail.js', './ownerMix.js', '../surfaces/owner/OwnerDetail.jsx', '../surfaces/owner/OwnerReports.jsx', '../surfaces/owner/MixBar.jsx']) {
+    assert.doesNotMatch(read(p), LONG_DASHES, p);
   }
 });

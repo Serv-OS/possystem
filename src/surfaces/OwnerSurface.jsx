@@ -1,8 +1,8 @@
 // src/surfaces/OwnerSurface.jsx  (?mode=owner)
 //
-// The owner phone app — a top-down snapshot of the whole business at a glance.
+// The owner phone app: a top-down snapshot of the whole business at a glance.
 // Mobile-first PWA surface: back-office login (owners' existing credentials),
-// then a rollup across every location they can access plus a per-venue card —
+// then a rollup across every location they can access plus a per-venue card:
 // today's sales vs forecast, labour %, live orders/tables, WTD vs last week and
 // today's top items. All figures come from the owner-snapshot edge fn in one
 // round trip. Read-only by design.
@@ -26,8 +26,14 @@
 //     group card per currency (the function's rollup.by_currency).
 //   * AN OLD FUNCTION (no `compare` block, no detail call): the cards draw exactly what they
 //     drew before, and the venue screen says "More reports need a ServOS update".
+//
+// 8 Oct 2026, Peter: "what is Food/drink/other split ... in hospitality a valued piece of data".
+// Every venue card and every group card gets a thin sales mix bar under its sales figure (Food,
+// Drinks, Other, with each group's share and its change in points), from the function's own
+// `mix` blocks through src/lib/ownerMix.js (src/surfaces/owner/MixBar.jsx draws it). Only when
+// the function says it has the mix (canMix); a function from before it shows no bar at all.
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
@@ -38,8 +44,10 @@ import {
   venueView, rollupView, likeForLikeNote, rangeLabel, sharedRange, signedPct, groupCards,
 } from '../lib/ownerPeriod';
 import { compareBlock, groupCompareBlock, compareLine, groupLine, sharedCompareRange } from '../lib/ownerCompare';
-import { canDetail, groupTarget, venueTarget } from '../lib/ownerDetail';
+import { canDetail, canMix, groupTarget, venueTarget } from '../lib/ownerDetail';
+import { cardBar, allOtherByCurrency } from '../lib/ownerMix';
 import OwnerDetail from './owner/OwnerDetail';
+import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
@@ -55,7 +63,8 @@ const phoneStorage = () => { try { return window.localStorage; } catch { return 
 const pctTone = (p, good = 'up') => p == null ? 'var(--t3)' : (good === 'up' ? (p >= 100 ? 'var(--grn)' : p >= 85 ? 'var(--amber)' : 'var(--red)') : 'var(--t1)');
 
 export default function OwnerSurface() {
-  const [session, setSession] = useState(undefined); // undefined=checking
+  // undefined = checking; with no backend (the demo build) there is no session to check for.
+  const [session, setSession] = useState(isMock || !supabase ? null : undefined);
   // SECOND SIGN IN STEP (docs/SECOND_STEP.md): the Owner app signs in with Back Office
   // credentials and its token can read everything the Back Office can, so it asks for the
   // same second step. Closed again whenever the session drops back to password only.
@@ -65,11 +74,11 @@ export default function OwnerSurface() {
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
   const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
 
-  useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch {} }, []);
-  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch {} }, [theme]);
+  useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch { /* no document */ } }, []);
+  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch { /* storage closed to us */ } }, [theme]);
 
   // The app globally locks html/body/#root to height:100% + overflow:hidden
-  // (kiosk/POS style — no page scroll). The owner app is a normal scrollable
+  // (kiosk/POS style, no page scroll). The owner app is a normal scrollable
   // mobile page, so unlock scrolling while it's mounted and restore on unmount.
   useEffect(() => {
     const nodes = [document.documentElement, document.body, document.getElementById('root')].filter(Boolean);
@@ -93,7 +102,7 @@ export default function OwnerSurface() {
   }, []);
 
   useEffect(() => {
-    if (isMock || !supabase) { setSession(null); return; }
+    if (isMock || !supabase) return undefined;
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       setSession(s || null);
@@ -188,7 +197,7 @@ function Login({ theme, onToggleTheme }) {
   );
 }
 
-function Dashboard({ email, theme, onToggleTheme }) {
+function Dashboard({ theme, onToggleTheme }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -213,7 +222,7 @@ function Dashboard({ email, theme, onToggleTheme }) {
       const { data: d, error } = await withTimeout(
         supabase.functions.invoke('owner-snapshot', { body: { period: want } }),
         want === 'month' ? MONTH_LOAD_TIMEOUT_MS : LOAD_TIMEOUT_MS, 'Owner snapshot');
-      if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
+      if (error) { let b = null; try { b = await error.context?.json?.(); } catch { /* no body to read */ } throw new Error(b?.error || error.message); }
       if (d?.error) throw new Error(d.error);
       if (mine !== seq.current) return;
       setData(d);
@@ -278,6 +287,10 @@ function Dashboard({ email, theme, onToggleTheme }) {
   const dates = shown === 'today' ? null : sharedRange(data?.locations);
   // One group card, or one per currency when the venues do not share one.
   const groups = groupCards(data);
+  // 8 Oct 2026: the sales mix bars, only from a function that sends the mix. A venue card in a
+  // currency with nothing set up anywhere stays quiet; its group card carries the one hint.
+  const mixOn = canMix(data);
+  const quietBy = allOtherByCurrency(groups);
   // The numbers on screen are for another period than the lit chip: they stay, dimmed, under
   // their own labels, until an answer for the chip lands. NOT only while the call is running:
   // a This month call that failed left Today's figures at full brightness under a lit
@@ -327,11 +340,13 @@ function Dashboard({ email, theme, onToggleTheme }) {
           {/* ── Rollup (all venues of one currency, the period shown) ── */}
           {groups.map((g) => (
             <GroupCard key={g.currency} g={g} shown={shown} multi={multi} mixed={groups.length > 1}
+              bar={mixOn ? cardBar(g.rollup.mix, { hint: true }) : null}
               onOpen={() => openDetail(groupTarget(groups.length > 1 ? g.currency : (r.currency || null), g.rollup.locations))} />
           ))}
 
           {/* ── Per-venue cards ── */}
-          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates} onOpen={() => openDetail(venueTarget(l))} />)}
+          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates}
+            bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null} onOpen={() => openDetail(venueTarget(l))} />)}
         </div>
       )}
     </>
@@ -345,7 +360,7 @@ const tapProps = (onOpen, label) => ({
 });
 const MoreHint = () => <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, flexShrink: 0 }}>Reports ›</span>;
 
-function GroupCard({ g, shown, multi, mixed, onOpen }) {
+function GroupCard({ g, shown, multi, mixed, onOpen, bar }) {
   const r = g.rollup;
   const cur = g.currency;
   const copy = PERIOD_COPY[shown];
@@ -368,9 +383,11 @@ function GroupCard({ g, shown, multi, mixed, onOpen }) {
           {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
         </div>
       )}
+      {/* 8 Oct 2026: the sales mix of this currency's venues, from the function; nothing from an old one. */}
+      <MixBar bar={bar} size="group"/>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
         <Mini label="Orders" value={rv.orders} />
-        <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '—'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
+        <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '-'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
         <Mini label="Live now" value={rv.live_orders} />
         <Mini label="On floor" value={rv.open_tables} />
       </div>
@@ -403,7 +420,7 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName, period, showDates, onOpen }) {
+function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
   const t = venueView(l, period);
   const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
@@ -435,11 +452,13 @@ function VenueCard({ l, showName, period, showDates, onOpen }) {
           <div style={{ height: '100%', width: `${Math.min(100, fpct || 0)}%`, background: pctTone(fpct), borderRadius: 99 }} />
         </div>
       )}
+      {/* 8 Oct 2026: the sales mix bar (Food, Drinks, Other), from the function; nothing from an old one. */}
+      <MixBar bar={bar}/>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 14 }}>
         <Stat label="Orders" value={t.orders} />
         <Stat label="Avg check" value={money(t.avg_check, l.currency, 2)} />
-        <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '—'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
+        <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '-'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>

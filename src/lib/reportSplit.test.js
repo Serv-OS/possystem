@@ -91,7 +91,9 @@ test('pin: every flipped report renders its one site view untouched when one sit
   assert.match(read(dir + 'OrderSources.jsx'), /if \(!isSplit\(props\.sites\)\) return <OrderSourcesOne \{\.\.\.props\}\/>;/);
   assert.match(read(dir + 'Shifts.jsx'), /if \(isSplit\(props\.sites\)\) return <ShiftsSites \{\.\.\.props\}\/>;/);
   // the one site views take the props they always took: nothing new reaches them
-  assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare \}\) \{/);
+  // 8 Oct 2026 (Sales mix): the one site view also takes sites, scope and onOpenReport, which it
+  // only hands to the Sales mix strip under its tiles; its own figures are untouched.
+  assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport \}\) \{/);
   assert.match(read(dir + 'DailyTrend.jsx'), /function DailyTrendOne\(\{ checks, prevChecks = \[\], fmt, fmtN, range \}\) \{/);
   assert.match(read(dir + 'Payments.jsx'), /function PaymentsOne\(\{ checks, fmt, fmtN \}\) \{/);
   assert.match(read(dir + 'Tables.jsx'), /function TablesOne\(\{ checks, fmt, fmtN \}\) \{/);
