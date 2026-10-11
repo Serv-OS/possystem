@@ -143,7 +143,9 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     const src = fs.readFileSync(path.join(here, SOURCES[fn].file), 'utf8');
     const dir = SOURCES[fn].dir;
     assert.match(src, new RegExp(`import \\{ pagedRows(, pagedEach, limiter)? \\} from '${dir}\\/pagedRows\\.js';`));
-    assert.match(src, new RegExp(`import \\{ SALES_CHECK_COLS, emptySales, addCheckSales \\} from '${dir}\\/snapshotSales\\.js';`));
+    // 8 Oct 2026: both also read addRefundSales and refundMadeAt (refunds come off on their day).
+    assert.match(src, new RegExp(`import \\{ SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt \\} from '${dir}\\/snapshotSales\\.js';`));
+    assert.match(src, /addRefundSales\(/);
     assert.match(src, /addCheckSales\(/);
     // Sales never come from the subtotal or the total.
     assert.doesNotMatch(src, /Number\(c\.subtotal\)/);
@@ -165,10 +167,14 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     if (fn === 'owner-snapshot') { assert.equal(firstSale, 1, 'the first sale read'); assert.match(src, /const FIRST_SALE_ROWS = 60;/); assert.match(src, /const FIRST_SALE_PAGES = 5;/); }
     assert.equal(checkReads.length + firstSale, (src.match(/\.from\('closed_checks'\)/g) ?? []).length, 'a closed_checks read outside pagedRows');
     assert.ok(checkReads.some((p) => p.q.includes('.select(SALES_CHECK_COLS)')), 'no closed_checks read with SALES_CHECK_COLS');
+    // 8 Oct 2026 (review): both read the OLDER checks that carry a refund (refunds <> '[]'), 400
+    // days back, so a refund made today on an old sale comes off today as Daily trading takes it off.
+    assert.match(src, /const REFUND_LOOKBACK_DAYS = 400;/);
+    assert.ok(checkReads.some((p) => p.what === 'older refunds' && p.q.includes(".neq('refunds', '[]')") && p.q.includes('.select(SALES_CHECK_COLS)')), `${fn}: no older refunds read`);
     for (const p of checkReads) assert.match(p.q, /\.order\('closed_at'\)\.order\('id'\)$/);
     // Every read that pages is ordered on a unique key (order_queue's is location_id + ref).
-    // (wf_venue_settings has one row a venue: its key is location_id.)
-    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('wf_venue_settings'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
+    // (wf_venue_settings and xero_config have one row a venue: their key is location_id.)
+    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('(wf_venue_settings|xero_config)'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
     // PostgREST returns at most 1000 rows a request: a .limit() of 1000 or more is a lie.
     for (const m of src.replace(/\/\/[^\n]*/g, '').matchAll(/\.limit\((\d+)\)/g)) assert.ok(Number(m[1]) < 1000, `${fn} still has .limit(${m[1]})`);
   });
@@ -183,8 +189,9 @@ test('owner-snapshot answers VAT with net, and a failed read is a 500, not £0',
   assert.match(src, /const snap = await buildOwnerSnapshot\(\{ ops: opsAdmin, opsIds, meta, now: new Date\(\), period \}\);/);
   assert.doesNotMatch(src, /\.from\('closed_checks'\)/, 'a closed_checks read outside the shared build');
   assert.match(src, /return json\(\{ error: \(e as Error\)\?\.message \|\| 'Could not build the snapshot' \}, 500\);/);
-  // Items (the heavy column) are read for the period's own days only (today's, under Today),
-  // never the comparison or the whole sales window. ownerSnapshot.test.js checks the dates asked for.
+  // Items (the heavy column) are read for the period's own days (today's, under Today) and, since
+  // 8 Oct 2026 (the Sales mix points), for the comparison span in its own read (cmpItemsOf), never
+  // the whole sales window. ownerSnapshot.test.js checks the dates asked for.
   assert.match(core, /const itemsOf = \(id\) => Promise\.all\(windowsOf\(plan\[id\], \[\{ from: plan\[id\]\.range\.from, to: plan\[id\]\.today \}\], SLICE_DAYS\[period\]\)/);
   // 5 Oct 2026: the detail call goes through the shared build too, and every answer says what
   // the function can do, so an app can tell it from one that cannot.

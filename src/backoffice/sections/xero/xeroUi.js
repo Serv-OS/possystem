@@ -50,12 +50,17 @@ export const accountRef = (a) => (a ? (a.code || a.id) : '');
 /** Accounts that can receive a payment in Xero: bank accounts, or "Enable payments to this account". */
 export const canTakePayments = (a) => !!a && (a.bank || String(a.type || '').toUpperCase() === 'BANK' || a.pay === true);
 
+// 8 Oct 2026 (D5): a day with sales and no posting is 'missing' (red, with a Push button); a
+// day with nothing to post is 'quiet'. Before this both read a grey "Not posted", and Leeds
+// 30 Sep (143 sales) looked like a quiet Sunday for a week.
 export const STATUS_LABEL = {
   posted: 'Posted', partly_posted: 'Partly posted', blocked: 'Blocked', failed: 'Failed', sending: 'Sending', waiting: 'Not posted',
+  missing: 'Not posted', quiet: 'Nothing to post',
 };
 export const STATUS_COLOUR = {
   posted: ['rgba(46,143,78,.16)', '#2f8f4e'], partly_posted: ['rgba(200,150,40,.16)', '#c89628'], blocked: ['rgba(200,150,40,.16)', '#c89628'],
   failed: ['rgba(200,60,60,.16)', '#c33'], sending: ['rgba(80,120,200,.16)', '#4a6fc0'], waiting: ['rgba(120,120,120,.16)', 'var(--t3)'],
+  missing: ['rgba(200,60,60,.16)', '#c33'], quiet: ['rgba(120,120,120,.16)', 'var(--t3)'],
 };
 
 /** The outline on a field ServOS filled in for the person to check. */

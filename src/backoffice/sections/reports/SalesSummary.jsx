@@ -15,10 +15,11 @@ import { toCsv, downloadCsv } from './_csv';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
+import SalesMixStrip from './SalesMixStrip';
 
 // The figures live in lib/salesStats.js (28 Sep 2026) so the till can print them too.
 export { computeSalesStats } from '../../../lib/salesStats';
-import { computeSalesStats } from '../../../lib/salesStats';
+import { computeSalesStats, vatMissingLine } from '../../../lib/salesStats';
 
 // 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
 // together"): with more than one site on screen this is the site split below. One site is
@@ -28,7 +29,7 @@ export default function SalesSummary(props) {
 }
 
 // compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
-function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare }) {
+function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport }) {
   const cur  = useMemo(() => computeSalesStats(checks),     [checks]);
   const prev = useMemo(() => computeSalesStats(prevChecks), [prevChecks]);
   const avgCheck     = cur.count  ? cur.net  / cur.count  : 0;
@@ -106,6 +107,7 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
         <StatTile label="Avg check"  value={fmt(avgCheck)}     vs={compare} values={[avgCheck, prevAvgCheck]}/>
         <StatTile label="Tips"       value={fmt(cur.tips)}     vs={compare} values={[cur.tips, prev.tips]} noun="tips" sub={cur.net > 0 ? `${((cur.tips/cur.net)*100).toFixed(1)}% of net` : null} color="var(--grn)"/>
       </div>
+      <SalesMixStrip checks={checks} fmt={fmt} sites={sites} scope={scope} onOpen={onOpenReport ? () => onOpenReport('sales_mix') : null}/>
 
       {servicePeriods && servicePeriods.rows.length > 0 && (
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'14px 16px', marginBottom:12 }}>
@@ -148,6 +150,8 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
           <LadderRow label="less Refunds"        value={fmt(-cur.refundsItems)} tone={cur.refundsItems > 0 ? 'bad'  : null}/>
           <LadderRow label="Net sales"           value={fmt(cur.net)}         prominence="sub" border/>
           <LadderRow label="plus Tax"            value={fmt(cur.tax)}/>
+          {/* 8 Oct 2026 (the VAT audit): a sale with goods and no VAT recorded is counted 0 and named, never hidden. */}
+          {cur.vatMissingCount > 0 && <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, padding:'2px 0 6px', lineHeight:1.5 }}>{vatMissingLine(cur)}</div>}
           <LadderRow label={cur.refundsService > 0 ? 'plus Service (net of refunds)' : 'plus Service'} value={fmt(cur.service)}/>
           {cur.deliveryFees > 0 && <LadderRow label="plus Delivery charges" value={fmt(cur.deliveryFees)}/>}
           <LadderRow label={cur.refundsTip > 0 ? 'plus Tips (net of refunds)' : 'plus Tips'} value={fmt(cur.tips)}/>
@@ -279,6 +283,7 @@ function SalesSummarySites(props) {
               <StatTile label="Avg check" value={b.fmt(perCheck(all))}/>
               <StatTile label="Tips"      value={b.fmt(all.tips)} sub={all.net > 0 ? `${((all.tips / all.net) * 100).toFixed(1)}% of net` : null} color="var(--grn)"/>
             </div>
+            <SalesMixStrip block={b} fromSums={fromSums} onOpen={props.onOpenReport ? () => props.onOpenReport('sales_mix') : null}/>
             <SiteMatrix block={b} rows={rows} first="Revenue breakdown" fmtN={fmtN}/>
           </>
         );

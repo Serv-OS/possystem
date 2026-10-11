@@ -9,7 +9,7 @@
  */
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
-import { missingColumnOf } from '../lib/closedCheckWrite';
+import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { isParkedPermissionItem, releaseParkedItem, isPermissionError, shouldReleaseParkedOnLink } from '../lib/deviceFence';
 import { getLastDeviceLinkOutcome } from '../lib/supabase';
 // Fix round 2 (the zero row blocker): a replayed update or delete that changes 0 rows is judged
@@ -200,18 +200,18 @@ export async function bufferedDeleteKeys(table) {
 // device is linked again), 'failed' (refused or not sent: retried later, or failed for good).
 async function replayItem(supabase, item) {
   try {
-    if (item.type === 'upsert') {
-      let payload = item.payload;
-      let { error } = await supabase.from(item.table).upsert(payload, { onConflict: item.onConflict || 'id' });
-      // v5.9.11: a buffered SALE (MPOS close recovery) must not be refused forever because
-      // the database lacks a newer optional column (tenders before its migration). Drop the
-      // column PostgREST names and send the rest, as every closed_checks writer now does.
-      for (let n = 0; error && item.table === 'closed_checks' && n < 4; n++) {
-        const col = missingColumnOf(error);
-        if (!col || !(col in payload) || col === 'id' || col === 'location_id') break;
-        payload = { ...payload }; delete payload[col];
-        ({ error } = await supabase.from(item.table).upsert(payload, { onConflict: item.onConflict || 'id' }));
-      }
+    if (item.table === 'closed_checks' && (item.type === 'upsert' || item.type === 'insert')) {
+      // 8 Oct 2026 (VAT audit, Fix 3): a buffered SALE (MPOS close recovery) goes through
+      // writeClosedCheckRow, the ONE way a closed_checks row is written: the v5.9.11 missing
+      // column loop lives there now, and the save time guard (lib/saleVatGuard.js) repairs the
+      // row's VAT from its lines with this till's rates or refuses it by name, so a sale buffered
+      // on a till that held no rates is never saved with tax_amount null (it stays here, retried).
+      // The upsert is INSERT ... ON CONFLICT DO NOTHING: a sale already booked under this id (the
+      // operator's retry landed first) is never overwritten by the buffered copy.
+      const { error } = await writeClosedCheckRow(supabase, item.payload, { upsert: item.type === 'upsert', tag: 'OfflineQueue' });
+      if (error) throw error;
+    } else if (item.type === 'upsert') {
+      const { error } = await supabase.from(item.table).upsert(item.payload, { onConflict: item.onConflict || 'id' });
       if (error) throw error;
     } else if (item.type === 'insert') {
       const { error } = await supabase.from(item.table).insert(item.payload);

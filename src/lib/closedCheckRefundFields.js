@@ -11,6 +11,22 @@
 // no card leg and told staff to refund 3.80 by hand. The boot loaders had these fields all
 // along; realtime and MasterSync never did. One map, so no copy can drop them again.
 // Pure: no supabase import, testable in Node.
+/**
+ * 8 Oct 2026 (the VAT audit): the VAT a closed check booked and the record behind it, on EVERY
+ * copy the app holds (boot, realtime, force sync). Until now an ordinary UK row carried
+ * taxBreakdown only when it was a US added-on record or a scaled one, and a realtime copy
+ * carried no taxAmount at all, so the till's X and Z print counted 0 VAT for a kiosk sale and a
+ * refund made on another till saved no refund VAT. taxBreakdown is mapped when it is a usable
+ * record (an object with a total); the server's empty list ([]) is left off, as before.
+ * recordedCheckTax still takes a stored record as BOOKED only when taxShare.bookedTaxRecord says
+ * so (added-on, or scaled), so the figures it recomputes are unchanged by this.
+ */
+export function closedCheckTaxFields(row) {
+  const tb = row?.tax_breakdown;
+  const usable = !!tb && typeof tb === 'object' && !Array.isArray(tb) && tb.totalTax != null && Number.isFinite(Number(tb.totalTax));
+  return { taxAmount: row?.tax_amount ?? null, ...(usable ? { taxBreakdown: tb } : {}) };
+}
+
 export function closedCheckRefundFields(row) {
   return {
     giftCard: row?.gift_card || null,                        // v5.5.217: gift card reversal on refund

@@ -26,8 +26,9 @@ import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerChargedTax } from '../../lib/publicCheckTax';
+import VatGateNotice from '../online/VatGateNotice';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { fetchActiveDiscountRules } from '../../lib/db';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
@@ -39,7 +40,9 @@ import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as cal
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 
-export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced, menuId = null }) {
+// vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
+// tax rates are in) and the way to load them again. Payment never opens while it is shut.
+export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced, menuId = null, vatGate = null, onRetryRates = null }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
   // mode — they already opened a tab earlier and tapped Add more on
   // the resume screen. Skip Stripe pre-auth + card input entirely;
@@ -189,6 +192,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal),
     [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal],
   );
+  // 8 Oct 2026: does this page hold tax set up (rates or profiles)? With it, a sale is never sent
+  // without VAT (publicCheckTaxFields throws a named error instead; the gate below stops payment first).
+  const hasTaxConfig = useMemo(() => taxCtxHasConfig(taxCtx || { taxRates }), [taxCtx, taxRates]);
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
   // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
@@ -338,6 +344,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       setError('Please enter your name and a valid phone number (we use the last 4 digits to reconnect you with your tab).');
       return;
     }
+    // 8 Oct 2026 (VAT audit, Preston QR-4OGI7): no payment, no tab hold, while this venue's tax
+    // rates are not loaded. The card is never charged for a sale the page cannot book right.
+    if (vatGate) { setError(vatGate.message); return; }
+    try { publicCheckTaxFields(taxBreakdown, { hasTaxConfig, goods: subtotal }); }
+    catch (e) { setError(e?.message || 'Could not work out the VAT. Try again.'); return; }
     // Ryft is card-not-present here. RyftPaymentForm creates its own session, so
     // we just advance to the pay step — for an open tab it's created with a
     // manual-capture hold + the card stored (Unscheduled), exactly like Stripe's
@@ -556,7 +567,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         // the raw figure (the server read 0.9333333333333327 as 0), and the tax record by rate
         // whenever a rate was resolved, UK included, as the till writes it (lib/publicCheckTax.js).
         // With an automatic offer this is the VAT on what was charged (taxBreakdown above).
-        ...publicCheckTaxFields(taxBreakdown),
+        // 8 Oct 2026: with tax set up this throws rather than sending null (checked before payment).
+        ...publicCheckTaxFields(taxBreakdown, { hasTaxConfig, goods: subtotal }),
         total,
         method: 'card',
         // v5.9.11: what paid the check, per tender. place_public_order keeps it on the row it
@@ -965,9 +977,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 {tabWarning}
               </div>
             )}
+            <VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={theme}/>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={continueToPayment} disabled={!valid || working}
-              className={valid && !working ? 'op-btn-primary' : undefined}
+            <button onClick={continueToPayment} disabled={!valid || working || !!vatGate}
+              className={valid && !working && !vatGate ? 'op-btn-primary' : undefined}
               style={{
                 width: '100%', padding: '16px 22px', borderRadius: 14,
                 background: valid ? theme.accent : `${theme.fg}20`,

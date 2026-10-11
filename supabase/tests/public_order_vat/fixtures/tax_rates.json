@@ -1,0 +1,450 @@
+[
+ {
+  "id": "4554f07c-ab5f-4973-8d7d-9bf955abd9d9",
+  "location_id": "06202d51-8b42-4fac-88d9-331e1a7a41aa",
+  "venue": "Birmingham",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "0c25f5dd-33b7-4c1c-9dae-28090b8b9353",
+  "location_id": "06202d51-8b42-4fac-88d9-331e1a7a41aa",
+  "venue": "Birmingham",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "3d076f14-a93b-444f-bed9-cf897e2b8884",
+  "location_id": "06202d51-8b42-4fac-88d9-331e1a7a41aa",
+  "venue": "Birmingham",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "36027f73-a594-489a-9ee9-b864c437d0a6",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "venue": "Coffee Boy Headingley",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "b256fa9b-fd1e-44cd-bb0a-6fbe997454f8",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "venue": "Coffee Boy Headingley",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "57720840-3fa4-4f3b-8726-9a5eb55ad651",
+  "location_id": "24786cbd-efe6-40d9-8424-46e242820abf",
+  "venue": "Coffee Boy Headingley",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "83e61d2b-b0bc-46b5-944f-0c214b6324f4",
+  "location_id": "3f915972-7107-4f70-9b3d-de80ba9ab0c2",
+  "venue": "Coffee Boy Barnsley Train Station",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "446937cd-7ec5-44ed-9d71-5b25452a94ad",
+  "location_id": "3f915972-7107-4f70-9b3d-de80ba9ab0c2",
+  "venue": "Coffee Boy Barnsley Train Station",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "6a159b5e-441b-4f69-93e9-9e04570812c1",
+  "location_id": "3f915972-7107-4f70-9b3d-de80ba9ab0c2",
+  "venue": "Coffee Boy Barnsley Train Station",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "8a476d3a-a8e2-404c-8473-073182bb7443",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "0ed7ee06-cfe6-493a-aaa3-46bef1051489",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "229a7558-c675-47e9-bb16-c756815591d9",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "e4934a19-9fe3-497b-95d2-d4217bdf6b44",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "venue": "Coffee Boy Barnsley",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "85b61962-f985-4217-9fda-5e75e3e6ed78",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "venue": "Coffee Boy Barnsley",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "679381a2-bcb3-47d0-82a1-99671a95bd0b",
+  "location_id": "c5dd8483-f250-4868-9e46-709a74d78e2a",
+  "venue": "Coffee Boy Barnsley",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "f2d44561-f146-4fa5-b9a5-75aeb6d26a05",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "venue": "Coffee Boy Huddersfield",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "a779f62e-4bc6-49ba-9860-dbb23d19adca",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "venue": "Coffee Boy Huddersfield",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "b4c75881-8771-4780-bac4-afc501f4a77e",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "venue": "Coffee Boy Huddersfield",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "60168c55-b69b-40b3-9980-68c87ed40f5f",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "1913bd65-00cf-4772-90b9-0cb260d8c029",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "6368f6fb-ff7a-4dfd-a44c-8db4e09b58bf",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "1acfd2ac-07df-4dec-ae2d-111cf5a4b407",
+  "location_id": "5d9864db-e627-42bc-90af-d76ba3b78241",
+  "venue": "Huddersfield",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "5c24af11-ace9-4add-8c32-bdb659548fa3",
+  "location_id": "5d9864db-e627-42bc-90af-d76ba3b78241",
+  "venue": "Huddersfield",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "4be9232c-0505-436c-842c-2ba11b8325c8",
+  "location_id": "5d9864db-e627-42bc-90af-d76ba3b78241",
+  "venue": "Huddersfield",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "b667cfd6-2f7f-4e9d-b78f-279451f2a3de",
+  "location_id": "c3ebfa7f-61b3-4fbc-a192-e7e3949f370e",
+  "venue": "Location 2",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "5b512401-d6d5-4734-873c-df19cfe64c12",
+  "location_id": "c3ebfa7f-61b3-4fbc-a192-e7e3949f370e",
+  "venue": "Location 2",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "ba10eb74-da50-4c49-ad64-6085ca185d7c",
+  "location_id": "c3ebfa7f-61b3-4fbc-a192-e7e3949f370e",
+  "venue": "Location 2",
+  "name": "Standard Rate",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "c0136481-aef3-4d2c-88fa-ea8bf76493e7",
+  "location_id": "7218c716-eeb4-4f96-b284-f3500823595c",
+  "venue": "Provo",
+  "name": "Zero Rate",
+  "code": "ZERO",
+  "rate": 0,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "bd0e5686-f4d5-4523-af1f-818df11fb1ea",
+  "location_id": "7218c716-eeb4-4f96-b284-f3500823595c",
+  "venue": "Provo",
+  "name": "Reduced Rate",
+  "code": "VAT5",
+  "rate": 0.05,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "e917d8ae-fd95-427c-9c4a-0e1cd144ad0e",
+  "location_id": "7218c716-eeb4-4f96-b284-f3500823595c",
+  "venue": "Provo",
+  "name": "VAT",
+  "code": "VAT20",
+  "rate": 0.2,
+  "type": "inclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ },
+ {
+  "id": "ba634704-f510-444b-a2c8-ac88bf337459",
+  "location_id": "5e870949-add5-42e7-924b-8018e212b91a",
+  "venue": "The Cabin",
+  "name": "Tax Exempt",
+  "code": "EXEMPT",
+  "rate": 0,
+  "type": "exclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": false,
+  "active": true
+ },
+ {
+  "id": "2b250c59-2398-4d40-a585-9d09b05af912",
+  "location_id": "5e870949-add5-42e7-924b-8018e212b91a",
+  "venue": "The Cabin",
+  "name": "Sales Tax",
+  "code": "US_SALES",
+  "rate": 0.08875,
+  "type": "exclusive",
+  "applies_to": [
+   "all"
+  ],
+  "is_default": true,
+  "active": true
+ }
+]

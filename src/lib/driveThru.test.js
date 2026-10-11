@@ -50,11 +50,15 @@ test('menuPricing.js: CHANNEL_MAP maps every drive thru spelling to driveThru', 
   hasRe(map, /'drive-through':\s*'driveThru'/, 'CHANNEL_MAP');
 });
 
-test('tax.js and taxEngine.js: both engines carry the drive thru fallback to takeaway', () => {
-  has(read('./tax.js'), "orderType === 'drive-thru'", 'taxOverrideFor');
+test('taxRule.js carries the drive thru fallback to takeaway, and both tax engines read it from there', () => {
+  // 8 Oct 2026: the alias moved out of tax.js and taxEngine.js into one table both import
+  // (taxRule.js TAX_ORDER_TYPE_ALIASES), so the two engines cannot drift apart again.
+  hasRe(read('./taxRule.js'), /TAX_ORDER_TYPE_ALIASES = Object\.freeze\(\{[^}]*'drive-thru':\s*'takeaway'/, 'TAX_ORDER_TYPE_ALIASES');
+  hasRe(read('./tax.js'), /import \{[^}]*\btaxOverrideFor\b[^}]*\} from '\.\/taxRule\.js'/, 'tax.js imports taxOverrideFor from taxRule.js');
   const eng = read('./taxEngine.js');
-  has(eng, "orderType === 'drive-thru' && types.includes('takeaway')", 'lineAppliesToOrderType');
-  has(eng, "orderType === 'drive-thru'", 'makeCascadeResolver');
+  hasRe(eng, /import \{[^}]*\btaxOverrideFor\b[^}]*\btaxOrderTypeKey\b[^}]*\} from '\.\/taxRule\.js'/, 'taxEngine.js imports the rule');
+  has(eng, 'taxOverrideFor(legacy, orderType)', 'makeCascadeResolver');
+  has(eng, 'const alias = taxOrderTypeKey(orderType);', 'lineAppliesToOrderType');
 });
 
 test('stock/costing.js: RECIPE_ORDER_TYPES, labels and the normaliser', () => {

@@ -17,7 +17,8 @@ import { productImage, resolveDefaultProductImage } from '../../lib/productImage
 import { supabase } from '../../lib/supabase';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
-import { buildLocalTaxCtx } from '../../lib/taxCompute';
+import { buildLocalTaxCtx, taxCtxHasConfig } from '../../lib/taxCompute';
+import { loadCustomerRates, ratesGate, venueExpectsRates } from '../../lib/customerRates';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
@@ -72,6 +73,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
+  // 8 Oct 2026 (VAT audit, Preston QR-4OGI7 booked with NO VAT): the rates have their own load
+  // (lib/customerRates.js), after the session, with retries, and a state the checkouts gate on:
+  // 'loading' | 'ok' | 'empty' | 'error'. ratesAttempt bumps to try again.
+  const [ratesState, setRatesState] = useState('loading');
+  const [ratesAttempt, setRatesAttempt] = useState(0);
   // v5.7.33: tax profiles + lines, fetched alongside taxRates.
   // v5.7.34: LIVE — the cart/checkout/QR components now compute through the
   // unified seam with the taxCtx built below (legacy venues byte-identical).
@@ -300,11 +306,18 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       console.log('[OnlineSurface] load start', { opsLocationId, onlineMenuId });
       if (!opsLocationId || !supabase) { setLoading(false); return; }
       try {
+        // 8 Oct 2026: the session FIRST, as CateringSurface has always done. Every read below is
+        // fenced by a policy; a read that goes out before the anonymous sign in finishes gets
+        // whatever the policy shows a stranger (for tax_rates that was an EMPTY list, which is how
+        // Preston QR-4OGI7 was booked with no VAT). A failed sign in is not fatal here: the
+        // public reads still answer, and the rates loader records that it had no session.
+        await ensureCustomerSession();   // 8 Oct 2026
+        if (!alive) return;
         // Each query independent — wrap in Promise.allSettled so a single
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes, tpRes, tlRes, menusRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes, sRes, tpRes, tlRes, menusRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -324,9 +337,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           // v5.5.141: live 86 list — manual operator 86s + auto-86s when
           // dailyCounts.remaining hits 0 both land in this table.
           supabase.from('eighty_six').select('item_id').eq('location_id', opsLocationId),
-          // v5.5.154: tax rates — UK VAT must show on every customer-
-          // facing total for compliance. Selecting the columns calculateOrderTax needs.
-          supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsLocationId),
+          // v5.5.154: tax rates used to ride here. 8 Oct 2026: they have their own load below
+          // (loadCustomerRates), after the session and with retries, so an empty answer can
+          // never be mistaken for "no rates" and sold on.
           // v5.5.239: stock levels for remaining-count display + availability check
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsLocationId),
           // v5.7.33: tax profiles + lines (anon SELECT), delivery only - unused
@@ -383,9 +396,6 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         setBranding(location.online_branding || brandingData);
         setInstGroupDefs(Array.isArray(snap?.instructionGroupDefs) ? snap.instructionGroupDefs : []);
         setEightySixIds((eRes.value?.data || []).map(r => r.item_id));
-        // v5.5.154: only keep active rates; calculateOrderTax also filters
-        // but doing it once here keeps the cart breakdown loop tight.
-        setTaxRates((tRes.value?.data || []).filter(r => r.active !== false));
         // v5.7.33: assemble profiles + lines into the store shape (one shared
         // normaliser). Both reads must succeed - never keep line-less profiles.
         if (Array.isArray(tpRes.value?.data) && Array.isArray(tlRes.value?.data)) {
@@ -456,6 +466,28 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsLocationId, onlineMenuId]);
+
+  // 8 Oct 2026: the venue's tax rates, loaded on their own (lib/customerRates.js): the session
+  // is awaited first, an error or an empty list is read again, and the result is a STATE the
+  // checkouts gate payment on, never a silent []. ratesAttempt re-runs it (Try again).
+  useEffect(() => {
+    let alive = true;
+    if (!opsLocationId || !supabase) return undefined;
+    setRatesState('loading');
+    (async () => {
+      const r = await loadCustomerRates({
+        waitForSession: ensureCustomerSession,
+        // v5.5.154: the columns calculateOrderTax needs; inactive rates are dropped by the loader.
+        readRates: () => supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsLocationId),
+      });
+      if (!alive) return;
+      if (r.status === 'ok') setTaxRates(r.rates);
+      setRatesState(r.status);
+      if (r.status !== 'ok') console.warn('[OnlineSurface] tax rates not loaded:', r.status, r.error?.message);
+    })();
+    return () => { alive = false; };
+  }, [opsLocationId, ratesAttempt]);
+  const retryRates = () => setRatesAttempt(n => n + 1);
 
   // v5.8.31: follow the timed menus. The ONE shared resolver (src/lib/menus/
   // resolveActiveMenu.js, the till's chain: schedule on the venue clock, then
@@ -596,6 +628,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     taxProfiles, menuItems: items, menuCategories: taxCatRows,
     venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
   }), [taxProfiles, items, taxCatRows, venueDefaultTaxProfileId, taxRates]);
+  // 8 Oct 2026: may payment open? null when the rates are in (or this venue has none to have);
+  // otherwise the plain words the checkouts show. A menu that names rates the page did not get
+  // is a failed load, whatever the read answered (lib/customerRates.js ratesGate).
+  const vatGate = useMemo(() => ratesGate({ ratesState, expectsRates: venueExpectsRates(items), hasTaxConfig: taxCtxHasConfig(taxCtx) }), [ratesState, items, taxCtx]);
 
   const addToCart = (item, mods, qty, notes = '') => {
     // The cart line's unit price. Checkout (online and QR) charges l.price as-is,
@@ -807,6 +843,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           taxCtx={taxCtx}
           menuItems={items}
           taxRates={taxRates}
+          vatGate={vatGate} /* 8 Oct 2026: no close (no capture) while the rates are not loaded */
+          onRetryRates={retryRates}
           onAddMore={() => setExistingTab({ ...resumeTab, runningTotal, rounds: resumeRounds })}
           onClosed={() => {
             setResumeTab(null); setResumeRounds([]); setExistingTab(null);
@@ -1108,6 +1146,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           categories={categories} /* v5.9.66: and by CATEGORY, through this site's own rows */
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
+          vatGate={vatGate} /* 8 Oct 2026: no payment while the rates are not loaded */
+          onRetryRates={retryRates}
           orderAheadOnly={!!closedInfo}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
@@ -1127,6 +1167,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
+          vatGate={vatGate} /* 8 Oct 2026: no payment while the rates are not loaded */
+          onRetryRates={retryRates}
           existingTab={existingTab}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}

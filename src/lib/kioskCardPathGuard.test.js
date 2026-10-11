@@ -102,6 +102,29 @@
 //       this screen never starts another charge either. The comment above the Ryft path is
 //       corrected (the check key alone does not stop a second charge).
 //     Both pay screen lines pass heldPayment (heldCardPayment on the engine for the new design).
+//   8 Oct 2026 (VAT audit, Fixes 2 and 3: "VAT despite the order type should follow the Tax rules set
+//   on the back office per menu item"; "Fix once and right". CARD PATH: Peter's explicit sign off and
+//   one kiosk card payment on a real Adyen reader are OWED before this reaches a kiosk, flagged in the
+//   release note). ScreenPay logic, the credits and updateCartQty are byte for byte the 30 Sep entry.
+//     totals 2862 -> 3557 chars: each line's rate id, overrides and profile come from
+//       kioskLineTaxRefs(l) (lib/kioskLine.js: a SIZE at its own Back Office rate when it has one,
+//       the parent's otherwise, the till's rule) and itemId is the size's; the tax memo calls
+//       kioskChargedTax (lib/kioskVat.js: the same seam call with the same basis, then UK VAT scaled
+//       to what the offers left to pay as the till's computeCheckTotals does; no offer = the same
+//       object) and LOGS a failure instead of swallowing it; its dependency list gains subtotal and
+//       discountedSubtotal. subtotal, autoDiscounts, discountedSubtotal, exclusiveTax and total are
+//       the same expressions.
+//     submitOrder 19963 -> 20475 chars: tax and tax_amount are rounded once (taxRule.roundVat,
+//       null stays null); tax_breakdown is ALWAYS written (was only for added-on tax, so 138
+//       Barnsley sales had VAT with no record of the rate); the PGRST204 loop is replaced by
+//       writeClosedCheckRow(supabase, checkRow, { tag: 'kiosk', vat: kioskVenueTaxCtx }), the ONE
+//       closed_checks writer, which keeps that loop and adds the save time guard
+//       (lib/saleVatGuard.js: repairs a row with no VAT from its lines or refuses it by name, the
+//       error reaching the screen as submitError); the dependency list gains kioskVenueTaxCtx. The
+//       gift commit order, the idempotency key, both stock paths, the order_queue insert, the 30
+//       second reset and every other line are unchanged.
+//     Neither pay screen line changed its ScreenPay call; ScreenPay now mounts inside KioskVatGate
+//       (surfaces/kiosk/KioskVatGate.jsx) under KioskPayLinkGate, which only decides WHETHER it mounts.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -115,8 +138,8 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 19963,
-    sha256: '2613c18354fd393598a6c8bcedd7b3173858d981ca5153863c8ad20c2e91dc68',
+    length: 20475,
+    sha256: '45f18fa4833a4d5191c3a710e34196fbe6ebe8ce3d3df8307fafd0a57ee3362f',
   },
   {
     name: 'ScreenPay logic',
@@ -136,8 +159,8 @@ const BLOCKS = [
     name: 'totals',
     start: 'const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);',
     end: 'const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);',
-    length: 2862,
-    sha256: '4dfc7f6aacef36c47c3b57544557d36ed89e93f2849a4c48a0755878b8f2e77c',
+    length: 3557,
+    sha256: '4458adca9eba347a52461ba18f6eb550b2f25a77248134569196fb61be457477',
   },
   {
     name: 'updateCartQty',

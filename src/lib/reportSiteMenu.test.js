@@ -189,10 +189,12 @@ test('tax: the check\'s own booked record first, then ITS OWN site\'s rates, nev
   assert.equal(own.source, 'rates');
   assert.ok(Math.abs(own.totalTax - 0.5714) < 0.001);
   assert.equal(own.breakdown[0].rate.id, 'r-preston-red');
-  // the same row through the signed in site's (Leeds) context knows no such rate and books
-  // NOTHING (and a line on "use default" would book Leeds' 20%): the fault this file removes
+  // the same row through the signed in site's (Leeds) context knows no such rate: it books Leeds'
+  // 20% default and flags the line (8 Oct 2026, D4; until then it booked NOTHING), and a line on
+  // "use default" books Leeds' 20% too. Either way the wrong site's answer: the fault this file removes
   const wrong = recordedCheckTax(c, leeds.taxCtx);
-  assert.equal(wrong.totalTax, 0);
+  assert.ok(Math.abs(wrong.totalTax - 2) < 0.001);
+  assert.deepEqual(wrong.fallbacks.map((f) => [f.reason, f.rateId]), [['rate-not-found', 'r-preston-red']]);
   assert.ok(Math.abs(recordedCheckTax(check({ items: [{ qty: 1, price: 12 }] }), leeds.taxCtx).totalTax - 2) < 0.001);
   // a booked record (US added-on, a scaled UK record) wins over any rates
   const booked = siteCheckTax(check({ items: [line], taxBreakdown: { totalTax: 0.99, subtotal: 11.01, hasExclusiveTax: true, breakdown: [{ rate: { id: 'x', label: 'Sales Tax', rate: 0.09, type: 'exclusive' }, tax: 0.99, net: 11.01, gross: 12, items: 1 }] } }), preston);
@@ -234,8 +236,19 @@ test('siteTaxAnalysis gives the Tax report\'s figures per site, rates keyed by w
   assert.equal(a.hasStoredCount, 2);
   assert.equal(a.totalGross, 18);
   assert.ok(Math.abs(a.totalStoredTax - 0.86) < 1e-9);
-  assert.equal(a.displayTax, a.totalStoredTax);
+  // 8 Oct 2026: the headline is the shared VAT ledger: what the checks booked, less refunds made
+  // in the period, rounded to the penny; a check with no VAT is named, never a silent 0.
+  assert.ok(Math.abs(a.displayTax - a.totalStoredTax) < 1e-9);
+  assert.equal(a.displayTax, a.vatDue);
+  assert.equal(a.salesVat, 0.86);
+  assert.equal(a.refundVat, 0);
+  assert.equal(a.ledger.noVatCount, 0);
+  assert.equal(a.rateRows[0].label, 'Reduced Rate', 'a rate is named by its name, never "Unrated"');
   assert.deepEqual(a.sources, { booked: 0, rates: 2, stored: 0 });
+  const noVat = siteTaxAnalysis([...rows, check({ id: 'q', items: [{ itemId: 'm-1_preston', qty: 1, price: 4.85 }], total: 4.85, taxAmount: null })], preston);
+  assert.equal(noVat.ledger.noVatCount, 1);
+  assert.deepEqual(noVat.ledger.noVat.map((x) => x.id), ['q']);
+  assert.equal(noVat.salesVat, 0.86, 'the no VAT check counts 0');
   // the same label and rate at two sites is one key; a different rate is not
   assert.equal(rateFamilyKey({ rate: { id: 'x', label: 'Standard Rate', rate: 0.2, type: 'inclusive' } }), rateFamilyKey({ rate: { id: 'y', label: 'standard rate', rate: 0.2, type: 'inclusive' } }));
   assert.notEqual(rateFamilyKey({ rate: { label: 'Standard Rate', rate: 0.2, type: 'inclusive' } }), rateFamilyKey({ rate: { label: 'Standard Rate', rate: 0.2, type: 'exclusive' } }));

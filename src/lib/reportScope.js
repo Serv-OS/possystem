@@ -54,7 +54,7 @@ export const REPORT_SITE_MODE = {
   summary: 'multi', daily_trend: 'multi', order_types: 'multi', order_sources: 'multi', daypart: 'multi',
   servers: 'multi', shifts: 'multi', exceptions: 'multi', payments: 'multi', tables: 'multi',
   transactions: 'multi',
-  items: 'multi', item_trend: 'multi', menu_eng: 'multi', tax: 'multi', tips: 'multi', kds_perf: 'multi',
+  items: 'multi', item_trend: 'multi', menu_eng: 'multi', sales_mix: 'multi', tax: 'multi', tips: 'multi', kds_perf: 'multi',
   payroll: 'home', daily_trading: 'home', bookings: 'home', cash_drawer: 'home',
   zreport: 'home', open: 'home',
   location_compare: 'all',
@@ -66,7 +66,7 @@ export const ONE_SITE_BY_DESIGN = new Set(['zreport', 'open', 'cash_drawer']);
 
 // Reports that read every item of every check. Across more than one site they are capped
 // (Peter's decision 4: "item level reports across all sites capped at 7 days").
-export const ITEM_LEVEL_REPORTS = new Set(['items', 'item_trend', 'menu_eng']);
+export const ITEM_LEVEL_REPORTS = new Set(['items', 'item_trend', 'menu_eng', 'sales_mix']);
 export const ITEM_MULTI_MAX_DAYS = 7;
 export const ITEM_CAP_TEXT = 'Item reports across several sites cover up to 7 days. Pick one site for longer.';
 

@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { publicCheckTaxFields, roundToPence, offerChargedTax, offerScaledTax } from './publicCheckTax.js';
-import { computeOrderTaxUnified } from './taxCompute.js';
+import { publicCheckTaxFields, roundToPence, offerChargedTax, offerScaledTax, PublicCheckTaxError, VAT_NOT_LOADED_MESSAGE } from './publicCheckTax.js';
+import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
 import { toStoreRate } from './venueTaxRates.js';
 import { computeCheckTotals } from './payments/checkTotals.js';
 import { bookedTaxRecord } from './taxShare.js';
@@ -39,7 +39,11 @@ test('QR-FAUOB: the raw VAT the page used to send is read as 0 by the old server
 });
 
 test('the nine sales the server booked with 0 VAT, as the till books the same line', () => {
-  const cases = [[5.6, 0.93], [4.85, 0.81], [5.85, 0.97], [4.4, 0.73], [4.4, 0.73], [5.15, 0.86], [1.95, 0.32], [1.0, 0.17], [1.0, 0.17]];
+  // 8 Oct 2026 (D3): 5.85 at 20% is exactly 0.975 and 1.95 at 20% exactly 0.325; the one rounding
+  // rule books 0.98 and 0.33 (half up). The 2 Oct backfill wrote 0.97 and 0.32 for them (the floats
+  // 0.9749999999999996 and 0.32499999999999996 rounded down); history is left alone, every new sale
+  // on a half penny rounds up.
+  const cases = [[5.6, 0.93], [4.85, 0.81], [5.85, 0.98], [4.4, 0.73], [4.4, 0.73], [5.15, 0.86], [1.95, 0.33], [1.0, 0.17], [1.0, 0.17]];
   for (const [price, vat] of cases) assert.equal(publicCheckTaxFields(qrTax(price)).tax_amount, vat, `${price}`);
   assert.equal(publicCheckTaxFields(qrTax(3.75)).tax_amount, 0.63, 'QR-N2IYX at Huddersfield, which did get through (0.625)');
 });
@@ -72,6 +76,53 @@ test('no tax result at all, or one without a number, is not recorded', () => {
   assert.deepEqual(publicCheckTaxFields({ totalTax: 'lots', breakdown: [{ tax: 1 }] }), { tax_amount: null });
 });
 
+// ── 8 Oct 2026: a venue with tax set up never books a sale without VAT ──────────────────────────
+test('QR-4OGI7: no rates loaded at a venue that has them is a named error, never tax_amount null', () => {
+  // The page's context had NO rates (read before sign in), the venue has three. The page must not
+  // send null; the checkout shows the error and does not take payment.
+  const noRates = computeOrderTaxUnified([line(4.85)], { taxRates: [] }, 'dine-in');
+  assert.deepEqual(publicCheckTaxFields(noRates), { tax_amount: null }, 'without the flag the old answer stands (older callers)');
+  assert.throws(() => publicCheckTaxFields(noRates, { hasTaxConfig: true, goods: 4.85 }), (e) => {
+    assert.equal(e.name, 'PublicCheckTaxError');
+    assert.equal(e.code, 'vat_not_loaded');
+    assert.equal(e.message, VAT_NOT_LOADED_MESSAGE);
+    assert.ok(e instanceof PublicCheckTaxError);
+    return true;
+  });
+  assert.throws(() => publicCheckTaxFields(null, { hasTaxConfig: true, goods: 4.85 }), PublicCheckTaxError);
+  assert.throws(() => publicCheckTaxFields(undefined, { hasTaxConfig: true }), PublicCheckTaxError, 'goods unknown counts as above zero');
+  assert.throws(() => publicCheckTaxFields({ totalTax: 'lots', breakdown: [{ tax: 1 }] }, { hasTaxConfig: true, goods: 1 }), PublicCheckTaxError);
+});
+
+test('with rates in hand the flag changes nothing: the same fields, a zero rated basket is a real 0', () => {
+  const hasTaxConfig = taxCtxHasConfig(UK);
+  assert.equal(hasTaxConfig, true);
+  const t = qrTax(4.85);
+  assert.deepEqual(publicCheckTaxFields(t, { hasTaxConfig, goods: 4.85 }), publicCheckTaxFields(t));
+  assert.equal(publicCheckTaxFields(t, { hasTaxConfig, goods: 4.85 }).tax_amount, 0.81, 'what QR-4OGI7 should have booked');
+  const zeroRated = computeOrderTaxUnified([line(3, { taxRateId: 'zero' })], UK, 'takeaway');
+  const f = publicCheckTaxFields(zeroRated, { hasTaxConfig, goods: 3 });
+  assert.equal(f.tax_amount, 0);
+  assert.equal(f.tax_breakdown, zeroRated);
+});
+
+test('a venue with no tax set up (flag false) still claims nothing, and goods of 0 never throw', () => {
+  const none = computeOrderTaxUnified([line(5.6)], { taxRates: [] }, 'dine-in');
+  assert.deepEqual(publicCheckTaxFields(none, { hasTaxConfig: false, goods: 5.6 }), { tax_amount: null });
+  assert.deepEqual(publicCheckTaxFields(none, { hasTaxConfig: taxCtxHasConfig({ taxRates: [] }), goods: 5.6 }), { tax_amount: null });
+  assert.deepEqual(publicCheckTaxFields(null, { hasTaxConfig: true, goods: 0 }), { tax_amount: null }, 'nothing sold, nothing to book');
+});
+
+test('guard: the QR and online checkouts pass the flag, so the throw can happen', () => {
+  const qr = readFileSync(join(here, '../surfaces/qr/QrCheckout.jsx'), 'utf8');
+  assert.match(qr, /publicCheckTaxFields\(taxBreakdown, \{ hasTaxConfig, goods: subtotal \}\)/);
+  const online = readFileSync(join(here, '../surfaces/online/OnlineCheckout.jsx'), 'utf8');
+  // Four: the two payloads (card, and gift card or reward only), and the two checks BEFORE payment
+  // (startPayment, onGiftOnlyPayment) that let the throw stop the card being charged.
+  assert.equal((online.match(/publicCheckTaxFields\(chargedTaxBreakdown, \{ hasTaxConfig, goods: subtotal \}\)/g) || []).length, 4, 'both online payloads and both pre-payment checks');
+  assert.equal((qr.match(/publicCheckTaxFields\(taxBreakdown, \{ hasTaxConfig, goods: subtotal \}\)/g) || []).length, 2, 'the QR payload and its pre-payment check');
+});
+
 test('added-on (US) sales tax: the amount in cents and the named lines, as before', () => {
   const tax = computeOrderTaxUnified([line(20)], { taxRates: [salesTax] }, 'collection');
   const f = publicCheckTaxFields(tax);
@@ -88,9 +139,10 @@ test('a scaled record (an online order with an offer) is sent as it stands', () 
   assert.equal(f.tax_breakdown, scaled);
 });
 
-test('roundToPence rounds like the closed_checks column, not like Math.round', () => {
+test('roundToPence is the one rounding rule (half up on the true value), not Math.round and not the column\'s float reading', () => {
   assert.equal(roundToPence(0.9333333333333327), 0.93);
-  assert.equal(roundToPence(0.9749999999999996), 0.97, '5.85 at 20%: the till books 0.97');
+  assert.equal(roundToPence(0.9749999999999996), 0.98, '5.85 at 20% is exactly 0.975: half up (8 Oct 2026, D3); the column read the float as 0.97');
+  assert.equal(roundToPence(1.6749999999999998), 1.68, '10.05 at 20% is exactly 1.675');
   assert.equal(roundToPence(0.625), 0.63);
   assert.equal(roundToPence(1.005), 1.01, 'Math.round(1.005 * 100) / 100 is 1');
   assert.equal(roundToPence(1.7750000000000001), 1.78);
@@ -209,7 +261,7 @@ test('QR with an offer at an added-on (US) venue: the record is not scaled, the 
 test('guard: the QR page books the offer scaled record and the Online page scales the whole record', () => {
   const qr = readFileSync(join(here, '../surfaces/qr/QrCheckout.jsx'), 'utf8');
   assert.match(qr, /const taxBreakdown = useMemo\(\s*\(\) => offerChargedTax\(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal\)/);
-  assert.match(qr, /publicCheckTaxFields\(taxBreakdown\)/);
+  assert.match(qr, /publicCheckTaxFields\(taxBreakdown, \{ hasTaxConfig, goods: subtotal \}\)/);   // 8 Oct 2026: with the tax config flag
   const online = readFileSync(join(here, '../surfaces/online/OnlineCheckout.jsx'), 'utf8');
   assert.match(online, /return offerScaledTax\(taxBreakdown, discountedSubtotalMinor \/ subtotalMinor\);/);
 });

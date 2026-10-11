@@ -32,6 +32,7 @@ import Payments     from './reports/Payments';
 import Daypart      from './reports/Daypart';
 import Shifts       from './reports/Shifts';
 import ProductMix   from './reports/ProductMix';
+import SalesMix     from './reports/SalesMix';
 import ItemTrend    from './reports/ItemTrend';
 import DailyTrend   from './reports/DailyTrend';
 import DailyTrading from './reports/DailyTrading';
@@ -584,7 +585,8 @@ export default function BOReports({ setSection, canOpen } = {}) {
         </div>
       ) : (
         <>
-          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} {...siteProps}/>}
+          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} {...siteProps}/>}
+          {view === 'sales_mix'  && <SalesMix     checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} range={trendRange} canOpen={canOpen} {...siteProps}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt} {...siteProps}/>}
           {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
           {view === 'daypart'    && <Daypart      checks={filtered} fmt={fmt} locationConfig={locationConfig} {...siteProps}/>}
@@ -603,7 +605,7 @@ export default function BOReports({ setSection, canOpen } = {}) {
           {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} locationConfig={locationConfig} fmtN={fmtN} {...siteProps}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} {...siteProps}/>}
           {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} timeZone={range.timeZone} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
-          {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
+          {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} {...siteProps}/>}
           {view === 'location_compare' && <LocationCompare range={range} period={period} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
           {view === 'cash_drawer' && <CashDrawer   fromMs={range.from} toMs={range.to} {...siteProps}/>}
           {view === 'transactions' && <Transactions checks={filtered} fmt={fmt} {...siteProps}/>}
