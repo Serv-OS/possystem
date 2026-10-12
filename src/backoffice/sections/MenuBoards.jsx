@@ -21,6 +21,8 @@ import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus'
 import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, LINE_SPACING_OPTS, LINE_SPACING_DEFAULT, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
+import { fetchScreenNotes } from '../../lib/menuBoardNotes';
+import { agoLabel } from '../../lib/menuBoardPairing';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -45,6 +47,11 @@ const seenLabel = (ts) => {
   return { online: false, text: `seen ${Math.round(hrs / 24)}d ago` };
 };
 
+// 12 Oct 2026: the newest note a TV left about its own pairing ("TV kept its pairing · 5m ago").
+// A TV writes one when it ignores a bad live update, finds its own screen again or shows its
+// code (lib/menuBoardNotes.js), so what a TV did overnight can be read here, not on the TV.
+const noteLine = (n) => `${n.title} · ${agoLabel(n.at, Date.now())}`;
+
 export default function MenuBoards() {
   const [locId, setLocId] = useState(null);
   const [screens, setScreens] = useState([]);
@@ -63,6 +70,7 @@ export default function MenuBoards() {
   const [err, setErr] = useState('');
   const [copied, setCopied] = useState('');
   const [paired, setPaired] = useState([]);        // physical screens (menu_board_screens) at this location
+  const [tvNotes, setTvNotes] = useState({});      // { screen id: newest note the TV left }, best effort
   const [pairCode, setPairCode] = useState('');
   const [pairBoard, setPairBoard] = useState('');
   const [pairMsg, setPairMsg] = useState('');
@@ -94,6 +102,7 @@ export default function MenuBoards() {
       setItems(it?.data || []);
       setSix(new Set((s?.data || []).map(r => r.item_id)));
       setPaired(scr?.data || []);
+      fetchScreenNotes(id).then((n) => setTvNotes(n || {}), () => {});   // best effort, never holds the page
       setMenus(Array.isArray(m?.data) ? m.data : []);
       setLinks(Array.isArray(l?.data) ? l.data : []);
       setTz(cfg?.timezone || null);
@@ -261,6 +270,7 @@ export default function MenuBoards() {
                 <div style={{ flex: 1, minWidth: 140 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 700 }}>{s.name || boardName(s.board_id)}</div>
                   <div style={{ fontSize: 11, color: 'var(--t4)' }}>{s.code} · {sl.text}</div>
+                  {tvNotes[s.id] && <div style={{ fontSize: 11, color: 'var(--t3)' }} title={tvNotes[s.id].body}>{noteLine(tvNotes[s.id])}</div>}
                 </div>
                 <select style={{ ...S.inp, width: 190 }} value={s.board_id || ''} disabled={busy === 'scr-' + s.id}
                   onChange={e => reassign(s.id, e.target.value)}>

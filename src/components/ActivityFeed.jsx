@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase, getActiveLocationSync, getLocationId } from '../lib/supabase';
 import { fetchRecentActivity, ackActivity, eventFromRow } from '../lib/activity';
+import { liveRow } from '../lib/liveRow';
 import { Icon } from './ServOSIcons';
 import { useStore } from '../store';
 
@@ -67,11 +68,14 @@ export default function ActivityFeed() {
     if (!loc || !supabase) return undefined;
     let live = true;
     fetchRecentActivity(loc).then(e => { if (live) setEvents(e); });
+    // 12 Oct 2026, WHY liveRow. A live change that carries an error has no record (the realtime
+    // library hands it over as new = {}), and the server sends it to every till on the table. It
+    // used to add a blank entry to the bell and one to its count. Such a change is skipped.
     const ch = supabase.channel(`activity-feed:${loc}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_events', filter: `location_id=eq.${loc}` },
-        ({ new: r }) => setEvents(prev => [eventFromRow(r), ...prev.filter(x => x.id !== r.id)].slice(0, 120)))
+        (p) => { const r = liveRow(p); if (!r) return; setEvents(prev => [eventFromRow(r), ...prev.filter(x => x.id !== r.id)].slice(0, 120)); })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'activity_events', filter: `location_id=eq.${loc}` },
-        ({ new: r }) => setEvents(prev => prev.map(x => x.id === r.id ? eventFromRow(r) : x)))
+        (p) => { const r = liveRow(p); if (!r) return; setEvents(prev => prev.map(x => x.id === r.id ? eventFromRow(r) : x)); })
       .subscribe();
     return () => { live = false; try { supabase.removeChannel(ch); } catch { /* noop */ } };
   }, [loc]);

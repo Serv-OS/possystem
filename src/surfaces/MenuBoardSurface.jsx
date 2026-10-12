@@ -34,9 +34,10 @@ import { stageSize } from '../lib/orderScreen/orderScreenLayout';
 import { fetchVenueTimezone } from '../lib/venueTimezone';
 import { withTimeout } from '../lib/withTimeout';
 import OrderStatusScreen from './orderScreen/OrderStatusScreen';
+import { readSavedScreen, sameScreen, newPairingMemory, runPairingTick, applyLiveUpdate, decideView, shouldReadEarly, failedBoardRead, EARLY_READ_DELAY_MS, TICK_MS } from '../lib/menuBoardPairing';
+import { stampScreenNote } from '../lib/menuBoardNotes';
 
 const TICK_TIMEOUT_MS = 10000;
-const MISS_SPACING_MS = 10000;   // a missing row counts as a miss at most once per 10s
 
 const DEFAULT_THEME = {
   bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null,
@@ -48,7 +49,7 @@ const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands s
 // Text size → columns: lib/menuBoardSections.js boardColumns. Measure, pack and fit: BoardParts
 // BoardBody (v5.9.76), the SAME body the Back Office preview draws, so the preview is the TV in miniature.
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
-const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id}, kept across tenant-fence wipes
+const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id,location_id,device_uid}, kept across tenant-fence wipes
 // Human pairing code shown on an unassigned screen: generatePairingCode() in
 // src/lib/pairingCode.js (8 chars, 30 symbol alphabet, about 39 bits, crypto random).
 
@@ -76,13 +77,19 @@ export default function MenuBoardSurface() {
 
   const [screen, setScreen] = useState(() => {       // this device's screen row (pairing mode only)
     if (!pairing) return null;
-    try { return JSON.parse(localStorage.getItem(LS_SCREEN) || 'null'); } catch { return null; }
+    try { return readSavedScreen(localStorage.getItem(LS_SCREEN)).screen; } catch { return null; }
   });
-  const screenIdRef = useRef(screen?.id || null);
   const tickRef = useRef(null);                        // re-read our own row now (order screen unassigned, wake, online)
   const effectiveBoardId = urlBoardId || screen?.board_id || null;
 
-  const [locId, setLocId] = useState(null);
+  // 12 Oct 2026, WHY TWO SOURCES FOR THE VENUE. The board cache is kept under the venue id, and
+  // the venue used to come only from a network read. So a TV that restarted with no network sat
+  // on "Loading menu" with a good board saved underneath. The screen row carries its venue (the
+  // same venue as its board: the server refuses any other), so it is saved with the screen and
+  // used until the network read answers. The network answer wins as soon as there is one.
+  const [netLocId, setLocId] = useState(null);
+  const savedLocId = pairing && screen?.board_id && screen.board_id === effectiveBoardId ? (screen.location_id || null) : null;
+  const locId = netLocId || savedLocId;
   const [resolving, setResolving] = useState(true);
   const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set, menus:[], links:[], tz }
   const dataRef = useRef(null);             // last data set, so a failed timezone read keeps the last good tz
@@ -101,92 +108,104 @@ export default function MenuBoardSurface() {
     return () => { if (prev != null) meta.setAttribute('content', prev); };
   }, []);
 
-  // ── device pairing: register/find this screen's row, then watch it for an
+  // ── device pairing: find or register this screen's row, then watch it for an
   // assignment. The device only ever reads/heartbeats its OWN row (RLS scopes it
-  // by device_uid = auth.uid()); it never writes location_id/board_id. ──
+  // by device_uid = auth.uid()); it never writes location_id/board_id.
+  //
+  // 12 Oct 2026, WHY THE RULES MOVED OUT (src/lib/menuBoardPairing.js). On the night of
+  // 11 to 12 Oct one bad realtime message (an error and an empty record) made every Coffee
+  // Boy TV but one save a screen with no id, and one tick later each made itself a new
+  // unpaired row. Now: a live update is only a hint, a TV never gives up its pairing on an
+  // answer it cannot check, and it looks for rows it already owns before it makes one.
+  // This effect only wires the network and the page to those rules. ──
   useEffect(() => {
     if (!pairing || isMock || !supabase) return;
-    let alive = true, ch = null, chId = null;
-    const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch { /* storage blocked */ } };
-    const apply = (r) => {
-      if (!alive || !r) return;
-      screenIdRef.current = r.id;
-      // order_display_id: set when Back Office paired this TV to an ORDER SCREEN (then
-      // board_id is null). Undefined before the 20260911 migration, so it stays null.
-      const s = { id: r.id, code: r.code, board_id: r.board_id || null, order_display_id: r.order_display_id || null };
-      setScreen((prev) => (prev && prev.id === s.id && prev.code === s.code && prev.board_id === s.board_id && prev.order_display_id === s.order_display_id ? prev : s));
-      persist(s);
+    let alive = true, ch = null, chId = null, chSeq = 0;
+    let busy = false, again = false, earlyTimer = null, lastEarlyAt = 0;
+    let saved = { screen: null, broken: false };
+    try { saved = readSavedScreen(localStorage.getItem(LS_SCREEN)); } catch { /* storage blocked */ }
+    if (saved.broken) console.warn('[menuboard] the saved screen had no id. Looking for my own rows first.');
+    let mem = newPairingMemory(saved.screen);
+    let shown = saved.screen;
+    // The one place a screen is put on the page and saved. menuBoardPairing never hands
+    // over a screen with no id, so a screen with no id can never be written again.
+    const show = (s) => {
+      if (!alive || !s) return;
+      shown = s;
+      setScreen((prev) => (sameScreen(prev, s) ? prev : s));
+      try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch { /* storage blocked */ }
+    };
+    // Every pairing request carries THIS device's own token, so it runs as this device or it
+    // fails. Left to itself the client sends the public key when the sign in cannot be
+    // refreshed, and the database then answers "no rows" with no error, which reads exactly
+    // like a removed screen.
+    const asMe = (q, token) => q.setHeader('Authorization', `Bearer ${token}`);
+    const timed = (q, label) => withTimeout(q, TICK_TIMEOUT_MS, label);
+    const tick = async () => {
+      if (!alive) return;
+      if (busy) { again = true; return; }     // one tick at a time; a trigger that lands mid tick runs once after it
+      busy = true;
+      try {
+        const next = await runPairingTick(mem, io);
+        if (alive) { mem = next; if (mem.screen && !sameScreen(mem.screen, shown)) show(mem.screen); }
+      } finally {
+        busy = false;
+        if (again && alive) { again = false; tick(); }
+      }
+    };
+    // One early read, at most once per 10 s, when a live update asks to take the board down.
+    const early = () => {
+      const now = Date.now();
+      if (!alive || !shouldReadEarly({ now, lastAt: lastEarlyAt, pending: !!earlyTimer })) return;
+      lastEarlyAt = now;
+      earlyTimer = setTimeout(() => { earlyTimer = null; tick(); }, EARLY_READ_DELAY_MS);
+    };
+    // A live update is a hint. A bad one is ignored and nothing is read because of it: the
+    // ordinary 12 s tick re-reads anyway. (One bad change reaches EVERY TV at once; a read
+    // and heartbeat from each in reply would be a storm.)
+    const onLive = (p) => {
+      if (!alive) return;
+      const r = applyLiveUpdate(mem, p);
+      mem = r.mem;
+      if (r.action === 'apply') { if (r.changed) show(mem.screen); return; }
+      if (r.action === 'confirm') { console.warn('[menuboard] a live update would clear this screen. Checking with a read first.'); early(); return; }
+      console.warn(`[menuboard] ignored a live update (${r.reason}${r.detail ? `: ${r.detail}` : ''}). Pairing kept.`);
+      if (r.reason !== 'no_screen_held') stampScreenNote({ screen: mem.screen, kind: 'live_ignored', detail: r.detail || r.reason });
     };
     // Realtime for our own row: a best effort instant push on top of the tick, wrapped so it
-    // can never break the tick. Re-subscribes only when the row id changes.
+    // can never break the tick. Re-subscribes only when the row id changes. The topic carries
+    // a sequence number so going back to an earlier row can never pick up a channel that is
+    // still leaving (see the Follow timed menus effect below).
     const subscribe = (sid) => {
       if (!alive || !sid || chId === sid) return;
       if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } ch = null; }
       chId = sid;
       try {
-        ch = supabase.channel(`mbscreen-${sid}`)
-          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, (p) => apply(p.new))
+        ch = supabase.channel(`mbscreen-${sid}-${++chSeq}`)
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, onLive)
           .subscribe();
       } catch { /* realtime is best effort, the 12s tick carries correctness */ }
     };
-    // A fresh unclaimed row with a new code. Retries a code collision only.
-    const createRow = async () => {
-      for (let i = 0; i < 3; i++) {
-        const { data, error } = await withTimeout(
-          supabase.from('menu_board_screens').insert({ code: generatePairingCode() }).select().maybeSingle(),
-          TICK_TIMEOUT_MS, 'New screen row');
-        if (!error) return data || null;
-        if (error.code !== '23505') return null;     // not a code collision → the next tick tries again
-      }
-      return null;
-    };
-    // Reliable loop: re-auth, re-read our row, and stamp last_seen, every 12s. It is also the
-    // boot: the first tick loads the cached row, or makes a row when there is none. It works
-    // even when the realtime socket cannot open on an older TV browser.
-    // Boot rules (a flaky network must never wipe a pairing):
-    //   a failed or timed out read or auth is UNKNOWN: keep the cached screen, retry next tick
-    //   a new row is made only with no cached id, or when a read that SUCCEEDED found no row
-    //     before any read ever found it (the row was removed while the TV was off)
-    // After a read has found the row, a missing row counts as a miss. Three misses at least
-    // 10s apart mean Back Office removed it, so a burst of wake, online and interval triggers
-    // during one short hidden window can never count three times.
-    let found = false, creating = false, misses = 0, lastMissAt = 0;
-    const tick = async () => {
-      try {
-        // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
-        await withTimeout(ensureAuthToken(), TICK_TIMEOUT_MS, 'Auth session');
-        if (!alive) return;
-        const sid = screenIdRef.current;
-        if (sid) {
-          const { data, error } = await withTimeout(
-            supabase.from('menu_board_screens').select('*').eq('id', sid).maybeSingle(),
-            TICK_TIMEOUT_MS, 'Screen row');
-          if (!alive || error) return;
-          if (data) {
-            found = true; misses = 0;
-            apply(data); subscribe(data.id);
-            supabase.rpc('mb_screen_heartbeat', { p_id: data.id }).then(() => {}, () => {});
-            return;
-          }
-          if (found) {
-            const now = Date.now();
-            if (now - lastMissAt < MISS_SPACING_MS) return;
-            lastMissAt = now;
-            if (++misses >= 3) { try { localStorage.removeItem(LS_SCREEN); } catch { /* storage blocked */ } window.location.reload(); }  // genuinely retired in BO
-            return;
-          }
-          screenIdRef.current = null;   // removed while this TV was off: make a fresh row below
-        }
-        if (creating) return;
-        creating = true;
-        try {
-          const row = await createRow();
-          if (alive && row) { found = true; misses = 0; apply(row); subscribe(row.id); }
-        } finally { creating = false; }
-      } catch { /* unknown: keep the cached pairing, the next tick retries */ }
+    // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
+    const io = {
+      now: () => Date.now(),
+      getToken: () => timed(ensureAuthToken(), 'Auth session'),
+      readRow: (id, token) => timed(asMe(supabase.from('menu_board_screens').select('*').eq('id', id).maybeSingle(), token), 'Screen row'),
+      // Second opinion after an empty read. order_status_feed runs as the database owner, so
+      // row level security cannot hide our row from it. It is only called on that rare path.
+      checkGone: (id, token) => timed(asMe(supabase.rpc('order_status_feed', { p_screen_id: id }), token), 'Screen check'),
+      // Rare path only (no id, three confirmed misses, or once at boot on a row never claimed).
+      // The device_uid filter is needed: a Back Office login can see every screen at its venues.
+      readOwned: (uid, token) => timed(asMe(supabase.from('menu_board_screens').select('*').eq('device_uid', uid).order('created_at', { ascending: false }).limit(50), token), 'Own screens'),
+      insertRow: (token) => timed(asMe(supabase.from('menu_board_screens').insert({ code: generatePairingCode() }).select().maybeSingle(), token), 'New screen row'),
+      heartbeat: (id, token) => { asMe(supabase.rpc('mb_screen_heartbeat', { p_id: id }), token).then(() => {}, () => {}); },
+      subscribe,
+      setScreen: show,
+      say: (line) => console.warn(line),
+      note: (kind, detail, s) => stampScreenNote({ screen: s, kind, detail }),
     };
     tickRef.current = tick;
-    const poll = setInterval(tick, 12000);
+    const poll = setInterval(tick, TICK_MS);
     // iPads and Android WebViews suspend the page and kill the socket: re-read on wake
     // and when the network returns, instead of waiting for the next 12s tick.
     const onVisible = () => { if (document.visibilityState === 'visible') tick(); };
@@ -198,6 +217,7 @@ export default function MenuBoardSurface() {
       alive = false;
       tickRef.current = null;
       clearInterval(poll);
+      clearTimeout(earlyTimer);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('online', onOnline);
       if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } }
@@ -243,12 +263,21 @@ export default function MenuBoardSurface() {
         supabase.from('menu_boards').select('*').eq('id', effectiveBoardId).maybeSingle(),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
       ]);
+      // 12 Oct 2026, WHY A FAILED READ CHANGES NOTHING. These reads do not throw when the network
+      // is down, they answer with an error and no data. That used to be drawn as a board with no
+      // design and no products, and saved over the good copy: a running TV went blank at its next
+      // refresh after the network dropped, and had nothing saved to show after a restart. A read
+      // that failed says nothing about the menu, so the board on screen and its saved copy stay.
+      // An empty answer with NO error is still an answer and is drawn as before.
+      const failed = failedBoardRead({ board: boardRes, categories: catsRes, items: itemsRes });
+      if (failed) { console.warn(`[menuboard] the ${failed} read failed. Keeping the board on screen.`); return; }
       const board = boardRes?.data || null;
       const next = {
         board,
         cats: catsRes?.data || [],
         items: itemsRes?.data || [],
-        six: new Set((sixRes?.data || []).map((r) => r.item_id)),
+        // A failed sold out read keeps the last sold out list, not "nothing is sold out".
+        six: sixRes?.error ? new Set(dataRef.current?.six || []) : new Set((sixRes?.data || []).map((r) => r.item_id)),
         menus: [], links: [], tz: null,
       };
       // Follow timed menus: only when the published board asks for it, so a
@@ -333,13 +362,16 @@ export default function MenuBoardSurface() {
   // Paired to an ORDER SCREEN (Back Office, Channels, Order screens): the order status
   // board replaces the menu board. It reads only order_status_feed. When the feed says
   // this screen is no longer assigned, re-read our own row now so the code shows again.
-  if (pairing && screen?.order_display_id) {
+  // 12 Oct 2026, the same order of checks as before, now in decideView (lib/menuBoardPairing.js)
+  // so the test of "the board is still shown" runs the rule the TV runs.
+  const view = decideView({ pairing, screen, urlBoardId, hasData: !!data, resolving });
+  if (view === 'order_screen') {
     return <OrderStatusScreen key={screen.id} screenId={screen.id} onUnassigned={() => tickRef.current && tickRef.current()} />;
   }
   // No board yet → device-pairing screen (shows the code to type into Back Office).
-  if (pairing && !effectiveBoardId) return <PairScreen code={screen?.code} />;
-  if (resolving && !data) return <Splash text="Starting menu board…" />;
-  if (!data) return <Splash text="Loading menu…" />;
+  if (view === 'pair') return <PairScreen code={screen?.code} />;
+  if (view === 'starting') return <Splash text="Starting menu board…" />;
+  if (view === 'loading') return <Splash text="Loading menu…" />;
   return <Board data={data} />;
 }
 
