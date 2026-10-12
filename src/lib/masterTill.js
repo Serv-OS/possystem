@@ -152,9 +152,9 @@ export function hydratableConfig({ mode, device, config, venueTag } = {}) {
 
 // ── Words (short and plain) ──────────────────────────────────────────────────
 
-export const MASTER_REFUSED_TOAST = 'This till is set as master but is not sending orders to the kitchen. Restart it.';
+export const MASTER_REFUSED_TOAST = 'This till is set as master but is not sending QR, online and kiosk orders to the kitchen. Restart it.';
 export const MASTER_CHANGED_TOAST = 'Master till setting changed. Restart this till.';
-export const NO_MASTER_TEXT = 'No master till. QR, online and kiosk orders will not reach the kitchen.';
+export const NO_MASTER_TEXT = 'No master till. QR, online and kiosk orders will not reach the kitchen. Turn on Master POS for one till in Device profiles.';
 
 /** The urgent activity event for a till that storage calls master while the rule says no. */
 export function masterRefusedEvent({ deviceId, deviceName } = {}) {

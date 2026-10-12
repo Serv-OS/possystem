@@ -367,9 +367,9 @@ test('agoWords: just now, minutes, hours, days', () => {
 });
 
 test('words: short, plain, no long dashes, never the text N/A', () => {
-  assert.equal(MASTER_REFUSED_TOAST, 'This till is set as master but is not sending orders to the kitchen. Restart it.');
+  assert.equal(MASTER_REFUSED_TOAST, 'This till is set as master but is not sending QR, online and kiosk orders to the kitchen. Restart it.');
   assert.equal(MASTER_CHANGED_TOAST, 'Master till setting changed. Restart this till.');
-  assert.equal(NO_MASTER_TEXT, 'No master till. QR, online and kiosk orders will not reach the kitchen.');
+  assert.equal(NO_MASTER_TEXT, 'No master till. QR, online and kiosk orders will not reach the kitchen. Turn on Master POS for one till in Device profiles.');
   const ev = masterRefusedEvent({ deviceId: 'dev-1', deviceName: 'POS' });
   assert.deepEqual(ev, {
     kind: 'ops', severity: 'urgent',
