@@ -11,7 +11,7 @@ import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, o
 // thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
 // lib/masterTillDevice.js), and every channel ticket records who routed it and with what
 // (lib/channelRouteGate.js). Nothing in these three reads the network.
-import { isMasterTillHere, autoRouteGate, routerIdentity } from '../lib/masterTillDevice';
+import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig } from '../lib/masterTillDevice';
 import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbackNotice } from '../lib/channelRouteGate';
 import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
@@ -1068,10 +1068,12 @@ export const useStore = create((set, get) => ({
   // after loading data. If a subsequent boot detects a mismatch, it purges
   // stale data BEFORE loading fresh — preventing cross-location bleed.
   _dataLocationId: null,
-  // 12 Oct 2026 (Preston): the venue whose category read SUCCEEDED at boot, rows or none.
+  // 12 Oct 2026 (Preston): the venue whose category read SUCCEEDED at boot and found NONE.
   // SyncBridge sets it from the read it already makes. lib/channelRouteGate.js venueHoldsMenu
   // reads it, so a brand new venue with no categories is not made to wait for a menu that
   // will never come, and a boot whose category read failed is not taken for "no categories".
+  // It is NOT set for a read that found rows (review, same day): those rows reach the store
+  // later in the boot, and until they do this till does not hold its menu.
   _catsReadLocationId: null,
 
   // ── Auth ──────────────────────────────────
@@ -1546,9 +1548,14 @@ export const useStore = create((set, get) => ({
         return cfg;
       }
       // Fall back to localStorage device config (set when device was paired/profiled)
-      const localConfig = localStorage.getItem('rpos-device-config');
-      if (localConfig) {
-        const cfg = JSON.parse(localConfig);
+      // 12 Oct 2026 (review): through hydratableDeviceConfig, not the key itself. The tenant
+      // fence now KEEPS this key when the browser moves to another venue (the paired till needs
+      // it, lib/supabase.js TENANT_FENCE_KEEP) and it used to wipe it. So a Back Office,
+      // Bookings, Waitlist or kiosk page for another venue would have started from a till's
+      // config for good. The paired till's own page reads it as before; any other page only
+      // for the venue this browser was last used for (lib/masterTill.js hydratableConfig).
+      const cfg = hydratableDeviceConfig();
+      if (cfg) {
         // Backfill serviceCharge from stored profiles if missing
         if (!cfg.serviceCharge && cfg.profileId) {
           const profiles = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
@@ -1563,10 +1570,14 @@ export const useStore = create((set, get) => ({
   // v5.5.645: per-device Training Mode. Initialised from the cached device config at
   // module load (so a training till is gated before App's profile fetch completes)
   // and kept authoritative by setDeviceConfig (boot + device_profiles realtime).
+  // 12 Oct 2026 (review): the shared copy is read through hydratableDeviceConfig (see the
+  // deviceConfig initialiser above). Training mode is the one that matters: a till's training
+  // flag carried into a Bookings or Back Office page for ANOTHER venue made that page answer
+  // "saved" while saving nothing. This tab's own session copy is read first, as before.
   trainingMode: (() => {
     try {
-      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
-      const cfg = raw ? JSON.parse(raw) : null;
+      const tab = sessionStorage.getItem('rpos-terminal-config');
+      const cfg = tab ? JSON.parse(tab) : hydratableDeviceConfig();
       const on = !!cfg?.trainingMode;
       applyTrainingFlag(on);   // seed the module singleton read by db.js / sync gates
       return on;

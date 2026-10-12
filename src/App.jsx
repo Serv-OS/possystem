@@ -466,7 +466,7 @@ function MposDeviceProfileSync({ pairedDevice }) {
         if (!deviceConfigChanged(prev, next)) return;
         // 12 Oct 2026: the one writer (it stamps the config with this device and venue, and
         // never throws). A handset is never the master till, whatever its profile says.
-        saveDeviceConfig(next, { force: true });
+        saveDeviceConfig(next, { force: true, deviceId: pairedDevice.id });
         useStore.getState().setDeviceConfig(next);
       } catch { /* offline: keep the cache */ }
       finally { inFlight = false; }
@@ -657,7 +657,10 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     // written for an unchanged profile. The writer leaves storage alone when it is already this
     // till's own copy with the same master answer. The compare keys are NOT changed for this:
     // a stamp key there would run setDeviceConfig on every till and reset its order type.
-    saveDeviceConfig(config, { force: changed });
+    // deviceId (review, same day): the config was read for THIS device. When another tab has
+    // paired the browser as another till since, nothing is written, so that till's stored
+    // config is never this one's answer under its stamp.
+    saveDeviceConfig(config, { force: changed, deviceId: pairedDevice.id });
     if (!changed) return;
     const trainingFlipped = (prev?.trainingMode === true) !== (config.trainingMode === true);
     // The heartbeat role and the print engines are decided once per page load, so a master
@@ -883,7 +886,11 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
           localStorage.setItem('rpos-device', JSON.stringify({ ...current, name: data.name, profileId: data.profile_id }));
         }
         wireProfileChannel(data.profile_id);
-        if (!data.profile_id) return;
+        // 12 Oct 2026 (D3, review): a device with no profile cannot be a master. This silent
+        // cycle (wake, online, Push to POS, every 5 minutes) is the one that still runs when the
+        // socket died in sleep, and it used to leave an old master answer in place until the
+        // next reload. The row was read (data is not null), so "no profile" is a fact here.
+        if (!data.profile_id) { clearMasterFlag(); return; }
         const { data: dbProfile } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
         if (!dbProfile) return;   // fetch failed or profile gone: keep the working cache
         applyDeviceConfig(configFromProfile(profileRowToProfile(dbProfile)));

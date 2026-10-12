@@ -16,7 +16,7 @@ import fs from 'node:fs';
 
 import {
   NON_TILL_MODES, isTillMode, resolvePageMode, pairedTill, configOwner, stampDeviceConfig,
-  masterFlagDiffers, carryMasterForward, masterTillDecision,
+  masterFlagDiffers, carryMasterForward, masterTillDecision, masterBeatRole, hydratableConfig,
   MASTER_REFUSED_TOAST, MASTER_CHANGED_TOAST, NO_MASTER_TEXT, masterRefusedEvent,
   MASTER_SEEN_MS, agoWords, masterSetupReport,
 } from './masterTill.js';
@@ -257,6 +257,102 @@ test('masterSetupReport, live facts: one line per master from its own heartbeat 
   assert.deepEqual(two.map((l) => l.level), ['warn', 'ok', 'error']);
   assert.equal(two[1].text, 'Master till Apple Test POS is on.');
   assert.equal(two[2].text, 'Sunmi is set as master but is running as a normal till. Restart it.');
+});
+
+test('masterSetupReport: a row of another type counts ONLY when its own heartbeat says it runs as master (review, 12 Oct 2026)', () => {
+  // The rule on the till never looks at the row's type, so a kiosk TYPE row opened on the till
+  // address with a master profile is a real master. The Devices screen used to miss it.
+  const kiosk = dev('k', 'Kiosk 1', 'online', 'pm', 'kiosk');
+  const report = (devices, heartbeats) => masterSetupReport({ devices, profiles: PROFS, heartbeats, now: NOW });
+  // It is the venue's only master and it is running: no false "No master till".
+  assert.deepEqual(report([kiosk], [seen('k', 'master', 20_000)]), { masters: [{ id: 'k', name: 'Kiosk 1' }], lines: [{ level: 'ok', text: 'Master till Kiosk 1 is on.' }] });
+  // Switched off overnight: it is still the master, said as "last seen", never "No master till".
+  assert.deepEqual(report([kiosk], [seen('k', 'master', 9 * 3600_000)]).lines, [{ level: 'warn', text: 'Master till Kiosk 1 was last seen 9 hours ago. While it is off, QR, online and kiosk orders wait.' }]);
+  // Beside a pos master: both are named.
+  const both = report([dev('a', 'POS 1'), kiosk], [seen('a', 'master', 10_000), seen('k', 'master', 10_000)]);
+  assert.deepEqual(both.masters, [{ id: 'a', name: 'POS 1' }, { id: 'k', name: 'Kiosk 1' }]);
+  assert.equal(both.lines[0].text, 'More than one master till: POS 1, Kiosk 1. This is safe, each order is sent once. One is enough.');
+  // Coffee Boy Barnsley as it is today: Kiosk 1 on the master profile with NO heartbeat (the
+  // stand alone kiosk). Not a master, no "more than one" line.
+  assert.deepEqual(report([dev('a', 'POS 1'), kiosk], [seen('a', 'master', 10_000)]), { masters: [{ id: 'a', name: 'POS 1' }], lines: [{ level: 'ok', text: 'Master till POS 1 is on.' }] });
+  // Provo "Kiosk": a kiosk type row that ran the till path as a CHILD. Not a master.
+  assert.deepEqual(report([kiosk], [seen('k', 'child', 5 * 86_400_000)]).lines, [{ level: 'error', text: NO_MASTER_TEXT }]);
+  // Its newest row decides: a master beat long ago and a child beat since is not a master.
+  assert.deepEqual(report([kiosk], [seen('k', 'master', 86_400_000), seen('k', 'child', 60_000)]).lines, [{ level: 'error', text: NO_MASTER_TEXT }]);
+  // A handheld the same way, and never on a profile that is not a master profile, nor when removed.
+  assert.equal(report([dev('h', 'Handheld', 'active', 'pm', 'handheld')], [seen('h', 'master', 5_000)]).masters.length, 1);
+  assert.deepEqual(report([dev('k', 'Kiosk 1', 'online', 'pn', 'kiosk')], [seen('k', 'master', 5_000)]).lines, [{ level: 'error', text: NO_MASTER_TEXT }]);
+  assert.deepEqual(report([dev('k', 'Kiosk 1', 'removed', 'pm', 'kiosk')], [seen('k', 'master', 5_000)]).lines, [{ level: 'error', text: NO_MASTER_TEXT }]);
+  // Heartbeats not read: only type pos rows can be counted, as before.
+  assert.deepEqual(report([kiosk], null).lines, [{ level: 'error', text: NO_MASTER_TEXT }]);
+});
+
+// ── the heartbeat follows the rule (review, 12 Oct 2026) ─────────────────────
+
+test('masterBeatRole: master while the rule says yes, child while this page still holds the session, nothing at all without it', () => {
+  assert.equal(masterBeatRole(masterTillDecision(OK)), 'master');
+  // Still this till's page, no longer the master: the row says so, and the Devices screen reads
+  // "is set as master but is running as a normal till".
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, config: { ...STAMPED, isMaster: false } })), 'child');   // the answer was cleared
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, config: null })), 'child');                               // the config was wiped
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, config: { ...STAMPED, ownerDeviceId: 'dev-9' } })), 'child');
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, venueId: 'loc-B' })), 'child');
+  // No till session on this page: "This terminal has been disconnected" (another session holds
+  // the device and its heartbeat row), the pairing screen of a removed till, a page that turned
+  // into Back Office. It writes NOTHING, so two pages never flap one row between two roles.
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, sessionDeviceId: null })), null);
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, sessionDeviceId: 'dev-2' })), null);
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, device: null })), null);
+  assert.equal(masterBeatRole(masterTillDecision({ ...OK, mode: 'office' })), null);
+  // Every reason the rule can give has an answer here, and junk writes nothing.
+  const answers = { ok: 'master', mode: null, unpaired: null, session: null, 'no-config': 'child', 'other-device': 'child', 'not-master': 'child', venue: 'child' };
+  for (const [reason, role] of Object.entries(answers)) {
+    assert.equal(masterBeatRole({ master: reason === 'ok', reason }), role, reason);
+  }
+  for (const junk of [null, undefined, {}, { reason: 'new-reason' }, { master: 'yes', reason: 'ok' }]) assert.equal(masterBeatRole(junk), null);
+});
+
+// ── what a page may start from (review, 12 Oct 2026) ─────────────────────────
+
+test('hydratableConfig: the paired till\'s own page starts from its config as before, stamped or not', () => {
+  const training = { ...CFG, trainingMode: true };
+  for (const mode of [...TILL_MODES, 'mpos']) {
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: 'loc-A' }), training, mode);
+    assert.deepEqual(hydratableConfig({ mode, device: DEV, config: { ...STAMPED, trainingMode: true }, venueTag: 'loc-A' }), { ...STAMPED, trainingMode: true }, mode);
+    // The tag another tab left (a Back Office tab on another venue) does not take the till's own config away.
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: 'loc-B' }), training, mode);
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: null }), training, mode);
+  }
+  // Before any pairing record (or with the Back Office placeholder) an unstamped config still reads, as it always did.
+  assert.equal(hydratableConfig({ mode: 'pos', device: null, config: training }), training);
+});
+
+test('hydratableConfig: a page that is not the till starts from it only for the venue the browser was last used for', () => {
+  const training = { ...STAMPED, trainingMode: true };
+  const others = ['office', 'backoffice', 'bookings', 'waitlist', 'kiosk', 'manager', 'customer-display', 'clock', 'admin', 'owner', ''];
+  for (const mode of others) {
+    // Same venue: exactly as before (the fence never wiped it there).
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: 'loc-A' }), training, mode);
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: null }), training, mode + ', no tag yet');
+    // The browser has since been used for venue B: the fence used to wipe the key. Now it is
+    // kept for the till and simply not read here, so a Bookings page never inherits training mode.
+    assert.equal(hydratableConfig({ mode, device: DEV, config: training, venueTag: 'loc-B' }), null, mode);
+    // An unstamped copy (written before this release) is fenced the same way, by the paired till's venue.
+    assert.equal(hydratableConfig({ mode, device: DEV, config: { ...CFG, trainingMode: true }, venueTag: 'loc-B' }), null, mode);
+    // No real till paired in this browser: the config is nobody's.
+    assert.equal(hydratableConfig({ mode, device: null, config: { ...CFG, trainingMode: true }, venueTag: 'loc-A' }), null, mode);
+    assert.equal(hydratableConfig({ mode, device: { id: 'admin', adminMode: true, locationId: null }, config: { ...CFG, trainingMode: true } }), null, mode);
+  }
+});
+
+test('hydratableConfig: a config stamped for another device or venue is nobody\'s here, in any mode; junk is nothing', () => {
+  for (const mode of ['pos', 'kds', 'mpos', 'office', 'bookings']) {
+    assert.equal(hydratableConfig({ mode, device: DEV, config: { ...STAMPED, ownerDeviceId: 'dev-9' }, venueTag: 'loc-A' }), null, mode);
+    assert.equal(hydratableConfig({ mode, device: DEV, config: { ...STAMPED, ownerLocationId: 'loc-B' }, venueTag: 'loc-A' }), null, mode);
+    assert.equal(hydratableConfig({ mode, device: null, config: STAMPED, venueTag: 'loc-A' }), null, mode + ', the till was removed');
+    for (const junk of [null, undefined, 'x', 7]) assert.equal(hydratableConfig({ mode, device: DEV, config: junk }), null);
+  }
+  assert.equal(hydratableConfig(), null);
 });
 
 test('agoWords: just now, minutes, hours, days', () => {

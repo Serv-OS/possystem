@@ -14,7 +14,7 @@
 //   nothing else.
 import {
   resolvePageMode, pairedTill, configOwner, stampDeviceConfig, masterFlagDiffers,
-  carryMasterForward, masterTillDecision,
+  carryMasterForward, masterTillDecision, hydratableConfig,
 } from './masterTill.js';
 import { venueHoldsMenu, routeGateDecision, MENU_WAIT_MS } from './channelRouteGate.js';
 
@@ -22,6 +22,7 @@ export const DEVICE_KEY = 'rpos-device';
 export const DEVICE_CONFIG_KEY = 'rpos-device-config';
 export const TERMINAL_CONFIG_KEY = 'rpos-terminal-config';   // the tab's own copy (sessionStorage, the store writes it)
 export const MASTER_TILL_EVENT = 'rpos-master-till-changed';
+export const VENUE_TAG_KEY = 'rpos-active-location';         // the tenant fence's tag: the venue this browser was last used for (a plain id)
 
 const safeLocal = () => { try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch { return null; } };
 const safeSession = () => { try { return typeof sessionStorage !== 'undefined' ? sessionStorage : null; } catch { return null; } };
@@ -80,6 +81,25 @@ export function routerIdentity(env = {}) {
 }
 
 /**
+ * The stored device config a page may START from (the store's deviceConfig and training mode
+ * at load), or null. The rule is lib/masterTill.js hydratableConfig: the paired till's own page
+ * as before; any other page only for the venue the browser was last used for; never a config
+ * stamped for another device or venue. A fresh parse each call. env is for tests.
+ */
+export function hydratableDeviceConfig(env = {}) {
+  try {
+    const storage = env.storage || safeLocal();
+    if (!storage) return null;
+    return hydratableConfig({
+      mode: 'mode' in env ? env.mode : pageMode(),
+      device: readJson(storage, DEVICE_KEY),
+      config: readJson(storage, DEVICE_CONFIG_KEY),
+      venueTag: storage.getItem(VENUE_TAG_KEY),
+    });
+  } catch { return null; }
+}
+
+/**
  * May the AUTO route go for this venue now? 'route' | 'route-blind' | 'wait' | 'skip'
  * (lib/channelRouteGate.js). Plain and synchronous: no await is added before the claim.
  * storeState is useStore.getState().
@@ -109,13 +129,19 @@ export function autoRouteGate(storeState, venueId, now = Date.now(), env = {}) {
  * store, which hydrates from the tab's session copy, so a flag removed from storage (a re pair in
  * the same tab, a wipe from another tab) was never put back until a cold start, and a stamp added
  * inside the gate would never have been written for an unchanged profile.
+ * deviceId (12 Oct 2026, review): the device the config was READ for. The stamp is taken from
+ * the pairing in storage at write time, so a page whose refresh still belonged to device X
+ * could save X's profile answer as device Y's own after another tab re paired the browser.
+ * When the pairing in storage is another device, nothing is written.
  * Returns true when it wrote.
  */
-export function saveDeviceConfig(config, { force = false } = {}, env = {}) {
+export function saveDeviceConfig(config, { force = false, deviceId = null } = {}, env = {}) {
   const storage = env.storage || safeLocal();
   if (!config || typeof config !== 'object' || !storage) return false;
   try {
-    const till = pairedTill(readJson(storage, DEVICE_KEY));
+    const paired = readJson(storage, DEVICE_KEY);
+    if (deviceId && paired && paired.id && String(paired.id) !== String(deviceId)) return false;
+    const till = pairedTill(paired);
     const stored = readJson(storage, DEVICE_CONFIG_KEY);
     if (!force && configOwner(stored, till) === 'own' && !masterFlagDiffers(stored, config)) return false;
     storage.setItem(DEVICE_CONFIG_KEY, JSON.stringify(stampDeviceConfig(config, till)));

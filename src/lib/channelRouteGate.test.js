@@ -15,8 +15,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import {
-  MENU_WAIT_MS, CATCH_UP_MIN_GAP_MS, venueHoldsMenu, routeGateDecision, queueRowToRouteOrder, autoRoutable,
-  ROUTE_TRIGGERS, countParentLinks, buildRouteStamp, noticeLines, fallbackNotice,
+  MENU_WAIT_MS, CATCH_UP_MIN_GAP_MS, CATCH_UP_RETRY_MS, catchUpRetryDelay, venueHoldsMenu, routeGateDecision,
+  queueRowToRouteOrder, autoRoutable, ROUTE_TRIGGERS, countParentLinks, buildRouteStamp, noticeLines, fallbackNotice, tidyName,
 } from './channelRouteGate.js';
 
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
@@ -34,6 +34,21 @@ test('the menu wait is 20 seconds, far under the catering cron grace; the catch 
   assert.ok(m, 'GRACE_MIN is still declared in the catering release function');
   assert.equal(Number(m[1]), 3);
   assert.ok(MENU_WAIT_MS < (Number(m[1]) * 60_000) / 3, 'under a third of the cron grace');
+});
+
+test('a failed catch up read is tried again by the till: 10 s, 20 s, 40 s, then every 60 s', () => {
+  // Review, 12 Oct 2026: the master till is the only router and the catch up read is its only
+  // second look. A read that failed armed nothing, so the next look waited for a wake or a rejoin.
+  assert.equal(CATCH_UP_RETRY_MS, 10_000);
+  assert.deepEqual([1, 2, 3, 4, 5, 50].map((n) => catchUpRetryDelay(n)), [10_000, 20_000, 40_000, 60_000, 60_000, 60_000]);
+  // Never zero, never a tight loop, whatever it is handed.
+  for (const junk of [0, -3, NaN, undefined, null, 'x']) assert.equal(catchUpRetryDelay(junk), 10_000, String(junk));
+  assert.equal(catchUpRetryDelay(1, 0), 10_000);
+  assert.equal(catchUpRetryDelay(1, NaN), 10_000);
+  // The tests of the runner hand it a short base; the shape is the same.
+  assert.deepEqual([1, 2, 3, 4, 9].map((n) => catchUpRetryDelay(n, 20)), [20, 40, 80, 120, 120]);
+  // Slower than the rate limit gap at its slowest, so a till that is offline asks once a minute.
+  assert.ok(catchUpRetryDelay(99) >= CATCH_UP_MIN_GAP_MS);
 });
 
 // ── does this page hold this venue's menu ────────────────────────────────────
@@ -54,6 +69,16 @@ test('venueHoldsMenu: a brand new venue with no categories is ready only once it
   assert.deepEqual(venueHoldsMenu({ venueId: 'loc-A', categories: [], catsReadLocationId: 'loc-A' }), { ready: true, why: 'none-on-file' });
   // The successful read was for another venue.
   assert.deepEqual(venueHoldsMenu({ venueId: 'loc-A', categories: [], catsReadLocationId: 'loc-B', bootLocationId: 'loc-A' }), { ready: false, why: 'not-loaded' });
+});
+
+test('venueHoldsMenu: a venue WITH categories is ready only when they are in the store, never on the read alone', () => {
+  // Review, 12 Oct 2026. The boot's category read found 41 rows; they reach the store several
+  // awaited reads later. SyncBridge sets the "read" mark ONLY for a read with no rows, so in
+  // that window the store is empty, the mark is unset and the answer is "not loaded": wait.
+  assert.deepEqual(venueHoldsMenu({ venueId: 'loc-A', categories: [], bootLocationId: 'loc-A', catsReadLocationId: null }), { ready: false, why: 'not-loaded' });
+  // The rows land (the boot patch): ready, for the right reason.
+  const landed = Array.from({ length: 41 }, (_, i) => ({ id: 'c' + i, location_id: 'loc-A' }));
+  assert.deepEqual(venueHoldsMenu({ venueId: 'loc-A', categories: landed, bootLocationId: 'loc-A', catsReadLocationId: null }), { ready: true, why: 'categories' });
 });
 
 test('venueHoldsMenu: another venue\'s categories are never this venue\'s menu, even after a successful read', () => {
@@ -261,4 +286,50 @@ test('fallbackNotice: three names then "and N more"; it and them; a missing scre
     assert.ok(noLongDash(w), w);
     assert.ok(!/N\/A/i.test(w), w);
   }
+});
+
+// ── names as staff read them (review, 12 Oct 2026) ───────────────────────────
+
+// The live Preston names, read from closed_checks. Written with escapes so this file holds no
+// long dash: a sized line is stored as product, long dash, size, and the size ends in a space.
+const LATTE = 'Latte \u2014 Big Boy ';
+const TEA = 'Tea \u2014 XL Boy';
+const CHOC = 'Choc Boy \u2013 XL Boy';
+
+test('tidyName: the long dash becomes a space, runs of spaces become one, the ends are trimmed', () => {
+  assert.equal(tidyName(LATTE), 'Latte Big Boy');
+  assert.equal(tidyName(TEA), 'Tea XL Boy');
+  assert.equal(tidyName(CHOC), 'Choc Boy XL Boy');
+  assert.equal(tidyName('  Flat   White  '), 'Flat White');
+  assert.equal(tidyName('Latte\u2014Oat'), 'Latte Oat');
+  // A plain hyphen is part of a name and stays.
+  assert.equal(tidyName('Half-and-half'), 'Half-and-half');
+  assert.equal(tidyName('Wrap - Large'), 'Wrap - Large');
+  for (const junk of [null, undefined, '']) assert.equal(tidyName(junk), '');
+  assert.equal(tidyName(5), '5');
+  assert.equal(tidyName(' \u2014 '), '');
+});
+
+test('fallbackNotice with the live names: no long dash and no double space in any word staff read', () => {
+  const one = fallbackNotice({ ref: 'QR-QRJZK', names: [LATTE], centreName: 'Food', menuHeld: true });
+  assert.equal(one.toast, 'QR-QRJZK: Latte Big Boy went to Food. No kitchen screen is set for it.');
+  assert.equal(one.body, 'QR-QRJZK: Latte Big Boy went to Food. Set a kitchen screen for it in Back Office, Production printing. If this till shows Sync now, tap it.');
+  const blind = fallbackNotice({ ref: 'QR-UNGQA', names: [LATTE, TEA, CHOC], centreName: 'Food', menuHeld: false });
+  assert.equal(blind.toast, 'QR-UNGQA: Latte Big Boy, Tea XL Boy, Choc Boy XL Boy went to Food. This till had no menu yet. Check the kitchen screens.');
+  for (const n of [one, blind]) for (const w of [n.toast, n.title, n.body]) {
+    assert.ok(noLongDash(w), w);
+    assert.ok(!/ {2}/.test(w), 'double space: ' + w);
+  }
+  // A name that is only a dash and spaces is no name: nothing to say when the menu was held.
+  assert.equal(fallbackNotice({ ref: 'QR-1', names: [' \u2014 '], centreName: 'Food', menuHeld: true }), null);
+  // The cut can end on a space: it is trimmed, so the toast never gets a double space from it.
+  const cutOnSpace = fallbackNotice({ ref: 'R', names: ['x'.repeat(39) + ' tail'], centreName: 'Food', menuHeld: true });
+  assert.ok(cutOnSpace.toast.startsWith('R: ' + 'x'.repeat(39) + ' went to Food.'), cutOnSpace.toast);
+});
+
+test('buildRouteStamp keeps the names tidied the same way', () => {
+  const s = buildRouteStamp({ fallbackNames: [LATTE, TEA, ' \u2014 ', null] });
+  assert.deepEqual(s.fallback, ['Latte Big Boy', 'Tea XL Boy']);
+  assert.equal(s.fallbackCount, 2);
+  assert.ok(noLongDash(JSON.stringify(s)));
 });

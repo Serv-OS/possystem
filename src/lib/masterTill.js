@@ -107,6 +107,49 @@ export function masterTillDecision({ mode, sessionDeviceId, device, config, venu
   return { master: true, reason: 'ok', storedMaster: true };
 }
 
+/**
+ * What the master heartbeat writes at each beat, from the rule's answer AT THAT BEAT
+ * (12 Oct 2026, review). The role used to be fixed when the page loaded and the beat never
+ * stopped, so a page that had stopped sending orders (disconnected by another session, removed
+ * in Back Office, its master answer cleared) went on saying "master" with a fresh time, and the
+ * Devices screen read "Master till is on" while nothing reached the kitchen.
+ *   'master'  the rule says yes: the same row as always
+ *   'child'   this page still holds the till's session but is no master now: say so
+ *   null      this page holds no till session for the device (kicked, unpaired, removed, not a
+ *             till page): write NOTHING. Another session may own this device's row, and two
+ *             pages writing different roles to one row would flap. The row goes stale and the
+ *             Devices screen says "last seen".
+ */
+export function masterBeatRole(verdict) {
+  if (verdict && verdict.master === true) return 'master';
+  const reason = verdict ? verdict.reason : null;
+  return reason === 'no-config' || reason === 'other-device' || reason === 'not-master' || reason === 'venue' ? 'child' : null;
+}
+
+/**
+ * May a page START from the stored device config? The store reads it at load for the device
+ * settings and for training mode, in EVERY mode. 12 Oct 2026 (review): the tenant fence now
+ * keeps 'rpos-device-config' when the browser moves to another venue (the till needs it), and
+ * it used to wipe it. Without this rule a browser that held a training mode till for venue A
+ * and was then used as Back Office, Bookings, Waitlist or a kiosk for venue B started in
+ * training mode on every load, and those pages then skip their saves in silence.
+ *   - a config stamped for another device or venue than the paired till is nobody's here;
+ *   - the paired till's own page (a till mode, or the handset) starts from it as before;
+ *   - any other page starts from it only when a real till is paired in this browser AND the
+ *     venue the browser was last used for (the fence tag) is that till's venue. That is what
+ *     the fence wipe used to give: same venue, unchanged; another venue, nothing.
+ * Returns the config, or null.
+ */
+export function hydratableConfig({ mode, device, config, venueTag } = {}) {
+  if (!config || typeof config !== 'object') return null;
+  const till = pairedTill(device);
+  if (configOwner(config, till) === 'other') return null;
+  if (isTillMode(mode) || mode === 'mpos') return config;
+  if (!till) return null;
+  if (venueTag && String(venueTag) !== till.locationId) return null;
+  return config;
+}
+
 // ── Words (short and plain) ──────────────────────────────────────────────────
 
 export const MASTER_REFUSED_TOAST = 'This till is set as master but is not sending orders to the kitchen. Restart it.';
@@ -144,12 +187,21 @@ export function agoWords(ms) {
  * heartbeats: rows of device_heartbeats (device_id, role, last_seen), or null when unread.
  * A master till is a row of type 'pos', status active or online, on a master profile. A kiosk
  * or handheld on a master profile is not one, nor is a removed or unpaired till.
+ * 12 Oct 2026 (review): with ONE exception. The rule on the till never looks at the row's type
+ * (masterTillDecision), so a row of another type that is opened on the till address with a
+ * master profile really is a master. Such a row is counted when its own heartbeat says it runs
+ * as master, and only then: no venue is told "No master till" while one is sending, and a
+ * second master of another type is named. A kiosk row with no master heartbeat (the stand alone
+ * kiosk) is still not counted.
  * Returns { masters: [{ id, name }], lines: [{ level: 'error' | 'warn' | 'ok', text }] }.
  */
 export function masterSetupReport({ devices, profiles, heartbeats, now = Date.now() } = {}) {
   if (!Array.isArray(devices) || !Array.isArray(profiles) || !devices.length) return { masters: [], lines: [] };
   const masterProfiles = new Set(profiles.filter((p) => p && p.is_master === true).map((p) => p.id));
-  const rows = devices.filter((d) => d && d.type === 'pos' && LIVE_STATUSES.has(d.status) && d.profile_id && masterProfiles.has(d.profile_id));
+  const beatOf = (d) => (Array.isArray(heartbeats) ? heartbeats : []).filter((h) => h && h.device_id === d.id)
+    .sort((a, b) => (Date.parse(b.last_seen) || 0) - (Date.parse(a.last_seen) || 0))[0];
+  const rows = devices.filter((d) => d && LIVE_STATUSES.has(d.status) && d.profile_id && masterProfiles.has(d.profile_id)
+    && (d.type === 'pos' || beatOf(d)?.role === 'master'));
   const nameOf = (d) => d.name || 'A till';
   const masters = rows.map((d) => ({ id: d.id, name: nameOf(d) }));
   const lines = [];
@@ -157,8 +209,7 @@ export function masterSetupReport({ devices, profiles, heartbeats, now = Date.no
   if (rows.length > 1) lines.push({ level: 'warn', text: `More than one master till: ${rows.map(nameOf).join(', ')}. This is safe, each order is sent once. One is enough.` });
   if (Array.isArray(heartbeats)) {
     for (const d of rows) {
-      const hb = heartbeats.filter((h) => h && h.device_id === d.id)
-        .sort((a, b) => (Date.parse(b.last_seen) || 0) - (Date.parse(a.last_seen) || 0))[0];
+      const hb = beatOf(d);
       const age = hb ? now - Date.parse(hb.last_seen) : NaN;
       if (!hb || !Number.isFinite(age)) lines.push({ level: 'warn', text: `Master till ${nameOf(d)} has not been seen yet. Open it to start sending orders to the kitchen.` });
       else if (age <= MASTER_SEEN_MS && hb.role !== 'master') lines.push({ level: 'error', text: `${nameOf(d)} is set as master but is running as a normal till. Restart it.` });

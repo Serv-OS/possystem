@@ -12,9 +12,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  DEVICE_KEY, DEVICE_CONFIG_KEY, TERMINAL_CONFIG_KEY, MASTER_TILL_EVENT,
+  DEVICE_KEY, DEVICE_CONFIG_KEY, TERMINAL_CONFIG_KEY, MASTER_TILL_EVENT, VENUE_TAG_KEY,
   pageMode, markTillSession, tillSession, readMasterTill, isMasterTillHere, routerIdentity, autoRouteGate,
-  saveDeviceConfig, keepStoredMaster, clearMasterFlag, forgetDeviceConfig, dropAdminPlaceholder,
+  saveDeviceConfig, keepStoredMaster, clearMasterFlag, forgetDeviceConfig, dropAdminPlaceholder, hydratableDeviceConfig,
 } from './masterTillDevice.js';
 import { MENU_WAIT_MS } from './channelRouteGate.js';
 
@@ -46,6 +46,7 @@ test('the keys: one name each, the same ones the app has always used', () => {
   assert.equal(DEVICE_CONFIG_KEY, 'rpos-device-config');
   assert.equal(TERMINAL_CONFIG_KEY, 'rpos-terminal-config');
   assert.equal(MASTER_TILL_EVENT, 'rpos-master-till-changed');
+  assert.equal(VENUE_TAG_KEY, 'rpos-active-location', 'the tenant fence tag (lib/supabase.js enforceTenantFence)');
   // No window here: the page has no mode, so it is no till.
   assert.equal(pageMode(), '');
 });
@@ -148,6 +149,57 @@ test('autoRouteGate: route with this venue\'s menu, wait without it, route-blind
   assert.equal(autoRouteGate(undefined, 'loc-A', 1500, env), 'wait');
 });
 
+test('autoRouteGate: the category read found rows that are not in the store yet, so the till waits (review, 12 Oct 2026)', () => {
+  // SyncBridge used to mark ANY successful category read, 4 awaited reads before the rows
+  // reached the store. In that window the gate said "route" with an empty tree: the master
+  // till itself could send a sub category drink to the first screen, as at Preston. The mark
+  // is now set only for a read with NO rows, so this state (41 rows read, none in the store,
+  // no mark) waits, and opens when the rows land.
+  const { env } = till();
+  const during = { bootLocationId: 'loc-A', menuCategories: [], _catsReadLocationId: null };
+  assert.equal(autoRouteGate(during, 'loc-A', 1500, env), 'wait');
+  const landed = { ...during, menuCategories: Array.from({ length: 41 }, (_, i) => ({ id: 'c' + i, location_id: 'loc-A' })) };
+  assert.equal(autoRouteGate(landed, 'loc-A', 1500, env), 'route');
+  // The patch never lands (the boot fell over after the read): the bounded wait still ends.
+  assert.equal(autoRouteGate(during, 'loc-A', SESSION.validAt + MENU_WAIT_MS, env), 'route-blind');
+});
+
+// ── what the store may start from (review, 12 Oct 2026) ──────────────────────
+
+test('hydratableDeviceConfig: the till page reads its config; a page for another venue in the same browser does not', () => {
+  const training = { ...STAMPED, trainingMode: true };
+  const storage = fake({ [DEVICE_KEY]: DEV, [DEVICE_CONFIG_KEY]: training, [VENUE_TAG_KEY]: 'loc-A' });
+  // The till, and every other page while the browser is on the till's venue: as before.
+  for (const mode of ['pos', 'kds', 'mpos', 'office', 'bookings', 'waitlist', 'kiosk']) {
+    assert.deepEqual(hydratableDeviceConfig({ storage, mode }), training, mode);
+  }
+  // A Back Office tab resolved venue B: the fence wipes what it wipes and re tags the browser.
+  // It KEEPS rpos-device-config now (the till needs it), so the pages for venue B must not read it.
+  storage.setItem(VENUE_TAG_KEY, 'loc-B');
+  for (const mode of ['office', 'backoffice', 'bookings', 'waitlist', 'kiosk', 'manager']) {
+    assert.equal(hydratableDeviceConfig({ storage, mode }), null, mode + ' on venue B must not start in training mode');
+  }
+  // The till's own page still does, so a training till is gated from its first line.
+  assert.deepEqual(hydratableDeviceConfig({ storage, mode: 'pos' }), training);
+  assert.deepEqual(hydratableDeviceConfig({ storage, mode: 'mpos' }), training);
+  // The key itself was not touched by any of this.
+  assert.deepEqual(storage.json(DEVICE_CONFIG_KEY), training);
+  // A fresh parse each call: a caller that edits its copy changes nobody else's.
+  const a = hydratableDeviceConfig({ storage, mode: 'pos' });
+  a.trainingMode = false;
+  assert.equal(hydratableDeviceConfig({ storage, mode: 'pos' }).trainingMode, true);
+});
+
+test('hydratableDeviceConfig: nothing stored, junk, no storage, a config of another device: null, never a throw', () => {
+  assert.equal(hydratableDeviceConfig({ storage: fake(), mode: 'pos' }), null);
+  assert.equal(hydratableDeviceConfig({ storage: fake({ [DEVICE_KEY]: DEV, [DEVICE_CONFIG_KEY]: '{junk' }), mode: 'pos' }), null);
+  assert.equal(hydratableDeviceConfig({ storage: fake({ [DEVICE_KEY]: DEV, [DEVICE_CONFIG_KEY]: { ...STAMPED, ownerDeviceId: 'dev-9' } }), mode: 'pos' }), null);
+  assert.equal(hydratableDeviceConfig({ storage: fake({ [DEVICE_CONFIG_KEY]: CFG }), mode: 'office' }), null, 'no till paired');
+  const throwing = { getItem: () => { throw new Error('SecurityError'); } };
+  assert.equal(hydratableDeviceConfig({ storage: throwing, mode: 'pos' }), null);
+  assert.equal(hydratableDeviceConfig(), null, 'no storage in node');
+});
+
 // ── the one writer ───────────────────────────────────────────────────────────
 
 test('saveDeviceConfig heals OUTSIDE the change gate: an unstamped copy is stamped once, then storage is left alone', () => {
@@ -188,6 +240,30 @@ test('saveDeviceConfig after a wipe: storage with the pairing and NO config gets
   assert.equal(isMasterTillHere('loc-A', other.env), false);
   assert.equal(saveDeviceConfig(CFG, {}, other.env), true);
   assert.deepEqual(other.storage.json(DEVICE_CONFIG_KEY), STAMPED);
+});
+
+test('saveDeviceConfig: a config read for device X is never saved under device Y\'s stamp (review, 12 Oct 2026)', () => {
+  // This page's refresh still belongs to dev-1. Another tab has paired the browser as dev-2.
+  const other = { ...DEV, id: 'dev-2', name: 'Bar' };
+  const storage = fake({ [DEVICE_KEY]: other, [DEVICE_CONFIG_KEY]: { profileId: 'prof-2', isMaster: false, ownerDeviceId: 'dev-2', ownerLocationId: 'loc-A' } });
+  const before = storage.json(DEVICE_CONFIG_KEY);
+  const n = storage.sets;
+  assert.equal(saveDeviceConfig(CFG, { force: true, deviceId: 'dev-1' }, { storage }), false);
+  assert.equal(saveDeviceConfig(CFG, { deviceId: 'dev-1' }, { storage }), false);
+  assert.equal(storage.sets, n, 'nothing written');
+  assert.deepEqual(storage.json(DEVICE_CONFIG_KEY), before);
+  // So till dev-2 does not turn master on dev-1's answer.
+  assert.equal(isMasterTillHere('loc-A', { storage, mode: 'pos', session: { deviceId: 'dev-2', validAt: 1 } }), false);
+  // The device's own write goes through as before, with and without the id.
+  const mine = till();
+  assert.equal(saveDeviceConfig(CFG, { deviceId: 'dev-1' }, mine.env), true);
+  assert.deepEqual(mine.storage.json(DEVICE_CONFIG_KEY), STAMPED);
+  assert.equal(saveDeviceConfig({ ...CFG, isMaster: false }, { deviceId: 'dev-1' }, mine.env), true);
+  assert.equal(saveDeviceConfig(CFG, {}, mine.env), true, 'no id given: the old behaviour');
+  // No pairing in storage at all: written with no stamp, as before.
+  const bare = fake();
+  assert.equal(saveDeviceConfig(CFG, { force: true, deviceId: 'dev-1' }, { storage: bare }), true);
+  assert.deepEqual(bare.json(DEVICE_CONFIG_KEY), CFG);
 });
 
 test('saveDeviceConfig never throws: no storage, no config, a storage that refuses the write', () => {

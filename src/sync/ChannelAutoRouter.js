@@ -12,10 +12,15 @@
 //   - the scan also runs again on wake, on 'online' and when the order channel subscribes
 //     again, at most every CATCH_UP_MIN_GAP_MS, because this till is now the ONLY router and a
 //     missed realtime event has no other second look. One read per scan, never one per order.
+//   - "at most every" means LATER, never dropped (12 Oct 2026, review). On a wake the tab is
+//     visible at once and scans, and the socket that died in sleep joins again some seconds
+//     later: an order paid in between has no INSERT event and was in no scan. A request inside
+//     the gap now arms ONE look for the moment the gap ends, and a read that FAILED is tried
+//     again by a timer (10 s, then slower), with no outside event needed.
 // A person's press (Send to kitchen again, Accept, catering opened early) never comes here.
 import { autoRouteGate, pageMode, MASTER_TILL_EVENT, DEVICE_KEY, DEVICE_CONFIG_KEY } from '../lib/masterTillDevice.js';
 import { isTillMode } from '../lib/masterTill.js';
-import { queueRowToRouteOrder, autoRoutable, CATCH_UP_MIN_GAP_MS } from '../lib/channelRouteGate.js';
+import { queueRowToRouteOrder, autoRoutable, CATCH_UP_MIN_GAP_MS, CATCH_UP_RETRY_MS, catchUpRetryDelay } from '../lib/channelRouteGate.js';
 
 let _run = null;
 
@@ -29,6 +34,29 @@ function armWaitTimer(run) {
   run.timer.unref?.();
 }
 
+// ONE look armed for later: the end of the rate limit gap, or the retry after a failed read.
+// Rate limited means delayed, never dropped. A look that is already due sooner is kept.
+function armRescan(run, ms, reason) {
+  const wait = Math.max(0, Number(ms) || 0);
+  const at = Date.now() + wait;
+  if (run.rescanTimer && run.rescanAt <= at) return;
+  clearTimeout(run.rescanTimer);
+  run.rescanAt = at;
+  run.rescanTimer = setTimeout(() => {
+    run.rescanTimer = null;
+    if (_run === run) evaluate(reason, { rescan: true });   // the gate is asked again then: closed means no read
+  }, wait);
+  run.rescanTimer.unref?.();
+}
+
+// The read failed (null, or it threw): the next trigger looks again at once, and so does a timer.
+function readFailed(run, reason) {
+  run.lastScanAt = 0;
+  run.failures += 1;
+  const why = String(reason || 'asked');
+  armRescan(run, catchUpRetryDelay(run.failures, run.retryMs), why.startsWith('retry, ') ? why : `retry, ${why}`);
+}
+
 async function scan(reason) {
   const run = _run;
   if (!run) return;
@@ -37,23 +65,41 @@ async function scan(reason) {
   run.lastScanAt = Date.now();
   try {
     const rows = await run.fetchUnrouted();
-    if (rows == null) run.lastScanAt = 0;               // the read failed: the next trigger looks again at once
+    if (_run !== run) return;                           // realtime stopped or moved venue while the read was out
+    if (rows == null) readFailed(run, reason);
+    else run.failures = 0;
     if (rows?.length) console.log(`[ChannelAutoRouter] catch up (${reason}): ${rows.length} unrouted order(s)`);
     for (const row of rows || []) {
       if (_run !== run) return;                         // realtime stopped or moved venue
       if (!autoRoutable(row)) continue;                 // delivery app order waiting for Accept
       // The WHOLE rule again for every order, at the moment it would go. False: leave without claiming.
-      if (!isOpen(run.gate(run.store.getState(), run.venueId))) break;
+      if (!isOpen(run.gate(run.store.getState(), run.venueId))) {
+        // 12 Oct 2026 (review): the runner must not go on believing the gate is open, or the menu
+        // landing (the store subscription returns early while open) would be ignored and the
+        // rows left behind would wait for an outside event. Closed now; the 1 s check re opens
+        // it and a re opened gate scans again.
+        run.open = false;
+        armWaitTimer(run);
+        break;
+      }
       const order = queueRowToRouteOrder(row);
       // A pre order due later: routeKioskOrderPrints arms one timer for it. Hand it over once per page.
-      if (order.sentAt - Date.now() > 60_000) {
+      const dueLater = order.sentAt - Date.now() > 60_000;
+      if (dueLater) {
         if (run.deferred.has(order.ref)) continue;
         run.deferred.add(order.ref);
       }
-      await run.store.getState().routeKioskOrderPrints?.(order, { trigger: 'backfill' });
+      // 12 Oct 2026 (review): one order that makes the route throw (a null line in its items)
+      // must not block every order behind it, in this scan and in every scan after. Its own try.
+      try {
+        await run.store.getState().routeKioskOrderPrints?.(order, { trigger: 'backfill' });
+      } catch (e) {
+        if (dueLater) run.deferred.delete(order.ref);
+        console.warn('[ChannelAutoRouter] catch up: one order failed, the rest go on', order.ref, e?.message || e);
+      }
     }
   } catch (e) {
-    run.lastScanAt = 0;
+    if (_run === run) readFailed(run, reason);
     console.warn('[ChannelAutoRouter] catch up failed', e?.message || e);
   } finally {
     run.scanning = false;
@@ -72,7 +118,12 @@ function evaluate(reason, { rescan = false } = {}) {
   if (!isOpen(d)) { run.open = false; return; }
   const opened = !run.open;
   run.open = true;
-  if (opened || (rescan && Date.now() - run.lastScanAt >= CATCH_UP_MIN_GAP_MS)) scan(opened ? `open, ${reason}` : reason);
+  if (opened) { scan(`open, ${reason}`); return; }
+  if (!rescan) return;
+  // since < 0: the clock was set back. Look now rather than wait on a time that may never come.
+  const since = Date.now() - run.lastScanAt;
+  if (since < 0 || since >= run.minGapMs) scan(reason);
+  else armRescan(run, run.minGapMs - since, reason);     // inside the gap: one look when it ends
 }
 
 /** A new channel order from the realtime INSERT event (already checked: master, not routed, not a delivery app order waiting for Accept). */
@@ -90,7 +141,7 @@ export function offerLiveOrder(order) {
   run.store.getState().routeKioskOrderPrints?.(order, { trigger: 'live' });
 }
 
-/** Ask for a catch up scan (the order channel subscribed again). Rate limited, and only while the gate is open. */
+/** Ask for a catch up scan (the order channel subscribed again). Rate limited (a request inside the gap is run when the gap ends), and only while the gate is open. */
 export function requestCatchUp(reason = 'asked') {
   evaluate(reason, { rescan: true });
 }
@@ -100,6 +151,7 @@ export function stopChannelAutoRouter() {
   _run = null;
   if (!run) return;
   clearTimeout(run.timer);
+  clearTimeout(run.rescanTimer);
   try { run.unsub?.(); } catch { /* already gone */ }
   if (hasWindow()) {
     window.removeEventListener(MASTER_TILL_EVENT, run.onChange);
@@ -111,15 +163,19 @@ export function stopChannelAutoRouter() {
 
 /**
  * Start the gate for one venue. fetchUnrouted is realtime.js's own backfill read (returns the
- * unrouted rows, or null when the read failed). gate and mode are for tests.
+ * unrouted rows, or null when the read failed). gate, mode, minGapMs and retryMs are for tests.
  */
-export function startChannelAutoRouter({ store, venueId, fetchUnrouted, gate = autoRouteGate, mode = pageMode() } = {}) {
+export function startChannelAutoRouter({
+  store, venueId, fetchUnrouted, gate = autoRouteGate, mode = pageMode(),
+  minGapMs = CATCH_UP_MIN_GAP_MS, retryMs = CATCH_UP_RETRY_MS,
+} = {}) {
   stopChannelAutoRouter();
   if (!store || !venueId || typeof fetchUnrouted !== 'function') return stopChannelAutoRouter;
   if (!isTillMode(mode)) return stopChannelAutoRouter;   // this page can never be a master till
   const run = {
-    store, venueId, fetchUnrouted, gate,
+    store, venueId, fetchUnrouted, gate, minGapMs, retryMs,
     open: false, scanning: false, again: false, lastScanAt: 0, timer: null, deferred: new Set(),
+    rescanTimer: null, rescanAt: 0, failures: 0,
   };
   _run = run;
   // The menu landing is what a waiting master is waiting for.

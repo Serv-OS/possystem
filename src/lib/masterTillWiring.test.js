@@ -76,6 +76,13 @@ test('the flag has one reader: no file but the rule, its device reader and the p
   const retrier = read('sync/PrintRetrier.js').split('\n').filter((l) => /\.isMaster\b/.test(l));
   assert.equal(retrier.length, 1);
   assert.match(retrier[0], /^\s*\*/);
+  // Review, 12 Oct 2026: a reader written as a destructure (const { isMaster } = config) has no
+  // ".isMaster" in it and walked past the check above. No file may take it off an object that way.
+  const DESTRUCTURE = /\b(?:const|let|var)\s*\{[^{}]*\bisMaster\b[^{}]*\}\s*=/;
+  for (const rel of files) assert.ok(!DESTRUCTURE.test(read(rel)), `${rel} takes isMaster off an object by destructure. Ask lib/masterTillDevice.js instead.`);
+  assert.ok(DESTRUCTURE.test('const { isMaster } = useStore.getState().deviceConfig || {};'), 'the check sees a destructure');
+  assert.ok(DESTRUCTURE.test('let {\n  profileId,\n  isMaster: m,\n} = cfg;'), 'over lines, renamed');
+  assert.ok(!DESTRUCTURE.test('startPrintOrchestrator({ deviceId, locationId, isMaster: isMasterDevice });'), 'passing the answer on is not a read');
 });
 
 test('no file that touches the device config key reads the master answer another way (a destructure, a string key)', () => {
@@ -209,7 +216,11 @@ test('nothing new before the claim, and nothing new can stop the ticket', () => 
     assert.ok(!beforeClaim.includes(word), `${word} must come after the claim`);
   }
   // No new wait before the claim: the venue (when it is not already known) and the claim itself.
-  assert.equal(count(beforeClaim, 'await '), 2);
+  // Comment lines are left out of the count (a comment that holds the word is not a wait), and
+  // a wait written with .then is counted too (review, 12 Oct 2026).
+  const codeBeforeClaim = beforeClaim.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.equal(count(codeBeforeClaim, 'await '), 2);
+  assert.equal(count(codeBeforeClaim, '.then('), 0, 'no promise chain before the claim either');
   assert.ok(ROUTE.indexOf('buildRouteStamp(') > claimAt);
   // The stamp block: both values start null, one try, a catch that only warns.
   const block = between(ROUTE, '// 12 Oct 2026 (Preston, D5 + D6): who routed this and with what, and which lines had no screen.', 'const SRC_LABEL');
@@ -278,6 +289,11 @@ test('the stamp block, run as written: the Preston ticket (no tree, a Latte with
   const held = runStampBlock({ unrouted: [latte] });
   assert.equal(held.routeStamp.menu, true);
   assert.equal(held.routeWords.toast, 'QR-QRJZK: Latte Big Boy went to Food. No kitchen screen is set for it.');
+  // The live name as the app stores a sized line (product, long dash, size, a trailing space),
+  // written with an escape. Staff read it with no long dash and no double space (review).
+  const live = runStampBlock({ unrouted: [{ itemId: 'm-latte', name: 'Latte \u2014 Big Boy ', qty: 1 }] });
+  assert.equal(live.routeWords.toast, 'QR-QRJZK: Latte Big Boy went to Food. No kitchen screen is set for it.');
+  assert.deepEqual(live.routeStamp.fallback, ['Latte Big Boy']);
   // A delivery app line that is not in our menu is left to the existing toast: stamped, not said twice.
   const hubrise = runStampBlock({ unrouted: [{ id: 'sku-unknown', name: 'Mystery' }], order: { ref: 'HR-1', source: 'hubrise' } });
   assert.deepEqual(hubrise.routeStamp.fallback, ['Mystery']);
@@ -398,13 +414,41 @@ test('the tree: the till\'s own two copies merged, the live store first, this ve
   assert.match(STORE, /const makeRoutingCtx = \(orderType\) => \(\{\n\s*menuItems: useStore\.getState\(\)\.menuItems \|\| \[\],\n\s*catParents: buildCatParentMap\(\),\n\s*orderType,\n\}\);/);
 });
 
-test('SyncBridge marks the category read from the read it already makes; the store declares the flag', () => {
+test('SyncBridge marks the category read ONLY when it found no rows, from the read it already makes; the store declares the flag', () => {
   const sync = read('sync/SyncBridge.jsx');
-  assert.match(sync, /const catsRes\s+= unwrap\(catsSt\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(!catsRes\.error && Array\.isArray\(catsRes\.data\)\) useStore\.setState\(\{ _catsReadLocationId: locationId \}\);\n/);
-  assert.equal(count(sync, '_catsReadLocationId'), 1);
+  // Review, 12 Oct 2026: the mark used to be set for ANY successful read, and the rows of that
+  // read reach the store several awaited reads later (the boot patch). In between the gate said
+  // "no categories on file, go" with an empty tree. Now: no rows, or no mark.
+  assert.match(sync, /const catsRes\s+= unwrap\(catsSt\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(!catsRes\.error && Array\.isArray\(catsRes\.data\) && catsRes\.data\.length === 0\) useStore\.setState\(\{ _catsReadLocationId: locationId \}\);\n/);
+  const mark = sync.split('\n').filter((l) => l.includes('_catsReadLocationId') && !/^\s*\/\//.test(l));
+  assert.equal(mark.length, 1, 'set in one place');
+  assert.ok(mark[0].includes('catsRes.data.length === 0'));
+  assert.ok(!sync.includes('if (!catsRes.error && Array.isArray(catsRes.data)) useStore.setState({ _catsReadLocationId'), 'the old line, which marked a read with rows');
+  // The rows of that read are applied later, by the boot patch, after other awaited reads.
+  const markAt = sync.indexOf(mark[0]);
+  const rowsAt = sync.indexOf('patch.menuCategories = catsRes.data.map(mapCategoryRow);');
+  const applyAt = sync.indexOf('if (Object.keys(patch).length) useStore.setState(patch);');
+  assert.ok(markAt > 0 && rowsAt > markAt && applyAt > rowsAt, 'the read, then (much later) the rows reach the store');
+  assert.ok(/\bawait\b/.test(sync.slice(markAt, applyAt)), 'awaited reads sit between the two: the window the old line opened');
   assert.equal(count(sync, 'fetchMenuCategories(locationId),'), 1, 'no second category read');
   assert.match(STORE, /\n {2}_catsReadLocationId: null,\n/);
   assert.equal(count(STORE, '_catsReadLocationId: null,'), 1);
+});
+
+test('the gate after the SyncBridge line, replayed: 41 rows read and none in the store waits; a venue with none on file goes', () => {
+  const sync = read('sync/SyncBridge.jsx');
+  const line = sync.split('\n').find((l) => l.includes('useStore.setState({ _catsReadLocationId: locationId });'));
+  const condition = /if \((.*)\) useStore\.setState/.exec(line)[1];
+  const marks = (catsRes) => new Function('catsRes', `return (${condition});`)(catsRes);
+  const afterBootRead = (catsRes) => {
+    const state = { bootLocationId: 'loc-A', menuCategories: [], _catsReadLocationId: marks(catsRes) ? 'loc-A' : null };
+    return venueHoldsMenu({ venueId: 'loc-A', categories: state.menuCategories, bootLocationId: state.bootLocationId, catsReadLocationId: state._catsReadLocationId });
+  };
+  const fortyOne = Array.from({ length: 41 }, (_, i) => ({ id: 'c' + i, location_id: 'loc-A' }));
+  assert.deepEqual(afterBootRead({ data: fortyOne, error: null }), { ready: false, why: 'not-loaded' }, 'rows read, not in the store yet: wait');
+  assert.deepEqual(afterBootRead({ data: [], error: null }), { ready: true, why: 'none-on-file' }, 'a brand new venue');
+  assert.deepEqual(afterBootRead({ data: null, error: new Error('boot fetch failed') }), { ready: false, why: 'not-loaded' }, 'a failed read is not "none"');
+  assert.deepEqual(afterBootRead({ data: [], error: new Error('partial') }), { ready: false, why: 'not-loaded' });
 });
 
 // ── App.jsx: the role, the session mark, the writer, the clears ──────────────
@@ -425,6 +469,64 @@ test('App.jsx role: the heartbeat, the print engines and the child monitor follo
   assert.ok(APP.includes('startChildHeartbeat({ deviceId: pairedDevice.id, locationId: locId, deviceName: pairedDevice.name, version: VERSION });'));
 });
 
+test('the master heartbeat follows the one rule at every beat (review): a page that stopped sending never says "master"', () => {
+  const ms = read('sync/MasterSync.js');
+  assert.ok(ms.includes("import { readMasterTill } from '../lib/masterTillDevice';"));
+  assert.ok(ms.includes("import { masterBeatRole } from '../lib/masterTill';"));
+  const beat = between(ms, 'export async function startMasterHeartbeat({ deviceId, locationId, deviceName, version }) {', 'await beat(); // immediate first beat');
+  // Asked first, before any work, with no network, and with the venue the beat is for.
+  assert.match(beat, /const beat = async \(\) => \{\n\s*try \{\n(?:\s*\/\/[^\n]*\n)*\s*const role = masterBeatRole\(readMasterTill\(\{ venueId: locationId \}\)\);\n\s*if \(!role\) return;\n/);
+  // The row carries the answer of that beat, not a word fixed at page load.
+  assert.match(beat, /device_name: deviceName,\n\s*role,\n\s*last_seen:/);
+  assert.ok(!/role:\s+'master'/.test(beat), 'the fixed word is gone from the master beat');
+  // The child beat is as it was.
+  const child = between(ms, 'export async function startChildHeartbeat(', '_childBeatTimer = setInterval');
+  assert.match(child, /role:\s+'child',/);
+  // App.jsx still starts it only for a page the rule calls master, with the same four values.
+  assert.match(APP, /if \(isMasterDevice\) \{\n(?:\s*\/\/[^\n]*\n)*\s*startMasterHeartbeat\(\{\n\s*deviceId: pairedDevice\.id,\n\s*locationId: locId,\n\s*deviceName: pairedDevice\.name,\n\s*version: VERSION,\n\s*\}\);/);
+});
+
+test('the store starts from the device config through the fence, not from the key (review): deviceConfig and training mode', () => {
+  assert.ok(STORE.includes("import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig } from '../lib/masterTillDevice';"));
+  // deviceConfig: this tab's session copy first (unchanged), then the fenced shared copy.
+  const dc = between(STORE, "const saved = sessionStorage.getItem('rpos-terminal-config');", '\n  })(),');
+  assert.match(dc, /const cfg = hydratableDeviceConfig\(\);\n\s*if \(cfg\) \{/);
+  assert.ok(!dc.includes("localStorage.getItem('rpos-device-config')"), 'never the key itself');
+  // Training mode: the same.
+  const tm = between(STORE, '  trainingMode: (() => {', '\n  })(),');
+  assert.ok(tm.includes("const tab = sessionStorage.getItem('rpos-terminal-config');"));
+  assert.ok(tm.includes('const cfg = tab ? JSON.parse(tab) : hydratableDeviceConfig();'));
+  assert.ok(tm.includes('applyTrainingFlag(on);'));
+  assert.ok(!tm.includes("localStorage.getItem('rpos-device-config')"));
+  assert.equal(count(STORE, 'hydratableDeviceConfig()'), 2);
+  // The key is still kept through the tenant fence: the paired till needs it (D3).
+  assert.ok(between(read('lib/supabase.js'), 'const TENANT_FENCE_KEEP = new Set([', ']);').includes("'rpos-device-config',"));
+  // And the fence tag the rule compares with is the one the fence writes.
+  assert.ok(read('lib/supabase.js').includes("localStorage.setItem('rpos-active-location', activeLocId);"));
+  assert.ok(read('lib/masterTillDevice.js').includes("export const VENUE_TAG_KEY = 'rpos-active-location';"));
+});
+
+test('the catch up runner: rate limited is delayed, a failed read is retried, a closed scan closes the runner, one bad order blocks nobody (review)', () => {
+  const auto = read('sync/ChannelAutoRouter.js');
+  const evaluate = between(auto, 'function evaluate(reason, { rescan = false } = {}) {', '\n}\n');
+  assert.ok(evaluate.includes('else armRescan(run, run.minGapMs - since, reason);'), 'inside the gap: one look when it ends');
+  assert.ok(!/>= CATCH_UP_MIN_GAP_MS\)\) scan\(/.test(auto), 'the old line that dropped the request');
+  const scan = between(auto, 'async function scan(reason) {', '\nfunction evaluate(');
+  assert.ok(scan.includes('if (rows == null) readFailed(run, reason);'));
+  assert.ok(scan.includes('if (_run === run) readFailed(run, reason);'));
+  assert.match(scan, /run\.open = false;\n\s*armWaitTimer\(run\);\n\s*break;/);
+  assert.match(scan, /try \{\n\s*await run\.store\.getState\(\)\.routeKioskOrderPrints\?\.\(order, \{ trigger: 'backfill' \}\);\n\s*\} catch \(e\) \{/);
+  // Every timer is cleared on stop, and none keeps a node process alive.
+  const stop = between(auto, 'export function stopChannelAutoRouter() {', '\n}\n');
+  assert.ok(stop.includes('clearTimeout(run.timer);') && stop.includes('clearTimeout(run.rescanTimer);'));
+  assert.equal(count(auto, '.unref?.();'), 2);
+  // The real gap and retry are the defaults: realtime.js hands the runner neither.
+  assert.ok(auto.includes('minGapMs = CATCH_UP_MIN_GAP_MS, retryMs = CATCH_UP_RETRY_MS,'));
+  assert.ok(!REALTIME.includes('minGapMs') && !REALTIME.includes('retryMs'));
+  // Still no read per order and no second query: the one read is realtime.js's own.
+  assert.ok(!auto.includes('supabase'));
+});
+
 test('App.jsx session mark: set in the same statement that calls the device valid, cleared when the till shell goes', () => {
   assert.equal(count(APP, 'const [deviceValid, setDeviceValidState] = useState(null);'), 1);
   assert.equal(count(APP, 'const setDeviceValid = (v) => { markTillSession(v === true ? pairedDevice?.id : null); setDeviceValidState(v); };'), 1);
@@ -438,7 +540,8 @@ test('App.jsx session mark: set in the same statement that calls the device vali
 
 test('App.jsx writer: storage is written outside the change gate, and the compare keys carry no stamp', () => {
   const apply = between(APP, 'const applyDeviceConfig = (config, { announce = false } = {}) => {', '\n  };');
-  const save = apply.indexOf('saveDeviceConfig(config, { force: changed });');
+  // deviceId (review): the config was read for THIS device; the writer refuses when storage is paired as another.
+  const save = apply.indexOf('saveDeviceConfig(config, { force: changed, deviceId: pairedDevice.id });');
   const gate = apply.indexOf('if (!changed) return;');
   assert.ok(save > 0 && gate > save, 'the write comes before the gate');
   assert.ok(apply.includes('const changed = deviceConfigChanged(prev, config);'));
@@ -449,7 +552,8 @@ test('App.jsx writer: storage is written outside the change gate, and the compar
   assert.ok(keys.includes("'isMaster'"));
   // The handset sync writes through the same writer.
   const mpos = between(APP, 'function MposDeviceProfileSync({ pairedDevice }) {', '\n}\n');
-  assert.equal(count(mpos, 'saveDeviceConfig(next, { force: true });'), 1);
+  assert.equal(count(mpos, 'saveDeviceConfig(next, { force: true, deviceId: pairedDevice.id });'), 1);
+  assert.equal(count(APP, 'saveDeviceConfig('), 2, 'two callers in App.jsx, both name the device');
   // App.jsx itself never writes or removes the key.
   assert.ok(!APP.includes("setItem('rpos-device-config'"));
   assert.ok(!APP.includes("removeItem('rpos-device-config'"));
@@ -463,7 +567,16 @@ test('App.jsx clears: a removed till, an unpaired till and a till with no profil
   assert.ok(!pair.includes("removeItem('rpos-device')"), 'the pairing record is kept, as before');
   // No profile on the device row.
   assert.match(APP, /\} catch\(e\) \{\}\n\s*\} else \{\n(?:\s*\/\/[^\n]*\n)*\s*clearMasterFlag\(\);\n\s*\}/);
-  assert.equal(count(APP, 'clearMasterFlag();'), 3);
+  assert.equal(count(APP, 'clearMasterFlag();'), 4);
+  // Review, 12 Oct 2026: the silent refresh (wake, online, Push to POS, every 5 minutes) is the
+  // cycle that still runs when the socket died in sleep. It returned at "no profile" without
+  // clearing, so the master answer lived on until the next reload. The clear sits AFTER the
+  // "row not read" return, so a failed read never clears anything.
+  const silent = between(APP, 'const refreshDeviceProfile = async () => {', 'const { data: dbProfile } = await supabase');
+  const notRead = silent.indexOf("if (!data || data.status === 'removed') return;");
+  const noProfile = silent.indexOf('if (!data.profile_id) { clearMasterFlag(); return; }');
+  assert.ok(notRead > 0 && noProfile > notRead, 'only a row that was read can say "no profile"');
+  assert.ok(!silent.includes('if (!data.profile_id) return;'));
   // Only a fresh read of the profile row may turn master on or off.
   assert.ok(APP.includes('if (dbProfile) { profile = profileRowToProfile(dbProfile); profileFromDb = true; }'));
   assert.ok(APP.includes('applyDeviceConfig(profileFromDb ? cfg : keepStoredMaster(cfg));'));

@@ -28,22 +28,29 @@ function fakeStore(initial) {
   };
 }
 
-/** One runner with a gate the test turns by hand and a read that counts itself. */
-function rig({ decision = 'skip', rows = [] } = {}) {
+/**
+ * One runner with a gate the test turns by hand and a read that counts itself. timing hands the
+ * runner a short rate limit gap and a short retry, so the tests of "later, never dropped" run in
+ * milliseconds; without it the runner uses the real 30 s and 10 s.
+ */
+function rig({ decision = 'skip', rows = [], timing = {} } = {}) {
   const routed = [];
   let fetches = 0;
-  const ctl = { decision, rows };
+  const ctl = { decision, rows, boom: false };
   const store = fakeStore({
     menuCategories: [], bootLocationId: null, _catsReadLocationId: null,
     routeKioskOrderPrints: async (order, opts) => { routed.push([order.ref, opts.trigger]); await tick(); },
   });
   const start = (mode = 'pos') => startChannelAutoRouter({
-    store, venueId: 'loc-A', mode,
+    store, venueId: 'loc-A', mode, ...timing,
     gate: () => ctl.decision,
-    fetchUnrouted: async () => { fetches++; return ctl.rows; },
+    fetchUnrouted: async () => { fetches++; if (ctl.boom) throw new Error('network'); return ctl.rows; },
   });
   return { store, routed, ctl, start, get fetches() { return fetches; } };
 }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Wait until cond() is true (a timer may be late on a busy machine, never early). */
+const until = async (cond, ms = 4000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await tick(); return cond(); };
 const row = (ref, over = {}) => ({ ref, source: 'qr', status: 'received', items: [{ name: 'Latte' }], sent_at: new Date().toISOString(), ...over });
 const quiet = (t) => t.mock.method(console, 'log', () => {});
 
@@ -165,7 +172,209 @@ test('the whole rule again for every order: the gate turning false during a scan
   stopChannelAutoRouter();
 });
 
-test('route-blind routes; catch up requests inside the gap do not read again; an order due later is handed over once; after stop nothing routes', async (t) => {
+test('a scan that stops because the gate closed leaves the runner CLOSED, so the gate opening again scans for what was left (review)', async (t) => {
+  quiet(t);
+  // Review, 12 Oct 2026. The loop broke but the runner still believed the gate was open: the
+  // menu landing was ignored (the store subscription returns early while open) and B and C
+  // waited for an outside event.
+  const r = rig({ decision: 'route', rows: [row('A'), row('B'), row('C')] });
+  const left = new Set(['A', 'B', 'C']);
+  r.store.setState({ routeKioskOrderPrints: async (order, opts) => {
+    r.routed.push([order.ref, opts.trigger]); left.delete(order.ref);
+    if (order.ref === 'A') r.ctl.decision = 'wait';      // the till lost its menu, or its answer, mid scan
+  } });
+  r.start();
+  await settle();
+  assert.deepEqual(r.routed, [['A', 'backfill']]);
+  assert.equal(r.fetches, 1);
+  // The menu lands: a store change, with no other event. The read now holds what was left.
+  r.ctl.rows = [row('B'), row('C')];
+  r.ctl.decision = 'route';
+  r.store.setState({ menuCategories: [{ id: 'c', location_id: 'loc-A' }] });
+  await settle(8);
+  assert.equal(r.fetches, 2, 'the gate re opened and scanned again');
+  assert.deepEqual([...left], []);
+  assert.deepEqual(r.routed.map((x) => x[0]), ['A', 'B', 'C']);
+  stopChannelAutoRouter();
+});
+
+test('a scan that stops because the gate closed is looked at again by the clock alone, about a second later (review)', async (t) => {
+  quiet(t);
+  const r = rig({ decision: 'route', rows: [row('A'), row('B')] });
+  r.store.setState({ routeKioskOrderPrints: async (order, opts) => { r.routed.push([order.ref, opts.trigger]); if (order.ref === 'A') r.ctl.decision = 'wait'; } });
+  r.start();
+  await settle();
+  assert.deepEqual(r.routed, [['A', 'backfill']]);
+  // Nothing happens on the page: no store change, no event. The wait check runs each second.
+  r.ctl.rows = [row('B')];
+  r.ctl.decision = 'route-blind';
+  const from = Date.now();
+  assert.ok(await until(() => r.fetches >= 2), 'looked again with no event');
+  assert.ok(Date.now() - from >= 900, 'by the one second check, not at once');
+  await settle(4);
+  assert.deepEqual(r.routed, [['A', 'backfill'], ['B', 'backfill']]);
+  stopChannelAutoRouter();
+});
+
+test('one order that makes the route throw does not block the orders behind it, in this scan or the next (review)', async (t) => {
+  quiet(t);
+  const warned = [];
+  t.mock.method(console, 'warn', (...a) => warned.push(a.join(' ')));
+  // routeKioskOrderPrints maps order.items before its own try, so a null line rejects.
+  const r = rig({ decision: 'route', rows: [row('BAD'), row('GOOD-1'), row('GOOD-2')], timing: { minGapMs: 40 } });
+  r.store.setState({ routeKioskOrderPrints: async (order, opts) => {
+    if (order.ref === 'BAD') throw new TypeError("Cannot read properties of null (reading 'id')");
+    r.routed.push([order.ref, opts.trigger]);
+  } });
+  r.start();
+  await settle();
+  assert.deepEqual(r.routed, [['GOOD-1', 'backfill'], ['GOOD-2', 'backfill']]);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /one order failed, the rest go on BAD /);
+  // The bad row is still unrouted next time. It fails again and still blocks nobody.
+  r.ctl.rows = [row('BAD'), row('GOOD-3')];
+  await wait(60);
+  requestCatchUp('online');
+  await settle();
+  assert.deepEqual(r.routed.map((x) => x[0]), ['GOOD-1', 'GOOD-2', 'GOOD-3']);
+  // It was a route that failed, not the read: no retry is armed for it.
+  await wait(120);
+  assert.equal(r.fetches, 2);
+  stopChannelAutoRouter();
+});
+
+test('an order due later whose hand over threw is offered again by the next scan', async (t) => {
+  quiet(t);
+  t.mock.method(console, 'warn', () => {});
+  const future = new Date(Date.now() + 3600_000).toISOString();
+  const r = rig({ decision: 'route', rows: [row('OL-9', { source: 'online', sent_at: future })], timing: { minGapMs: 30 } });
+  let fail = true;
+  r.store.setState({ routeKioskOrderPrints: async (order, opts) => { if (fail) throw new Error('boom'); r.routed.push([order.ref, opts.trigger]); } });
+  r.start();
+  await settle();
+  assert.deepEqual(r.routed, []);
+  fail = false;
+  await wait(45);
+  requestCatchUp('online');
+  await settle();
+  assert.deepEqual(r.routed, [['OL-9', 'backfill']]);
+  stopChannelAutoRouter();
+});
+
+test('rate limited means LATER, never dropped: a request inside the gap is one more read when the gap ends (review)', async (t) => {
+  quiet(t);
+  // Review, 12 Oct 2026, the wake. The tab is visible at once and scans. The socket that died
+  // in sleep joins again some seconds later and asks for a catch up: inside the gap. An order
+  // paid between the read and the rejoin has no INSERT event and was in no scan. The request
+  // used to be thrown away and nothing was armed, so the order waited for the next wake.
+  const GAP = 300;
+  const r = rig({ decision: 'route', rows: [], timing: { minGapMs: GAP } });
+  const scanAt = Date.now();
+  r.start();
+  await settle(2);
+  assert.equal(r.fetches, 1, 'the wake scan');
+  // QR-LATE lands after that read, with the socket down. Then the socket joins again.
+  r.ctl.rows = [row('QR-LATE')];
+  requestCatchUp('subscribed');
+  requestCatchUp('subscribed');
+  requestCatchUp('online');
+  await settle(2);
+  assert.equal(r.fetches, 1, 'still inside the gap: no read yet');
+  assert.deepEqual(r.routed, []);
+  // The gap ends. Exactly one more read, however many asked, and not before the gap is over.
+  assert.ok(await until(() => r.fetches >= 2), 'the deferred read came with no further event');
+  assert.ok(Date.now() - scanAt >= GAP - 5, 'not before the end of the gap');
+  await settle(4);
+  assert.equal(r.fetches, 2, 'one deferred read');
+  assert.deepEqual(r.routed, [['QR-LATE', 'backfill']]);
+  // And nothing keeps reading afterwards: no request, no read.
+  r.ctl.rows = [];
+  await wait(GAP * 2 + 80);
+  assert.equal(r.fetches, 2, 'no polling');
+  stopChannelAutoRouter();
+});
+
+test('the deferred look asks the gate again: a gate that closed in the meantime reads nothing', async (t) => {
+  quiet(t);
+  const r = rig({ decision: 'route', rows: [], timing: { minGapMs: 60 } });
+  r.start();
+  await settle(2);
+  requestCatchUp('subscribed');
+  r.ctl.decision = 'skip';                 // the till stopped being the master before the gap ended
+  await wait(110);
+  assert.equal(r.fetches, 1);
+  // Master again: the gate opening scans, as always.
+  r.ctl.decision = 'route';
+  requestCatchUp('x');
+  await settle(2);
+  assert.equal(r.fetches, 2);
+  stopChannelAutoRouter();
+});
+
+test('a failed read is tried again by the till itself, with no outside event, and slower each time (review)', async (t) => {
+  quiet(t);
+  t.mock.method(console, 'warn', () => {});
+  // Review, 12 Oct 2026: a read that answered null armed nothing. Routed [] and reads 1, for
+  // as long as no wake, no online event and no rejoin came.
+  const at = [];
+  const routed = [];
+  let rows = null;
+  const store = fakeStore({ routeKioskOrderPrints: async (order, opts) => { routed.push([order.ref, opts.trigger]); } });
+  startChannelAutoRouter({
+    store, venueId: 'loc-A', mode: 'pos', gate: () => 'route', retryMs: 60, minGapMs: 60_000,
+    fetchUnrouted: async () => { at.push(Date.now()); if (at.length === 3) rows = [row('P')]; return at.length < 3 ? null : rows; },
+  });
+  // Nothing happens on the page from here on: no request, no event, no store change.
+  assert.ok(await until(() => at.length >= 3), 'it asked again by itself, twice: ' + at.length);
+  await settle(4);
+  assert.deepEqual(routed, [['P', 'backfill']], 'the order that was waiting went as soon as a read worked');
+  // 60 ms, then 120 ms (10 s, then 20 s on a till). A timer is never early, so these are floors.
+  assert.ok(at[1] - at[0] >= 55, 'first retry after the base delay: ' + (at[1] - at[0]));
+  assert.ok(at[2] - at[1] >= 115, 'second retry waits twice as long: ' + (at[2] - at[1]));
+  // It worked: the retries stop. No fourth read comes (the rate limit gap is a minute here).
+  await wait(450);
+  assert.equal(at.length, 3);
+  stopChannelAutoRouter();
+});
+
+test('a read that throws is retried the same way', async (t) => {
+  quiet(t);
+  t.mock.method(console, 'warn', () => {});
+  const r = rig({ decision: 'route', rows: [row('QR-8')], timing: { retryMs: 30, minGapMs: 60_000 } });
+  r.ctl.boom = true;
+  r.start();
+  await settle(2);
+  assert.equal(r.fetches, 1);
+  assert.deepEqual(r.routed, []);
+  r.ctl.boom = false;
+  assert.ok(await until(() => r.fetches >= 2), 'retried with no outside event');
+  await settle(4);
+  assert.deepEqual(r.routed, [['QR-8', 'backfill']]);
+  stopChannelAutoRouter();
+});
+
+test('stopping clears the retry and the deferred look: nothing reads after a stop', async (t) => {
+  quiet(t);
+  t.mock.method(console, 'warn', () => {});
+  // A retry is armed (the read failed), then the runner stops.
+  const failed = rig({ decision: 'route', rows: null, timing: { retryMs: 30, minGapMs: 60_000 } });
+  failed.start();
+  await settle(2);
+  assert.equal(failed.fetches, 1);
+  stopChannelAutoRouter();
+  // A deferred look is armed (a request inside the gap), then the runner stops.
+  const asked = rig({ decision: 'route', rows: [], timing: { minGapMs: 40 } });
+  asked.start();
+  await settle(2);
+  assert.equal(asked.fetches, 1);
+  requestCatchUp('subscribed');
+  stopChannelAutoRouter();
+  await wait(160);
+  assert.equal(failed.fetches, 1, 'no retry after the stop');
+  assert.equal(asked.fetches, 1, 'no deferred look after the stop');
+});
+
+test('route-blind routes; an order due later is handed over once; after stop nothing routes', async (t) => {
   quiet(t);
   const future = new Date(Date.now() + 3600_000).toISOString();
   const r = rig({ decision: 'route-blind', rows: [row('OL-1', { source: 'online', sent_at: future })] });
@@ -173,7 +382,8 @@ test('route-blind routes; catch up requests inside the gap do not read again; an
   await settle();
   assert.deepEqual(r.routed, [['OL-1', 'backfill']]);
   assert.equal(r.fetches, 1);
-  // The order channel subscribed again, twice, seconds after the scan: inside the 30 s gap.
+  // The order channel subscribed again, twice, seconds after the scan: inside the real 30 s
+  // gap, so no read now (one look is armed for the end of the gap, tested above).
   requestCatchUp('subscribed');
   requestCatchUp('subscribed');
   await settle(2);
