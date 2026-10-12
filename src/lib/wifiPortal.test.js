@@ -175,7 +175,7 @@ test('supabase.js builds BOTH clients from supabaseBaseUrls, never from the raw 
   assert.match(src, /const PLATFORM_URL\s+= SUPABASE_BASES\.platformUrl;/);
   assert.equal((src.match(/import\.meta\.env\.VITE_SUPABASE_URL/g) || []).length, 1, 'read once, into BAKED_SUPABASE_URL');
   assert.equal((src.match(/import\.meta\.env\.VITE_PLATFORM_SUPABASE_URL/g) || []).length, 1, 'read once, into BAKED_PLATFORM_URL');
-  assert.equal((src.match(/createClient\(SUPABASE_URL, SUPABASE_ANON/g) || []).length, 2, 'ops and staff');
+  assert.equal((src.match(/createClient\(SUPABASE_URL, SUPABASE_ANON/g) || []).length, 3, 'ops, staff and the kitchen screen client');
   assert.equal((src.match(/createClient\(PLATFORM_URL, PLATFORM_ANON/g) || []).length, 1, 'platform');
 });
 

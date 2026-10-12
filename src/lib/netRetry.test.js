@@ -102,7 +102,7 @@ test('a refusal from the database is passed straight back, never retried', async
 
 test('the clients use it, and the banner tells the truth about a dropped connection', () => {
   const client = readFileSync(new URL('./supabase.js', import.meta.url), 'utf8');
-  assert.equal((client.match(/global: \{ fetch: retryingFetch \}/g) || []).length, 3, 'ops, staff and platform');
+  assert.equal((client.match(/global: \{ fetch: retryingFetch \}/g) || []).length, 4, 'ops, staff, the kitchen screen client and platform');
   // window.fetch called without its receiver throws "Illegal invocation" (v5.8.56)
   const mod = readFileSync(new URL('./netRetry.js', import.meta.url), 'utf8');
   assert.match(mod, /globalThis\.fetch\(input, init\)/, 'the base fetch is CALLED, never passed detached');

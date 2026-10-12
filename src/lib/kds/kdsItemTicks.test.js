@@ -84,8 +84,14 @@ test('wiring: the tick box toggles and the screen saves in order (source pins)',
   assert.match(surf, /if \(ticked && shouldBumpAfterTick\(items, settingsRef\.current\)\) \{ bump\(id\); return; \}/, 'unticking never bumps');
   assert.match(surf, /entry\.chain = \(prev\?\.chain \|\| Promise\.resolve\(\)\)\.then\(/, 'saves for one ticket run in order');
   assert.match(surf, /if \(localTicks\.current\.get\(id\) !== entry\) return;/, 'only the newest tap saves');
-  assert.match(surf, /setRows\(data\.map\(r => withLocalTicksRef\.current\(mapRow\(r\)\)\)\);/, 'the refetch keeps local ticks');
-  assert.equal((surf.match(/const t = withLocalTicksRef\.current\(mapRow\(payload\.new\)\);/g) || []).length, 2, 'both live update paths keep local ticks');
+  // 12 Oct 2026: the list read and both live paths now run through the board engine, which maps
+  // every row it is given with the mapper the screen hands in.
+  assert.match(surf, /mapRow: \(r\) => withLocalTicksRef\.current\(mapRow\(r\)\),/, 'the engine keeps local ticks on every row');
+  assert.match(surf, /eng\.liveInsert\(payload\.new\)/);
+  assert.match(surf, /eng\.liveUpdate\(payload\.new\)/);
+  const engine = fs.readFileSync(new URL('./kdsBoardEngine.js', import.meta.url), 'utf8');
+  assert.equal((engine.match(/const t = deps\.mapRow\(dbRow\);/g) || []).length, 2, 'both live update paths keep local ticks');
+  assert.match(engine, /const fresh = ans\.data\.map\(\(row\) => deps\.mapRow\(row\)\);/, 'the refetch keeps local ticks');
 });
 
 test('review round: after our last save, only a late copy of our OWN save is held back', () => {
