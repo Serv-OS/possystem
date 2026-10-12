@@ -11,6 +11,7 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
 import { normaliseCheckStatus } from './voidRules.js';
 import { readAllPagesResult, progressSum, isTooManyRows, rowBudget, pinnedEnd, CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES } from './pagedRead.js';
+import { kitchenTicketQueueItem, isDuplicateTicketError } from './kds/kdsTicketReplay';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
 import { copiesNeedingMasterRate } from './venueTaxRates';
@@ -569,7 +570,12 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
 
   // v4.3 — durable send: if the network/Supabase fails, queue the write to
   // IndexedDB so it replays when the device comes back online. No lost tickets.
+  // 12 Oct 2026, Barnsley hunt (K7): resolves true when the ticket is already in the database
+  // (nothing to queue, the caller reports it sent), false when it was queued for a retry.
   const handleFailure = async (err) => {
+    // The database says this ticket is already there: its first insert landed and only the answer
+    // was lost, or the request was sent twice. It is inserted ONCE, so there is nothing to queue.
+    if (isDuplicateTicketError(err)) return true;
     reportWriteRefused(err);   // fence stage 1: a refused kitchen ticket may mean a lost link (banner); it is queued below
     try {
       const { queueWrite } = await import('../sync/OfflineQueue');
@@ -577,11 +583,15 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
       // accept a write. The queue gives up after 5 failed replays, so a payload the
       // database cannot take (meta before the migration) would be a lost kitchen ticket.
       // Without meta the KDS still reads the row from table_label.
-      await queueWrite({ type: 'upsert', table: 'kds_tickets', payload: _kdsMetaColumn === true ? withMeta : row, onConflict: 'id' });
+      // 12 Oct 2026 (K7): the queued copy is INSERT IF MISSING (lib/kds/kdsTicketReplay.js). It
+      // used to be a merging upsert carrying status 'pending' and the items as sent: replayed after
+      // the kitchen had bumped the ticket, it put the ticket back on the screen and wiped the ticks.
+      await queueWrite(kitchenTicketQueueItem(_kdsMetaColumn === true ? withMeta : row));
       console.warn('[KDS] Send failed, queued for retry:', err?.message || err);
     } catch (qe) {
       console.error('[KDS] CRITICAL: send failed AND queueing failed:', qe?.message || qe);
     }
+    return false;
   };
 
   try {
@@ -594,7 +604,7 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
         _kdsMetaColumn = true;
       }
     }
-    if (res?.error) await handleFailure(res.error);
+    if (res?.error && await handleFailure(res.error)) return { data: null, error: null };   // already there: sent
     return res;
   } catch (err) {
     await handleFailure(err);

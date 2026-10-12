@@ -19,6 +19,9 @@ import {
   isLateSafeParkedDelete, PARKED_LINK, OCCUPATION_KEY, ZERO_ROWS_UNKNOWN,
 } from '../lib/rowWriteFence';
 import { confirmLinkAfterZeroRows, getLinkEpoch, checkDeviceLink } from '../lib/deviceLink';
+// 12 Oct 2026, Barnsley hunt (K7): a queued kitchen ticket is replayed as INSERT IF MISSING, never
+// as a merge, so a replay can never un bump a ticket the kitchen already bumped.
+import { replayUpsertOptions, upsertRunKey } from '../lib/kds/kdsTicketReplay';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -211,7 +214,10 @@ async function replayItem(supabase, item) {
       const { error } = await writeClosedCheckRow(supabase, item.payload, { upsert: item.type === 'upsert', tag: 'OfflineQueue' });
       if (error) throw error;
     } else if (item.type === 'upsert') {
-      const { error } = await supabase.from(item.table).upsert(item.payload, { onConflict: item.onConflict || 'id' });
+      // 12 Oct 2026 (K7): for kds_tickets the options are insert if missing (ON CONFLICT DO NOTHING),
+      // so a ticket the kitchen already bumped keeps its status, bumped_at and ticks. Every other
+      // table replays exactly as before.
+      const { error } = await supabase.from(item.table).upsert(item.payload, replayUpsertOptions(item));
       if (error) throw error;
     } else if (item.type === 'insert') {
       const { error } = await supabase.from(item.table).insert(item.payload);
@@ -384,7 +390,7 @@ export async function replayQueue(supabase) {
     // Two-tier safety: a batch error falls back to per-item replay (replayItem), preserving the exact
     // attempt / permanent-failure attribution.
     const opKind = (it) =>
-      it.type === 'upsert' ? `u|${it.table}|${it.onConflict || 'id'}`
+      it.type === 'upsert' ? upsertRunKey(it)
       : it.type === 'insert' ? `i|${it.table}`
       : it.type === 'update' ? `x|${it.table}`
       : `d|${it.table}`;
@@ -394,7 +400,7 @@ export async function replayQueue(supabase) {
       const k = opKind(item);
       const last = runs[runs.length - 1];
       if (last && last.k === k) last.items.push(item);
-      else runs.push({ k, type: item.type, table: item.table, onConflict: item.onConflict || 'id', items: [item] });
+      else runs.push({ k, type: item.type, table: item.table, onConflict: item.onConflict || 'id', upsertOptions: replayUpsertOptions(item), items: [item] });
     }
 
     // Fix round 2: once a write of a row does not land in this pass (kept for the link, kept to
@@ -446,7 +452,7 @@ export async function replayQueue(supabase) {
         const fresh = [...byKey.values()];
         if (fresh.length === 1) { noteOutcome(fresh[0], await replayItem(supabase, fresh[0])); continue; }
         try {
-          const { error } = await supabase.from(run.table).upsert(fresh.map(i => i.payload), { onConflict: run.onConflict });
+          const { error } = await supabase.from(run.table).upsert(fresh.map(i => i.payload), run.upsertOptions);
           if (error) throw error;
           await Promise.allSettled(fresh.map(i => dbDelete(i.id)));
         } catch (e) {
