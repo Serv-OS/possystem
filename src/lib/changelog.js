@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.53',
+    date: '12 Oct 2026',
+    items: [
+      "Kitchen screens never put a table back, in every shape. On 26 Sep we stopped a kitchen screen sending tables to the tills, after one in Leeds kept putting a voided table back. That fix only knew the ServOS KDS app. A tablet set up as a Kitchen Display inside the normal till page was missed, and so was a POS device on a profile that opens straight on the kitchen screen. Both are covered now. A kitchen screen reads tables. It never sends one, deletes one or puts one back.",
+      "A till inside the ServOS KDS app sends its tables again. A device that runs the KDS app but is paired as a till, on a till profile, shows the PIN pad and the till. The old fix stopped that till sending tables too, so a table opened on it did not reach the other tills. It now sends them like any till.",
+      "If a device is moved between a kitchen profile and a till profile while the app is open, the new rule applies at once. No restart is needed.",
+      "The Bookings host stand is not changed. It seats tables, so it still sends them.",
+    ],
+  },
+  {
     v: '5.11.52',
     date: '12 Oct 2026',
     items: [

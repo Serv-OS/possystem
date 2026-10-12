@@ -87,6 +87,31 @@ export function queueDeviceRole({ mode, deviceType, defaultSurface, profileName 
   return 'till';
 }
 
+/**
+ * Does this page show the KITCHEN SCREEN? Narrower than 'reader' on purpose. It is the fence for
+ * tables (sync/SessionSync.js, sync/SessionReconciler.js): a kitchen screen only reads tables and
+ * must never publish one or put one back (v5.9.72, Leeds 26 Sep 2026). The other readers are not
+ * all safe to stop: the Bookings host stand SEATS tables and publishes them through the same
+ * sync, so it must stay free to write.
+ *
+ * The same three signs queueDeviceRole reads, which are what App.jsx shows:
+ *   - the device is paired as a Kitchen Display (type kds), whatever the page's mode word is;
+ *   - its profile boots straight to the kitchen screen (isKitchenProfile);
+ *   - it is the kitchen app (?mode=kds) with no pairing type to say otherwise.
+ * A page that shows a till is never a kitchen screen, even inside the kitchen app (a POS pairing
+ * on a till profile), so its tables always reach the other tills. Only inside the till shell: a
+ * mode App.jsx returns for earlier (Back Office, a host stand, the handset page) never shows the
+ * kitchen screen, whatever pairing a shared browser holds in storage.
+ */
+export function showsKitchenScreen({ mode, deviceType, defaultSurface, profileName } = {}) {
+  const m = lower(mode);
+  const t = lower(deviceType);
+  if (OFFICE.has(m) || READER_MODE.has(m) || m === 'mpos') return false;
+  if (READER_TYPE.has(t)) return true;
+  if (isKitchenProfile({ defaultSurface, profileName })) return true;
+  return m === 'kds' && !t;
+}
+
 /** May this page's background sync write order_queue and bar_tabs at all? Only a till. */
 export function maySyncQueue(role) {
   return role === 'till';

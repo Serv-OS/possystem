@@ -9,7 +9,7 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode, isBackOfficeMode } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, isBackOfficeMode } from '../lib/supabase';
 import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
@@ -741,7 +741,10 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     // v5.9.72: not on a kitchen screen, which only reads tables and must never put one back.
-    if (!isMock && getDeviceMode() !== 'kds') startSessionReconciler();
+    // 12 Oct 2026: that is now the reconciler's own test, asked on every pass and for every shape
+    // of kitchen screen (sync/SessionReconciler.js), not the mode word read once here. So it is
+    // started on every page, and stands still while the page shows the kitchen screen.
+    if (!isMock) startSessionReconciler();
     // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
     if (!isMock) startTablePlanSync();
     // v5.5.846 — close tables paid on the PAX. 28 Sep 2026: on every device that mounts this

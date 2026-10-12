@@ -1,6 +1,6 @@
 // v5.9.72: a void leaves the same tombstone a payment does (Leeds, 26 Sep 2026: "this order is
 // being voided but still coming back"), demo tabs stay in demo mode, a kitchen screen never
-// publishes tables or tabs.
+// publishes tables or tabs (12 Oct 2026: in every shape, not only the page whose mode word is kds).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,9 +28,21 @@ test('pins: voidCheck writes the tombstone; demo tabs only in mock; a KDS never 
   assert.match(v, /insertClosedCheck\(tomb\);/);
   assert.match(store, /seedTabs: \(\) => \{ if \(!isMock\) return; set\(\{ tabs:\[/);
   assert.match(read('../surfaces/BarSurface.jsx'), /if \(tabs\.length===0 && isMock\) seedTabs\(\);/);
-  assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;/);
-  assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;   \/\/ v5\.9\.72: a kitchen screen never resurrects a table/);
-  assert.match(read('../sync/SyncBridge.jsx'), /if \(!isMock && getDeviceMode\(\) !== 'kds'\) startSessionReconciler\(\);/);
+  // 12 Oct 2026: these three were tests of the page's mode word (kds), true only for the ServOS
+  // KDS app. A tablet paired as a Kitchen Display inside a till mode page was missed, and a till
+  // inside the kitchen app was stopped. All three now ask one rule that follows what the page
+  // shows (lib/queueDeleteRule.js showsKitchenScreen, pinned in kitchenScreenRule.test.js and run
+  // end to end in sync/sessionKitchenFence.test.js). The reconciler asks it on every pass, so
+  // SyncBridge starts it on every page.
+  const ss = read('../sync/SessionSync.js');
+  const flush = ss.slice(ss.indexOf('export async function flushSessions()'), ss.indexOf('export function scheduleFlush()'));
+  assert.match(flush, /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;/);
+  assert.match(ss, /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;   \/\/ v5\.9\.72: a kitchen screen never resurrects a table/);
+  assert.match(read('../sync/SessionReconciler.js'), /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;/);
+  assert.match(read('../sync/SyncBridge.jsx'), /if \(!isMock\) startSessionReconciler\(\);/);
+  for (const file of ['../sync/SessionSync.js', '../sync/SyncBridge.jsx']) {
+    assert.doesNotMatch(read(file), /getDeviceMode\(\) (===|!==) 'kds'/, `${file}: the mode word alone no longer decides`);
+  }
   // 12 Oct 2026: the QueueSync fence used to empty `tabs` on a kitchen screen, which stopped the
   // publish but made its delete loop remove every tab the screen knew of. A page that is not a
   // till now returns before any write (lib/queueDeleteRule.js, pinned in queueDeleteRule.test.js).
