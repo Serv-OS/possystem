@@ -696,7 +696,11 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         // Profile settings changed: re-apply immediately through the SAME
         // mapping + apply path as boot and the silent refresh (v5.7.7: the
         // handler used to keep its own field-mapping copy, which had drifted).
-        if (!payload.new) return;
+        // 12 Oct 2026: a live change can arrive with an error and NO row; the realtime library
+        // hands it over as new = {}. Applied as a profile it reset this till to the defaults
+        // (not master, no card reader, eat in only) until a reload. The same kind of message
+        // took 24 menu board TVs off their pairing that night. Only this profile's own row counts.
+        if (payload?.errors?.length || !payload?.new || payload.new.id !== profileId) return;
         applyDeviceConfig(configFromProfile(profileRowToProfile(payload.new)), { announce: true });
       })
       .subscribe();
