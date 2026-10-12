@@ -1437,8 +1437,11 @@ export default function OrdersHub() {
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
               {viewOrder._kind === 'queue' && (
                 <button onClick={async () => {
-                  // The route reports its own outcome (routing, printed, no printer mapped,
-                  // no matching centre). A blind "sent" toast here hid those reasons.
+                  // The route reports its own problems (did not print, no matching centre, did
+                  // NOT reach the kitchen screen). A blind "sent" toast here hid those reasons.
+                  // v5.11.52 (the quiet till): when all is well the route says nothing any more,
+                  // so a press that worked shows no message. The route returns no outcome, so
+                  // this button cannot yet tell "sent" from "nothing sent" by itself.
                   // 12 Oct 2026: a person's press. It is never refused for not being the master
                   // till and never waits for the menu. The ticket is stamped trigger manual.
                   try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true, trigger: 'manual' }); }

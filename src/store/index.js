@@ -8367,9 +8367,14 @@ export const useStore = create((set, get) => ({
     const printerId = centre?.printer?.id || null;
 
     // No printer mapped → still creates KDS ticket, warns staff
+    // v5.11.52 (the quiet till): not when the caller marks the centre as a kitchen screen with
+    // no printer by choice (job.kdsOnly, set only by routeKioskOrderPrints, from the saved
+    // routing). Until v5.11.52 the "routed" toast replaced this warning the moment it was
+    // raised; with that toast gone it would have shown on every QR, online and kiosk order at a
+    // venue that runs screens only. The 'no-printer' marker is kept; only the words are left off.
     if (!printerId) {
       set(s => ({ printJobs: [{ ...basePrintJob, status: 'no-printer' }, ...s.printJobs.slice(0, 49)] }));
-      get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
+      if (!job.kdsOnly) get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
       return;
     }
 
@@ -8497,19 +8502,17 @@ export const useStore = create((set, get) => ({
   routeKioskOrderPrints: async (order, opts = {}) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
-    // v5.5.131: surface routing diagnostics as on-screen toasts on the master
+    // v5.5.131: surface routing PROBLEMS as on-screen toasts on the master
     // device — DevTools isn't accessible on Sunmi/Android-APK installs.
+    // v5.11.52 (the quiet till): problems only. An order that is routed with nothing wrong
+    // shows NOTHING on the till. Peter, 12 Oct 2026: "we dont want it to show on the POS a
+    // routing message, whats the point, it just needs to do it".
     const showToast = useStore.getState().showToast;
-    // NB: named srcUpper, NOT srcLabel. A second `const srcLabel` is declared later INSIDE the
-    // try block (SRC_LABEL[...]); reusing the name here put the "Routing …" toast below in that
-    // inner const's temporal dead zone → a silent ReferenceError AFTER the kitchen_routed_at
-    // claim but BEFORE the KDS/print writes, so channel orders claimed-but-never-printed (v5.5.861
-    // regression, fixed v5.5.867). Keep these two names distinct.
-    const srcUpper = order.source ? order.source.toUpperCase() : 'ORDER';
-    // v5.5.861: console entry log stays here, but the on-screen "Routing …" toast moved
-    // BELOW the dedup/staleness/claim guards — it used to fire on every backfill pass
-    // (every Back Office refresh re-toasted the same held/already-printed order, reading
-    // as a repeated new-order notification).
+    // NB: a `const srcLabel` is declared later INSIDE the try block (SRC_LABEL[...]). Nothing
+    // above that line may use the name. v5.5.861 did, in a toast, which threw a silent
+    // ReferenceError (temporal dead zone) AFTER the kitchen_routed_at claim but BEFORE the
+    // KDS/print writes, so channel orders were claimed and never printed (fixed v5.5.867 with a
+    // second const, srcUpper, which went with its "Routing" toast in v5.11.52).
     console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
       'items:', order.items.map(i => ({
         id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
@@ -8626,10 +8629,9 @@ export const useStore = create((set, get) => ({
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
       const claimedRow = r.data?.[0] || null;
-      // v5.5.861: we are now COMMITTED to printing this order on this device — this is
-      // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
-      // passes above stay silent instead of re-notifying on every boot).
-      showToast?.(`Routing ${srcUpper} ${order.ref}…`, 'info');
+      // v5.11.52 (the quiet till): we are now COMMITTED to sending this order on this device,
+      // and from here on the till speaks only when something needs attention. The "Routing"
+      // message that was raised at this point for every order is gone.
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen).
       // v5.5.868: load the routing config FRESH from the DB. The device that routes a channel
@@ -8674,7 +8676,7 @@ export const useStore = create((set, get) => ({
         });
       });
       // The fallback warning is raised at the END of this action (see below), because the
-      // routed / did-not-print toast further down would overwrite it: showToast is one slot.
+      // did-not-print toast further down would overwrite it: showToast is one slot.
 
       // v5.5.850 (supersedes v5.5.555's whole-order-only fallback): PER-ITEM fallback — any
       // item that matched no centre (e.g. a HubRise sku_ref that isn't in our catalog) still
@@ -8694,7 +8696,8 @@ export const useStore = create((set, get) => ({
       // said which app had sent it or that it held no category tree. This sits AFTER the claim,
       // so it has its own try and both values start as null: if anything here fails, the ticket
       // goes exactly as before with the stamp and the notice left off. It never leaves this
-      // action early, and it uses srcUpper only (see the note at the top of this action).
+      // action early, and it never uses the channel label const declared just below it (see
+      // the note at the top of this action).
       let routeStamp = null;
       let routeWords = null;
       try {
@@ -8933,6 +8936,10 @@ export const useStore = create((set, get) => ({
           })),
           type: 'kitchen',
           delivery: deliveryBlock,
+          // v5.11.52 (the quiet till): the saved routing says this centre is a kitchen screen
+          // with no printer. That is a chosen setup, so routePrintJob keeps its "No printer
+          // mapped" warning to itself. Words only: the job is handed over exactly as before.
+          kdsOnly: !printerId,
         });
       });
 
@@ -8988,25 +8995,21 @@ export const useStore = create((set, get) => ({
         // types now, and the per-item fallback means the CATEGORY is what failed here.
         else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre that takes ${orderTypeLabelOf(typeKey) || 'this order type'}`;
         showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
-      } else {
-        const centreNames = Object.keys(byCentre).map(cid =>
-          routingConfig.centres?.find(c => c.id === cid)?.name || cid
-        );
-        // Also report which (if any) centres lack a printer mapping.
-        const noPrinter = centreNames.filter((_, idx) => {
-          const cid = Object.keys(byCentre)[idx];
-          const c = routingConfig.centres?.find(c => c.id === cid);
-          return !c?.printer?.id;
-        });
-        if (noPrinter.length) {
-          showToast?.(`⚠ ${srcLabel} ${order.ref} routed to ${centreNames.join(', ')} — but ${noPrinter.join(', ')} has no printer mapped (KDS only)`, 'warning');
-        } else {
-          showToast?.(`✓ ${srcLabel} ${order.ref} routed → ${centreNames.join(', ')}`, 'success');
-        }
       }
-      // v5.8.63: now that the routed / did-not-print toast has been raised, queue the
-      // order type fallback warning behind it so the operator actually reads it.
-      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning');
+      // v5.11.52 (the quiet till): an order that was routed with nothing wrong shows NOTHING on
+      // the till. The "routed" tick and the "no printer mapped (KDS only)" warning that were
+      // raised here are gone. A kitchen screen with no printer is a chosen setup, not a fault,
+      // and at a venue that runs screens only that warning showed on every single order.
+      // The console lines above stay as they are.
+      //
+      // The two warnings below used to queue behind the routed toast. Now they wait only when a
+      // message really is on the till at this moment (did not print, did NOT reach the kitchen
+      // screen, an item not in our menu): the toast is one slot and a new one replaces it. With
+      // nothing on the till they are shown at once.
+      const toastOnScreen = !!useStore.getState().toast;
+      // v5.8.63: the order type fallback warning, behind that message when there is one, so the
+      // operator actually reads both.
+      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning', toastOnScreen ? 3000 : 0);
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
       // durable so the row was at minimum queued), flip status from
@@ -9033,12 +9036,14 @@ export const useStore = create((set, get) => ({
       // 12 Oct 2026 (Preston, D4 + D6): never silent. When a line had no kitchen screen, or this
       // till sent the order before it held its menu, the till says so and one activity feed
       // event records it. Raised LAST, after the status write, in its own try, and the event is
-      // not waited for, so it can never delay or stop the route. The toast waits behind the
-      // routed toast and the order type warning (3000 ms), because the toast is one slot.
+      // not waited for, so it can never delay or stop the route. The toast is one slot, so this
+      // one waits behind a message that was on the till (3200 ms) and behind the order type
+      // warning (3000 ms more). v5.11.52: with neither it is shown at once, because the routed
+      // toast it used to wait for is gone.
       // Severity info: action and urgent chime on every till of the venue.
       try {
         if (routeWords && Object.keys(byCentre).length > 0) {
-          setTimeout(() => useStore.getState().showToast?.(routeWords.toast, 'warning', 9000), typeFallback ? 6200 : 3200);
+          setTimeout(() => useStore.getState().showToast?.(routeWords.toast, 'warning', 9000), (toastOnScreen ? 3200 : 0) + (typeFallback ? 3000 : 0));
           logActivity(locId, { kind: 'ops', severity: 'info', title: routeWords.title, body: routeWords.body, refType: 'kitchen_route', refId: order.ref, actorName: routeStamp?.deviceName || null }).catch(() => {});
         }
       } catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }

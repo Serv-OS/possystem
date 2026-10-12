@@ -15,6 +15,7 @@ export const CHANGELOG = [
       "TVs: before a TV makes a new screen for itself it looks for the one it already owns and uses it. A TV left on a pairing code by the 12 Oct fault finds its old screen by itself when it loads this version, where that screen is still in the list.",
       "Back Office, Menu boards: a small grey note under a screen says when a TV kept its pairing, or that it lost its sign in, with the code to pair it again.",
       "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
+      "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
     ],
   },
   {
