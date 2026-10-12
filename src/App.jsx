@@ -91,6 +91,13 @@ const BackOfficeApp = lazy(() => import('./backoffice/BackOfficeApp'));
 import { isMock, supabase, linkDevice } from './lib/supabase';
 import { classifyDeviceRead, decideDeviceRefresh, isMissingRpc } from './lib/deviceFence';
 import { checkDeviceLink, reportWriteRefused } from './lib/deviceLink';
+// 12 Oct 2026 (Coffee Boy Preston; Peter: "you need to fix the master thing"). ONE rule answers
+// "am I this venue's master till" (lib/masterTill.js). This file no longer reads the master
+// answer from storage and no longer writes the device config itself: lib/masterTillDevice.js is
+// the one reader and the one writer, and it ties the config to the till it was derived for.
+import { readMasterTill, markTillSession, tillSession, saveDeviceConfig, keepStoredMaster, clearMasterFlag } from './lib/masterTillDevice';
+import { masterFlagDiffers, masterRefusedEvent, MASTER_REFUSED_TOAST, MASTER_CHANGED_TOAST } from './lib/masterTill';
+import { logActivity } from './lib/activity';
 import DeviceLinkBanner from './components/DeviceLinkBanner';
 import PairingScreen from './surfaces/PairingScreen';
 import ModeSelector from './surfaces/ModeSelector';
@@ -457,7 +464,9 @@ function MposDeviceProfileSync({ pairedDevice }) {
         const next = configFromProfile(profileRowToProfile(row));
         const prev = useStore.getState().deviceConfig;
         if (!deviceConfigChanged(prev, next)) return;
-        try { localStorage.setItem('rpos-device-config', JSON.stringify(next)); } catch { /* quota */ }
+        // 12 Oct 2026: the one writer (it stamps the config with this device and venue, and
+        // never throws). A handset is never the master till, whatever its profile says.
+        saveDeviceConfig(next, { force: true });
         useStore.getState().setDeviceConfig(next);
       } catch { /* offline: keep the cache */ }
       finally { inFlight = false; }
@@ -502,7 +511,13 @@ function deviceConfigChanged(prev, next) {
 }
 
 function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shift, theme, setTheme, syncPulse, handleSyncPulse, showWhatsNew, setShowWhatsNew, deviceConfig }) {
-  const [deviceValid, setDeviceValid] = useState(null); // null=checking, true=ok, false=revoked
+  const [deviceValid, setDeviceValidState] = useState(null); // null=checking, true=ok, false=revoked
+  // 12 Oct 2026 (Preston): this page's till session mark moves in the SAME statement as the
+  // screen state, never in a later effect (the heartbeat effect below is declared before the
+  // validate effect and would read it too early). Only a valid device holds the mark, so
+  // "Checking device", the pairing screen of a removed till and a kicked second tab are never
+  // the master, whatever the shared storage says. Every caller below is unchanged.
+  const setDeviceValid = (v) => { markTillSession(v === true ? pairedDevice?.id : null); setDeviceValidState(v); };
   const [masterOffline, setMasterOffline] = useState(false);
   const [masterInfo, setMasterInfo] = useState(null);
   // OrderAlert state lives on the store; ValidatedPOSApp owns the render
@@ -532,10 +547,11 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 
         const { startMasterHeartbeat, startChildMonitor, startChildHeartbeat } = await import('./sync/MasterSync.js');
 
-        // isMaster is written to rpos-device-config during device validation (refreshDevice)
-        // which queries device_profiles from Supabase — always authoritative
-        const cfg = JSON.parse(localStorage.getItem('rpos-device-config') || '{}');
-        const isMasterDevice = cfg.isMaster === true;
+        // 12 Oct 2026: the role is no longer read straight from rpos-device-config. One rule
+        // answers it (lib/masterTill.js): a till mode, this page's valid till session, the
+        // till's own config, its own venue. The same answer the channel auto route asks for.
+        const verdict = readMasterTill({ venueId: locId });
+        const isMasterDevice = verdict.master;
 
         if (isMasterDevice) {
           // Master: write heartbeat immediately, never monitor
@@ -549,8 +565,18 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
           // Child: report our own heartbeat (v5.5.870 — so Network Status sees this till's version
           // too), then wait 20s before monitoring the master (gives it time to write on startup).
           startChildHeartbeat({ deviceId: pairedDevice.id, locationId: locId, deviceName: pairedDevice.name, version: VERSION });
-          await new Promise(r => setTimeout(r, 20_000));
-          if (!stopped) startChildMonitor({ locationId: locId });
+          if (verdict.storedMaster) {
+            // 12 Oct 2026: storage says master and the rule says no. Never silent, and never
+            // the child monitor: Preston and Coffee Boy Huddersfield hold old master heartbeat
+            // rows of deleted devices, and the monitor would put the full screen "Master POS
+            // offline" block on the only till of the venue.
+            console.warn('[MasterTill] set as master but refused:', verdict.reason);
+            useStore.getState().showToast?.(MASTER_REFUSED_TOAST, 'error', 15000);
+            logActivity(locId, masterRefusedEvent({ deviceId: pairedDevice.id, deviceName: pairedDevice.name })).catch(() => {});
+          } else {
+            await new Promise(r => setTimeout(r, 20_000));
+            if (!stopped) startChildMonitor({ locationId: locId });
+          }
         }
 
         // v4.3 — Print reliability
@@ -623,13 +649,25 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   // only toast when Training Mode actually flips (staff must always know).
   const applyDeviceConfig = (config, { announce = false } = {}) => {
     const prev = useStore.getState().deviceConfig;
-    if (!deviceConfigChanged(prev, config)) return;
+    const changed = deviceConfigChanged(prev, config);
+    // 12 Oct 2026: storage is written by the ONE writer and OUTSIDE the change gate. The gate
+    // compares against the store, which hydrates from this tab's own session copy, so a master
+    // answer missing from storage (a wipe from another tab, a re pair in this tab) was never
+    // put back until a cold start, and the device and venue stamp would never have been
+    // written for an unchanged profile. The writer leaves storage alone when it is already this
+    // till's own copy with the same master answer. The compare keys are NOT changed for this:
+    // a stamp key there would run setDeviceConfig on every till and reset its order type.
+    saveDeviceConfig(config, { force: changed });
+    if (!changed) return;
     const trainingFlipped = (prev?.trainingMode === true) !== (config.trainingMode === true);
-    localStorage.setItem('rpos-device-config', JSON.stringify(config));
+    // The heartbeat role and the print engines are decided once per page load, so a master
+    // setting changed in Back Office while the till runs needs a restart. Say so.
+    const masterFlipped = !!tillSession() && masterFlagDiffers(prev, config);
     useStore.getState().setDeviceConfig(config);
     if (announce || trainingFlipped) {
       useStore.getState().showToast(config.trainingMode === true ? 'Training mode ON — nothing will be saved' : 'Device profile updated', 'info');
     }
+    if (masterFlipped) setTimeout(() => useStore.getState().showToast(MASTER_CHANGED_TOAST, 'warning', 12000), 3000);
   };
 
   // ── v5.7.7: profile channel is REWIRABLE ───────────────────────────────────
@@ -695,12 +733,19 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         const decision = decideDeviceRefresh({ read, readError, statusSupported, linkOutcome: link?.outcome, linkReason: link?.reason });
         if (decision === 'removed') {
           localStorage.removeItem('rpos-device');
+          // 12 Oct 2026 (D3): a removed till is no master, whatever storage held. Only the
+          // master answer is cleared, in the shared copy and in this tab's own copy.
+          clearMasterFlag();
           setDeviceValid(false);
           return;
         }
         if (decision === 'pair') {
           // The server says this device was unpaired or removed in Back Office. Show the
           // pairing screen but keep rpos-device, so pairing it again keeps its open orders.
+          // 12 Oct 2026 (D3): it is no master any more. The Preston "Test" till sat here, removed
+          // in Back Office, with its master answer still in storage and no menu. Only the master
+          // answer is cleared; the pairing record is kept as before.
+          clearMasterFlag();
           setDeviceValid(false);
           return;
         }
@@ -729,13 +774,14 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         try {
           // Always fetch from Supabase first — this is the single source of truth
           let profile = null;
+          let profileFromDb = false;
           try {
             const { data: dbProfile } = await supabase
               .from('device_profiles')
               .select('*')
               .eq('id', data.profile_id)
               .single();
-            if (dbProfile) profile = profileRowToProfile(dbProfile);   // v5.7.7: unified mapping
+            if (dbProfile) { profile = profileRowToProfile(dbProfile); profileFromDb = true; }   // v5.7.7: unified mapping
           } catch {}
           // Fallback: localStorage > config snapshot only (NO hardcoded defaults — deleted means deleted)
           if (!profile) {
@@ -745,7 +791,11 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             profile = allProfiles.find(p => p.id === data.profile_id) || null;
           }
           if (profile) {
-            applyDeviceConfig(configFromProfile(profile));   // v5.7.7: unified mapping + apply path
+            // 12 Oct 2026: only a fresh read of the profile row may turn master on or off. The
+            // offline profile caches and the minimal config below carry no master answer, so a
+            // failed read at boot used to write "not master" on the venue's master till.
+            const cfg = configFromProfile(profile);   // v5.7.7: unified mapping + apply path
+            applyDeviceConfig(profileFromDb ? cfg : keepStoredMaster(cfg));
           } else {
             // Profile ID not found in hardcoded list — try to find it in config push payload
             const existingConfig = JSON.parse(localStorage.getItem('rpos-device-config') || 'null');
@@ -786,9 +836,13 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               defaultOrderType: existingConfig?.defaultOrderType || null,   // 30 Sep 2026
               dineInFlagPrompt: existingConfig?.dineInFlagPrompt === true,
             };
-            applyDeviceConfig(minConfig);   // v5.7.7: same apply path (change-gated)
+            applyDeviceConfig(keepStoredMaster(minConfig));   // v5.7.7: same apply path (change-gated)
           }
         } catch(e) {}
+      } else {
+        // 12 Oct 2026 (D3): a device with no profile cannot be a master. Its config was never
+        // rewritten on this path, so an old master answer lived in storage for ever.
+        clearMasterFlag();
       }
       // Always ensure serviceCharge is in deviceConfig (backfill for existing sessions)
       const currentConfig = useStore.getState().deviceConfig;
@@ -932,6 +986,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     wireProfileChannel(currentProfileId);
 
     return () => {
+      markTillSession(null);   // 12 Oct 2026: this page no longer holds a valid till session
       supabase.removeChannel(channel);
       if (profileChannel) supabase.removeChannel(profileChannel);
       document.removeEventListener('visibilitychange', onVisible);
@@ -996,7 +1051,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     // recalled, a failed save) was invisible on the wall. Render it here too.
     body = <><KioskAutoUpdate /><KDSSurface />{toast && <Toast toast={toast} />}</>;
   } else if (!staff) {
-    body = <PINScreen />;
+    // 12 Oct 2026: a till that signs out after each sale sits here most of the day and drew no
+    // toast, so "sent without the menu" and "no kitchen screen" went unseen. Same as the KDS body above.
+    body = <><PINScreen />{toast && <Toast toast={toast} />}</>;
   } else if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') {
     // Kiosk — full screen, no staff sidebar, no shift bar
     body = <KioskSurface />;

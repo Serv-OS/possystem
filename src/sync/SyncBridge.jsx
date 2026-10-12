@@ -371,6 +371,11 @@ export default function SyncBridge({ onSyncPulse }) {
           const floorRes    = unwrap(floorSt);
           const itemsRes    = unwrap(itemsSt);
           const catsRes     = unwrap(catsSt);
+          // 12 Oct 2026 (Preston): the category read SUCCEEDED for this venue, rows or none. The
+          // master till must hold this venue's menu before it sends a QR, online or kiosk order
+          // to the kitchen (lib/channelRouteGate.js venueHoldsMenu). "Boot finished" is no proof:
+          // a failed leg reads as data null. No new read, this is the leg above.
+          if (!catsRes.error && Array.isArray(catsRes.data)) useStore.setState({ _catsReadLocationId: locationId });
           const menusRes    = unwrap(menusSt);
           const linksRes    = unwrap(linksSt);
           const sessionsRes = unwrap(sessionsSt);
