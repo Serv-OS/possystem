@@ -489,6 +489,12 @@ const TENANT_FENCE_KEEP = new Set([
   'rpos-device-mode',
   'rpos-theme',
   'rpos-device',
+  // 12 Oct 2026 (Preston): the paired till's own config, stamped with the device and venue it
+  // was derived for. A Back Office tab on another venue in the same browser used to wipe it
+  // here, and the running till then stopped sending channel orders to the kitchen in silence.
+  // A config stamped for another device or venue is not honoured (lib/masterTill.js), and
+  // PairingScreen forgets it on every new pairing.
+  'rpos-device-config',
   'rpos-mbscreen',   // menu-board screen pairing record (its own device identity; no rpos-device)
   // Self order kiosk pairing and its customer language (KioskSurface.jsx, i18n.js). A kiosk
   // has no rpos-device, so without these a location switch would unpair it.

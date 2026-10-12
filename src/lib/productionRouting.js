@@ -128,6 +128,41 @@ export function buildCatParentMap(categories) {
 }
 
 /**
+ * One parent map from several copies of the category tree.
+ * 12 Oct 2026, Coffee Boy Preston: QR drinks in a sub category (a Latte in Coffee, which sits
+ * inside Hot/Iced Coffee) went to the Food screen, because the app that routed them held no
+ * parent links at all. The first copy that names a parent wins, "no parent" never beats a named
+ * parent, and an id no copy gives a parent keeps null. The store passes the live store first,
+ * then this venue's snapshot copy.
+ * Decision pinned in the tests: a parent known by EITHER copy is used, so an old snapshot can
+ * keep a parent the store has since cleared.
+ *   mergeCatParentMaps(fromStore, fromSnapshot) -> { catId: parentId | null }
+ */
+export function mergeCatParentMaps(...maps) {
+  const out = {};
+  for (const m of maps) {
+    if (!m || typeof m !== 'object') continue;
+    for (const [id, parent] of Object.entries(m)) {
+      if (parent && !out[id]) out[id] = parent;
+      else if (!(id in out)) out[id] = parent || null;
+    }
+  }
+  return out;
+}
+
+/**
+ * The categories of a pushed config snapshot, when it is this venue's.
+ * 12 Oct 2026: 'rpos-config-snapshot' is written only by Back Office at push time, so in a
+ * browser that also runs Back Office it can belong to another venue. That one is ignored. A
+ * snapshot that names no venue, or a till whose venue is not known, is used as before.
+ */
+export function snapshotCategoriesFor(snapshot, venueId) {
+  if (!snapshot || typeof snapshot !== 'object') return [];
+  if (snapshot.locationId && venueId && snapshot.locationId !== venueId) return [];
+  return Array.isArray(snapshot.menuCategories) ? snapshot.menuCategories : [];
+}
+
+/**
  * [catId, parent, grandparent, ...], at most 6 long. Stops at a loop, so a bad parent
  * link can never hang a till.
  */

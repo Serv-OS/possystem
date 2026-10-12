@@ -120,6 +120,15 @@ export function buildTicketMeta({ channel, orderType, isTable = false, customerN
   };
 }
 
+// 12 Oct 2026 (Preston, D5): who routed a channel ticket rides inside meta under ONE key that no
+// reader looks at. buildTicketMeta takes named inputs only, so ticketMeta drops the key, and the
+// kitchen note save (kdsOrderNote.js metaWithKdsNote) keeps it. buildTicketMeta itself is NOT
+// changed: the stamp is added around its output, never inside it.
+export const ROUTE_STAMP_KEY = 'routedBy';
+export function withRouteStamp(meta, stamp) {
+  return stamp && meta && typeof meta === 'object' ? { ...meta, [ROUTE_STAMP_KEY]: stamp } : meta;
+}
+
 /** Join an order note and a customer note without repeating the same words twice. */
 export function joinNotes(...notes) {
   const seen = new Set();
