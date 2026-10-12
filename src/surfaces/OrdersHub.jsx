@@ -1104,8 +1104,7 @@ export default function OrdersHub() {
       // dedups against the scheduled release), so the kitchen ticket is guaranteed.
       if (o.source === 'catering') {
         // v5.8.63: `type` rides along so production centres by order type apply here too.
-        // 12 Oct 2026: a person opened it, so the ticket is stamped trigger manual. It goes now, on any till.
-        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }, { trigger: 'manual' }); } catch { /* best-effort */ }
+        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
       }
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
@@ -1439,9 +1438,7 @@ export default function OrdersHub() {
                 <button onClick={async () => {
                   // The route reports its own outcome (routing, printed, no printer mapped,
                   // no matching centre). A blind "sent" toast here hid those reasons.
-                  // 12 Oct 2026: a person's press. It is never refused for not being the master
-                  // till and never waits for the menu. The ticket is stamped trigger manual.
-                  try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true, trigger: 'manual' }); }
+                  try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true }); }
                   catch (e) { useStore.getState().showToast?.(`Could not send: ${e?.message || e}`, 'error'); }
                 }}
                   title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"

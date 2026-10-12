@@ -25,13 +25,6 @@ import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
 import { capClosedChecks, isMenuRowPending } from '../store';
 import { mapMenuItemRow as mapItemRow, mapTaxRateRow, srvNewer } from './rowMapping';
 import { getLocationConfig, clearLocationConfigCache } from './locationTime';
-// 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen): the channel auto route no
-// longer starts here on the word of a storage flag. ONE rule says whether this page is the
-// venue's master till (lib/masterTill.js), and a gate holds the route until the till holds the
-// venue's menu (sync/ChannelAutoRouter.js). Nothing in these reads the network per order.
-import { isMasterTillHere } from './masterTillDevice';
-import { queueRowToRouteOrder } from './channelRouteGate';
-import { startChannelAutoRouter, stopChannelAutoRouter, offerLiveOrder, requestCatchUp } from '../sync/ChannelAutoRouter';
 
 let channels = [];
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
@@ -573,22 +566,24 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // kitchen_routed_at` is applied on this venue's DB, we could broaden
         // the gate again, but master-only is the minimum-surprise behaviour
         // (matches kiosk-source path that's worked correctly all along).
-        // 12 Oct 2026 (Preston; Peter: "you need to fix the master thing"). The storage flag
-        // alone used to decide this, so a Back Office tab, the rear customer display of a Sunmi
-        // or a removed till that still held the flag routed channel orders with no category
-        // tree, and sub category drinks fell to the first screen. One rule now: a till mode,
-        // this page's valid till session, the till's own config, its own venue (lib/masterTill.js).
-        const isMaster = isMasterTillHere(locationId);
+        let isMaster = false;
+        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
         // HubRise/channel orders aren't auto-printed on receipt when manual-accept is on —
         // staff Accept them in the Orders Hub (which prints + confirms a prep time back to the
         // channel). When the venue AUTO-accepts, the row arrives already 'prep', so it prints.
         const hubriseAuto = src === 'hubrise' && row.status === 'prep';
         if (isMaster && !row.kitchen_routed_at && (src !== 'hubrise' || hubriseAuto)) {
-          // 12 Oct 2026: offered to the gate, not routed blind. With the venue's menu held it
-          // goes in this same tick, as before. Without it nothing is claimed and nothing is
-          // dropped: the order waits in order_queue and the catch up scan sends it the moment
-          // the menu lands (or after the short wait runs out). The order is the same shape.
-          offerLiveOrder(queueRowToRouteOrder(row));
+          store.getState().routeKioskOrderPrints?.({
+            ref,
+            source: src,                                     // 'kiosk' | 'online' | 'qr' | 'hubrise'
+            type: row.type || null,                          // v5.8.63: production centres by order type
+            tableLabel: row.customer?.tableLabel || null,    // QR only
+            items: row.items || [],
+            customer: row.customer || null,
+            collectionTime: row.collection_time || null,
+            isASAP: !!row.is_asap,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
           // Auto-accepted HubRise order → also auto-print the dispatch receipt (if enabled).
           if (hubriseAuto && isHubriseAutoReceipt(locationId)) {
             store.getState().printHubriseReceipt?.({
@@ -616,11 +611,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         }
       }
     })
-    // 12 Oct 2026: (re)subscribed. Events may have been missed while the socket was down, and
-    // the master till is the only router, so it looks again (rate limited, one read).
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') requestCatchUp('subscribed');
-    });
+    .subscribe();
 
   // ── v4.6.5 Bug 4: Bar tabs — cross-device sync ──────────────────────────────
   const tabsChannel = supabase
@@ -655,28 +646,45 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 
   channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel, bookingsChannel];
 
-  // Catch up scan (12 Oct 2026). This was a one shot boot backfill gated on the storage flag
-  // alone: any page that said "master" read the unrouted customer surface orders (kiosk, online,
-  // qr, hubrise) once at boot and routed them, menu or no menu, and never looked again.
-  // The read below is the same one. WHEN it runs, and whether this page may route at all, is
-  // the gate's decision (sync/ChannelAutoRouter.js): the venue's master till only, once it
-  // holds the venue's menu, and again on wake, on 'online' and when the order channel
-  // subscribes again. The route itself still defers an order due later and HOLDS anything
-  // over 2 hours stale, as before. A delivery app order waiting for Accept is still left for
-  // staff (lib/channelRouteGate.js autoRoutable).
-  const fetchUnroutedChannelOrders = async () => {
-    const { data, error } = await supabase
-      .from('order_queue')
-      .select('ref, type, source, items, customer, sent_at, status, collection_time, is_asap')
-      .eq('location_id', locationId)
-      .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
-      .is('kitchen_routed_at', null)
-      .neq('status', 'collected')
-      .limit(100); // bounded: a bigger backlog signals a kitchen issue, not a sync job
-    if (error) { console.warn('[Realtime] order backfill query failed', error); return null; }
-    return data || [];
-  };
-  startChannelAutoRouter({ store, venueId: locationId, fetchUnrouted: fetchUnroutedChannelOrders });
+  // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr / hubrise)
+  // that arrived while it was offline OR that were scheduled and are now due. routeKioskOrderPrints
+  // internally defers if sent_at is still in the future and HOLDS anything >2h stale (boot backstop).
+  (async () => {
+    try {
+      let isMaster = false;
+      try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+      if (!isMaster) return;
+      const { data, error } = await supabase
+        .from('order_queue')
+        .select('ref, type, source, items, customer, sent_at, status, collection_time, is_asap')
+        .eq('location_id', locationId)
+        .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
+        .is('kitchen_routed_at', null)
+        .neq('status', 'collected')
+        .limit(100); // bounded backfill — a bigger backlog signals a kitchen issue, not a sync job
+      if (error) { console.warn('[Realtime] order backfill query failed', error); return; }
+      if (data?.length) {
+        console.log(`[Realtime] backfilling ${data.length} unrouted order(s)`);
+        for (const row of data) {
+          // HubRise on manual-accept arrives as 'received' and must wait for staff Accept in the
+          // Orders Hub (which prints + confirms a prep time back to the channel). Only auto-route
+          // hubrise rows the venue auto-accepted (already 'prep') — mirrors the live INSERT handler.
+          if (row.source === 'hubrise' && row.status !== 'prep') continue;
+          await store.getState().routeKioskOrderPrints?.({
+            ref: row.ref,
+            source: row.source,
+            type: row.type || null,                          // v5.8.63: production centres by order type
+            tableLabel: row.customer?.tableLabel || null,
+            items: row.items || [],
+            customer: row.customer || null,
+            collectionTime: row.collection_time || null,
+            isASAP: !!row.is_asap,
+            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
+          });
+        }
+      }
+    } catch (e) { console.warn('[Realtime] order backfill failed', e?.message); }
+  })();
 
   // ── Menu items — live propagation of BO renames / price changes ────────────
   // Without this, a rename in Back Office only reaches other devices when they
@@ -773,6 +781,4 @@ export function stopRealtime() {
   channels = [];
   _rtLocation = null;
   kioskAlertsRealtimeStopped();
-  // 12 Oct 2026: the gate in front of the channel auto route stops with its channels.
-  stopChannelAutoRouter();
 }

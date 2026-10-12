@@ -22,8 +22,6 @@ import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { checkClosesOccupation } from '../lib/rowWriteFence';
 import { closedCheckRefundFields, closedCheckTaxFields } from '../lib/closedCheckRefundFields';
-import { readMasterTill } from '../lib/masterTillDevice';
-import { masterBeatRole } from '../lib/masterTill';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -44,14 +42,6 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
 
   const beat = async () => {
     try {
-      // 12 Oct 2026 (review): the beat follows the ONE rule at every beat, no network. The role
-      // was fixed at page load and this timer is never stopped, so a page that had stopped
-      // sending orders (disconnected by another session, removed, its master answer cleared)
-      // went on writing "master" and the Back Office Devices screen said "Master till is on".
-      // For the real master the row is the same as always. A page with no till session writes
-      // nothing (lib/masterTill.js masterBeatRole says why).
-      const role = masterBeatRole(readMasterTill({ venueId: locationId }));
-      if (!role) return;
       const tables = useStore.getState().tables || [];
       const openTables = tables.filter(t => t.session?.items?.length > 0).length;
       // Get local IP hint (best effort) — CACHED: spinning up an
@@ -78,7 +68,7 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
         device_id:   deviceId,
         location_id: locationId,
         device_name: deviceName,
-        role,
+        role:        'master',
         last_seen:   new Date().toISOString(),
         version,
         open_tables: openTables,

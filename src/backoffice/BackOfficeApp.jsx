@@ -108,10 +108,6 @@ import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow } from '../lib/boSections';
-// 12 Oct 2026 (Preston, D3): the two buttons below that open the POS used to delete the
-// pairing and its config, which unpaired a real till in another tab of this browser. Now only
-// the Back Office placeholder is dropped; a real pairing and its config are left alone.
-import { dropAdminPlaceholder } from '../lib/masterTillDevice';
 
 // Open-group height for the sidebar's collapse animation: rows are ~34px (8px padding, 12.8px
 // text, 1px gap) plus the list's own padding. Generous per row so nothing is ever clipped; the
@@ -946,7 +942,7 @@ export default function BackOfficeApp() {
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
             {theme === 'dark' ? 'Light mode' : 'Dark mode'}
           </button>
-          <button onClick={() => { dropAdminPlaceholder(); localStorage.setItem('rpos-device-mode','pos'); window.location.href = '?mode=pos'; }} style={{
+          <button onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); localStorage.setItem('rpos-device-mode','pos'); window.location.href = '?mode=pos'; }} style={{
             width:'100%', padding:'9px 10px', borderRadius:9,
             cursor:'pointer', textAlign:'left', fontSize:12,
             fontWeight:600, border:'1px solid var(--bdr)',
@@ -1018,7 +1014,7 @@ export default function BackOfficeApp() {
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {/* Quick nav: POS / Office segmented (Office active) */}
             <div style={{ display:'inline-flex', gap:2, padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)' }}>
-              <a href="?mode=pos" onClick={() => { dropAdminPlaceholder(); }} style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="pos" size={14}/>POS</a>
+              <a href="?mode=pos" onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); }} style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="pos" size={14}/>POS</a>
               <a href="?mode=office" style={{ padding:'6px 12px', borderRadius:8, background:'var(--glass-bg)', boxShadow:'var(--glass-hi)', color:'var(--t1)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="office" size={14}/>Office</a>
             </div>
             {/* Push to POS button */}

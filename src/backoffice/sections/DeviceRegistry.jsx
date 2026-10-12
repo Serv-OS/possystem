@@ -4,30 +4,6 @@ import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { issuePairingCodeWithFallback, formatPairingCode } from '../../lib/deviceFence';
 import { pairingCodeState, canIssueNewCode, replaceCodeWarning } from '../../lib/pairingCodeState';
-import { masterSetupReport } from '../../lib/masterTill';
-
-// 12 Oct 2026 (Preston, D9): the master till set up, said plainly above the device list. The
-// master till is the one that sends QR, online and kiosk orders to the kitchen. A venue with
-// none, or with a master that is off or running as a normal till, used to find out when an
-// order did not arrive. Words only: nothing is enforced and there is no schema change.
-const MASTER_LINE = {
-  error: { background:'#fef2f2', color:'#dc2626', border:'1px solid #fecaca' },
-  warn:  { background:'rgba(234,179,8,0.1)', color:'#ca8a04', border:'1px solid #ca8a04' },
-  ok:    { background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)' },
-};
-// The two small reads the master till lines need: which profiles are master, and when each
-// device was last seen. readAt is the moment of the read, so "last seen" is measured against
-// it and does not drift while the screen stays open. A read that fails says nothing rather
-// than warn wrongly (lib/masterTill.js masterSetupReport gives no lines for a null list).
-async function readMasterFacts(locId) {
-  try {
-    const [profs, beats] = await Promise.all([
-      supabase.from('device_profiles').select('id, is_master').eq('location_id', locId),
-      supabase.from('device_heartbeats').select('device_id, role, last_seen').eq('location_id', locId),
-    ]);
-    return { profiles: profs.error ? null : (profs.data || []), heartbeats: beats.error ? null : (beats.data || []), readAt: Date.now() };
-  } catch { return null; }
-}
 
 const DEFAULT_PRODUCTION_CENTRES = [
   { id:'pc1', name:'Hot kitchen',  icon:'🔥' },
@@ -156,8 +132,6 @@ function ProfileSelect({ value, onChange }) {
 export default function DeviceRegistry() {
   const showToast = useStore(s => s.showToast);
   const [devices, setDevices] = useState([]);
-  // Which profiles are master, and when each device was last seen (read beside the device list).
-  const [masterFacts, setMasterFacts] = useState(null);
   const [locationId, setLocationId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -194,9 +168,6 @@ export default function DeviceRegistry() {
   const loadDevices = async (locId) => {
     const { data } = await supabase.from('devices').select('*').eq('location_id', locId).order('created_at');
     setDevices(data || []);
-    // 12 Oct 2026 (D9): read again with every device list load, so adding, removing or
-    // moving a till to another profile updates the master till lines too.
-    setMasterFacts(await readMasterFacts(locId));
   };
 
   const startPairing = async () => {
@@ -332,10 +303,6 @@ export default function DeviceRegistry() {
     offline:  { bg:'#f1f5f9', color:'#64748b', label:'Offline' },
   }[s] || { bg:'#f1f5f9', color:'#64748b', label:s });
 
-  // 12 Oct 2026 (D9): a master till is a till (type pos, active or online) on a master profile.
-  // A kiosk or handheld on a master profile, and a removed or unpaired till, are not counted.
-  const masterReport = masterSetupReport({ devices, profiles: masterFacts?.profiles, heartbeats: masterFacts?.heartbeats, now: masterFacts?.readAt });
-
   return (
     <div style={S.page}>
       <div style={S.h1}>📱 Devices</div>
@@ -432,11 +399,6 @@ export default function DeviceRegistry() {
           )}
         </div>
       )}
-
-      {/* ── Master till set up (12 Oct 2026, D9): words only, nothing is enforced ── */}
-      {masterReport.lines.map((l, i) => (
-        <div key={i} style={{ ...MASTER_LINE[l.level], padding:'10px 14px', borderRadius:8, fontSize:13, fontWeight:600, marginBottom:10 }}>{l.text}</div>
-      ))}
 
       {/* ── Device list ── */}
       <div style={S.card}>

@@ -1193,7 +1193,7 @@ function ProfileEditor({ profile, brandReady, onSave, onDelete, onClose }) {
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <div>
               <div style={{ fontSize:13, fontWeight:700, color: form.isMaster ? '#ca8a04' : 'var(--t1)' }}>👑 Master POS</div>
-              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>The master till sends QR, online and kiosk orders to the kitchen. Set it on one till per venue. A handheld or kiosk cannot be the master.</div>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Designate this terminal as the network master. Other devices monitor its heartbeat.</div>
             </div>
             <div style={{ width:36, height:20, borderRadius:10, background: form.isMaster ? '#ca8a04' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>
               <div style={{ position:'absolute', top:2, left: form.isMaster ? 18 : 2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }}/>
