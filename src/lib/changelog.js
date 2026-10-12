@@ -16,6 +16,7 @@ export const CHANGELOG = [
       "Back Office, Menu boards: a small grey note under a screen says when a TV kept its pairing, or that it lost its sign in, with the code to pair it again.",
       "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
       "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
+      "Orders: Send to kitchen again now tells you what happened. It says Sent to the kitchen again when it worked, and Not sent when it did not. The button waits while it is sending, so one press sends the order once.",
     ],
   },
   {

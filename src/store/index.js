@@ -8876,6 +8876,9 @@ export const useStore = create((set, get) => ({
         server: serverName,
         covers: 1,
       }));
+      // v5.11.52: true when the kitchen screen refused the ticket. Read once, by the outcome this
+      // action hands back at its very end (see there). It changes nothing that is sent.
+      let kitchenScreenRefused = false;
       if (tickets.length) {
         let { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
         // 12 Oct 2026 (D5): the stamp must never cost a ticket. A refused insert is tried once
@@ -8896,6 +8899,7 @@ export const useStore = create((set, get) => ({
         // v5.5.971: a rejected ticket insert means the kitchen never sees the order.
         reportSave('kitchen ticket', kdsErr);
         if (kdsErr) {
+          kitchenScreenRefused = true;
           console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
           useStore.getState().showToast?.(`${order.ref} did NOT reach the kitchen screen — ${kdsErr.message}`, 'error');
         }
@@ -9047,6 +9051,14 @@ export const useStore = create((set, get) => ({
           logActivity(locId, { kind: 'ops', severity: 'info', title: routeWords.title, body: routeWords.body, refType: 'kitchen_route', refId: order.ref, actorName: routeStamp?.deviceName || null }).catch(() => {});
         }
       } catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }
+      // v5.11.52: what happened, for a person's press (Orders, "Send to kitchen again"). The
+      // action itself stays quiet. That button now says "Sent to the kitchen again" in its own
+      // words, because the "Routing" and "routed" messages were the only sign it had worked.
+      // sent is true only here, at the very end, when at least one centre took the order and
+      // the kitchen screen did not refuse the ticket. Every early return above, and the catch
+      // below, hand back nothing, which the button reads as not sent. The automatic callers
+      // (sync/ChannelAutoRouter.js, the catering sweep, Accept) do not read it.
+      return { sent: Object.keys(byCentre).length > 0 && !kitchenScreenRefused };
     } catch (e) {
       console.warn('[routeKioskOrderPrints] failed:', e?.message);
     }

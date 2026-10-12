@@ -313,6 +313,141 @@ test('the mark has one writer: the channel route, from the printer the saved rou
   assert.ok(!/if \(printerId\)|if \(!printerId\)/.test(loop), 'no centre is skipped');
 });
 
+// ── a person's press: Orders, "Send to kitchen again" ────────────────────────
+
+// The quiet rule is for the automatic route. A button a person presses must still answer.
+// Until v5.11.52 the "Routing" and "routed" messages were the only sign that this button had
+// worked: it had no busy state and no words of its own. With them gone a press that worked
+// looked the same as a press that failed, and a forced press skips the once only checks, so
+// every extra press puts the order on the kitchen screen again. The action stays quiet (the
+// count of seven above is unchanged). It hands back an outcome and the button says the words.
+const HUB = read('surfaces/OrdersHub.jsx');
+const SENT_WORDS = 'Sent to the kitchen again';
+const NOT_SENT_WORDS = 'Not sent. Check the connection and try again.';
+
+test('the route hands back one outcome, at its very end, and says nothing about it itself', () => {
+  const RETURN = 'return { sent: Object.keys(byCentre).length > 0 && !kitchenScreenRefused };';
+  assert.equal(count(CODE, 'return { sent:'), 1, 'one outcome, in one place');
+  assert.equal(count(CODE, RETURN), 1);
+  // The last thing the action does: after the route notice, and straight before the catch.
+  assert.ok(CODE.indexOf(RETURN) > CODE.indexOf(NOTICE_END), 'after the route notice');
+  assert.match(CODE, /route notice failed:', e\?\.message \|\| e\); \}\n\s*return \{ sent: [^\n]*\n\s*\} catch \(e\) \{\n\s*console\.warn\('\[routeKioskOrderPrints\] failed:', e\?\.message\);\n\s*\}\n\s*\},\s*$/);
+  // Every way out before the claim is settled hands back nothing (the button reads that as not sent).
+  const early = CODE.slice(0, CODE.indexOf('const claimedRow = r.data?.[0] || null;'));
+  assert.ok(early.includes("if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }"), 'a claim that failed (no connection) hands back nothing');
+  assert.ok(!/return \{/.test(early), 'no outcome before the order is claimed');
+  // The flag has one writer, set only when the kitchen screen refused the ticket.
+  assert.equal(count(CODE, 'kitchenScreenRefused'), 3);
+  assert.equal(count(CODE, 'let kitchenScreenRefused = false;'), 1);
+  assert.match(CODE, /if \(kdsErr\) \{\n\s*kitchenScreenRefused = true;\n\s*console\.warn\('\[routeKioskOrderPrints\] kds insert', kdsErr\);/);
+  // As written: sent only when a centre took the order and the kitchen screen did not refuse it.
+  const sent = (byCentre, kitchenScreenRefused) => new Function('byCentre', 'kitchenScreenRefused', RETURN)(byCentre, kitchenScreenRefused);
+  assert.deepEqual(sent({ drinks: [{}] }, false), { sent: true });
+  assert.deepEqual(sent({ drinks: [{}] }, true), { sent: false });
+  assert.deepEqual(sent({}, false), { sent: false });
+  // The words belong to the button. The action holds neither line.
+  assert.ok(!CODE.includes(SENT_WORDS) && !CODE.includes('Not sent.'));
+});
+
+test('the button: busy while it sends, and the press is the one in the handler', () => {
+  assert.equal(count(HUB, 'const [kitchenBusy, setKitchenBusy] = useState(false);'), 1);
+  assert.equal(count(HUB, '<button onClick={sendToKitchenAgain} disabled={kitchenBusy}'), 1);
+  assert.equal(count(HUB, "{kitchenBusy ? 'Sending…' : '🍳 Send to kitchen again'}"), 1);
+  assert.equal(count(HUB, 'sendToKitchenAgain'), 2, 'one handler, one button');
+  // Still a forced press stamped manual, once in the file (masterTillWiring.test.js pins the same).
+  assert.equal(count(HUB, "{ force: true, trigger: 'manual' }"), 1);
+});
+
+// The handler as it is written, lifted and run against a store with the real toast slot.
+const PRESS_FROM = '  const sendToKitchenAgain = async () => {';
+const PRESS_END = '    finally { setKitchenBusy(false); }\n  };';
+const PRESS = sliceIn(HUB, PRESS_FROM, PRESS_END).slice(PRESS_FROM.length, -'\n  };'.length);
+const AsyncFunction = (async () => {}).constructor;
+const DID_NOT_PRINT = '⚠ QR QR-1 did not print: no production centres configured';
+
+/** One press. `route(till)` stands in for the route: it may put a message on the till, and hands back its outcome. */
+const press = async ({ route, viewOrder = { ref: 'QR-1', items: [{ name: 'Latte' }], _raw: { source: 'qr', type: 'takeaway' } }, kitchenBusy = false, before = null } = {}) => {
+  const till = makeTill();
+  const busy = []; const calls = [];
+  if (before) before(till);
+  till.state.routeKioskOrderPrints = async (order, opts) => { calls.push([order, opts, [...busy]]); return route ? route(till) : undefined; };
+  const fn = new AsyncFunction('viewOrder', 'kitchenBusy', 'setKitchenBusy', 'useStore', 'showToast', PRESS);
+  await fn(viewOrder, kitchenBusy, (v) => busy.push(v), till.useStore, till.state.showToast);
+  // What is on the till when the press is over, before any toast times out.
+  const shown = till.state.toast ? [till.state.toast.msg, till.state.toast.type] : null;
+  return { shown, screen: till.screen, busy, calls };
+};
+
+test('a press, run as written: it worked, so the till says so once, and the button was busy meanwhile', async () => {
+  const ok = await press({ route: () => ({ sent: true }) });
+  assert.deepEqual(ok.shown, [SENT_WORDS, 'success']);
+  assert.equal(ok.screen.length, 1);
+  assert.deepEqual(ok.busy, [true, false], 'busy, then free again');
+  // The route got the open order, forced and stamped manual, while the button was busy.
+  assert.equal(ok.calls.length, 1);
+  assert.deepEqual(ok.calls[0][0], { source: 'qr', type: 'takeaway', ref: 'QR-1', items: [{ name: 'Latte' }] });
+  assert.deepEqual(ok.calls[0][1], { force: true, trigger: 'manual' });
+  assert.deepEqual(ok.calls[0][2], [true]);
+  // An older message that was still on the till makes way for the answer.
+  const old = await press({ route: () => ({ sent: true }), before: (till) => till.state.showToast('QR-9 collected', 'info') });
+  assert.deepEqual(old.shown, [SENT_WORDS, 'success']);
+});
+
+test('a press, run as written: nothing came back (no connection, a claim that failed, a throw inside the route), so the till says Not sent', async () => {
+  const none = await press({ route: () => undefined });
+  assert.deepEqual(none.shown, [NOT_SENT_WORDS, 'error']);
+  assert.deepEqual(none.busy, [true, false]);
+  // An older message on the till does not pass for an answer.
+  const old = await press({ route: () => undefined, before: (till) => till.state.showToast('QR-9 collected', 'info') });
+  assert.deepEqual(old.shown, [NOT_SENT_WORDS, 'error']);
+  // A store with no route at all (it never happens, but the press must still answer).
+  const till = makeTill();
+  const said = [];
+  await new AsyncFunction('viewOrder', 'kitchenBusy', 'setKitchenBusy', 'useStore', 'showToast', PRESS)(
+    { ref: 'QR-1', items: [], _raw: {} }, false, () => {}, till.useStore, (...a) => said.push(a));
+  assert.deepEqual(said, [[NOT_SENT_WORDS, 'error']]);
+});
+
+test('a press, run as written: a problem the route named itself stays on the till, the button does not talk over it', async () => {
+  // Nothing was routed: the route said why.
+  const noCentre = await press({ route: (till) => { till.state.showToast(DID_NOT_PRINT, 'error'); return { sent: false }; } });
+  assert.deepEqual(noCentre.shown, [DID_NOT_PRINT, 'error']);
+  assert.equal(noCentre.screen.length, 1);
+  // The kitchen screen refused the ticket.
+  const refused = await press({ route: (till) => { notReached(till); return { sent: false }; } });
+  assert.deepEqual(refused.shown, [NOT_REACHED, 'error']);
+  // It was sent, with a warning (a delivery app item that is not in our menu): the warning stays.
+  const WARNED = '⚠ HubRise H-1: 1 item(s) not in our menu (Latte)';
+  const warned = await press({ route: (till) => { till.state.showToast(WARNED, 'warning'); return { sent: true }; } });
+  assert.deepEqual(warned.shown, [WARNED, 'warning']);
+  assert.deepEqual(warned.busy, [true, false]);
+});
+
+test('a press, run as written: a throw is reported, the button is freed, and a second press while busy does nothing', async () => {
+  const thrown = await press({ route: () => { throw new Error('boom'); } });
+  assert.deepEqual(thrown.shown, ['Could not send: boom', 'error']);
+  assert.deepEqual(thrown.busy, [true, false], 'never left busy');
+  // Busy: the press is ignored. Nothing is sent a second time and nothing is said.
+  const twice = await press({ route: () => ({ sent: true }), kitchenBusy: true });
+  assert.deepEqual([twice.calls, twice.busy, twice.shown], [[], [], null]);
+  // No order open: the same.
+  const closed = await press({ route: () => ({ sent: true }), viewOrder: null });
+  assert.deepEqual([closed.calls, closed.busy, closed.shown], [[], [], null]);
+});
+
+test('the words on the button are plain and hold no long dash', () => {
+  for (const words of [SENT_WORDS, NOT_SENT_WORDS]) {
+    assert.equal(count(HUB, `showToast('${words}'`), 1, words);
+    assert.ok(!/[\u2013\u2014]/.test(words));
+  }
+  assert.ok(HUB.includes("if (outcome?.sent) showToast('Sent to the kitchen again', 'success');"));
+  assert.ok(HUB.includes("else showToast('Not sent. Check the connection and try again.', 'error');"));
+  const entry = CHANGELOG.find((e) => e.v === '5.11.52');
+  const line = entry.items.filter((i) => /^Orders: Send to kitchen again now tells you what happened\./.test(i));
+  assert.equal(line.length, 1);
+  assert.ok(line[0].includes(SENT_WORDS) && line[0].includes('Not sent'));
+});
+
 // ── what the owner reads ─────────────────────────────────────────────────────
 
 test('the release note says it in plain words, with no long dash', () => {
