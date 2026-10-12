@@ -51,6 +51,8 @@ import { persistTransfer } from '../sync/SessionSync';
 // Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
 // change a row count the rows they changed and are kept while this device is not linked.
 import { mustChangeRow } from '../lib/rowWrites';
+import { mayRemoveQueueRow } from '../lib/queueDeleteRule';
+import { readQueueRole } from '../lib/queueDevice';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
@@ -4856,6 +4858,9 @@ export const useStore = create((set, get) => ({
     // that resets on reload), so a finished/collected order RESURRECTED on the next boot
     // (loadQueues re-pulls any row that isn't status 'collected'). Location-scoped because
     // refs (e.g. #1002) collide across locations.
+    // 12 Oct 2026: only a named staff action on a till or in Back Office removes the row from the
+    // database (lib/queueDeleteRule.js). A kitchen screen, a kiosk or a host stand never does.
+    if (!mayRemoveQueueRow(readQueueRole(get().deviceConfig))) return;
     try {
       const locId = getActiveLocationSync();
       if (supabase && locId && ref) {

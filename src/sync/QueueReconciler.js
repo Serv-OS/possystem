@@ -29,6 +29,8 @@ import { setReplayGuard, bufferedUpsertKeys, bufferedDeleteKeys } from './Offlin
 import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { reconcileList, changedKeys, keepBufferedWrite as keepRule, stampedKeys } from '../lib/queueReconcile';
+import { dropBufferedQueueWrite } from '../lib/queueDeleteRule';
+import { readQueueRole } from '../lib/queueDevice';
 import {
   queueHash, tabHash, queueFromRow, tabFromRow, QUEUE_ROW_CAP, openQueueQuery, openTabQuery,
   clearedKeys, markQueueDropped, markTabDropped, publishQueueRows, publishTabRows,
@@ -295,12 +297,20 @@ export function keepBufferedWrite(item) {
   return keepRule(item, (kind, key, ts) => isFinishedAfter(kind, key, ts));
 }
 
+/**
+ * 12 Oct 2026: on a page that is not a till, a buffered order or bar tab write that the list sync
+ * made (on an older build) is never sent (lib/queueDeleteRule.js dropBufferedQueueWrite).
+ */
+export function dropBufferedWrite(item) {
+  return dropBufferedQueueWrite({ role: readQueueRole(useStore.getState().deviceConfig), item });
+}
+
 export function startQueueReconciler() {
   if (_running) return _started;
   _running = true;
   const seq = ++_startSeq;
   // Registered before any wait so a replay scheduled during boot already waits for us.
-  setReplayGuard({ before: beforeReplay, keep: keepBufferedWrite });
+  setReplayGuard({ before: beforeReplay, keep: keepBufferedWrite, drop: dropBufferedWrite });
   _started = (async () => {
     const loc = await getLocationId().catch(() => null);
     if (seq !== _startSeq || !_running) return;   // stopped (or restarted) while resolving

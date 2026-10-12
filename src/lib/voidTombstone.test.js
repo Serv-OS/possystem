@@ -31,5 +31,9 @@ test('pins: voidCheck writes the tombstone; demo tabs only in mock; a KDS never 
   assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;/);
   assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;   \/\/ v5\.9\.72: a kitchen screen never resurrects a table/);
   assert.match(read('../sync/SyncBridge.jsx'), /if \(!isMock && getDeviceMode\(\) !== 'kds'\) startSessionReconciler\(\);/);
-  assert.match(read('../sync/QueueSync.js'), /const tabs = getDeviceMode\(\) === 'kds' \? \[\] : \(state\.tabs \|\| \[\]\);/);
+  // 12 Oct 2026: the QueueSync fence used to empty `tabs` on a kitchen screen, which stopped the
+  // publish but made its delete loop remove every tab the screen knew of. A page that is not a
+  // till now returns before any write (lib/queueDeleteRule.js, pinned in queueDeleteRule.test.js).
+  assert.match(read('../sync/QueueSync.js'), /if \(!maySyncQueue\(role\)\) return;/);
+  assert.doesNotMatch(read('../sync/QueueSync.js'), /getDeviceMode\(\) === 'kds' \? \[\]/);
 });
