@@ -12,13 +12,21 @@ const rowToEvent = (r) => ({
 });
 export const eventFromRow = rowToEvent;
 
-/** Add one activity event. kind: order|nudge|menu|stock|ops|system. severity: info|action|urgent. */
-export async function logActivity(locationId, { kind = 'system', severity = 'info', title, body = null, refType = null, refId = null, actorName = null } = {}) {
+/**
+ * Add one activity event. kind: order|nudge|menu|stock|ops|system. severity: info|action|urgent.
+ *   id  optional, a uuid made by the caller. 12 Oct 2026 (kitchen screen slow link trace): a caller
+ *       that sends the same event again after a failure hands in the SAME id each time. An insert
+ *       that landed with its answer lost is then refused as a duplicate by the database, and that
+ *       counts as written: one row, not one per try. Left out, the database makes the id, as before.
+ */
+export async function logActivity(locationId, { id = null, kind = 'system', severity = 'info', title, body = null, refType = null, refId = null, actorName = null } = {}) {
   if (isMock || !supabase || !locationId || !title) return { ok: false };
   const { error } = await supabase.from('activity_events').insert({
+    ...(id ? { id } : null),
     location_id: locationId, kind, severity, title, body,
     ref_type: refType, ref_id: refId ? String(refId) : null, actor_name: actorName,
   });
+  if (error && id && (error.code === '23505' || /duplicate key/i.test(error.message || ''))) return { ok: true, duplicate: true };
   if (error) { console.warn('[activity] log failed', error.message); return { ok: false, error: error.message }; }
   return { ok: true };
 }

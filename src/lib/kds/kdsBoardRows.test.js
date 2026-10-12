@@ -4,7 +4,7 @@
 // learned AFTER that read was sent is laid on top, so a late list can never undo something newer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EVENT_KEEP_MS, noteEvent, pruneEvents, upsertRow, removeRow, mergeList } from './kdsBoardRows.js';
+import { EVENT_KEEP_MS, noteEvent, pruneEvents, upsertRow, removeRow, mergeList, wentAway, forgetReturned, keepUnlisted } from './kdsBoardRows.js';
 
 const row = (id, extra = {}) => ({ id, status: 'pending', ...extra });
 const ids = (rows) => rows.map((r) => r.id);
@@ -75,4 +75,35 @@ test('mergeList: no events, no rows', () => {
   assert.deepEqual(out, rows);
   assert.notEqual(out, rows, 'a new array: the answer is never changed in place');
   assert.deepEqual(mergeList({ rows: null, readStartedAt: 0, events: new Map() }), []);
+});
+
+// ── review of the build, 12 Oct 2026 ────────────────────────────────────────────────────────────
+
+test('review: a ticket this screen saw go is remembered until a later list shows it waiting again', () => {
+  let events = noteEvent(new Map(), { id: 'A', kind: 'gone', at: 1000 });
+  events = noteEvent(events, { id: 'B', kind: 'row', row: row('B'), at: 1000 });
+  assert.equal(wentAway(events, 'A'), true);
+  assert.equal(wentAway(events, 'B'), false, 'a row it learned of is not "gone"');
+  assert.equal(wentAway(events, 'nope'), false);
+  assert.equal(wentAway(null, 'A'), false);
+  // A list sent BEFORE the ticket went proves nothing: still gone.
+  assert.equal(forgetReturned(events, { ids: new Set(['A']), readStartedAt: 900 }), events);
+  assert.equal(forgetReturned(events, { ids: new Set(['A']), readStartedAt: 1000 }), events, 'sent at the same moment: still gone');
+  // A list sent after it that does not hold the ticket: still gone.
+  assert.equal(forgetReturned(events, { ids: new Set(['B']), readStartedAt: 2000 }), events);
+  // A list sent after it that DOES hold it: recalled on another screen. Forgotten, and nothing else is touched.
+  const back = forgetReturned(events, { ids: new Set(['A', 'B']), readStartedAt: 2000 });
+  assert.equal(wentAway(back, 'A'), false);
+  assert.equal(back.has('B'), true);
+  assert.equal(wentAway(events, 'A'), true, 'the Map handed in is not changed');
+});
+
+test('review: a list that overlapped another takes nothing off the board', () => {
+  const board = [row('B'), row('C')];
+  // The older snapshot answers last: it holds A (bumped since on another screen) and not C (sent since).
+  assert.deepEqual(ids(keepUnlisted([row('A'), row('B', { status: 'held' })], board)), ['A', 'B', 'C']);
+  assert.equal(keepUnlisted([row('A'), row('B', { status: 'held' })], board)[1].status, 'held', 'a row in both: the list\'s copy');
+  assert.deepEqual(ids(keepUnlisted([], board)), ['B', 'C']);
+  assert.deepEqual(ids(keepUnlisted([row('A')], [])), ['A']);
+  assert.deepEqual(keepUnlisted(null, null), []);
 });

@@ -49,6 +49,19 @@ export const clockText = (ms) => new Date(ms).toISOString().slice(11, 19);
 
 const abortError = () => { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; return e; };
 
+/** How far apart the requests of one burst may reach the database when the burst is scrambled. */
+export const BURST_SPREAD_MS = 300;
+/** The client's own repeats of a request that never completed (lib/netRetry.js RETRY_DELAYS_MS). */
+const CLIENT_REPEAT_DELAYS_MS = [400, 1200];
+
+/** Does a write's guard (kdsWriteLane.js guardFor) let it change this row? The fake database's WHERE. */
+const guardLets = (row, guard) => {
+  if (!guard) return true;
+  for (const [k, v] of Object.entries(guard.match || {})) if (row[k] !== v) return false;
+  for (const [k, v] of Object.entries(guard.notMatch || {})) if (row[k] === v) return false;
+  return true;
+};
+
 /**
  * The tablet's link, as a list of spells. Outside every spell a request takes 0.1 s.
  *   { from, to, kind: 'dead' }                    nothing arrives; a request still open at `to` arrives then and is answered
@@ -63,57 +76,109 @@ const abortError = () => { const e = new Error('The operation was aborted.'); e.
  * log of 12 Oct showed: the same bump landed two and three times.
  * A request with no answer fails by itself 60 s after it left the tablet, as the iPad's own network
  * does, and such a request is still delivered when the link lets go.
+ *
+ * Review 12 Oct 2026 added three things this world could not do, each of which hid a fault:
+ *   scramble      the requests a stalled link held reach the database in ANY order when it lets go
+ *                 (the API log of 12 Oct: bursts landed scrambled). A number is the seed of a
+ *                 shuffle; 'reverse' delivers what was sent later first (for short tests). Left out,
+ *                 a burst arrives in the order it was sent, as before.
+ *   listBackMs    a list answer takes this much longer to come back than a write's answer, so a
+ *                 list read served BEFORE a bump of the same burst reaches the tablet AFTER that
+ *                 bump's answer (the 12 Oct burst shape).
+ *   clientRepeat  the client sends a write that never completed again by itself, 0.4 s and then
+ *                 1.2 s later (lib/netRetry.js), so the screen's 75 s valve cancels a copy that has
+ *                 left the tablet. With cancelledStillArrive that copy still lands (lateCancelled).
+ * Writes carry their guard (kdsWriteLane.js guardFor); a write its guard refuses changes nothing
+ * and answers 'gone', as the database does (refused).
  */
-export function makeWorld(clock, spells = [], { cancelledStillArrive = false } = {}) {
+export function makeWorld(clock, spells = [], { cancelledStillArrive = false, scramble = null, listBackMs = 0, clientRepeat = false } = {}) {
   const db = new Map();            // id → row
-  const landed = [];               // every write that reached the database: { at, id, body }
+  const landed = [];               // every write that changed a row: { at, id, body }
+  const refused = [];              // every write its guard refused: { at, id, body, guard }
+  const lateCancelled = [];        // writes that changed a row AFTER the screen had cancelled them
   const reads = [];                // every list answer that reached the tablet: { at, snapshotAt, ids }
   const spellAt = (t) => spells.find((s) => t >= s.from && t < s.to) || null;
+  let seed = typeof scramble === 'number' ? scramble : 1;
+  let held = 0;
+  /** Extra ms before a request the link HELD reaches the database: what makes a burst land out of order. */
+  const spread = () => {
+    if (scramble === null || scramble === undefined || scramble === false) return 0;
+    held += 1;
+    if (scramble === 'reverse') return Math.max(0, BURST_SPREAD_MS - held);
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return Math.floor((seed / 2147483648) * BURST_SPREAD_MS);
+  };
 
   function plan(sentAt, isWrite) {
     let leaveAt = sentAt;
+    const back = isWrite ? 0 : listBackMs;
     const tok = spells.find((s) => s.kind === 'token' && sentAt >= s.from && sentAt < s.to);
     if (tok) leaveAt = tok.to;
     const s = spellAt(leaveAt);
-    if (!s || s.kind === 'token') return { leaveAt, arriveAt: leaveAt + 50, answerAt: leaveAt + 100 };
-    if (s.kind === 'dead') return { leaveAt, arriveAt: s.to + 20, answerAt: s.to + 120 };
+    if (!s || s.kind === 'token') {
+      const arriveAt = leaveAt + 50 + (tok ? spread() : 0);
+      return { leaveAt, arriveAt, answerAt: arriveAt + 50 + back };
+    }
+    if (s.kind === 'dead') { const arriveAt = s.to + 20 + spread(); return { leaveAt, arriveAt, answerAt: arriveAt + 100 + back }; }
     if (s.kind === 'slow') {
       const ms = isWrite ? s.writeMs(leaveAt) : s.readMs(leaveAt);
-      return { leaveAt, arriveAt: leaveAt + ms - 50, answerAt: leaveAt + ms };
+      return { leaveAt, arriveAt: leaveAt + ms - 50, answerAt: leaveAt + ms + back };
     }
     // windows
     const since = (leaveAt - s.from) % s.every;
     const inOpening = since < s.open;
-    const arriveAt = inOpening ? leaveAt + 50 : leaveAt + (s.every - since) + 20;
-    if (arriveAt >= s.to) return { leaveAt, arriveAt: s.to + 20, answerAt: s.to + 120 };
+    const arriveAt = inOpening ? leaveAt + 50 : leaveAt + (s.every - since) + 20 + spread();
+    if (arriveAt >= s.to) { const at = s.to + 20 + spread(); return { leaveAt, arriveAt: at, answerAt: at + 100 + back }; }
     const openEnds = arriveAt - ((arriveAt - s.from) % s.every) + s.open;
-    const answerAt = arriveAt + 100;
+    const answerAt = arriveAt + 100 + back;
     return { leaveAt, arriveAt, answerAt: answerAt <= openEnds ? answerAt : null };
   }
 
-  /** One request. `effect()` runs when it reaches the database and returns the answer body. */
+  /** One request. `effect(at, copy)` runs when a copy of it reaches the database and returns the answer body. */
   function request(isWrite, signal, effect) {
     return new Promise((resolve, reject) => {
-      const p = plan(clock.now(), isWrite);
-      let done = false;
       if (signal && signal.aborted) { reject(abortError()); return; }
-      let answer;
-      let arrived = false;
-      const arriveTimer = clock.setTimer(() => { arrived = true; answer = effect(clock.now()); }, p.arriveAt - clock.now());
-      const answerTimer = p.answerAt === null ? null : clock.setTimer(() => { if (!done) { done = true; resolve(answer); } }, p.answerAt - clock.now());
-      // No answer for 60 s on the network: the tablet's own network gives up. The request itself may
-      // still be delivered. The 60 s run from the moment the request LEAVES the tablet: one still
-      // waiting for the sign in token is not on the network yet, so nothing but the screen's own
-      // limit ends it (12 Oct: bump 33 waited 3 min 37 s behind the renewal and then went out once).
-      const giveUpTimer = clock.setTimer(() => { if (!done) { done = true; reject(new TypeError('Load failed')); } }, Math.max(0, p.leaveAt - clock.now()) + 60000);
+      let done = false;
+      const copies = [];           // every copy of this request the client put on the link
+      let giveUpTimer = null;
+      const send = (attempt) => {
+        const p = plan(clock.now(), isWrite);
+        const copy = { leaveAt: p.leaveAt, arrived: false, cancelled: false, arriveTimer: null, answerTimer: null };
+        copies.push(copy);
+        let answer;
+        copy.arriveTimer = clock.setTimer(() => { copy.arrived = true; answer = effect(clock.now(), copy); }, p.arriveAt - clock.now());
+        copy.answerTimer = p.answerAt === null ? null : clock.setTimer(() => {
+          if (done || copies[copies.length - 1] !== copy) return;
+          done = true;
+          resolve(answer);
+        }, p.answerAt - clock.now());
+        // No answer for 60 s on the network: the tablet's own network gives up. The request itself may
+        // still be delivered. The 60 s run from the moment the request LEAVES the tablet: one still
+        // waiting for the sign in token is not on the network yet, so nothing but the screen's own
+        // limit ends it (12 Oct: bump 33 waited 3 min 37 s behind the renewal and then went out once).
+        giveUpTimer = clock.setTimer(() => {
+          if (done) return;
+          if (clientRepeat && isWrite && attempt < CLIENT_REPEAT_DELAYS_MS.length) {
+            clock.setTimer(() => { if (!done) send(attempt + 1); }, CLIENT_REPEAT_DELAYS_MS[attempt]);
+            return;
+          }
+          done = true;
+          reject(new TypeError('Load failed'));
+        }, Math.max(0, p.leaveAt - clock.now()) + 60000);
+      };
+      send(0);
       if (signal) signal.addEventListener('abort', () => {
         if (done) return;
         done = true;
-        // Cancelled before it left the tablet (still waiting for the sign in token): it never reaches
-        // the database. Cancelled after it left: lost too, unless cancelledStillArrive.
-        const left = clock.now() >= p.leaveAt;
-        if (!arrived && (!left || !cancelledStillArrive)) clock.clearTimer(arriveTimer);
-        if (answerTimer !== null) clock.clearTimer(answerTimer);
+        for (const copy of copies) {
+          if (copy.answerTimer !== null) clock.clearTimer(copy.answerTimer);
+          if (copy.arrived) continue;
+          // Cancelled before it left the tablet (still waiting for the sign in token): it never reaches
+          // the database. Cancelled after it left: lost too, unless cancelledStillArrive.
+          const left = clock.now() >= copy.leaveAt;
+          if (!left || !cancelledStillArrive) clock.clearTimer(copy.arriveTimer);
+          else copy.cancelled = true;
+        }
         clock.clearTimer(giveUpTimer);
         reject(abortError());
       });
@@ -121,7 +186,7 @@ export function makeWorld(clock, spells = [], { cancelledStillArrive = false } =
   }
 
   return {
-    db, landed, reads,
+    db, landed, refused, lateCancelled, reads,
     /** The till sends a ticket (it reaches the database at once: on 12 Oct the till was never slow). */
     insert(row) { db.set(row.id, { status: 'pending', bumped_at: null, ...row }); },
     /** The board's list read: the pending and held rows, as lib/kds/kdsBoardEngine.js readList resolves them. */
@@ -130,11 +195,13 @@ export function makeWorld(clock, spells = [], { cancelledStillArrive = false } =
       return { data, snapshotAt: at };
     }).then((ans) => { reads.push({ at: clock.now(), snapshotAt: ans.snapshotAt, ids: ans.data.map((r) => r.id) }); return { data: ans.data }; }, (e) => ({ error: e })),
     /** The board's ticket write, in the shape lib/rowWrites.js mustChangeRow resolves. */
-    writeTicket: (id, body, label, signal) => request(true, signal, (at) => {
+    writeTicket: (id, body, label, signal, guard = null) => request(true, signal, (at, copy) => {
       const row = db.get(id);
       if (!row) return { outcome: 'gone' };
+      if (!guardLets(row, guard)) { refused.push({ at, id, body: { ...body }, guard }); return { outcome: 'gone' }; }
       db.set(id, { ...row, ...body });
       landed.push({ at, id, body: { ...body } });
+      if (copy && copy.cancelled) lateCancelled.push({ at, id, body: { ...body } });
       return { outcome: 'applied' };
     }).then((ans) => ({ error: null, outcome: ans.outcome }), (e) => ({ error: e, outcome: 'error' })),
   };

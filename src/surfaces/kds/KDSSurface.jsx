@@ -31,6 +31,14 @@
 //   paints. A bumped ticket never comes back by itself, every write has a time limit and a count
 //   on screen, a large banner says slow or offline, and "Kitchen clear" is only said when sure.
 //   On a healthy link the board looks and behaves as before.
+//
+// 12 Oct 2026, review of that build (three reviewers, each fault reproduced on the real engine):
+//   a write the tablet's network gave up on is still delivered when a stalled link lets go, in
+//   any order, so every Hold, Resume and recall now carries a guard in the write itself and can
+//   no longer undo a newer tap (ticketWrite below, lib/kds/kdsWriteLane.js guardFor) · a bump that
+//   is saved is not painted back by a late live echo · "N more orders below" is a strip under the
+//   board, not a pill over the Bump buttons · the red banner does not blame the WiFi when ServOS
+//   itself answers with an error · the empty board says nothing while its last bump is unsaved.
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
@@ -73,10 +81,18 @@ import { C, SANS, MONO, ghostBtn, pill, monoLabel, KDS_KEYFRAMES } from './kdsSt
 // screen client (lib/supabase.js kitchenClient). It sends the device's own stored sign in while
 // that is still valid, so they never queue behind a sign in renewal that cannot reach the server
 // (that queue held one bump for 3.5 minutes). `signal` lets the board cancel a send that hangs.
+//
+// 12 Oct 2026, review (K3): `guard` is more filters for the SAME write (lib/kds/kdsWriteLane.js
+// guardFor): a Hold or Resume only changes a ticket that is not bumped, a recall only undoes the
+// very bump it names. A request the tablet's network gave up on is still delivered when a stalled
+// link lets go, in any order, and without the guard a late Hold un bumped a ticket. A write its
+// guard refuses changes 0 rows and answers 'gone'. match and notMatch are the two filters a copy
+// parked in the offline queue keeps, so that copy is guarded too.
 let kitchenDbClient = null;
 const kitchenDb = () => (kitchenDbClient || (kitchenDbClient = kitchenClient() || supabase));
-const ticketWrite = (id, payload, label, signal) =>
-  mustChangeRow({ table: 'kds_tickets', type: 'update', payload, match: { id }, kind: 'kds_ticket', label, signal }, { client: kitchenDb() })
+const guarded = (id, guard) => (guard ? { match: { id, ...guard.match }, notMatch: { ...guard.notMatch } } : null);
+const ticketWrite = (id, payload, label, signal, guard = null) =>
+  mustChangeRow({ table: 'kds_tickets', type: 'update', payload, match: { id }, kind: 'kds_ticket', label, signal, ...guarded(id, guard) }, { client: kitchenDb() })
     .then((r) => ({ error: writeErrorOf(r), outcome: r.outcome }));
 
 const UNDO_MS = 5000;
@@ -91,10 +107,15 @@ const AUTO_STATUS_SETTINGS_POLL_MS = 60000;
 // for this long, while the socket itself is connected, is thrown away and made again.
 const REJOIN_AFTER_MS = 60000;
 const CHANNEL_CHECK_MS = 20000;
-// Unsaved bumps are kept here across a restart of the app (lib/kds/kdsWriteLane.js toJournal).
+// Unsaved bumps and unsaved recalls are kept here across a restart of the app (lib/kds/kdsWriteLane.js toJournal).
 const unsavedKey = (deviceId) => `rpos-kds-unsaved-${deviceId || 'screen'}`;
 const GAVE_UP_WORD = { hold: 'Hold', resume: 'Resume', restore: 'Recall' };
-const EMPTY_BOARD = Object.freeze({ rows: [], level: 'ok', sure: false, everApplied: false, unsavedBumps: 0, unsavedOthers: 0, failedBumps: 0, showSaving: false });
+/** An id for one activity feed row (a version 4 uuid), made here so a repeated insert is the same row. */
+const traceId = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  const r = Math.floor(Math.random() * 16);
+  return (c === 'x' ? r : (r % 4) + 8).toString(16);
+});
+const EMPTY_BOARD = Object.freeze({ rows: [], level: 'ok', sure: false, everApplied: false, unsavedBumps: 0, unsavedOthers: 0, failedBumps: 0, showSaving: false, serverFault: false });
 
 /** One read with a real time limit: after `ms` the request is cancelled, not only left behind. */
 function limitedRead(q, ms, label) {
@@ -123,7 +144,9 @@ function mapRow(row) {
     bumpedAt: bumped ? new Date(bumped).getTime() : null,
     firedCourses: row.fired_courses || row.firedCourses || [0, 1],
     allCourses: row.all_courses || row.allCourses || [],
-    items: (Array.isArray(items) ? items : []).map(i => ({ ...i, _bumped: i._bumped || false })),
+    // filter(Boolean): 12 Oct 2026 review. One empty entry in the list (items: [null]) threw here,
+    // and a list answer that cannot be mapped is a failed read for the whole board.
+    items: (Array.isArray(items) ? items : []).filter(Boolean).map(i => ({ ...i, _bumped: i._bumped || false })),
     meta: ticketMeta(row),
     // 30 Sep 2026: the column as stored (the note write merges into it) and the kitchen's own note.
     rawMeta: row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : null,
@@ -410,13 +433,16 @@ export function KDSSurface() {
     if (!live) return undefined;
     let alive = true;
     let eng = null;
-    const writeTrace = (summary, triesLeft) => {
+    // K9: one trace per spell. A write that did not land is tried again a minute later, five times
+    // at most. Every try carries the SAME id (review 12 Oct 2026: the insert had none, so one that
+    // landed with its answer lost was written again, up to five rows for one spell). A second
+    // insert of that id is refused by the database and counts as written (lib/activity.js).
+    const writeTrace = (summary, triesLeft, id = traceId()) => {
       const w = traceWords({ name: device.name, summary });
       Promise.resolve(logActivity(locationId, {
-        kind: 'system', severity: 'info', title: w.title, body: w.body, refType: 'kds_link', refId: device.id, actorName: device.name,
+        id, kind: 'system', severity: 'info', title: w.title, body: w.body, refType: 'kds_link', refId: device.id, actorName: device.name,
       })).then((r) => {
-        // K9: one trace per spell. A write that did not land is tried again a minute later, five times at most.
-        if (alive && r && r.ok === false && triesLeft > 1) setTimeout(() => writeTrace(summary, triesLeft - 1), 60000);
+        if (alive && r && r.ok === false && triesLeft > 1) setTimeout(() => writeTrace(summary, triesLeft - 1, id), 60000);
       }).catch(() => {});
     };
     eng = createBoardEngine({
@@ -433,8 +459,11 @@ export function KDSSurface() {
         // The engine asks again itself. The client's own repeats of a failed read (three more) are
         // switched off: on 12 Oct they helped put 14 list reads into one two second burst.
         if (typeof q.retry === 'function') q = q.retry(false);
-        const { data, error } = await q;
-        if (error) return { error };
+        const { data, error, status } = await q;
+        // status 0 = the request never completed (the tablet's network). Any other status with an
+        // error is ServOS itself answering (a database restart, a 503): the banner then does not
+        // tell staff to check the WiFi (review 12 Oct 2026).
+        if (error) return { error, server: Number(status) >= 400 };
         // Database fence stage 1 (contract A9): an empty read while this screen may have lost
         // its link is unknown, never "no tickets". Keep what is on screen (the engine does not
         // use an answer of undefined, and it clears no warning).
@@ -927,8 +956,9 @@ export function KDSSurface() {
   })), [history, queueRows, clockFmt]);
 
   // The "more below" count follows the board: tickets in or out, History closing, a banner
-  // pushing the cards down. (Scrolling and a resize measure too.)
-  useEffect(() => { measureBelow(); }, [measureBelow, displayed, scale, showHistory, board.level, filterNote]);
+  // pushing the cards down. (Scrolling and a resize measure too.) `below` itself is in the list:
+  // the strip that says it takes its own height off the board, so the count is taken once more.
+  useEffect(() => { measureBelow(); }, [measureBelow, displayed, scale, showHistory, board.level, filterNote, below]);
 
   // ── settings gate (manager PIN, 90 second grace) ────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -966,13 +996,15 @@ export function KDSSurface() {
 
   // 12 Oct 2026, Barnsley (K5): the words the board says about its link. Not live (mock, unpaired)
   // there is no link to speak of, so the board reads as healthy.
-  const linkBanner = live ? bannerWords({ level: board.level, unsavedBumps: board.unsavedBumps }) : null;
+  const linkBanner = live ? bannerWords({ level: board.level, unsavedBumps: board.unsavedBumps, serverFault: board.serverFault }) : null;
   const savingNote = live && board.showSaving ? savingWords({ bumps: board.unsavedBumps, others: board.unsavedOthers }) : null;
   // A bump tapped under 3 seconds ago is not yet said to be "not saved" (the header count waits the
-  // same 3 seconds): a healthy board that staff have just cleared says "Kitchen clear" at once, as
-  // before, and not "1 bump not saved yet." for the tenth of a second its write takes.
+  // same 3 seconds), so a healthy board that staff have just cleared never flashes "1 bump not saved
+  // yet." for the tenth of a second its write takes. For those 3 seconds the empty board says
+  // NOTHING, no tick and no words (review 12 Oct 2026: it said "Kitchen clear" with the green tick
+  // while the last bump was not saved, on a hung link for the full 3 seconds).
   const empty = live
-    ? emptyWords({ sure: board.sure, everApplied: board.everApplied, level: board.level, unsavedBumps: board.showSaving ? board.unsavedBumps : 0 })
+    ? emptyWords({ sure: board.sure, everApplied: board.everApplied, level: board.level, unsavedBumps: board.unsavedBumps, showSaving: board.showSaving })
     : emptyWords({ sure: true, everApplied: true, level: 'ok', unsavedBumps: 0 });
   const belowNote = showHistory ? null : belowWords(below);
 
@@ -1088,8 +1120,8 @@ export function KDSSurface() {
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
-            <div ref={scrollRef} onScroll={measureBelow} style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '20px 22px' }}>
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div ref={scrollRef} onScroll={measureBelow} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'auto', padding: '20px 22px' }}>
               {displayed.length === 0 ? (
                 inStation.length === 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '120px 0' }}>
@@ -1112,12 +1144,15 @@ export function KDSSurface() {
                 </div>
               )}
             </div>
+            {/* 12 Oct 2026, review: this was a pill floating over the bottom of the board. Measured
+                on the real screen it lay over a card's Bump button at about a third of scroll
+                positions, and a tap meant for Bump only scrolled the board. It is a strip UNDER the
+                board now: the cards end above it and it covers nothing. */}
             {belowNote && (
               <button type="button" onClick={() => { const box = scrollRef.current; if (box) box.scrollTop += Math.round(box.clientHeight * 0.8); }}
                 style={{
-                  position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 5,
-                  border: 0, borderRadius: 999, padding: '0 28px', minHeight: 56, background: '#F5A524', color: '#1A1200',
-                  font: `800 21px ${SANS}`, boxShadow: '0 8px 24px rgba(0,0,0,.5)', cursor: 'pointer', whiteSpace: 'nowrap',
+                  flex: 'none', width: '100%', border: 0, borderRadius: 0, padding: '0 28px', minHeight: 56,
+                  background: '#F5A524', color: '#1A1200', font: `800 21px ${SANS}`, cursor: 'pointer', whiteSpace: 'nowrap',
                 }}>{belowNote} ↓</button>
             )}
           </div>

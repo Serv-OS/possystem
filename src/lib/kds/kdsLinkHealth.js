@@ -6,7 +6,8 @@
 //
 // The rule: the screen is 'ok', 'slow' or 'offline'.
 //   slow     a request has been open over 5 s, or a bump has been unsaved over 10 s
-//   offline  list reads are failing (two in a row failed, or one has had no answer for 30 s)
+//   offline  list reads are failing (two in a row failed, or one has had no answer for 30 s),
+//            and it STAYS offline until a list has been used
 //   ok       only after TWO list reads in a row were used and each took under 5 s
 // "Kitchen clear" is only said when the screen is sure. One trace is written when a spell ends.
 //
@@ -30,6 +31,13 @@ export const MAX_OPEN_READS = 2;
 export const RETRY_AFTER_FAIL_MS = 5000;
 /** The warning clears after this many good list reads in a row. */
 export const GOOD_READS_TO_CLEAR = 2;
+/**
+ * The good reads that clear a warning must be this far apart. Review 12 Oct 2026: a read that
+ * overlapped another is now followed by a fresh read at once, and two reads answered inside one
+ * two second burst of the 12 Oct link would otherwise have said "ok" for the seconds between bursts.
+ * On a healthy link the reads are a poll (20 s) apart.
+ */
+export const GOOD_READS_APART_MS = 5000;
 /** No list used for this long: the screen is not sure what is waiting. */
 export const STALE_MS = 45000;
 /** Two list reads in a row must fail before the screen says offline: one blip (a 503 while the database reloads) only says slow. */
@@ -43,7 +51,7 @@ export const SPELL_QUIET_MS = 5 * 60 * 1000;
 
 export const newLink = () => ({
   seq: 0, open: [], lastAppliedN: 0, lastAppliedAt: 0, everApplied: false,
-  fails: 0, goodRun: 0, warned: false, level: 'ok', spell: null,
+  fails: 0, goodRun: 0, goodAt: 0, warned: false, level: 'ok', spell: null, cut: false,
 });
 
 /** May a list read start now? One at a time, as before; a second only beside one that is overdue. */
@@ -65,6 +73,12 @@ export const readsToCancel = (link, now) => link.open.filter((r) => now - r.star
 export const shouldApply = (link, n) => n > link.lastAppliedN;
 
 /**
+ * Was another list answer used while this read (sent at startedAt) was on its way? Then two reads
+ * overlapped, and which one the database answered last cannot be told (kdsBoardRows.js keepUnlisted).
+ */
+export const readOverlapped = (link, startedAt) => link.everApplied && startedAt < link.lastAppliedAt;
+
+/**
  * A list read ended.
  *   result  'applied'    its rows were painted
  *           'stale'      a newer read was already painted: nothing to do
@@ -77,7 +91,13 @@ export function readEnded(link, { n, result, now }) {
   const open = link.open.filter((x) => x.n !== n);
   const took = r ? now - r.startedAt : 0;
   if (result === 'applied') {
-    return { ...link, open, lastAppliedN: n, lastAppliedAt: now, everApplied: true, fails: 0, goodRun: took < SLOW_MS ? link.goodRun + 1 : 0 };
+    const good = took < SLOW_MS;
+    // The second good read only counts when it was SENT a while after the first one came back.
+    const counts = good && (link.goodRun === 0 || !r || r.startedAt - link.goodAt >= GOOD_READS_APART_MS);
+    return {
+      ...link, open, lastAppliedN: n, lastAppliedAt: now, everApplied: true, fails: 0, cut: false,
+      goodRun: good ? (counts ? link.goodRun + 1 : link.goodRun) : 0, goodAt: counts ? now : link.goodAt,
+    };
   }
   if (result === 'stale') return { ...link, open };
   if (result === 'unknown') return { ...link, open, goodRun: 0 };
@@ -88,9 +108,14 @@ export function readEnded(link, { n, result, now }) {
  * The tablet slept (lid shut, auto lock, the night): the reads that were open then are forgotten
  * without counting as failures, so a healthy screen never wakes up to a warning. The engine cancels
  * them and reads the list afresh.
+ *   at  the last moment the screen was awake. A spell that was open then ENDS there (review 12 Oct
+ *       2026: a router switched off at closing with the tablet locked two minutes later gave a
+ *       trace of "slow or offline for 9 h 1 min" the next morning). What the link was like before
+ *       the sleep says nothing about now, so the warning starts afresh too.
  */
-export function afterSleep(link) {
-  return { ...link, open: [], fails: 0 };
+export function afterSleep(link, { at = null } = {}) {
+  const spell = link.spell && link.spell.endedAt === null && at !== null ? { ...link.spell, endedAt: Math.max(link.spell.startedAt, at) } : link.spell;
+  return { ...link, open: [], fails: 0, cut: false, warned: false, goodRun: 0, level: 'ok', spell };
 }
 
 /**
@@ -103,7 +128,10 @@ export function assess(link, { now, oldestOpenWriteMs = 0, oldestUnsavedBumpMs =
   const fresh = link.open.filter((r) => r.n > link.lastAppliedN);
   const overdue = fresh.some((r) => now - r.startedAt >= READ_OFFLINE_MS);
   const oldestRead = link.open.reduce((m, r) => Math.max(m, now - r.startedAt), 0);
-  const failing = link.fails >= FAILS_TO_OFFLINE || overdue;
+  // Review 12 Oct 2026: on the burst pattern of that day the banner went red, amber for 5 s when
+  // the unanswered read was cancelled (one failure only says slow), red again, about four changes
+  // a minute, too fast to read. Once offline the screen stays offline until a list has been USED.
+  const failing = link.fails >= FAILS_TO_OFFLINE || overdue || link.cut === true;
   const slowNow = link.fails > 0 || oldestRead >= SLOW_MS || oldestOpenWriteMs >= SLOW_MS || oldestUnsavedBumpMs >= LATE_BUMP_MS;
   let level = 'ok';
   if (failing) level = 'offline';
@@ -118,7 +146,7 @@ export function assess(link, { now, oldestOpenWriteMs = 0, oldestUnsavedBumpMs =
   } else if (spell && spell.endedAt === null) {
     spell = { ...spell, endedAt: now };
   }
-  const next = { ...link, level, warned: level !== 'ok', spell, goodRun: level === 'ok' ? link.goodRun : (slowNow || failing ? 0 : link.goodRun) };
+  const next = { ...link, level, warned: level !== 'ok', cut: level === 'offline', spell, goodRun: level === 'ok' ? link.goodRun : (slowNow || failing ? 0 : link.goodRun) };
   const sure = next.everApplied && level === 'ok' && now - next.lastAppliedAt < STALE_MS;
   return { link: next, level, sure };
 }
@@ -131,6 +159,15 @@ export function noteBumpSaved(link, { tookMs, now }) {
 }
 
 /**
+ * A bump passed ten minutes unsaved and its card came back marked. Review 12 Oct 2026: it was
+ * counted nowhere, so the trace of a spell in which a bump was never saved said "No bumps were late."
+ */
+export function noteBumpGaveUp(link, { now }) {
+  const spell = link.spell || { startedAt: now, endedAt: now, lateBumps: 0, worstLateMs: 0, wentOffline: false };
+  return { ...link, spell: { ...spell, notSaved: (spell.notSaved || 0) + 1 } };
+}
+
+/**
  * The spell to write down, once it has been over for SPELL_QUIET_MS. Returns { link, summary }.
  * summary is null when nothing is due, or when the spell was too small to be worth a trace.
  */
@@ -138,8 +175,9 @@ export function takeSpell(link, now) {
   const s = link.spell;
   if (!s || s.endedAt === null || now - s.endedAt < SPELL_QUIET_MS) return { link, summary: null };
   const durationMs = s.endedAt - s.startedAt;
-  const worth = durationMs >= SPELL_MIN_MS || s.lateBumps > 0 || s.wentOffline;
-  return { link: { ...link, spell: null }, summary: worth ? { startedAt: s.startedAt, endedAt: s.endedAt, durationMs, lateBumps: s.lateBumps, worstLateMs: s.worstLateMs, wentOffline: s.wentOffline } : null };
+  const notSaved = s.notSaved || 0;
+  const worth = durationMs >= SPELL_MIN_MS || s.lateBumps > 0 || notSaved > 0 || s.wentOffline;
+  return { link: { ...link, spell: null }, summary: worth ? { startedAt: s.startedAt, endedAt: s.endedAt, durationMs, lateBumps: s.lateBumps, worstLateMs: s.worstLateMs, notSaved, wentOffline: s.wentOffline } : null };
 }
 
 /** A spell kept across a restart is forgotten after this. */
@@ -156,6 +194,7 @@ export function spellFromJournal(text, { now } = {}) {
     // A restart in the middle of a spell: it counts as still running until the new page proves otherwise.
     endedAt: s.endedAt === null || s.endedAt === undefined || !Number.isFinite(Number(s.endedAt)) ? now : Number(s.endedAt),
     lateBumps: Math.max(0, Number(s.lateBumps) || 0), worstLateMs: Math.max(0, Number(s.worstLateMs) || 0), wentOffline: s.wentOffline === true,
+    notSaved: Math.max(0, Number(s.notSaved) || 0),
   };
 }
 
@@ -175,10 +214,16 @@ export function durationWords(ms) {
 /** On the card of a bump that could not be saved for ten minutes (K1). */
 export const BUMP_NOT_SAVED = 'Bump not saved. Tap to try again.';
 
-/** The big banner: null on a healthy screen. */
-export function bannerWords({ level, unsavedBumps = 0 } = {}) {
+/**
+ * The big banner: null on a healthy screen.
+ *   serverFault  the list reads ARE reaching ServOS and it answers with an error (a database
+ *                restart, a 503). Review 12 Oct 2026: in a fault like the 45 minutes of 22 Sep
+ *                every kitchen screen at every venue would have told staff to check their WiFi.
+ */
+export function bannerWords({ level, unsavedBumps = 0, serverFault = false } = {}) {
   if (level !== 'slow' && level !== 'offline') return null;
   const tail = unsavedBumps > 0 ? ` ${plural(unsavedBumps, 'bump', 'bumps')} not saved yet.` : '';
+  if (level === 'offline' && serverFault) return { tone: 'offline', text: `ServOS is not answering this screen. New orders are NOT showing. Tell the till.${tail}` };
   if (level === 'offline') return { tone: 'offline', text: `This screen is offline. New orders are NOT showing. Check the tablet's WiFi.${tail}` };
   return { tone: 'slow', text: `This screen is slow to reach ServOS. New orders may be late.${tail}` };
 }
@@ -192,9 +237,16 @@ export function savingWords({ bumps = 0, others = 0 } = {}) {
   return `${parts.join(' and ')} saving`;
 }
 
-/** The empty board. "Kitchen clear" only when the screen is sure and nothing is unsaved. */
-export function emptyWords({ sure, everApplied, level, unsavedBumps = 0 } = {}) {
+/**
+ * The empty board. "Kitchen clear" only when the screen is sure and nothing is unsaved.
+ *   showSaving  false while the unsaved bumps are under 3 s old (the header count is not up yet).
+ *               The board then says NOTHING: no tick, no words. Review 12 Oct 2026: it said
+ *               "Kitchen clear" with the green tick for those 3 seconds while the last bump was not
+ *               saved. On a healthy link the gap is the tenth of a second the write takes.
+ */
+export function emptyWords({ sure, everApplied, level, unsavedBumps = 0, showSaving = true } = {}) {
   if (sure && unsavedBumps === 0) return { clear: true, title: 'Kitchen clear', sub: 'All orders bumped' };
+  if (unsavedBumps > 0 && showSaving === false) return { clear: false, title: '', sub: '' };
   if (unsavedBumps > 0) return { clear: false, title: 'No orders showing', sub: `${plural(unsavedBumps, 'bump', 'bumps')} not saved yet.` };
   if (level === 'offline') return { clear: false, title: 'No orders showing', sub: 'This screen is offline, so it cannot tell.' };
   // Not sure yet with nothing wrong: the first list after a start or a wake is on its way.
@@ -215,8 +267,10 @@ export function traceWords({ name, summary } = {}) {
   const who = name || 'Kitchen screen';
   const kind = summary.wentOffline ? 'slow or offline' : 'slow';
   const title = `${who} was ${kind} for ${durationWords(summary.durationMs)}`;
-  const body = summary.lateBumps > 0
+  const notSaved = summary.notSaved > 0 ? `${summary.notSaved} ${summary.notSaved === 1 ? 'bump was' : 'bumps were'} not saved.` : '';
+  const late = summary.lateBumps > 0
     ? `${plural(summary.lateBumps, 'bump', 'bumps')} saved late. Longest wait ${durationWords(summary.worstLateMs)}.`
-    : 'No bumps were late.';
+    : '';
+  const body = [late, notSaved].filter(Boolean).join(' ') || 'No bumps were late.';
   return { title, body };
 }

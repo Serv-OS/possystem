@@ -6,10 +6,12 @@
 //
 // The rule: a till watches the kitchen screens of its venue. It says so, with a sound, when a
 // screen has orders waiting and
-//   silent  the screen has not been heard from for 2 minutes, or
+//   silent  the screen has not been heard from for 2 minutes (and no other live screen shows
+//           those orders), or
 //   stuck   its oldest order has waited past that screen's late time plus 5 minutes and nothing
-//           has been bumped there in that time.
-// The sound repeats every 5 minutes while it lasts. A line says when the screen is back.
+//           has been bumped there in that time. Built, tested and SWITCHED OFF (STUCK_RULE below).
+// The sound repeats every 5 minutes while it lasts, three times at most for the same orders, and
+// OK stops it until a new order is sent to that screen. A line says when the screen is back.
 // Never outside trading hours, never with nothing waiting.
 //
 // Local first: the orders waiting come from the till's own list (store kdsTickets). The screens'
@@ -28,20 +30,37 @@ export const MIN_WAIT_MS = 2 * 60 * 1000;
 export const MAX_WAIT_MS = 3 * 60 * 60 * 1000;
 export const STUCK_EXTRA_MIN = 5;
 /**
- * Hold back switch for the "stuck" rule (a screen that is heard from but bumps nothing). ON, as
- * the owner decided (K6). Measured on the live rows of the 8 days to 12 Oct 2026 at the five
- * Coffee Boy venues: on its own this rule would have come up for 81 of 9,373 tickets, on 24 of 40
- * venue days (an order nobody bumped at a quiet station, or cards left at closing time). At late
- * time plus 15 minutes it is 31 tickets on 14 days; plus 30, 9 on 5. The "silent" rule does not
- * depend on it. To ship "silent" alone make this false (four tests in kdsScreenWatch.test.js
- * expect the rule and will say so).
+ * The switch for the "stuck" rule (a screen that is heard from but bumps nothing). OFF.
+ * 12 Oct 2026, review: replayed minute by minute on the real rows of 39 normal venue days (5 to
+ * 12 Oct, five Coffee Boy venues, every screen beating, the Barnsley incident day left out) this
+ * rule alone chimed on 25 of the 39 days, 275 chimes per counter till, with a red bar up for
+ * 1,238 minutes: an order nobody bumped at a quiet station, or cards left at closing time. Staff
+ * would learn to ignore the bar, and the "silent" rule, which is what would have caught 12 Oct
+ * (at about 14:47), would be ignored with it. The builder's own count agreed (81 of 9,373 tickets
+ * on 24 of 40 days). With a flat wait of 45 minutes it is still 11 tickets on 6 of 40 days.
+ * The rule and its tests stay (they pass stuckRule: true). To switch it on: make this true, and
+ * raise STUCK_EXTRA_MIN to 30 first. That is the owner's call.
  */
-export const STUCK_RULE = true;
+export const STUCK_RULE = false;
 export const DEFAULT_LATE_MIN = 15;
 export const REPEAT_MS = 5 * 60 * 1000;
 export const BACK_LINE_MS = 20 * 1000;
 export const TRADING_MARGIN_MS = 30 * 60 * 1000;
 export const CONFIRM_MAX_IDS = 20;
+/**
+ * At most this many chimes for the same waiting orders. 12 Oct 2026, review: nothing on the till
+ * could stop the chime. Staff switch the kitchen tablet off at closing with the last card not
+ * bumped (4 of 45 venue days), the till stays on, and it chimed every 5 minutes for 3 hours,
+ * 36 times. A new order sent to that screen starts the count again.
+ */
+export const MAX_CHIMES = 3;
+/**
+ * A kitchen screen row not heard from for this long, or never, is a leftover (a tablet that was
+ * replaced, a test screen), not a screen staff rely on: never an alarm. 12 Oct 2026, review: 3 of
+ * the 16 live kitchen screen rows had been silent for over a week, and each would have raised
+ * "is not showing orders" with a chime whenever an order of its station waited two minutes.
+ */
+export const STALE_SCREEN_MS = 7 * 24 * 60 * 60 * 1000;
 /** How many "the database says it is no longer waiting" ids a till remembers. The oldest are forgotten first. */
 export const GONE_KEEP = 500;
 /**
@@ -98,9 +117,17 @@ export function leftWaiting(before, after) {
   return [...out];
 }
 
-/** Trading: no opening hours set, or open now, or open half an hour either side of now. */
+/**
+ * Trading: no opening hours set, or open now, or open half an hour either side of now.
+ * "No hours set" includes a week with no opening time on any day. 12 Oct 2026, review: Back Office
+ * stores exactly that ({ weekly: { sun: [], mon: [], ... } }) the first time the Location page is
+ * saved for any reason, and it reads as shut at every hour, so the till would never have raised an
+ * alarm at such a venue. The kiosk treats that shape as "not set" too (surfaces/KioskSurface.jsx).
+ */
 export function isTrading({ openingHours, timeZone, now, isOpenNow } = {}) {
-  if (!openingHours || !openingHours.weekly || typeof isOpenNow !== 'function') return true;
+  const weekly = openingHours && openingHours.weekly;
+  const hoursSet = !!weekly && typeof weekly === 'object' && Object.values(weekly).some((day) => Array.isArray(day) && day.length > 0);
+  if (!hoursSet || typeof isOpenNow !== 'function') return true;
   const open = (t) => { try { return !!isOpenNow(openingHours, timeZone, new Date(t)).open; } catch { return true; } };
   return open(now) || open(now - TRADING_MARGIN_MS) || open(now + TRADING_MARGIN_MS);
 }
@@ -141,29 +168,59 @@ function lastBumpAt(bumpSeenAt, centreId) {
  *   bumpSeenAt     Map station id ('' for none) to when the till last saw a ticket of that station leave its list
  *   watchingSince  when this till started watching (a till that just started has seen no bump yet)
  *   stuckRule      false leaves the "stuck" rule out (STUCK_RULE when not given)
- * Returns [{ screenId, name, centreId, reason: 'silent' | 'stuck', count, oldestWaitMs, silentMs, noBumpMs, ids }].
+ * Returns [{ screenId, name, centreId, reason: 'silent' | 'stuck', count, oldestWaitMs, newestSentAt, silentMs, noBumpMs, ids }].
+ *
+ * 12 Oct 2026, review, two rules for "silent" (each one a false alarm on live rows):
+ *   a row not heard from for a week, or never, is a leftover and is not judged (STALE_SCREEN_MS);
+ *   an order that ANOTHER live screen also shows (the same station, or a screen with no station)
+ *   is not stranded, so a second tablet used only at peak, switched off, raises nothing while the
+ *   first one is working.
  */
 export function watchProblems({ screens, waiting, serverNow, bumpSeenAt, watchingSince, now, stuckRule = STUCK_RULE } = {}) {
   const out = [];
+  const known = serverNow !== null && serverNow !== undefined;
+  const live = (s) => known && Number.isFinite(s.lastSeenMs) && serverNow - s.lastSeenMs < SILENT_MS;
+  const shows = (s, w) => !s.centreId || w.centreId === s.centreId;
   for (const s of screens || []) {
-    const mine = (waiting || []).filter((w) => !s.centreId || w.centreId === s.centreId);
+    const mine = (waiting || []).filter((w) => shows(s, w));
     if (!mine.length) continue;
-    const oldestWaitMs = now - mine[0].sentAt;
-    const known = serverNow !== null && serverNow !== undefined;
-    // Never heard from: silent. Heard from, but no clock to compare with: cannot tell, so not silent.
+    // Heard from, but no clock to compare with: cannot tell, so not silent.
     const silentMs = Number.isFinite(s.lastSeenMs) ? (known ? Math.max(0, serverNow - s.lastSeenMs) : 0) : Infinity;
     const lastBump = Math.max(lastBumpAt(bumpSeenAt, s.centreId), watchingSince || 0);
-    const noBumpMs = Math.min(Math.max(0, now - lastBump), oldestWaitMs);
-    const base = { screenId: s.id, name: s.name, centreId: s.centreId, count: mine.length, oldestWaitMs, silentMs, noBumpMs, ids: mine.map((w) => w.id) };
-    if (silentMs >= SILENT_MS) { out.push({ ...base, reason: 'silent' }); continue; }
+    const about = (list) => {
+      const oldestWaitMs = now - list[0].sentAt;
+      return {
+        screenId: s.id, name: s.name, centreId: s.centreId, count: list.length, oldestWaitMs, newestSentAt: list[list.length - 1].sentAt,
+        silentMs, noBumpMs: Math.min(Math.max(0, now - lastBump), oldestWaitMs), ids: list.map((w) => w.id),
+      };
+    };
+    if (silentMs >= SILENT_MS) {
+      if (silentMs >= STALE_SCREEN_MS) continue;
+      const stranded = mine.filter((w) => !(screens || []).some((o) => o.id !== s.id && live(o) && shows(o, w)));
+      if (stranded.length) out.push({ ...about(stranded), reason: 'silent' });
+      continue;
+    }
     const limit = (s.lateMin + STUCK_EXTRA_MIN) * 60000;
-    if (stuckRule && oldestWaitMs >= limit && now - lastBump >= limit) out.push({ ...base, reason: 'stuck' });
+    if (stuckRule && now - mine[0].sentAt >= limit && now - lastBump >= limit) out.push({ ...about(mine), reason: 'stuck' });
   }
   return out;
 }
 
-/** Is a sound due for this problem now (new, or 5 minutes since the last)? The database check runs only then. */
-export const soundDue = (prev, p, now) => { const was = prev && prev[p.screenId]; return !was || now - was.lastSoundAt >= REPEAT_MS; };
+/**
+ * Is a chime due for this problem now? The database check runs only then.
+ *   new trouble                              yes
+ *   OK was tapped                            no, until a NEW order has been sent to that screen
+ *   said MAX_CHIMES times for the same orders  no, until a NEW order has been sent to that screen
+ *   otherwise                                5 minutes after the last one
+ * A screen that came back and went again is new trouble (its alert was taken down in between).
+ */
+function chimeDue(was, p, now) {
+  if (!was) return true;
+  const fresh = (p.newestSentAt || 0) > (was.newestSentAt || 0);
+  if (!fresh && (was.acked || (was.sounds || 0) >= MAX_CHIMES)) return false;
+  return now - was.lastSoundAt >= REPEAT_MS;
+}
+export const soundDue = (prev, p, now) => chimeDue(prev && prev[p.screenId], p, now);
 
 /**
  * After the database was asked about one screen's oldest waiting orders.
@@ -230,7 +287,9 @@ export function isBack(was, { screens, serverNow, bumpSeenAt } = {}) {
 
 /**
  * The alerts after this look.
- *   prev      { [screenId]: problem plus { since, lastSoundAt, hiddenUntil } }
+ *   prev      { [screenId]: problem plus { since, lastSoundAt, sounds, acked } }
+ *             sounds  chimes so far for the orders waiting now (a new order starts it again)
+ *             acked   OK was tapped: no bar and no chime until a new order is sent to that screen
  *   problems  watchProblems, already checked against the database where a sound is due
  *   carry     screens whose check against the database could not be made this time
  *   proof     { screens, serverNow, bumpSeenAt }: when given, a "back" line is only said for a
@@ -248,14 +307,18 @@ export function nextAlerts(prev, problems, { now, carry = [], proof } = {}) {
   for (const p of problems || []) {
     if (alerts[p.screenId]) continue;
     const was = prev && prev[p.screenId];
-    const due = !was || now - was.lastSoundAt >= REPEAT_MS;
+    const fresh = !!was && (p.newestSentAt || 0) > (was.newestSentAt || 0);
+    const due = chimeDue(was, p, now);
     if (due) sound = true;
+    const sounds = was && !fresh ? (was.sounds || 0) : 0;
     alerts[p.screenId] = {
       ...p,
       since: was ? was.since : now,
       lastSoundAt: due ? now : was.lastSoundAt,
-      // "OK" hides the bar until the next sound; a new sound always shows it again.
-      hiddenUntil: due ? 0 : (was.hiddenUntil || 0),
+      sounds: due ? sounds + 1 : sounds,
+      newestSentAt: Math.max(p.newestSentAt || 0, was ? was.newestSentAt || 0 : 0),
+      // A new order for that screen shows the bar again; its chime waits for the 5 minutes.
+      acked: !!was && !fresh && was.acked === true,
     };
   }
   for (const [id, was] of Object.entries(prev || {})) {
@@ -298,7 +361,7 @@ export function newWatch(now) {
  * Resolves to null when nothing changes (nothing to watch, or READ 1 could not tell), else to
  * { alerts, sound, back } as nextAlerts gives them.
  */
-export async function watchLook({ tickets, trading, dayStartMs, getAlerts, watch, now, readDevices, readStatuses } = {}) {
+export async function watchLook({ tickets, trading, dayStartMs, getAlerts, watch, now, readDevices, readStatuses, stuckRule = STUCK_RULE } = {}) {
   const alertsNow = () => (typeof getAlerts === 'function' ? getAlerts() : getAlerts) || {};
   let waiting = waitingTickets(tickets, { now, dayStartMs, skip: watch.gone });
   const due = waiting.length > 0 && trading !== false;
@@ -318,7 +381,7 @@ export async function watchLook({ tickets, trading, dayStartMs, getAlerts, watch
   const onScreen = (w) => screens.some((sc) => !sc.centreId || sc.centreId === w.centreId);
   watch.noScreen = new Set(waiting.filter((w) => !onScreen(w)).map((w) => w.centreId || ''));
   watch.noScreenUntil = now + NO_SCREEN_RECHECK_MS;
-  const judge = () => watchProblems({ screens, waiting, serverNow, bumpSeenAt: watch.bumpSeenAt, watchingSince: watch.watchingSince, now });
+  const judge = () => watchProblems({ screens, waiting, serverNow, bumpSeenAt: watch.bumpSeenAt, watchingSince: watch.watchingSince, now, stuckRule });
   const carry = [];
   for (const p of judge()) {
     if (!soundDue(alertsNow(), p, now) && !watch.behind.has(p.screenId)) continue;
@@ -339,11 +402,15 @@ export async function watchLook({ tickets, trading, dayStartMs, getAlerts, watch
   return nextAlerts(alertsNow(), judge().filter((p) => !carry.includes(p.screenId)), { now, carry, proof });
 }
 
-/** "OK" on the bar: hidden until the next sound. */
+/**
+ * "OK" on the bar: staff know. No bar and no chime for that screen until a NEW order is sent to it,
+ * or it has come back and gone again (nextAlerts). 12 Oct 2026, review: OK used to hide the bar for
+ * five minutes only, and the chime could not be stopped at all.
+ */
 export function hideAlert(alerts, screenId) {
   const a = alerts && alerts[screenId];
   if (!a) return alerts;
-  return { ...alerts, [screenId]: { ...a, hiddenUntil: a.lastSoundAt + REPEAT_MS } };
+  return { ...alerts, [screenId]: { ...a, acked: true } };
 }
 
 // "3 min", "1 h 36 min", "2 h", "22 days". Never under a minute: the till looks once a minute.

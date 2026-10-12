@@ -6,9 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   POLL_MS, SLOW_MS, READ_SECOND_AFTER_MS, READ_OFFLINE_MS, READ_CANCEL_MS, MAX_OPEN_READS, RETRY_AFTER_FAIL_MS,
-  GOOD_READS_TO_CLEAR, STALE_MS, FAILS_TO_OFFLINE, SLEEP_GAP_MS, SPELL_MIN_MS, SPELL_QUIET_MS, SPELL_KEEP_MS, BUMP_NOT_SAVED,
-  newLink, canStartRead, readStarted, readsToCancel, shouldApply, readEnded, afterSleep, assess,
-  noteBumpSaved, takeSpell, spellFromJournal,
+  GOOD_READS_TO_CLEAR, GOOD_READS_APART_MS, STALE_MS, FAILS_TO_OFFLINE, SLEEP_GAP_MS, SPELL_MIN_MS, SPELL_QUIET_MS, SPELL_KEEP_MS, BUMP_NOT_SAVED,
+  newLink, canStartRead, readStarted, readsToCancel, shouldApply, readOverlapped, readEnded, afterSleep, assess,
+  noteBumpSaved, noteBumpGaveUp, takeSpell, spellFromJournal,
   durationWords, bannerWords, savingWords, emptyWords, countBelow, belowWords, traceWords,
 } from './kdsLinkHealth.js';
 
@@ -195,7 +195,7 @@ test('K9 spell: opens when the screen leaves ok, ends when it is back, joins a n
 
   const taken = takeSpell(link, T0 + 220100 + SPELL_QUIET_MS);
   assert.deepEqual(taken.summary, {
-    startedAt: T0 + 20100, endedAt: T0 + 220100, durationMs: 200000, lateBumps: 3, worstLateMs: 343000, wentOffline: true,
+    startedAt: T0 + 20100, endedAt: T0 + 220100, durationMs: 200000, lateBumps: 3, worstLateMs: 343000, notSaved: 0, wentOffline: true,
   });
   assert.equal(taken.link.spell, null, 'taken once');
   assert.equal(takeSpell(taken.link, T0 + 900000).summary, null);
@@ -236,7 +236,8 @@ test('K9 spell: written only when it is worth a line', () => {
 test('K9 spell across a restart: kept in the journal, forgotten after 6 hours', () => {
   const open = JSON.stringify({ v: 1, entries: [], spell: { startedAt: T0, endedAt: null, lateBumps: 4, worstLateMs: 90000, wentOffline: true } });
   // Restarted in the middle of it: it counts as ended at the restart until the new page says otherwise.
-  assert.deepEqual(spellFromJournal(open, { now: T0 + 120000 }), { startedAt: T0, endedAt: T0 + 120000, lateBumps: 4, worstLateMs: 90000, wentOffline: true });
+  assert.deepEqual(spellFromJournal(open, { now: T0 + 120000 }), { startedAt: T0, endedAt: T0 + 120000, lateBumps: 4, worstLateMs: 90000, wentOffline: true, notSaved: 0 });
+  assert.equal(spellFromJournal(JSON.stringify({ spell: { startedAt: T0, endedAt: null, notSaved: 2 } }), { now: T0 + 1000 }).notSaved, 2, 'bumps that gave up ride across the restart too');
   const ended = JSON.stringify({ v: 1, entries: [], spell: { startedAt: T0, endedAt: T0 + 50000, lateBumps: 0, worstLateMs: 0, wentOffline: false } });
   assert.equal(spellFromJournal(ended, { now: T0 + 120000 }).endedAt, T0 + 50000);
   assert.equal(spellFromJournal(open, { now: T0 + SPELL_KEEP_MS + 1 }), null);
@@ -339,5 +340,127 @@ test('no dash and no "N/A" in anything the screen can say', () => {
   for (const text of said) {
     assert.doesNotMatch(text, /[\u2013\u2014]/, text);   // en dash, em dash
     assert.doesNotMatch(text, /N\/A/i, text);
+  }
+});
+
+// ── review of the build, 12 Oct 2026 ────────────────────────────────────────────────────────────
+
+test('review: once offline the screen stays offline until a list has been USED (no red, amber, red in one minute)', () => {
+  assert.equal(GOOD_READS_APART_MS, 5000);
+  let link = read(newLink(), T0, 100, 'applied');
+  // A read with no answer for 30 s: offline.
+  const a = readStarted(link, T0 + 20000);
+  link = assess(a.link, { now: T0 + 50000 }).link;
+  assert.equal(link.level, 'offline');
+  // Cancelled at 45 s. That is ONE failure, which by itself only says slow: it used to turn the
+  // banner amber for the 5 s until the next read was 30 s old.
+  link = readEnded(link, { n: a.n, result: 'failed', now: T0 + 65000 });
+  assert.equal(link.fails, 1);
+  assert.equal(assess(link, { now: T0 + 65000 }).level, 'offline', 'still offline: nothing has got through');
+  // A read that came back but could not be used clears nothing either.
+  const b = readStarted(link, T0 + 66000);
+  link = assess(readEnded(b.link, { n: b.n, result: 'unknown', now: T0 + 66100 }), { now: T0 + 66100 }).link;
+  assert.equal(link.level, 'offline');
+  // A list is used: amber (recovering), then ok after the second good one.
+  link = read(link, T0 + 70000, 100, 'applied');
+  assert.equal(link.level, 'slow');
+  link = read(link, T0 + 90000, 100, 'applied');
+  assert.equal(link.level, 'ok');
+  // One blip alone is still only slow.
+  assert.equal(read(read(newLink(), T0, 100, 'applied'), T0 + 20000, 100, 'failed').level, 'slow');
+});
+
+test('review: the two good reads that clear a warning must be 5 s apart (two answers inside one burst do not say ok)', () => {
+  let link = read(newLink(), T0, 100, 'applied');
+  link = read(link, T0 + 20000, 100, 'failed');
+  link = read(link, T0 + 25000, 100, 'failed');
+  assert.equal(link.level, 'offline');
+  // The burst: one read answered, and a second sent and answered inside the same second.
+  link = read(link, T0 + 60000, 100, 'applied');
+  link = read(link, T0 + 60200, 100, 'applied');
+  assert.equal(link.goodRun, 1);
+  assert.equal(link.level, 'slow', 'not ok yet');
+  link = read(link, T0 + 60100 + GOOD_READS_APART_MS - 1, 100, 'applied');
+  assert.equal(link.level, 'slow');
+  link = read(link, T0 + 60100 + GOOD_READS_APART_MS + 5000, 100, 'applied');
+  assert.equal(link.level, 'ok');
+  // A slow read in between still starts the count again.
+  let again = read(newLink(), T0, 100, 'failed');
+  again = read(again, T0 + 5000, 100, 'applied');
+  again = read(again, T0 + 20000, 6000, 'applied');
+  assert.equal(again.goodRun, 0);
+});
+
+test('review: two list reads overlapped when another list was used while this one was on its way', () => {
+  let link = newLink();
+  assert.equal(readOverlapped(link, T0), false, 'the first list of all');
+  const a = readStarted(link, T0);
+  const b = readStarted(a.link, T0 + 15000);
+  link = readEnded(b.link, { n: a.n, result: 'applied', now: T0 + 26000 });
+  assert.equal(readOverlapped(link, T0 + 15000), true, 'read b was sent before read a was used');
+  assert.equal(shouldApply(link, b.n), true, 'it is still used (K4), with care');
+  assert.equal(readOverlapped(link, T0 + 26000), false, 'a read sent after the last used one did not overlap');
+  assert.equal(readOverlapped(link, T0 + 40000), false);
+});
+
+test('review: a spell that was open when the tablet slept ends at the last look before the sleep', () => {
+  let link = read(newLink(), T0, 100, 'applied');
+  link = read(link, T0 + 20000, 100, 'failed');
+  link = read(link, T0 + 25000, 100, 'failed');
+  assert.equal(link.level, 'offline');
+  assert.equal(link.spell.endedAt, null);
+  // Locked at 14:02. Woken nine hours later.
+  const woke = afterSleep(link, { at: T0 + 120000 });
+  assert.equal(woke.spell.endedAt, T0 + 120000);
+  assert.equal(woke.warned, false);
+  assert.equal(woke.cut, false);
+  const morning = T0 + 9 * 3600000;
+  assert.equal(assess(woke, { now: morning }).level, 'ok', 'what the link was like before the sleep says nothing about now');
+  const taken = takeSpell(woke, morning);
+  assert.equal(taken.summary.durationMs, 120000 - 20100, 'the two minutes before the sleep, not nine hours');
+  assert.equal(taken.summary.wentOffline, true);
+  // A spell that was already over, or no spell: untouched. No time given: untouched.
+  const done = { ...link, spell: { ...link.spell, endedAt: T0 + 60000 } };
+  assert.equal(afterSleep(done, { at: T0 + 120000 }).spell.endedAt, T0 + 60000);
+  assert.equal(afterSleep(newLink(), { at: T0 }).spell, null);
+  assert.equal(afterSleep(link).spell.endedAt, null);
+});
+
+test('review: a bump that gave up is counted in the spell and said in the trace', () => {
+  let link = read(newLink(), T0, 100, 'applied');
+  link = read(link, T0 + 20000, 100, 'failed');
+  link = noteBumpGaveUp(link, { now: T0 + 600000 });
+  link = noteBumpGaveUp(link, { now: T0 + 601000 });
+  assert.equal(link.spell.notSaved, 2);
+  link = read(link, T0 + 620000, 100, 'applied');
+  link = read(link, T0 + 640000, 100, 'applied');
+  const s = takeSpell(link, T0 + 640100 + SPELL_QUIET_MS).summary;
+  assert.equal(s.notSaved, 2);
+  assert.equal(traceWords({ name: 'drinks kds', summary: s }).body, '2 bumps were not saved.');
+  assert.equal(traceWords({ name: 'drinks kds', summary: { ...s, notSaved: 1 } }).body, '1 bump was not saved.');
+  assert.equal(traceWords({ name: 'drinks kds', summary: { ...s, notSaved: 1, lateBumps: 3, worstLateMs: 343000 } }).body, '3 bumps saved late. Longest wait 5 min 43 s. 1 bump was not saved.');
+  // With no spell open (the level never left ok) it still leaves a trace, and that alone is worth a line.
+  const lone = noteBumpGaveUp(read(newLink(), T0, 100, 'applied'), { now: T0 + 700000 });
+  assert.deepEqual(lone.spell, { startedAt: T0 + 700000, endedAt: T0 + 700000, lateBumps: 0, worstLateMs: 0, wentOffline: false, notSaved: 1 });
+  assert.equal(takeSpell(lone, T0 + 700000 + SPELL_QUIET_MS).summary.notSaved, 1);
+});
+
+test('review words: ServOS itself answers with an error: the red banner does not blame the WiFi', () => {
+  assert.deepEqual(bannerWords({ level: 'offline', serverFault: true }), { tone: 'offline', text: 'ServOS is not answering this screen. New orders are NOT showing. Tell the till.' });
+  assert.equal(bannerWords({ level: 'offline', serverFault: true, unsavedBumps: 2 }).text, 'ServOS is not answering this screen. New orders are NOT showing. Tell the till. 2 bumps not saved yet.');
+  assert.equal(bannerWords({ level: 'slow', serverFault: true }).text, 'This screen is slow to reach ServOS. New orders may be late.', 'only the red banner changes');
+  assert.equal(bannerWords({ level: 'ok', serverFault: true }), null);
+  assert.doesNotMatch(bannerWords({ level: 'offline', serverFault: true, unsavedBumps: 1 }).text, /[\u2013\u2014]|N\/A|WiFi/);
+});
+
+test('review words: the empty board says nothing at all while its last bump is under 3 s unsaved (never "Kitchen clear")', () => {
+  assert.deepEqual(emptyWords({ sure: true, everApplied: true, level: 'ok', unsavedBumps: 1, showSaving: false }), { clear: false, title: '', sub: '' });
+  assert.deepEqual(emptyWords({ sure: false, everApplied: true, level: 'slow', unsavedBumps: 2, showSaving: false }), { clear: false, title: '', sub: '' });
+  // From 3 s on it says so, as before.
+  assert.deepEqual(emptyWords({ sure: true, everApplied: true, level: 'ok', unsavedBumps: 1, showSaving: true }), { clear: false, title: 'No orders showing', sub: '1 bump not saved yet.' });
+  // Nothing unsaved: the flag changes nothing.
+  assert.deepEqual(emptyWords({ sure: true, everApplied: true, level: 'ok', unsavedBumps: 0, showSaving: false }), { clear: true, title: 'Kitchen clear', sub: 'All orders bumped' });
+  for (const showSaving of [true, false]) for (const sure of [true, false]) {
+    assert.equal(emptyWords({ sure, everApplied: true, level: 'ok', unsavedBumps: 1, showSaving }).clear, false, 'never the tick with a bump unsaved');
   }
 });

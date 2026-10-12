@@ -44,3 +44,32 @@ export function mergeList({ rows, readStartedAt, events }) {
   }
   return out;
 }
+
+/** Did this screen see the ticket go (its own saved bump, a live "bumped"), and learn nothing newer of it since? */
+export const wentAway = (events, id) => { const e = (events || new Map()).get(id); return !!e && e.kind === 'gone'; };
+
+/**
+ * A list sent AFTER this screen saw a ticket go, which holds that ticket, proves it is waiting
+ * again (recalled on another screen): the "gone" is forgotten, so live changes paint it again.
+ */
+export function forgetReturned(events, { ids, readStartedAt }) {
+  let next = null;
+  for (const [id, e] of events || []) {
+    if (e.kind !== 'gone' || !(e.at < readStartedAt) || !ids.has(id)) continue;
+    if (!next) next = new Map(events);
+    next.delete(id);
+  }
+  return next || events;
+}
+
+/**
+ * Two list reads were on their way at the same time and the one answered LAST is being used. Which
+ * of the two the database answered last cannot be told (review 12 Oct 2026: the older snapshot was
+ * painted over the newer one, and a new order left the screen for one read). So nothing the board
+ * holds is taken off by such an answer: its rows are used, the rows only the board holds stay, and
+ * the engine reads again at once to settle it.
+ */
+export function keepUnlisted(listRows, boardRows) {
+  const have = new Set((listRows || []).map((r) => r.id));
+  return [...(listRows || []), ...(boardRows || []).filter((r) => !have.has(r.id))];
+}

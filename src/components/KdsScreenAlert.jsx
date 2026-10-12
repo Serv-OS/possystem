@@ -2,9 +2,12 @@
 //
 // 12 Oct 2026, Coffee Boy Barnsley (K6): the drinks screen stopped showing orders for half an hour
 // and nothing told the till. This bar tells it: a red bar across the top of the till naming the
-// screen, a chime when it comes up and again every five minutes while it lasts, and a green line
-// when the screen is back. OK hides the bar until the next chime. It is a bar, not a pop up: it
-// never takes a tap away from the till, so it cannot get in the way of a payment.
+// screen, a chime when it comes up and again every five minutes while it lasts (three times at
+// most for the same orders), and a green line when the screen is back. OK takes the bar away and
+// stops the chime until a new order is sent to that screen. It is a bar, not a pop up: it is fixed
+// across the top of the till, above everything, so until OK is tapped it covers the top strip of
+// the till and the top of a tall pop up; the rest of the till takes taps as usual. (12 Oct 2026,
+// review: this note used to say it "never takes a tap away", which nobody had checked on a till.)
 //
 // The rules are in lib/kds/kdsScreenWatch.js (watchLook), with their tests. Local first, and
 // nothing here is on the order path:
@@ -132,9 +135,9 @@ export default function KdsScreenAlert() {
   }, [on, locationId]);
 
   if (!on || held) return null;
-  // OK: hidden until the next chime. The look in flight must see it too, so the ref is set at the tap.
+  // OK: no bar and no chime until a new order is sent to that screen. The look in flight must see it too, so the ref is set at the tap.
   const ok = (screenId) => { const next = hideAlert(alertsRef.current, screenId); alertsRef.current = next; setAlerts(next); };
-  const shown = Object.values(alerts).filter(a => !(a.hiddenUntil > clock));
+  const shown = Object.values(alerts).filter(a => !a.acked);
   const lines = back.filter(b => b.until > clock);
   if (!shown.length && !lines.length) return null;
 

@@ -133,7 +133,16 @@ test('PIN K6: it is a bar, not a pop up, and its words come from the rules', () 
   assert.ok(bar.includes('role="alert"') && bar.includes('role="status"'));
   assert.ok(bar.includes('const w = alertWords(a);') && bar.includes('{w.title}') && bar.includes('{w.body}'));
   assert.ok(bar.includes('text: backWords(b)'));
-  assert.ok(bar.includes('const ok = (screenId) => { const next = hideAlert(alertsRef.current, screenId); alertsRef.current = next; setAlerts(next); };'), 'OK hides it until the next chime');
+  assert.ok(bar.includes('const ok = (screenId) => { const next = hideAlert(alertsRef.current, screenId); alertsRef.current = next; setAlerts(next); };'), 'OK: no bar and no chime until a new order is sent to that screen');
+  // Review 12 Oct 2026: OK used to hide the bar for five minutes only, and the chime could not be stopped.
+  assert.ok(bar.includes('const shown = Object.values(alerts).filter(a => !a.acked);'));
+  assert.equal(count(bar, 'hiddenUntil'), 0);
+  const rules = read('src/lib/kds/kdsScreenWatch.js');
+  assert.ok(rules.includes('export const STUCK_RULE = false;'), 'only a silent screen raises the bar until the owner switches the "stuck" rule on');
+  assert.ok(rules.includes('return { ...alerts, [screenId]: { ...a, acked: true } };'));
+  assert.equal(count(rules, 'hiddenUntil'), 0);
+  // The note above the component no longer promises what nobody checked on a till.
+  assert.equal(count(bar, 'never takes a tap away from the till, so it cannot get in the way of a payment'), 0);
   assert.ok(bar.includes('onClick={() => ok(a.screenId)}'));
   assert.ok(bar.includes("background: '#b91c1c'") && bar.includes("background: '#14532d'"));
 });

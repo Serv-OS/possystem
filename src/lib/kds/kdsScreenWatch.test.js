@@ -3,10 +3,10 @@
 // and the till kept beating, and orders sat on the drinks screen from 14:30:58.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isOpenNow } from '../openingHours.js';
+import { isOpenNow, emptyOpeningHours } from '../openingHours.js';
 import {
   WATCH_TICK_MS, SILENT_MS, MIN_WAIT_MS, MAX_WAIT_MS, STUCK_EXTRA_MIN, STUCK_RULE, DEFAULT_LATE_MIN, REPEAT_MS, BACK_LINE_MS,
-  TRADING_MARGIN_MS, CONFIRM_MAX_IDS, GONE_KEEP, NO_SCREEN_RECHECK_MS,
+  TRADING_MARGIN_MS, CONFIRM_MAX_IDS, GONE_KEEP, NO_SCREEN_RECHECK_MS, MAX_CHIMES, STALE_SCREEN_MS,
   watchRunsOn, waitingTickets, leftWaiting, isTrading, screensFrom, serverNowFrom, watchProblems, soundDue,
   confirmWaiting, rememberGone, newWatch, watchLook, isBack, nextAlerts, hideAlert, alertWords, backWords,
   waitingSummary, waitingWords, screenStatus, heardWords, testTicketWords,
@@ -39,7 +39,11 @@ test('the limits are the ones the owner was told', () => {
   assert.equal(MIN_WAIT_MS, 120000);
   assert.equal(MAX_WAIT_MS, 10800000);
   assert.equal(STUCK_EXTRA_MIN, 5);
-  assert.equal(STUCK_RULE, true, 'the "stuck" rule is on, as decided');
+  // Review 12 Oct 2026: on 39 normal venue days the "stuck" rule chimed on 25. It is built and
+  // tested (the tests below pass stuckRule: true) and switched off until the owner says otherwise.
+  assert.equal(STUCK_RULE, false, 'the "stuck" rule is off: only a SILENT screen raises the bar');
+  assert.equal(MAX_CHIMES, 3);
+  assert.equal(STALE_SCREEN_MS, 7 * 24 * 60 * MIN);
   assert.equal(DEFAULT_LATE_MIN, 15);
   assert.equal(REPEAT_MS, 300000);
   assert.equal(BACK_LINE_MS, 20000);
@@ -154,13 +158,20 @@ test('a silent screen with nothing waiting on it is not an alarm, and neither is
   assert.deepEqual(watchProblems(), []);
 });
 
-test('a screen never heard from is silent; with no heartbeat to compare with the till cannot tell', () => {
+test('a screen not heard from since yesterday is silent; one never heard from, or not for a week, is a leftover; with no heartbeat to compare with the till cannot tell', () => {
   const waiting = waitingTickets(store(), { now, dayStartMs });
-  const never = [{ id: 'd1', name: 'drinks kds', type: 'kds', status: 'active', centre_id: 'pc-d', last_seen: null }, { id: 'p1', type: 'pos', status: 'active', last_seen: iso('14:46:45') }];
-  const p = watchProblems({ screens: screensFrom(never), waiting, serverNow: serverNowFrom(never), bumpSeenAt: new Map(), watchingSince: 0, now })[0];
+  const rows = (lastSeen) => [{ id: 'd1', name: 'drinks kds', type: 'kds', status: 'active', centre_id: 'pc-d', last_seen: lastSeen }, { id: 'p1', type: 'pos', status: 'active', last_seen: iso('14:46:45') }];
+  const judge = (lastSeen) => watchProblems({ screens: screensFrom(rows(lastSeen)), waiting, serverNow: serverNowFrom(rows(lastSeen)), bumpSeenAt: new Map(), watchingSince: 0, now });
+  // The tablet worked yesterday evening and did not start this morning: that IS an alarm.
+  const p = judge(new Date(T('14:46:45') - 20 * 60 * MIN).toISOString())[0];
   assert.equal(p.reason, 'silent');
-  assert.equal(p.silentMs, Infinity);
-  assert.match(alertWords(p).body, /^This till has not heard from it today\. 2 orders waiting, the oldest 16 min\. Check that screen and its WiFi\. Tell the kitchen the orders by hand\.$/);
+  assert.match(alertWords(p).body, /^This till has not heard from it for 20 h\. 2 orders waiting, the oldest 16 min\. Check that screen and its WiFi\. Tell the kitchen the orders by hand\.$/);
+  assert.match(alertWords(judge(new Date(T('14:46:45') - 3 * 24 * 60 * MIN).toISOString())[0]).body, /^This till has not heard from it today\. /, 'days: "today" reads better than a count of hours');
+  // Review 12 Oct 2026: 3 of the 16 live kitchen screen rows were leftovers (a replaced tablet, a
+  // test screen), silent for over a week. Each would have chimed whenever an order waited 2 minutes.
+  assert.deepEqual(judge(new Date(T('14:46:45') - STALE_SCREEN_MS).toISOString()), [], 'a week: a leftover, not a screen staff rely on');
+  assert.equal(judge(new Date(T('14:46:45') - STALE_SCREEN_MS + MIN).toISOString()).length, 1, 'a minute under a week still counts');
+  assert.deepEqual(judge(null), [], 'never heard from at all: a leftover');
   // Heard from once, but no clock at all (cannot happen while this till beats): not called silent.
   const fresh = [{ id: 'k9', centre_id: 'pc-d', sent_at: iso('14:44:00') }];
   assert.deepEqual(watchProblems({ screens: screensFrom(devices()), waiting: waitingTickets(fresh, { now }), serverNow: null, bumpSeenAt: new Map(), watchingSince: now, now }), []);
@@ -171,7 +182,7 @@ test('stuck: only past the late time plus 5 minutes with no bump seen in that ti
   const now2 = T('14:51:00');
   const waiting = waitingTickets(store(), { now: now2, dayStartMs });
   const look = (bumpSeenAt, watchingSince = T('11:46:18'), list = beating) =>
-    watchProblems({ screens: screensFrom(list), waiting, serverNow: serverNowFrom(list), bumpSeenAt, watchingSince, now: now2 });
+    watchProblems({ screens: screensFrom(list), waiting, serverNow: serverNowFrom(list), bumpSeenAt, watchingSince, now: now2, stuckRule: true });
   // The oldest drinks order has waited 20 min 2 s; late is 15, so the limit is 20.
   const stuck = look(new Map([['pc-d', T('14:29:42')]]));
   assert.deepEqual(stuck.map((p) => `${p.name}:${p.reason}`), ['drinks kds:stuck']);
@@ -181,6 +192,8 @@ test('stuck: only past the late time plus 5 minutes with no bump seen in that ti
     title: 'drinks kds has not bumped anything for 20 min',
     body: '3 orders waiting, the oldest 20 min. Check that screen is showing them.',
   });
+  // As shipped (STUCK_RULE off) the very same look raises nothing: the screen is beating.
+  assert.deepEqual(watchProblems({ screens: screensFrom(beating), waiting, serverNow: serverNowFrom(beating), bumpSeenAt: new Map([['pc-d', T('14:29:42')]]), watchingSince: T('11:46:18'), now: now2 }), []);
   assert.deepEqual(look(new Map([['pc-d', T('14:46:00')]])), [], 'a bump seen 5 minutes ago is a slow kitchen, not a stuck screen');
   assert.deepEqual(look(new Map([['pc-d', T('14:31:01')]])), [], 'a bump 19 min 59 s ago: not yet');
   assert.equal(look(new Map([['pc-d', T('14:31:00')]])).length, 1, 'exactly 20 minutes');
@@ -194,7 +207,7 @@ test('stuck: only past the late time plus 5 minutes with no bump seen in that ti
   assert.deepEqual(watchProblems({ screens: screensFrom(devices()), waiting, serverNow: serverNowFrom(devices()), bumpSeenAt: new Map(), watchingSince: T('11:46:18'), now: now2, stuckRule: false }).map((p) => p.reason), ['silent']);
   // The oldest order one second under the limit: not yet.
   const young = waitingTickets(store().filter((t) => t.id !== 'k1'), { now: now2, dayStartMs });
-  assert.deepEqual(watchProblems({ screens: screensFrom(beating), waiting: young, serverNow: serverNowFrom(beating), bumpSeenAt: new Map(), watchingSince: 0, now: now2 }), []);
+  assert.deepEqual(watchProblems({ screens: screensFrom(beating), waiting: young, serverNow: serverNowFrom(beating), bumpSeenAt: new Map(), watchingSince: 0, now: now2, stuckRule: true }), []);
 });
 
 test('a screen with no station shows every ticket: any order counts, and a bump at any station counts', () => {
@@ -204,7 +217,7 @@ test('a screen with no station shows every ticket: any order counts, and a bump 
     { id: 'p1', type: 'pos', status: 'active', last_seen: iso('14:50:50') },
   ];
   const waiting = waitingTickets(store(), { now: now2, dayStartMs });
-  const look = (bumpSeenAt) => watchProblems({ screens: screensFrom(list), waiting, serverNow: serverNowFrom(list), bumpSeenAt, watchingSince: 0, now: now2 });
+  const look = (bumpSeenAt) => watchProblems({ screens: screensFrom(list), waiting, serverNow: serverNowFrom(list), bumpSeenAt, watchingSince: 0, now: now2, stuckRule: true });
   assert.equal(look(new Map())[0].count, 4, 'drinks and food orders are all on it');
   assert.equal(look(new Map())[0].reason, 'stuck');
   assert.deepEqual(look(new Map([['pc-f', T('14:49:00')]])), [], 'a food ticket left 2 minutes ago: somebody is bumping on it');
@@ -215,20 +228,22 @@ test('a till whose clock is 10 minutes fast calls nobody silent: heartbeats are 
   const beating = devices().map((d) => ({ ...d, last_seen: iso(d.id === 'd1' ? '14:50:40' : '14:50:50') }));
   const fast = T('14:51:00') + 10 * MIN;
   const waiting = waitingTickets(store(), { now: fast, dayStartMs: 0 });
-  const problems = watchProblems({ screens: screensFrom(beating), waiting, serverNow: serverNowFrom(beating), bumpSeenAt: new Map([['pc-d', fast - MIN]]), watchingSince: 0, now: fast });
+  const problems = watchProblems({ screens: screensFrom(beating), waiting, serverNow: serverNowFrom(beating), bumpSeenAt: new Map([['pc-d', fast - MIN]]), watchingSince: 0, now: fast, stuckRule: true });
   assert.equal(problems.filter((p) => p.reason === 'silent').length, 0);
   assert.deepEqual(problems, [], 'and a bump it saw a minute ago keeps "stuck" away too');
 });
 
-test('the chime: at the start, again at 5 minutes, not in between; OK hides the bar until the next chime', () => {
+test('the chime: at the start, again at 5 minutes, not in between, three times at most for the same orders', () => {
   const waiting = waitingTickets(store(), { now, dayStartMs });
   const problems = watchProblems({ screens: screensFrom(devices()), waiting, serverNow: serverNowFrom(devices()), bumpSeenAt: new Map(), watchingSince: 0, now });
+  assert.equal(problems[0].newestSentAt, T('14:42:13'), 'the newest order waiting on that screen');
   assert.equal(soundDue({}, problems[0], now), true);
   const a = nextAlerts({}, problems, { now });
   assert.equal(a.sound, true);
   assert.equal(a.alerts.d1.since, now);
   assert.equal(a.alerts.d1.lastSoundAt, now);
-  assert.equal(a.alerts.d1.hiddenUntil, 0);
+  assert.equal(a.alerts.d1.sounds, 1);
+  assert.equal(a.alerts.d1.acked, false);
   assert.deepEqual(a.back, []);
   // One minute on: the same trouble, no second sound.
   assert.equal(soundDue(a.alerts, problems[0], now + MIN), false);
@@ -236,20 +251,94 @@ test('the chime: at the start, again at 5 minutes, not in between; OK hides the 
   assert.equal(b.sound, false);
   assert.equal(b.alerts.d1.lastSoundAt, now);
   assert.equal(b.alerts.d1.since, now);
-  // OK: hidden until the next chime is due.
-  const hidden = hideAlert(b.alerts, 'd1');
-  assert.equal(hidden.d1.hiddenUntil, now + REPEAT_MS);
-  assert.equal(hideAlert(b.alerts, 'nobody'), b.alerts, 'OK on a bar that is gone changes nothing');
-  const c = nextAlerts(hidden, problems, { now: now + 4 * MIN });
-  assert.equal(c.sound, false);
-  assert.equal(c.alerts.d1.hiddenUntil, now + REPEAT_MS, 'still hidden a minute before');
-  // Five minutes on: the sound again, and the bar shows again.
-  assert.equal(soundDue(hidden, problems[0], now + 5 * MIN), true);
-  const d = nextAlerts(c.alerts, problems, { now: now + 5 * MIN });
+  // Five and ten minutes on: the second and the third chime.
+  const c = nextAlerts(b.alerts, problems, { now: now + 5 * MIN });
+  assert.equal(c.sound, true);
+  assert.equal(c.alerts.d1.since, now, 'the same trouble since the start');
+  const d = nextAlerts(c.alerts, problems, { now: now + 10 * MIN });
   assert.equal(d.sound, true);
-  assert.equal(d.alerts.d1.hiddenUntil, 0);
-  assert.equal(d.alerts.d1.lastSoundAt, now + 5 * MIN);
-  assert.equal(d.alerts.d1.since, now, 'the same trouble since the start');
+  assert.equal(d.alerts.d1.sounds, MAX_CHIMES);
+  // Review 12 Oct 2026: a tablet switched off at closing with one card not bumped chimed every 5
+  // minutes for 3 hours, 36 times. After the third chime for the same orders the till is quiet.
+  let last = d.alerts;
+  for (let n = 3; n <= 36; n += 1) {
+    assert.equal(soundDue(last, problems[0], now + n * 5 * MIN), false, `no chime ${n + 1}`);
+    const next = nextAlerts(last, problems, { now: now + n * 5 * MIN });
+    assert.equal(next.sound, false);
+    assert.equal(next.alerts.d1.acked, false, 'the bar stays up: the words are still true');
+    last = next.alerts;
+  }
+  // A NEW order sent to that screen starts it again (it shows up here once it has waited 2 minutes).
+  const more = [...problems.map((p) => ({ ...p, count: 3, newestSentAt: now + 180 * MIN, ids: [...p.ids, 'k9'] }))];
+  const e = nextAlerts(last, more, { now: now + 183 * MIN });
+  assert.equal(e.sound, true);
+  assert.equal(e.alerts.d1.sounds, 1);
+  assert.equal(e.alerts.d1.newestSentAt, now + 180 * MIN);
+});
+
+test('OK means something: no bar and no chime for that screen until a new order is sent to it, or it comes back and goes again', () => {
+  const waiting = waitingTickets(store(), { now, dayStartMs });
+  const problems = watchProblems({ screens: screensFrom(devices()), waiting, serverNow: serverNowFrom(devices()), bumpSeenAt: new Map(), watchingSince: 0, now });
+  const up = nextAlerts({}, problems, { now }).alerts;
+  const ok = hideAlert(up, 'd1');
+  assert.equal(ok.d1.acked, true);
+  assert.equal(hideAlert(up, 'nobody'), up, 'OK on a bar that is gone changes nothing');
+  // Review 12 Oct 2026: OK used to hide the bar for five minutes and the chime came anyway.
+  let last = ok;
+  for (let n = 1; n <= 36; n += 1) {
+    assert.equal(soundDue(last, problems[0], now + n * 5 * MIN), false);
+    const next = nextAlerts(last, problems, { now: now + n * 5 * MIN });
+    assert.equal(next.sound, false, `quiet ${n * 5} minutes after OK`);
+    assert.equal(next.alerts.d1.acked, true, 'and the bar stays away');
+    last = next.alerts;
+  }
+  // An order leaving the list (bumped on another screen) is not a new order.
+  const fewer = problems.map((p) => ({ ...p, count: 1, newestSentAt: T('14:30:58'), ids: ['k1'] }));
+  assert.equal(nextAlerts(last, fewer, { now: now + 200 * MIN }).alerts.d1.acked, true);
+  // A new order for the silent screen 2 minutes after OK: the bar is back at once, the chime waits for the 5 minutes.
+  const more = problems.map((p) => ({ ...p, count: 3, newestSentAt: now + MIN, ids: [...p.ids, 'k9'] }));
+  const soon = nextAlerts(ok, more, { now: now + 3 * MIN });
+  assert.equal(soon.alerts.d1.acked, false, 'the bar shows again: staff must know this order is not on the screen either');
+  assert.equal(soon.sound, false);
+  const later = nextAlerts(soon.alerts, more, { now: now + 5 * MIN });
+  assert.equal(later.sound, true);
+  // The screen comes back (the alert goes) and falls silent again later: new trouble, bar and chime.
+  const gone = nextAlerts(ok, [], { now: now + 6 * MIN });
+  assert.deepEqual(gone.alerts, {});
+  const again = nextAlerts(gone.alerts, problems, { now: now + 30 * MIN });
+  assert.equal(again.sound, true);
+  assert.equal(again.alerts.d1.acked, false);
+});
+
+test('an order another live screen also shows is not stranded: a second tablet that is off raises nothing while the first is working', () => {
+  // Review 12 Oct 2026: two kitchen screen rows on one station (a tablet used only at peak, or the
+  // old row left behind when a tablet was replaced) raised "is not showing orders. Tell the kitchen
+  // the orders by hand" with a chime, while the working screen had every one of those orders.
+  const two = [
+    { id: 'd1', name: 'Drinks 1', type: 'kds', status: 'active', centre_id: 'pc-d', last_seen: iso('14:46:40') },
+    { id: 'd3', name: 'Drinks 2', type: 'kds', status: 'active', centre_id: 'pc-d', last_seen: iso('11:00:00') },
+    { id: 'p1', name: 'POS 1', type: 'pos', status: 'active', centre_id: null, last_seen: iso('14:46:45') },
+  ];
+  const waiting = waitingTickets(store(), { now, dayStartMs });
+  const judge = (list) => watchProblems({ screens: screensFrom(list), waiting, serverNow: serverNowFrom(list), bumpSeenAt: new Map(), watchingSince: 0, now });
+  assert.deepEqual(judge(two), []);
+  // Both drinks screens silent: each is in trouble (nobody shows those orders).
+  const both = two.map((d) => (d.id === 'd1' ? { ...d, last_seen: iso('14:40:00') } : d));
+  assert.deepEqual(judge(both).map((p) => p.name), ['Drinks 1', 'Drinks 2']);
+  // A live screen with NO station shows every ticket, so it covers the silent drinks screen too.
+  const pass = [{ ...two[1] }, { id: 'all', name: 'Pass', type: 'kds', status: 'active', centre_id: null, last_seen: iso('14:46:40') }, two[2]];
+  assert.deepEqual(judge(pass), []);
+  // A silent screen with no station is covered order by order: the food screen is live, the
+  // drinks screen is not, so only the drinks orders are stranded.
+  const mixed = [
+    { id: 'all', name: 'Pass', type: 'kds', status: 'active', centre_id: null, last_seen: iso('14:40:00') },
+    { id: 'd2', name: 'food KDS', type: 'kds', status: 'active', centre_id: 'pc-f', last_seen: iso('14:46:50') },
+    two[2],
+  ];
+  const p = judge(mixed);
+  assert.deepEqual(p.map((x) => `${x.name}:${x.count}:${x.ids}`), ['Pass:2:k1,k2'], 'the food order k4 is on the live food screen');
+  // A live screen of ANOTHER station covers nothing of this one.
+  assert.equal(judge(devices()).length, 1);
 });
 
 test('"could not tell" changes nothing: a carried alert stays as it was, and none is raised', () => {
@@ -317,12 +406,12 @@ test('the ids the database said are gone are remembered, and the memory stays sm
 });
 
 // A till as components/KdsScreenAlert.jsx runs it: its own list, the two reads, one look a minute.
-function till({ tickets, devicesAt, database, since = T('09:00:00'), trading = true }) {
+function till({ tickets, devicesAt, database, since = T('09:00:00'), trading = true, stuckRule }) {
   const t = { tickets, alerts: {}, watch: newWatch(since), reads: [], chimes: [], backs: [], devicesAt, database, trading, read1: 'ok', read2: 'ok' };
   t.look = async (at) => {
     const now = typeof at === 'string' ? T(at) : at;
     const out = await watchLook({
-      tickets: t.tickets, trading: t.trading, dayStartMs, getAlerts: () => t.alerts, watch: t.watch, now,
+      tickets: t.tickets, trading: t.trading, dayStartMs, getAlerts: () => t.alerts, watch: t.watch, now, stuckRule,
       readDevices: async () => { t.reads.push('devices'); return t.read1 === 'ok' ? t.devicesAt(now) : null; },
       readStatuses: async (ids) => {
         t.reads.push(`tickets:${ids.length}`);
@@ -372,20 +461,24 @@ test('12 Oct at the till: nothing read while nothing waits, the bar at 14:46, a 
     title: 'drinks kds is not showing orders',
     body: 'This till has not heard from it for 2 min. 2 orders waiting, the oldest 15 min. Check that screen and its WiFi. Tell the kitchen the orders by hand.',
   });
-  // Staff tap OK. The next four looks: one small read each, no chime, the bar stays hidden.
-  t.alerts = hideAlert(t.alerts, 'd1');
+  // The next four looks: one small read each, no chime.
   t.reads = [];
   for (const at of ['14:47:00', '14:48:00', '14:49:00', '14:50:00']) await t.look(at);
   assert.deepEqual(t.reads, ['devices', 'devices', 'devices', 'devices']);
   assert.equal(t.chimes.length, 1);
-  assert.ok(t.alerts.d1.hiddenUntil > T('14:50:00'));
-  // 14:51: five minutes on. Checked again, chimes again, the bar shows again.
+  // 14:51: five minutes on. Checked again, chimes again.
   t.reads = [];
   await t.look('14:51:00');
   assert.deepEqual(t.reads, ['devices', 'tickets:2']);
   assert.deepEqual(t.chimes, [T('14:46:00'), T('14:51:00')]);
-  assert.equal(t.alerts.d1.hiddenUntil, 0);
   assert.match(alertWords(t.alerts.d1).body, /^This till has not heard from it for 7 min\. 2 orders waiting, the oldest 20 min\. /);
+  // Staff tap OK: quiet from here on, and no more checks against the database either.
+  t.alerts = hideAlert(t.alerts, 'd1');
+  t.reads = [];
+  await t.look('14:56:00');
+  assert.deepEqual(t.reads, ['devices']);
+  assert.equal(t.chimes.length, 2);
+  assert.equal(t.alerts.d1.acked, true);
   // 14:58: the screen is back and both orders were bumped. One read to prove it, one line, no bar.
   t.tickets = [];
   t.reads = [];
@@ -398,6 +491,39 @@ test('12 Oct at the till: nothing read while nothing waits, the bar at 14:46, a 
   assert.equal(await t.look('14:59:00'), null);
   assert.deepEqual(t.reads, []);
   assert.equal(t.chimes.length, 2);
+});
+
+test('a look, as shipped: a screen that is beating never raises the bar, however long an order has waited', async () => {
+  // Review 12 Oct 2026: "has not bumped anything for 20 min" came up on 25 of 39 normal venue days
+  // (a toastie nobody bumped at a quiet station). The rule is off; only a silent screen is an alarm.
+  const tickets = [{ id: 'k1', centre_id: 'pc-d', sent_at: iso('14:20:00'), status: 'pending' }];
+  const t = till({ tickets, devicesAt: beatingAt(), database: { k1: 'pending' }, since: T('09:00:00') });
+  for (let n = 0; n < 30; n += 1) await t.look(T('14:45:00') + n * MIN);
+  assert.deepEqual(t.alerts, {});
+  assert.equal(t.chimes.length, 0);
+  assert.deepEqual(t.reads.filter((r) => r !== 'devices'), [], 'and no check against the database is made for it');
+  // Switched on (the owner's call), the same looks do raise it.
+  const on = till({ tickets, devicesAt: beatingAt(), database: { k1: 'pending' }, since: T('09:00:00'), stuckRule: true });
+  await on.look('14:45:00');
+  assert.equal(on.alerts.d1.reason, 'stuck');
+});
+
+test('a look at closing time: the tablet is switched off with the last card not bumped and the till stays on', async () => {
+  // Review 12 Oct 2026 (Headingley, 9 Oct: card sent 17:26, screen off 17:27, bumped next morning):
+  // the till chimed every 5 minutes for 3 hours, 36 times, and OK only hid the bar for 5 minutes.
+  const tickets = [{ id: 'k1', centre_id: 'pc-d', sent_at: iso('17:26:29'), status: 'pending' }];
+  const off = beatingAt(() => T('17:27:00'));
+  const t = till({ tickets, devicesAt: off, database: { k1: 'pending' } });
+  for (let at = T('17:28:00'); at <= T('20:30:00'); at += MIN) await t.look(at);
+  assert.deepEqual(t.chimes.map((c) => new Date(c).toISOString().slice(11, 16)), ['17:30', '17:35', '17:40'], 'three chimes, then quiet');
+  assert.equal(t.reads.filter((r) => r.startsWith('tickets')).length, 3, 'and the database is only asked before a chime');
+  // With OK tapped at the first bar: one chime in all.
+  const u = till({ tickets, devicesAt: off, database: { k1: 'pending' } });
+  for (let at = T('17:28:00'); at <= T('20:30:00'); at += MIN) {
+    await u.look(at);
+    if (u.alerts.d1 && !u.alerts.d1.acked) u.alerts = hideAlert(u.alerts, 'd1');
+  }
+  assert.equal(u.chimes.length, 1);
 });
 
 test('a look: outside trading hours nothing is read and a bar that is up comes down without a "back" line', async () => {
@@ -456,7 +582,7 @@ test('a look: OK tapped while the reads are out is not lost', async () => {
   const slow = t.devicesAt;
   t.devicesAt = (at) => { t.alerts = hideAlert(t.alerts, 'd1'); return slow(at); };   // the tap lands during READ 1
   await t.look('14:48:00');
-  assert.equal(t.alerts.d1.hiddenUntil, T('14:47:00') + REPEAT_MS);
+  assert.equal(t.alerts.d1.acked, true);
 });
 
 test('a till with a stale list of 60 old orders never calls a healthy screen stuck', async () => {
@@ -464,7 +590,7 @@ test('a till with a stale list of 60 old orders never calls a healthy screen stu
   const stale = [];
   const database = {};
   for (let i = 0; i < 60; i += 1) { stale.push({ id: `s${i}`, centre_id: 'pc-d', sent_at: new Date(T('12:00:00') + i * MIN).toISOString(), status: 'pending' }); database[`s${i}`] = 'bumped'; }
-  const t = till({ tickets: stale, devicesAt: beatingAt(), database });
+  const t = till({ tickets: stale, devicesAt: beatingAt(), database, stuckRule: true });
   // Ten looks, a minute apart.
   for (let n = 0; n < 10; n += 1) await t.look(T('14:51:00') + n * MIN);
   assert.equal(t.chimes.length, 0);
@@ -599,6 +725,15 @@ test('trading: no hours set, open, shut, and the 30 minute margin', () => {
   assert.equal(isTrading({ openingHours: hours, timeZone: tz, now: Date.parse('2026-10-13T12:00:00+01:00'), isOpenNow }), false, 'a closed day');
   assert.equal(isTrading({ openingHours: hours, timeZone: 'Not/AZone', now: at('03:00'), isOpenNow }), true, 'a broken time zone never silences the watch');
   assert.equal(isTrading(), true);
+  // Review 12 Oct 2026: Back Office stores a week with NO opening time on any day the first time
+  // the Location page is saved for any reason (lib/openingHours.js emptyOpeningHours). It read as
+  // shut at every hour, so the till would never have raised an alarm at such a venue.
+  const never = { weekly: { sun: [], mon: [], tue: [], wed: [], thu: [], fri: [], sat: [] }, closedDates: [] };
+  assert.deepEqual(never, emptyOpeningHours());
+  assert.equal(isOpenNow(never, tz, new Date(at('12:00'))).open, false, 'the kiosk helper really does call it shut');
+  for (const hhmm of ['03:00', '08:00', '12:00', '14:47', '23:30']) assert.equal(isTrading({ openingHours: never, timeZone: tz, now: at(hhmm), isOpenNow }), true, `hours never filled in count as trading (${hhmm})`);
+  assert.equal(isTrading({ openingHours: { weekly: {} }, timeZone: tz, now: at('03:00'), isOpenNow }), true);
+  assert.equal(isTrading({ openingHours: { weekly: 'nonsense' }, timeZone: tz, now: at('03:00'), isOpenNow }), true);
 });
 
 test('the words on the till bar, singular and plural, minutes and hours', () => {
