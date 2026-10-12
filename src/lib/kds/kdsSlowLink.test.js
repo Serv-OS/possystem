@@ -20,7 +20,6 @@ import { bannerWords, traceWords, POLL_MS } from './kdsLinkHealth.js';
 import { LATE_BUMP_MS } from './kdsWriteLane.js';
 
 const CENTRE = 'pc-drinks';
-const SLOWEST_READ_MS = 20000;
 // Staff: a card is bumped once it has been up two minutes; every eighth is put on Hold after one.
 const BUMP_AFTER_MS = 120000;
 const HOLD_AFTER_MS = 60000;
@@ -198,7 +197,11 @@ for (const hard of [false, true]) {
       const firstAnswer = world.reads.find((x) => x.snapshotAt >= sent && x.ids.includes(id));
       if (shown && firstAnswer) worstShow = Math.max(worstShow, shown - firstAnswer.at);
     }
-    assert.ok(worstShow <= POLL_MS + SLOWEST_READ_MS, `a ticket in a list answer that reached the tablet waited ${worstShow} ms to be shown`);
+    // K4 as decided: once a list answer holding the ticket has reached the tablet, the ticket is on
+    // screen within ONE poll (20 s). 12 Oct 2026: the old board threw a list answer away when any
+    // write had started or ended since the read was sent, and only asked again at the next 20 s
+    // poll, so on a slow link with bumps always on their way new orders were starved.
+    assert.ok(worstShow <= POLL_MS, `a ticket in a list answer that reached the tablet waited ${worstShow} ms to be shown`);
 
     // K5: the warnings, on and off at the right moments.
     assert.deepEqual(r.probes['13:45'], { level: 'ok', sure: true, unsavedBumps: 0, showSaving: false, words: null });
