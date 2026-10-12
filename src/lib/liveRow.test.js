@@ -56,9 +56,11 @@ test('the kitchen screen never draws a ticket from a change with no row', () => 
 test('the till bell and the ops page skip a change with no row', () => {
   const bell = read('../components/ActivityFeed.jsx');
   assert.equal(count(bell, 'liveRow(p)'), 2, 'INSERT and UPDATE');
+  assert.equal(count(bell, '(p) => { const r = liveRow(p); if (!r) return; setEvents('), 2, 'each handler stops when there is no row');
   assert.equal(count(bell, '({ new: r })'), 0);
+  assert.equal(count(bell, '.new'), 0, 'the row is only ever taken through liveRow (no "liveRow(p) || p.new")');
   const ops = read('../backoffice/sections/operations/OpsOverview.jsx');
   assert.equal(count(ops, 'liveRow(p)'), 1);
-  assert.equal(count(ops, 'p.new?.title'), 0, 'no toast for an alert that does not exist');
+  assert.equal(count(ops, 'p.new'), 0, 'no toast for an alert that does not exist');
   assert.match(ops, /if \(r\) showToast\?\.\(r\.title \|\| 'New ops alert', 'error'\); reload\(\);/, 'it still reloads, which is an ordinary read');
 });

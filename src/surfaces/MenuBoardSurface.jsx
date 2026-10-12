@@ -146,8 +146,18 @@ export default function MenuBoardSurface() {
       if (busy) { again = true; return; }     // one tick at a time; a trigger that lands mid tick runs once after it
       busy = true;
       try {
+        // 12 Oct 2026 (review), WHY THE SCREEN IS MERGED AND NOT JUST TAKEN. The tick works on the
+        // memory it was given when it started. A good live update can land while its read is in
+        // flight. If that read then fails (or times out) the tick hands back the screen from
+        // BEFORE the live update, and taking it as it is put the old board back on the TV and in
+        // storage until a read worked: a TV that had just been paired dropped back to its code.
+        // So: when the tick did not change the screen itself, what a live update set stays.
+        const started = mem.screen;
         const next = await runPairingTick(mem, io);
-        if (alive) { mem = next; if (mem.screen && !sameScreen(mem.screen, shown)) show(mem.screen); }
+        if (alive) {
+          mem = sameScreen(next.screen, started) ? { ...next, screen: mem.screen } : next;
+          if (mem.screen && !sameScreen(mem.screen, shown)) show(mem.screen);
+        }
       } finally {
         busy = false;
         if (again && alive) { again = false; tick(); }
@@ -188,6 +198,10 @@ export default function MenuBoardSurface() {
     };
     // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
     const io = {
+      // 12 Oct 2026 (review): once this effect is cleaned up, a tick still in flight stops at its
+      // next answer and sends nothing more. Before, it could go on to insert a row while the new
+      // effect did the same (two rows for one new TV on mount, clean up, mount).
+      alive: () => alive,
       now: () => Date.now(),
       getToken: () => timed(ensureAuthToken(), 'Auth session'),
       readRow: (id, token) => timed(asMe(supabase.from('menu_board_screens').select('*').eq('id', id).maybeSingle(), token), 'Screen row'),

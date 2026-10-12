@@ -15,38 +15,39 @@
 // update once an hour, found again or shows its code once in 5 minutes, lost its sign in once a
 // day). One bad realtime change reaches every TV at once and may repeat, so no limit would
 // mean a row per TV per message.
+//
+// 12 Oct 2026 (review): the rules (what is skipped, the limit, the row) are makeNoteStamper in
+// menuBoardPairing.js, so node:test can run them. This file only hands them the real client and
+// the real storage. The limit now starts when the insert WORKED, so a note written while the TV
+// was offline is tried again a minute later and not lost for an hour or a day.
 
 import { supabase, isMock } from './supabase';
 import { VERSION } from './version';
-import { noteText, shouldNote, isUuid } from './menuBoardPairing';
+import { makeNoteStamper, noteCode } from './menuBoardPairing';
 
-const LS_NOTES = 'rpos-mbscreen-notes';   // { kind: last written ms }
-const lastInMemory = {};                  // so blocked storage cannot switch the limit off
+const LS_NOTES = 'rpos-mbscreen-notes';   // { kind (or kind:code): last written ms }
+
+const stamp = makeNoteStamper({
+  write: (row) => supabase.from('activity_events').insert(row),
+  now: () => Date.now(),
+  load: () => JSON.parse(localStorage.getItem(LS_NOTES) || '{}'),
+  save: (o) => localStorage.setItem(LS_NOTES, JSON.stringify(o)),
+  version: VERSION,
+});
 
 /** Fire and forget. Never throws, never blocks the TV. */
-export function stampScreenNote({ screen, kind, detail = '' }) {
+export function stampScreenNote(note) {
   try {
-    if (isMock || !supabase || !screen || !isUuid(screen.id) || !isUuid(screen.location_id)) return;
-    const words = noteText(kind, detail);
-    if (!words) return;
-    const now = Date.now();
-    if (!shouldNote({ kind, now, lastAt: lastInMemory[kind] })) return;   // the cheap check first: this runs every tick while a TV holds
-    let stored = {};
-    try { stored = JSON.parse(localStorage.getItem(LS_NOTES) || '{}') || {}; } catch { stored = {}; }
-    const lastAt = Math.max(Number(lastInMemory[kind]) || 0, Number(stored[kind]) || 0);
-    if (!shouldNote({ kind, now, lastAt })) return;
-    lastInMemory[kind] = now;
-    try { localStorage.setItem(LS_NOTES, JSON.stringify({ ...stored, [kind]: now })); } catch { /* storage blocked */ }
-    supabase.from('activity_events').insert({
-      location_id: screen.location_id, kind: 'system', severity: 'info',
-      title: words.title, body: `${words.body} (v${VERSION})`,
-      ref_type: 'menu_board_screen', ref_id: screen.id, actor_name: 'TV',
-      acked_at: new Date(now).toISOString(), acked_by: 'auto',
-    }).then(() => {}, () => {});
+    if (isMock || !supabase) return;
+    stamp(note);
   } catch { /* a note must never break the TV */ }
 }
 
-/** Back Office: the newest note per screen at this venue, last 14 days. {} on any failure. */
+/**
+ * Back Office: what the TVs at this venue said in the last 14 days, by screen id:
+ * { title, body, at } of the newest note, plus { code, codeAt } of the newest "pair it again
+ * with code" note (a TV that lost its sign in). {} on any failure.
+ */
 export async function fetchScreenNotes(locationId) {
   if (isMock || !supabase || !locationId) return {};
   try {
@@ -57,7 +58,12 @@ export async function fetchScreenNotes(locationId) {
       .gte('created_at', since).order('created_at', { ascending: false }).limit(200);
     if (error) return {};
     const out = {};
-    for (const r of data || []) if (r.ref_id && !out[r.ref_id]) out[r.ref_id] = { title: r.title, body: r.body || '', at: r.created_at };
+    for (const r of data || []) {
+      if (!r.ref_id) continue;
+      if (!out[r.ref_id]) out[r.ref_id] = { title: r.title, body: r.body || '', at: r.created_at, code: null, codeAt: null };
+      const code = noteCode(r.title);
+      if (code && !out[r.ref_id].code) { out[r.ref_id].code = code; out[r.ref_id].codeAt = r.created_at; }
+    }
     return out;
   } catch { return {}; }
 }

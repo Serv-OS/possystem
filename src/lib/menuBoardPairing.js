@@ -14,6 +14,9 @@
 //      with no sign in, or one empty answer is "unknown": keep the screen, try again.
 //   3. Before it makes a new row, the TV looks for rows it already owns and uses one.
 //   4. A saved screen with no id is never written.
+//   5. (review, 12 Oct 2026) A TV whose sign in changed keeps its board AND gets a way out: it
+//      makes one spare row under its new sign in and tells Back Office that row's code. See
+//      decideStandby below.
 //
 // NO imports, so node:test can load it. Every function takes plain values and returns a
 // plain value. runPairingTick talks to the outside only through the `io` it is given.
@@ -21,12 +24,20 @@
 export const TICK_MS = 12000;
 export const MISS_SPACING_MS = 10000;      // a "gone" answer counts at most once per 10 s
 export const MISSES_TO_UNPAIR = 3;         // three spaced "gone" answers mean Back Office removed it
-export const HEARTBEAT_MIN_MS = 10000;     // never stamp last_seen more often than this
+// 12 Oct 2026 (review), WHY HALF A TICK AND NOT 10 s. The gap is measured from when a tick
+// STARTED (not from when its read came back), and the floor is half the 12 s tick. With a 10 s
+// floor measured after the read, a read 2 s slower than the next one left under 10 s between two
+// stamps, so every other tick sent no heartbeat (one per 24 s). "Last seen" is the one sign
+// support has that a TV is alive. A burst (wake, online and the interval at once) still sends one.
+export const HEARTBEAT_MIN_MS = 6000;
 export const EARLY_READ_MIN_MS = 10000;    // a live update may ask for one early read per 10 s
 export const EARLY_READ_DELAY_MS = 1000;
 export const CREATE_TRIES = 3;
 export const LIVE_FIELDS = ['id', 'code', 'board_id', 'order_display_id', 'location_id'];
 export const NOTE_GAP_MS = { live_ignored: 3600000, adopted: 300000, unpaired: 300000, sign_in_changed: 86400000 };
+export const NOTE_RETRY_MS = 60000;        // a note whose write failed is tried again a minute later,
+export const NOTE_RETRY_MAX_MS = 3600000;  // then 2, 4, 8 minutes ... up to once an hour (a write that is refused for good must not be sent every minute for ever)
+export const CODE_NOTE_FRESH_MS = 2 * 86400000;   // Back Office shows a "pair it again" code for 2 days after the TV last said it
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
@@ -129,6 +140,8 @@ export function decideTickStart({ screen, who }) {
     // A new sign in cannot see the old row at all. A menu board can still draw its board
     // (boards are readable by any device), so it is kept. An order screen cannot work under
     // a new sign in, so it goes the removed way and ends on a code that can be paired.
+    // The hold is not a dead end: see decideStandby. (To go back to "code after three misses"
+    // for menu boards too, return count_miss here for both.)
     return screen.board_id ? { action: 'hold', reason: 'sign_in_changed' } : { action: 'count_miss', reason: 'sign_in_changed' };
   }
   return { action: 'read_row' };
@@ -207,6 +220,38 @@ export function decideInsert({ result, attempt }) {
   return { action: 'give_up' };
 }
 
+/**
+ * A menu board whose sign in changed (the hold): what to do with the rows it owns under its NEW
+ * sign in. rows = those rows, held = the screen it keeps showing.
+ *
+ * 12 Oct 2026 (review), WHY A STANDBY ROW. The first build held the board for ever and sent
+ * nothing: Back Office could never change or remove that TV again, short of clearing the app on
+ * the TV by hand. And a new sign in is not rare (Leeds, 28 Sep and 4 Oct). Now the TV keeps its
+ * board AND makes ONE spare, unclaimed row under its new sign in, keeps that row seen, and tells
+ * Back Office its code in a note. When someone pairs that code the TV moves to that row, which it
+ * CAN read, and from then on Back Office can change it or remove it like any other TV.
+ *
+ * WHY "AT THIS VENUE" ONLY. The code is written where the venue's tills can read it, so it is not
+ * the secret a code on the TV's own glass is. The TV therefore obeys a pairing of that code only
+ * when it was made at the venue it was already paired to (Back Office can only pair to a venue the
+ * login may use). A pairing made anywhere else is ignored and no second code is offered.
+ *
+ *   adopt   a row at this venue: Back Office paired the new code. Use it.
+ *   none    no code can be offered (the code was used at another venue, or the venue is unknown)
+ *   offer   an unclaimed row it already owns: that is the standby
+ *   create  it owns nothing yet: make the standby (one per page load at most, the caller counts)
+ */
+export function decideStandby({ rows, uid, held }) {
+  const venue = held && isUuid(held.location_id) ? held.location_id : null;
+  if (!venue) return { action: 'none', reason: 'no_venue' };
+  const mine = (Array.isArray(rows) ? rows : []).filter((r) => rowRank(r) > 0 && r.device_uid === uid);
+  const here = pickOwnedRow(mine.filter((r) => r.location_id === venue), uid);
+  if (here) return { action: 'adopt', row: here };
+  if (mine.some((r) => r.location_id)) return { action: 'none', reason: 'code_used_elsewhere' };
+  const spare = pickOwnedRow(mine, uid);
+  return spare ? { action: 'offer', row: spare } : { action: 'create' };
+}
+
 export const shouldHeartbeat = ({ now, lastAt }) => now - (Number(lastAt) || 0) >= HEARTBEAT_MIN_MS;
 export const shouldReadEarly = ({ now, lastAt, pending }) => !pending && now - (Number(lastAt) || 0) >= EARLY_READ_MIN_MS;
 export const shouldNote = ({ kind, now, lastAt }) => !!NOTE_GAP_MS[kind] && now - (Number(lastAt) || 0) >= NOTE_GAP_MS[kind];
@@ -214,14 +259,113 @@ export const shouldNote = ({ kind, now, lastAt }) => !!NOTE_GAP_MS[kind] && now 
 /** The words Back Office shows for a note the TV left. */
 export function noteText(kind, detail = '') {
   if (kind === 'live_ignored') return { title: 'TV kept its pairing', body: `It ignored a bad live update${detail ? ` (${detail})` : ''}. Nothing to do.` };
-  if (kind === 'adopted') return { title: 'TV found its pairing again', body: 'It went back to the screen it was paired as. Nothing to do.' };
+  if (kind === 'adopted') {
+    return detail === 'new_code'
+      ? { title: 'TV paired again', body: 'It was paired with its new code. Its old screen in this list can be removed.' }
+      : { title: 'TV found its pairing again', body: 'It went back to the screen it was paired as. Nothing to do.' };
+  }
   if (kind === 'unpaired') {
     return { title: 'TV shows its code', body: detail === 'sign_in_changed'
       ? 'It lost its sign in. Pair it again to use it.'
       : 'Its screen was removed in Back Office. Pair it again to use it.' };
   }
-  if (kind === 'sign_in_changed') return { title: 'TV lost its sign in', body: 'It still shows its board. To change it, clear the app on the TV and pair it again.' };
+  if (kind === 'sign_in_changed') {
+    // With a code (the standby row's): Back Office can pair the TV again from the desk.
+    return detail
+      ? { title: `TV lost its sign in. Pair it again with code ${detail}`, body: 'It still shows its board. To change it or remove it, pair it again first: type the code under Paired screens and pick a board.' }
+      : { title: 'TV lost its sign in', body: 'It still shows its board. To change it, clear the app on the TV and pair it again.' };
+  }
   return null;
+}
+
+const CODE_NOTE_RE = /^TV lost its sign in\. Pair it again with code ([A-Z0-9]{4}-[A-Z0-9]{4})$/;
+/** The code a "lost its sign in" note carries in its title, or null. The reader of noteText above. */
+export const noteCode = (title) => { const m = CODE_NOTE_RE.exec(typeof title === 'string' ? title : ''); return m ? m[1] : null; };
+
+/** The limit a note is counted under. A new code is news, so each code has its own. */
+export const noteSlot = (kind, detail) => (kind === 'sign_in_changed' && detail ? `${kind}:${detail}` : kind);
+
+/**
+ * The writer behind a TV's notes (menuBoardNotes.js gives it the real client and storage).
+ * deps = { write(row) gives a promise of { error }, now(), load() gives { slot: ms }, save(obj), version }.
+ * Returns stamp({ screen, kind, detail }) which answers 'sent', 'limited' or 'skipped' and never throws.
+ *
+ * 12 Oct 2026 (review), WHY THE LIMIT IS SET WHEN THE WRITE ANSWERS. It used to be set before the
+ * insert was sent, with every outcome swallowed. A note written while the TV was offline was lost
+ * and not tried again for the whole gap (an hour, or a day for "lost its sign in"), and that note
+ * now carries the code Back Office needs. So: one insert at a time per kind, the limit starts only
+ * when the insert worked, and a failed one is tried again a minute later (then 2, 4, 8 minutes,
+ * up to once an hour, so a write the server refuses for good is not sent every minute for ever).
+ */
+export function makeNoteStamper({ write, now, load, save, version }) {
+  const written = {};   // slot: when the last note was WRITTEN (kept here too, so blocked storage cannot switch the limit off)
+  const failed = {};    // slot: { at, n } when the last try failed, and how many have failed in a row
+  const flying = {};    // slot: true while an insert is on its way
+  return function stamp({ screen, kind, detail = '' } = {}) {
+    try {
+      if (!screen || !isUuid(screen.id) || !isUuid(screen.location_id)) return 'skipped';   // a note needs the venue
+      const words = noteText(kind, detail);
+      if (!words) return 'skipped';
+      const slot = noteSlot(kind, detail);
+      const at = now();
+      // The cheap checks first: this runs every tick while a TV holds.
+      if (flying[slot] || !shouldNote({ kind, now: at, lastAt: written[slot] })) return 'limited';
+      const f = failed[slot];
+      if (f && at - f.at < Math.min(NOTE_RETRY_MS * 2 ** (f.n - 1), NOTE_RETRY_MAX_MS)) return 'limited';
+      let stored = {};
+      try { stored = load() || {}; } catch { stored = {}; }
+      if (!shouldNote({ kind, now: at, lastAt: stored[slot] })) { written[slot] = Number(stored[slot]) || 0; return 'limited'; }
+      flying[slot] = true;
+      const done = (ok) => {
+        flying[slot] = false;
+        if (!ok) { failed[slot] = { at: now(), n: (failed[slot] ? failed[slot].n : 0) + 1 }; return; }
+        written[slot] = at; delete failed[slot];
+        try {
+          const keep = {};
+          for (const [k, v] of Object.entries(load() || {})) if (at - (Number(v) || 0) < CODE_NOTE_FRESH_MS) keep[k] = v;
+          save({ ...keep, [slot]: at });
+        } catch { /* storage blocked: the limit in memory still holds */ }
+      };
+      // Written ALREADY READ (acked_at set) and as 'info', so no till bell counts it or chimes.
+      Promise.resolve(write({
+        location_id: screen.location_id, kind: 'system', severity: 'info',
+        title: words.title, body: `${words.body} (v${version})`,
+        ref_type: 'menu_board_screen', ref_id: screen.id, actor_name: 'TV',
+        acked_at: new Date(at).toISOString(), acked_by: 'auto',
+      })).then((res) => done(!(res && res.error)), () => done(false));
+      return 'sent';
+    } catch { return 'skipped'; }   // a note must never break the TV
+  };
+}
+
+/**
+ * What Back Office shows from the notes TVs left. notes = { screen id: { title, body, at, code, codeAt } }
+ * (newest note per screen, plus the newest "pair it again" code it said), screens = the screen rows
+ * listed at this venue. Gives { byScreen: { id: { text, body } }, lost: [{ id, code, text, body }] }.
+ *
+ * A "pair it again" code is shown while it is open: said in the last 2 days (a held TV says it
+ * again every day) and not yet the code of a screen in the list (then it was used). It wins over
+ * a newer note of another kind, because it is the one thing someone has to do. "lost" is for a
+ * TV whose old screen was already removed from the list: its code would otherwise be nowhere.
+ */
+export function screenNoteView({ notes, screens, now }) {
+  const list = (Array.isArray(screens) ? screens : []).filter(Boolean);
+  const ids = new Set(list.map((s) => s.id));
+  const used = new Set(list.map((s) => s.code).filter(Boolean));
+  const byScreen = {}; const lost = [];
+  for (const [id, n] of Object.entries(notes || {})) {
+    if (!n) continue;
+    const open = n.code && !used.has(n.code) && now - stamp(n.codeAt) < CODE_NOTE_FRESH_MS ? n.code : null;
+    const words = open ? noteText('sign_in_changed', open) : null;
+    if (ids.has(id)) {
+      if (open) byScreen[id] = { text: `${words.title} · ${agoLabel(n.codeAt, now)}`, body: words.body };
+      else if (n.title && !noteCode(n.title)) byScreen[id] = { text: `${n.title} · ${agoLabel(n.at, now)}`, body: n.body || '' };
+    } else if (open) {
+      lost.push({ id, code: open, at: n.codeAt, text: `A ${words.title} · ${agoLabel(n.codeAt, now)}`, body: 'It still shows its board, and its old screen is no longer in this list. To change it, type the code above and pick a board.' });
+    }
+  }
+  lost.sort((a, b) => stamp(b.at) - stamp(a.at) || (a.id < b.id ? -1 : 1));
+  return { byScreen, lost };
 }
 
 /** "5m ago" for a note. */
@@ -262,7 +406,9 @@ export function failedBoardRead(reads) {
 
 /** What the TV remembers between ticks. Never saved. */
 export function newPairingMemory(screen) {
-  return { screen: screen || null, misses: 0, lastMissAt: 0, lastBeatAt: 0, healChecked: false, lastWait: '' };
+  return { screen: screen || null, misses: 0, lastMissAt: 0, lastBeatAt: 0, healChecked: false, lastWait: '',
+    // The hold only (sign in changed on a menu board): the spare row whose code Back Office can pair.
+    standby: null, standbyMade: false, standbyOff: false };
 }
 
 /** A live update, applied to the memory. Returns { mem, action, reason, detail }. */
@@ -276,57 +422,134 @@ export function applyLiveUpdate(mem, payload) {
   return { mem: { ...mem, screen: next }, action: 'apply', reason: '', detail: '', changed: !sameScreen(mem.screen, next) };
 }
 
-function takeRow(mem, row, io, token) {
+/** Stamp last_seen on a row, paced from when the tick started. Gives the new "last beat" time. */
+function beat(lastBeatAt, id, io, token, at) {
+  if (!shouldHeartbeat({ now: at, lastAt: lastBeatAt })) return lastBeatAt;
+  io.heartbeat(id, token);
+  return at;
+}
+
+function takeRow(mem, row, io, token, at) {
   const s = screenFromRow(row);
   if (!s) return mem;
   if (!sameScreen(mem.screen, s)) io.setScreen(s);
   io.subscribe(s.id);
-  const now = io.now();
-  let lastBeatAt = mem.lastBeatAt;
-  if (shouldHeartbeat({ now, lastAt: lastBeatAt })) { io.heartbeat(s.id, token); lastBeatAt = now; }
-  return { ...mem, screen: s, lastBeatAt };
+  return { ...mem, screen: s, lastBeatAt: beat(mem.lastBeatAt, s.id, io, token, at) };
 }
+
+// Thrown inside a tick when the page has let go of it (io.alive() says no). Never leaves the tick.
+const STOPPED = { name: 'Stopped' };
 
 /**
  * One tick. io = { now, getToken, readRow(id, token), checkGone(id, token), readOwned(uid, token),
- * insertRow(token), heartbeat(id, token), subscribe(id), setScreen(screen), say(line), note(kind, detail, screen) }.
+ * insertRow(token), heartbeat(id, token), subscribe(id), setScreen(screen), say(line), note(kind, detail, screen),
+ * alive() (optional) }.
  * The reads and the insert resolve to { data, error }. They, and the heartbeat, MUST run as the token given.
  * Returns the next memory. Never throws: anything unexpected is "unknown, keep the pairing".
+ *
+ * 12 Oct 2026 (review), io.alive. When the page has let go of this tick (the effect was cleaned
+ * up), the tick stops at its next answer: it sends nothing more, says nothing and hands back the
+ * memory it was given. Before this a tick still in flight at clean up went on to insert a row,
+ * while the new tick did the same: two rows for one new TV.
  */
 export async function runPairingTick(mem, io) {
   let m = { ...mem };
+  const at = io.now();                     // when this tick started: the heartbeat is paced from here
+  const ask = async (p) => {
+    const r = await p;
+    if (typeof io.alive === 'function' && !io.alive()) throw STOPPED;
+    return r;
+  };
+  // Said when the reason changes, not every tick. A TV with no screen has no pairing to keep.
   const wait = (reason) => {
-    if (m.lastWait !== reason) io.say(`[menuboard] cannot check this screen yet (${reason}). Pairing kept.`);
+    if (m.lastWait !== reason) {
+      io.say(m.screen ? `[menuboard] cannot check this screen yet (${reason}). Pairing kept.`
+        : `[menuboard] no screen yet (${reason}). Trying again.`);
+    }
     return { ...m, lastWait: reason };
   };
+  const makeRow = async (token) => {
+    for (let attempt = 1; attempt <= CREATE_TRIES; attempt += 1) {
+      const ins = decideInsert({ result: await ask(io.insertRow(token)), attempt });
+      if (ins.action === 'made') return ins.row;
+      if (ins.action === 'give_up') break;
+    }
+    return null;
+  };
+  // The hold: a menu board whose sign in changed. The board stays. See decideStandby for why
+  // it keeps one spare row and what it does with it.
+  const hold = async (token, who) => {
+    const held = m.screen;
+    if (!String(m.lastWait).startsWith('sign_in_changed')) io.say('[menuboard] sign in changed, this screen cannot be checked. Board kept.');
+    m = { ...m, lastWait: 'sign_in_changed' };
+    if (m.standbyOff) { io.note('sign_in_changed', '', held); return m; }
+    const later = (reason) => {
+      const w = `sign_in_changed_${reason}`;
+      if (mem.lastWait !== w) io.say(`[menuboard] no new code for this TV yet (${reason}). Board kept.`);
+      return { ...m, lastWait: w };
+    };
+    let rows = null;
+    const sb = m.standby && m.standby.device_uid === who.uid ? m.standby : null;
+    if (sb) {
+      const read = decideRowRead({ result: await ask(io.readRow(sb.id, token)), id: sb.id });
+      if (read.action === 'wait') return later(read.reason);
+      if (read.action === 'found') rows = [read.row];
+    }
+    if (!rows) {
+      // Rare: once per page load, or when the spare row is not there any more.
+      const res = await ask(io.readOwned(who.uid, token));
+      if (!res || res.error || !Array.isArray(res.data)) return later('owned_read_failed');
+      rows = res.data;
+    }
+    const d = decideStandby({ rows, uid: who.uid, held });
+    if (d.action === 'adopt') {
+      m = takeRow({ ...m, standby: null, standbyMade: false, standbyOff: false, misses: 0, lastMissAt: 0, healChecked: true, lastWait: '' }, d.row, io, token, at);
+      io.say(`[menuboard] the new code was paired in Back Office (${d.row.id.slice(0, 8)}). Using that screen.`);
+      if (rowRank(d.row) === 1) io.note('adopted', 'new_code', m.screen);
+      return m;
+    }
+    let row = d.action === 'offer' ? d.row : null;
+    if (d.action === 'create' && !m.standbyMade) {
+      row = await makeRow(token);
+      if (!row) return later('create_failed');
+      m = { ...m, standbyMade: true };
+    }
+    const spare = screenFromRow(row);
+    if (!spare || !spare.code) {
+      // Used at another venue, or the one row this page made is gone: offer no second code.
+      io.say(`[menuboard] no new code for this TV (${d.reason || 'row_gone'}). Board kept.`);
+      io.note('sign_in_changed', '', held);
+      return { ...m, standby: null, standbyOff: true };
+    }
+    if (!sb || sb.id !== spare.id) io.say(`[menuboard] to change this TV, pair code ${spare.code} in Back Office.`);
+    io.note('sign_in_changed', spare.code, held);
+    return { ...m, standby: spare, lastBeatAt: beat(m.lastBeatAt, spare.id, io, token, at) };
+  };
   try {
-    const token = await io.getToken();
+    const token = await ask(io.getToken());
     const who = readToken(token);
     const start = decideTickStart({ screen: m.screen, who });
     if (start.action === 'wait') return wait(start.reason);
-    if (start.action === 'hold') {
-      if (m.lastWait !== start.reason) io.say('[menuboard] sign in changed, this screen cannot be checked. Board kept.');
-      io.note('sign_in_changed', '', m.screen);
-      return { ...m, lastWait: start.reason };
-    }
+    if (start.action === 'hold') return await hold(token, who);
     let why = start.action === 'find_owned' ? start.why : null;
     const cause = start.action === 'count_miss' ? start.reason : '';
     if (why === 'no_id') {
-      if (m.lastWait !== 'no_id') io.say('[menuboard] no screen id saved. Looking for my own rows first.');
-      m.lastWait = 'no_id';
+      // Said once. lastWait is left alone here: writing it made this line and the "no screen
+      // yet" line take turns, two lines every tick, while the rows could not be read.
+      if (!m.lastWait) io.say('[menuboard] no screen id saved. Looking for my own rows first.');
     } else {
       const id = m.screen.id;
       let gone = start.action === 'count_miss';
       if (!gone) {
-        const read = decideRowRead({ result: await io.readRow(id, token), id });
+        const read = decideRowRead({ result: await ask(io.readRow(id, token)), id });
         if (read.action === 'wait') return wait(read.reason);
         if (read.action === 'found') {
-          m = takeRow({ ...m, misses: 0, lastMissAt: 0, lastWait: '' }, read.row, io, token);
+          m = takeRow({ ...m, misses: 0, lastMissAt: 0, lastWait: '' }, read.row, io, token, at);
           const heal = decideSelfHeal({ row: read.row, checked: m.healChecked });
           if (heal.action !== 'find_owned') return { ...m, healChecked: true };
           why = heal.why;
         } else {
-          const chk = decideGoneCheck({ result: await io.checkGone(id, token) });
+          const chk = decideGoneCheck({ result: await ask(io.checkGone(id, token)) });
           if (chk.verdict !== 'gone') return wait(`not_confirmed_${chk.reason}`);
           gone = true;
         }
@@ -343,7 +566,7 @@ export async function runPairingTick(mem, io) {
       }
     }
     const before = m.screen;
-    const owned = decideOwned({ result: await io.readOwned(who.uid, token), uid: who.uid, held: before, why });
+    const owned = decideOwned({ result: await ask(io.readOwned(who.uid, token)), uid: who.uid, held: before, why });
     if (owned.action === 'wait') {
       if (owned.reason === 'row_still_there') m = { ...m, misses: 0, lastMissAt: 0 };
       return wait(owned.reason);
@@ -351,27 +574,23 @@ export async function runPairingTick(mem, io) {
     if (owned.action === 'stay') return { ...m, healChecked: true };
     const fresh = { ...m, misses: 0, lastMissAt: 0, healChecked: true, lastWait: '' };
     if (owned.action === 'adopt') {
-      m = takeRow(fresh, owned.row, io, token);
+      m = takeRow(fresh, owned.row, io, token, at);
       io.say(`[menuboard] found my own screen again (${owned.row.id.slice(0, 8)}). Using it.`);
       if (rowRank(owned.row) === 1) io.note('adopted', '', m.screen);
       else if (why === 'removed') io.note('unpaired', cause, before);
       return m;
     }
-    for (let attempt = 1; attempt <= CREATE_TRIES; attempt += 1) {
-      const ins = decideInsert({ result: await io.insertRow(token), attempt });
-      if (ins.action === 'made') {
-        m = takeRow(fresh, ins.row, io, token);
-        if (why === 'removed') {
-          io.say(cause ? '[menuboard] sign in changed and this screen cannot be used. Showing a new code.'
-            : '[menuboard] screen removed in Back Office. Showing a new code.');
-          io.note('unpaired', cause, before);
-        }
-        return m;
-      }
-      if (ins.action === 'give_up') break;
+    const made = await makeRow(token);
+    if (!made) return wait('create_failed');
+    m = takeRow(fresh, made, io, token, at);
+    if (why === 'removed') {
+      io.say(cause ? '[menuboard] sign in changed and this screen cannot be used. Showing a new code.'
+        : '[menuboard] screen removed in Back Office. Showing a new code.');
+      io.note('unpaired', cause, before);
     }
-    return wait('create_failed');
+    return m;
   } catch (e) {
+    if (e === STOPPED) return mem;       // the page let go: nothing more is sent, said or changed
     // A timeout or a thrown client call. The name is enough to tell which (TimeoutError, TypeError).
     return wait(`error_${(e && e.name) || 'unknown'}`);
   }

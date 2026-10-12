@@ -80,17 +80,32 @@ test('a failed content read never replaces the board on screen or its saved copy
   assert.match(load, /six: sixRes\?\.error \? new Set\(dataRef\.current\?\.six \|\| \[\]\)/, 'a failed sold out read keeps the last list');
 });
 
-test('the note a TV leaves is written already read, so no till bell counts it', () => {
+test('the note a TV leaves is written by the tested rules, already read, so no till bell counts it', () => {
+  // What a note is (the row, written already read, the limits) is makeNoteStamper, run by
+  // menuBoardPairing.test.js. Here: menuBoardNotes.js really uses it, on the right table.
   const notes = read('./menuBoardNotes.js');
-  assert.match(notes, /severity: 'info'/);
-  assert.match(notes, /ref_type: 'menu_board_screen', ref_id: screen\.id/);
-  assert.match(notes, /acked_at: new Date\(now\)\.toISOString\(\), acked_by: 'auto'/);
-  assert.match(notes, /shouldNote\(\{ kind, now, lastAt/);
+  assert.match(notes, /const stamp = makeNoteStamper\(\{\s*write: \(row\) => supabase\.from\('activity_events'\)\.insert\(row\),/);
+  assert.match(notes, /export function stampScreenNote\(note\) \{\s*try \{\s*if \(isMock \|\| !supabase\) return;\s*stamp\(note\);/);
+  assert.equal(count(notes, ".from('activity_events')"), 2, 'one write, one read, nothing else');
+  assert.match(notes, /const code = noteCode\(r\.title\);/, 'Back Office reads the code with the same rule that wrote it');
   // The bell counts rows with no acked_at (components/ActivityFeed.jsx).
   assert.match(read('../components/ActivityFeed.jsx'), /const live = events\.filter\(e => !e\.ackedAt\);/);
   const bo = read('../backoffice/sections/MenuBoards.jsx');
   assert.match(bo, /fetchScreenNotes\(id\)\.then\(/);
-  assert.match(bo, /\{tvNotes\[s\.id\] && <div[^>]*title=\{tvNotes\[s\.id\]\.body\}>\{noteLine\(tvNotes\[s\.id\]\)\}<\/div>\}/);
+  // Which line shows is screenNoteView (tested), over EVERY screen row at the venue.
+  assert.match(bo, /const tvNoteView = \(notes, screens\) => screenNoteView\(\{ notes, screens, now: Date\.now\(\) \}\);/);
+  assert.match(bo, /const tvView = tvNoteView\(tvNotes, paired\);/);
+  assert.match(bo, /\{tvView\.byScreen\[s\.id\] && <div[^>]*title=\{tvView\.byScreen\[s\.id\]\.body\}>\{tvView\.byScreen\[s\.id\]\.text\}<\/div>\}/);
+  assert.match(bo, /\{tvView\.lost\.map\(\(n\) => \(\s*<div key=\{n\.id\}[^>]*title=\{n\.body\}>\{n\.text\}<\/div>\s*\)\)\}/, 'the code of a TV whose old screen is gone from the list');
+});
+
+test('review fixes in the effect: a tick that learned nothing keeps a live update, and a dead effect is told so', () => {
+  // The behaviour is run in menuBoardPairingReplay.test.js. These pins say which lines carry it.
+  assert.match(EFFECT, /const started = mem\.screen;\s*const next = await runPairingTick\(mem, io\);\s*if \(alive\) \{\s*mem = sameScreen\(next\.screen, started\) \? \{ \.\.\.next, screen: mem\.screen \} : next;/);
+  assert.equal(count(EFFECT, 'mem = next;'), 0, 'the tick result is never taken blind');
+  const io = between(EFFECT, 'const io = {', 'tickRef.current = tick;');
+  assert.match(io, /alive: \(\) => alive,/);
+  assert.match(EFFECT, /supabase\.channel\(`mbscreen-\$\{sid\}-\$\{\+\+chSeq\}`\)/, 'a new topic for each subscription');
 });
 
 // ── the client library: a request that says who it is, is sent as that, never as the public key ──

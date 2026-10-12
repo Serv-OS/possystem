@@ -1,19 +1,21 @@
 // src/lib/menuBoardCleanupSql.test.js
 //
 // 12 Oct 2026. The clean up for the screen rows the night of 11 to 12 Oct left behind is three
-// files Peter runs by hand in the Ops SQL editor: a PREVIEW that only lists, the clean up that
-// removes the same list, and a rollback note. These tests hold the promises their headers make:
-// the two files list by the SAME rule, the preview cannot change anything, the clean up is one
-// statement (so one transaction) with both locks, it can never list the row a TV is using, and
+// files Peter runs by hand in the Ops SQL editor: a PREVIEW that only lists, the REMOVE file that
+// removes the same list, and an undo note. They live in supabase/data_fixes with the other row
+// only fixes (they change no schema, so they are not migrations). These tests hold the promises
+// their headers make: the two files list by the SAME rule, the preview cannot change anything,
+// the REMOVE file is one statement (so one transaction) with both locks, reasons A and B can
+// never list the row a TV is using and reason C only a never paired row silent for 7 days, and
 // none of them changes the schema.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
-const read = (f) => readFileSync(new URL(`../../supabase/migrations/${f}`, import.meta.url), 'utf8');
-const PREVIEW = read('20261012a_OPS_menu_board_screen_cleanup_PREVIEW.sql');
-const REMOVE = read('20261012b_OPS_menu_board_screen_cleanup.sql');
-const NOTE = read('20261012b_OPS_menu_board_screen_cleanup_ROLLBACK.sql');
+const read = (f) => readFileSync(new URL(`../../supabase/data_fixes/${f}`, import.meta.url), 'utf8');
+const PREVIEW = read('20261012a_menu_board_screens_cleanup_PREVIEW.sql');
+const REMOVE = read('20261012b_menu_board_screens_cleanup_REMOVE.sql');
+const NOTE = read('20261012b_menu_board_screens_cleanup_UNDO_NOTE.sql');
 // Built from the character numbers so this file holds no long dash itself.
 const LONG_DASH = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
 
@@ -83,7 +85,7 @@ test('the clean up removes only screen rows, only the listed ones, behind both l
   assert.match(c, /quote_literal\(jsonb_agg\(to_jsonb\(x\) - ''\)::text\)/, 'every removed row, in full, minus the reason column');
 });
 
-test('the rule can never list the row a TV is using, or a paired row a TV must go back to', () => {
+test('A and B never list the row a TV is using or a paired row it must go back to; C only a never paired row silent for 7 days', () => {
   const r = code(rule(PREVIEW), { keepText: true });
   // The row in use is the most recently seen one of the device.
   assert.match(r, /row_number\(\) over \(partition by s\.device_uid\s+order by coalesce\(s\.last_seen_at, s\.created_at\) desc, s\.created_at desc, s\.id\) as rn/);
@@ -95,6 +97,33 @@ test('the rule can never list the row a TV is using, or a paired row a TV must g
   assert.match(b, /when r\.rn > 1 and not r\.is_paired and r\.seen_at < now\(\) - interval '1 hour'/, 'B: never the row in use, never a paired row');
   assert.match(c, /when r\.location_id is null and r\.board_id is null and r\.order_display_id is null\s+and r\.status = 'unpaired' and r\.seen_at < now\(\) - interval '7 days'/, 'C: only a row that was never paired');
   assert.match(r, /\(s\.location_id is not null and \(s\.board_id is not null or s\.order_display_id is not null\)\) as is_paired/, 'paired means a venue and something to show, not the status word');
+  // C has no "rn > 1": it CAN list the only row of a TV, but only one that was never paired and
+  // has been silent for 7 days. The headers say so in plain words.
+  const cWhen = c.indexOf('when r.location_id is null');
+  assert.ok(cWhen >= 0);
+  assert.equal(/rn > 1/.test(c.slice(cWhen)), false);
+  for (const sql of [PREVIEW, REMOVE]) {
+    assert.match(sql, /This can be the ONLY row of a TV that was never\n-- {6}paired and has been off for 7 days\./);
+    assert.match(sql, /-- {3}The row of every TV that is on, and every paired row in use\./);
+    assert.equal(/The row each TV uses now/.test(sql), false, 'the old words promised more than rule C keeps');
+  }
+});
+
+test('a TV is only ever compared with its OWN rows, the undo holds EVERY removed row, and the live lock is a full hour', () => {
+  // Three edits that would pass every other check here if made to both files at once.
+  const r = code(rule(PREVIEW), { keepText: true });
+  assert.match(r, /from ranked r join cur c using \(device_uid\)/, 'never a TV against another TV\'s row in use');
+  assert.match(r, /count\(\*\) filter \(where why is not null and seen_at > now\(\) - interval '1 hour'\) as listed_live/, 'the lock looks back a full hour');
+  assert.match(code(REMOVE, { keepText: true }), /from gone x\) as undo/, 'the undo is built from all of the removed rows');
+});
+
+test('the three files are data fixes, not migrations', () => {
+  const migrations = readdirSync(new URL('../../supabase/migrations/', import.meta.url));
+  assert.deepEqual(migrations.filter((f) => /menu_board_screens?_cleanup/.test(f)), [], 'nothing of the clean up is filed as a migration');
+  for (const sql of [PREVIEW, REMOVE]) assert.match(sql, /It is NOT a migration: it changes no schema/);
+  assert.match(REMOVE, /are in 20261012b_menu_board_screens_cleanup_UNDO_NOTE\.sql\./);
+  assert.match(NOTE, /20261012b_menu_board_screens_cleanup_REMOVE\.sql/);
+  for (const sql of [PREVIEW, REMOVE, NOTE]) assert.equal(/_OPS_menu_board_screen_cleanup/.test(sql), false, 'no old file name left in a header');
 });
 
 test('the headers say whose job it is, that it is optional, and how to undo it', () => {
@@ -111,4 +140,5 @@ test('the headers say whose job it is, that it is optional, and how to undo it',
   }
   assert.match(PREVIEW, /READ ONLY\. This file changes nothing\./);
   assert.match(REMOVE, /-- ROLLBACK\. The "undo" cell of row 0 is the rollback/);
+  for (const sql of [PREVIEW, REMOVE]) assert.match(sql, /WHEN TO RUN IT\. The same day the TVs go on the new build, and before anyone presses Remove/);
 });

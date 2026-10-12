@@ -22,7 +22,7 @@ import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boar
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
 import { fetchScreenNotes } from '../../lib/menuBoardNotes';
-import { agoLabel } from '../../lib/menuBoardPairing';
+import { screenNoteView } from '../../lib/menuBoardPairing';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
@@ -50,7 +50,11 @@ const seenLabel = (ts) => {
 // 12 Oct 2026: the newest note a TV left about its own pairing ("TV kept its pairing · 5m ago").
 // A TV writes one when it ignores a bad live update, finds its own screen again or shows its
 // code (lib/menuBoardNotes.js), so what a TV did overnight can be read here, not on the TV.
-const noteLine = (n) => `${n.title} · ${agoLabel(n.at, Date.now())}`;
+// A TV that lost its sign in keeps its board and says a new code here ("Pair it again with code
+// ..."): that line is the way to change or remove that TV from the desk. "lost" is the same line
+// for a TV whose old screen is no longer in the list. Which line shows: screenNoteView.
+// (A helper outside the component, so the render itself never reads the clock.)
+const tvNoteView = (notes, screens) => screenNoteView({ notes, screens, now: Date.now() });
 
 export default function MenuBoards() {
   const [locId, setLocId] = useState(null);
@@ -218,6 +222,7 @@ export default function MenuBoards() {
   // TVs paired to an order screen (Channels → Order screens) are managed there, not here.
   // Before the 20260911 migration order_display_id is undefined, so nothing is filtered.
   const boardTvs = paired.filter(s => !s.order_display_id);
+  const tvView = tvNoteView(tvNotes, paired);     // every screen row at the venue, so a code used for an order screen counts as used
   const orderScreenTvs = paired.length - boardTvs.length;
 
   return (
@@ -262,6 +267,10 @@ export default function MenuBoards() {
           {pairMsg && <span style={{ fontSize: 12, color: pairMsg.startsWith('✓') ? 'var(--grn)' : 'var(--red)' }}>{pairMsg}</span>}
         </div>
 
+        {tvView.lost.map((n) => (
+          <div key={n.id} style={{ fontSize: 12, color: 'var(--t2)', marginTop: 10 }} title={n.body}>{n.text}</div>
+        ))}
+
         {boardTvs.length > 0 ? (
           <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {boardTvs.map(s => { const sl = seenLabel(s.last_seen_at); return (
@@ -270,7 +279,7 @@ export default function MenuBoards() {
                 <div style={{ flex: 1, minWidth: 140 }}>
                   <div style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 700 }}>{s.name || boardName(s.board_id)}</div>
                   <div style={{ fontSize: 11, color: 'var(--t4)' }}>{s.code} · {sl.text}</div>
-                  {tvNotes[s.id] && <div style={{ fontSize: 11, color: 'var(--t3)' }} title={tvNotes[s.id].body}>{noteLine(tvNotes[s.id])}</div>}
+                  {tvView.byScreen[s.id] && <div style={{ fontSize: 11, color: 'var(--t3)' }} title={tvView.byScreen[s.id].body}>{tvView.byScreen[s.id].text}</div>}
                 </div>
                 <select style={{ ...S.inp, width: 190 }} value={s.board_id || ''} disabled={busy === 'scr-' + s.id}
                   onChange={e => reassign(s.id, e.target.value)}>
