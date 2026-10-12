@@ -371,6 +371,16 @@ export default function SyncBridge({ onSyncPulse }) {
           const floorRes    = unwrap(floorSt);
           const itemsRes    = unwrap(itemsSt);
           const catsRes     = unwrap(catsSt);
+          // 12 Oct 2026 (Preston): the category read SUCCEEDED for this venue and found none. The
+          // master till must hold this venue's menu before it sends a QR, online or kiosk order
+          // to the kitchen (lib/channelRouteGate.js venueHoldsMenu). "Boot finished" is no proof:
+          // a failed leg reads as data null. No new read, this is the leg above.
+          // Review, same day: ONLY for a read with no rows. This line used to mark any successful
+          // read, and the rows of that read reach the store several awaited reads further down
+          // (the boot patch), so in between the gate said "no categories on file, go" with an
+          // empty tree and the real master could repeat Preston. A venue WITH categories is
+          // ready when they are in the store, which the gate already watches.
+          if (!catsRes.error && Array.isArray(catsRes.data) && catsRes.data.length === 0) useStore.setState({ _catsReadLocationId: locationId });
           const menusRes    = unwrap(menusSt);
           const linksRes    = unwrap(linksSt);
           const sessionsRes = unwrap(sessionsSt);

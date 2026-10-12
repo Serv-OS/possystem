@@ -18,6 +18,19 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.51',
+    date: '12 Oct 2026',
+    items: [
+      "Kitchen screens: QR, online, kiosk and delivery app orders are now sent to the kitchen only by the venue's real master till, with its menu loaded. On a two screen till the customer display could send them instead, with no menu, so an item in a sub category (a Latte under Coffee) landed on the first screen in the list. Preston saw lattes on the Food screen. Barnsley saw kiosk food and frozen drinks on the hot drinks screen.",
+      "Master till: it waits for its menu before sending (up to 20 seconds after it opens), and looks again for unsent orders when it wakes, when the connection returns and when the order feed reconnects. When an item has no kitchen screen the till says which item and where it went, and the activity feed keeps the same note.",
+      "Master till: the master setting now belongs to the till it was given to. It is cleared when that till is unpaired or removed. Back Office, the customer display, kitchen screens and kiosks can never act as the master. A till that is set as master but cannot send says so in red and raises an urgent alert.",
+      "Back Office, Devices: a line at the top says whether the venue's master till is on, when it was last seen, that none is set, or that more than one till is set as master.",
+      "Orders: Send to kitchen again now works on the till that first sent the order.",
+      "If the master till is disconnected or removed, the other tills at the venue show Master POS offline after about 30 seconds until it is back. Before, they carried on while QR, online and kiosk orders waited in silence.",
+      "Each QR, online, kiosk and delivery ticket keeps a hidden record of which till sent it and what it knew, so a ticket on the wrong screen can be traced.",
+    ],
+  },
+  {
     v: '5.11.50',
     date: '11 Oct 2026',
     items: [
