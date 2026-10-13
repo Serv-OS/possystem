@@ -68,7 +68,9 @@ export function pspOf(ref: unknown): string | null {
 }
 
 // A tender or refund leg that names a card processor other than ServOS Payments (Adyen): its
-// fee is not in our records and never will be.
+// fee is not in our records and never will be. Only believed when the tender also carries that
+// processor's reference (see cardFeeItems): on a row written with no tenders the processor is
+// the closed_checks column's old default ('stripe', on Adyen kiosk sales too) and says nothing.
 const otherProcessor = (processor: unknown): boolean => {
   const p = String(processor ?? '').trim().toLowerCase();
   return !!p && p !== 'adyen';
@@ -84,8 +86,10 @@ const otherProcessor = (processor: unknown): boolean => {
 export function cardFeeItems({ day, saleRows = [], refundRows = [], clearing = null }: { day: { fromMs: number; toMs: number }; saleRows?: any[]; refundRows?: any[]; clearing?: Dict | null }): CardFeeItems {
   const cardAccount: string | null = clearingFor({ kind: 'card', processor: 'adyen' }, clearing).account;
   const inScope = (processor: unknown) => !!cardAccount && clearingFor({ kind: 'card', processor }, clearing).account === cardAccount;
-  const item = (checkId: string, minor: number, ref: unknown, processor: unknown): CardFeeItem => (
-    otherProcessor(processor) ? { checkId, minor, psp: null, other: true } : { checkId, minor, psp: pspOf(ref) });
+  const item = (checkId: string, minor: number, ref: unknown, processor: unknown): CardFeeItem => {
+    const psp = pspOf(ref);
+    return psp && otherProcessor(processor) ? { checkId, minor, psp: null, other: true } : { checkId, minor, psp };
+  };
 
   const sales: CardFeeItem[] = [];
   const seen = new Set<string>();
@@ -139,7 +143,7 @@ export function cardFeeItems({ day, saleRows = [], refundRows = [], clearing = n
  * its card refunds; both hold KNOWN fees only. Every item with no fee is counted in `unknown`
  * with the reason:
  *   no_reference     the till record has no processor reference (never arrives)
- *   other_processor  taken by another card processor (never arrives)
+ *   other_processor  the reference is another card processor's (never arrives)
  *   no_payment       no payment row for the reference yet (can still arrive)
  *   no_fee           the payment was taken and has no fee stamped yet (can still arrive)
  *   not_taken        the processor shows the payment as not taken, cancelled, a capture that

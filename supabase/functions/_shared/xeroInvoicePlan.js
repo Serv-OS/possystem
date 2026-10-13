@@ -1167,7 +1167,8 @@ export function cardFeesToRecord(started, recorded, fees, plan, at) {
   if (started === 'on') return recorded;
   if (!fees) return null;
   const c = plan?.cardFees || {};
-  return { way: 'on', at, account: c.account ?? null, line: !!c.line, reason: c.reason ?? null, net: c.net ?? 0, ...fees };
+  // The figures as they were read, then what the plan made of them (its account is the one the line was planned on).
+  return { ...fees, way: 'on', at, account: c.account ?? fees.account ?? null, line: !!c.line, reason: c.reason ?? null, net: c.net ?? 0 };
 }
 
 /**

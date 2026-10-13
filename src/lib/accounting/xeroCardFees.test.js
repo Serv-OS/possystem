@@ -846,12 +846,17 @@ test('17. the fee items are the card money the invoice counts: no more, no less'
   const kiosk = { id: 'K', closed_at: at(4), total: 6.5, tip: 0, service: 0, tax_amount: 1.08, source: 'kiosk', payment_method: 'card-external', method: 'card' };
   assert.deepEqual(items([kiosk]).sales, [{ checkId: 'K', minor: 650, psp: null }]);
   assert.equal(items([kiosk]).cardSales, cardMoney(groupedOf([kiosk]), mOn(), 'sales'));
+  // Such a row carries the processor column's old default ('stripe', on Adyen kiosk sales too, as
+  // the live rows of 2 Oct 2026 do). With no reference it says nothing: "no reference", never "another processor".
+  assert.deepEqual(items([{ ...kiosk, processor: 'stripe' }]).sales, [{ checkId: 'K', minor: 650, psp: null }]);
+  assert.deepEqual(sumCardFees(items([{ ...kiosk, processor: 'stripe' }]), new Map()).unknown.map((u) => u.reason), ['no_reference']);
+  assert.deepEqual(items([{ ...E, id: 'S', tenders: [{ method: 'card', amount: 8.0, tip: 0, processor: 'stripe' }] }]).sales, [{ checkId: 'S', minor: 800, psp: null }]);
   // A card tender mapped to ANOTHER clearing account is not in scope: its payment is not the one the fee comes off.
   const ryft = { ...E, id: 'R', tenders: [{ method: 'card', amount: 8.0, tip: 0, processor: 'ryft', psp_ref: 'pay_made_up' }] };
   const split = { card: 'CARDCLR', 'card:ryft': 'RYFTCLR', cash: 'CASHTILL' };
   assert.deepEqual(items([E, ryft], [], split).sales, [{ checkId: 'E', minor: 800, psp: psp(4) }]);
-  // Mapped to the SAME account, another processor's payment is on the invoice's card money, and
-  // can never have a fee in our records: counted, and never waited for.
+  // Mapped to the SAME account, a payment with another processor's own reference is on the
+  // invoice's card money, and can never have a fee in our records: counted, and never waited for.
   assert.deepEqual(items([E, ryft]).sales, [{ checkId: 'E', minor: 800, psp: psp(4) }, { checkId: 'R', minor: 800, psp: null, other: true }]);
   // card:adyen mapped on its own: only Adyen's tenders are in scope.
   const own = { card: 'OTHERCLR', 'card:adyen': 'ADYENCLR', cash: 'CASHTILL' };
@@ -1116,6 +1121,9 @@ test('24. cardFeeWayStarted: free exactly when the refund way is free; a marker 
   assert.deepEqual(cardFeesToRecord(null, undefined, w.fees, p, AT), { way: 'on', at: AT, account: 'SOSFEES', line: true, reason: null, net: 43, ...w.fees });
   assert.deepEqual(cardFeesPatch(null, undefined, w.fees, p, AT), { cardFees: { way: 'on', at: AT, account: 'SOSFEES', line: true, reason: null, net: 43, ...w.fees } });
   assert.equal(cardFeesToRecord('on', marker, { ...w.fees, charged: 99 }, p, 'later'), marker, 'what was started stands, to the letter');
+  // The account recorded is the one the line was planned on (trimmed), whatever spaces the setup holds.
+  const spaced = { ...w.fees, account: ' SOSFEES ' };
+  assert.equal(cardFeesToRecord(null, undefined, spaced, plan(w.g, spaced), AT).account, 'SOSFEES');
   assert.deepEqual(cardFeesPatch('on', marker, marker, p, 'later'), { cardFees: marker });
   assert.equal(cardFeesToRecord('off', undefined, null, p, AT), null);
   assert.deepEqual(cardFeesPatch(null, marker, null, plan(w.g, null), AT), { cardFees: null }, 'a marker left on a free day is cleared');
