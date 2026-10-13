@@ -7,6 +7,10 @@
  * What these protect (Peter's bar for the card path, 9 Sep 2026): nothing like a stranded live
  * job again; a customer is never charged twice; a till is never left unable to take a card when
  * the reader is fine.
+ *
+ * Since the 13 Oct review the two functions are also RUN (readerLockReplay.test.js). The pins
+ * here hold what a replay cannot see: the order of the guards, that a line is byte for byte what
+ * it was, and that work is held open with waitUntil.
  */
 
 import { test } from 'node:test';
@@ -47,10 +51,15 @@ const notFound = between(result, "if (cond === 'not_found') {", 'const inner = t
 // The module helpers, each up to the next one.
 const selfAsk = between(charge, 'function scheduleSelfAsk(', '\nasync function raiseNoPaymentNote(');
 const note = between(charge, 'async function raiseNoPaymentNote(', '\nasync function runReaderAskSweep(');
-const askSweep = between(charge, 'async function runReaderAskSweep(', '\nasync function runLateMoneyWatch(');
+const askSweep = between(charge, 'async function runReaderAskSweep(', '\n// MONEY ON A PAYMENT WE CANCELLED');
+const tellLate = between(charge, 'async function tellLateMoney(', '\nasync function lateMoneyAtSettle(');
+const lateAtSettle = between(charge, 'async function lateMoneyAtSettle(', '\nasync function runLateMoneyWatch(');
 const lateMoney = between(charge, 'async function runLateMoneyWatch(', '\nasync function logRefusal(');
+const settleResponse = between(charge, 'async function settleFromResponse(', '\nasync function afterSettle(');
+const settleLedger = between(charge, 'async function settleFromLedger(', '\nconst UNKNOWN_OUTCOME_WORDS');
+const lock = read('../../../supabase/functions/_shared/readerLock.js');
 
-test('result: the status ask sits in a try, and a throw is "could not be reached", never an HTTP 500', () => {
+test('result: the status ask sits in a try, and a throw is never an HTTP 500 and never feeds the 120 s rule', () => {
   const ask = between(result, 'let res: { ok: boolean; status?: number; data: any };', 'const tenderStalled =');
   before(ask, 'try {', "res = await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: STATUS_ASK_TIMEOUT_MS });", 'the ask is inside the try');
   before(ask, 'timeoutMs: STATUS_ASK_TIMEOUT_MS });', '} catch (e) {', 'its own catch follows it');
@@ -60,6 +69,13 @@ test('result: the status ask sits in a try, and a throw is "could not be reached
   assert.equal(count(result, 'statusReq, {'), 1);
   // The not ok result falls into the existing branch, which is the next thing that reads `res`.
   before(result, 'res = { ok: false, status: 0, data: null };', 'if (!res.ok) {', 'falls into the could not be reached branch');
+  // Review 13 Oct (the double charge path): an ask WE cut off is remembered, and only there.
+  before(ask, 'let askThrew = false;', 'try {', 'false until the ask throws');
+  before(ask, '} catch (e) {', 'askThrew = true;', 'set in the catch');
+  assert.equal(count(result, 'askThrew = true;'), 1);
+  assert.equal(count(result, 'askThrew = '), 2, 'the declaration and the catch, nowhere else');
+  // ...and in the could not be reached branch it waits for the send to be dead, like a timer.
+  assert.ok(unreachable.includes("if (v.verdict === 'nothing' && timerMustWait({ conservative: conservative || askThrew, sinceSendMs })) return processing('no_answer_yet');"));
 });
 
 test("result never writes status 'charging_unsent' again: nothing re sends a payment after a not found", () => {
@@ -138,46 +154,79 @@ test('result, in progress: a timer answers "processing" before any abort is buil
   assert.ok(inProgress.includes("if (stalled && led.verdict === 'nothing') {"));
 });
 
-test('result, no usable answer: the timer wait sits between the young guard and the cancel, in both branches', () => {
+test('result, no usable answer: the young guard, then the wait, then a second look at the ledger, then ONE compare and set cancel on the service id, in both branches', () => {
   const young = "if (v.verdict === 'nothing' && !tenderStalled) {";
-  const wait = "if (v.verdict === 'nothing' && timerMustWait({ conservative, sinceSendMs })) return processing('no_answer_yet');";
   const cancel = "if (v.verdict === 'nothing') {";
-  for (const [name, block, reason] of [
-    ['could not be reached', unreachable, 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged'],
-    ['no answer', noAnswer, 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged'],
+  const again = "if (!(await ledgerStillEmpty())) return processing('ledger_unclear');";
+  for (const [name, block, reason, wait] of [
+    ['could not be reached', unreachable, 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged',
+      "if (v.verdict === 'nothing' && timerMustWait({ conservative: conservative || askThrew, sinceSendMs })) return processing('no_answer_yet');"],
+    ['no answer', noAnswer, 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged',
+      "if (v.verdict === 'nothing' && timerMustWait({ conservative, sinceSendMs })) return processing('no_answer_yet');"],
   ]) {
     assert.equal(count(block, young), 1, name);
     assert.equal(count(block, wait), 1, name);
+    assert.equal(count(block, again), 1, name);
     before(block, young, wait, `${name}: the young guard first`);
     before(block, wait, cancel, `${name}: the wait before the cancel`);
-    before(block, wait, ".update({ status: 'cancelled'", `${name}: the wait before the write`);
-    // The decline reason is the one it always was, and the cancel now says whether it won.
-    assert.ok(block.includes(`.update({ status: 'cancelled', decline_reason: '${reason}', updated_at: new Date().toISOString() })\n          .eq('id', job.id).in('status', ['charging', 'unknown']).select('id');`), name);
+    before(block, cancel, again, `${name}: the second look is inside the cancel branch`);
+    before(block, again, ".update({ status: 'cancelled'", `${name}: the second look before the write`);
+    // The decline reason is the one it always was. The cancel says whether it won, and it names
+    // the attempt that was asked about (review 13 Oct), like the never received cancel.
+    assert.ok(block.includes(`.update({ status: 'cancelled', decline_reason: '${reason}', updated_at: new Date().toISOString() })\n          .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id).select('id');`), name);
     assert.equal(count(block, '.update('), 1, name);
+    // A job another path changed first, and that is still open, is reported as open.
+    assert.ok(block.includes("if (st && !SETTLED.includes(st.status)) return processing('no_answer_yet', { status: st.status });"), name);
   }
-  assert.equal(count(result, wait), 2);
+  // The second look: wait, read the ledger again, and only "nothing" (read with no error) passes.
+  assert.ok(result.includes([
+    '    const ledgerStillEmpty = async (): Promise<boolean> => {',
+    '      await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));',
+    "      const again = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));",
+    "      return again.verdict === 'nothing';",
+    '    };',
+  ].join('\n')));
+  assert.equal(count(result, 'await ledgerStillEmpty()'), 2);
+  // After an abort the same wait is given to a racing approval (it was 2 s, under the measured lag).
+  assert.ok(inProgress.includes('await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));'));
+  assert.ok(!result.includes('setTimeout(r, 2_000)'));
+  before(inProgress, 'buildAbortRequest(', 'await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));', 'the abort, then the wait');
+  before(inProgress, 'await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));', "const after = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));", 'then the ledger again');
+  // The two young guards of invariant 8 are byte for byte what they were.
+  assert.equal(count(result, young), 2);
+  assert.ok(result.includes('const tenderStalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;'));
 });
 
 test('each server cancel for never received or no answer raises its note only when ITS update returned one row', () => {
-  assert.equal(count(result, "if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy);"), 2);
-  assert.equal(count(result, "if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'never_received', askedBy);"), 1);
+  assert.equal(count(result, "if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy, callerId);"), 2);
+  assert.equal(count(result, "if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'never_received', askedBy, callerId);"), 1);
   assert.equal(count(charge, 'await raiseNoPaymentNote('), 3, 'no other caller');
+  // Who the cancel is recorded against (review 13 Oct): the verified sign in, never the body.
+  assert.ok(result.includes("const callerId = isServiceRole ? 'service_role' : String(callerUid ?? '');"));
+  assert.ok(note.includes('kind, job: job.id, service_id: job.nexo_service_id ?? null, asked_by: askedBy, caller,'));
+  assert.ok(!/caller:\s*body\./.test(charge) && !/callerId = .*body\./.test(charge));
   // The note: once per job by its key, best effort, never able to undo or block the cancel.
   assert.ok(note.includes('const told = await insertActivity(opsAdmin, job, note, noPaymentNoteKey(job.id));'));
   assert.ok(note.includes("if (told === 'inserted') {"));
   assert.ok(!note.includes('.update(') && !note.includes('throw '), 'it changes nothing and throws nothing');
-  assert.match(note, /^async function raiseNoPaymentNote\(job: any, kind: 'never_received' \| 'no_answer', askedBy: string\): Promise<void> \{\n {2}try \{/);
+  assert.match(note, /^async function raiseNoPaymentNote\(job: any, kind: 'never_received' \| 'no_answer', askedBy: string, caller: string\): Promise<void> \{\n {2}try \{/);
   assert.match(note, /\} catch \(e\) \{\n {4}console\.error\(`adyen-terminal-charge: note for cancelled job/);
   assert.ok(charge.includes('ledgerRowVerified, readTipEvidence, insertActivity,\n} from \'../_shared/readerTipHeal.ts\';'));
 });
 
 test("start writes the send ended marker at exactly the three UNKNOWN_OUTCOME exits, and not in the 4xx branch", () => {
-  const exit = "return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);";
+  const exit = "return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);";
   assert.equal(count(start, exit), 3);
+  // Review 13 Oct: what staff read there is plain words now (it was a code, a dash and jargon).
+  // The code a till could match on is the same; nothing in the app matches on the text.
+  const words = charge.match(/const UNKNOWN_OUTCOME_WORDS = '([^']+)';/)?.[1] ?? '';
+  assert.equal(words, 'The card machine did not answer. Checking what happened.');
+  assert.ok(!/[–—_]| - /.test(words), words);
+  assert.ok(!charge.includes('terminal_unreachable') && !charge.includes('pending recovery'));
   assert.equal(count(charge, "code: 'UNKNOWN_OUTCOME'"), 3);
   assert.equal(count(charge, 'sendEndedKey(job.id, serviceId), sendEndedRecord({'), 3);
   assert.equal(count(charge, "scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');"), 3);
-  const hows = [...start.matchAll(/await logDurable\(platformAdmin, sendEndedKey\(job\.id, serviceId\), sendEndedRecord\(\{ how: '([a-z_]+)'[^\n]*\}\)\);\n\s*scheduleSelfAsk\(job\.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended'\);\n\s*return json\(\{ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' \}, 502\);/g)].map((m) => m[1]);
+  const hows = [...start.matchAll(/await logDurable\(platformAdmin, sendEndedKey\(job\.id, serviceId\), sendEndedRecord\(\{ how: '([a-z_]+)'[^\n]*\}\)\);\n\s*scheduleSelfAsk\(job\.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended'\);\n\s*return json\(\{ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' \}, 502\);/g)].map((m) => m[1]);
   assert.deepEqual(hows, ['no_answer', 'adyen_error', 'answered_no_payment'], 'marker, then the ask, then the exit, in that order at each');
   // Only a 2xx with no payment answer is recorded as answered.
   assert.ok(start.includes("if (parsed.result === 'Unknown') {"));
@@ -204,6 +253,10 @@ test("scheduleSelfAsk only ever sends the status ask, always conservative; one p
   assert.ok(selfAsk.includes('out.slice(0, 200)'));
   // Never throws: the whole run is in a try.
   assert.match(selfAsk, /const run = async \(\) => \{\n {4}try \{/);
+  // The delay is waited BEFORE the ask, and the ask is held open (a mutant without either of
+  // these two lines passed every test before the 13 Oct review; a replay cannot see waitUntil).
+  before(selfAsk, 'await new Promise((r) => setTimeout(r, Math.max(0, Number(delayMs) || 0)));', 'const res = await fetch(', 'wait, then ask');
+  assert.ok(selfAsk.includes('const asked = run();\n  try {\n    // deno-lint-ignore no-explicit-any\n    const rt = (globalThis as any).EdgeRuntime;\n    if (rt?.waitUntil) rt.waitUntil(asked);'));
   // Every caller: the three send ended asks and the timer.
   assert.equal(count(charge, 'scheduleSelfAsk('), 5, 'the definition, three in start, one in the timer');
   assert.equal(count(charge, "action: 'start'"), 1, 'the unsent sweep kick is still the only sender of a start');
@@ -248,8 +301,9 @@ test('the timer: only sent Adyen jobs inside the lease, the local bridge left al
   assert.ok(askSweep.includes("for (const one of plan) for (const delay of one.delays) asks.push(scheduleSelfAsk(one.id, delay, 'reader_ask_sweep'));"));
   assert.ok(askSweep.includes('reader ask sweep: ${asks.length} ask(s) planned'), 'the line the after deploy check looks for');
   assert.ok(!askSweep.includes('.update(') && !askSweep.includes('.insert(') && !askSweep.includes('settle') && !askSweep.includes('adyenFetch'), 'it only plans asks');
+  // Every ask the plan holds is waited for (so waitUntil on the sweep keeps them all alive).
+  before(askSweep, "for (const one of plan) for (const delay of one.delays) asks.push(scheduleSelfAsk(one.id, delay, 'reader_ask_sweep'));", 'await Promise.all(asks);', 'asks, then wait for them');
   // The pure rule imports the one local bridge test there is.
-  const lock = read('../../../supabase/functions/_shared/readerLock.js');
   assert.ok(lock.includes("import { isLocalBridgeJob } from './terminalKick.js';"));
   assert.ok(kick.includes('export function isLocalBridgeJob('));
 });
@@ -262,13 +316,73 @@ test('the late money watch tells a person and changes nothing: no job update, no
   assert.ok(lateMoney.includes('.limit(LATE_MONEY_LIMIT);'));
   assert.ok(lateMoney.includes(".in('merchant_reference', [...byRef.keys()]).eq('success', true);"), 'one ledger read for the whole run');
   assert.equal(count(lateMoney, "platformAdmin.from('adyen_payments')"), 1);
-  const told = 'const told = await insertActivity(opsAdmin, job, alert, lateMoneyAlertKey(job.id));';
+  const told = 'await tellLateMoney(job, {';
   before(lateMoney, "if (ledgerApproval(row) !== 'approved') continue;", told, 'refunded, reversed or changed rows are skipped first');
   before(lateMoney, 'if ((await ledgerRowVerified(opsAdmin, row, job.id)) !== true) continue;', told, 'and an unverified row');
-  assert.equal(count(lateMoney, 'insertActivity('), 1);
-  assert.ok(!lateMoney.includes('.update(') && !lateMoney.includes('.delete('), 'it never changes a job');
-  assert.ok(!/settleFrom|settleRpc|terminal_job_settle|closed_checks/.test(lateMoney), 'it never books or settles a sale');
-  assert.ok(!lateMoney.includes('adyenFetch') && !lateMoney.includes('fetch('), 'it never calls Adyen');
+  assert.equal(count(lateMoney, 'tellLateMoney('), 1);
+  // The one teller (the watch and a settle both use it): one note per job by its key.
+  assert.ok(tellLate.includes('const told = await insertActivity(opsAdmin, job, alert, lateMoneyAlertKey(job.id));'));
+  assert.equal(count(charge, 'lateMoneyAlertKey(job.id)'), 2, 'the note and its durable copy, in the teller only');
+  for (const [name, block] of [['the watch', lateMoney], ['the teller', tellLate], ['the settle check', lateAtSettle]]) {
+    assert.ok(!block.includes('.update(') && !block.includes('.delete('), `${name} never changes a job`);
+    assert.ok(!/settleFromResponse|settleFromLedger|settleRpc|terminal_job_settle|closed_checks/.test(block), `${name} never books or settles a sale`);
+    assert.ok(!block.includes('adyenFetch') && !block.includes('fetch('), `${name} never calls Adyen`);
+    assert.ok(!block.includes('throw '), `${name} never throws`);
+  }
+});
+
+test('an approved answer that meets a job already cancelled is said at once, by both settle paths, and changes nothing', () => {
+  // The gate: the settle function's own "idempotent, cancelled or expired" answer, then the job
+  // as the database holds it (Adyen, not simulated, not training, still cancelled or expired).
+  assert.ok(lateAtSettle.includes("if (!(settled?.ok === true && settled?.idempotent === true && (settled?.status === 'cancelled' || settled?.status === 'expired'))) return;"));
+  assert.ok(lateAtSettle.includes("if (!j || j.processor !== 'adyen' || j.simulated === true || j.training === true) return;"));
+  assert.ok(lateAtSettle.includes("if (j.status !== 'cancelled' && j.status !== 'expired') return;"));
+  assert.ok(lateAtSettle.includes('await tellLateMoney(j, f);'));
+  assert.match(lateAtSettle, /^async function lateMoneyAtSettle\([^)]*\{[^}]*\}\): Promise<void> \{\n {2}try \{/);
+  // From the reader's answer: only when Adyen itself said so (never a device's own claim), and
+  // AFTER the settle call, whose answer it reads.
+  before(settleResponse, 'const settled = await settleRpcWithRetry(opsAdmin, {', 'if (success && TRUSTED_AMOUNT_SOURCES.has(source)) {', 'after the settle');
+  before(settleResponse, 'if (success && TRUSTED_AMOUNT_SOURCES.has(source)) {', 'await lateMoneyAtSettle(jobId, settled, {', 'gated on a trusted source');
+  assert.equal(count(settleResponse, 'lateMoneyAtSettle('), 1);
+  // From Adyen's ledger: the row was HMAC verified before the settle (a skip returns first).
+  before(settleLedger, 'if (verified !== true) {', 'const settled = await settleRpcWithRetry(opsAdmin, {', 'verified, then settled');
+  before(settleLedger, 'const settled = await settleRpcWithRetry(opsAdmin, {', 'await lateMoneyAtSettle(job.id, settled, {', 'after the settle');
+  assert.match(settleLedger, /if \(approved\) \{\n\s*await lateMoneyAtSettle\(job\.id, settled, \{/);
+  assert.equal(count(charge, 'await lateMoneyAtSettle('), 2, 'the two settle paths, nowhere else');
+  // The settle itself is what it was: the same call, the same arguments.
+  assert.ok(settleResponse.includes("p_outcome: success ? 'approved' : 'declined',"));
+  assert.ok(settleResponse.includes('p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),'));
+});
+
+test('a refused Pay press books conservative asks for the busy job, at both TERMINAL_BUSY exits, after the refusal is decided', () => {
+  const busyAsks = between(create, 'function scheduleBusyAsks(', '\nfunction scheduleServerKick(');
+  assert.ok(create.includes("import { busyPressAskDelays } from '../_shared/readerLock.js';"));
+  // Only ever the status ask, always conservative, with the service role and this project's own URL.
+  assert.equal(count(busyAsks, 'fetch('), 1);
+  assert.ok(busyAsks.includes("body: JSON.stringify({ action: 'result', job_id: jobId, asked_by: 'busy_press', conservative: true }),"));
+  assert.ok(busyAsks.includes("await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {"));
+  assert.ok(!busyAsks.includes("'start'") && !busyAsks.includes("'abort'") && !busyAsks.includes('.update(') && !busyAsks.includes('.insert('));
+  for (const line of busyAsks.split('\n').filter((l) => /console\.(log|error)\(/.test(l))) assert.ok(!/SERVICE_ROLE|Authorization/.test(line), line);
+  // The rule is the pure one, asked twice: before any read (a young or PAX job costs nothing),
+  // then with the busy job's own reader and till sign ins for the local bridge check.
+  assert.equal(count(busyAsks, 'busyPressAskDelays(busy, {'), 2);
+  assert.ok(busyAsks.includes("if (!jobId || !busyPressAskDelays(busy, { now: Date.now() }).length) return;"));
+  assert.ok(busyAsks.includes("opsAdmin.from('terminal_devices').select('id, device_uid').eq('id', String(busy.target_terminal_id)).maybeSingle()"));
+  assert.ok(busyAsks.includes("opsAdmin.from('devices').select('id, device_uid').eq('id', String(busy.pos_device_id)).maybeSingle()"));
+  // A read that fails books nothing (the slower, safer path).
+  before(busyAsks, 'if (term.error || dev.error) {', 'await Promise.all(delays.map(askAfter));', 'a failed read returns before any ask');
+  // Never throws, and held open.
+  assert.match(busyAsks, /const run = async \(\) => \{\n {4}try \{/);
+  assert.ok(busyAsks.includes('const booked = run();\n  try {\n    // deno-lint-ignore no-explicit-any\n    const rt = (globalThis as any).EdgeRuntime;\n    if (rt?.waitUntil) rt.waitUntil(booked);'));
+  // The two exits. Each still answers exactly what it answered.
+  assert.equal(count(create, 'scheduleBusyAsks('), 3, 'the definition and the two TERMINAL_BUSY exits');
+  assert.ok(create.includes("if (refusal.code === 'TERMINAL_BUSY') scheduleBusyAsks(hit.job as Record<string, unknown>, 'repeat check');"));
+  assert.ok(create.includes("scheduleBusyAsks(detail as Record<string, unknown>, 'reader index');"));
+  before(create, "const refusal = repeatRefusal(hit, body.repeat_ok_job_id ?? null, { tz });", "if (refusal.code === 'TERMINAL_BUSY') scheduleBusyAsks(", 'after the refusal is decided');
+  assert.equal(count(create, "code: 'TERMINAL_BUSY',"), 1);
+  assert.equal(count(create, "action: 'result'"), 2, 'the 25 s one shot and the busy press ask');
+  // The pure rule leaves the local bridge alone by the one test there is.
+  assert.ok(lock.includes('if (isLocalBridgeJob({ checkDraft: { source: busy.source }, terminalDeviceUid, posDeviceUid })) return [];'));
 });
 
 test('result answers stay backward compatible: processing keeps ok, state and status and only adds fields', () => {

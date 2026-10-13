@@ -33,6 +33,19 @@
 // A timer ask is CONSERVATIVE: it never sends an abort and it never cancels a silent reader
 // before the send is dead (timerMustWait).
 //
+// REVIEW, 13 OCT 2026 (the same day, before any of this shipped):
+//   - A status ask that WE cut off (our own 30 s limit) is not "the card machine could not be
+//     reached". In the week to 13 Oct that limit ran out on 8 jobs and 6 were live payments,
+//     two of them approved seconds later. So such an ask waits for the send to be dead like a
+//     timer does, whoever asked ('result' passes conservative || askThrew to timerMustWait).
+//   - Adyen's record runs behind the card machine (the webhook lands a median 4.8 s after the
+//     reader's answer, 7.6 s at the 99th centile). Every "no answer" cancel therefore looks at
+//     the ledger a second time, LEDGER_RECHECK_MS later, and cancels only if it is still empty.
+//   - The cron is not the only trigger. On 13 Oct its calls did not arrive for 15 minutes
+//     (06:32 to 06:47 UTC), exactly when the stuck job lived. A Pay press that is refused
+//     because the reader is busy now books the same conservative asks (planBusyPressAsks),
+//     and a tick that arrives late asks at once for the time it missed (planReaderAsks).
+//
 // NOTE ON IMPORTS. repeatCharge.js imports what its busy words need from this file (the 45 s
 // line and the "clears by" time), and this file imports the money, time and card formatters
 // from repeatCharge.js. Neither file uses the other while it loads (only inside functions), so
@@ -76,12 +89,30 @@ export const READER_ASK_LIMIT = 20;
 /** When a send ends with no payment answer, ask the reader once, this long after. */
 export const SEND_ENDED_ASK_AFTER_MS = 3_000;
 /**
- * What staff are told: a payment the reader never had clears by itself within this long of the
- * send. The 155 s line plus one 20 s ask gap, rounded up.
+ * Before a "no answer" cancel, and after an abort, wait this long and read Adyen's ledger again.
+ * The webhook that writes the ledger lands a median 4.8 s after the reader's answer and 7.6 s at
+ * the 99th centile (12,651 payments to 13 Oct 2026), so one read taken at once can miss a payment
+ * approved in the last few seconds.
+ */
+export const LEDGER_RECHECK_MS = 10_000;
+/**
+ * A refused Pay press books asks up to this long after the send: the 155 s line plus one status
+ * ask (30 s). An ask that starts at 125 s comes back from a silent reader at 155 s; one at 165 s
+ * is the first that can act on a "not found" with no marker.
+ */
+export const BUSY_PRESS_ASK_UNTIL_MS = 185_000;
+/**
+ * What staff are told: a payment the reader never had should clear by itself within this long
+ * of the send. The 155 s line plus one 20 s ask gap, rounded up; the 10 s second look at the
+ * ledger fits inside it for the ask that starts at 125 s (back at 155 s, cancelled at 165 s).
  */
 export const BUSY_CLEARS_AFTER_MS = 180_000;
-/** The late money watch looks at jobs that ended cancelled or expired this recently... */
-export const LATE_MONEY_WINDOW_MS = 24 * 60 * 60 * 1000;
+/**
+ * The late money watch looks at jobs that ended cancelled or expired this recently: 3 days, the
+ * same reach the "confirmed late" cover has for a job that ended 'unknown' (a reader that was
+ * off over a closed day sends its payment in when it comes back)...
+ */
+export const LATE_MONEY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 /** ...and at most this many a run, newest first. */
 export const LATE_MONEY_LIMIT = 50;
 /** terminal_jobs.decline_reason on a proven never received cancel (the till shows it). */
@@ -171,21 +202,74 @@ export function timerMustWait({ conservative, sinceSendMs } = {}) {
 /**
  * The asks one cron tick plans for one job: delays in ms from now, for the ask times
  * READER_ASK_FIRST_MS + k * READER_ASK_EVERY_MS (measured since the send) that fall inside the
- * next READER_ASK_HORIZON_MS and not past READER_ASK_MAX_SINCE_SEND_MS. Ticks are a minute
- * apart, so each ask time is planned by one tick; a doubled or a missed ask is harmless.
+ * next READER_ASK_HORIZON_MS and not past READER_ASK_MAX_SINCE_SEND_MS.
+ *
+ * A LATE TICK ASKS AT ONCE (review 13 Oct). A tick only plans ask times still ahead of it, so
+ * an ask time that passed between a late tick and the one before it was planned by nobody: at
+ * Barnsley on 12 Oct the tick due at 11:44:00 arrived 4.6 s late, 166.9 s after the send, and
+ * the 165 s ask (the first one allowed to free a silent reader) never existed. So when the
+ * newest ask time already passed, less than one gap ago, the tick asks now (delay 0). A tick
+ * that was on time asks one time more than it needs to; a doubled ask is harmless.
  * @param {{ sinceSendMs: number }} p
  * @returns {number[]}
  */
 export function planReaderAsks({ sinceSendMs } = {}) {
   if (typeof sinceSendMs !== 'number' || !Number.isFinite(sinceSendMs)) return [];
+  if (sinceSendMs > READER_ASK_MAX_SINCE_SEND_MS) return [];
   const out = [];
   for (let at = READER_ASK_FIRST_MS; at <= READER_ASK_MAX_SINCE_SEND_MS; at += READER_ASK_EVERY_MS) {
     const delay = at - sinceSendMs;
-    if (delay < 0) continue;
+    if (delay < 0) {
+      // Only the newest passed ask time is inside one gap, so this adds at most one ask.
+      if (delay > -READER_ASK_EVERY_MS) out.push(0);
+      continue;
+    }
     if (delay >= READER_ASK_HORIZON_MS) break;
     out.push(delay);
   }
   return out;
+}
+
+/**
+ * THE SECOND TRIGGER (review 13 Oct): the asks a REFUSED PAY PRESS books for the job that is
+ * holding the reader. The cron is the timer's only other trigger and on 13 Oct its calls did
+ * not arrive for 15 minutes. A press that is refused is the moment the lock hurts, so the press
+ * itself asks: once now, then at every timer ask time still ahead, up to
+ * BUSY_PRESS_ASK_UNTIL_MS since the send. Nothing before the timer's own first ask (45 s), and
+ * nothing once the 5 minute lease has passed. Delays in ms from now.
+ * @param {{ sinceSendMs: number }} p
+ * @returns {number[]}
+ */
+export function planBusyPressAsks({ sinceSendMs } = {}) {
+  if (typeof sinceSendMs !== 'number' || !Number.isFinite(sinceSendMs)) return [];
+  if (sinceSendMs < READER_ASK_FIRST_MS || sinceSendMs > READER_ASK_MAX_SINCE_SEND_MS) return [];
+  const out = [0];
+  for (let at = READER_ASK_FIRST_MS; at <= BUSY_PRESS_ASK_UNTIL_MS; at += READER_ASK_EVERY_MS) {
+    const delay = at - sinceSendMs;
+    if (delay > 0) out.push(delay);
+  }
+  return out;
+}
+
+/**
+ * Which busy job a refused Pay press asks about, and when: the same job the timer would ask
+ * about (an Adyen job that was really sent), from the busy detail terminal-job-create already
+ * holds (repeatDetail: job_id, status, processor, sent_at, source). A job the device drives
+ * itself over the local bridge is left alone, by the same rule as everywhere else.
+ * @param {object} busy  repeatDetail of the live job
+ * @param {object} [opts]
+ * @param {number} [opts.now]                epoch ms
+ * @param {string} [opts.terminalDeviceUid]  terminal_devices.device_uid of the busy job's reader
+ * @param {string} [opts.posDeviceUid]       devices.device_uid of the busy job's till
+ * @returns {number[]} delays in ms from now; [] = do not ask
+ */
+export function busyPressAskDelays(busy, { now = Date.now(), terminalDeviceUid = null, posDeviceUid = null } = {}) {
+  if (!busy || typeof busy !== 'object' || !busy.job_id) return [];
+  if (busy.processor !== 'adyen' || busy.status !== 'charging') return [];
+  const sent = ms(busy.sent_at);
+  if (!Number.isFinite(sent)) return [];
+  if (isLocalBridgeJob({ checkDraft: { source: busy.source }, terminalDeviceUid, posDeviceUid })) return [];
+  return planBusyPressAsks({ sinceSendMs: now - sent });
 }
 
 /**
@@ -269,6 +353,11 @@ export const noPaymentNoteKey = (jobId) => `reader-no-payment:${jobId}`;
  * The activity note for a payment the server cancelled because the card machine never took it.
  * Severity 'action' pops a toast with a chime on every till at the venue (src/lib/realtime.js),
  * which is how staff learn the card machine is free again.
+ *
+ * The till shows the title, then the body, in ONE toast for 2.8 s, so the title carries what
+ * staff need at a glance (the card machine is free, the amount was not charged) and the body
+ * opens with what to do. "Take the payment again" is said only for a customer who has not paid
+ * another way: on 13 Oct the customer had paid on the other till long before the lock cleared.
  * @param {object} p
  * @param {'never_received'|'no_answer'} p.kind
  * @returns {{ title: string, body: string, severity: 'action' }}
@@ -281,10 +370,10 @@ export function noPaymentNote({ kind, amountMinor, currency, sentAt, tz, ref, ta
   const held = heldWords(heldMs);
   const cancelled = `The payment was cancelled${held ? ` after ${held}` : ''} and the card machine is free.`;
   const body = kind === 'never_received'
-    ? `${sent} The card machine never received it. Nothing was charged. ${cancelled} Take the payment again.`
-    : `${sent} The card machine did not answer and Adyen has no record of a payment. Nothing was charged. ${cancelled} `
-      + 'Check the card machine is on and online, then take the payment again.';
-  return { title: `Card machine did not take ${amt}${ref ? ` (${ref})` : ''}`, body, severity: 'action' };
+    ? `If the customer has not paid another way, take the payment again. ${sent} The card machine never received it. Nothing was charged. ${cancelled}`
+    : `If the customer has not paid another way, check the card machine screen, then take the payment again. ${sent} `
+      + `The card machine did not answer and Adyen has no record of a payment. Nothing was charged. ${cancelled}`;
+  return { title: `Card machine is free. ${amt}${ref ? ` (${ref})` : ''} was not charged.`, body, severity: 'action' };
 }
 
 /** The key of the one urgent note a job gets when Adyen shows money for a payment we cancelled. */

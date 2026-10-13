@@ -22,12 +22,20 @@
 //                   "not sent yet" any more. It is cancelled only on PROOF the
 //                   payment never reached the reader (_shared/readerLock.js),
 //                   else left as it is and asked again. Nothing re sends it.
+//                   Review 13 Oct: a status ask WE cut off (our 30 s limit) is
+//                   not an answer and waits for the send to be dead like a
+//                   timer; every "no answer" cancel reads Adyen's ledger a
+//                   second time 10 s later; and it names the attempt it asked
+//                   about (the service id) in its compare and set.
 //   'sweep_unsent'  (9 Sep 2026) re-kick 'start' for cloud jobs stranded in
 //                   charging_unsent. SERVICE ROLE ONLY (pg_cron, every minute,
 //                   every venue). See the action block for the exact rule.
 //                   13 Oct 2026: the same cron also asks the reader about every
 //                   sent job from 45 s after the send (runReaderAskSweep) and
 //                   watches for money on a job we cancelled (runLateMoneyWatch).
+//                   The cron is not the only trigger for those asks: a Pay
+//                   press refused as TERMINAL_BUSY books them too
+//                   (terminal-job-create, scheduleBusyAsks).
 //
 // MONEY-SAFETY (inherited verbatim from terminal-job-charge):
 //   • CAS write-ahead: UPDATE … SET status='charging' WHERE status='charging_unsent'
@@ -41,6 +49,9 @@
 //     settle jobs; since v5.11.16 it only triggers the tip heal on AUTHORISATION.
 //     13 Oct 2026: such an exit of 'start' also writes a "send ended" marker
 //     (how Adyen answered, or that it did not) and asks the reader 3 s later.
+//   • An APPROVED answer that meets a job already cancelled or expired can
+//     never change it (the settle function keeps settled rows as they are), so
+//     the settle tells the venue at once (lateMoneyAtSettle, one urgent note).
 //   • A tip added on the reader is NEVER settled away (v5.11.16, R3618): the tip
 //     write is retried and verified, and if it cannot be recorded the settle is
 //     deferred (SettleDeferred, 200 state 'processing') for recovery to settle
@@ -84,7 +95,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { findSameCardRepeat, sameCardAlert, cardKeyOf, SAME_CARD_WINDOW_MS } from '../_shared/repeatCharge.js';
 // 13 Oct 2026: a card machine is never left locked by a payment it never had.
 import {
-  STATUS_ASK_TIMEOUT_MS, TENDER_STALL_MS, SEND_ENDED_ASK_AFTER_MS, BUSY_CLEARS_AFTER_MS,
+  STATUS_ASK_TIMEOUT_MS, TENDER_STALL_MS, SEND_ENDED_ASK_AFTER_MS, BUSY_CLEARS_AFTER_MS, LEDGER_RECHECK_MS,
   READER_ASK_MAX_SINCE_SEND_MS, READER_ASK_LIMIT, LATE_MONEY_WINDOW_MS, LATE_MONEY_LIMIT,
   NEVER_RECEIVED_REASON, NEVER_RECEIVED_ERROR,
   sendEndedKey, sendEndedRecord, sendAnswered, neverReceivedVerdict, timerMustWait, selectReaderAskJobs,
@@ -244,6 +255,13 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_source: source,
     p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
+  // Review 13 Oct: an APPROVED answer for a job we already cancelled is said at once (see
+  // lateMoneyAtSettle). Only for an answer that came from Adyen itself, never a device's claim.
+  if (success && TRUSTED_AMOUNT_SOURCES.has(source)) {
+    await lateMoneyAtSettle(jobId, settled, {
+      amountMinor: effectiveAuthorized ?? chargeMinor, card: settleCard(p), paidAt: Date.now(), psp: p.pspReference ?? null, by: source,
+    });
+  }
   await afterSettle(jobId, settled, { success, psp: p.pspReference, merchantAccount, authorizedMinor: effectiveAuthorized, chargeMinor });
   // v5.11.16 ALERT + SELF-CORRECT: a settle that PARKED the job with a
   // different amount stores both figures (Back Office shows them) and the
@@ -429,6 +447,14 @@ async function settleFromLedger(job: any, row: any, opts: { allowPark: boolean; 
     p_source: opts.source ?? 'adyen_ledger',
     p_session_amount_minor: approved ? (plan.amountMinor ?? null) : null,
   });
+  // Review 13 Oct: the same for an approved ledger row (HMAC verified above) that meets a
+  // job another call cancelled a moment ago.
+  if (approved) {
+    await lateMoneyAtSettle(job.id, settled, {
+      amountMinor: plan.amountMinor ?? ledgerAuthAmount(row), currency: row?.currency ?? null, card: row?.card ?? null,
+      paidAt: row?.created_at ?? null, psp, event: row?.last_event_code ?? null, by: opts.source ?? 'adyen_ledger',
+    });
+  }
   await afterSettle(job.id, settled, { success: approved, psp, merchantAccount: row?.merchant_account ?? null, authorizedMinor: approved ? (plan.amountMinor ?? null) : null, chargeMinor });
   await reportParkedMismatch(opsAdmin, platformAdmin, job.id, settled, {
     success: approved, authorizedMinor: approved ? (plan.amountMinor ?? null) : null, chargeMinor, source: opts.source ?? 'adyen_ledger',
@@ -436,6 +462,13 @@ async function settleFromLedger(job: any, row: any, opts: { allowPark: boolean; 
   });
   return { result: 'settled' };
 }
+
+// What staff read when a send ends with no payment answer (review 13 Oct). The
+// till shows it after "Could not reach the card machine: ". It used to be a
+// code word, a dash and three words of jargon, which is what Barnsley read at
+// 12:41:18 on 12 Oct. Nothing in the app matches on this text; the code beside
+// it (UNKNOWN_OUTCOME) is what it always was.
+const UNKNOWN_OUTCOME_WORDS = 'The card machine did not answer. Checking what happened.';
 
 // The answer to a settle the database could not record yet: the job stays in
 // flight, the till keeps watching it, recovery settles it. 200 on purpose, so
@@ -612,7 +645,13 @@ function scheduleSelfAsk(jobId: string, delayMs: number, askedBy: string): Promi
 // on every till at the venue, which is how staff learn the reader is free.
 // Called only by the call whose cancel update returned one row. Best effort:
 // never throws, and never changes or delays the cancel beyond its own retries.
-async function raiseNoPaymentNote(job: any, kind: 'never_received' | 'no_answer', askedBy: string): Promise<void> {
+// `caller` is WHO the cancel is recorded against: the signed in user or device
+// id of the ask that won (a manager's Release, a till), or 'service_role' for
+// a timer. It comes from the verified sign in, never from the request body
+// (asked_by is a label any caller can send). Review 13 Oct: Back Office tells a
+// manager "This is recorded against your name", and since the server now
+// cancels the payment before release_terminal_jobs runs, this row is where.
+async function raiseNoPaymentNote(job: any, kind: 'never_received' | 'no_answer', askedBy: string, caller: string): Promise<void> {
   try {
     let tz = 'Europe/London';
     let readerLabel: string | null = null;
@@ -641,7 +680,7 @@ async function raiseNoPaymentNote(job: any, kind: 'never_received' | 'no_answer'
     if (told === 'inserted') {
       console.log(`adyen-terminal-charge: job ${job.id} cancelled as ${kind} (asked by ${askedBy}), venue told: ${note.title}`);
       await logDurable(platformAdmin, noPaymentNoteKey(job.id), {
-        kind, job: job.id, service_id: job.nexo_service_id ?? null, asked_by: askedBy,
+        kind, job: job.id, service_id: job.nexo_service_id ?? null, asked_by: askedBy, caller,
         held_ms: heldMs, charge: job.charge_minor ?? null, status_before: job.status,
       });
     } else if (told === 'failed') {
@@ -702,12 +741,81 @@ async function runReaderAskSweep(locationId: string | null): Promise<void> {
   }
 }
 
+// MONEY ON A PAYMENT WE CANCELLED: tell the venue, ONCE per job (the note's id
+// comes from its key late-money:<job>, so the watch below and a settle that
+// meets the cancelled job can both call this and staff still get one note).
+// It NEVER changes a job and NEVER books a sale; a person decides. Never throws.
+async function tellLateMoney(job: any, f: {
+  amountMinor: number | null; currency?: string | null; card?: unknown; paidAt?: string | number | null;
+  psp?: string | null; event?: string | null; by: string;
+}, zones?: Map<string, string>): Promise<'inserted' | 'exists' | 'failed'> {
+  try {
+    let tz = zones?.get(job.location_id);
+    if (!tz) {
+      tz = 'Europe/London';
+      try {
+        const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', job.location_id).maybeSingle();
+        if (loc?.timezone) tz = String(loc.timezone);
+      } catch { /* the default zone */ }
+      zones?.set(job.location_id, tz);
+    }
+    const d = (job.check_draft && typeof job.check_draft === 'object' ? job.check_draft : {}) as Record<string, unknown>;
+    const alert = lateMoneyAlert({
+      amountMinor: f.amountMinor ?? job.charge_minor ?? job.due_minor,
+      currency: f.currency ?? job.currency,
+      card: f.card ?? null,
+      paidAt: f.paidAt ?? null,
+      tz,
+      ref: (d.orderRef as string | undefined) ?? null,
+    });
+    const told = await insertActivity(opsAdmin, job, alert, lateMoneyAlertKey(job.id));
+    if (told === 'inserted') {
+      console.error(`adyen-terminal-charge: MONEY ON A CANCELLED JOB ${job.id} (psp ${f.psp ?? 'not known'}, seen by ${f.by}): ${alert.title}`);
+      await logDurable(platformAdmin, lateMoneyAlertKey(job.id), {
+        job: job.id, job_status: job.status, psp: f.psp ?? null,
+        amount: f.amountMinor ?? null, currency: f.currency ?? job.currency ?? null, event: f.event ?? null, by: f.by,
+      });
+    } else if (told === 'failed') {
+      console.error(`adyen-terminal-charge: late money note for job ${job.id} could not be written; the watch tries again`);
+    }
+    return told;
+  } catch (e) {
+    console.error(`adyen-terminal-charge: late money note for job ${job?.id} failed: ${(e as Error)?.message || e}`);
+    return 'failed';
+  }
+}
+
+// SAID AT ONCE (review 13 Oct). When a settle holds an APPROVED answer and the
+// database says the job is already cancelled or expired (the settle function
+// never changes a settled job: it answers idempotent with that status), this
+// function knows at that second that money was taken with no sale. The watch
+// would say so a minute or more later, and that minute is when staff ring the
+// order again. So the settle says it now, with the same key. Best effort,
+// never throws, never blocks or changes the settle.
+async function lateMoneyAtSettle(jobId: string, settled: any, f: {
+  amountMinor: number | null; currency?: string | null; card?: unknown; paidAt?: string | number | null;
+  psp?: string | null; event?: string | null; by: string;
+}): Promise<void> {
+  try {
+    if (!(settled?.ok === true && settled?.idempotent === true && (settled?.status === 'cancelled' || settled?.status === 'expired'))) return;
+    const { data: j } = await opsAdmin.from('terminal_jobs')
+      .select('id, location_id, processor, status, charge_minor, due_minor, currency, check_draft, simulated, training')
+      .eq('id', jobId).maybeSingle();
+    if (!j || j.processor !== 'adyen' || j.simulated === true || j.training === true) return;
+    if (j.status !== 'cancelled' && j.status !== 'expired') return;
+    await tellLateMoney(j, f);
+  } catch (e) {
+    console.error(`adyen-terminal-charge: late money check at settle for job ${jobId} failed: ${(e as Error)?.message || e}`);
+  }
+}
+
 // THE LATE MONEY WATCH (rides 'sweep_unsent' too). A job that ended cancelled
 // or expired says "nothing was charged". If Adyen's own ledger later holds an
 // approved payment for it (HMAC verified, not refunded or reversed), a person
 // must be told: ONE urgent note per job. It replaces the "confirmed late"
-// cover such a job had when it ended 'unknown'. Two small reads a run. It
-// NEVER changes a job and NEVER books a sale; a person decides. Never throws.
+// cover such a job had when it ended 'unknown', and looks back as far (3 days).
+// Two small reads a run. It NEVER changes a job and NEVER books a sale; a
+// person decides. Never throws.
 async function runLateMoneyWatch(locationId: string | null): Promise<void> {
   try {
     const now = Date.now();
@@ -734,34 +842,10 @@ async function runLateMoneyWatch(locationId: string | null): Promise<void> {
       if (!job) continue;
       if (ledgerApproval(row) !== 'approved') continue;                       // refunded, reversed or changed: not this note
       if ((await ledgerRowVerified(opsAdmin, row, job.id)) !== true) continue; // an unsigned row tells nobody anything
-      let tz = zones.get(job.location_id);
-      if (!tz) {
-        tz = 'Europe/London';
-        try {
-          const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', job.location_id).maybeSingle();
-          if (loc?.timezone) tz = String(loc.timezone);
-        } catch { /* the default zone */ }
-        zones.set(job.location_id, tz);
-      }
-      const d = (job.check_draft && typeof job.check_draft === 'object' ? job.check_draft : {}) as Record<string, unknown>;
-      const alert = lateMoneyAlert({
-        amountMinor: ledgerAuthAmount(row) ?? job.charge_minor ?? job.due_minor,
-        currency: row.currency ?? job.currency,
-        card: row.card ?? null,
-        paidAt: row.created_at ?? null,
-        tz,
-        ref: (d.orderRef as string | undefined) ?? null,
-      });
-      const told = await insertActivity(opsAdmin, job, alert, lateMoneyAlertKey(job.id));
-      if (told === 'inserted') {
-        console.error(`adyen-terminal-charge: MONEY ON A CANCELLED JOB ${job.id} (psp ${row.psp_reference}): ${alert.title}`);
-        await logDurable(platformAdmin, lateMoneyAlertKey(job.id), {
-          job: job.id, job_status: job.status, psp: row.psp_reference ?? null,
-          amount: ledgerAuthAmount(row), currency: row.currency ?? null, event: row.last_event_code ?? null,
-        });
-      } else if (told === 'failed') {
-        console.error(`adyen-terminal-charge late money watch: note for job ${job.id} could not be written; the next run tries again`);
-      }
+      await tellLateMoney(job, {
+        amountMinor: ledgerAuthAmount(row), currency: row.currency ?? null, card: row.card ?? null,
+        paidAt: row.created_at ?? null, psp: row.psp_reference ?? null, event: row.last_event_code ?? null, by: 'late_money_watch',
+      }, zones);
     }
   } catch (e) {
     console.error(`adyen-terminal-charge late money watch failed: ${(e as Error)?.message || e}`);
@@ -855,7 +939,7 @@ Deno.serve(async (req) => {
     action?: string; job_id?: string; response?: unknown;
     location_id?: string;   // sweep_unsent: optional venue scope (the action itself is service role only)
     kicked_by?: string;     // start: who fired this kick (terminal-job-create | sweep_unsent), for the log only
-    asked_by?: string;      // result: who is asking (a till, manager_release, reader_ask_sweep, send_ended), for the log and the note's trail
+    asked_by?: string;      // result: who is asking (a till, manager_release, reader_ask_sweep, send_ended, busy_press), for the log and the note's trail
     conservative?: boolean; // result: true = a timer is asking. ANY caller may pass it: it only ever makes this function more careful
     [k: string]: unknown;
   };
@@ -1737,7 +1821,7 @@ Deno.serve(async (req) => {
       // call throwing is NOT proof of anything (answered false): see readerLock.js.
       await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'no_answer', error: (e as Error)?.message ?? String(e), now: Date.now() }));
       scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
     if (!res.ok && res.status >= 400 && res.status < 500) {
       // Definitive rejection before any card interaction — nothing charged.
@@ -1755,7 +1839,7 @@ Deno.serve(async (req) => {
       // 13 Oct 2026: an Adyen error that is not a clean refusal. Not proof (answered false).
       await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'adyen_error', httpStatus: res.status, body: res.data, now: Date.now() }));
       scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
 
     const parsed = parsePaymentResponse(res.data);
@@ -1770,7 +1854,7 @@ Deno.serve(async (req) => {
       // a reader that then says "not found" for this service id never had the payment.
       await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'answered_no_payment', httpStatus: res.status, body: res.data, now: Date.now() }));
       scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
     try { await settleFromResponse(job.id, parsed, 'charge_sync', chargeMinor, maa.merchant_account); }
     catch (e) {
@@ -1856,6 +1940,8 @@ Deno.serve(async (req) => {
       ? body.asked_by.trim().slice(0, 40)
       : (isServiceRole ? 'service_role' : 'till');
     console.log(`adyen-terminal-charge: result asked for job ${job.id} by ${askedBy}${conservative ? ' (conservative)' : ''} (status ${job.status})`);
+    // Who a cancel made by this ask is recorded against: the verified sign in, never the body.
+    const callerId = isServiceRole ? 'service_role' : String(callerUid ?? '');
     if (SETTLED.includes(job.status)) return json(await withCapture(settledBody(job), job));
     // "Still in flight", with the reason and the times a caller can show. An old till
     // reads ok, state and status exactly as before and ignores the rest. `why` is one of
@@ -1911,8 +1997,16 @@ Deno.serve(async (req) => {
     // the reader was silent and the till was locked). A status ask that times out or throws
     // is "could not be reached", exactly like a refused one: the branch below decides, by
     // the same rules. It never ends this call as a 500 and never decides anything by itself.
+    //
+    // Review 13 Oct: BUT AN ASK WE CUT OFF IS NOT AN ANSWER (askThrew). In the week to 13 Oct
+    // our 30 s limit ran out on 8 jobs: 6 were LIVE payments and 2 of those were approved
+    // seconds later (Headingley 22f54a98, Barnsley bfac9814). Only 2 were dead readers. So an
+    // ask that threw never feeds the 120 s rule, whoever asked: it waits for the send to be
+    // dead (155 s) exactly like a timer. A real answer from Adyen that is not a 2xx keeps the
+    // 120 s rule as it was.
     // deno-lint-ignore no-explicit-any
     let res: { ok: boolean; status?: number; data: any };
+    let askThrew = false;
     if (noTarget) {
       res = { ok: false, data: null };
     } else {
@@ -1920,6 +2014,7 @@ Deno.serve(async (req) => {
         res = await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: STATUS_ASK_TIMEOUT_MS });
       } catch (e) {
         console.error(`adyen-terminal-charge: result for job ${job.id}: the status ask did not come back (${(e as Error)?.message || e}), treated as could not be reached`);
+        askThrew = true;
         res = { ok: false, status: 0, data: null };
       }
     }
@@ -1940,6 +2035,18 @@ Deno.serve(async (req) => {
     const sinceSendMs = sinceSend();
     const waitWhy = (v: { verdict: string; ambiguous?: boolean }) =>
       (v.verdict === 'charged' || v.ambiguous === true || tenderStalled ? 'ledger_unclear' : 'no_answer_yet');
+    // Review 13 Oct: ONE MORE LOOK BEFORE A "NO ANSWER" CANCEL. The proof for a silent reader
+    // is "Adyen has no row for this job", and that row arrives a median 4.8 s after the
+    // reader's answer (7.6 s at the 99th centile). One read taken at once can miss a payment
+    // approved in the last few seconds, and the note that follows a cancel tells staff the
+    // card machine is free. So wait LEDGER_RECHECK_MS and read again: only a ledger that is
+    // STILL empty, read with no error, cancels. Nobody waits on a timer's ask, and a person's
+    // ask has usually spent 30 s on the reader already.
+    const ledgerStillEmpty = async (): Promise<boolean> => {
+      await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));
+      const again = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      return again.verdict === 'nothing';
+    };
     if (!res.ok) {
       // The terminal could not be reached. Adyen's ledger is the fallback, and
       // it is the branch that actually matters in service: a dead terminal used
@@ -1950,16 +2057,21 @@ Deno.serve(async (req) => {
         return processing('no_answer_yet');
       }
       // 13 Oct 2026: a TIMER never cancels a silent reader before the send is dead (155 s
-      // from the send; the slowest real approval was 132 s). A till or a person keeps the
-      // 120 s rule above.
-      if (v.verdict === 'nothing' && timerMustWait({ conservative, sinceSendMs })) return processing('no_answer_yet');
+      // from the send; the slowest real approval was 132 s). Nor does an ask WE cut off
+      // (askThrew, see the status ask above). A till or a person whose ask Adyen really
+      // answered keeps the 120 s rule above.
+      if (v.verdict === 'nothing' && timerMustWait({ conservative: conservative || askThrew, sinceSendMs })) return processing('no_answer_yet');
       if (v.verdict === 'nothing') {
+        if (!(await ledgerStillEmpty())) return processing('ledger_unclear');
+        // The service id is in the compare too: an old answer never cancels a job that was sent again.
         const { data: won } = await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
-          .eq('id', job.id).in('status', ['charging', 'unknown']).select('id');
+          .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id).select('id');
         // Only the call whose update won tells the venue (one note per job).
-        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy);
+        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy, callerId);
         const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        // Another path changed the job first and it is still open (it was sent again): say so.
+        if (st && !SETTLED.includes(st.status)) return processing('no_answer_yet', { status: st.status });
         return json(await withCapture(settledBody(st ?? job), st ?? job));
       }
       return processing(waitWhy(v));
@@ -2000,8 +2112,10 @@ Deno.serve(async (req) => {
           reason: 'MerchantAbort',
         });
         await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
-        // Give a racing authorisation a moment to reach the ledger, then look again.
-        await new Promise((r) => setTimeout(r, 2_000));
+        // Give a racing authorisation time to reach the ledger, then look again. Review 13 Oct:
+        // this wait was 2 s, under the measured lag (the webhook lands a median 4.8 s after the
+        // reader's answer), and a manager's Release can now reach this abort.
+        await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));
         const after = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
         if (after.verdict === 'charged') {
           // The tender is being ended and the ledger is the truth: an amount it
@@ -2033,11 +2147,14 @@ Deno.serve(async (req) => {
       // 13 Oct 2026: the same wait for a TIMER as in the unreachable branch above.
       if (v.verdict === 'nothing' && timerMustWait({ conservative, sinceSendMs })) return processing('no_answer_yet');
       if (v.verdict === 'nothing') {
+        if (!(await ledgerStillEmpty())) return processing('ledger_unclear');
         const { data: won } = await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
-          .eq('id', job.id).in('status', ['charging', 'unknown']).select('id');
-        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy);
+          .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id).select('id');
+        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy, callerId);
         const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        // Another path changed the job first and it is still open (it was sent again): say so.
+        if (st && !SETTLED.includes(st.status)) return processing('no_answer_yet', { status: st.status });
         return json(await withCapture(settledBody(st ?? job), st ?? job));
       }
       return processing(waitWhy(v));
@@ -2099,7 +2216,7 @@ Deno.serve(async (req) => {
         job: job.id, service_id: job.nexo_service_id, status: job.status, since_send_ms: sinceSendMs,
         marker_how: marker?.how ?? null, marker_at: marker?.at ?? null,
         ledger_rows: fresh.rows.length, ledger_error: fresh.error,
-        verdict: proof, asked_by: askedBy, conservative, caller: isServiceRole ? 'service_role' : callerUid,
+        verdict: proof, asked_by: askedBy, conservative, caller: callerId,
       });
       if (!proof.proven) {
         const why = String(proof.why ?? 'not_found_waiting');
@@ -2111,7 +2228,7 @@ Deno.serve(async (req) => {
         .update({ status: 'cancelled', decline_reason: NEVER_RECEIVED_REASON, last_error: NEVER_RECEIVED_ERROR, updated_at: new Date().toISOString() })
         .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id)
         .select('id');
-      if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'never_received', askedBy);
+      if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'never_received', askedBy, callerId);
       const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
       // Another path changed the job first (settled, or sent again): say what it is now.
       if (st && !SETTLED.includes(st.status)) return processing('not_found_waiting', { status: st.status });

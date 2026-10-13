@@ -66,7 +66,8 @@
 // payment the reader never received kept the reader "busy" for 310 s, and the refusal said
 // "still taking 6.00" when the reader had nothing. For a live job with processor 'adyen' the
 // words now say what is known: 45 s or more after the send it "has not finished" and when it
-// clears by itself; a job never sent "has not gone to the card machine". Everything else (a
+// should clear by itself (and, once that time has passed, that a manager can release it); a
+// job never sent "has not gone to the card machine". Everything else (a
 // young Adyen job, PAX and Ryft jobs, the other tiers) keeps the words it had. The numbers
 // live in _shared/readerLock.js. That file imports this file's formatters and this file
 // imports its 45 s line and "clears by" time; neither uses the other while loading (only
@@ -384,14 +385,25 @@ export function repeatMessage(hit, { tz } = {}) {
     const refPart = ref ? ` (${ref})` : '';
     // 13 Oct 2026: an Adyen job the reader may never have received. Only for processor 'adyen'.
     if (j.processor === 'adyen' && j.status === 'charging' && Number(j.age_ms) >= READER_ASK_FIRST_MS) {
-      const clears = fmtTime(busyClearsAtMs(j.sent_at), tz);
+      // Review 13 Oct: these words never looked at the clock, so a press at 07:41:44 and one at
+      // 07:42:20 were still promised "by about 07:41". The detail carries when it was read
+      // (at + age_ms). Once the promised time has passed, say who can clear it; before that
+      // the time is "should", because a payment the card machine says is in progress is never
+      // ended by a timer.
+      const clearsAt = busyClearsAtMs(j.sent_at);
+      const readAt = ms(j.at) + Number(j.age_ms);
+      if (Number.isFinite(clearsAt) && Number.isFinite(readAt) && readAt > clearsAt) {
+        return `The card machine has still not finished ${amt} ${forWhat} sent at ${when}${refPart}. `
+          + 'Ask a manager to press Release stuck payment in Back Office, Card readers, Advanced.';
+      }
+      const clears = fmtTime(clearsAt, tz);
       return `The card machine has not finished ${amt} ${forWhat} sent at ${when}${refPart}. `
-        + `If the customer is paying on it, wait. If it shows nothing, this clears by itself${clears ? ` by about ${clears}` : ' in about 3 minutes'}. `
+        + `If the customer is paying on it, wait. If it shows nothing, this should clear by itself${clears ? ` by about ${clears}` : ' in about 3 minutes'}. `
         + 'Then press Card again.';
     }
     if (j.processor === 'adyen' && j.status === 'charging_unsent') {
       return `${amt} ${forWhat} sent at ${when}${refPart} has not gone to the card machine. `
-        + 'Try again in a minute, or a manager can clear it in Back Office, Card readers, Release stuck payment.';
+        + 'Try again in a minute, or a manager can clear it in Back Office, Card readers, Advanced, Release stuck payment.';
     }
     return `The card machine is still taking ${amt} ${forWhat} sent at ${when}${refPart}. `
       + 'If it is this customer, do not send it again.';

@@ -403,7 +403,7 @@ test('a live Adyen job 25 s after the send keeps today\'s exact sentence', () =>
 
 test('13 Oct, the 07:39:32 Pay press: an Adyen job 50 s or more after the send "has not finished", with when it clears on the venue clock', () => {
   const NEW = 'The card machine has not finished £6.00 for the order sent at 07:37 (R14202). If the customer is paying on it, wait. '
-    + 'If it shows nothing, this clears by itself by about 07:41. Then press Card again.';
+    + 'If it shows nothing, this should clear by itself by about 07:41. Then press Card again.';
   assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], at(50)), { tz: TZ }), NEW);
   assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse(SENT_0737) + READER_ASK_FIRST_MS), { tz: TZ }), NEW, 'exactly on the line');
   // The real press, 102 s after the send. Still refused, never overridable, with the new words.
@@ -418,17 +418,44 @@ test('13 Oct, the 07:39:32 Pay press: an Adyen job 50 s or more after the send "
   // A table reads as the table, and the venue clock is the venue's (Los Angeles is 8 hours behind London).
   const table = stuck({ check_draft: draft([], 'R14202', { tableId: 'T3', tableLabel: 'T3' }) });
   assert.equal(repeatMessage(findPossibleRepeat(nextPress, [table], at(50)), { tz: TZ }),
-    'The card machine has not finished £6.00 for T3 sent at 07:37 (R14202). If the customer is paying on it, wait. If it shows nothing, this clears by itself by about 07:41. Then press Card again.');
+    'The card machine has not finished £6.00 for T3 sent at 07:37 (R14202). If the customer is paying on it, wait. If it shows nothing, this should clear by itself by about 07:41. Then press Card again.');
   assert.match(repeatMessage(findPossibleRepeat(nextPress, [stuck({ currency: 'USD' })], at(50)), { tz: 'America/Los_Angeles' }),
     /^The card machine has not finished \$6\.00 for the order sent at 23:37 \(R14202\)\. .* by about 23:41\. Then press Card again\.$/);
   // No ref on the draft: no brackets.
   assert.match(repeatMessage(findPossibleRepeat(nextPress, [stuck({ check_draft: draft([], null) })], at(50)), { tz: TZ }), /sent at 07:37\. If the customer/);
 });
 
+test('13 Oct, the 07:41:44 and 07:42:20 presses: once the promised time has passed the words stop promising it and say who can clear it', () => {
+  // Sent 07:37:50, so "by about 07:41" means 07:41:00, 190 s after the send. The words never
+  // looked at the clock: the presses at 234 s and 270 s were still told "by about 07:41".
+  const PASSED = 'The card machine has still not finished £6.00 for the order sent at 07:37 (R14202). '
+    + 'Ask a manager to press Release stuck payment in Back Office, Card readers, Advanced.';
+  const BEFORE = 'The card machine has not finished £6.00 for the order sent at 07:37 (R14202). If the customer is paying on it, wait. '
+    + 'If it shows nothing, this should clear by itself by about 07:41. Then press Card again.';
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse('2026-10-13T06:41:44.000Z')), { tz: TZ }), PASSED, '234 s after the send');
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse('2026-10-13T06:42:20.000Z')), { tz: TZ }), PASSED, '270 s');
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse('2026-10-13T06:42:55.000Z')), { tz: TZ }), PASSED, '305 s');
+  // The line is the promised minute itself: 07:41:00 still promises, one millisecond later does not.
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse('2026-10-13T06:41:00.000Z')), { tz: TZ }), BEFORE);
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], Date.parse('2026-10-13T06:41:00.001Z')), { tz: TZ }), PASSED);
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck()], at(189)), { tz: TZ }), BEFORE, '189 s');
+  // Still a refusal that can never be overridden, and still only for an Adyen job.
+  const hit = findPossibleRepeat(nextPress, [stuck()], at(234));
+  assert.equal(repeatRefusal(hit, hit.job.job_id, { tz: TZ }).code, 'TERMINAL_BUSY');
+  assert.equal(repeatRefusal(hit, hit.job.job_id, { tz: TZ }).error, PASSED);
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: 'ryft' })], at(234)), { tz: TZ }), TODAY);
+  // A table reads as the table. The place named is where the button is in Back Office.
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ check_draft: draft([], 'R14202', { tableId: 'T3', tableLabel: 'T3' }) })], at(234)), { tz: TZ }),
+    'The card machine has still not finished £6.00 for T3 sent at 07:37 (R14202). Ask a manager to press Release stuck payment in Back Office, Card readers, Advanced.');
+  assert.ok(!/[–—]| - /.test(PASSED));
+  // The busy words promise no more than the note's own numbers: "should", never a bare "clears".
+  assert.ok(!/this clears by itself/.test(BEFORE));
+});
+
 test('an Adyen job that was never sent "has not gone to the card machine", at any age', () => {
   const unsent = stuck({ status: 'charging_unsent', dispatched_at: null, created_at: SENT_0737 });
   const NEW = '£6.00 for the order sent at 07:37 (R14202) has not gone to the card machine. '
-    + 'Try again in a minute, or a manager can clear it in Back Office, Card readers, Release stuck payment.';
+    + 'Try again in a minute, or a manager can clear it in Back Office, Card readers, Advanced, Release stuck payment.';
   for (const s of [2, 25, 50, 200]) assert.equal(repeatMessage(findPossibleRepeat(nextPress, [unsent], at(s)), { tz: TZ }), NEW, `${s} s`);
   assert.equal(repeatRefusal(findPossibleRepeat(nextPress, [unsent], at(50)), null, { tz: TZ }).code, 'TERMINAL_BUSY');
 });
@@ -468,6 +495,7 @@ test('no em or en dash in any of the busy words', () => {
   const lines = [
     repeatMessage(findPossibleRepeat(nextPress, [stuck()], at(25)), { tz: TZ }),
     repeatMessage(findPossibleRepeat(nextPress, [stuck()], at(50)), { tz: TZ }),
+    repeatMessage(findPossibleRepeat(nextPress, [stuck()], at(270)), { tz: TZ }),
     repeatMessage(findPossibleRepeat(nextPress, [stuck({ status: 'charging_unsent' })], at(50)), { tz: TZ }),
     repeatMessage(findPossibleRepeat(nextPress, [stuck({ dispatched_at: 'not a date', created_at: 'nor this' })], at(50)), { tz: TZ }),
   ];

@@ -19,8 +19,9 @@ import {
   STATUS_ASK_TIMEOUT_MS, TENDER_STALL_MS, SEND_DEAD_AFTER_MS, READER_ASK_FIRST_MS, READER_ASK_EVERY_MS,
   READER_ASK_HORIZON_MS, READER_ASK_MAX_SINCE_SEND_MS, READER_ASK_LIMIT, SEND_ENDED_ASK_AFTER_MS,
   BUSY_CLEARS_AFTER_MS, LATE_MONEY_WINDOW_MS, LATE_MONEY_LIMIT, NEVER_RECEIVED_REASON, NEVER_RECEIVED_ERROR,
+  LEDGER_RECHECK_MS, BUSY_PRESS_ASK_UNTIL_MS,
   sendEndedKey, sendEndedRecord, sendAnswered, neverReceivedVerdict, timerMustWait,
-  planReaderAsks, selectReaderAskJobs, roundUpToMinute, busyClearsAtMs, heldWords,
+  planReaderAsks, planBusyPressAsks, busyPressAskDelays, selectReaderAskJobs, roundUpToMinute, busyClearsAtMs, heldWords,
   noPaymentNote, noPaymentNoteKey, lateMoneyAlert, lateMoneyAlertKey,
 } from '../../../supabase/functions/_shared/readerLock.js';
 import { LOST_CAS_ASK_AFTER_MS } from '../../../supabase/functions/_shared/terminalKick.js';
@@ -156,38 +157,117 @@ test('timerMustWait: a timer waits under 155 s, not at 155 s; an ask from a till
 test('planReaderAsks: the asks fall at 45 s then every 20 s since the send, inside the next minute only', () => {
   const at = (sinceSendMs) => planReaderAsks({ sinceSendMs }).map((d) => (sinceSendMs + d) / 1000);
   assert.deepEqual(at(5_000), [45]);
-  assert.deepEqual(at(50_000), [65, 85, 105]);
-  assert.deepEqual(at(130_000), [145, 165, 185]);
+  // Past 45 s a tick also asks at once, for the ask time that passed just before it (see below).
+  assert.deepEqual(at(50_000), [50, 65, 85, 105]);
+  assert.deepEqual(at(130_000), [130, 145, 165, 185]);
   assert.deepEqual(planReaderAsks({ sinceSendMs: 5_000 }), [40_000]);
-  assert.deepEqual(planReaderAsks({ sinceSendMs: 45_000 }), [0, 20_000, 40_000], 'an ask that is due now has no delay');
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 45_000 }), [0, 20_000, 40_000], 'an ask that is due now has no delay, and is not doubled');
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 65_000 }), [0, 20_000, 40_000], 'exactly on a later ask time: one ask now, not two');
   assert.deepEqual(planReaderAsks({ sinceSendMs: 0 }), [45_000]);
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 44_999 }), [1, 20_001, 40_001], 'nothing is asked before 45 s');
   // Nothing past 320 s since the send: the database sweep owns the job by then.
-  assert.deepEqual(at(290_000), [305]);
-  assert.deepEqual(planReaderAsks({ sinceSendMs: 305_001 }), []);
-  assert.deepEqual(planReaderAsks({ sinceSendMs: 320_000 }), []);
+  assert.deepEqual(at(290_000), [290, 305]);
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 305_001 }), [0]);
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 320_000 }), [0]);
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 320_001 }), []);
   assert.deepEqual(planReaderAsks({ sinceSendMs: 3_600_000 }), []);
   for (const odd of [null, undefined, NaN, '50000']) assert.deepEqual(planReaderAsks({ sinceSendMs: odd }), [], String(odd));
   assert.deepEqual(planReaderAsks(), []);
 });
 
-test('planReaderAsks: delays are never negative and never 60 s or more; ticks a minute apart plan each ask exactly once', () => {
+test('planReaderAsks: delays are never negative and never 60 s or more; ticks a minute apart plan every ask time, plus one ask at each tick', () => {
   for (let since = 0; since <= 400_000; since += 1_700) {
-    for (const d of planReaderAsks({ sinceSendMs: since })) {
+    const delays = planReaderAsks({ sinceSendMs: since });
+    for (const d of delays) {
       assert.ok(d >= 0, `since ${since}: ${d}`);
       assert.ok(d < READER_ASK_HORIZON_MS, `since ${since}: ${d}`);
       assert.ok(since + d <= READER_ASK_MAX_SINCE_SEND_MS, `since ${since}: ${d}`);
     }
+    assert.ok(delays.filter((d) => d === 0).length <= 1, `since ${since}: at most one ask at once`);
+    assert.ok(delays.length <= 4, `since ${since}: at most four asks a tick`);
   }
-  // A job sent 7 s before a cron tick, then ticks every 60 s: every ask time from 45 s to 305 s, once.
+  // A job sent 7 s before a cron tick, then ticks every 60 s: every ask time from 45 s to 305 s is
+  // planned once, and each tick past 45 s adds its own ask at once (67 s, 127 s, 187 s, 247 s, 307 s).
   const planned = [];
-  for (let since = 7_000; since <= 400_000; since += 60_000) for (const d of planReaderAsks({ sinceSendMs: since })) planned.push(since + d);
-  const expected = [];
-  for (let t = READER_ASK_FIRST_MS; t <= READER_ASK_MAX_SINCE_SEND_MS; t += READER_ASK_EVERY_MS) expected.push(t);
-  assert.deepEqual(planned, expected);
-  assert.equal(expected.at(-1), 305_000);
+  const ticks = [];
+  for (let since = 7_000; since <= 400_000; since += 60_000) {
+    if (since > READER_ASK_FIRST_MS && since <= READER_ASK_MAX_SINCE_SEND_MS) ticks.push(since);
+    for (const d of planReaderAsks({ sinceSendMs: since })) planned.push(since + d);
+  }
+  const grid = [];
+  for (let t = READER_ASK_FIRST_MS; t <= READER_ASK_MAX_SINCE_SEND_MS; t += READER_ASK_EVERY_MS) grid.push(t);
+  assert.deepEqual(planned, [...grid, ...ticks].sort((a, b) => a - b));
+  assert.deepEqual(ticks, [67_000, 127_000, 187_000, 247_000, 307_000]);
+  assert.equal(grid.at(-1), 305_000);
 });
 
-test('13 Oct replay: sent 07:37:50, the timer asks at 45, 65, 85, 105 and 125 s; the 125 s ask comes back past the 155 s line', () => {
+test('Barnsley, 12 Oct: the cron call due at 11:44:00 arrived 4.6 s late, and the 165 s ask it missed is asked at once', () => {
+  // Sent 11:41:17.73 UTC. The calls arrived at 11:42:00.04, 11:43:00.04 and 11:44:04.63.
+  const sent = Date.parse('2026-10-12T11:41:17.730Z');
+  const plan = (iso) => { const since = Date.parse(iso) - sent; return planReaderAsks({ sinceSendMs: since }).map((d) => Math.round((since + d) / 100) / 10); };
+  assert.deepEqual(plan('2026-10-12T11:42:00.040Z'), [45, 65, 85]);
+  assert.deepEqual(plan('2026-10-12T11:43:00.040Z'), [102.3, 105, 125, 145]);
+  // 166.9 s after the send: 165 s passed 1.9 s ago and the tick before this one could not plan it.
+  assert.deepEqual(plan('2026-10-12T11:44:04.630Z'), [166.9, 185, 205, 225]);
+  // The first ask a silent reader can be freed by is the one that starts at 165 s or later.
+  assert.equal(timerMustWait({ conservative: true, sinceSendMs: 166_900 }), false);
+  // A tick a whole gap late (20 s or more) has nothing just missed to ask for: its own minute only.
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 85_000 + READER_ASK_EVERY_MS }), [0, 20_000, 40_000], 'on an ask time');
+  assert.deepEqual(planReaderAsks({ sinceSendMs: 85_000 + READER_ASK_EVERY_MS - 1 }), [0, 1, 20_001, 40_001], 'one millisecond inside the gap');
+});
+
+test('planBusyPressAsks: a refused Pay press asks now, then at each timer ask time up to 185 s after the send', () => {
+  const at = (sinceSendMs) => planBusyPressAsks({ sinceSendMs }).map((d) => (sinceSendMs + d) / 1000);
+  // 13 Oct, the 07:39:32 press, 102 s after the send.
+  assert.deepEqual(at(102_000), [102, 105, 125, 145, 165, 185]);
+  assert.deepEqual(planBusyPressAsks({ sinceSendMs: 102_000 })[0], 0, 'the first ask is now');
+  // Under 45 s the payment is young: nobody is asked (99% of real payments are done by 41 s).
+  assert.deepEqual(planBusyPressAsks({ sinceSendMs: 44_999 }), []);
+  assert.deepEqual(at(45_000), [45, 65, 85, 105, 125, 145, 165, 185]);
+  // Past 185 s there is only the ask now; past the 5 minute lease the database sweep owns the job.
+  assert.deepEqual(at(200_000), [200]);
+  assert.deepEqual(at(320_000), [320]);
+  assert.deepEqual(planBusyPressAsks({ sinceSendMs: 320_001 }), []);
+  for (const odd of [null, undefined, NaN, '102000']) assert.deepEqual(planBusyPressAsks({ sinceSendMs: odd }), [], String(odd));
+  assert.deepEqual(planBusyPressAsks(), []);
+  // Whenever the press comes, an ask starts at 125 s or later (it comes back from a silent reader
+  // at 155 s) and one at 165 s or later (the first that can act on "not found" with no marker),
+  // unless the press itself is already past those times.
+  for (let since = 45_000; since <= 320_000; since += 1_300) {
+    const times = planBusyPressAsks({ sinceSendMs: since }).map((d) => since + d);
+    assert.ok(times.some((t) => t + STATUS_ASK_TIMEOUT_MS >= SEND_DEAD_AFTER_MS), `since ${since}`);
+    assert.ok(times.some((t) => t >= SEND_DEAD_AFTER_MS) || since > BUSY_PRESS_ASK_UNTIL_MS, `since ${since}`);
+    for (const d of planBusyPressAsks({ sinceSendMs: since })) assert.ok(d >= 0 && d <= BUSY_PRESS_ASK_UNTIL_MS - READER_ASK_FIRST_MS, `since ${since}: ${d}`);
+  }
+});
+
+test('busyPressAskDelays: only an Adyen job that was really sent, 45 s or more ago, and never the local bridge', () => {
+  const now = Date.parse('2026-10-13T06:39:32.000Z');
+  const busy = (over = {}) => ({ job_id: JOB, status: 'charging', processor: 'adyen', sent_at: '2026-10-13T06:37:50.000Z', source: 'pos_send_to_terminal', ...over });
+  assert.deepEqual(busyPressAskDelays(busy(), { now }), [0, 3_000, 23_000, 43_000, 63_000, 83_000]);
+  for (const [why, over] of [
+    ['a Ryft job', { processor: 'ryft' }],
+    ['no processor (an old read)', { processor: null }],
+    ['not sent yet', { status: 'charging_unsent' }],
+    ['a PAX status', { status: 'tipping' }],
+    ['settled', { status: 'approved' }],
+    ['no send time', { sent_at: null }],
+    ['a bad send time', { sent_at: 'not a date' }],
+    ['no job id', { job_id: null }],
+    ['young', { sent_at: '2026-10-13T06:39:00.000Z' }],
+    ['past the lease', { sent_at: '2026-10-13T06:30:00.000Z' }],
+    ['MPOS on its own reader, by the draft source', { source: 'mpos_adyen_local' }],
+  ]) assert.deepEqual(busyPressAskDelays(busy(over), { now }), [], why);
+  // The reader row and the till row share one sign in: the device drives the reader itself.
+  assert.deepEqual(busyPressAskDelays(busy(), { now, terminalDeviceUid: 'uid-one-session', posDeviceUid: 'uid-one-session' }), []);
+  assert.equal(busyPressAskDelays(busy(), { now, terminalDeviceUid: 'random-uid-from-admin', posDeviceUid: 'uid-till' }).length, 6);
+  // The MPOS CLOUD flow is a cloud job like any other.
+  assert.equal(busyPressAskDelays(busy({ source: 'mpos_cloud_terminal' }), { now }).length, 6);
+  assert.deepEqual(busyPressAskDelays(null, { now }), []);
+  assert.deepEqual(busyPressAskDelays(undefined), []);
+});
+
+test('13 Oct replay: sent 07:37:50, the timer asks at 45, 65, 70, 85, 105 and 125 s; the 125 s ask comes back past the 155 s line', () => {
   const sent = Date.parse('2026-10-13T06:37:50.000Z');
   // The cron ticks on the minute: 06:38:00 (10 s after the send), 06:39:00 (70 s), 06:40:00 (130 s).
   const asks = [];
@@ -195,7 +275,7 @@ test('13 Oct replay: sent 07:37:50, the timer asks at 45, 65, 85, 105 and 125 s;
     const since = Date.parse(`2026-10-13T${tick}.000Z`) - sent;
     for (const d of planReaderAsks({ sinceSendMs: since })) asks.push((since + d) / 1000);
   }
-  assert.deepEqual(asks.slice(0, 5), [45, 65, 85, 105, 125]);
+  assert.deepEqual(asks.slice(0, 7), [45, 65, 70, 85, 105, 125, 130]);
   // A silent reader costs each ask the 30 s limit. The 105 s ask returns at 135 s: a timer must wait.
   assert.equal(timerMustWait({ conservative: true, sinceSendMs: 105_000 + STATUS_ASK_TIMEOUT_MS }), true);
   // The 125 s ask returns at 155 s: the send is dead, the job may be cancelled as "no answer".
@@ -218,7 +298,7 @@ const maps = {
 
 test('selectReaderAskJobs keeps only Adyen jobs that were really sent, never simulated or training', () => {
   const pick = (jobs, over = {}) => selectReaderAskJobs(jobs, { now: NOW, ...maps, ...over });
-  assert.deepEqual(pick([sentJob()]), [{ id: 'job-1', delays: [15_000, 35_000, 55_000] }]);
+  assert.deepEqual(pick([sentJob()]), [{ id: 'job-1', delays: [0, 15_000, 35_000, 55_000] }]);
   for (const [why, over] of [
     ['not adyen', { processor: 'ryft' }],
     ['no processor', { processor: null }],
@@ -277,14 +357,18 @@ test('the numbers hold together', () => {
   assert.ok(SEND_DEAD_AFTER_MS > 132_200, 'the slowest real approval in 14 days was 132.2 s after the send');
   assert.ok(READER_ASK_FIRST_MS >= LOST_CAS_ASK_AFTER_MS, 'the timer never asks before the one shot that already exists');
   assert.ok(READER_ASK_FIRST_MS > 41_300, '99% of real payments are finished before the timer first asks');
-  assert.ok(READER_ASK_EVERY_MS * 3 <= READER_ASK_HORIZON_MS, 'three asks fit one cron minute');
+  assert.ok(READER_ASK_EVERY_MS * 3 <= READER_ASK_HORIZON_MS, 'three ask times fit one cron minute');
   assert.equal(READER_ASK_HORIZON_MS, 60_000, 'the cron runs every minute');
   assert.ok(BUSY_CLEARS_AFTER_MS >= SEND_DEAD_AFTER_MS + READER_ASK_EVERY_MS, 'what staff are told covers the line plus one ask gap');
   assert.ok(READER_ASK_MAX_SINCE_SEND_MS >= 5 * 60_000, 'the timer covers the whole 5 minute lease');
   assert.ok(READER_ASK_LIMIT > 0 && READER_ASK_LIMIT <= 50);
   assert.equal(SEND_ENDED_ASK_AFTER_MS, 3_000);
-  assert.equal(LATE_MONEY_WINDOW_MS, 24 * 60 * 60 * 1000);
+  assert.equal(LATE_MONEY_WINDOW_MS, 3 * 24 * 60 * 60 * 1000, 'as far back as the "confirmed late" cover it replaces (3 days)');
   assert.equal(LATE_MONEY_LIMIT, 50);
+  assert.ok(LEDGER_RECHECK_MS >= 7_600, "the second look waits past the 99th centile of Adyen's webhook lag (7.6 s)");
+  assert.ok(LEDGER_RECHECK_MS <= READER_ASK_EVERY_MS, 'and is over before the next ask');
+  assert.equal(BUSY_PRESS_ASK_UNTIL_MS, SEND_DEAD_AFTER_MS + STATUS_ASK_TIMEOUT_MS, 'a refused press asks until the line plus one status ask');
+  assert.ok(BUSY_CLEARS_AFTER_MS >= SEND_DEAD_AFTER_MS + LEDGER_RECHECK_MS, 'what staff are told covers the line and the second look');
   // A silent reader: the last ask that starts before the line returns after it, within one ask gap.
   const lastBefore = [...Array(20).keys()].map((k) => READER_ASK_FIRST_MS + k * READER_ASK_EVERY_MS).filter((t) => t + STATUS_ASK_TIMEOUT_MS >= SEND_DEAD_AFTER_MS)[0];
   assert.ok(lastBefore + STATUS_ASK_TIMEOUT_MS <= BUSY_CLEARS_AFTER_MS, 'a silent reader is cleared inside what staff are told');
@@ -319,33 +403,44 @@ const noteFacts = {
 test('noPaymentNote, never received: the amount, the venue time, the ref, the reader and the held time; nothing was charged', () => {
   const n = noPaymentNote({ kind: 'never_received', ...noteFacts });
   assert.equal(n.severity, 'action');
-  assert.equal(n.title, 'Card machine did not take £6.00 (R14202)');
+  // The till shows the title then the body in one toast for 2.8 s: the title says the card
+  // machine is free, and the body opens with what to do.
+  assert.equal(n.title, 'Card machine is free. £6.00 (R14202) was not charged.');
   assert.equal(n.body,
-    '£6.00 for the order was sent to the Drive Thru card machine at 07:37. The card machine never received it. Nothing was charged. '
-    + 'The payment was cancelled after 2 minutes 36 seconds and the card machine is free. Take the payment again.');
+    'If the customer has not paid another way, take the payment again. '
+    + '£6.00 for the order was sent to the Drive Thru card machine at 07:37. The card machine never received it. Nothing was charged. '
+    + 'The payment was cancelled after 2 minutes 36 seconds and the card machine is free.');
 });
 
 test('noPaymentNote, no answer: says the card machine did not answer and Adyen has no record', () => {
   const n = noPaymentNote({ kind: 'no_answer', ...noteFacts });
   assert.equal(n.severity, 'action');
-  assert.equal(n.title, 'Card machine did not take £6.00 (R14202)');
+  assert.equal(n.title, 'Card machine is free. £6.00 (R14202) was not charged.');
+  // "Take the payment again" only for a customer who has not paid another way (on 13 Oct they
+  // had, on the other till), and only after a look at the card machine: silence is not proof.
   assert.equal(n.body,
-    '£6.00 for the order was sent to the Drive Thru card machine at 07:37. The card machine did not answer and Adyen has no record of a payment. Nothing was charged. '
-    + 'The payment was cancelled after 2 minutes 36 seconds and the card machine is free. Check the card machine is on and online, then take the payment again.');
+    'If the customer has not paid another way, check the card machine screen, then take the payment again. '
+    + '£6.00 for the order was sent to the Drive Thru card machine at 07:37. The card machine did not answer and Adyen has no record of a payment. Nothing was charged. '
+    + 'The payment was cancelled after 2 minutes 36 seconds and the card machine is free.');
 });
 
 test('noPaymentNote: USD, a table label, a reader whose name says what it is, and facts that are missing', () => {
   const us = noPaymentNote({ kind: 'never_received', ...noteFacts, amountMinor: 1250, currency: 'USD', tz: 'America/Los_Angeles', tableLabel: 'T3', ref: 'R88' });
-  assert.equal(us.title, 'Card machine did not take $12.50 (R88)');
-  assert.ok(us.body.startsWith('$12.50 for T3 was sent to the Drive Thru card machine at 23:37.'), us.body);
-  assert.ok(noPaymentNote({ kind: 'no_answer', ...noteFacts, readerLabel: 'Reader 1' }).body.startsWith('£6.00 for the order was sent to Reader 1 at 07:37.'));
+  assert.equal(us.title, 'Card machine is free. $12.50 (R88) was not charged.');
+  assert.ok(us.body.includes(' $12.50 for T3 was sent to the Drive Thru card machine at 23:37.'), us.body);
+  assert.ok(noPaymentNote({ kind: 'no_answer', ...noteFacts, readerLabel: 'Reader 1' }).body.includes(' £6.00 for the order was sent to Reader 1 at 07:37.'));
   const bare = noPaymentNote({ kind: 'never_received', amountMinor: 600 });
-  assert.equal(bare.title, 'Card machine did not take £6.00');
-  assert.equal(bare.body, '£6.00 for the order was sent to the card machine. The card machine never received it. Nothing was charged. The payment was cancelled and the card machine is free. Take the payment again.');
+  assert.equal(bare.title, 'Card machine is free. £6.00 was not charged.');
+  assert.equal(bare.body, 'If the customer has not paid another way, take the payment again. £6.00 for the order was sent to the card machine. The card machine never received it. Nothing was charged. The payment was cancelled and the card machine is free.');
   for (const kind of ['never_received', 'no_answer']) {
     for (const facts of [noteFacts, { ...noteFacts, currency: 'USD', tableLabel: 'T3' }, { amountMinor: 600 }]) {
       const n = noPaymentNote({ kind, ...facts });
+      assert.ok(n.title.startsWith('Card machine is free. '), n.title);
+      assert.ok(n.body.startsWith('If the customer has not paid another way, '), 'never a bare "take the payment again"');
+      assert.equal(n.body.split('take the payment again').length, 2, 'said once');
       assert.ok(n.body.includes('Nothing was charged.'));
+      assert.ok(n.body.endsWith('the card machine is free.'));
+      assert.ok(n.title.split(/\s+/).length <= 10, `a title short enough for a 2.8 s toast: ${n.title}`);
       assert.ok(!NO_DASH.test(n.title) && !NO_DASH.test(n.body), `${n.title} ${n.body}`);
     }
   }
