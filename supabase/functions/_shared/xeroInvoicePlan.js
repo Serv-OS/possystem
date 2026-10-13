@@ -931,7 +931,8 @@ export function cardFeesMissingWords(unknown) {
 /** The warning of a day whose invoice does not carry its card fees: `fee` is the plan's cardFees. */
 export function cardFeesNotPostedWords(fee) {
   const f = fee || {};
-  if (f.reason === 'card_short') return `The card fees of this day (${amount2(f.net)}) are as much as the card money left on the invoice (${amount2(f.cardBefore)}) or more, and Xero does not take a payment of zero or less. This day posts without the Card fees line. Put the fees in Xero by hand.`;
+  // cardBefore is the whole payment into the card clearing account (cash too, where they share one), so it is called that.
+  if (f.reason === 'card_short') return `The card fees of this day (${amount2(f.net)}) are as much as the payment into the card clearing account (${amount2(f.cardBefore)}) or more, and Xero does not take a payment of zero or less. This day posts without the Card fees line. Put the fees in Xero by hand.`;
   if (f.reason === 'no_invoice') return `This day has refunds and no sales, so it has no invoice to carry its card fees (${amount2(f.returned)} given back on the refunds). They are not posted. Put them in Xero by hand.`;
   if (f.reason === 'no_card_payment') return `This day took no card payments, so its invoice cannot carry the card fees given back on its refunds (${amount2(f.returned)}). They are not posted. Put them in Xero by hand.`;
   if (f.reason === 'sales_differ') return "ServOS could not tie the card fees to this day's card sales, so this day posts without the Card fees line. Put the fees in Xero by hand.";
@@ -1217,6 +1218,9 @@ export const isNumberTaken = (message) => /must be unique|already (been )?(used|
 const OWN_INVOICE_400 = /^Xero API \/Invoices failed: 400(\s|$)/;
 // Causes Xero names itself that have nothing to do with refund lines: a locked period.
 const NOT_THE_REFUNDS = /lock date/i;
+// Xero naming an account ("Account code 'SOSFEES' is not a valid code for this document"). Only
+// read on an invoice that carries a Card fees line (see invoiceRefusal).
+const NAMES_AN_ACCOUNT = /account/i;
 
 /**
  * What a failed attempt says about the day's refund lines (13 Oct 2026 review). Only Xero's own
@@ -1235,6 +1239,10 @@ const NOT_THE_REFUNDS = /lock date/i;
  *            refund lines: freed, so the fee figures and the fee account it was sent with do
  *            not stand for a day Xero holds nothing of. Without this a wrong card fees account
  *            could not be put right from the setup, nor card fees switched off for that day.
+ *            And an invoice with a Card fees line AND refund lines that Xero refused naming an
+ *            account: a card fees account archived or recoded in Xero is the likely cause, and
+ *            an account is never put right by a credit note (it would carry the same accounts),
+ *            so the refund lines are not blamed and the day keeps them.
  * `started` is refundWayStarted of the row as claimed; `before` is postings.INVOICE.refusedNotLines
  * of the row as claimed; `error` is { status, message, words } (words: Xero's own, xeroErrorWords).
  */
@@ -1255,7 +1263,10 @@ export function invoiceRefusal(plan, { started = null, postings = null, before =
   // A day with no refund lines on its invoice has none to refuse: it goes on as it always did.
   // Unless it carried a Card fees line: then the day is freed (see 'other' above).
   if (plan.refundWay !== 'lines') return plan.cardFees?.line ? 'other' : null;
-  return NOT_THE_REFUNDS.test(words) ? 'other' : 'lines';
+  if (NOT_THE_REFUNDS.test(words)) return 'other';
+  // Refund lines and a Card fees line, and Xero names an account: not the refund lines.
+  if (plan.cardFees?.line && NAMES_AN_ACCOUNT.test(words)) return 'other';
+  return 'lines';
 }
 
 /** What a refusal writes on the day's row, in the detail of the attempt that failed. */

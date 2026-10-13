@@ -10,11 +10,13 @@
 // figures worked out before the last save say so and cannot be ticked.
 // 13 Oct 2026, card fees: at a site that switched them on the preview shows the Card fees line
 // and the card payment net of it. A day still waiting for a card fee lists the wait under "This
-// day would not be sent yet" and cannot be ticked: pick another day.
+// day would not be sent yet" and cannot be ticked: the words beside the button say to pick an
+// earlier day. A day already in Xero without card fees shows the line a new day would carry,
+// with a warning that the day itself stays as it is (xero-sales, cardFeesPreviewRow).
 
 import { useState } from 'react';
 import { xeroCheckFigures, xeroFiguresChecked } from '../../../lib/xero';
-import { S, btn } from './xeroUi';
+import { S, btn, figuresTick } from './xeroUi';
 import { Bullets } from './controls';
 import InvoicePreview from './InvoicePreview';
 
@@ -32,10 +34,8 @@ export default function CheckFigures({ locId, venue, accounts, dirty, checked, s
     setBusy('tick'); setErr('');
     try { const r = await xeroFiguresChecked(locId, res.date, res.mappingHash); onChecked?.(r.figuresChecked); } catch (e) { setErr(e.message || 'Could not save'); } finally { setBusy(''); }
   };
-  // Worked out before the last save: the choices have changed since.
-  const stale = !!res?.ok && !!savedHash && !!res.mappingHash && res.mappingHash !== savedHash;
-  const ticked = !!res?.ok && !!checked?.hash && checked.hash === res.mappingHash && checked.date === res.date;
-  const canTick = res?.ok && !res.empty && !dirty && !stale && !ticked && !(res.problems || []).length && !(res.notReady || []).length;
+  // Whether the tick can be pressed, and the words when it cannot (figuresTick in xeroUi.js, where it is tested).
+  const { ticked, canTick, why } = figuresTick(res, { dirty, savedHash, checked });
   return (
     <div>
       <Bullets items={[
@@ -58,7 +58,7 @@ export default function CheckFigures({ locId, venue, accounts, dirty, checked, s
           <InvoicePreview result={res} accounts={accounts} />
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
             <button style={btn(!canTick || !!busy)} onClick={tick} disabled={!canTick || !!busy}>{busy === 'tick' ? 'Saving…' : ticked ? '✓ Checked' : 'I have checked these figures'}</button>
-            {!canTick && !ticked && <span style={S.note}>{(res.problems || []).length || (res.notReady || []).length ? 'Fix what stops this day first.' : dirty ? 'Save your changes first.' : stale ? 'These figures were worked out before your last save. Press Check figures again.' : ''}</span>}
+            {!canTick && !ticked && <span style={S.note}>{why}</span>}
           </div>
         </div>
       )}

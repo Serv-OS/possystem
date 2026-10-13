@@ -12,6 +12,8 @@
 //      2026, card fees: off by default; on, each day's invoice gets one "Card fees" minus line
 //      on an expense account and the card payment is net of it. One button creates the
 //      "Card fees" account in Xero (an existing one is reused), or an expense account is picked.
+//      The section shows only when xero-config says it knows the choice (site_data canCardFees),
+//      so a Back Office that is live before the function never offers it.
 //   7. The Ready checklist, 8. Check figures, 9. the switch with its start day.
 //   Helpers above: Copy my Lightspeed setup, Copy from another site, Create recommended accounts.
 // The form is unsaved until Save; the start day and "figures checked" are kept on the server.
@@ -204,7 +206,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
       const r = await xeroSiteCreate(locId, { kind: 'accounts', keys: ['cardFees'] });
       setMap((m) => mergePatch(m, r.patch));
       setOpts(await xeroOptions(locId));
-      setFeeMsg({ ok: true, words: `${r.created.map((c) => `${c.name}${c.existed ? ' (already there)' : ' (created)'}`).join(', ')}. It is filled in below; press Save.` });
+      setFeeMsg({ ok: true, words: `${r.created.map((c) => `${c.name}${c.existed ? ' (already there)' : ' (created)'}`).join(', ')}. It is chosen in the list above. Press Save.` });
     } catch (e) { setFeeMsg({ ok: false, words: e.message || 'Could not create the account' }); } finally { setBusy(''); }
   };
 
@@ -483,25 +485,30 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
           ))}
         </div>
 
-        <div style={S.h3}>Card fees</div>
-        <Bullets items={[
-          ['Off:', 'the invoice shows card takings in full, so the card clearing account keeps the fees as a balance.'],
-          ['On:', 'each day’s invoice gets one minus line, Card fees, and the card payment is what the card processor pays you for that day.'],
-          ['The fee', 'is the one on each card payment under Card payments. It is never worked out from a percentage.'],
-        ]} />
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0', fontSize: 13, color: 'var(--t1)' }}>
-          <input type="checkbox" checked={map.cardFees?.enabled === true} onChange={(e) => setMap((m) => setCardFeesOn(m, e.target.checked))} />
-          Put card fees on the daily invoice
-        </label>
-        {map.cardFees?.enabled === true && (
+        {data.canCardFees === true && (
           <>
-            <div style={fieldRow}>
-              <span style={flabel}>Card fees account</span>
-              <AcctSelect value={map.cardFees?.account} list={expenses} placeholder="Choose an expense account" onChange={(v) => setMap((m) => setCardFeesAccount(m, v))} />
-            </div>
-            <button style={S.small} onClick={createFeeAccount} disabled={!!busy}>{busy === 'fees' ? 'Creating…' : 'Create a Card fees account in Xero'}</button>
-            {feeMsg && <div style={{ ...S.note, marginTop: 6, color: feeMsg.ok ? '#2f8f4e' : '#c33' }}>{feeMsg.words}</div>}
-            <div style={{ ...S.note, marginTop: 8 }}>Posts with No {tw}. After you save, check a day’s figures again: the preview then shows the Card fees line and the card payment.</div>
+            <div style={S.h3}>Card fees</div>
+            <Bullets items={[
+              ['Off:', 'the invoice shows card takings in full, so the card clearing account keeps the fees as a balance.'],
+              ['On:', 'each day’s invoice gets one minus line, Card fees, and the card payment is less by the fees, so the clearing account no longer keeps them.'],
+              ['The fee', 'is the one on each card payment under Card payments. It is never worked out from a percentage.'],
+              ['No fee found:', 'a card payment whose till record has no card processor reference is left out of the line. The day’s warning says how many and how much.'],
+            ]} />
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0', fontSize: 13, color: 'var(--t1)' }}>
+              <input type="checkbox" checked={map.cardFees?.enabled === true} onChange={(e) => setMap((m) => setCardFeesOn(m, e.target.checked))} />
+              Put card fees on the daily invoice
+            </label>
+            {map.cardFees?.enabled === true && (
+              <>
+                <div style={fieldRow}>
+                  <span style={flabel}>Card fees account</span>
+                  <AcctSelect value={map.cardFees?.account} list={expenses} placeholder="Choose an expense account" onChange={(v) => setMap((m) => setCardFeesAccount(m, v))} />
+                </div>
+                <button style={S.small} onClick={createFeeAccount} disabled={!!busy}>{busy === 'fees' ? 'Creating…' : 'Create a Card fees account in Xero'}</button>
+                {feeMsg && <div style={{ ...S.note, marginTop: 6, color: feeMsg.ok ? '#2f8f4e' : '#c33' }}>{feeMsg.words}</div>}
+                <div style={{ ...S.note, marginTop: 8 }}>Posts with No {tw}. After you save, check a day’s figures again: the preview then shows the Card fees line and the card payment.</div>
+              </>
+            )}
           </>
         )}
       </div>

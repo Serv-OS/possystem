@@ -24,6 +24,11 @@
  *             refusing the invoice.
  *   33 to 38  The screens, the US shape, awkward pennies on 200 days, the account button, the
  *             words (no dashes), and the wiring of xero-sales and xero-config.
+ *   39 to 41  The review of 13 Oct 2026: Check figures on a day already in Xero without card
+ *             fees shows the line a new day carries; a day still waiting for a fee on Check
+ *             figures and on the Postings list; and the exact lines of the screens.
+ * Test 11 holds the two real shapes of a card refund the till did not reverse itself (the card
+ * processor shows it refunded, or does not), and test 32 a refusal that names an account.
  *
  * To make the golden again (only if the refund lines planner itself changes): check out that
  * planner with no card fees code in it, then write cardFeesOffGolden(planner) from
@@ -40,6 +45,7 @@ import { fileURLToPath } from 'node:url';
 import * as planner from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
 import {
   pspOf, cardFeeItems, sumCardFees, CARD_FEE_WAIT_MS, cardFeesWait, loadCardFees, cardFeesFor, CARD_FEE_COLS,
+  waitNotReady, missingWhileWaiting, cardFeesPreviewRow,
 } from '../../../supabase/functions/_shared/xeroCardFees.ts';
 import { postInvoiceDay, NotReadyError } from '../../../supabase/functions/_shared/xeroInvoicePost.ts';
 import { claimSyncRun, readSyncRow } from '../../../supabase/functions/_shared/syncRun.ts';
@@ -49,6 +55,7 @@ import { venuePayoutLine as payoutLineEdge } from '../../../supabase/functions/_
 import { venuePayoutLine, venueFeeFor } from '../payments/venueFees.js';
 import {
   previewWords, historyFeeNote, historyRefundNote, mergePatch, setCardFeesOn, setCardFeesAccount, expenseAccounts, STATUS_LABEL, STATUS_COLOUR,
+  figuresTick, showsGap,
 } from '../../backoffice/sections/xero/xeroUi.js';
 import { buildGroupedDay, makeGroupResolver } from '../../../supabase/functions/_shared/accountingGroups.js';
 import { businessDayWindow } from '../../../supabase/functions/_shared/businessDay.js';
@@ -269,7 +276,7 @@ async function attempt(sb, w, runId, { m = w.m, platform = fakePlatform({ paymen
   try {
     cf = await cardFeesFor(platform, { detailRow: run.detail, mapping: m, locationId: 'leeds', loaded: w.loaded, venue: UK, site: { platformId: 'platform-leeds' }, nowMs, noWait: !!run.detail?.replace });
     const grouped = withCardFees(w.loaded.grouped, cf.cardFees);
-    if (cf.wait) throw new NotReadyError([{ code: cf.wait.code, message: cf.wait.message }]);
+    if (cf.wait) throw new NotReadyError([waitNotReady(cf.wait)]);
     p = planXeroInvoiceDay(grouped, { mapping: m, detail: DETAIL, site: SITE, date: DATE, currency: 'GBP', started });
     await run.save({ detail: { model: 'sales_invoice', warnings: p.warnings, notReady: null, refundWay: refundWayToRecord(started, p), ...cardFeesPatch(cf.started, run.detail.cardFees, cf.cardFees, p, AT) } });
     const res = await postInvoiceDay(run, p, CTX);
@@ -589,10 +596,61 @@ test('10. a refund on a later day than its sale: the sale day carries the full f
 });
 
 test('11. no fee comes back without a payment to take it from, and the day says so', () => {
-  // (a) Card money refunded with no processor reversal on record: nothing to match.
-  const noLeg = dayOf([E], refundOf(E, { id: 'n', amount: 2.0, taxAmount: 0.34, legs: undefined, items: [AMERICANO] }));
-  assert.deepEqual(noLeg.items.refunds, [{ checkId: 'E', minor: 200, psp: null }]);
-  assert.deepEqual([noLeg.fees.returned, noLeg.fees.unknown], [0, [{ side: 'refund', reason: 'no_reference', count: 1, amount: 200, checkIds: ['E'] }]]);
+  // (a) Card money refunded with no reversal on the till record (tenderMethod card, cardStatus
+  // none, no legs: the two real shapes of Sep 2026). The check was paid on ONE card payment, so
+  // that is the payment, and the card processor's own record decides.
+  const loose = (o = {}) => ({ id: 'n', amount: 2.0, taxAmount: 0.34, cardStatus: 'none', legs: [], items: [AMERICANO], ...o });
+  const E4 = PAYMENTS.get(psp(4));   // check E: 8.00 on payment 4, fee 0.13
+  // The processor shows nothing refunded: no fee came back, and that is KNOWN (Payouts has no
+  // refund line for it either). Nothing is missing, so nothing is warned and nothing waits.
+  const noLeg = dayOf([E], refundOf(E, loose()));
+  assert.deepEqual(noLeg.items.refunds, [{ checkId: 'E', minor: 200, psp: psp(4), unreversed: true, need: 200 }]);
+  assert.deepEqual([noLeg.fees.returned, noLeg.fees.refunds, noLeg.fees.unknown, noLeg.fees.cardRefunds], [0, { count: 1, known: 1 }, [], 200]);
+  assert.deepEqual([plan(noLeg.g, noLeg.fees).cardFees.net, warned(plan(noLeg.g, noLeg.fees), 'card_fees_missing')], [13, []]);
+  assert.equal(cardFeesWait(noLeg.fees, { dayEndMs: DAY.toMs, nowMs: DAY.toMs + 5 * H, timezone: UK.timezone }), null);
+  // The processor shows it refunded (staff refunded it another way): the fee came back, and it
+  // is the refund line of Back Office Payouts to the penny.
+  const refunded = (minor) => withPay(PAYMENTS, { ...E4, amount_refunded_minor: minor });
+  const paidBack = dayOf([E], refundOf(E, loose()), { payments: refunded(200) });
+  assert.deepEqual([paidBack.fees.returned, paidBack.fees.refunds, paidBack.fees.unknown], [3, { count: 1, known: 1 }, []]);
+  assert.equal(paidBack.fees.returned, Math.abs(venuePayoutLine({ line_type: 'Refunded', gross_minor: -200 }, E4).fee_minor));
+  assert.deepEqual([plan(paidBack.g, paidBack.fees).cardFees.net, pays(plan(paidBack.g, paidBack.fees))], [10, [['PAY:CARDCLR', 800 - 200 - 10]]]);
+  // Less shown refunded than the till says went back: not covered, so nothing is given back.
+  assert.equal(dayOf([E], refundOf(E, loose()), { payments: refunded(199) }).fees.returned, 0);
+  // Never counted twice. The till reversed 2.00 itself and ALSO recorded 2.00 with no reversal:
+  // the processor must show 4.00 refunded before the second one is believed.
+  const both = [{ ...E, refunds: [refundEntry({ id: 'r1', amount: 2.0, taxAmount: 0.34, legs: [legOf(E, 200)], items: [AMERICANO] }), refundEntry(loose({ id: 'r2' }))] }];
+  assert.deepEqual(dayOf([E], both).items.refunds, [{ checkId: 'E', minor: 200, psp: psp(4) }, { checkId: 'E', minor: 200, psp: psp(4), unreversed: true, need: 400 }]);
+  assert.deepEqual([dayOf([E], both, { payments: refunded(200) }).fees.returned, dayOf([E], both, { payments: refunded(400) }).fees.returned], [3, 6]);
+  // The reversal the till made may be on ANOTHER day: it still counts towards what must be shown.
+  const day2 = businessDayWindow('2026-09-30', UK.timezone, UK.dayStart);
+  const later = [{ ...E, refunds: [refundEntry(loose({ id: 'r1' })), refundEntry({ id: 'r2', amount: 2.0, taxAmount: 0.34, timestamp: day2.fromMs + 2 * H, legs: [legOf(E, 200)], items: [AMERICANO] })] }];
+  assert.deepEqual(dayOf([E], later).items.refunds, [{ checkId: 'E', minor: 200, psp: psp(4), unreversed: true, need: 400 }]);
+  assert.deepEqual([dayOf([E], later, { payments: refunded(200) }).fees.returned, dayOf([E], later, { payments: refunded(400) }).fees.returned], [0, 3]);
+  // Two such refunds of one check: each needs all the earlier ones shown as well.
+  const twice = [{ ...E, refunds: [refundEntry(loose({ id: 'r1' })), refundEntry(loose({ id: 'r2' }))] }];
+  assert.deepEqual(dayOf([E], twice).items.refunds.map((x) => x.need), [200, 400]);
+  assert.deepEqual([dayOf([E], twice, { payments: refunded(200) }).fees.returned, dayOf([E], twice, { payments: refunded(400) }).fees.returned], [3, 6]);
+  // Its payment has no row yet, or no fee yet: the same as any refund, and it can still arrive.
+  assert.deepEqual(dayOf([E], refundOf(E, loose()), { payments: new Map() }).fees.unknown.map((u) => [u.side, u.reason]), [['sale', 'no_payment'], ['refund', 'no_payment']]);
+  assert.deepEqual(dayOf([E], refundOf(E, loose()), { payments: withPay(PAYMENTS, paymentRow(4, 800, null, { amount_refunded_minor: 200 })) }).fees.unknown.map((u) => [u.side, u.reason]), [['sale', 'no_fee'], ['refund', 'no_fee']]);
+  // No ONE card payment to tie it to: two card tenders, a card tender with no reference, a
+  // card tender of another processor, or a row written with no tenders. No payment is picked,
+  // so there is none to take a fee from, and the day says so.
+  const E2 = { ...E, id: 'E2', tenders: [{ method: 'card', amount: 5.0, tip: 0, processor: 'adyen', psp_ref: tillRef(40) }, { method: 'card', amount: 3.0, tip: 0, processor: 'adyen', psp_ref: tillRef(41) }] };
+  const bare = { ...E, id: 'E3', tenders: [{ method: 'card', amount: 8.0, tip: 0, processor: 'adyen' }] };
+  const ryft = { ...E, id: 'E4', tenders: [{ method: 'card', amount: 8.0, tip: 0, processor: 'ryft', psp_ref: 'pay_made_up' }] };
+  const kiosk = { ...E, id: 'E5', tenders: undefined, source: 'kiosk', payment_method: 'card-external', method: 'card' };
+  for (const check of [E2, bare, ryft, kiosk]) {
+    const w = dayOf([check], refundOf(check, loose()), { payments: withPay(PAYMENTS, paymentRow(40, 500, 9, { amount_refunded_minor: 200 }), paymentRow(41, 300, 8, { amount_refunded_minor: 200 })) });
+    assert.deepEqual(w.items.refunds, [{ checkId: check.id, minor: 200, psp: null }], check.id);
+    assert.deepEqual([w.fees.returned, w.fees.unknown.filter((u) => u.side === 'refund')], [0, [{ side: 'refund', reason: 'no_reference', count: 1, amount: 200, checkIds: [check.id] }]], check.id);
+  }
+  const split = dayOf([E2], refundOf(E2, loose()), { payments: withPay(PAYMENTS, paymentRow(40, 500, 9), paymentRow(41, 300, 8)) });
+  assert.equal(warned(plan(split.g, split.fees), 'card_fees_missing')[0].message,
+    'No card fee was found for 1 card refund (2.00). It has no card processor reference on the till record. The Card fees line leaves it out, so the card clearing account will be out by its fee. Check it under Card payments and put the difference right in Xero.');
+  // A check paid part by card and part in cash, refunded with no reversal: the card share is on the one card payment.
+  assert.deepEqual(dayOf([C], refundOf(C, loose({ amount: 1.0, taxAmount: 0.17, items: undefined }))).items.refunds.map((x) => [x.psp, x.unreversed, x.need === x.minor]), [[psp(2), true, true]]);
   // (b) A reversal that failed moved no money: only the one that went through counts, and gives back.
   const partFailed = dayOf([E], refundOf(E, { id: 'p', amount: 4.0, taxAmount: 0.67, cardStatus: 'partial', legs: [legOf(E, 200), legOf(E, 200, { status: 'failed' })], items: [{ ...AMERICANO, refundQty: 2 }] }));
   assert.deepEqual(partFailed.items.refunds, [{ checkId: 'E', minor: 200, psp: psp(4) }]);
@@ -609,14 +667,13 @@ test('11. no fee comes back without a payment to take it from, and the day says 
   const unstamped = dayOf([E], refundOf(Y, { id: 'm', amount: 3.8, taxAmount: 0.63, isFullRefund: true, legs: [legOf(Y, 380)] }), { payments: withPay(PAYMENTS, paymentRow(20, 380, null)) });
   assert.deepEqual(unstamped.fees.unknown, [{ side: 'refund', reason: 'no_fee', count: 1, amount: 380, checkIds: ['Y'] }]);
   // Each of them: the line carries the fees that ARE known, and one warning names what is not.
-  for (const w of [noLeg, missing, unstamped]) {
+  for (const w of [split, missing, unstamped]) {
     const p = plan(w.g, w.fees);
-    assert.deepEqual([p.cardFees.line, p.cardFees.net, p.invoice.lines.at(-1).amount], [true, 13, -13]);
+    assert.deepEqual([p.cardFees.line, p.invoice.lines.at(-1).amount], [true, -p.cardFees.net]);
+    assert.equal(p.cardFees.net, w.fees.charged);
     assert.equal(warned(p, 'card_fees_missing').length, 1);
     assert.deepEqual(warned(p, 'card_fees_missing')[0].checkIds, w.fees.unknown[0].checkIds);
   }
-  assert.equal(warned(plan(noLeg.g, noLeg.fees), 'card_fees_missing')[0].message,
-    'No card fee was found for 1 card refund (2.00). It has no card processor reference on the till record. The Card fees line leaves it out, so the card clearing account will be out by its fee. Check it under Card payments and put the difference right in Xero.');
   // More reversed to the card than the invoice counts as card money is capped at what it counts.
   const over = cardFeeItems({ day: DAY, saleRows: [E], refundRows: refundOf(E, { id: 'o', amount: 2.0, taxAmount: 0.34, legs: [legOf(E, 500)], items: [AMERICANO] }), clearing: mOn().clearing });
   assert.deepEqual([over.refunds, over.cardRefunds], [[{ checkId: 'E', minor: 200, psp: psp(4) }], 200]);
@@ -709,7 +766,7 @@ test('14. the card payment would be zero or less: the day posts WITHOUT the line
     const w = dayOf([B, tiny], [], { payments: withPay(new Map(), paymentRow(40, 5, fee)) });
     const off = plan(w.g, null), p = plan(w.g, w.fees);
     assert.deepEqual(p.cardFees, { line: false, reason: 'card_short', charged: fee, returned: 0, net: fee, account: 'SOSFEES', cardAccount: 'CARDCLR', cardBefore: 5, cardAfter: 5, unknown: [] });
-    const said = { code: 'card_fees_not_posted', reason: 'card_short', message: `The card fees of this day (0.0${fee}) are as much as the card money left on the invoice (0.05) or more, and Xero does not take a payment of zero or less. This day posts without the Card fees line. Put the fees in Xero by hand.` };
+    const said = { code: 'card_fees_not_posted', reason: 'card_short', message: `The card fees of this day (0.0${fee}) are as much as the payment into the card clearing account (0.05) or more, and Xero does not take a payment of zero or less. This day posts without the Card fees line. Put the fees in Xero by hand.` };
     assert.deepEqual(without(p), { ...off, warnings: [...off.warnings, said] }, 'the plan of the day without fees, and one more warning');
     assert.deepEqual(pays(p), [['PAY:CARDCLR', 5], ['PAY:CASHTILL', 266]]);
     assert.ok(!('fees' in p.totals));
@@ -879,8 +936,9 @@ test('17. the fee items are the card money the invoice counts: no more, no less'
 });
 
 test('18. pspOf: the PSP reference after the last dot; one payment, one fee', () => {
-  assert.equal(pspOf('D9Uy001791813744047.F3ZPBRZDSZP6TC24'), 'F3ZPBRZDSZP6TC24');
-  assert.equal(pspOf('F3ZPBRZDSZP6TC24'), 'F3ZPBRZDSZP6TC24');
+  // A made up pair in the shape the till writes: its own key, a dot, the PSP reference.
+  assert.equal(pspOf('AB12cd345678901234.ZZTESTPSP0000001'), 'ZZTESTPSP0000001');
+  assert.equal(pspOf('ZZTESTPSP0000001'), 'ZZTESTPSP0000001');
   assert.equal(pspOf('  a.b.C3  '), 'C3');
   for (const v of ['', '   ', null, undefined, 'abc.', '.']) assert.equal(pspOf(v), null, JSON.stringify(v));
   assert.equal(pspOf(tillRef(7)), psp(7));
@@ -964,6 +1022,25 @@ test('20. reading the fees: fenced to the venue, 200 references at a time, and a
   assert.deepEqual((await loadCardFees(quiet, 'leeds', { day: DAY, rows: { sale: [kiosk], refund: [] }, clearing: w.m.clearing })).unknown, [{ side: 'sale', reason: 'no_reference', count: 1, amount: 650, checkIds: ['K'] }]);
   assert.deepEqual(quiet.calls, []);
   assert.deepEqual((await loadCardFees(quiet, 'leeds', { day: DAY, rows: null, clearing: w.m.clearing })).cardSales, 0);
+  // A refund of a payment of the day BEFORE (it is not one of this day's sales): its reference
+  // is read as well, or the fee it gave back would never be found. Through the loader, and
+  // through cardFeesFor as xero-sales asks.
+  const Y = earlier(D, 'Y', 20, 380);
+  const refundOfY = refundOf(Y, { id: 'ry', amount: 3.8, taxAmount: 0.63, isFullRefund: true, legs: [legOf(Y, 380)] });
+  const withY = withPay(PAYMENTS, paymentRow(20, 380, 9));
+  const late = fakePlatform({ payments: withY });
+  const lateFees = await loadCardFees(late, 'leeds', { day: DAY, rows: { sale: [E], refund: refundOfY }, clearing: w.m.clearing, platformId: 'platform-leeds' });
+  assert.deepEqual(late.reads().map((c) => [...c.in[1]].sort()), [[psp(4), psp(20)].sort()], 'the sale of the day and the payment its refund is of');
+  assert.deepEqual([lateFees.charged, lateFees.returned, lateFees.refunds, lateFees.unknown], [13, 9, { count: 1, known: 1 }, []]);
+  assert.equal(lateFees.returned, Math.abs(venuePayoutLine({ line_type: 'Refunded', gross_minor: -380 }, withY.get(psp(20))).fee_minor), 'the refund line of Back Office Payouts');
+  const lateDay = dayOf([E], refundOfY, { payments: withY });
+  const asked = await cardFeesFor(fakePlatform({ payments: withY }), { detailRow: null, mapping: lateDay.m, locationId: 'leeds', loaded: lateDay.loaded, venue: UK, site: { platformId: 'platform-leeds' }, nowMs: DAY.toMs + 5 * H });
+  assert.deepEqual([asked.wait, asked.cardFees.charged, asked.cardFees.returned], [null, 13, 9], 'found, so the day does not wait for it');
+  // A refund the till did not reverse itself is read by the reference of the check's one card payment.
+  const unreversed = fakePlatform({ payments: withPay(PAYMENTS, { ...PAYMENTS.get(psp(4)), amount_refunded_minor: 200 }) });
+  const got2 = await loadCardFees(unreversed, 'leeds', { day: DAY, rows: { sale: [B], refund: refundOf({ ...E, closed_at: BEFORE }, { id: 'n', amount: 2.0, taxAmount: 0.34, cardStatus: 'none', legs: [], items: [AMERICANO] }) }, clearing: w.m.clearing, platformId: 'platform-leeds' });
+  assert.deepEqual([unreversed.reads().map((c) => c.in[1]), got2.returned, got2.unknown], [[[psp(4)]], 3, []]);
+  assert.ok(CARD_FEE_COLS.split(',').map((c) => c.trim()).includes('amount_refunded_minor'), 'what the processor shows refunded is read');
   // A read that fails throws, in plain words. Never a day of "no fees".
   await assert.rejects(loadCardFees(fakePlatform({ fail: 'connection reset' }), 'leeds', { ...args, platformId: 'platform-leeds' }), { message: 'Could not read the card fees: connection reset' });
   await assert.rejects(loadCardFees(fakePlatform({ fail: 'connection reset' }), 'leeds', args), { message: "Could not read the card fees: Could not read the venue's name: connection reset" });
@@ -1044,7 +1121,7 @@ test('23. a waiting day is recorded, sends nothing, and posts by itself once the
     let r = await readSyncRow(sb, KEY);
     assert.equal(r.status, 'error');
     assert.deepEqual(r.detail.postings, {});
-    assert.deepEqual(r.detail.notReady, [{ code: 'card_fees_wait', message: first.e.message }]);
+    assert.deepEqual(r.detail.notReady, [{ code: 'card_fees_wait', message: first.e.message, until: new Date(DAY.toMs + 16 * H).toISOString() }], 'the wait, its words and the time it ends');
     assert.equal(r.detail.error, 'Waiting for card fees. 1 card payment has no fee from the card processor yet (4.00). ServOS tries again every hour. If it is still missing at 22:00 on Wed 30 Sep 2026, this day posts with the fees it has and says what is missing. Nothing has been posted yet.');
     assert.doesNotMatch(r.detail.error, /not ready/, 'the wait in its own words, never "This site is not ready"');
     assert.ok(!('cardFees' in r.detail) && !('refundWay' in r.detail), 'no way is on the row: the day is free');
@@ -1251,7 +1328,7 @@ test('28. a lost answer with fees: the invoice is found by its number at the net
     assert.deepEqual(x.payments.map((p) => p.Amount), [18.93, 4.91]);
     r = await readSyncRow(sb, KEY);
     assert.equal(r.status, 'ok');
-    assert.equal(historyFeeNote(asHistory(r)), 'Card fees 0.37 are on the invoice as a minus line, and the card payment is net of them.');
+    assert.equal(historyFeeNote(asHistory(r)), 'Card fees 0.37 are on the invoice as a minus line, and the payment into the card clearing account is net of them.');
     assert.equal(historyRefundNote(asHistory(r)), 'Refunds are on the invoice as minus lines.');
   }, { lose: (method, where) => (method === 'PUT' && where === '/Invoices' && !lost ? (lost = true) : false) });
 });
@@ -1319,7 +1396,7 @@ test('30. the Postings history: an old day says nothing new, a day with the line
   const marker = cardFeesToRecord(null, undefined, w.fees, p, AT);
   const invoice = (status, payload = p.invoice.payload) => ({ status, type: 'invoice', id: status === 'posted' ? 'inv-1' : null, number: 'SOS-LEEDS-20260929', total: 27.58, payload });
   const day = (cardFees, postings) => ({ refundWay: null, postings, ...(cardFees ? { cardFees: cardFeesView(cardFees) } : {}) });
-  const NOTE = 'Card fees 0.43 are on the invoice as a minus line, and the card payment is net of them.';
+  const NOTE = 'Card fees 0.43 are on the invoice as a minus line, and the payment into the card clearing account is net of them.';
   assert.equal(historyFeeNote(day(marker, { INVOICE: invoice('posted'), 'PAY:CARDCLR': { status: 'posted' } })), NOTE);
   assert.equal(historyFeeNote(day(marker, { INVOICE: invoice('posted'), 'PAY:CARDCLR': { status: 'sending' } })), NOTE, 'partly posted: the invoice is in Xero');
   assert.equal(historyFeeNote(day(marker, { INVOICE: invoice('sending') })), '', 'refused by Xero, or the answer lost');
@@ -1333,7 +1410,7 @@ test('30. the Postings history: an old day says nothing new, a day with the line
   assert.deepEqual(historyDocs({ ...oldRow, documents: null }, null).map((d) => [d.type, d.number, d.total]), [['invoice', 'SOS-LEEDS-20260929', 28.01], ['payment', 'SOS-LEEDS-20260929 Card', 23.1]]);
   assert.deepEqual(historyDocs({ ...oldRow, documents: null, cardFees: marker }, null), historyDocs({ ...oldRow, documents: null }, null), 'the marker changes nothing about the documents');
   // More fee back than charged: a plus line.
-  assert.equal(historyFeeNote(day({ ...marker, net: -48, charged: 2, returned: 50 }, { INVOICE: { status: 'posted' } })), 'Card fees returned 0.48 are on the invoice as a plus line, and the card payment includes them.');
+  assert.equal(historyFeeNote(day({ ...marker, net: -48, charged: 2, returned: 50 }, { INVOICE: { status: 'posted' } })), 'Card fees returned 0.48 are on the invoice as a plus line, and the payment into the card clearing account includes them.');
   // A day that could not carry the line.
   const short = { ...marker, line: false, reason: 'card_short' };
   assert.equal(historyFeeNote(day(short, { INVOICE: invoice('posted', plan(w.g, null).invoice.payload) })), 'Card fees were not put on this invoice. The warnings below say why.');
@@ -1373,7 +1450,7 @@ test('31. replace day: the preview is net of fees, a wait refuses it before anyt
   const replace = read('supabase/functions/xero-sales/index.ts');
   const run = replace.slice(replace.indexOf('async function replaceDay('), replace.indexOf('Deno.serve('));
   const order = ["const cf = await cardFeesFor(platform, { detailRow: run.detail, mapping, locationId, loaded, venue, site, nowMs: Date.now(), noWait: !!run.detail?.replace });",
-    'if (cf.wait) throw new NotReadyError([{ code: cf.wait.code, message: cf.wait.message }]);', 'const res = await removeOldDay(run, api, { by: user });'].map((s) => run.indexOf(s));
+    'if (cf.wait) throw new NotReadyError([waitNotReady(cf.wait)]);', 'const res = await removeOldDay(run, api, { by: user });'].map((s) => run.indexOf(s));
   assert.ok(order.every((i) => i > 0) && order[0] < order[1] && order[1] < order[2], `the wait is thrown before anything is removed: ${order}`);
   // Once the replace has its record on the row (old entries being removed, or gone) it never waits.
   const deleting = { ...bank, postings: Object.fromEntries(Object.entries(bank.postings).map(([k, v]) => [k, { ...v, status: 'deleted' }])),
@@ -1400,8 +1477,11 @@ test('31. replace day: the preview is net of fees, a wait refuses it before anyt
 
 test('32. Xero refuses the invoice: the refund lines ladder still holds, and a day with nothing in Xero is free again', async () => {
   const WHY = "Account code 'SOSFEES' is not a valid code for this document.";
-  // (a) With refund lines AND a fee line. First the refund lines are blamed, then the invoice is
-  // refused without them too, so the day is free: fees are read afresh once the cause is put right.
+  // Words of Xero's that name no account and no lock date: nothing shows another cause.
+  const VAGUE = 'The document is not valid.';
+  // (a) With refund lines AND a fee line, refused in words that name no cause. First the refund
+  // lines are blamed, then the invoice is refused without them too, so the day is free: fees are
+  // read afresh once the cause is put right.
   let broken = true;
   const w = refundDay();
   await withXero(async (x) => {
@@ -1413,7 +1493,7 @@ test('32. Xero refuses the invoice: the refund lines ladder still holds, and a d
     const second = await attempt(sb, w, 'M2');
     assert.deepEqual([second.started, second.plan.refundWay, second.plan.refundWayReason, second.cf.started, second.platform.calls.length, second.refusal], ['refused', 'credit_note', 'xero_refused', 'on', 0, 'other']);
     assert.equal(second.plan.invoice.lines.at(-1).description, 'Card fees', 'the fee line goes with the day whichever way its refunds go');
-    assert.equal(second.error, `Xero did not take this day: ${WHY} Nothing was posted. Put that right, then push again.`);
+    assert.equal(second.error, `Xero did not take this day: ${VAGUE} Nothing was posted. Put that right, then push again.`);
     r = await readSyncRow(sb, KEY);
     assert.deepEqual([refundWayStarted(r.detail), cardFeeWayStarted(r.detail)], [null, null], 'free again, for its refunds and for its fees');
     assert.equal(r.detail.cardFees.way, 'on', 'the marker is still on the row, and is ignored');
@@ -1422,7 +1502,7 @@ test('32. Xero refuses the invoice: the refund lines ladder still holds, and a d
     const third = await attempt(sb, w, 'M3');
     assert.deepEqual([third.started, third.cf.started, third.platform.reads().length, third.plan.refundWay, third.refusal], [null, null, 1, 'lines', 'other']);
     assert.equal(cardFeeWayStarted((await readSyncRow(sb, KEY)).detail), null);
-    // The account is put right in Xero: the day posts, refunds and fees on the invoice.
+    // The cause is put right in Xero: the day posts, refunds and fees on the invoice.
     broken = false;
     const fourth = await attempt(sb, w, 'M4');
     assert.equal(fourth.ok, true, fourth.e?.message);
@@ -1430,6 +1510,33 @@ test('32. Xero refuses the invoice: the refund lines ladder still holds, and a d
     assert.deepEqual([x.creditNotes.length, x.payments.map((p) => p.Amount)], [0, [18.93, 4.91]]);
     r = await readSyncRow(sb, KEY);
     assert.deepEqual([r.status, r.detail.refundWay, cardFeeWayStarted(r.detail)], ['ok', 'lines', 'on']);
+  }, { refuse: (method, where) => (broken && method === 'PUT' && where === '/Invoices' ? xero400(VAGUE) : null) });
+  // (a2) The same day, refused because the Card fees account is wrong in Xero (archived, or its
+  // code changed there). Xero names the account, so the refund lines are NOT blamed: the day
+  // stays free from the first refusal, the row gives Xero's own words, and once the account is
+  // put right the day posts with its refunds as lines. It is never switched to a credit note
+  // for a cause that is not its refunds.
+  broken = true;
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    const first = await attempt(sb, w, 'A1');
+    assert.deepEqual([first.started, first.plan.refundWay, first.plan.cardFees.line, first.refusal], [null, 'lines', true, 'other']);
+    assert.equal(first.error, `Xero did not take this day: ${WHY} Nothing was posted. Put that right, then push again.`);
+    assert.doesNotMatch(first.error, /credit note|its refunds on the invoice/);
+    let r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.refundLinesRefused, r.detail.refundWay, r.detail.postings.INVOICE.refusedNotLines.words], ['error', null, null, WHY]);
+    assert.deepEqual([refundWayStarted(r.detail), cardFeeWayStarted(r.detail)], [null, null], 'free: nothing of the day is in Xero');
+    // Pushed again while it is still wrong: the same answer, still free, still nothing in Xero.
+    const second = await attempt(sb, w, 'A2');
+    assert.deepEqual([second.started, second.plan.refundWay, second.refusal, x.invoices.length + x.creditNotes.length + x.payments.length], [null, 'lines', 'other', 0]);
+    // The account is put right: refunds and fees on the invoice, and no credit note, ever.
+    broken = false;
+    const third = await attempt(sb, w, 'A3');
+    assert.equal(third.ok, true, third.e?.message);
+    assert.deepEqual([third.plan.refundWay, third.plan.warnings.filter((x2) => x2.code === 'refunds_as_credit_note')], ['lines', []]);
+    assert.deepEqual([x.invoices.map((i) => i.Total), x.creditNotes.length, x.payments.map((p) => p.Amount)], [[23.84], 0, [18.93, 4.91]]);
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.refundWay, cardFeeWayStarted(r.detail), r.detail.postings.INVOICE.refusedNotLines], ['ok', 'lines', 'on', undefined]);
   }, { refuse: (method, where) => (broken && method === 'PUT' && where === '/Invoices' ? xero400(WHY) : null) });
   // (b) No refund lines, a fee line: Xero's own words on the row, and the day is free, so the
   // person can pick another account (or switch card fees off) and push again.
@@ -1476,13 +1583,24 @@ test('32. Xero refuses the invoice: the refund lines ladder still holds, and a d
   // A fee day whose line was not carried has no line to blame.
   const short = plan(plain.g, { ...plain.fees, cardSales: 1 });
   assert.equal(invoiceRefusal(short, { postings: alone, error: err('A') }), null);
+  // Refund lines and a fee line: 'other' only when Xero names an account (or a lock date, as before).
+  const linesAndFee = plan(w.g, w.fees), linesOnly = plan(w.g, null);
+  assert.deepEqual([linesAndFee.refundWay, linesAndFee.cardFees.line, linesOnly.refundWay], ['lines', true, 'lines']);
+  assert.equal(invoiceRefusal(linesAndFee, { postings: alone, error: err(WHY) }), 'other');
+  assert.equal(invoiceRefusal(linesAndFee, { postings: alone, error: err("Account code '429' has been archived.") }), 'other');
+  assert.equal(invoiceRefusal(linesAndFee, { postings: alone, error: err(VAGUE) }), 'lines');
+  assert.equal(invoiceRefusal(linesAndFee, { postings: alone, error: err('The document date cannot be before the period lock date.') }), 'other');
+  // A day with NO fee line reads a refusal exactly as it did before card fees: an account named
+  // on it still blames the refund lines (a site with card fees off is not changed by this).
+  assert.equal(invoiceRefusal(linesOnly, { postings: alone, error: err(WHY) }), 'lines');
+  assert.equal(invoiceRefusal(plan(w.g, { ...w.fees, cardSales: 1 }), { postings: alone, error: err(WHY) }), 'lines', 'fees on, but the line was not carried');
 });
 
 // ── 33 to 38: screens, shapes, words and wiring ──────────────────────────────
 
 test('33. Back Office: what the preview says about card fees, and only when the invoice carries the line', () => {
   const fmt = (n) => `£${Number(n).toFixed(2)}`;
-  const view = (w, started) => planView(plan(w.g, w.fees, { started }));
+  const view = (w, started) => planView(plan(w.g, w.fees, { started }, w.m));
   // No refunds.
   const a = previewWords(view(plainDay()), { tw: 'VAT', fmt });
   assert.deepEqual([a.asLines, a.note, a.paymentsTitle], [false, '', 'Payments on the invoice, takings less card fees (it shows as Paid)']);
@@ -1498,8 +1616,32 @@ test('33. Back Office: what the preview says about card fees, and only when the 
   // The credit note way: the credit note shows as it did, and the payments are takings less card fees.
   const c = previewWords(view(refundDay(), 'credit_note'), { tw: 'VAT', fmt });
   assert.deepEqual([c.asLines, c.note, c.paymentsTitle], [false, '', 'Payments on the invoice, takings less card fees (it shows as Paid)']);
-  assert.equal(c.feeNote, 'Card fees £0.37, £0.43 on sales less £0.06 given back on refunds. The card payment is £23.10 less card fees: £22.73, what the card processor pays for this day.');
+  // "What the card processor pays for this day" is NOT said here: the card refunds are on the
+  // credit note, so they are not in this payment (the day pays £18.93). It says where they are.
+  assert.equal(c.feeNote, 'Card fees £0.37, £0.43 on sales less £0.06 given back on refunds. The card payment is £23.10 less card fees: £22.73. The card refunds of this day (£3.80) are on the credit note.');
   assert.equal(c.creditNote.number, 'SOS-LEEDS-20260929-R');
+  // A credit note day that refunded more than it took by card (2.80 taken, 8.00 of the day before refunded).
+  const Z = earlier(E, 'Z', 21, 800);
+  const bigRefund = dayOf([B, D], refundOf(Z, { id: 'rz', amount: 8.0, taxAmount: 1.34, isFullRefund: true, legs: [legOf(Z, 800)] }), { payments: withPay(PAYMENTS, paymentRow(21, 800, 13)) });
+  assert.equal(view(bigRefund).refundWay, 'credit_note');
+  assert.equal(previewWords(view(bigRefund), { fmt }).feeNote, "Card fees returned £0.05: more fee came back on refunds (£0.13) than this day's sales paid (£0.08). The card payment is £2.80 plus that: £2.85. The card refunds of this day (£8.00) are on the credit note.");
+  // Card and cash sharing ONE clearing account (a live site's own setup): the fee comes off the
+  // one payment that holds both, so it is named for both and never called what the processor pays.
+  const sharedMap = mOn({ clearing: { card: 'TILL', cash: 'TILL', gift_card: '830' } });
+  const shared = view(dayOf(REF.rows, [], { m: sharedMap }));
+  assert.deepEqual(shared.payments.map((x) => [x.reference, x.kinds, x.amount]), [['SOS-LEEDS-20260929 Card and Cash', ['Card', 'Cash'], 27.58]]);
+  const sh = previewWords(shared, { fmt });
+  assert.equal(sh.feeNote, 'Card fees £0.43. The Card and Cash payment is £28.01 less card fees: £27.58.');
+  assert.doesNotMatch(sh.feeNote, /card processor pays|The card payment/);
+  assert.equal(previewWords(view(dayOf(REF.rows, latteRefund(), { m: sharedMap }), 'credit_note'), { fmt }).feeNote,
+    'Card fees £0.37, £0.43 on sales less £0.06 given back on refunds. The Card and Cash payment is £28.01 less card fees: £27.64. The card refunds of this day (£3.80) are on the credit note.');
+  // A card payment of the day has no fee (missing for good, or still awaited): the figure is
+  // not the whole of what the processor keeps, so it is not called what the processor pays.
+  const part = dayOf(REF.rows, [], { payments: new Map([...PAYMENTS].filter(([k]) => k !== psp(2))) });
+  assert.equal(previewWords(view(part), { fmt }).feeNote, 'Card fees £0.34. The card payment is £23.10 less card fees: £22.76.');
+  // A view with no payments on it (never the case for an invoice that carries the line) claims nothing.
+  assert.equal(previewWords({ refundWay: null, invoice: {}, totals: {}, cardFees: { line: true, net: 0.43, charged: 0.43, returned: 0, cardBefore: 23.1, cardAfter: 22.67 } }, { fmt }).feeNote,
+    'Card fees £0.43. The payment into the card clearing account is £23.10 less card fees: £22.67.');
   // More fee back than charged.
   const Y = earlier(D, 'Y', 20, 380);
   const back = dayOf([E], refundOf(Y, { id: 'ry', amount: 3.8, taxAmount: 0.63, isFullRefund: true, legs: [legOf(Y, 380)] }), { payments: withPay(new Map(), paymentRow(4, 800, 2), paymentRow(20, 380, 50)) });
@@ -1756,11 +1898,18 @@ test('37. the words: plain, right for one and for many, and not a dash among the
   said.push('The card fees choice is not valid.', 'The account chosen for card fees is not valid.', 'Choose the account for card fees, or switch card fees off.');
   said.push(cardFeesAccountRefusal({ Name: 'Card fees', Code: '429' }), 'This venue has no card payments record, so its card fees cannot be read.', 'Could not read the card fees: connection reset');
   said.push(STATUS_LABEL.fees_wait, RECOMMENDED.cardFees({}).Description, RECOMMENDED.cardFees({}).Name);
+  said.push(cardFeesPreviewRow({ status: 'ok', detail: { postings: { INVOICE: { status: 'posted', id: 'i' } } } }, { cardFees: ON }).warning.message);
+  said.push(cardFeesPreviewRow({ status: 'partial', detail: { postings: { INVOICE: { status: 'posted', id: 'i' } } } }, { cardFees: ON }).warning.message);
+  said.push(figuresTick({ ok: true, notReady: [{ code: 'card_fees_wait', message: 'x' }] }).why, figuresTick({ ok: true, problems: [{ code: 'p', message: 'x' }] }).why);
   // The screens.
   const fmt = (n) => Number(n).toFixed(2);
   for (const v of [{ refundWay: 'lines', invoice: {}, totals: { sales: 28.01, refunds: 3.8 }, cardFees: { line: true, net: 0.37, charged: 0.43, returned: 0.06, cardBefore: 19.3, cardAfter: 18.93 } },
     { refundWay: null, invoice: {}, totals: { sales: 28.01, refunds: 0 }, cardFees: { line: true, net: 0.43, charged: 0.43, returned: 0, cardBefore: 23.1, cardAfter: 22.67 } },
-    { refundWay: 'lines', invoice: {}, totals: { sales: 8, refunds: 3.8 }, cardFees: { line: true, net: -0.48, charged: 0.02, returned: 0.5, cardBefore: 4.2, cardAfter: 4.68 } }]) {
+    { refundWay: 'lines', invoice: {}, totals: { sales: 8, refunds: 3.8 }, cardFees: { line: true, net: -0.48, charged: 0.02, returned: 0.5, cardBefore: 4.2, cardAfter: 4.68 } },
+    { refundWay: null, invoice: {}, totals: { sales: 28.01, refunds: 0 }, payments: [{ account: 'TILL', kinds: ['Card', 'Cash'], amount: 27.58 }], cardFees: { line: true, net: 0.43, charged: 0.43, returned: 0, cardAccount: 'TILL', cardBefore: 28.01, cardAfter: 27.58 } },
+    { refundWay: null, invoice: {}, totals: { sales: 28.01, refunds: 0 }, payments: [{ account: 'CARDCLR', kinds: ['Card'], amount: 22.67 }], cardFees: { line: true, net: 0.43, charged: 0.43, returned: 0, cardAccount: 'CARDCLR', cardBefore: 23.1, cardAfter: 22.67 } },
+    { refundWay: 'credit_note', invoice: {}, creditNote: {}, totals: { sales: 28.01, refunds: 3.8 }, payments: [{ account: 'TILL', kinds: ['Card', 'Cash'], amount: 27.64 }], refundPayments: [{ account: 'TILL', kinds: ['Card', 'Cash'], amount: 5.8 }],
+      cardFees: { line: true, net: 0.37, charged: 0.43, returned: 0.06, cardAccount: 'TILL', cardBefore: 28.01, cardAfter: 27.64 } }]) {
     const w = previewWords(v, { fmt });
     said.push(w.note, w.paymentsTitle, w.feeNote);
   }
@@ -1782,16 +1931,21 @@ test('37. the words: plain, right for one and for many, and not a dash among the
   const screens = {
     'src/backoffice/sections/xero/SiteSetup.jsx': [
       "['Off:', 'the invoice shows card takings in full, so the card clearing account keeps the fees as a balance.'],",
-      "['On:', 'each day’s invoice gets one minus line, Card fees, and the card payment is what the card processor pays you for that day.'],",
+      "['On:', 'each day’s invoice gets one minus line, Card fees, and the card payment is less by the fees, so the clearing account no longer keeps them.'],",
       "['The fee', 'is the one on each card payment under Card payments. It is never worked out from a percentage.'],",
+      "['No fee found:', 'a card payment whose till record has no card processor reference is left out of the line. The day’s warning says how many and how much.'],",
       'Put card fees on the daily invoice', '<span style={flabel}>Card fees account</span>', "'Create a Card fees account in Xero'",
       'Posts with No {tw}. After you save, check a day’s figures again: the preview then shows the Card fees line and the card payment.',
-      "' (already there)' : ' (created)'}`).join(', ')}. It is filled in below; press Save.`",
+      "' (already there)' : ' (created)'}`).join(', ')}. It is chosen in the list above. Press Save.` });",
     ],
     'src/backoffice/sections/xero/xeroUi.js': ['Refunds are the minus lines before the card fees line. Sales ', 'Payments on the invoice, takings less refunds and card fees (it shows as Paid)', 'Payments on the invoice, takings less card fees (it shows as Paid)',
       'Card fees were not put on this invoice. The warnings below say why.', "fees_wait: 'Waiting for card fees',"],
     'supabase/functions/xero-sales/index.ts': ["{ code: 'card_fees_unread', message: `${String((e as Error)?.message || e).replace(/[.\\s]+$/, '')}. Try again.` }"],
+    'supabase/functions/_shared/xeroCardFees.ts': ['This day is already in Xero without card fees and stays as it is. The Card fees line here is how a new day is sent.', 'This day was started in Xero without card fees, so it finishes without them.'],
   };
+  // The Setup tab never promises what is only true where card takings have an account of their
+  // own, and the message under the Create button points at the list it sits under.
+  assert.doesNotMatch(read('src/backoffice/sections/xero/SiteSetup.jsx'), /what the card processor pays you|It is filled in below/);
   for (const [file, phrases] of Object.entries(screens)) {
     const lines = read(file).split('\n');
     for (const phrase of phrases) {
@@ -1809,7 +1963,7 @@ test('37. the words: plain, right for one and for many, and not a dash among the
 test('38. xero-sales and xero-config are wired to the functions tested here', () => {
   const sales = read('supabase/functions/xero-sales/index.ts');
   const config = read('supabase/functions/xero-config/index.ts');
-  assert.match(sales, /import \{ cardFeesFor, loadCardFees \} from '\.\.\/_shared\/xeroCardFees\.ts';/);
+  assert.match(sales, /import \{ cardFeesFor, loadCardFees, cardFeesPreviewRow, missingWhileWaiting, waitNotReady \} from '\.\.\/_shared\/xeroCardFees\.ts';/);
   assert.match(sales, /withCardFees, cardFeesPatch, cardFeesForCompare,\n\} from '\.\.\/_shared\/xeroInvoicePlan\.js';/);
   // Four places ask for a day's card fees: the already answer, Check figures, the real post, and replace day (its preview and its run).
   assert.equal((sales.match(/await cardFeesFor\(platform, /g) || []).length, 5);
@@ -1823,7 +1977,7 @@ test('38. xero-sales and xero-config are wired to the functions tested here', ()
   const order = ['await claimSyncRun(sb, key)', 'const started = refundWayStarted(run.detail);',
     'const cf = await cardFeesFor(platform, { detailRow: run.detail, mapping, locationId, loaded, venue, site, nowMs, noWait: !!run.detail?.replace });',
     '\n    const grouped = withCardFees(loaded.grouped, cf.cardFees);\n', 'invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started)',
-    'if (cf.wait) throw new NotReadyError([{ code: cf.wait.code, message: cf.wait.message }]);', 'await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET)',
+    'if (cf.wait) throw new NotReadyError([waitNotReady(cf.wait)]);', 'await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET)',
     '\n    plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency, started });',
     'refundWay: refundWayToRecord(started, plan), ...cardFeesPatch(cf.started, run.detail.cardFees, cf.cardFees, plan, new Date().toISOString()) } });', 'await postInvoiceDay(run, plan,'];
   const real = day.slice(day.indexOf('await claimSyncRun(sb, key)') - 1);
@@ -1833,15 +1987,31 @@ test('38. xero-sales and xero-config are wired to the functions tested here', ()
   // A waiting day: the wait's own words, recorded not ready, HTTP 400.
   assert.match(day, /const feesWait = notReady\?\.\[0\]\?\.code === 'card_fees_wait';\n\s+const said = refusal \? refusalWords\(refusal, xeroWords\)\n\s+: feesWait \? msg\n/);
   assert.match(day, /\}, notReady \? 400 : 500\);/);
-  // Check figures: the fees the way the row started, a failed read said as a problem, the wait under "would not be sent yet".
-  assert.match(day, /try \{ cf = await cardFeesFor\(platform, \{ detailRow: prior\?\.detail, mapping, locationId, loaded, venue, site, nowMs \}\); \}\n\s+catch \(e\) \{ feeProblems\.push\(\{ code: 'card_fees_unread', /);
-  assert.match(day, /problems: \[\.\.\.plan\.blocked, \.\.\.feeProblems\],\n\s+notReady: \[\.\.\.plan\.notReady, \.\.\.\(cf\.wait \? \[\{ code: cf\.wait\.code, message: cf\.wait\.message \}\] : \[\]\)\], readiness, seen,/);
+  // Check figures: the fees the way the row started (a day finished in Xero without them is read
+  // as a new day, test 39), a failed read said as a problem, the wait under "would not be sent
+  // yet" with the time it ends, and while it waits no "missing" warning for what is awaited (test 40).
+  const dry = day.slice(day.indexOf('if (dryRun) {'), day.indexOf('if (!CLIENT_ID || !CLIENT_SECRET)'));
+  assert.ok(dry.includes("const feeRow = cardFeesPreviewRow(prior, mapping);\n    try { cf = await cardFeesFor(platform, { detailRow: feeRow.detailRow, mapping, locationId, loaded, venue, site, nowMs, noWait: feeRow.noWait }); }\n    catch (e) { feeProblems.push({ code: 'card_fees_unread', "));
+  assert.ok(dry.includes('const warnings = [...summary.warnings, ...(cf.wait ? missingWhileWaiting(plan.warnings, cf.cardFees) : plan.warnings), ...(feeRow.warning ? [feeRow.warning] : [])];'));
+  assert.ok(dry.includes('const started = refundWayStarted(prior?.detail);'), 'the way the refunds go is still read from the real row');
+  assert.ok(dry.includes('problems: [...plan.blocked, ...feeProblems],\n      notReady: [...plan.notReady, ...(cf.wait ? [waitNotReady(cf.wait)] : [])], readiness, seen,'));
+  // Only the preview reads a posted day as a new one: the real post and the replace never do.
+  assert.equal((sales.match(/cardFeesPreviewRow\(/g) || []).length, 1);
+  assert.doesNotMatch(day.slice(day.indexOf('if (!CLIENT_ID || !CLIENT_SECRET)')), /feeRow|cardFeesPreviewRow|missingWhileWaiting/);
+  // The time the wait is measured from is the clock, read once per run, before any fee is read
+  // (set to anything else, a real post could wait for ever).
+  assert.equal((day.match(/\bnowMs = /g) || []).length, 1);
+  assert.ok(day.indexOf('\n  const nowMs = Date.now();\n') > 0 && day.indexOf('\n  const nowMs = Date.now();\n') < day.indexOf('await cardFeesFor(platform, '));
+  assert.equal((sales.match(/nowMs: Date\.now\(\)/g) || []).length, 2, 'replace day: its preview and its run');
   // The already answer: only what is on the day's own row, a fee change in its own sentence.
   const already = sales.slice(sales.indexOf('async function invoiceAlreadyAnswer('), sales.indexOf('function invoiceNotReady('));
   assert.match(already, /const cf = await cardFeesFor\(platform, \{ detailRow: prior\.detail, storedOnly: true, /);
   assert.match(already, /const fees = cardFeesForCompare\(cf\.cardFees, freshFees\);\n\s+const grouped = withCardFees\(loaded\.grouped, fees\.cardFees\);/);
   assert.match(already, /if \(fees\.words\) out\.warnings\.push\(\{ code: 'card_fees_changed_since_posted', message: fees\.words \}\);/);
   assert.match(already, /if \(cf\.started === 'on'\) \{\n\s+try \{ freshFees = await loadCardFees\(/);
+  // The fresh read is of the same day, the same rows, the same clearing accounts and the same
+  // venue as the post: without the clearing map no card money is in scope and every posted day reads as changed.
+  assert.ok(already.includes('freshFees = await loadCardFees(platform, locationId, { day: loaded.day, rows: loaded.rows, clearing: mapping.clearing, platformId: site?.platformId || null }); }'));
   // Replace day: the preview lists a wait or a failed read as a problem.
   const replace = sales.slice(sales.indexOf('async function replaceDay('), sales.indexOf('Deno.serve('));
   assert.match(replace, /if \(cf\.wait\) feeProblems\.push\(cf\.wait\.message\);\n\s+const grouped = withCardFees\(loaded\.grouped, cf\.cardFees\);\n\s+const \{ pre: plan, notReady \} = invoiceNotReady\(/);
@@ -1872,4 +2042,185 @@ test('38. xero-sales and xero-config are wired to the functions tested here', ()
   }
   // The split at Adyen that the refund rule rests on: refunds unwind the fee in the same ratio.
   assert.match(read('supabase/functions/_shared/adyenLink.ts'), /refund: 'deductAccordingToSplitRatio',/);
+});
+
+// ── 39 to 41: the review of 13 Oct 2026 (Check figures on a day already in Xero, a waiting day on the screens, the screens' own lines)
+
+// Check figures, as xero-sales makes it (test 38 pins these calls there): which row the fees are
+// read against, the fees, the plan the way the row started its refunds, and the warnings.
+async function checkFigures(prior, w, { m = w.m, payments = w.payments, nowMs = DAY.toMs + 30 * H } = {}) {
+  const platform = fakePlatform({ payments });
+  const feeRow = cardFeesPreviewRow(prior, m);
+  const cf = await cardFeesFor(platform, { detailRow: feeRow.detailRow, mapping: m, locationId: 'leeds', loaded: w.loaded, venue: UK, site: { platformId: 'platform-leeds' }, nowMs, noWait: feeRow.noWait });
+  const p = planXeroInvoiceDay(withCardFees(w.loaded.grouped, cf.cardFees), { mapping: m, detail: DETAIL, site: SITE, date: DATE, currency: 'GBP', started: refundWayStarted(prior?.detail) });
+  const warnings = [...(cf.wait ? missingWhileWaiting(p.warnings, cf.cardFees) : p.warnings), ...(feeRow.warning ? [feeRow.warning] : [])];
+  return { feeRow, cf, plan: p, view: planView(p), warnings, notReady: [...p.notReady, ...(cf.wait ? [waitNotReady(cf.wait)] : [])], reads: platform.reads().length };
+}
+
+test('39. Check figures on a day already in Xero without card fees shows the line a new day carries, and says the day stays as it is', async () => {
+  const POSTED = 'This day is already in Xero without card fees and stays as it is. The Card fees line here is how a new day is sent.';
+  const STARTED = 'This day was started in Xero without card fees, so it finishes without them.';
+  const posting = (total) => ({ status: 'posted', id: 'x', total });
+  const w = plainDay();
+  // A live site: the day was posted WITHOUT card fees (28.01), and card fees are switched on afterwards.
+  // Every day a person can pick in Check figures is such a day, and the tick needs the line to be seen.
+  const old = { status: 'ok', detail: { model: 'sales_invoice', postings: { INVOICE: posting(28.01), 'PAY:CARDCLR': posting(23.1), 'PAY:CASHTILL': posting(4.91) } } };
+  assert.equal(cardFeeWayStarted(old.detail), 'off');
+  // Read the way the row started, the preview would show NO line and say nothing (what a real post of it does: nothing).
+  const asRow = await cardFeesFor(fakePlatform(), { detailRow: old.detail, mapping: w.m, locationId: 'leeds', loaded: w.loaded, venue: UK, site: { platformId: 'platform-leeds' }, nowMs: DAY.toMs + 30 * H });
+  assert.deepEqual([asRow.cardFees, asRow.started], [null, 'off']);
+  // The preview: the fees are read as for a new day, the line is on the invoice, and one warning says the day itself stays.
+  const a = await checkFigures(old, w);
+  assert.deepEqual(a.feeRow, { detailRow: null, noWait: true, warning: { code: 'card_fees_preview_posted', message: POSTED } });
+  assert.deepEqual([a.reads, a.cf.started, a.cf.wait, a.cf.cardFees.charged], [1, null, null, 43]);
+  assert.deepEqual(a.view.invoice.lines.at(-1), { kind: 'fee', refund: false, description: 'Card fees', account: 'SOSFEES', taxType: 'NONE', amount: -0.43, vat: 0, xeroVat: 0 });
+  assert.deepEqual([a.view.invoice.total, a.view.payments.map((x) => [x.key, x.amount]), a.view.cardFees.line], [27.58, [['PAY:CARDCLR', 22.67], ['PAY:CASHTILL', 4.91]], true]);
+  assert.deepEqual(a.warnings.filter((x) => /^card_fees/.test(x.code)), [{ code: 'card_fees_preview_posted', message: POSTED }]);
+  assert.equal(previewWords(a.view).feeNote, 'Card fees 0.43. The card payment is 23.10 less card fees: 22.67, what the card processor pays for this day.');
+  assert.deepEqual([a.notReady, a.plan.blocked], [[], []], 'nothing stops the tick: the person has seen the line');
+  assert.equal(figuresTick({ ok: true, date: DATE, mappingHash: 'h', problems: a.plan.blocked, notReady: a.notReady }, { savedHash: 'h' }).canTick, true);
+  // It never waits (nothing of this day will be sent): a fee still missing is named, inside the wait time too.
+  const noRow2 = new Map([...PAYMENTS].filter(([k]) => k !== psp(2)));
+  const b = await checkFigures(old, w, { payments: noRow2, nowMs: DAY.toMs + 5 * H });
+  assert.deepEqual([b.cf.wait, b.notReady, b.view.invoice.lines.at(-1).amount, b.warnings.map((x) => x.code).filter((c) => /^card_fees/.test(c))], [null, [], -0.34, ['card_fees_missing', 'card_fees_preview_posted']]);
+  // An older day with refunds, posted with a credit note: it keeps its credit note in the preview, and shows the line.
+  const r = refundDay();
+  const oldRefunds = { status: 'ok', detail: { model: 'sales_invoice', postings: { INVOICE: posting(28.01), 'PAY:CARDCLR': posting(23.1), 'PAY:CASHTILL': posting(4.91), CREDIT: posting(3.8), 'REFUND:CARDCLR': posting(3.8) } } };
+  const c = await checkFigures(oldRefunds, r);
+  assert.deepEqual([c.view.refundWay, c.view.creditNote.total, c.view.invoice.lines.at(-1).description, c.view.invoice.total], ['credit_note', 3.8, 'Card fees', 27.64]);
+  assert.deepEqual(c.warnings.map((x) => x.code).filter((code) => code !== 'loyalty_vat_rule'), ['refunds_as_credit_note', 'card_fees_preview_posted']);
+  // A day only PART sent without card fees: the preview stays as the day was started, and says so.
+  const part = { status: 'partial', detail: { model: 'sales_invoice', postings: { INVOICE: posting(28.01), 'PAY:CARDCLR': { status: 'sending' } } } };
+  const d = await checkFigures(part, w);
+  assert.deepEqual(d.feeRow, { detailRow: part.detail, noWait: false, warning: { code: 'card_fees_started_without', message: STARTED } });
+  assert.deepEqual([d.reads, d.cf.cardFees, d.view.invoice.total, 'cardFees' in d.view, d.view.invoice.lines.some((l) => l.kind === 'fee')], [0, null, 28.01, false, false]);
+  assert.deepEqual(d.warnings.filter((x) => /^card_fees/.test(x.code)), [{ code: 'card_fees_started_without', message: STARTED }]);
+  // A day posted WITH card fees shows what it was posted with: no read, no new words.
+  const marker = cardFeesToRecord(null, undefined, w.fees, plan(w.g, w.fees), AT);
+  const withFees = { status: 'ok', detail: { model: 'sales_invoice', cardFees: marker, postings: { INVOICE: posting(27.58), 'PAY:CARDCLR': posting(22.67), 'PAY:CASHTILL': posting(4.91) } } };
+  const e = await checkFigures(withFees, w, { payments: withPay(PAYMENTS, paymentRow(1, 830, 30)) });
+  assert.deepEqual([e.feeRow.warning, e.feeRow.detailRow, e.reads, e.cf.started, e.view.invoice.total], [null, withFees.detail, 0, 'on', 27.58]);
+  // A free day (nothing sent, or no row at all): by the setup, with the wait, and no new words.
+  for (const free of [null, { status: 'error', detail: { postings: {}, error: 'x' } }]) {
+    const f = await checkFigures(free, w, { nowMs: DAY.toMs + 5 * H });
+    assert.deepEqual([f.feeRow.warning, f.feeRow.noWait, f.reads, f.cf.wait, f.view.invoice.total], [null, false, 1, null, 27.58]);
+  }
+  // Card fees OFF: a posted day previews exactly as before, with no new word and no read.
+  const off = await checkFigures(old, w, { m: mapping() });
+  assert.deepEqual([off.feeRow, off.reads, off.cf.cardFees], [{ detailRow: old.detail, noWait: false, warning: null }, 0, null]);
+  assert.deepEqual([off.view, off.warnings], [planView(plan(w.g, null, { started: refundWayStarted(old.detail) }, mapping())), plan(w.g, null, { started: refundWayStarted(old.detail) }, mapping()).warnings]);
+  assert.deepEqual(cardFeesPreviewRow(old, { cardFees: { enabled: false, account: 'SOSFEES' } }).warning, null);
+  // A day in Xero the older way (bank transactions) has no invoice started: free, as before.
+  assert.deepEqual(cardFeesPreviewRow({ status: 'ok', detail: { postings: { 'RECEIVE:acc': posting(28.01) } } }, w.m).warning, null);
+  // A real post is never read this way: a posted day is handed back as done and nothing is sent (test 29),
+  // and a part sent day finishes without the line (test 26). Only the preview differs.
+  await withXero(async (x) => {
+    const sb = fakeTable(old);
+    assert.deepEqual([(await attempt(sb, w, 'P9')).already, x.calls], [true, []]);
+  });
+});
+
+test('40. a day still waiting for a card fee, on Check figures and on the Postings list', async () => {
+  // Payment 2 (4.00) has no row yet, payment 3 (2.80) no fee yet, and a kiosk sale (6.50) has no reference.
+  const kiosk = { id: 'K', closed_at: at(4), total: 6.5, tip: 0, service: 0, tax_amount: 1.08, source: 'kiosk', payment_method: 'card-external', method: 'card',
+    items: [{ uid: 'k1', cat: 'cat-hot_1e945c26', itemId: 'm-k', qty: 1, price: 6.5, taxRateId: 'r20' }] };
+  const payments = new Map([[psp(1), PAYMENTS.get(psp(1))], [psp(3), paymentRow(3, 280, null)], [psp(4), PAYMENTS.get(psp(4))]]);
+  const mixed = dayOf([...REF.rows, kiosk], [], { payments });
+  const UNTIL = new Date(DAY.toMs + 16 * H).toISOString();
+  // Check figures inside the wait: the wait is what stops the day, with the time it ends.
+  const a = await checkFigures(null, mixed, { nowMs: DAY.toMs + 5 * H });
+  assert.deepEqual(a.notReady.map((n) => [n.code, n.until]), [['card_fees_wait', UNTIL]]);
+  assert.match(a.notReady[0].message, /^Waiting for card fees\. 2 card payments have no fee from the card processor yet \(6\.80\)\. /);
+  assert.deepEqual(waitNotReady({ code: 'card_fees_wait', message: 'm', untilMs: DAY.toMs + 16 * H, count: 1, amount: 1 }), { code: 'card_fees_wait', message: 'm', until: UNTIL });
+  // The plan itself warns of all three; while the day waits the screen is told only of the one
+  // that can never have a fee. The two still awaited are the wait's to say, not "put it right in Xero".
+  assert.match(warned(a.plan, 'card_fees_missing')[0].message, /^No card fee was found for 3 card payments \(13\.30\)\. /);
+  assert.deepEqual(a.warnings.filter((x) => x.code === 'card_fees_missing'), [{ code: 'card_fees_missing', checkIds: ['K'],
+    message: 'No card fee was found for 1 card payment (6.50). It has no card processor reference on the till record. The Card fees line leaves it out, so the card clearing account will be out by its fee. Check it under Card payments and put the difference right in Xero.' }]);
+  assert.deepEqual(a.warnings.filter((x) => x.code !== 'card_fees_missing'), a.plan.warnings.filter((x) => x.code !== 'card_fees_missing'), 'every other warning as it was');
+  // Only fees that can still arrive are missing: no "missing" warning at all while it waits.
+  const awaited = plainDay({ payments: new Map([...PAYMENTS].filter(([k]) => k !== psp(2))) });
+  const b = await checkFigures(null, awaited, { nowMs: DAY.toMs + 5 * H });
+  assert.deepEqual([b.notReady.length, warned(b.plan, 'card_fees_missing').length, b.warnings.filter((x) => x.code === 'card_fees_missing')], [1, 1, []]);
+  // The figure shown is a part figure, so it is not called what the card processor pays.
+  assert.equal(previewWords(b.view).feeNote, 'Card fees 0.34. The card payment is 23.10 less card fees: 22.76.');
+  // Once the wait is over nothing is held back: the warning names all that is missing.
+  const c = await checkFigures(null, mixed, { nowMs: DAY.toMs + 16 * H });
+  assert.deepEqual([c.notReady, c.warnings], [[], c.plan.warnings]);
+  assert.deepEqual(missingWhileWaiting(null, null), []);
+  assert.deepEqual(missingWhileWaiting([{ code: 'x', message: 'y' }], null), [{ code: 'x', message: 'y' }]);
+  // The tick: a waiting day cannot be ticked, and the words say what to do (there is nothing to fix).
+  const res = (extra = {}) => ({ ok: true, date: DATE, mappingHash: 'h1', problems: [], notReady: [], ...extra });
+  const ready = { savedHash: 'h1', checked: null, dirty: false };
+  assert.deepEqual(figuresTick(res(), ready), { stale: false, ticked: false, canTick: true, why: '' });
+  assert.deepEqual(figuresTick(res({ notReady: a.notReady }), ready), { stale: false, ticked: false, canTick: false, why: 'This day is still waiting for a card fee. Pick an earlier day to check.' });
+  assert.deepEqual(figuresTick(res({ notReady: [...a.notReady, { code: 'tips', message: 'Choose the tips account.' }] }), ready).why, 'Fix what stops this day first.');
+  assert.deepEqual(figuresTick(res({ notReady: a.notReady, problems: [{ code: 'card_fees_unread', message: 'x' }] }), ready), { stale: false, ticked: false, canTick: false, why: 'Fix what stops this day first.' });
+  assert.deepEqual(figuresTick(res({ problems: [{ code: 'totals_mismatch', message: 'x' }] }), ready), { stale: false, ticked: false, canTick: false, why: 'Fix what stops this day first.' });
+  assert.deepEqual(figuresTick(res(), { ...ready, dirty: true }), { stale: false, ticked: false, canTick: false, why: 'Save your changes first.' });
+  assert.deepEqual(figuresTick(res(), { ...ready, savedHash: 'h2' }), { stale: true, ticked: false, canTick: false, why: 'These figures were worked out before your last save. Press Check figures again.' });
+  assert.deepEqual(figuresTick(res(), { ...ready, checked: { hash: 'h1', date: DATE } }), { stale: false, ticked: true, canTick: false, why: '' });
+  assert.deepEqual(figuresTick(res(), { ...ready, checked: { hash: 'h1', date: '2026-09-28' } }).canTick, true, 'ticked for another day');
+  assert.deepEqual([figuresTick(res({ empty: true }), ready).canTick, figuresTick(null, ready).canTick, figuresTick({ error: 'x' }, ready).canTick, figuresTick(res()).canTick], [false, false, false, true]);
+  const figures = read('src/backoffice/sections/xero/CheckFigures.jsx');
+  assert.ok(figures.includes('const { ticked, canTick, why } = figuresTick(res, { dirty, savedHash, checked });'));
+  assert.ok(figures.includes("<button style={btn(!canTick || !!busy)} onClick={tick} disabled={!canTick || !!busy}>{busy === 'tick' ? 'Saving…' : ticked ? '✓ Checked' : 'I have checked these figures'}</button>"));
+  assert.ok(figures.includes('{!canTick && !ticked && <span style={S.note}>{why}</span>}'));
+  assert.doesNotMatch(figures.replace(/^\s*\/\/.*$/gm, ''), /const canTick =|notReady|problems/, 'the screen decides nothing about the tick itself');
+  // The Postings list. A waiting day shows its blue pill and the words of the wait, and NOT the
+  // red "not in Xero" line with a red Push (a push would only bring the wait back).
+  const gap = { date: DATE, sales: 5, gross: 28.01, ageDays: 0 };
+  const waiting = { date: DATE, locationId: 'leeds', status: 'fees_wait', notReady: a.notReady, gap };
+  assert.equal(showsGap(waiting, DAY.toMs + 5 * H), false);
+  assert.equal(showsGap(waiting, DAY.toMs + 16 * H - 1), false);
+  // Once the wait is over the button is back, so a day nobody tried again (auto posting off) is never left with nothing to press.
+  assert.equal(showsGap(waiting, DAY.toMs + 16 * H), true);
+  assert.equal(showsGap(waiting, DAY.toMs + 40 * H), true);
+  assert.equal(showsGap({ ...waiting, notReady: [{ code: 'card_fees_wait', message: 'm' }] }, DAY.toMs + 5 * H), true, 'no end time on the row: the button stays');
+  // Every other gap day is as it was; a day with no gap never shows it.
+  for (const status of ['missing', 'failed', 'blocked', 'partly_posted']) assert.equal(showsGap({ status, gap, notReady: a.notReady }, DAY.toMs + 5 * H), true, status);
+  assert.deepEqual([showsGap({ status: 'fees_wait', notReady: a.notReady }, 0), showsGap({ status: 'posted' }), showsGap(null)], [false, false, false]);
+  const history = read('src/backoffice/sections/xero/PostingsHistory.jsx');
+  assert.equal((history.match(/\{showsGap\(r\) && /g) || []).length, 2, 'the red line and the Push button');
+  assert.ok(history.includes('{showsGap(r) && <GapPush locationId={r.locationId} date={r.date} onDone={load} />}'));
+  assert.doesNotMatch(history, /\{r\.gap && /);
+  // The row as the history gives it carries the end of the wait: the not ready entry is stored and handed on whole.
+  await withXero(async () => {
+    const sb = fakeTable();
+    await attempt(sb, awaited, 'H1', { platform: fakePlatform({ payments: awaited.payments }), nowMs: DAY.toMs + 4 * H });
+    assert.deepEqual((await readSyncRow(sb, KEY)).detail.notReady.map((n) => [n.code, n.until]), [['card_fees_wait', UNTIL]]);
+  });
+  const config = read('supabase/functions/xero-config/index.ts');
+  assert.match(config, /notReady:detail->notReady,/);
+  assert.match(config, /error: r\.error \|\| null, notReady: r\.notReady \|\| null, updatedAt: r\.updated_at,/);
+});
+
+test('41. the screens are wired to what is tested: the exact lines of the Setup tab, the Postings detail and the server flag', () => {
+  const setup = read('src/backoffice/sections/xero/SiteSetup.jsx');
+  const has = (text, why) => assert.ok(setup.includes(text), why || text);
+  // The tick shows the saved choice and can be switched both ways.
+  has('<input type="checkbox" checked={map.cardFees?.enabled === true} onChange={(e) => setMap((m) => setCardFeesOn(m, e.target.checked))} />');
+  // The account row and the Create button only while card fees are on.
+  has("            {map.cardFees?.enabled === true && (\n              <>\n                <div style={fieldRow}>\n                  <span style={flabel}>Card fees account</span>");
+  // The list offers expense accounts only, and choosing one sets it.
+  has('const expenses = expenseAccounts(accounts);');
+  has('<AcctSelect value={map.cardFees?.account} list={expenses} placeholder="Choose an expense account" onChange={(v) => setMap((m) => setCardFeesAccount(m, v))} />');
+  // The Create button: a failure is said, in red, under the button; so is what was created.
+  has("    } catch (e) { setFeeMsg({ ok: false, words: e.message || 'Could not create the account' }); } finally { setBusy(''); }");
+  has("<button style={S.small} onClick={createFeeAccount} disabled={!!busy}>{busy === 'fees' ? 'Creating…' : 'Create a Card fees account in Xero'}</button>");
+  has("{feeMsg && <div style={{ ...S.note, marginTop: 6, color: feeMsg.ok ? '#2f8f4e' : '#c33' }}>{feeMsg.words}</div>}");
+  assert.ok(setup.indexOf('list={expenses} placeholder="Choose an expense account"') < setup.indexOf('onClick={createFeeAccount}') && setup.indexOf('onClick={createFeeAccount}') < setup.indexOf('{feeMsg && <div'), 'the message sits under the list it speaks of');
+  // The whole section shows only when xero-config says it knows the choice, so a Back Office that
+  // is live before the function never offers a choice the server would save unchecked.
+  has("        {data.canCardFees === true && (\n          <>\n            <div style={S.h3}>Card fees</div>");
+  assert.equal((setup.match(/canCardFees/g) || []).length, 2, 'once in the header comment, once in the screen');
+  const config = read('supabase/functions/xero-config/index.ts');
+  const siteData = config.slice(config.indexOf("if (action === 'site_data')"), config.indexOf("if (action === 'readiness')"));
+  assert.match(siteData, /\n\s+canCardFees: true,\n\s+\}\);/);
+  // The Postings detail of a waiting day: its words once as a note, and neither the red error nor "Not ready:".
+  const history = read('src/backoffice/sections/xero/PostingsHistory.jsx');
+  for (const line of ["      {waiting && <div style={{ ...S.info, maxWidth: 'none' }}>{(d.notReady || []).map((n) => n.message).join(' ')}</div>}",
+    "      {!waiting && d.error && <div style={{ ...S.banner(false), maxWidth: 'none' }}>{d.error}</div>}",
+    '      {!waiting && (d.notReady || []).length > 0 && (']) assert.ok(history.includes(line), line);
+  assert.equal((history.match(/\{d\.error && /g) || []).length, 0, 'never the red error on a waiting day');
 });

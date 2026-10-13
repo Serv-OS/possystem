@@ -287,9 +287,13 @@ export function cardFeesOffGolden(planner, { mappingExtra = null, options = {} }
   return out;
 }
 
-/** A made up Adyen PSP reference (16 characters) and the till's own key for a reader payment. */
+/**
+ * A made up Adyen PSP reference (16 characters) and the till's own key for a reader payment
+ * ("<till's key>.<PSP reference>"). Both are invented: no real payment reference belongs in a
+ * public repository.
+ */
 export const psp = (n) => `TESTPSP${String(n).padStart(9, '0')}`;
-export const tillRef = (n) => `D9Uy00179181${String(n).padStart(7, '0')}.${psp(n)}`;
+export const tillRef = (n) => `AB12cd345678${String(n).padStart(7, '0')}.${psp(n)}`;
 
 /** An adyen_payments row as xeroCardFees.ts reads it: authorised, captured, with the venue's fee. */
 export const paymentRow = (n, amountMinor, commissionMinor, extra = {}) => ({

@@ -42,7 +42,8 @@
 // saved like any other (validateInvoiceMapping), in the figures hash only while it is on
 // (mappingHash) and on the Ready checklist only while it is on (invoiceReadiness). It is never
 // copied from another site: switching it on is each site's own choice. A day waiting for a card
-// fee reads 'fees_wait' in the history, with the words of the wait.
+// fee reads 'fees_wait' in the history, with the words of the wait. site_data answers
+// canCardFees: true, which is what lets the Setup tab show the Card fees section at all.
 //     copy_site   { locationId, fromLocationId } -> another site's choices on this Xero, to fill in
 // Save keeps the server owned invoiceStartDate and figuresChecked, validates the invoice choices,
 // and refuses auto posting for a sales invoice site that is not Ready.
@@ -331,6 +332,11 @@ Deno.serve(async (req) => {
         categories: cats, discountLabels: grouped.groups.discountLabels, groupNames: grouped.groups.names, seen,
         otherGroup: OTHER_GROUP, discountGroups: DISCOUNT_GROUPS, mappingHash: mappingHash(mapping),
         totals: { goods: grouped.groups.goodsTotal / 100, unresolved: grouped.groups.unresolved.goods / 100 },
+        // 13 Oct 2026: this xero-config knows the Card fees choice (it validates it, hashes it and
+        // can create the account). The Setup tab shows the Card fees section only when it reads
+        // this, so a Back Office that is live before the function never offers a choice the
+        // server would save unchecked and leave out of the figures hash.
+        canCardFees: true,
       });
     }
 

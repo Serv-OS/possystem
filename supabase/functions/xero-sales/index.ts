@@ -101,7 +101,7 @@ import {
   withCardFees, cardFeesPatch, cardFeesForCompare,
 } from '../_shared/xeroInvoicePlan.js';
 import { loadInvoiceDay, refreshSiteDetail, postInvoiceDay, NotReadyError, DayChangedError } from '../_shared/xeroInvoicePost.ts';
-import { cardFeesFor, loadCardFees } from '../_shared/xeroCardFees.ts';
+import { cardFeesFor, loadCardFees, cardFeesPreviewRow, missingWhileWaiting, waitNotReady } from '../_shared/xeroCardFees.ts';
 import { revenueTaxRates, expenseTaxRates, healedTaxType } from '../_shared/xeroTax.js';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -526,14 +526,21 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     // it, the way the row started (or by the setup, for a day with nothing sent). A day still
     // waiting for a fee says so under "would not be sent yet". A read that fails never fails the
     // preview: it is said as a problem and the day is shown without card fees.
+    // A day already in Xero WITHOUT card fees, at a site that has since switched them on, shows
+    // the line a new day would carry and says the day itself stays as it is (cardFeesPreviewRow):
+    // at a live site every day a person can pick is such a day, and the line must be seen before
+    // the figures are ticked. Only this preview reads it so; a real post reads the row it holds.
     const feeProblems: any[] = [];
     let cf: any = { cardFees: null, wait: null, started: null };
-    try { cf = await cardFeesFor(platform, { detailRow: prior?.detail, mapping, locationId, loaded, venue, site, nowMs }); }
+    const feeRow = cardFeesPreviewRow(prior, mapping);
+    try { cf = await cardFeesFor(platform, { detailRow: feeRow.detailRow, mapping, locationId, loaded, venue, site, nowMs, noWait: feeRow.noWait }); }
     catch (e) { feeProblems.push({ code: 'card_fees_unread', message: `${String((e as Error)?.message || e).replace(/[.\s]+$/, '')}. Try again.` }); }
     const grouped = withCardFees(loaded.grouped, cf.cardFees);
     const started = refundWayStarted(prior?.detail);
     const plan = planXeroInvoiceDay(grouped, { mapping, detail: cfgRow?.detail || {}, site: siteArg, date, currency: venue.currency, started });
-    const warnings = [...summary.warnings, ...plan.warnings];
+    // While the day waits, the wait says which payments have no fee yet: the "missing" warning
+    // speaks only of the ones that can never have one.
+    const warnings = [...summary.warnings, ...(cf.wait ? missingWhileWaiting(plan.warnings, cf.cardFees) : plan.warnings), ...(feeRow.warning ? [feeRow.warning] : [])];
     if (!Array.isArray(cfgRow?.detail?.salesTaxRates)) {
       warnings.push({ code: 'tax_rates_unknown', message: "Xero's tax rates have not been read for this venue yet, so these VAT rates assume a UK organisation. Posting reads them from Xero first." });
     }
@@ -542,7 +549,7 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     return json({
       ok: true, dryRun: true, ...base, model: 'sales_invoice', summary: summaryView(summary), invoice: planView(plan), lines: [],
       warnings, blocked: plan.blockedRates, problems: [...plan.blocked, ...feeProblems],
-      notReady: [...plan.notReady, ...(cf.wait ? [{ code: cf.wait.code, message: cf.wait.message }] : [])], readiness, seen,
+      notReady: [...plan.notReady, ...(cf.wait ? [waitNotReady(cf.wait)] : [])], readiness, seen,
       mappingHash: mappingHash(mapping), site: { name: siteName, code, suggested: codeSuggested },
     });
   }
@@ -576,7 +583,7 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     if (notReady.length) throw new NotReadyError(notReady);
     // A fee that can still arrive is missing: the day waits. Before any call to Xero, and before
     // the way is recorded, so the row only says "not ready" with the words of the wait.
-    if (cf.wait) throw new NotReadyError([{ code: cf.wait.code, message: cf.wait.message }]);
+    if (cf.wait) throw new NotReadyError([waitNotReady(cf.wait)]);
     const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
     if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
     const detail = await refreshSiteDetail(sb, accessToken, tenantId, locationId, cfgRow?.detail || {}, mapping, siteName, { tab: setupTabName(addedOn) });
@@ -726,7 +733,7 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
       // before anything is removed; a replace that already removed some of the old entries
       // (the row has its record) never waits. A read that fails stops the run the same way.
       const cf = await cardFeesFor(platform, { detailRow: run.detail, mapping, locationId, loaded, venue, site, nowMs: Date.now(), noWait: !!run.detail?.replace });
-      if (cf.wait) throw new NotReadyError([{ code: cf.wait.code, message: cf.wait.message }]);
+      if (cf.wait) throw new NotReadyError([waitNotReady(cf.wait)]);
       const grouped = withCardFees(loaded.grouped, cf.cardFees);
       const { notReady, addedOn } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started);
       if (notReady.length) throw new NotReadyError(notReady);

@@ -24,6 +24,11 @@
 // keeps the full fee on the payment, so the fee given back on a day is worked out from that
 // day's refund legs with venuePayoutLine, the very function Back Office, Card payments, Payouts
 // uses. The Xero line and that screen therefore agree by construction.
+// A card refund the till did not reverse itself (no reversal on its record: staff refunded it
+// another way, or not at all) names no payment. When the check was paid on exactly ONE card
+// payment, that is the payment: the fee comes back only when the card processor's own record
+// shows that much refunded on it (amount_refunded_minor), and otherwise nothing came back, which
+// is known, not missing. Leeds 27 Sep 2026 is the first shape, Barnsley 30 Sep 2026 the second.
 //
 // NEVER A GUESS, NEVER FOR EVER. A fee that can still arrive (the payment has a reference, and
 // its row or its fee is not there yet) makes the day WAIT, up to CARD_FEE_WAIT_MS after the
@@ -32,13 +37,15 @@
 // another card processor, or one the processor shows as not taken) never holds the day.
 
 import { checkTenders, refundParts, isVoidedCheck } from './accountingDay.js';
-import { clearingFor, dayLabel, cardFeeWayStarted } from './xeroInvoicePlan.js';
+import { clearingFor, dayLabel, cardFeeWayStarted, cardFeesMissingWords } from './xeroInvoicePlan.js';
 import { wallClock } from './businessDay.js';
 import { venuePayoutLine, isCountedPayment } from './venueFees.ts';
 import { venueSite } from './accountingData.ts';
 
 type Dict = Record<string, any>;
-export type CardFeeItem = { checkId: string; minor: number; psp: string | null; other?: boolean };
+// unreversed: a card refund with no reversal on the till record, tied to the check's one card
+// payment; need: what the processor must show refunded on that payment for this refund to be in it.
+export type CardFeeItem = { checkId: string; minor: number; psp: string | null; other?: boolean; unreversed?: boolean; need?: number };
 export type CardFeeItems = { cardAccount: string | null; sales: CardFeeItem[]; refunds: CardFeeItem[]; cardSales: number; cardRefunds: number };
 export type CardFeeUnknown = { side: 'sale' | 'refund'; reason: string; count: number; amount: number; checkIds: string[] };
 export type CardFees = {
@@ -108,30 +115,52 @@ export function cardFeeItems({ day, saleRows = [], refundRows = [], clearing = n
 
   const refunds: CardFeeItem[] = [];
   const seenRefund = new Set<string>();
+  const okLegs = (entry: any): any[] => (Array.isArray(entry?.legs) ? entry.legs : []).filter((l: any) => l && OK_LEG.has(String(l.status || '').toLowerCase()));
+  const legMinor = (leg: any): number => Math.max(0, Math.round(Number(leg.amountMinor) || 0));
   for (const row of refundRows || []) {
     if (!row || isVoidedCheck(row)) continue;
-    const list: any[] = Array.isArray(row.refunds) ? row.refunds : [];
-    list.forEach((entry, i) => {
+    // Every refund of the check that moved money, in the order the till wrote them, whatever the
+    // day: a refund of another day is not on this invoice, but it is on the same card payment.
+    const entries: { entry: any; r: any; inDay: boolean }[] = [];
+    (Array.isArray(row.refunds) ? row.refunds : []).forEach((entry: any, i: number) => {
       if (!entry || typeof entry !== 'object') return;
       const rid = `${row.id}:${entry.id || i}`;
       if (seenRefund.has(rid)) return;
       seenRefund.add(rid);
       const r: any = refundParts(entry, row, null);
+      if (r.skipped) return;
       const at = r.atMs == null ? Date.parse(row.closed_at) : r.atMs;
-      if (!(at >= day.fromMs && at < day.toMs) || r.skipped) return;
+      entries.push({ entry, r, inDay: at >= day.fromMs && at < day.toMs });
+    });
+    if (!entries.some((e) => e.inDay)) continue;
+    // The check's ONE card payment: it was paid on exactly one card tender in scope, and that
+    // tender carries a reference of ours. With two card tenders, or none with a reference, a
+    // refund the till did not reverse itself names no payment, and none is picked for it.
+    const cards = (checkTenders(row).tenders as any[]).filter((t) => t.kind === 'card' && t.amount + t.tip > 0 && inScope(t.processor));
+    const only = cards.length === 1 ? item(row.id, 0, cards[0].pspRef, cards[0].processor) : null;
+    const one: string | null = only && !only.other ? only.psp : null;
+    // What the till itself reversed on that payment, over all of the check's refunds.
+    const reversed = one ? entries.reduce((s, e) => s + okLegs(e.entry).filter((l) => pspOf(l.id) === one).reduce((x, l) => x + legMinor(l), 0), 0) : 0;
+    let loose = 0;   // card money refunded with no reversal on the till record, so far
+    for (const { entry, r, inDay } of entries) {
       // The card money this refund put back on the card clearing account, as the invoice counts it.
       let cardLeft = 0;
       for (const p of r.parts as any[]) if (p.kind === 'card' && p.gross > 0 && inScope(p.processor)) cardLeft += p.gross;
       // Each card reversal that went through names the payment it refunded (leg.id; leg.ref is
       // the refund's own reference). Never more than the card money the invoice counts.
-      for (const leg of (Array.isArray(entry.legs) ? entry.legs : []) as any[]) {
-        if (!leg || !OK_LEG.has(String(leg.status || '').toLowerCase())) continue;
-        const m = Math.min(Math.max(0, Math.round(Number(leg.amountMinor) || 0)), cardLeft);
-        if (m > 0) { refunds.push(item(row.id, m, leg.id, leg.processor)); cardLeft -= m; }
+      for (const leg of okLegs(entry)) {
+        const m = Math.min(legMinor(leg), cardLeft);
+        if (m > 0) { if (inDay) refunds.push(item(row.id, m, leg.id, leg.processor)); cardLeft -= m; }
       }
-      // Card money refunded with no processor reversal recorded: no payment to take a fee from.
-      if (cardLeft > 0) refunds.push({ checkId: row.id, minor: cardLeft, psp: null });
-    });
+      if (!(cardLeft > 0)) continue;
+      // Card money refunded with no reversal on the till record. On the check's one card payment
+      // it is tied to that payment, and `need` is what the card processor must show refunded on
+      // it for this refund to be among them: all the till reversed there, and every such refund
+      // up to this one. With no one payment there is nothing to take a fee from.
+      loose += cardLeft;
+      if (!inDay) continue;
+      refunds.push(one ? { checkId: row.id, minor: cardLeft, psp: one, unreversed: true, need: reversed + loose } : { checkId: row.id, minor: cardLeft, psp: null });
+    }
   }
   const total = (list: CardFeeItem[]) => list.reduce((s, x) => s + x.minor, 0);
   return { cardAccount, sales, refunds, cardSales: total(sales), cardRefunds: total(refunds) };
@@ -148,6 +177,8 @@ export function cardFeeItems({ day, saleRows = [], refundRows = [], clearing = n
  *   no_fee           the payment was taken and has no fee stamped yet (can still arrive)
  *   not_taken        the processor shows the payment as not taken, cancelled, a capture that
  *                    failed or a hold never captured (never arrives)
+ * An `unreversed` refund item (see cardFeeItems) is KNOWN either way: its fee comes back when the
+ * payment's amount_refunded_minor covers its `need`, and nothing comes back when it does not.
  */
 export function sumCardFees(items: CardFeeItems, paymentsByPsp: Map<string, Dict> | Dict | null): CardFees {
   const get = (psp: string): Dict | null => (paymentsByPsp instanceof Map ? paymentsByPsp.get(psp) : (paymentsByPsp as Dict | null)?.[psp]) || null;
@@ -192,8 +223,12 @@ export function sumCardFees(items: CardFeeItems, paymentsByPsp: Map<string, Dict
     // The refund line of Back Office Payouts: the fee this refund gave back, as a minus fee.
     const f = venuePayoutLine({ line_type: 'Refunded', gross_minor: -it.minor }, row);
     if (!f || f.unrated) { miss('refund', unrated(row), it); continue; }
-    returned += Math.abs(Math.round(Number(f.fee_minor) || 0));
     refunds.known += 1;
+    // A refund the till did not reverse itself: the fee came back only if the card processor
+    // shows that much refunded on the payment. If it does not, the processor refunded nothing
+    // for it (Payouts has no refund line either), so no fee came back, and that is known.
+    if (it.unreversed && Math.round(Number(row.amount_refunded_minor) || 0) < (it.need ?? it.minor)) continue;
+    returned += Math.abs(Math.round(Number(f.fee_minor) || 0));
   }
   const order = (u: CardFeeUnknown) => (u.side === 'sale' ? 0 : 10) + REASONS.indexOf(u.reason);
   return {
@@ -221,6 +256,48 @@ export function cardFeesWait(fees: CardFees | null | undefined, { dayEndMs, nowM
   const message = `Waiting for card fees. ${one ? '1 card payment has' : `${count} card payments have`} no fee from the card processor yet (${(Math.round(amount) / 100).toFixed(2)}). `
     + `ServOS tries again every hour. If ${one ? 'it is' : 'they are'} still missing at ${hhmm} on ${dayLabel(w.ymd)}, this day posts with the fees it has and says what is missing. Nothing has been posted yet.`;
   return { code: 'card_fees_wait', untilMs, count, amount, message };
+}
+
+/**
+ * The wait as a day's "not ready" entry: its code, its words, and the time it ends (`until`), so
+ * a screen can tell a day that is still waiting from one whose wait is over and was not tried since.
+ */
+export const waitNotReady = (wait: { code: string; message: string; untilMs: number }) => ({ code: wait.code, message: wait.message, until: new Date(wait.untilMs).toISOString() });
+
+/**
+ * Check figures on a day that is still waiting (13 Oct 2026 review). The wait itself says which
+ * payments have no fee yet, so the plan's 'card_fees_missing' warning ("put the difference right
+ * in Xero") must not speak of them: it is cut down to the payments that can never have a fee,
+ * and left out when there are none. Every other warning is passed on as it is.
+ */
+export function missingWhileWaiting(warnings: any[] | null | undefined, fees: CardFees | null | undefined): any[] {
+  const never = (fees?.unknown || []).filter((u) => !WAITABLE.has(u.reason));
+  return (warnings || []).flatMap((w) => {
+    if (w?.code !== 'card_fees_missing') return [w];
+    return never.length ? [{ code: w.code, message: cardFeesMissingWords(never), checkIds: [...new Set(never.flatMap((u) => u.checkIds || []))].slice(0, MAX_IDS) }] : [];
+  });
+}
+
+/**
+ * Check figures only (13 Oct 2026 review): which log row the day's card fees are read against.
+ * A real post is never asked this way; it reads the row its run holds.
+ * Switching card fees on asks for Check figures again so the person SEES the Card fees line
+ * before ticking, and at a live site every day they can pick is already in Xero without it. So:
+ *   a day finished in Xero without card fees   the preview reads the fees as for a new day
+ *                (detailRow null, and no wait: nothing of this day will be sent), with a warning
+ *                that the day itself stays as it is;
+ *   a day only part sent without them          the preview stays as the day was started, and a
+ *                warning says it finishes without them;
+ *   every other day (free, or started with card fees, or card fees off)   as its row says.
+ * The way the day's REFUNDS go is still read from the real row by the caller.
+ */
+export function cardFeesPreviewRow(prior: any, mapping: any): { detailRow: any; noWait: boolean; warning: { code: string; message: string } | null } {
+  const detailRow = prior?.detail ?? null;
+  if (mapping?.cardFees?.enabled !== true || cardFeeWayStarted(detailRow) !== 'off') return { detailRow, noWait: false, warning: null };
+  if (prior?.status === 'ok') {
+    return { detailRow: null, noWait: true, warning: { code: 'card_fees_preview_posted', message: 'This day is already in Xero without card fees and stays as it is. The Card fees line here is how a new day is sent.' } };
+  }
+  return { detailRow, noWait: false, warning: { code: 'card_fees_started_without', message: 'This day was started in Xero without card fees, so it finishes without them.' } };
 }
 
 // What venueFees needs to rate a payment (the aliases adyen-financial's CAPTURE_COLS uses).

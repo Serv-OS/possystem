@@ -80,12 +80,28 @@ export const suggested = (on) => (on ? { outline: '2px solid rgba(200,150,40,.65
 const LINE_KIND = { sales: 'Sales', discount: 'Discount', gift: 'Gift cards', tip: 'Tips', service: 'Service', fee: 'Card fees' };
 
 // 13 Oct 2026, card fees. The sentence under the payments of an invoice that carries the Card
-// fees line: how much, and what it does to the card payment. `fee` is view.cardFees (major units).
-function feeNoteWords(fee, fmt) {
+// fees line: how much, and what it does to the payment it comes off. `view` is the plan view and
+// `fee` its cardFees (major units). The fee comes off the ONE payment into the card clearing
+// account, and that payment is named for what it holds: "The card payment" when it is card
+// money alone, "The Card and Cash payment" where they share an account (the kinds, as the
+// payment's own reference has them).
+// "What the card processor pays for this day" is said ONLY when it is true: the payment is card
+// money alone, every card payment of the day has its fee (fee.unknown is empty, so not on a day
+// still waiting for one), and the day's card refunds are on the invoice. On a credit note day
+// they are not in this payment, so the sentence says where they are instead.
+const CARD_KIND = /^Card\b/;
+const allCard = (kinds) => kinds.length > 0 && kinds.every((k) => CARD_KIND.test(String(k)));
+function feeNoteWords(view, fee, fmt) {
   const before = fmt(fee.cardBefore || 0), after = fmt(fee.cardAfter || 0);
-  if (fee.net < 0) return `Card fees returned ${fmt(-fee.net)}: more fee came back on refunds (${fmt(fee.returned || 0)}) than this day's sales paid (${fmt(fee.charged || 0)}). The card payment is ${before} plus that: ${after}.`;
+  const onAccount = (list) => (list || []).find((p) => p?.account && p.account === fee.cardAccount) || null;
+  const kinds = onAccount(view.payments)?.kinds || [];
+  const what = !kinds.length ? 'The payment into the card clearing account' : allCard(kinds) ? 'The card payment' : `The ${kinds.join(' and ')} payment`;
+  const apart = view.creditNote ? onAccount(view.refundPayments) : null;
+  const apartWords = apart ? ` ${allCard(apart.kinds || []) ? 'The card refunds' : `The ${(apart.kinds || []).join(' and ')} refunds`} of this day (${fmt(apart.amount || 0)}) are on the credit note.` : '';
+  if (fee.net < 0) return `Card fees returned ${fmt(-fee.net)}: more fee came back on refunds (${fmt(fee.returned || 0)}) than this day's sales paid (${fmt(fee.charged || 0)}). ${what} is ${before} plus that: ${after}.${apartWords}`;
   const split = fee.returned > 0 ? `, ${fmt(fee.charged || 0)} on sales less ${fmt(fee.returned)} given back on refunds` : '';
-  return `Card fees ${fmt(fee.net)}${split}. The card payment is ${before} less card fees: ${after}, what the card processor pays for this day.`;
+  const whole = allCard(kinds) && !apart && !(fee.unknown || []).length;
+  return `Card fees ${fmt(fee.net)}${split}. ${what} is ${before} less card fees: ${after}${whole ? ', what the card processor pays for this day.' : '.'}${apartWords}`;
 }
 
 /**
@@ -115,7 +131,7 @@ export function previewWords(view, { tw = 'VAT', fmt = (n) => Number(n || 0).toF
         : `Refunds are the minus lines at the end. Sales ${fmt(view.totals?.sales || 0)} less refunds ${fmt(view.totals?.refunds || 0)} makes the invoice total.`,
     paymentsTitle: fee ? (asLines ? 'Payments on the invoice, takings less refunds and card fees (it shows as Paid)' : 'Payments on the invoice, takings less card fees (it shows as Paid)')
       : asLines ? 'Payments on the invoice, takings less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)',
-    feeNote: fee ? feeNoteWords(fee, fmt) : '',
+    feeNote: fee ? feeNoteWords(view, fee, fmt) : '',
     creditNote: view?.creditNote || null,
     refundPayments: view?.refundPayments || [],
     refundTieTitle: asLines ? `${tw} per rate on the refund lines` : `${tw} per rate on refunds`,
@@ -153,10 +169,43 @@ export function historyFeeNote(d, fmt = (n) => Number(n || 0).toFixed(2)) {
   const line = invoice.payload ? !!sent : !!c.line;
   const net = sent ? -Number(sent.UnitAmount) : Number(c.net) || 0;
   if (line) {
-    return net < 0 ? `Card fees returned ${fmt(-net)} are on the invoice as a plus line, and the card payment includes them.`
-      : `Card fees ${fmt(net)} are on the invoice as a minus line, and the card payment is net of them.`;
+    return net < 0 ? `Card fees returned ${fmt(-net)} are on the invoice as a plus line, and the payment into the card clearing account includes them.`
+      : `Card fees ${fmt(net)} are on the invoice as a minus line, and the payment into the card clearing account is net of them.`;
   }
   return c.reason && c.reason !== 'none' ? 'Card fees were not put on this invoice. The warnings below say why.' : '';
+}
+
+/**
+ * Check figures: whether "I have checked these figures" can be pressed, and the words beside it
+ * when it cannot. `res` is the xero-sales answer on screen. A day that is only waiting for a
+ * card fee has nothing for the person to fix, so it says to pick an earlier day.
+ */
+export function figuresTick(res, { dirty = false, savedHash = '', checked = null } = {}) {
+  // Worked out before the last save: the choices have changed since.
+  const stale = !!res?.ok && !!savedHash && !!res.mappingHash && res.mappingHash !== savedHash;
+  const ticked = !!res?.ok && !!checked?.hash && checked.hash === res.mappingHash && checked.date === res.date;
+  const problems = res?.problems || [], notReady = res?.notReady || [];
+  const canTick = !!res?.ok && !res.empty && !dirty && !stale && !ticked && !problems.length && !notReady.length;
+  const onlyWaiting = !problems.length && notReady.length > 0 && notReady.every((n) => n?.code === 'card_fees_wait');
+  const why = canTick || ticked ? ''
+    : onlyWaiting ? 'This day is still waiting for a card fee. Pick an earlier day to check.'
+      : problems.length || notReady.length ? 'Fix what stops this day first.'
+        : dirty ? 'Save your changes first.'
+          : stale ? 'These figures were worked out before your last save. Press Check figures again.' : '';
+  return { stale, ticked, canTick, why };
+}
+
+/**
+ * Postings: whether a row shows the red "not in Xero" line and its Push button. Every gap day
+ * does, but not a day still waiting for a card fee: it is tried again by itself and a push only
+ * repeats the wait. Once the wait is over (`until` on its not ready entry) the button is back,
+ * so a day is never left waiting with nothing to press.
+ */
+export function showsGap(r, nowMs = Date.now()) {
+  if (!r?.gap) return false;
+  if (r.status !== 'fees_wait') return true;
+  const until = Date.parse(r.notReady?.[0]?.until);
+  return !(Number.isFinite(until) && nowMs < until);
 }
 
 /** The form after the "Put card fees on the daily invoice" tick changes. Off keeps the account it had, so ticking again brings it back. */
