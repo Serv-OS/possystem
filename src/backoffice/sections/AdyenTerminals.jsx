@@ -32,6 +32,15 @@
 // Release ask in page, at the page's own size (a native confirm is also a
 // silent no in the iPad shell's web view).
 //
+// RELEASE STUCK PAYMENT (13 Oct 2026, Huddersfield Drive Thru): Release used
+// to call only the database function release_terminal_jobs, which never
+// touches a payment that was SENT to the card machine, so a manager was told
+// "Nothing was stuck" while the till stayed locked. It now asks the server
+// about each sent payment first (adyen-terminal-charge 'result', which
+// settles it or cancels it when nothing was charged), then calls the same
+// database function, then reads again and says one line per payment
+// (src/lib/payments/readerRelease.js). This page never writes terminal_jobs.
+//
 // TIPS (10 Sep 2026): the Tips box is the ONE place the tip choices AND
 // whether the readers ask for a tip on a till payment are set. The fn writes
 // the choices on the Adyen store and the same on/off on every reader's
@@ -42,8 +51,10 @@ import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import {
   DEFAULT_TIP_PRESETS, STATUS_ONLINE, tipPresetChanges, tipChangeSentence, nextReaderName,
 } from '../../lib/payments/readerSettings';
+import { releaseLines, jobsToAsk, RELEASE_LIVE_STATUSES, RELEASE_JOB_COLUMNS } from '../../lib/payments/readerRelease';
 
 const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-admin`;
+const CHARGE_FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-charge`;
 
 const S = {
   card: { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 20, marginBottom: 18, fontSize: 15, lineHeight: 1.5, color: 'var(--t1)' },
@@ -93,6 +104,28 @@ async function callAdmin(action, payload = {}) {
     throw err;
   }
   return data;
+}
+
+// Ask the server what happened to ONE payment that was sent to a card machine
+// (adyen-terminal-charge 'result', with the manager's own sign in, the same
+// headers as callAdmin). The server settles it from the card machine's answer,
+// or cancels it when nothing was charged. It never sends a payment. Never
+// throws: the answer, or the reason there is none, goes to releaseLines.
+async function askCardMachine(jobId) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return { httpStatus: 0, body: null, error: 'not signed in' };
+    const res = await fetch(CHARGE_FN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ action: 'result', job_id: jobId, asked_by: 'manager_release' }),
+    });
+    let body = null;
+    try { body = await res.json(); } catch { body = null; }
+    return { httpStatus: res.status, body, error: null };
+  } catch (e) {
+    return { httpStatus: 0, body: null, error: e?.message || 'no connection' };
+  }
 }
 
 const fmtWhen = (iso) => {
@@ -320,7 +353,7 @@ export default function AdyenTerminals() {
     <>
       {err && err.where === where && <Notice kind="error" text={err.text} detail={err.detail} onClose={() => setErr(null)} />}
       {notice && notice.where === where && (
-        <div style={S.ok} role="status">
+        <div style={notice.kind === 'error' ? S.err : S.ok} role={notice.kind === 'error' ? 'alert' : 'status'}>
           <div>{notice.text}</div>
           {(notice.lines || []).map((l, i) => <div key={i} style={{ marginTop: 2 }}>{l}</div>)}
         </div>
@@ -512,16 +545,47 @@ export default function AdyenTerminals() {
     setBusy('');
   };
 
+  // 13 Oct 2026: ask first, then release, then read again (see the header and
+  // src/lib/payments/readerRelease.js). The live payments are READ here and
+  // never written: the server decides what happened to each one.
   const release = async () => {
     const r = readers.find((x) => x.id === releaseId);
     if (!r) return;
     setBusy('release'); clearMessages();
-    const { data, error } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: r.id, p_note: null });
+    const liveOn = async () => {
+      try {
+        const { data, error } = await supabase.from('terminal_jobs').select(RELEASE_JOB_COLUMNS)
+          .eq('target_terminal_id', r.id).in('status', RELEASE_LIVE_STATUSES).limit(5);
+        return error ? null : (data || []);
+      } catch { return null; }
+    };
+    let tz = 'Europe/London';
+    try {
+      const { data: loc } = await supabase.from('locations').select('timezone').eq('id', getActiveLocationSync()).maybeSingle();
+      if (loc?.timezone) tz = loc.timezone;
+    } catch { /* the default zone */ }
+    // 1. what is live on this card machine
+    const before = await liveOn();
+    // 2. each payment that was sent: the server asks the card machine and settles or cancels it
+    const asked = [];
+    for (const job of jobsToAsk(before)) asked.push({ job, ...(await askCardMachine(job.id)) });
+    // 3. the release, exactly as before
+    let rpc = null;
+    let rpcError = null;
+    try {
+      const { data, error } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: r.id, p_note: null });
+      rpc = error ? null : data;
+      rpcError = error || null;
+    } catch (e) { rpcError = e; }
+    // 4. what is still live
+    const still = await liveOn();
     setBusy('');
     setAskRelease(false);
-    if (error) { fail('The payment could not be released.', error, 'advanced'); return; }
-    const n = (data?.expired || 0) + (data?.released || 0);
-    setNotice({ where: 'advanced', text: n ? `Released ${n} stuck payment${n === 1 ? '' : 's'}. ${r.label} can take payments again.` : `Nothing was stuck on ${r.label}.` });
+    // 5. one line per payment, then the closing line
+    const out = releaseLines({ label: r.label, asked, rpc, still, tz, now: Date.now() });
+    if (rpcError) fail('The payment could not be released.', rpcError, 'advanced');
+    if (rpcError && !asked.length) return;
+    setNotice({ where: 'advanced', kind: out.free ? 'ok' : 'error', text: out.lines[0], lines: out.lines.slice(1) });
   };
 
   const setPin = async () => {
@@ -753,11 +817,12 @@ export default function AdyenTerminals() {
               {askRelease && releaseReader && (
                 <div style={S.ask} role="alertdialog" aria-label={`Release ${releaseReader.label}?`}>
                   <h4 style={S.askH}>Release {releaseReader.label}?</h4>
+                  <p style={S.askLine}>A payment that is still on the card machine is checked first. It is only released if it was not taken.</p>
                   <p style={S.askLine}>If a payment could not be confirmed, releasing it means you are sure the customer was not charged.</p>
                   <p style={S.askLine}>Check your card statement first if you are unsure.</p>
                   <p style={S.askLine}>This is recorded against your name.</p>
                   <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
-                    <button style={{ ...S.btn, ...S.btnDanFill }} disabled={!!busy} onClick={release}>{busy === 'release' ? 'Releasing' : 'Release it'}</button>
+                    <button style={{ ...S.btn, ...S.btnDanFill }} disabled={!!busy} onClick={release}>{busy === 'release' ? 'Checking with the card machine' : 'Release it'}</button>
                     <button style={S.linkBtn} disabled={!!busy} onClick={() => setAskRelease(false)}>Not now</button>
                   </div>
                 </div>

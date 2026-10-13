@@ -94,12 +94,17 @@ test('the MPOS local flow treats a deferred report as pending recovery, never "d
   assert.match(localTerminal, /if \(reported\?\.state !== 'processing'\) return reported;/);
 });
 
-test('result, NotFound: a job Adyen approved is never reverted to "never received" (review: the ledger skip fall through)', () => {
+test('result, NotFound: a job Adyen approved is never cancelled as "never received" (review: the ledger skip fall through)', () => {
   const block = charge.slice(charge.indexOf("if (cond === 'not_found') {"));
   const guardAt = block.indexOf('if (ledgerApproved) {');
-  const revertAt = block.indexOf(".update({ status: 'charging_unsent', nexo_service_id: null");
-  assert.ok(guardAt > 0 && revertAt > guardAt, 'the ledger guard comes before the revert');
-  const guard = block.slice(guardAt, revertAt);
+  // 13 Oct 2026: the revert to "not sent yet" is gone. What follows the guard now is the
+  // never received verdict and, only when it is proven, the cancel (readerLockWiring.test.js
+  // pins those). The guard still comes first, so an approved job reaches neither.
+  const verdictAt = block.indexOf('neverReceivedVerdict(');
+  const cancelAt = block.indexOf(".update({ status: 'cancelled', decline_reason: NEVER_RECEIVED_REASON");
+  assert.ok(guardAt > 0 && verdictAt > guardAt && cancelAt > verdictAt, 'the ledger guard comes before the verdict and the cancel');
+  assert.ok(!block.includes(".update({ status: 'charging_unsent'"), 'nothing in the not found branch puts the job back to not sent');
+  const guard = block.slice(guardAt, verdictAt);
   assert.match(guard, /settleFromLedger\(job, \(lg as any\)\.row, \{ allowPark: true \}\)/);
   assert.match(guard, /return json\(\{ ok: true, state: 'processing'/, 'otherwise it stays in flight, never charging_unsent');
   // The ledger is asked again when the early look had nothing: a row may have landed since.
