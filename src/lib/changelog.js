@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.53',
+    date: '13 Oct 2026',
+    items: [
+      "Rolled back v5.11.52. Tills, kitchen screens and ordering work exactly as they did on v5.11.51. Nothing for venues to do.",
+    ],
+  },
+  {
     v: '5.11.51',
     date: '12 Oct 2026',
     items: [
