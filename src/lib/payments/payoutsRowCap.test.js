@@ -5,8 +5,8 @@
  * stopped. supabase/functions/adyen-financial/index.ts read a venue's payout lines with
  * `.limit(5000)`; hosted PostgREST answers at most 1,000 rows a request whatever the limit
  * says, and every venue was past 1,000 lines. Each venue's list stopped at the batch holding
- * its 1,000th line and showed that batch short (Barnsley: batch 19 as 436.62 where the
- * database held 1,216.63).
+ * its 1,000th line and showed that batch short (Barnsley: batch 19 came back with 64 of its
+ * 168 lines, so its gross read at about a third of what the database held).
  *
  * These tests run the SHIPPED function, not a copy. Two small module hooks give it a fake
  * supabase-js in place of the esm.sh import (as offlineQueueFence.test.js does for the app),
