@@ -80,5 +80,6 @@ export const xeroCopySite = (locationId, fromLocationId) => call('xero-config', 
 // made after a preview that has one.
 export const xeroReplaceDayPreview = (locationId, date) => call('xero-sales', { action: 'replace_day', locationId, date, dryRun: true });
 export const xeroReplaceDay = (locationId, date) => call('xero-sales', { action: 'replace_day', locationId, date });
-// Check figures: the invoice and credit note that would be sent for a day. Nothing is sent to Xero.
+// Check figures: the invoice that would be sent for a day, with its refunds as minus lines (or
+// the credit note, on a day whose refunds cannot go on its invoice). Nothing is sent to Xero.
 export const xeroCheckFigures = (locationId, date) => call('xero-sales', { locationId, date, dryRun: true, model: 'sales_invoice' });

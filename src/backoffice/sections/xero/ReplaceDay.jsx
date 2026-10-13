@@ -12,6 +12,9 @@
 // removed, it says exactly that and offers Push again (a normal push finishes it as an invoice).
 // Before xero-sales can replace (not deployed yet) the preview comes back without its
 // `replacePreview`: an honest "needs a ServOS update" line, and no way to confirm.
+// 13 Oct 2026: the day's refunds are minus lines on the invoice, so the invoice total shown is
+// sales less refunds. The credit note row shows only when the preview has one (a day whose
+// refunds cannot go on its invoice).
 
 import { useCallback, useEffect, useState } from 'react';
 import { xeroReplaceDayPreview, xeroReplaceDay, xeroSyncSales } from '../../../lib/xero';

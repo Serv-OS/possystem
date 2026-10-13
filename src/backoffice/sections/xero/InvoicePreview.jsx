@@ -2,9 +2,13 @@
 //
 // The daily sales invoice as it would be (Check figures) or was (a post) sent to Xero: the
 // header, every line with its account, VAT code, amount and VAT, the payments into clearing
-// accounts, the refund credit note, and the VAT per rate against what the till booked. The exact
-// JSON is one click away, so an accountant can see precisely what Xero receives. Where tax is
-// added on top of prices (US, Exclusive) the words are "tax", not "VAT".
+// accounts, and the VAT per rate against what the till booked. The exact JSON is one click away,
+// so an accountant can see precisely what Xero receives. Where tax is added on top of prices
+// (US, Exclusive) the words are "tax", not "VAT".
+// 13 Oct 2026: the day's refunds are minus lines at the end of the invoice (view.refundWay
+// 'lines'), each marked Refund, and the payments are takings less refunds. The credit note and
+// refund payment blocks stay for a day whose refunds could not go on its invoice and for days
+// posted before this. An older xero-sales sends no refundWay: the screen then reads as before.
 
 import { money } from '../../../lib/currency';
 import { dayLabel } from '../../../../supabase/functions/_shared/xeroInvoicePlan.js';
@@ -27,7 +31,7 @@ function Lines({ lines, accounts, cur, tw }) {
             const a = findAccount(accounts, l.account);
             return (
               <tr key={i}>
-                <td style={S.td}>{l.description}<div style={{ fontSize: 11, color: 'var(--t4)' }}>{KIND[l.kind] || l.kind}</div></td>
+                <td style={S.td}>{l.description}<div style={{ fontSize: 11, color: 'var(--t4)' }}>{l.refund ? 'Refund' : (KIND[l.kind] || l.kind)}</div></td>
                 <td style={S.td}>{a ? accountLabel(a) : (l.account || <b style={{ color: '#c33' }}>No account chosen</b>)}</td>
                 <td style={S.td}>{l.taxType || <b style={{ color: '#c33' }}>No Xero rate</b>}</td>
                 <td style={S.num}>{money(tw === 'Tax' ? Math.round((l.amount - l.vat) * 100) / 100 : l.amount, cur)}</td>
@@ -112,6 +116,8 @@ export default function InvoicePreview({ result, accounts = [], currency }) {
   ) : null);
   const problems = result.problems || [];
   const notReady = result.notReady || [];
+  // Refunds on the invoice as minus lines (13 Oct 2026). Undefined from an older server: as before.
+  const asLines = view.refundWay === 'lines';
   return (
     <div>
       {(problems.length > 0 || notReady.length > 0) && (
@@ -123,11 +129,16 @@ export default function InvoicePreview({ result, accounts = [], currency }) {
         </div>
       )}
       <Doc doc={view.invoice} title="Sales invoice" date={date} view={view} accounts={accounts} cur={cur} tw={tw} />
-      <Payments list={view.payments} accounts={accounts} cur={cur} title="Payments on the invoice (it shows as Paid)" />
+      {asLines && view.invoice && (
+        <div style={{ ...S.note, marginTop: 8 }}>
+          Refunds are the minus lines at the end. Sales {money(view.totals?.sales || 0, cur)} less refunds {money(view.totals?.refunds || 0, cur)} makes the invoice total.
+        </div>
+      )}
+      <Payments list={view.payments} accounts={accounts} cur={cur} title={asLines ? 'Payments on the invoice, takings less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)'} />
       <Doc doc={view.creditNote} title="Credit note for refunds" date={date} view={view} accounts={accounts} cur={cur} tw={tw} />
       <Payments list={view.refundPayments} accounts={accounts} cur={cur} title="Refund payments" />
       {tie(sales, `${tw} per rate: the till against the invoice`)}
-      {tie(refunds, `${tw} per rate on refunds`)}
+      {tie(refunds, asLines ? `${tw} per rate on the refund lines` : `${tw} per rate on refunds`)}
       {!view.invoice && !view.creditNote && <div style={S.note}>Nothing to send for this day.</div>}
       {(result.warnings || []).length > 0 && (
         <div style={S.warn}>

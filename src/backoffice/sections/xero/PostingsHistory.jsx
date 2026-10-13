@@ -14,6 +14,9 @@
 // post says so in grey. Leeds 30 Sep 2026 (143 sales) sat as a grey "Not posted" for a week, the
 // same as a quiet day. Push posts that one day through xero-sales exactly as the Posting tab
 // does; nothing posts by itself.
+// 13 Oct 2026: a day whose refunds are minus lines on its invoice says so when opened. A day
+// posted with a credit note (before this, or one whose refunds could not go on its invoice)
+// keeps showing its credit note and refund payment.
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { xeroHistory, xeroHistoryDetail, xeroGaps, xeroSyncSales } from '../../../lib/xero';
@@ -38,6 +41,7 @@ function Detail({ d, note }) {
           Not ready: {(d.notReady || []).map((n) => n.message).join(' ')}
         </div>
       )}
+      {d.refundWay === 'lines' && d.postings?.INVOICE && <div style={{ ...S.note, marginBottom: 8 }}>Refunds are on the invoice as minus lines.</div>}
       {postings.length === 0 && <div style={S.note}>Nothing was sent for this day.</div>}
       {postings.map(([k, p]) => (
         <details key={k} style={{ marginBottom: 8 }}>

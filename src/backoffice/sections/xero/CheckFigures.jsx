@@ -1,7 +1,9 @@
 // src/backoffice/sections/xero/CheckFigures.jsx
 //
-// "Check figures": the exact sales invoice and credit note ServOS would send to Xero for a
-// chosen business day, worked out from the saved choices. Nothing is sent. Once someone (ideally
+// "Check figures": the exact sales invoice ServOS would send to Xero for a chosen business day,
+// with that day's refunds as minus lines on it (13 Oct 2026; or the credit note, on a day whose
+// refunds cannot go on its invoice), worked out from the saved choices. Nothing is sent. A day
+// that already has a posting shows the way that posting started. Once someone (ideally
 // the accountant) has read a real day through, they tick "I have checked these figures"; the
 // tick lapses when the choices change, and the site cannot switch to the sales invoice without it.
 // The result stays on screen after a save or the tick (the setup refreshes in the background);
