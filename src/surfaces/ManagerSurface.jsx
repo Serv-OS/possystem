@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
-import { opsHeartbeat, opsRegisterDevice, opsPinLogin } from '../lib/ops/data';
+import { opsHeartbeat, opsRegisterDevice, opsPinLogin, opsClaimDemo } from '../lib/ops/data';
 import { ensureAuthToken } from '../lib/supabase';
 import { fetchManagerSnapshot } from '../lib/manager/data';
 import { roleFlags, TABS } from '../lib/manager/access';
@@ -30,6 +30,7 @@ export default function ManagerSurface() {
   const [loc, setLoc] = useState(null);
   const [venueName, setVenueName] = useState('');
   const [claimCode, setClaimCode] = useState('');
+  const [demoErr, setDemoErr] = useState('');
   const [operator, setOperator] = useState(null); // { id, name, role, permissions }
   const [tab, setTab] = useState('home');
   // Deep-link into the Ops tab (e.g. Home's "needs you now" → straight to the Alerts view).
@@ -104,7 +105,18 @@ export default function ManagerSurface() {
   }, [stage, loc]);
 
   if (stage === 'boot') return <Screen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></Screen>;
-  if (stage === 'pair') return <PairScreen code={claimCode} />;
+  if (stage === 'pair') {
+    // "Try the demo" pairs this phone to the demo venue itself, so somebody with no
+    // Back Office (an App Store reviewer, a prospect on a call) can still get in. The
+    // staff PIN still stands between them and the venue's data.
+    const tryDemo = async () => {
+      setDemoErr('');
+      const { data, error } = await opsClaimDemo();
+      if (error || !data?.ok) { setDemoErr(data?.message || error?.message || 'Could not open the demo. Try again.'); return; }
+      setLoc(data.location_id); setVenueName(data.name || 'Demo'); setStage('pin');
+    };
+    return <PairScreen code={claimCode} onDemo={tryDemo} demoErr={demoErr} />;
+  }
   if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName} onOk={(op) => { setOperator(op); setStage('app'); }} />;
 
   const flags = roleFlags(operator?.role, operator?.permissions);
@@ -256,7 +268,7 @@ function TabBar({ tabs, active, onTab }) {
   );
 }
 
-function PairScreen({ code }) {
+function PairScreen({ code, onDemo, demoErr }) {
   return (
     <Screen>
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 340 }}>
@@ -266,6 +278,15 @@ function PairScreen({ code }) {
             the ops device layer (opsRegisterDevice), which is the same list the
             Ops tablet pairs into. The Settings group has no Devices page at all. */}
         <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Operations → Devices, enter this code to link this phone to your venue. This screen updates automatically once it&apos;s paired.</div>
+        {onDemo && (
+          <>
+            <button type="button" onClick={onDemo}
+              style={{ marginTop: 18, width: '100%', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'transparent', color: 'var(--t2)', fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+              No venue yet? Try the demo
+            </button>
+            {demoErr && <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--red)' }}>{demoErr}</div>}
+          </>
+        )}
       </div>
     </Screen>
   );
