@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.55',
+    date: '13 Oct 2026',
+    items: [
+      "Card readers: when a card machine never receives a payment, it now frees itself in under 3 minutes, and at once when the machine says it never got it. It used to stay busy for 5 minutes or more and refuse every new payment, and restarting the till did not help.",
+      "Card readers: staff are told with a sound when that happens. The message says Card machine is free and the amount that was not charged.",
+      "Card readers: a payment the card machine says is still in progress is never cancelled by the system. If a payment is ever approved after it was cancelled, the till raises an urgent note so it can be put right.",
+      "Back Office, Card readers: Release stuck payment now asks the card machine first, really frees it when that is safe, and says why when it is not.",
+    ],
+  },
+  {
     v: '5.11.54',
     date: '13 Oct 2026',
     items: [
