@@ -7,21 +7,6 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.52',
-    date: '13 Oct 2026',
-    items: [
-      "Menu board and order screen TVs: a TV no longer drops to its pairing code because of one bad live update. At 03:09 on 12 Oct the live update service sent every TV a blank update of its own screen, the TV believed it, and 24 TVs made themselves a new screen. A TV now ignores a live update that is blank, carries an error or is for another screen, and checks properly instead.",
-      "TVs: only Back Office can take a board down (Remove or Unpaired). A network drop, a failed read or a lost sign in keeps the board on screen, and a TV no longer goes blank after a network drop.",
-      "TVs: before a TV makes a new screen for itself it looks for the one it already owns and uses it. A TV left on a pairing code by the 12 Oct fault finds its old screen by itself when it loads this version, where that screen is still in the list.",
-      "Back Office, Menu boards: a small grey note under a screen says when a TV kept its pairing, or that it lost its sign in, with the code to pair it again.",
-      "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
-      "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
-      "Orders: Send to kitchen again now tells you what happened. It says Sent to the kitchen again when it worked, and Not sent when it did not. The button waits while it is sending, so one press sends the order once.",
-      "Guest WiFi sign in page: it now scrolls, so on a small phone you can reach the Connect button. The review page and the waitlist join page had the same fault and are fixed too.",
-      "Till status page, Card readers: an Adyen card reader now reads Connected to Adyen. It used to say Not connected, cannot take card, in red, while the reader was taking payments. Back Office kiosk settings read the same rule.",
-    ],
-  },
-  {
     v: '5.11.51',
     date: '12 Oct 2026',
     items: [

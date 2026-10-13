@@ -10,7 +10,6 @@ import { useStore } from '../../../store';
 import { hhmmToMin, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
 import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } from '../../../lib/locationTime';
 import { Icon } from '../../../components/ServOSIcons';
-import { liveRow } from '../../../lib/liveRow';
 
 const mono = { fontFamily: 'var(--font-mono)' };
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '14px 16px' };
@@ -116,14 +115,11 @@ export default function OpsOverview({ setSection }) {
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   // live alert push: a new breach alert refreshes the dashboard + toasts the manager
-  // 12 Oct 2026: only a change that carries a real row toasts (liveRow). A change with an error
-  // has no record and reaches every Back Office on the table; it used to show a red "New ops
-  // alert" for an alert that did not exist. It still reloads, which is an ordinary read.
   useEffect(() => {
     if (!supabase || !locId) return;
     const ch = supabase.channel(`ops-alerts-${locId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ops_alerts', filter: `location_id=eq.${locId}` },
-        (p) => { const r = liveRow(p); if (r) showToast?.(r.title || 'New ops alert', 'error'); reload(); })
+        (p) => { showToast?.(p.new?.title || 'New ops alert', 'error'); reload(); })
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, [locId, reload, showToast]);
