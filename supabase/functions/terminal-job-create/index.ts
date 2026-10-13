@@ -128,8 +128,9 @@ const SERVER_KICK_GRACE_MS = 1500;
  * minutes later.
  *
  * This is an ASK, never another kick: 'result' settles from the reader's own
- * answer, leaves a live tender alone inside 120s, and resets a job the reader
- * never saw back to charging_unsent for the sweep to re-kick safely.
+ * answer and leaves a live tender alone inside 120s. A job the reader never saw
+ * is cancelled once that is proven (13 Oct 2026, _shared/readerLock.js); it is
+ * no longer put back to charging_unsent and nothing re sends it.
  */
 function scheduleReaderAsk(jobId: string, why: string) {
   const run = async () => {
@@ -574,7 +575,7 @@ Deno.serve(async (req) => {
         : `target_terminal_id.eq.${target_terminal_id}`;
       const { data: recent, error: recentErr } = await opsAdmin
         .from('terminal_jobs')
-        .select('id, check_key, status, location_id, pos_device_id, target_terminal_id, due_minor, charge_minor, currency, closed_check_id, check_draft, card, simulated, training, created_at, dispatched_at, charged_at, settled_at, updated_at')
+        .select('id, check_key, status, processor, location_id, pos_device_id, target_terminal_id, due_minor, charge_minor, currency, closed_check_id, check_draft, card, simulated, training, created_at, dispatched_at, charged_at, settled_at, updated_at')
         .eq('location_id', locationId)
         .or(sameDevice)
         .neq('check_key', check_key)
@@ -747,7 +748,7 @@ Deno.serve(async (req) => {
     //    the reconcile queue and must never take a terminal out of service.
     const { data: busy } = await opsAdmin
       .from('terminal_jobs')
-      .select('id, check_key, status, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')
+      .select('id, check_key, status, processor, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')
       .eq('target_terminal_id', target_terminal_id)
       .in('status', ['claimed', 'tipping', 'charging_unsent', 'charging'])
       .order('created_at', { ascending: false })
