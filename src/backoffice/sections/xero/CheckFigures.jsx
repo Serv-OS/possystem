@@ -8,6 +8,9 @@
 // tick lapses when the choices change, and the site cannot switch to the sales invoice without it.
 // The result stays on screen after a save or the tick (the setup refreshes in the background);
 // figures worked out before the last save say so and cannot be ticked.
+// 13 Oct 2026, card fees: at a site that switched them on the preview shows the Card fees line
+// and the card payment net of it. A day still waiting for a card fee lists the wait under "This
+// day would not be sent yet" and cannot be ticked: pick another day.
 
 import { useState } from 'react';
 import { xeroCheckFigures, xeroFiguresChecked } from '../../../lib/xero';

@@ -71,6 +71,7 @@ export const xeroLightspeedSuggest = (locationId, contactName, option) => call('
   ...(option?.optionId ? { optionId: option.optionId } : {}), ...(option?.optionName ? { optionName: option.optionName } : {}),
 });
 // Creates recommended accounts ({ kind: 'accounts', keys }) or the tracking option ({ kind: 'tracking', categoryName, optionName }) in Xero.
+// keys ['cardFees'] (13 Oct 2026) creates or reuses the organisation's "Card fees" expense account.
 export const xeroSiteCreate = (locationId, payload) => call('xero-config', { action: 'site_create', locationId, ...payload });
 export const xeroCopySite = (locationId, fromLocationId) => call('xero-config', { action: 'copy_site', locationId, fromLocationId });
 // Replace a day that is in Xero as bank transactions (the old way) with its daily sales invoice
@@ -82,4 +83,6 @@ export const xeroReplaceDayPreview = (locationId, date) => call('xero-sales', { 
 export const xeroReplaceDay = (locationId, date) => call('xero-sales', { action: 'replace_day', locationId, date });
 // Check figures: the invoice that would be sent for a day, with its refunds as minus lines (or
 // the credit note, on a day whose refunds cannot go on its invoice). Nothing is sent to Xero.
+// 13 Oct 2026: at a site with card fees switched on (mapping.cardFees) the answer's invoice also
+// carries `cardFees` and the Card fees line, and `notReady` names a day still waiting for a fee.
 export const xeroCheckFigures = (locationId, date) => call('xero-sales', { locationId, date, dryRun: true, model: 'sales_invoice' });
