@@ -15,6 +15,9 @@
 // 13 Oct 2026: the day's refunds are minus lines on the invoice, so the invoice total shown is
 // sales less refunds. The credit note row shows only when the preview has one (a day whose
 // refunds cannot go on its invoice).
+// 13 Oct 2026, card fees: at a site that switched them on the invoice total shown is also net of
+// the day's card fees. A day still waiting for a card fee cannot be replaced yet: the preview
+// says so, and nothing is removed.
 
 import { useCallback, useEffect, useState } from 'react';
 import { xeroReplaceDayPreview, xeroReplaceDay, xeroSyncSales } from '../../../lib/xero';
