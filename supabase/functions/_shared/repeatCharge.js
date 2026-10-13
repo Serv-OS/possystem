@@ -61,6 +61,18 @@
 // STATUS VOCABULARY. A booked approved job is flipped to 'reconciled' by the device
 // that booked it (1,431 of 1,527 rows in the last 7 days). Both mean "the card
 // was charged" here.
+//
+// THE BUSY WORDS FOR AN ADYEN READER (13 Oct 2026, Huddersfield Drive Thru, job df9c6528). A
+// payment the reader never received kept the reader "busy" for 310 s, and the refusal said
+// "still taking 6.00" when the reader had nothing. For a live job with processor 'adyen' the
+// words now say what is known: 45 s or more after the send it "has not finished" and when it
+// clears by itself; a job never sent "has not gone to the card machine". Everything else (a
+// young Adyen job, PAX and Ryft jobs, the other tiers) keeps the words it had. The numbers
+// live in _shared/readerLock.js. That file imports this file's formatters and this file
+// imports its 45 s line and "clears by" time; neither uses the other while loading (only
+// inside functions), so the pair loads in either order.
+
+import { READER_ASK_FIRST_MS, busyClearsAtMs } from './readerLock.js';
 
 /** How far back the caller should read and the widest tier looks. */
 export const REPEAT_WINDOW_MS = 10 * 60_000;
@@ -258,6 +270,8 @@ export function repeatDetail(job, booked = null, { now = Date.now() } = {}) {
   return {
     job_id: job?.id ?? null,
     status: job?.status ?? null,
+    // 13 Oct 2026: which card processor the job is on, for the busy words (null on an old read).
+    processor: job?.processor ?? null,
     amount_minor: amountMinorOf(job),
     due_minor: dueMinorOf(job),
     currency: String(job?.currency || 'GBP').toUpperCase(),
@@ -367,7 +381,19 @@ export function repeatMessage(hit, { tz } = {}) {
   if (hit.tier === 'live') {
     const when = fmtTime(j.sent_at, tz);
     const forWhat = j.table_label ? `for ${j.table_label}` : 'for the order';
-    return `The card machine is still taking ${amt} ${forWhat} sent at ${when}${ref ? ` (${ref})` : ''}. `
+    const refPart = ref ? ` (${ref})` : '';
+    // 13 Oct 2026: an Adyen job the reader may never have received. Only for processor 'adyen'.
+    if (j.processor === 'adyen' && j.status === 'charging' && Number(j.age_ms) >= READER_ASK_FIRST_MS) {
+      const clears = fmtTime(busyClearsAtMs(j.sent_at), tz);
+      return `The card machine has not finished ${amt} ${forWhat} sent at ${when}${refPart}. `
+        + `If the customer is paying on it, wait. If it shows nothing, this clears by itself${clears ? ` by about ${clears}` : ' in about 3 minutes'}. `
+        + 'Then press Card again.';
+    }
+    if (j.processor === 'adyen' && j.status === 'charging_unsent') {
+      return `${amt} ${forWhat} sent at ${when}${refPart} has not gone to the card machine. `
+        + 'Try again in a minute, or a manager can clear it in Back Office, Card readers, Release stuck payment.';
+    }
+    return `The card machine is still taking ${amt} ${forWhat} sent at ${when}${refPart}. `
       + 'If it is this customer, do not send it again.';
   }
   const when = fmtTime(j.at, tz);

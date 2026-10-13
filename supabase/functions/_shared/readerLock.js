@@ -33,9 +33,10 @@
 // A timer ask is CONSERVATIVE: it never sends an abort and it never cancels a silent reader
 // before the send is dead (timerMustWait).
 //
-// NOTE ON IMPORTS. repeatCharge.js imports the two numbers its busy words need from this file,
-// and this file imports the money, time and card formatters from repeatCharge.js. Neither file
-// uses the other while it loads (only inside functions), so the pair loads in either order.
+// NOTE ON IMPORTS. repeatCharge.js imports what its busy words need from this file (the 45 s
+// line and the "clears by" time), and this file imports the money, time and card formatters
+// from repeatCharge.js. Neither file uses the other while it loads (only inside functions), so
+// the pair loads in either order.
 
 import { fmtMoney, fmtTime, fmtCard } from './repeatCharge.js';
 import { isLocalBridgeJob } from './terminalKick.js';
