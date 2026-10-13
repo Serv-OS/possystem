@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { getPosDeviceId, resolvePlatformLocationId } from '../lib/networkReader';
 import { getActiveLocationSync, platformSupabase } from '../lib/supabase';
 import { findPaxTerminal, terminalIsOnline, getPosDeviceId as getPaxPosDeviceId } from '../lib/payments/terminalJobs';
+import { terminalProcessor } from '../lib/payments/terminalProcessor.js';
 
 const Sx = {
   pill:    { fontSize: 10, padding: '2px 7px', borderRadius: 99, background: 'var(--bg3)', color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700, border: '1px solid var(--bdr)' },
@@ -99,7 +100,8 @@ export default function StatusDrawerCardReaders() {
 
   const paxTerminal = pax?.terminal || null;
   const paxOnline = paxTerminal ? terminalIsOnline(paxTerminal) : false;
-  const paxRyftLinked = !!paxTerminal?.ryft_terminal_id;
+  // Adyen or Ryft, whichever this reader is linked to (terminalProcessor). Null means neither.
+  const paxProcessor = terminalProcessor(paxTerminal);
   const paxBoundToThisTill = !!(paxTerminal && paxTerminal.bound_pos_device_id
     && paxTerminal.bound_pos_device_id === getPaxPosDeviceId());
 
@@ -136,11 +138,12 @@ export default function StatusDrawerCardReaders() {
               <div style={{ fontSize:11, color:'var(--t3)', display:'flex', flexWrap:'wrap', gap:'2px 12px' }}>
                 <span>
                   Processor:{' '}
-                  <strong style={{ color: paxRyftLinked ? 'var(--grn)' : 'var(--red)' }}>
-                    {paxRyftLinked ? 'Connected to Ryft ✓' : 'Not connected — cannot take card'}
+                  <strong style={{ color: paxProcessor ? 'var(--grn)' : 'var(--red)' }}>
+                    {paxProcessor ? `Connected to ${paxProcessor} ✓` : 'Not connected. Cannot take card'}
                   </strong>
                 </span>
-                <span>Last seen: <strong style={{ color:'var(--t2)' }}>{relTime(paxTerminal.last_seen_at)}</strong></span>
+                {/* An Adyen reader does not report in to ServOS, so there is no time to show. */}
+                {paxTerminal.last_seen_at && <span>Last seen: <strong style={{ color:'var(--t2)' }}>{relTime(paxTerminal.last_seen_at)}</strong></span>}
               </div>
             </div>
           ) : (
