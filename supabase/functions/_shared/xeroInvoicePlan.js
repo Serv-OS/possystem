@@ -688,8 +688,11 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   // A day is never mixed: what an earlier attempt started stands, whatever the day looks like now.
   const forced = started === 'lines' ? 'lines' : (started === 'credit_note' || started === 'refused') ? 'credit_note' : null;
   const refundWay = !hasRefunds ? null : forced || (why ? 'credit_note' : 'lines');
+  // The reason is the real one for as long as it holds: a day that fell back because its refunds
+  // do not fit keeps saying that on every later attempt. 'started_credit_note' is only for a day
+  // whose refunds WOULD fit today (a day sent before 13 Oct 2026, or one that has changed since).
   const refundWayReason = !hasRefunds ? null : started === 'refused' ? 'xero_refused'
-    : forced === 'credit_note' ? 'started_credit_note' : forced === 'lines' ? 'started_lines' : why;
+    : forced === 'credit_note' ? (why || 'started_credit_note') : forced === 'lines' ? 'started_lines' : why;
   const asLines = refundWay === 'lines';
   // A refund line on the invoice: the credit note's line with the sign turned (`|| 0`: never -0).
   // A loyalty or promo credit put back is a minus line on the credit note, so a plus line here.
@@ -739,7 +742,7 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
       },
     };
     // Said plainly on the day: its refunds went as a credit note, and why.
-    const names = short.map((r) => r.kinds.join(' and ')).join(', ');
+    const names = short.map((r) => r.kinds.join(' and ')).join(' and ');
     const WHY = {
       no_sales: 'This day has refunds and no sales, so there is no invoice to put them on. The refunds go to Xero as a credit note.',
       total_not_positive: 'The refunds on this day come to as much as its sales or more, and Xero does not take an invoice of zero or less. The refunds go to Xero as a credit note.',
@@ -921,23 +924,35 @@ export function planView(plan) {
 //   detail.postings            INVOICE, PAY:<account>, CREDIT, REFUND:<account>, each 'sending' or 'posted'
 //   detail.refundWay           'lines' | 'credit_note' | null, saved BEFORE anything is sent
 //                              (refundWayToRecord). Rows written before 13 Oct 2026 have none.
-//   detail.refundLinesRefused  { at, message }, only after Xero refused an invoice with refund lines
+//   detail.refundLinesRefused  { at, message }, only after Xero refused an invoice BECAUSE of its
+//                              refund lines, as far as can be told (invoiceRefusal 'lines')
+//   postings.INVOICE.refusedNotLines  { at, words }, on an invoice still 'sending' that Xero refused
+//                              for a cause that is not the refund lines (invoiceRefusal 'other').
+//                              Nothing of the day is in Xero. The record is written again the
+//                              moment a later attempt sends the invoice, so the mark goes with it.
 // Every day sent before 13 Oct 2026 has an invoice for the gross figure and no marker, so it
 // reads as the credit note way and finishes exactly as it was started.
 
 const INV_KEY = (k) => k === 'INVOICE' || /^PAY:/.test(k);
 const CN_KEY = (k) => k === 'CREDIT' || /^REFUND:/.test(k);
+const dayKeys = (postings) => Object.keys(postings).filter((k) => postings[k] && typeof postings[k] === 'object' && (INV_KEY(k) || CN_KEY(k)));
+// Nothing of the day on the row but its invoice, still 'sending'.
+const invoiceAlone = (postings, keys) => keys.length === 1 && keys[0] === 'INVOICE' && postings.INVOICE.status === 'sending';
 
 /**
  * How an earlier attempt sent, or started to send, the day's refunds: null | 'lines' | 'credit_note' | 'refused'.
  *   null           nothing of the sales invoice was sent (no row, a blocked or failed attempt that
  *                  sent nothing, older bank transaction keys only, a replace day after its old
- *                  entries were removed): the day is free to decide. A left over marker is ignored.
+ *                  entries were removed), or all that was sent is an invoice Xero refused for a
+ *                  cause that is not the refund lines: the day is free to decide. A left over
+ *                  marker is ignored.
  *   'credit_note'  a CREDIT or REFUND: record exists, or an INVOICE or PAY: record with no 'lines'
  *                  marker (the invoice went for the gross figure).
  *   'lines'        an INVOICE or PAY: record with the 'lines' marker.
- *   'refused'      the 'lines' marker, Xero's refusal recorded, and nothing but the invoice still
- *                  'sending': the day goes the credit note way.
+ *   'refused'      Xero refused the refund lines (the refusal is on the row): the day goes the
+ *                  credit note way, and keeps saying that Xero's refusal is why. Either nothing
+ *                  but the refused invoice is on the row yet ('lines' marker), or the day has
+ *                  already been switched ('credit_note' marker), however far it has got since.
  */
 /**
  * @param {any} detail
@@ -945,23 +960,77 @@ const CN_KEY = (k) => k === 'CREDIT' || /^REFUND:/.test(k);
  */
 export function refundWayStarted(detail) {
   const postings = detail?.postings && typeof detail.postings === 'object' ? detail.postings : {};
-  const keys = Object.keys(postings).filter((k) => postings[k] && typeof postings[k] === 'object' && (INV_KEY(k) || CN_KEY(k)));
+  const keys = dayKeys(postings);
   if (!keys.length) return null;
+  const alone = invoiceAlone(postings, keys);
+  if (alone && postings.INVOICE.refusedNotLines) return null;
+  if (detail.refundLinesRefused && (detail.refundWay === 'credit_note' || (detail.refundWay === 'lines' && alone))) return 'refused';
   if (keys.some(CN_KEY)) return 'credit_note';
   if (detail.refundWay !== 'lines') return 'credit_note';
-  if (detail.refundLinesRefused && keys.length === 1 && keys[0] === 'INVOICE' && postings.INVOICE.status === 'sending') return 'refused';
   return 'lines';
 }
 
 /** The value for detail.refundWay, saved before anything is sent. What an earlier attempt started always stands. */
 export const refundWayToRecord = (started, plan) => (started === 'refused' ? 'credit_note' : started || plan?.refundWay || null);
 
-/** Xero refused the invoice of a day whose refunds were minus lines (HTTP 400), and nothing of the day is in Xero. */
-export function refundLinesRefused(plan, postings, httpStatus) {
-  if (plan?.refundWay !== 'lines' || Number(httpStatus) !== 400) return false;
+/** Xero's answer that an invoice or credit note number is already in use (the document may be in Xero). */
+export const isNumberTaken = (message) => /must be unique|already (been )?(used|assigned|exists)/i.test(String(message || ''));
+
+// Xero's answer to the invoice THIS run sent (_shared/xero.ts words an error "Xero API <path>
+// failed: <status> <body>"). A lookup of the number has "?InvoiceNumbers=" in its path: not this.
+const OWN_INVOICE_400 = /^Xero API \/Invoices failed: 400(\s|$)/;
+// Causes Xero names itself that have nothing to do with refund lines: a locked period.
+const NOT_THE_REFUNDS = /lock date/i;
+
+/**
+ * What a failed attempt says about the day's refund lines (13 Oct 2026 review). Only Xero's own
+ * "no" (HTTP 400) to the invoice this run sent counts, and only while nothing else of the day is
+ * on the row: then nothing of the day is in Xero. A lookup that failed, a number Xero says is
+ * taken (the invoice may be there) or a payment that failed says nothing, and the day goes on
+ * the way it was started.
+ *   null     says nothing.
+ *   'lines'  the invoice had refund lines and nothing shows another cause: the next attempt
+ *            sends the day the credit note way.
+ *   'other'  the refund lines were NOT the cause: Xero refused the invoice without them too (the
+ *            attempt after a refusal), or in the same words as the last such refusal, or
+ *            refused an invoice with refund lines for a cause it names itself (a lock date).
+ *            The day is free again, so it goes with its refunds on the invoice once the real
+ *            cause is put right.
+ * `started` is refundWayStarted of the row as claimed; `before` is postings.INVOICE.refusedNotLines
+ * of the row as claimed; `error` is { status, message, words } (words: Xero's own, xeroErrorWords).
+ */
+/**
+ * @param {any} plan
+ * @param {{ started?: any, postings?: any, before?: any, error?: { status?: any, message?: any, words?: any } | null }} [o]
+ * @returns {null | 'lines' | 'other'}
+ */
+export function invoiceRefusal(plan, { started = null, postings = null, before = null, error = null } = {}) {
+  if (!plan?.invoice || Number(error?.status) !== 400) return null;
+  const message = String(error?.message || '');
+  if (!OWN_INVOICE_400.test(message) || isNumberTaken(message)) return null;
   const p = postings && typeof postings === 'object' ? postings : {};
-  const keys = Object.keys(p).filter((k) => p[k] && typeof p[k] === 'object' && (INV_KEY(k) || CN_KEY(k)));
-  return keys.length === 1 && keys[0] === 'INVOICE' && p.INVOICE.status === 'sending';
+  if (!invoiceAlone(p, dayKeys(p))) return null;
+  const words = String(error?.words || '').trim();
+  // Refused without its refund lines too, or in the words that refused it so before.
+  if (started === 'refused' || (words && before?.words === words)) return 'other';
+  // A day with no refund lines on its invoice has none to refuse: it goes on as it always did.
+  if (plan.refundWay !== 'lines') return null;
+  return NOT_THE_REFUNDS.test(words) ? 'other' : 'lines';
+}
+
+/** What a refusal writes on the day's row, in the detail of the attempt that failed. */
+export function refusalPatch(kind, postings, { at, message, words }) {
+  if (kind === 'lines') return { refundLinesRefused: { at, message: String(message || '').slice(0, 500) } };
+  if (kind === 'other') return { refundLinesRefused: null, refundWay: null, postings: { ...postings, INVOICE: { ...postings.INVOICE, refusedNotLines: { at, words } } } };
+  return {};
+}
+
+/** What the person is told after a refusal. `words` are Xero's own. */
+export function refusalWords(kind, words) {
+  const why = `${words}${/[.!?]$/.test(words) ? '' : '.'}`;
+  if (kind === 'lines') return `Xero did not take this day with its refunds on the invoice: ${why} Nothing was posted. The next push sends the refunds as a credit note.`;
+  if (kind === 'other') return `Xero did not take this day: ${why} Nothing was posted. Put that right, then push again.`;
+  return '';
 }
 
 /**

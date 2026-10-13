@@ -33,7 +33,7 @@
 
 import { xeroApi } from './xero.ts';
 import { revenueTaxRates, expenseTaxRates, healedTaxType } from './xeroTax.js';
-import { contactName, planSteps, stepIdempotencyKey, xeroDocLink, retryConflicts } from './xeroInvoicePlan.js';
+import { contactName, planSteps, stepIdempotencyKey, xeroDocLink, retryConflicts, isNumberTaken } from './xeroInvoicePlan.js';
 import { loadAccountingDay, venueCategories } from './accountingData.ts';
 import { buildGroupedDay, makeGroupResolver } from './accountingGroups.js';
 
@@ -200,7 +200,8 @@ async function findPayment(token: string, tenantId: string, reference: string, t
   return p ? { id: p.PaymentID, status: p.Status, total: Number(p.Amount), reference } : null;
 }
 
-const isNumberTaken = (msg: string) => /must be unique|already (been )?(used|assigned|exists)/i.test(msg);
+// isNumberTaken (a number Xero says is in use) lives in _shared/xeroInvoicePlan.js, with the rule
+// for what a refused invoice says about a day's refund lines (invoiceRefusal).
 
 /**
  * Send (or finish) one site day. `run` is the claimed SyncRun; `plan` is planXeroInvoiceDay's

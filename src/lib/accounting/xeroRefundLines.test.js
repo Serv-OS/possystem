@@ -25,6 +25,14 @@
  *             "changed since it was posted" check; the replace day flow keeps working.
  *   23, 24    The words are plain, with no dashes; xero-sales and xero-config are wired to the
  *             pure functions tested here; nothing about being Ready or the figures tick moved.
+ *   25 to 28  (review, 13 Oct 2026) Only Xero's own "no" to the invoice a run sent says anything
+ *             about its refund lines. A lock date, or an invoice Xero refuses without its refund
+ *             lines too, never leaves a day as a credit note day: it stays free and goes with
+ *             its refund lines once the cause is put right. A failed lookup or a number Xero
+ *             says is taken says nothing. A day switched after a refusal keeps saying why.
+ *   29        The Back Office screens: what the invoice preview and the Postings history say,
+ *             and when, for a new day, a day that fell back, a day posted before this, and an
+ *             answer from an older server.
  *
  * "The credit note way" in these tests is the same day planned with started 'credit_note': the
  * plan a day started before 13 Oct 2026 gets, the same payloads as before that date.
@@ -38,11 +46,12 @@ import { fileURLToPath } from 'node:url';
 
 import {
   planXeroInvoiceDay, planView, planSteps, retryConflicts, dayModel, mappingHash, invoiceReadiness, seenFromGrouped, xeroDocLink,
-  refundWayStarted, refundWayToRecord, refundLinesRefused, dayNumbers, postedDayChanges, historyDocs,
+  refundWayStarted, refundWayToRecord, invoiceRefusal, refusalPatch, refusalWords, isNumberTaken, dayNumbers, postedDayChanges, historyDocs,
 } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
 import { postInvoiceDay } from '../../../supabase/functions/_shared/xeroInvoicePost.ts';
 import { claimSyncRun, readSyncRow } from '../../../supabase/functions/_shared/syncRun.ts';
-import { allDeletedPatch, previewView } from '../../../supabase/functions/_shared/xeroReplacePlan.js';
+import { allDeletedPatch, previewView, xeroErrorWords } from '../../../supabase/functions/_shared/xeroReplacePlan.js';
+import { previewWords, historyRefundNote } from '../../backoffice/sections/xero/xeroUi.js';
 import { buildGroupedDay, makeGroupResolver } from '../../../supabase/functions/_shared/accountingGroups.js';
 import { revenueTaxRates } from '../../../supabase/functions/_shared/xeroTax.js';
 import { businessDayWindow } from '../../../supabase/functions/_shared/businessDay.js';
@@ -111,10 +120,17 @@ const vatNegativeDay = () => grouped([ZERO_RATED], refundOf({ ...dayBefore(D, 'Y
 const GIFT_SPENT = { id: 'GR', closed_at: new Date(DAY.fromMs - 5 * 3600000).toISOString(), total: 3.8, tip: 0, service: 0, tax_amount: 0.63, tax_breakdown: breakdown([{ id: 'r20', gross: 3.8, tax: 0.6333 }]),
   items: [{ uid: 's1', cat: 'cat-hot_1e945c26', itemId: 'm-latte', qty: 1, price: 3.8, taxRateId: 'r20' }], tenders: [{ method: 'gift_card', amount: 3.8, tip: 0 }] };
 const giftPutBackDay = () => grouped(saleRows(), refundOf(GIFT_SPENT, { id: 'rgb', amount: 3.8, taxAmount: 0.63, tenderMethod: 'gift_card', cardStatus: null, isFullRefund: true }));
+/** No VAT on either side: two 0% sandwiches sold by card (8.00), one refunded to the card (4.00). */
+const zeroVatDay = () => grouped([ZERO_RATED], refundOf(ZERO_RATED, { id: 'rz', amount: 4.0, taxAmount: 0, legs: leg(400), items: [SANDWICH] }));
+/** Card sales only (A and E); 2.00 refunded in cash and 3.80 put back on a gift card: two accounts short. */
+const twoShortDay = () => grouped([A, E], [
+  ...refundOf(E, { id: 'r7', amount: 2.0, taxAmount: 0.34, tenderMethod: 'cash', cardStatus: null, items: [AMERICANO] }),
+  ...refundOf(GIFT_SPENT, { id: 'rgb', amount: 3.8, taxAmount: 0.63, tenderMethod: 'gift_card', cardStatus: null, isFullRefund: true }),
+]);
 
-const LINES_DAYS = { plainDay, twoRatesDay, tipsDay, serviceDay, loyaltyDay, giftDay, zeroNetDay };
-const FALL_BACK_DAYS = { cashShortDay: 'account_short', largerDay: 'total_not_positive', equalDay: 'total_not_positive', noSalesDay: 'no_sales', vatNegativeDay: 'vat_negative', giftPutBackDay: 'account_short' };
-const DAYS = { plainDay, twoRatesDay, tipsDay, serviceDay, loyaltyDay, giftDay, zeroNetDay, cashShortDay, largerDay, equalDay, noSalesDay, vatNegativeDay, giftPutBackDay };
+const LINES_DAYS = { plainDay, twoRatesDay, tipsDay, serviceDay, loyaltyDay, giftDay, zeroNetDay, zeroVatDay };
+const FALL_BACK_DAYS = { cashShortDay: 'account_short', largerDay: 'total_not_positive', equalDay: 'total_not_positive', noSalesDay: 'no_sales', vatNegativeDay: 'vat_negative', giftPutBackDay: 'account_short', twoShortDay: 'account_short' };
+const DAYS = { plainDay, twoRatesDay, tipsDay, serviceDay, loyaltyDay, giftDay, zeroNetDay, zeroVatDay, cashShortDay, largerDay, equalDay, noSalesDay, vatNegativeDay, giftPutBackDay, twoShortDay };
 
 /** Generated days. `rich`: full refunds too, with their tips, service charge and loyalty credit. */
 function generatedDay(seed, rich) {
@@ -267,6 +283,18 @@ test('7. a cash refund on a day with no cash takings: the whole day goes the cre
   assert.deepEqual([gift.refundWay, gift.refundWayReason], ['credit_note', 'account_short']);
   assert.match(saidWhy(gift)[0].message, /^More was refunded by Gift cards on this day than was taken by Gift cards, /);
   assert.deepEqual(gift.refundPayments.map((x) => [x.key, x.amount]), [['REFUND:830', 380]]);
+  // A later attempt of the same day (its row now says 'credit_note') still gives the real reason:
+  // the row keeps the warnings of the last attempt only, so "it was started that way" would lose it.
+  for (const [name, f] of Object.entries(DAYS).filter(([k]) => k in FALL_BACK_DAYS)) {
+    const first = plan(f()), again = creditNoteWay(f());
+    assert.equal(again.refundWayReason, FALL_BACK_DAYS[name], name);
+    assert.deepEqual(saidWhy(again), saidWhy(first), name);
+  }
+  assert.equal(saidWhy(creditNoteWay(g))[0].message, 'More was refunded by Cash on this day than was taken by Cash, and Xero does not take a minus payment. The refunds go to Xero as a credit note.');
+  // Only a day whose refunds WOULD fit today says it was started that way (a day sent before 13 Oct 2026).
+  assert.deepEqual(saidWhy(creditNoteWay(plainDay())).map((w) => [w.reason, w.message]), [['started_credit_note', 'This day was started in Xero with its refunds as a credit note, so it stays that way.']]);
+  // Two accounts short: the names are joined with "and".
+  assert.equal(saidWhy(plan(twoShortDay()))[0].message, 'More was refunded by Cash and Gift cards on this day than was taken by Cash and Gift cards, and Xero does not take a minus payment. The refunds go to Xero as a credit note.');
 });
 
 test('8. refunds larger than the sales, or equal to them: Xero takes no invoice of zero or less', () => {
@@ -312,6 +340,15 @@ test('11. more VAT refunded than charged that day: the credit note way', () => {
   assert.deepEqual([p.totals.vat, p.totals.refundVat], [0, 63]);
   assert.deepEqual(p.invoice, creditNoteWay(g).invoice);
   assert.deepEqual(p.creditNote, creditNoteWay(g).creditNote);
+  // The same VAT on both sides is NOT more refunded than charged: a day with no VAT at all (a 0%
+  // only day, a venue with no VAT, a US state with no sales tax) has its refunds on the invoice.
+  const zero = plan(zeroVatDay());
+  assert.deepEqual([zero.refundWay, zero.refundWayReason, zero.blocked], ['lines', null, []]);
+  assert.deepEqual([zero.totals.vat, zero.totals.refundVat], [0, 0]);
+  assert.deepEqual(zero.invoice.lines.map(row), [['Food 0%', '202', 'ZERORATEDOUTPUT', 800, 0], ['Refund: Food 0%', '202', 'ZERORATEDOUTPUT', -400, 0]]);
+  assert.deepEqual(pays(zero).map(([k, a]) => [k, a]), [['PAY:CARDCLR', 400]]);
+  assert.deepEqual(steps(zero), ['INVOICE', 'PAY:CARDCLR']);
+  assert.deepEqual(saidWhy(zero), []);
 });
 
 // ── 12, 13: to the penny ─────────────────────────────────────────────────────
@@ -440,7 +477,25 @@ test('14. refundWayStarted: what an earlier attempt sent decides, and a day with
   assert.equal(refundWayStarted({ refundWay: 'lines', refundLinesRefused: refusal, postings: { INVOICE: sending } }), 'refused');
   assert.equal(refundWayStarted({ refundWay: 'lines', refundLinesRefused: refusal, postings: { INVOICE: posted } }), 'lines', 'the invoice is in Xero: never switched');
   assert.equal(refundWayStarted({ refundWay: 'lines', refundLinesRefused: refusal, postings: { INVOICE: sending, 'PAY:CARDCLR': sending } }), 'lines');
-  assert.equal(refundWayStarted({ refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: sending } }), 'credit_note', 'after the switch it stays the credit note way');
+  // After the switch (the 'credit_note' marker) it stays the credit note way and keeps saying
+  // Xero's refusal is why, however far the day has got: never "it was started that way".
+  assert.equal(refundWayStarted({ refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: sending } }), 'refused');
+  assert.equal(refundWayStarted({ refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: posted, 'PAY:CARDCLR': sending } }), 'refused');
+  assert.equal(refundWayStarted({ refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: posted, 'PAY:CARDCLR': posted, CREDIT: sending } }), 'refused');
+  assert.equal(refundWayStarted({ refundWay: 'credit_note', refundLinesRefused: null, postings: { INVOICE: sending } }), 'credit_note', 'no refusal on the row');
+  for (const d of [{ refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: posted, CREDIT: sending } }, { refundWay: 'credit_note', refundLinesRefused: refusal, postings: { INVOICE: sending } }]) {
+    assert.equal(plan(plainDay(), { started: refundWayStarted(d) }).refundWay, 'credit_note');
+    assert.equal(refundWayToRecord(refundWayStarted(d), plan(plainDay())), 'credit_note');
+  }
+  // Xero refused the invoice for a cause that was not its refund lines: nothing is in Xero, so
+  // the day is free, whatever markers are left. Only while that refused invoice is all there is.
+  const notLines = { status: 'sending', refusedNotLines: { at: 'T', words: 'A lock date.' } };
+  assert.equal(refundWayStarted({ refundWay: null, postings: { INVOICE: notLines } }), null);
+  assert.equal(refundWayStarted({ refundWay: 'credit_note', postings: { INVOICE: notLines } }), null);
+  assert.equal(refundWayStarted({ refundWay: 'lines', refundLinesRefused: refusal, postings: { INVOICE: notLines } }), null);
+  assert.equal(refundWayStarted({ refundWay: 'lines', postings: { INVOICE: { ...notLines, status: 'posted', id: 'x' } } }), 'lines', 'in Xero: the mark means nothing');
+  assert.equal(refundWayStarted({ refundWay: 'lines', postings: { INVOICE: notLines, 'PAY:CARDCLR': sending } }), 'lines');
+  assert.equal(refundWayStarted({ postings: { INVOICE: notLines, CREDIT: sending } }), 'credit_note');
   // The older model keys beside it change nothing (dayModel keeps such days on the older model anyway).
   assert.equal(refundWayStarted({ refundWay: 'lines', postings: { INVOICE: sending, 'RECEIVE:a': posted } }), 'lines');
 });
@@ -565,11 +620,12 @@ async function withXero(fn, { refuse = () => null, lose = () => false, seed = nu
 }
 
 // One attempt, as xero-sales makes it (the same calls in the same order; test 24 pins them there):
-// claim the row, read the way from the row this run HOLDS, plan, record the way, then post. A
-// refusal of the refund lines is recorded on the row.
+// claim the row, read the way from the row this run HOLDS, plan, record the way, then post. What
+// Xero's "no" to the invoice says about the refund lines (invoiceRefusal) is recorded on the row.
 async function attempt(sb, g, runId) {
   const { run } = await claimSyncRun(sb, KEY, { runId });
   const started = refundWayStarted(run.detail);
+  const refusedBefore = run.postings.INVOICE?.refusedNotLines || null;
   let p = null;
   try {
     p = plan(g, { started });
@@ -579,12 +635,18 @@ async function attempt(sb, g, runId) {
     return { ok: true, res, plan: p, started };
   } catch (e) {
     const done = Object.values(run.postings).filter((x) => x?.status === 'posted').length;
-    const refused = refundLinesRefused(p, run.postings, e?.status);
-    const refusal = refused ? { refundLinesRefused: { at: '2026-10-14T03:10:00.000Z', message: String(e.message).slice(0, 500) } } : {};
-    await run.finish(done ? 'partial' : 'error', { detail: { error: e.message, ...refusal } }, { ok: false, posted: done });
-    return { ok: false, e, plan: p, started, refused };
+    const xeroWords = xeroErrorWords(e.message);
+    const refusal = invoiceRefusal(p, { started, postings: run.postings, before: refusedBefore, error: { status: e?.status, message: e.message, words: xeroWords } });
+    const error = refusal ? refusalWords(refusal, xeroWords) : e.message;
+    const refused = refusalPatch(refusal, run.postings, { at: '2026-10-14T03:10:00.000Z', message: e.message, words: xeroWords });
+    await run.finish(done ? 'partial' : 'error', { detail: { error, ...refused } }, { ok: false, posted: done });
+    return { ok: false, e, plan: p, started, refusal, refused: refusal === 'lines', error };
   }
 }
+// The row as the Postings history gets it (xero-config history_detail): the way and the postings.
+const asHistory = (r) => ({ refundWay: r.detail.refundWay || null, postings: r.detail.postings });
+// Xero's answer to a document it will not take.
+const xero400 = (message) => new Response(JSON.stringify({ ErrorNumber: 10, Type: 'ValidationException', Message: 'A validation exception occurred', Elements: [{ InvoiceNumber: 'SOS-LEEDS-20260929', ValidationErrors: [{ Message: message }] }] }), { status: 400 });
 const posted = (r) => Object.entries(r.detail.postings).map(([k, p]) => [k, p.status, p.total]);
 
 test('16. a half posted NEW way day finishes the new way: only the payment that failed is sent again', async () => {
@@ -601,6 +663,7 @@ test('16. a half posted NEW way day finishes the new way: only the payment that 
     assert.equal(r.detail.refundWay, 'lines', 'the way is on the row');
     assert.equal(r.detail.refundLinesRefused, undefined);
     assert.deepEqual(posted(r), [['INVOICE', 'posted', 24.21], ['PAY:CARDCLR', 'posted', 19.3], ['PAY:CASHTILL', 'sending', 4.91]]);
+    assert.equal(historyRefundNote(asHistory(r)), 'Refunds are on the invoice as minus lines.', 'the invoice is in Xero');
     assert.ok(r.detail.postings.INVOICE.payload.LineItems.some((l) => l.Description === 'Refund: Hot drinks 20%' && l.UnitAmount === -3.8), 'the row keeps exactly what was sent');
     x.calls.length = 0;
     const second = await attempt(sb, g, 'A2');
@@ -629,6 +692,7 @@ test('17. a lost answer on the new way: the invoice is found by its number, neve
     let r = await readSyncRow(sb, KEY);
     assert.deepEqual([r.status, r.detail.refundWay], ['error', 'lines']);
     assert.deepEqual(posted(r), [['INVOICE', 'sending', 24.21]]);
+    assert.equal(historyRefundNote(asHistory(r)), '', 'the answer was lost: nothing is confirmed in Xero yet');
     const second = await attempt(sb, g, 'C2');
     assert.equal(second.started, 'lines', 'an invoice still "sending" under the lines marker is the new way');
     assert.equal(second.ok, true, second.e?.message);
@@ -638,6 +702,7 @@ test('17. a lost answer on the new way: the invoice is found by its number, neve
     assert.deepEqual(x.payments.map((p) => p.Amount), [19.3, 4.91]);
     r = await readSyncRow(sb, KEY);
     assert.deepEqual([r.status, r.detail.refundWay], ['ok', 'lines']);
+    assert.equal(historyRefundNote(asHistory(r)), 'Refunds are on the invoice as minus lines.');
   }, { lose: (method, where) => (method === 'PUT' && where === '/Invoices' && !lost ? (lost = true) : false) });
 });
 
@@ -725,17 +790,36 @@ test('20. Xero refuses an invoice with refund lines: the row says so, and the ne
     assert.deepEqual([r.status, r.detail.refundWay], ['error', 'lines']);
     assert.deepEqual(posted(r), [['INVOICE', 'sending', 24.21]]);
     assert.ok(r.detail.refundLinesRefused?.at && /400/.test(r.detail.refundLinesRefused.message));
-    // refundLinesRefused: only a 400, only a lines plan, only while nothing of the day is posted.
+    assert.equal(first.error, 'Xero did not take this day with its refunds on the invoice: A rule nobody knew about. Nothing was posted. The next push sends the refunds as a credit note.');
+    assert.equal(r.detail.error, first.error);
+    // The opened day in the Postings history never says the refunds are on the invoice: Xero refused it.
+    assert.equal(historyRefundNote(asHistory(r)), '');
+    // invoiceRefusal: only Xero's own 400 to the invoice this run sent, only a plan with refund
+    // lines, only while nothing else of the day is on the row.
     const sending = r.detail.postings;
-    assert.equal(refundLinesRefused(first.plan, sending, 400), true);
-    assert.equal(refundLinesRefused(first.plan, sending, '400'), true);
-    assert.equal(refundLinesRefused(first.plan, sending, 500), false);
-    assert.equal(refundLinesRefused(first.plan, sending, undefined), false);
-    assert.equal(refundLinesRefused(creditNoteWay(g), sending, 400), false, 'a credit note plan has no refund lines to refuse');
-    assert.equal(refundLinesRefused(null, sending, 400), false, 'refused before a plan was made');
-    assert.equal(refundLinesRefused(first.plan, { ...sending, 'PAY:CARDCLR': { status: 'posted', id: 'p' } }, 400), false);
-    assert.equal(refundLinesRefused(first.plan, { INVOICE: { status: 'posted', id: 'i' }, 'PAY:CARDCLR': { status: 'sending' } }, 400), false, 'the invoice is in Xero');
-    assert.equal(refundLinesRefused(first.plan, {}, 400), false);
+    const err = { status: 400, message: first.e.message, words: xeroErrorWords(first.e.message) };
+    const says = (pl, postings, error) => invoiceRefusal(pl, { started: null, postings, before: null, error });
+    assert.match(err.message, /^Xero API \/Invoices failed: 400 /);
+    assert.equal(says(first.plan, sending, err), 'lines');
+    assert.equal(says(first.plan, sending, { ...err, status: '400' }), 'lines');
+    assert.equal(says(first.plan, sending, { ...err, status: 500 }), null);
+    assert.equal(says(first.plan, sending, { ...err, status: undefined }), null);
+    assert.equal(says(first.plan, sending, null), null);
+    assert.equal(invoiceRefusal(first.plan), null);
+    assert.equal(says(first.plan, sending, { ...err, message: err.message.replace('/Invoices failed', '/Invoices?InvoiceNumbers=SOS-LEEDS-20260929 failed') }), null, 'a lookup that failed is not Xero refusing the invoice');
+    assert.equal(says(first.plan, sending, { ...err, message: err.message.replace('/Invoices failed', '/Payments failed') }), null);
+    assert.equal(says(first.plan, sending, { ...err, message: 'network connection lost' }), null);
+    assert.equal(says(creditNoteWay(g), sending, err), null, 'a credit note plan has no refund lines to refuse');
+    assert.equal(says(plan(grouped(saleRows())), sending, err), null, 'a day with no refunds');
+    assert.equal(says(null, sending, err), null, 'refused before a plan was made');
+    assert.equal(says(plan(noSalesDay(), { started: 'lines' }), sending, err), null, 'no invoice in the plan');
+    assert.equal(says(first.plan, { ...sending, 'PAY:CARDCLR': { status: 'posted', id: 'p' } }, err), null);
+    assert.equal(says(first.plan, { INVOICE: { status: 'posted', id: 'i' }, 'PAY:CARDCLR': { status: 'sending' } }, err), null, 'the invoice is in Xero');
+    assert.equal(says(first.plan, { INVOICE: { status: 'posted', id: 'i' } }, err), null);
+    assert.equal(says(first.plan, {}, err), null);
+    assert.equal(says(first.plan, null, err), null);
+    assert.deepEqual(refusalPatch(null, sending, { at: 'T', message: 'm', words: 'w' }), {});
+    assert.equal(refusalWords(null, 'w'), '');
     assert.equal(refundWayStarted(r.detail), 'refused');
     // The next attempt: the credit note way, in full.
     const second = await attempt(sb, g, 'E2');
@@ -749,7 +833,9 @@ test('20. Xero refuses an invoice with refund lines: the row says so, and the ne
     assert.ok(x.calls.indexOf('GET /Invoices') < x.calls.lastIndexOf('PUT /Invoices'), 'the number is looked up before the invoice is sent again');
     r = await readSyncRow(sb, KEY);
     assert.deepEqual([r.status, r.detail.refundWay], ['ok', 'credit_note']);
-    assert.equal(refundWayStarted(r.detail), 'credit_note');
+    assert.equal(refundWayStarted(r.detail), 'refused', 'a credit note day, and the row still says Xero refused its refund lines');
+    assert.equal(plan(g, { started: refundWayStarted(r.detail) }).refundWay, 'credit_note');
+    assert.equal(historyRefundNote(asHistory(r)), '');
   }, { refuse: (method, where, body) => (method === 'PUT' && where === '/Invoices' && body.Invoices[0].LineItems.some((l) => /^Refund: /.test(l.Description))
     ? new Response(JSON.stringify({ ErrorNumber: 10, Type: 'ValidationException', Elements: [{ ValidationErrors: [{ Message: 'A rule nobody knew about.' }] }] }), { status: 400 }) : null) });
 });
@@ -874,11 +960,12 @@ test('23. the words: every refund line starts "Refund: ", and nothing a person r
   if (usWhy?.reason === 'vat_negative') assert.equal(usWhy.message, 'The sales tax on the refunds of this day is more than the sales tax on its sales. The refunds go to Xero as a credit note.');
   // Back Office: the sentences are there, and the lines they are on have no dash.
   const screens = {
-    'src/backoffice/sections/xero/InvoicePreview.jsx': ["l.refund ? 'Refund'", 'Refunds are the minus lines at the end. Sales ', ' makes the invoice total.', 'Payments on the invoice, takings less refunds (it shows as Paid)', 'per rate on the refund lines'],
-    'src/backoffice/sections/xero/PostingsHistory.jsx': ['Refunds are on the invoice as minus lines.'],
-    'src/backoffice/sections/XeroIntegration.jsx': ['paid into its clearing accounts. Refunds are minus lines on the same invoice (set up under {tabName}).'],
-    'src/backoffice/sections/xero/SiteSetup.jsx': ['are minus lines on the same day’s invoice. A day whose refunds cannot go on its invoice sends them as a credit note.', 'A credit note, when a day needs one, is <b>{creditNoteNumber('],
-    'supabase/functions/xero-sales/index.ts': ['Xero did not take this day with its refunds on the invoice: ', ' Nothing was posted. The next push sends the refunds as a credit note.'],
+    'src/backoffice/sections/xero/xeroUi.js': ["line?.refund ? 'Refund'", 'Refunds are the minus lines at the end. Sales ', ' makes the invoice total.', 'Payments on the invoice, takings less refunds (it shows as Paid)', 'per rate on the refund lines', 'Refunds are on the invoice as minus lines.'],
+    // The setup words belong to the invoice; the refund sentence says WHICH day's invoice (the day
+    // the refund was made, never the day of the sale) and what to search for in Xero ("Refund:").
+    'src/backoffice/sections/XeroIntegration.jsx': ['paid into its clearing accounts (set up under {tabName}). A refund is a minus line on the invoice of the day it was made.'],
+    'src/backoffice/sections/xero/SiteSetup.jsx': ['are minus lines on the invoice of the day the refund was made, each starting “Refund:”. A day whose refunds cannot go on its invoice sends them as a credit note.', 'A credit note, when a day needs one, is <b>{creditNoteNumber('],
+    'supabase/functions/_shared/xeroInvoicePlan.js': ['Xero did not take this day with its refunds on the invoice: ', ' Nothing was posted. The next push sends the refunds as a credit note.', 'Xero did not take this day: ', ' Nothing was posted. Put that right, then push again.'],
   };
   for (const [file, phrases] of Object.entries(screens)) {
     const lines = read(file).split('\n');
@@ -891,12 +978,28 @@ test('23. the words: every refund line starts "Refund: ", and nothing a person r
   // The old promises are gone from the screens.
   assert.ok(!read('src/backoffice/sections/xero/SiteSetup.jsx').includes('Refunds post as a credit note'));
   assert.ok(!read('src/backoffice/sections/XeroIntegration.jsx').includes('with a credit note for refunds'));
+  assert.ok(!read('src/backoffice/sections/XeroIntegration.jsx').includes('Refunds are minus lines on the same invoice (set up under'), 'refund lines are not a setting to find under a tab');
+  assert.ok(!read('src/backoffice/sections/xero/SiteSetup.jsx').includes('same day’s invoice'));
+  for (const kind of ['lines', 'other']) for (const w of ['A rule nobody knew about.', 'The account is archived', 'Stop!']) assert.doesNotMatch(refusalWords(kind, w), DASH);
+  assert.equal(refusalWords('other', 'The account is archived'), 'Xero did not take this day: The account is archived. Nothing was posted. Put that right, then push again.');
+  assert.equal(refusalWords('lines', 'Stop!'), 'Xero did not take this day with its refunds on the invoice: Stop! Nothing was posted. The next push sends the refunds as a credit note.');
   // Old days still have their words: the credit note and refund payment labels stay.
-  assert.match(read('src/backoffice/sections/xero/PostingsHistory.jsx'), /credit_note: 'Credit note', payment: 'Payment', refund: 'Refund'/);
-  assert.match(read('src/backoffice/sections/xero/InvoicePreview.jsx'), /<Doc doc=\{view\.creditNote\} title="Credit note for refunds"/);
-  assert.match(read('src/backoffice/sections/xero/InvoicePreview.jsx'), /<Payments list=\{view\.refundPayments\}/);
-  // An older server sends no refundWay: the preview then reads exactly as before.
-  assert.match(read('src/backoffice/sections/xero/InvoicePreview.jsx'), /const asLines = view\.refundWay === 'lines';/);
+  const history = read('src/backoffice/sections/xero/PostingsHistory.jsx');
+  assert.match(history, /credit_note: 'Credit note', payment: 'Payment', refund: 'Refund'/);
+  // The screens take what they say, and when, from the tested functions (test 29), and decide nothing themselves.
+  const preview = read('src/backoffice/sections/xero/InvoicePreview.jsx');
+  assert.match(preview, /const words = previewWords\(view, \{ tw, fmt: \(n\) => money\(n, cur\) \}\);/);
+  assert.match(preview, /<Doc doc=\{view\.invoice\} title="Sales invoice" [^>]*tagFor=\{words\.tagFor\} \/>\n\s+\{words\.note && <div [^>]*>\{words\.note\}<\/div>\}/);
+  assert.match(preview, /<Payments list=\{view\.payments\} [^>]*title=\{words\.paymentsTitle\} \/>/);
+  assert.match(preview, /<Doc doc=\{words\.creditNote\} title="Credit note for refunds" [^>]*tagFor=\{words\.tagFor\} \/>/);
+  assert.match(preview, /<Payments list=\{words\.refundPayments\} [^>]*title="Refund payments" \/>/);
+  assert.match(preview, /\{tie\(refunds, words\.refundTieTitle\)\}/);
+  assert.match(preview, /<div style=\{\{ fontSize: 11, color: 'var\(--t4\)' \}\}>\{tagFor\(l\)\}<\/div>/);
+  assert.match(preview, /<Lines lines=\{doc\.lines\} [^>]*tagFor=\{tagFor\} \/>/);
+  assert.doesNotMatch(preview.replace(/^\s*\/\/.*$/gm, ''), /refundWay|asLines|l\.refund/, 'no refund decision is made in the screen itself');
+  assert.match(history, /const refundNote = historyRefundNote\(d\);/);
+  assert.match(history, /\{refundNote && <div [^>]*>\{refundNote\}<\/div>\}/);
+  assert.doesNotMatch(history.replace(/^\s*\/\/.*$/gm, ''), /refundWay/, 'the history screen decides nothing about refunds itself');
 });
 
 test('24. xero-sales and xero-config are wired to these functions; Ready and the figures tick did not move', () => {
@@ -909,15 +1012,22 @@ test('24. xero-sales and xero-config are wired to these functions; Ready and the
   // The real post: decided on the row the run HOLDS, after the model check, and recorded before anything is sent.
   const day = sales.slice(sales.indexOf('async function invoiceDay('), sales.indexOf('async function replaceDay('));
   const order = ['await claimSyncRun(sb, key)', "await modelChanged(run, cfgRow, date, 'sales_invoice', auto, base)", 'const started = refundWayStarted(run.detail);',
-    'invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started)', '\n    plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency, started });', 'refundWay: refundWayToRecord(started, plan)', 'await postInvoiceDay(run, plan,'];
+    'const refusedBefore = run.postings.INVOICE?.refusedNotLines || null;', 'invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started)', '\n    plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency, started });', 'refundWay: refundWayToRecord(started, plan)', 'await postInvoiceDay(run, plan,'];
   const at0 = order.map((w) => day.indexOf(w));
   assert.ok(at0.every((i) => i > 0), `all there: ${at0}`);
   assert.deepEqual([...at0].sort((a, b) => a - b), at0, 'in this order');
   assert.match(day, /const started = refundWayStarted\(prior\?\.detail\);\n\s+const plan = planXeroInvoiceDay\(/, 'a dry run shows the way the row started');
-  // A refusal of the refund lines is recorded on the row.
-  assert.match(day, /const refusedLines = refundLinesRefused\(plan, run\.postings, \(e as any\)\?\.status\);/);
-  assert.match(day, /refundLinesRefused: \{ at: new Date\(\)\.toISOString\(\), message: String\(msg\)\.slice\(0, 500\) \}/);
-  assert.match(day, /detail: \{ model: 'sales_invoice', window, error, notReady, problems, \.\.\.refusal \}/);
+  // What Xero's "no" to the invoice says about the refund lines is judged by the tested function,
+  // from the row as this run claimed it, and recorded on the row with the words the person reads.
+  assert.match(day, /const xeroWords = xeroErrorWords\(msg\);\n\s+const refusal = invoiceRefusal\(plan, \{ started, postings: run\.postings, before: refusedBefore, error: \{ status: \(e as any\)\?\.status, message: msg, words: xeroWords \} \}\);/);
+  assert.match(day, /const said = refusal \? refusalWords\(refusal, xeroWords\)\n/);
+  assert.match(day, /const refused = refusalPatch\(refusal, run\.postings, \{ at: new Date\(\)\.toISOString\(\), message: msg, words: xeroWords \}\);/);
+  assert.match(day, /detail: \{ model: 'sales_invoice', window, error, notReady, problems, \.\.\.refused \}/);
+  // One rule for "that number is taken", used by the post and by the refusal rule.
+  const post = read('supabase/functions/_shared/xeroInvoicePost.ts');
+  assert.match(post, /retryConflicts, isNumberTaken \} from '\.\/xeroInvoicePlan\.js';/);
+  assert.doesNotMatch(post, /const isNumberTaken/);
+  assert.match(post, /if \(isDoc && isNumberTaken\(\(e as Error\)\?\.message \|\| ''\)\) \{/);
   // The already answer compares the day the way it was posted.
   const already = sales.slice(sales.indexOf('async function invoiceAlreadyAnswer('), sales.indexOf('function invoiceNotReady('));
   assert.match(already, /started: refundWayStarted\(prior\.detail\) \}\);\n\s+const changed: string\[\] = postedDayChanges\(plan, docs\);/);
@@ -949,4 +1059,285 @@ test('24. xero-sales and xero-config are wired to these functions; Ready and the
   assert.deepEqual(plan(serviceDay(), {}, noCash).blocked.filter((b) => b.code === 'clearing_unmapped'), creditNoteWay(serviceDay(), noCash).blocked.filter((b) => b.code === 'clearing_unmapped'));
   assert.equal(plan(serviceDay(), {}, noCash).blocked.filter((b) => b.code === 'clearing_unmapped').length, 2, 'the cash taken and the cash refunded');
   assert.ok(!plan(serviceDay(), {}, noCash).blocked.some((b) => b.code === 'payments_mismatch'));
+});
+
+// ── 25 to 28: what Xero's "no" to an invoice says about its refund lines (review, 13 Oct 2026) ──
+
+const LOCK = 'The document date cannot be before the period lock date, currently set at 30 Sep 2026';
+
+test('25. a lock date is never read as Xero refusing the refund lines: the day goes with them once the lock is moved', async () => {
+  const g = plainDay();
+  let locked = true;
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    const first = await attempt(sb, g, 'L1');
+    assert.equal(first.ok, false);
+    assert.equal(first.e.status, 400);
+    assert.deepEqual([first.started, first.plan.refundWay, first.refusal], [null, 'lines', 'other']);
+    assert.equal(first.error, `Xero did not take this day: ${LOCK}. Nothing was posted. Put that right, then push again.`);
+    assert.doesNotMatch(first.error, /credit note|refunds on the invoice/, "Xero's own words, and no promise of a credit note");
+    let r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.error, r.detail.refundWay, r.detail.refundLinesRefused], ['error', first.error, null, null]);
+    assert.deepEqual(posted(r), [['INVOICE', 'sending', 24.21]]);
+    assert.deepEqual(r.detail.postings.INVOICE.refusedNotLines, { at: '2026-10-14T03:10:00.000Z', words: LOCK });
+    assert.ok(r.detail.postings.INVOICE.payload.LineItems.some((l) => l.Description === 'Refund: Hot drinks 20%'), 'the row still shows exactly what was sent');
+    assert.equal(refundWayStarted(r.detail), null, 'nothing is in Xero: the day is free');
+    assert.equal(historyRefundNote(asHistory(r)), '');
+    // The next hourly run, the lock still on: tried the same way, never the credit note way.
+    const second = await attempt(sb, g, 'L2');
+    assert.deepEqual([second.started, second.plan.refundWay, second.refusal], [null, 'lines', 'other']);
+    assert.equal(refundWayStarted((await readSyncRow(sb, KEY)).detail), null);
+    assert.equal(x.invoices.length + x.creditNotes.length + x.payments.length, 0, 'nothing of the day is in Xero');
+    assert.equal(x.puts().filter((c) => c === 'PUT /CreditNotes').length, 0);
+    // The lock date is moved in Xero: the day posts with its refunds on the invoice, as asked for.
+    locked = false;
+    const third = await attempt(sb, g, 'L3');
+    assert.equal(third.ok, true, third.e?.message);
+    assert.deepEqual([third.started, third.plan.refundWay], [null, 'lines']);
+    assert.deepEqual(x.invoices.map((i) => i.Total), [24.21]);
+    assert.equal(x.creditNotes.length, 0);
+    assert.deepEqual(x.payments.map((p) => [p.Reference, p.Amount]), [['SOS-LEEDS-20260929 Card', 19.3], ['SOS-LEEDS-20260929 Cash', 4.91]]);
+    assert.deepEqual(saidWhy(third.plan), []);
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.refundWay, refundWayStarted(r.detail)], ['ok', 'lines', 'lines']);
+    assert.equal(r.detail.postings.INVOICE.refusedNotLines, undefined, 'the mark went the moment the invoice was sent again');
+    assert.equal(historyRefundNote(asHistory(r)), 'Refunds are on the invoice as minus lines.');
+  }, { refuse: (method, where) => (locked && method === 'PUT' && where === '/Invoices' ? xero400(LOCK) : null) });
+  // Xero's other lock date sentence reads the same.
+  const alone = { INVOICE: { status: 'sending' } };
+  const err = (words) => ({ status: 400, message: `Xero API /Invoices failed: 400 ${JSON.stringify({ Elements: [{ ValidationErrors: [{ Message: words }] }] })}`, words });
+  assert.equal(invoiceRefusal(plan(g), { postings: alone, error: err('The document date cannot be before the end of year lock date, currently set at 31 Mar 2026') }), 'other');
+  // A day with no refund lines on its invoice (the credit note way, or no refunds) has none to
+  // refuse: nothing about it changes, lock date or not.
+  assert.equal(invoiceRefusal(creditNoteWay(g), { started: 'credit_note', postings: alone, error: err(LOCK) }), null);
+  assert.equal(invoiceRefusal(plan(cashShortDay()), { postings: alone, error: err(LOCK) }), null);
+  assert.equal(invoiceRefusal(plan(grouped(saleRows())), { postings: alone, error: err(LOCK) }), null);
+  // Only Xero's own words count, never the invoice it sends back with them.
+  assert.equal(invoiceRefusal(plan(g), { postings: alone, error: { ...err('A rule nobody knew about.'), message: 'Xero API /Invoices failed: 400 {"Elements":[{"Reference":"Lock date drinks"}]}' } }), 'lines');
+});
+
+test('26. Xero refuses the invoice with its refund lines AND without them: the lines were not the cause, and the day is free again', async () => {
+  const g = plainDay();
+  const WHY = "Account code '201' has been archived, or has been deleted. Each line item must reference a valid account.";
+  let broken = true;
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    // 1. With its refund lines: refused. Nothing shows another cause yet, so the row says the lines were refused.
+    const first = await attempt(sb, g, 'M1');
+    assert.deepEqual([first.started, first.plan.refundWay, first.refusal], [null, 'lines', 'lines']);
+    let r = await readSyncRow(sb, KEY);
+    assert.equal(refundWayStarted(r.detail), 'refused');
+    // 2. Without them (the credit note way), refused as well: the refund lines were not the cause.
+    const second = await attempt(sb, g, 'M2');
+    assert.deepEqual([second.started, second.plan.refundWay, second.plan.refundWayReason, second.refusal], ['refused', 'credit_note', 'xero_refused', 'other']);
+    assert.equal(second.error, `Xero did not take this day: ${WHY} Nothing was posted. Put that right, then push again.`);
+    assert.doesNotMatch(second.error, /credit note|refunds on the invoice/, "Xero's own words only");
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.error, r.detail.refundWay, r.detail.refundLinesRefused], ['error', second.error, null, null]);
+    assert.deepEqual(posted(r), [['INVOICE', 'sending', 28.01]]);
+    assert.equal(r.detail.postings.INVOICE.refusedNotLines.words, WHY);
+    assert.equal(refundWayStarted(r.detail), null, 'free again: never left as a credit note day when nothing is in Xero');
+    // 3. Still not put right (the next hourly run): tried with its refund lines, refused in the
+    // same words. It stays free, and never goes round to "the next push sends a credit note" again.
+    const third = await attempt(sb, g, 'M3');
+    assert.deepEqual([third.started, third.plan.refundWay, third.refusal], [null, 'lines', 'other']);
+    assert.equal(third.error, second.error);
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([refundWayStarted(r.detail), r.detail.refundLinesRefused], [null, null]);
+    assert.deepEqual(posted(r), [['INVOICE', 'sending', 24.21]]);
+    assert.equal(x.invoices.length + x.creditNotes.length + x.payments.length, 0, 'nothing of the day is in Xero');
+    // 4. The account is put right: the day posts with its refunds on the invoice. No credit note, no word of one.
+    broken = false;
+    const fourth = await attempt(sb, g, 'M4');
+    assert.equal(fourth.ok, true, fourth.e?.message);
+    assert.deepEqual([fourth.started, fourth.plan.refundWay], [null, 'lines']);
+    assert.deepEqual(x.invoices.map((i) => i.Total), [24.21]);
+    assert.equal(x.creditNotes.length, 0);
+    assert.deepEqual(x.payments.map((p) => p.Amount), [19.3, 4.91]);
+    assert.deepEqual(saidWhy(fourth.plan), []);
+    assert.ok(!fourth.plan.warnings.some((w) => /credit note/.test(w.message)));
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.refundWay, refundWayStarted(r.detail)], ['ok', 'lines', 'lines']);
+  }, { refuse: (method, where) => (broken && method === 'PUT' && where === '/Invoices' ? xero400(WHY) : null) });
+  // The rule on its own.
+  const alone = { INVOICE: { status: 'sending' } };
+  const err = (words, status = 400) => ({ status, message: `Xero API /Invoices failed: ${status} ${JSON.stringify({ Elements: [{ ValidationErrors: [{ Message: words }] }] })}`, words });
+  const lines = plan(g), gross = creditNoteWay(g);
+  assert.equal(invoiceRefusal(gross, { started: 'refused', postings: alone, error: err('A') }), 'other', 'refused without its refund lines too');
+  assert.equal(invoiceRefusal(gross, { started: 'refused', postings: alone, error: err('A', 503) }), null, 'only Xero saying no');
+  assert.equal(invoiceRefusal(gross, { started: 'refused', postings: { ...alone, 'PAY:CARDCLR': { status: 'sending' } }, error: err('A') }), null);
+  assert.equal(invoiceRefusal(gross, { started: 'refused', postings: { INVOICE: { status: 'posted', id: 'i' } }, error: err('A') }), null);
+  assert.equal(invoiceRefusal(gross, { started: 'credit_note', postings: alone, error: err('A') }), null, 'a day on the credit note way for its own reasons goes on as it did');
+  assert.equal(invoiceRefusal(lines, { postings: alone, before: { at: 'T', words: 'A' }, error: err('A') }), 'other', 'the words that refused it without its refund lines');
+  assert.equal(invoiceRefusal(lines, { postings: alone, before: { at: 'T', words: 'A' }, error: err('B') }), 'lines', 'other words: judged afresh');
+  assert.equal(invoiceRefusal(lines, { postings: alone, before: { at: 'T', words: '' }, error: err('') }), 'lines', 'no words are not the same words');
+  // What each writes on the row.
+  const sent = { INVOICE: { status: 'sending', total: 24.21 }, 'RECEIVE:a': { status: 'deleted' } };
+  assert.deepEqual(refusalPatch('lines', sent, { at: 'T', message: 'm'.repeat(600), words: 'w' }), { refundLinesRefused: { at: 'T', message: 'm'.repeat(500) } });
+  assert.deepEqual(refusalPatch('other', sent, { at: 'T', message: 'm', words: 'w' }),
+    { refundLinesRefused: null, refundWay: null, postings: { INVOICE: { status: 'sending', total: 24.21, refusedNotLines: { at: 'T', words: 'w' } }, 'RECEIVE:a': { status: 'deleted' } } });
+  assert.deepEqual(sent.INVOICE, { status: 'sending', total: 24.21 }, 'the postings handed in are not changed');
+});
+
+test('27. a day switched after a refusal keeps saying why, and finishes the credit note way with nothing sent twice', async () => {
+  const g = plainDay();
+  let phase = 1;   // 1 the refund lines are refused; 2 the invoice without them fails (503); 3 its cash payment fails; 4 all well
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    const first = await attempt(sb, g, 'N1');
+    assert.equal(first.refusal, 'lines');
+    phase = 2;
+    const second = await attempt(sb, g, 'N2');
+    assert.deepEqual([second.started, second.ok, second.refusal], ['refused', false, null]);
+    let r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.detail.refundWay, posted(r)], ['credit_note', [['INVOICE', 'sending', 28.01]]]);
+    assert.ok(r.detail.refundLinesRefused?.at, 'the refusal stays on the row');
+    assert.equal(refundWayStarted(r.detail), 'refused', 'nothing is in Xero yet: never "started in Xero as a credit note"');
+    phase = 3;
+    const third = await attempt(sb, g, 'N3');
+    assert.deepEqual([third.started, third.ok, third.refusal], ['refused', false, null]);
+    assert.deepEqual(saidWhy(third.plan).map((w) => w.reason), ['xero_refused']);
+    r = await readSyncRow(sb, KEY);
+    assert.equal(r.status, 'partial');
+    assert.deepEqual(posted(r), [['INVOICE', 'posted', 28.01], ['PAY:CARDCLR', 'posted', 23.1], ['PAY:CASHTILL', 'sending', 4.91]]);
+    assert.equal(refundWayStarted(r.detail), 'refused', 'part of it is in Xero now: still the credit note way, still saying why');
+    phase = 4;
+    x.calls.length = 0;
+    const fourth = await attempt(sb, g, 'N4');
+    assert.equal(fourth.ok, true, fourth.e?.message);
+    assert.deepEqual([fourth.started, fourth.plan.refundWay, fourth.plan.refundWayReason], ['refused', 'credit_note', 'xero_refused']);
+    assert.deepEqual(saidWhy(fourth.plan).map((w) => w.message), ['Xero did not take this day with its refunds on the invoice, so the refunds go to Xero as a credit note.']);
+    assert.deepEqual(x.puts(), ['PUT /Payments', 'PUT /CreditNotes', 'PUT /Payments'], 'only what was still to send');
+    assert.deepEqual(x.invoices.map((i) => i.Total), [28.01]);
+    assert.deepEqual(x.creditNotes.map((c) => c.Total), [3.8]);
+    assert.deepEqual(x.payments.map((p) => [p.Reference, p.Amount]), [['SOS-LEEDS-20260929 Card', 23.1], ['SOS-LEEDS-20260929 Cash', 4.91], ['SOS-LEEDS-20260929-R Card', 3.8]]);
+    r = await readSyncRow(sb, KEY);
+    assert.deepEqual([r.status, r.detail.refundWay], ['ok', 'credit_note']);
+    assert.deepEqual(r.detail.warnings.filter((w) => w.code === 'refunds_as_credit_note').map((w) => w.reason), ['xero_refused'], 'the finished row says why its refunds are a credit note');
+  }, { refuse: (method, where, body) => {
+    if (method === 'PUT' && where === '/Invoices' && phase === 1) return xero400('A rule nobody knew about.');
+    if (method === 'PUT' && where === '/Invoices' && phase === 2) return new Response('Service Unavailable', { status: 503 });
+    if (method === 'PUT' && where === '/Payments' && phase === 3 && /Cash$/.test(body.Payments[0].Reference)) return new Response('Service Unavailable', { status: 503 });
+    return null;
+  } });
+});
+
+test('28. a lookup that fails, or a number Xero says is taken, says nothing about the refund lines', async () => {
+  const g = plainDay();
+  // The answer to the invoice with its refund lines is lost and the invoice IS in Xero at sales
+  // less refunds. Then the lookup of its number fails with a 400. The day must still finish.
+  let lost = false, lookups = 0;
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    const first = await attempt(sb, g, 'P1');
+    assert.equal(first.ok, false);
+    assert.deepEqual(x.invoices.map((i) => i.Total), [24.21]);
+    const second = await attempt(sb, g, 'P2');
+    assert.equal(second.ok, false);
+    assert.equal(second.e.status, 400);
+    assert.match(second.e.message, /^Xero API \/Invoices\?InvoiceNumbers=SOS-LEEDS-20260929 failed: 400 /);
+    assert.equal(second.refusal, null, 'the lookup failed: that is not Xero refusing the invoice');
+    const r = await readSyncRow(sb, KEY);
+    assert.equal(r.detail.refundLinesRefused, undefined);
+    assert.equal(refundWayStarted(r.detail), 'lines');
+    const third = await attempt(sb, g, 'P3');
+    assert.equal(third.ok, true, third.e?.message);
+    assert.deepEqual(x.invoices.map((i) => i.Total), [24.21], 'the one invoice, found and paid');
+    assert.equal(x.puts().filter((c) => c === 'PUT /Invoices').length, 1);
+    assert.equal(x.creditNotes.length, 0);
+    assert.deepEqual(x.payments.map((p) => p.Amount), [19.3, 4.91]);
+  }, {
+    lose: (method, where) => (method === 'PUT' && where === '/Invoices' && !lost ? (lost = true) : false),
+    refuse: (method, where) => (method === 'GET' && where.startsWith('/Invoices?InvoiceNumbers=') && ++lookups === 1 ? xero400('The request could not be read.') : null),
+  });
+  // Xero says the number is taken and the lookup finds nothing: the invoice may be there, so the
+  // day goes on the way it was started and is never switched.
+  await withXero(async (x) => {
+    const sb = fakeTable();
+    const first = await attempt(sb, g, 'Q1');
+    assert.equal(first.ok, false);
+    assert.equal(first.e.status, 400);
+    assert.ok(isNumberTaken(first.e.message));
+    assert.equal(first.refusal, null);
+    assert.deepEqual(x.calls, ['PUT /Invoices', 'GET /Invoices']);
+    const r = await readSyncRow(sb, KEY);
+    assert.equal(r.detail.refundLinesRefused, undefined);
+    assert.equal(r.detail.postings.INVOICE.refusedNotLines, undefined);
+    assert.deepEqual([r.detail.refundWay, refundWayStarted(r.detail)], ['lines', 'lines']);
+  }, { refuse: (method, where) => (method === 'PUT' && where === '/Invoices' ? xero400('Invoice # must be unique.') : null) });
+  assert.equal(isNumberTaken('Xero API /Invoices failed: 400 {"Message":"Invoice # must be unique."}'), true);
+  assert.equal(isNumberTaken('Credit Note # must be unique'), true);
+  assert.equal(isNumberTaken("Account code '201' has been archived"), false);
+  assert.equal(isNumberTaken(null), false);
+});
+
+// ── 29: the Back Office screens ──────────────────────────────────────────────
+
+test('29. Back Office: what the preview and the Postings history say about refunds, and when', () => {
+  const fmt = (n) => `£${Number(n).toFixed(2)}`;
+  const g = plainDay();
+  const newDay = planView(plan(g));                      // refunds on the invoice
+  const fellBack = planView(plan(cashShortDay()));       // refunds that cannot go on the invoice
+  const oldDay = planView(creditNoteWay(g));             // a day started before 13 Oct 2026
+  // The answer of an older xero-sales: no refundWay, and no refund flag on any line.
+  const bare = (doc) => (doc ? { ...doc, lines: doc.lines.map((l) => ({ kind: l.kind, description: l.description, account: l.account, taxType: l.taxType, amount: l.amount, vat: l.vat, xeroVat: l.xeroVat })) } : null);
+  const olderServer = { ...oldDay, invoice: bare(oldDay.invoice), creditNote: bare(oldDay.creditNote) };
+  delete olderServer.refundWay; delete olderServer.refundWayReason;
+
+  // A new day: one note under the invoice, the payments titled as takings less refunds, no credit note.
+  const w = previewWords(newDay, { tw: 'VAT', fmt });
+  assert.equal(w.asLines, true);
+  assert.deepEqual([newDay.totals.sales, newDay.totals.refunds, newDay.totals.vat], [28.01, 3.8, 3.75]);
+  assert.equal(w.note, 'Refunds are the minus lines at the end. Sales £28.01 less refunds £3.80 makes the invoice total.');
+  assert.equal(w.paymentsTitle, 'Payments on the invoice, takings less refunds (it shows as Paid)');
+  assert.equal(w.creditNote, null);
+  assert.deepEqual(w.refundPayments, []);
+  assert.equal(w.refundTieTitle, 'VAT per rate on the refund lines');
+  assert.deepEqual(newDay.invoice.lines.map(w.tagFor), ['Sales', 'Sales', 'Discount', 'Discount', 'Discount', 'Sales', 'Tips', 'Service', 'Refund']);
+  assert.equal(previewWords(newDay, { tw: 'Tax', fmt }).refundTieTitle, 'Tax per rate on the refund lines');
+  assert.equal(previewWords(newDay).note, 'Refunds are the minus lines at the end. Sales 28.01 less refunds 3.80 makes the invoice total.');
+  // A refunded tip, service charge and gift card are tagged Refund too, and only they are.
+  for (const f of [tipsDay, serviceDay, giftDay, loyaltyDay]) {
+    const v = planView(plan(f()));
+    assert.deepEqual(v.invoice.lines.map((l) => previewWords(v).tagFor(l) === 'Refund'), v.invoice.lines.map((l) => l.description.startsWith('Refund: ')));
+  }
+  assert.deepEqual(['sales', 'discount', 'gift', 'tip', 'service', 'new_kind', undefined].map((kind) => w.tagFor({ kind })), ['Sales', 'Discount', 'Gift cards', 'Tips', 'Service', 'new_kind', '']);
+  assert.equal(w.tagFor({ kind: 'gift', refund: true }), 'Refund');
+
+  // A day that fell back, a day posted before this, and an older server's answer: exactly as
+  // before. The credit note and its refund payments show, and nothing speaks of minus lines.
+  for (const [name, v] of Object.entries({ fellBack, oldDay, olderServer })) {
+    const o = previewWords(v, { tw: 'VAT', fmt });
+    assert.equal(o.asLines, false, name);
+    assert.equal(o.note, '', name);
+    assert.equal(o.paymentsTitle, 'Payments on the invoice (it shows as Paid)', name);
+    assert.ok(o.creditNote && o.creditNote === v.creditNote, `${name}: the credit note shows`);
+    assert.equal(o.creditNote.number, 'SOS-LEEDS-20260929-R', name);
+    assert.ok(o.refundPayments.length === 1 && o.refundPayments === v.refundPayments, `${name}: its refund payment shows`);
+    assert.equal(o.refundTieTitle, 'VAT per rate on refunds', name);
+    assert.ok([...v.invoice.lines, ...v.creditNote.lines].every((l) => o.tagFor(l) !== 'Refund'), `${name}: no line is tagged Refund`);
+    assert.deepEqual(v.creditNote.lines.map(o.tagFor), v.creditNote.lines.map(() => 'Sales'), name);
+  }
+  assert.equal(previewWords(olderServer, { tw: 'Tax' }).refundTieTitle, 'Tax per rate on refunds');
+  // No refunds, no invoice, nothing at all.
+  const quiet = previewWords(planView(plan(grouped(saleRows()))), { fmt });
+  assert.deepEqual([quiet.asLines, quiet.note, quiet.paymentsTitle, quiet.creditNote, quiet.refundPayments], [false, '', 'Payments on the invoice (it shows as Paid)', null, []]);
+  const noInvoice = planView(plan(noSalesDay(), { started: 'lines' }));
+  assert.deepEqual([noInvoice.refundWay, noInvoice.invoice], ['lines', null]);
+  assert.equal(previewWords(noInvoice, { fmt }).note, '', 'no invoice on the screen, so no note about its lines');
+  assert.deepEqual([previewWords(null).asLines, previewWords(null).note, previewWords(undefined).creditNote, previewWords({}).refundPayments], [false, '', null, []]);
+
+  // The Postings history, an opened day: the note only once the invoice with the lines IS in Xero.
+  const NOTE = 'Refunds are on the invoice as minus lines.';
+  const day = (refundWay, postings) => ({ refundWay, postings });
+  assert.equal(historyRefundNote(day('lines', { INVOICE: { status: 'posted' }, 'PAY:CARDCLR': { status: 'posted' } })), NOTE);
+  assert.equal(historyRefundNote(day('lines', { INVOICE: { status: 'posted' }, 'PAY:CARDCLR': { status: 'sending' } })), NOTE, 'partly posted, the invoice is in Xero');
+  assert.equal(historyRefundNote(day('lines', { INVOICE: { status: 'sending' } })), '', 'refused by Xero, or the answer lost');
+  assert.equal(historyRefundNote(day('lines', {})), '', 'blocked before anything was sent');
+  assert.equal(historyRefundNote(day('lines', null)), '');
+  assert.equal(historyRefundNote(day('credit_note', { INVOICE: { status: 'posted' }, CREDIT: { status: 'posted' } })), '', 'a day that fell back');
+  assert.equal(historyRefundNote(day(null, { INVOICE: { status: 'posted' }, CREDIT: { status: 'posted' } })), '', 'a day posted before 13 Oct 2026');
+  assert.equal(historyRefundNote({ postings: { INVOICE: { status: 'posted' } } }), '', 'an older server sends no refundWay');
+  assert.equal(historyRefundNote(null), '');
+  assert.doesNotMatch(NOTE + w.note + w.paymentsTitle + w.refundTieTitle, DASH);
 });

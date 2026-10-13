@@ -276,7 +276,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
           ['One invoice a day:', `each business day posts to Xero as one sales invoice, with a line per sales group and ${tw} rate.`],
           ['Discounts', 'post as minus lines. Tips, service charge and gift cards go to their own accounts.'],
           ['Paid:', 'it is paid into this site’s clearing accounts, so it shows as Paid.'],
-          ['Refunds', 'are minus lines on the same day’s invoice. A day whose refunds cannot go on its invoice sends them as a credit note.'],
+          ['Refunds', 'are minus lines on the invoice of the day the refund was made, each starting “Refund:”. A day whose refunds cannot go on its invoice sends them as a credit note.'],
           [`${addedOn ? 'Tax' : 'VAT'} ties:`, `each line carries the till’s own ${tw}, to the penny.`],
         ]} />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>

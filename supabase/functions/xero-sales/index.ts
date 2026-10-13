@@ -40,6 +40,9 @@
 // finishes. The way is read from the log row the run HOLDS (refundWayStarted) and recorded on it
 // (detail.refundWay) before anything is sent, so a day is never sent both ways. If Xero refuses
 // an invoice with refund lines outright, the row says so and the next push sends the credit note.
+// If Xero then refuses the invoice without them too, or names a lock date, the refund lines were
+// not the cause: the day is free again and goes with its refund lines once that is put right
+// (invoiceRefusal).
 // Site safety (phase 0, both models): the site's name is in every older reference and line,
 // and a transaction found by reference is adopted only when it is this site's own.
 //
@@ -82,7 +85,7 @@ import { buildAccountingDay } from '../_shared/accountingDay.js';
 import { planXeroDay, requiredDefaults, DEFAULT_ACCOUNTS, postingStep, idempotencyKey, postingVat, blockedMessage, sampleSaleRows, SAMPLE_TAX_NOTES, adoptable } from '../_shared/xeroPostingPlan.js';
 import {
   planXeroInvoiceDay, planView, planSteps, dayModel, invoiceReadiness, siteNameFrom, siteCodeFromSlug, seenFromGrouped, mappingHash, xeroDocLink, setupTabName,
-  refundWayStarted, refundWayToRecord, refundLinesRefused, dayNumbers, postedDayChanges,
+  refundWayStarted, refundWayToRecord, invoiceRefusal, refusalPatch, refusalWords, dayNumbers, postedDayChanges,
 } from '../_shared/xeroInvoicePlan.js';
 import { loadInvoiceDay, refreshSiteDetail, postInvoiceDay, NotReadyError, DayChangedError } from '../_shared/xeroInvoicePost.ts';
 import { revenueTaxRates, expenseTaxRates, healedTaxType } from '../_shared/xeroTax.js';
@@ -513,6 +516,8 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
   // is decided on the row this run HOLDS, never on the first read: a day is never sent both ways,
   // and a day an earlier attempt started finishes the way it was started.
   const started = refundWayStarted(run.detail);
+  // The last invoice this day sent, if Xero refused it for a cause that was not its refund lines.
+  const refusedBefore = run.postings.INVOICE?.refusedNotLines || null;
   const window = { from: summary.fromIso, to: summary.toIso };
   const addedOn = summary.defaultTaxBucket?.key === 'excl';
   let plan: any = null;
@@ -555,11 +560,13 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     const problems = dayChanged || (e as any)?.problems || null;
     const done = Object.values(run.postings).filter((p: any) => p?.status === 'posted').length;
     const status = done ? 'partial' : 'error';
-    // 13 Oct 2026: Xero refused the invoice of a day whose refunds were minus lines, and nothing
-    // of the day is in Xero. The row says so, and the next push sends the refunds as a credit note.
-    const refusedLines = refundLinesRefused(plan, run.postings, (e as any)?.status);
-    const why = refusedLines ? xeroErrorWords(msg) : '';
-    const said = refusedLines ? `Xero did not take this day with its refunds on the invoice: ${why}${/[.!?]$/.test(why) ? '' : '.'} Nothing was posted. The next push sends the refunds as a credit note.`
+    // 13 Oct 2026: Xero's own "no" to the invoice this run sent, and nothing of the day is in Xero
+    // (invoiceRefusal). 'lines': it had refund lines, so the row says so and the next push sends
+    // the refunds as a credit note. 'other': the refund lines were not the cause (refused without
+    // them too, or a lock date), so the day is free again and the row gives Xero's own words.
+    const xeroWords = xeroErrorWords(msg);
+    const refusal = invoiceRefusal(plan, { started, postings: run.postings, before: refusedBefore, error: { status: (e as any)?.status, message: msg, words: xeroWords } });
+    const said = refusal ? refusalWords(refusal, xeroWords)
       : notReady ? `This site is not ready to post its sales invoice, so nothing was sent. ${msg}`
         : dayChanged ? msg
           : problems ? `${msg}${done ? '' : ' Nothing was posted.'}`
@@ -567,8 +574,8 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     // 2 Oct 2026: the old bank transactions of this day were removed for this invoice. Until the
     // invoice is in Xero the row says so, so the day never looks posted when nothing is there.
     const error = pendingInvoiceError(run.detail?.replace, said, !!done);
-    const refusal = refusedLines ? { refundLinesRefused: { at: new Date().toISOString(), message: String(msg).slice(0, 500) } } : {};
-    if (!run.lost) await run.finish(status, { detail: { model: 'sales_invoice', window, error, notReady, problems, ...refusal } }, { ok: false, auto, model: 'sales_invoice', error, posted: done }).catch(() => {});
+    const refused = refusalPatch(refusal, run.postings, { at: new Date().toISOString(), message: msg, words: xeroWords });
+    if (!run.lost) await run.finish(status, { detail: { model: 'sales_invoice', window, error, notReady, problems, ...refused } }, { ok: false, auto, model: 'sales_invoice', error, posted: done }).catch(() => {});
     return json({ ...base, model: 'sales_invoice', error, partial: !!done, ...(notReady ? { notReady } : {}), ...((e as any)?.blocked ? { blocked: (e as any).blocked } : {}) }, notReady ? 400 : 500);
   }
 }
