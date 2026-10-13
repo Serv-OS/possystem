@@ -17,6 +17,8 @@ export const CHANGELOG = [
       "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
       "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
       "Orders: Send to kitchen again now tells you what happened. It says Sent to the kitchen again when it worked, and Not sent when it did not. The button waits while it is sending, so one press sends the order once.",
+      "Guest WiFi sign in page: it now scrolls, so on a small phone you can reach the Connect button. The review page and the waitlist join page had the same fault and are fixed too.",
+      "Till status page, Card readers: an Adyen card reader now reads Connected to Adyen. It used to say Not connected, cannot take card, in red, while the reader was taking payments. Back Office kiosk settings read the same rule.",
     ],
   },
   {
