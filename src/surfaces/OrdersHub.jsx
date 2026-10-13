@@ -174,6 +174,7 @@ export default function OrdersHub() {
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
   const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
   const [printBusy, setPrintBusy] = useState(false);
+  const [kitchenBusy, setKitchenBusy] = useState(false);  // "Send to kitchen again" is running
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 30000);
@@ -224,6 +225,33 @@ export default function OrdersHub() {
     setPrintBusy(true);
     await reprintOrderReceipt?.(viewOrder);
     setPrintBusy(false);
+  };
+
+  // Orders, "Send to kitchen again": a person's press, so the button has its own words.
+  // v5.11.52 (the quiet till): the route says nothing when all is well (Peter, 12 Oct 2026),
+  // and its "Routing" and "routed" messages were the only sign this button had worked. With
+  // them gone a press that worked looked the same as a press that failed, and every extra
+  // press puts the order on the kitchen screen again. So: busy while it runs (it cannot be
+  // pressed twice), then one short line, sent or not sent, from the outcome the route hands
+  // back. When the route put a problem message of its own on the till (did not print, did NOT
+  // reach the kitchen screen, an item not in our menu) that message stays: the toast is one
+  // slot and ours would hide the reason.
+  // 12 Oct 2026: it is never refused for not being the master till and never waits for the
+  // menu. The ticket is stamped trigger manual.
+  const sendToKitchenAgain = async () => {
+    if (!viewOrder || kitchenBusy) return;
+    setKitchenBusy(true);
+    const toastBefore = useStore.getState().toast;
+    try {
+      const outcome = await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true, trigger: 'manual' });
+      const toastNow = useStore.getState().toast;
+      const routeSpoke = !!toastNow && toastNow !== toastBefore;
+      if (!routeSpoke) {
+        if (outcome?.sent) showToast('Sent to the kitchen again', 'success');
+        else showToast('Not sent. Check the connection and try again.', 'error');
+      }
+    } catch (e) { showToast(`Could not send: ${e?.message || e}`, 'error'); }
+    finally { setKitchenBusy(false); }
   };
 
   // ── Build unified order pool ──────────────────────────────────────────────
@@ -1436,17 +1464,10 @@ export default function OrdersHub() {
 
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
               {viewOrder._kind === 'queue' && (
-                <button onClick={async () => {
-                  // The route reports its own outcome (routing, printed, no printer mapped,
-                  // no matching centre). A blind "sent" toast here hid those reasons.
-                  // 12 Oct 2026: a person's press. It is never refused for not being the master
-                  // till and never waits for the menu. The ticket is stamped trigger manual.
-                  try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true, trigger: 'manual' }); }
-                  catch (e) { useStore.getState().showToast?.(`Could not send: ${e?.message || e}`, 'error'); }
-                }}
+                <button onClick={sendToKitchenAgain} disabled={kitchenBusy}
                   title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"
-                  style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
-                  🍳 Send to kitchen again
+                  style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor: kitchenBusy?'wait':'pointer', fontFamily:'inherit', opacity: kitchenBusy?0.6:1 }}>
+                  {kitchenBusy ? 'Sending…' : '🍳 Send to kitchen again'}
                 </button>
               )}
               <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>

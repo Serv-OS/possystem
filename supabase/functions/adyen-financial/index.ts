@@ -91,6 +91,20 @@ const SUMMARY_CAP = 20000;
 // A statement is the venue's fee document and never truncates: past this it
 // fails loudly.
 const STATEMENT_CEILING = 100000;
+// PAYOUTS (13 Oct 2026, owner report "payouts have stopped registering on the
+// back office"). adyen_payout_lines gains one row per card payment and never
+// stops growing. The list read it with `.limit(5000)`, the server cut that at
+// 1000 rows, and every venue is past 1000 lines: each venue's list stopped at
+// the batch holding its 1000th line and showed that batch short. Every read
+// of payout lines now PAGES (readAllRows) in the order of its id, the table's
+// serial primary key. Past a ceiling the answer is an ERROR, never a short
+// list. The ceilings are far above any venue (the busiest holds about 3,400
+// lines after its first month).
+const PAYOUT_LINES_CEILING = 200000;
+// One venue's own settlement batches and bank transfers (about two a day).
+const PAYOUT_BATCH_CEILING = 20000;
+// How many ids go in one `in (...)` filter (they travel in the request URL).
+const PAYOUT_ID_CHUNK = 50;
 
 // Read every row of a query in pages, up to `ceiling` rows. `build` returns a
 // FRESH ordered query each call. capped is true only when a row exists past
@@ -109,6 +123,18 @@ async function readPaged(build: () => any, ceiling: number): Promise<{ rows: Rec
   const { data: more, error: moreErr } = await build().range(ceiling, ceiling);
   if (moreErr) return { rows, capped: false, error: moreErr.message };
   return { rows, capped: (more ?? []).length > 0, error: null };
+}
+
+// Every row of a query, or an error: the pager for the payouts screens, where
+// a short read shows a venue a wrong payout. A failed page and a read that
+// reaches its ceiling both answer an error and NO rows, so a caller can never
+// build a list from part of the data. `what` names the rows in the message.
+// deno-lint-ignore no-explicit-any
+async function readAllRows(build: () => any, ceiling: number, what: string): Promise<{ rows: any[]; error: string | null; capped: boolean }> {
+  const read = await readPaged(build, ceiling);
+  if (read.error) return { rows: [], error: `${what} read failed: ${read.error}`, capped: false };
+  if (read.capped) return { rows: [], error: `There are too many ${what} to show here (more than ${ceiling}). Contact ServOS support.`, capped: true };
+  return { rows: read.rows, error: null, capped: false };
 }
 
 // Postgres 42703 (column does not exist) — the fee columns until migration
@@ -388,28 +414,36 @@ Deno.serve(async (req) => {
   // Batch figures are the venue's: gross of its payment lines, its card rate
   // fees (payments matched by PSP reference) and what it receives.
   if (action === 'payouts') {
-    // Test and live payouts never mix (applyPayoutLiveFilter).
-    const { data: own, error: ownErr } = await applyPayoutLiveFilter(platformAdmin.from('adyen_payouts')
+    // Test and live payouts never mix (applyPayoutLiveFilter). Paged, newest
+    // first with the id as the tie break, so a venue past 1000 payouts of its
+    // own still gets every one.
+    const ownRead = await readAllRows(() => applyPayoutLiveFilter(platformAdmin.from('adyen_payouts')
       .select('*').eq('location_id', loc.id))
-      .order('payout_date', { ascending: false }).limit(100);
-    if (ownErr) return json({ error: `payouts read failed: ${ownErr.message}` }, 500);
+      .order('payout_date', { ascending: false }).order('id', { ascending: true }), PAYOUT_BATCH_CEILING, 'payouts');
+    if (ownRead.error) return json({ error: ownRead.error }, 500);
+    const own = ownRead.rows;
 
     // Lines: per-line location_id (shared batches) plus every line of a batch
-    // the venue owns outright.
+    // the venue owns outright. Both reads page on the line id: a venue holds
+    // thousands of lines and one request answers at most 1000.
     const LINE_COLS = 'id, payout_id, psp_reference, line_type, gross_minor';
     // deno-lint-ignore no-explicit-any
     const lineById = new Map<string, any>();
-    const { data: venueLines, error: vlErr } = await platformAdmin.from('adyen_payout_lines')
-      .select(LINE_COLS).eq('location_id', loc.id).limit(5000);
-    if (vlErr && !isMissingColumn(vlErr.message)) return json({ error: `payout lines read failed: ${vlErr.message}` }, 500);
-    for (const l of venueLines ?? []) lineById.set(String(l.id), l);
+    const venueRead = await readAllRows(() => platformAdmin.from('adyen_payout_lines')
+      .select(LINE_COLS).eq('location_id', loc.id).order('id', { ascending: true }), PAYOUT_LINES_CEILING, 'payout lines');
+    // As before, a database with no location_id on the lines (before migration
+    // 20260820) reads as no lines of the venue's own. Nothing else is let
+    // through: any other failure, and the ceiling, answer an error.
+    if (venueRead.error && (venueRead.capped || !isMissingColumn(venueRead.error))) return json({ error: venueRead.error }, 500);
+    const venueLines = venueRead.rows;   // readAllRows gives no rows with an error, never part of a read
+    for (const l of venueLines) lineById.set(String(l.id), l);
     // deno-lint-ignore no-explicit-any
-    const ownBatchIds = (own ?? []).filter(isSettlementBatch).map((p: any) => p.id);
-    for (let i = 0; i < ownBatchIds.length; i += 50) {
-      const { data, error } = await platformAdmin.from('adyen_payout_lines')
-        .select(LINE_COLS).in('payout_id', ownBatchIds.slice(i, i + 50)).limit(5000);
-      if (error) return json({ error: `payout lines read failed: ${error.message}` }, 500);
-      for (const l of data ?? []) lineById.set(String(l.id), l);
+    const ownBatchIds = own.filter(isSettlementBatch).map((p: any) => p.id);
+    for (let i = 0; i < ownBatchIds.length; i += PAYOUT_ID_CHUNK) {
+      const ownedRead = await readAllRows(() => platformAdmin.from('adyen_payout_lines')
+        .select(LINE_COLS).in('payout_id', ownBatchIds.slice(i, i + PAYOUT_ID_CHUNK)).order('id', { ascending: true }), PAYOUT_LINES_CEILING, 'payout lines');
+      if (ownedRead.error) return json({ error: ownedRead.error }, 500);
+      for (const l of ownedRead.rows) lineById.set(String(l.id), l);
     }
     const lines = [...lineById.values()];
     const { map: pays, error: joinErr } = await venuePaymentsByPsp(lines.map((l) => l.psp_reference));
@@ -428,16 +462,19 @@ Deno.serve(async (req) => {
     }
 
     // deno-lint-ignore no-explicit-any
-    const ownIds = new Set((own ?? []).map((p: any) => p.id));
+    const ownIds = new Set(own.map((p: any) => p.id));
     // deno-lint-ignore no-explicit-any
-    const sharedIds = [...new Set((venueLines ?? []).map((l: any) => l.payout_id).filter((id: unknown) => id && !ownIds.has(id)))] as string[];
+    const sharedIds = [...new Set(venueLines.map((l: any) => l.payout_id).filter((id: unknown) => id && !ownIds.has(id)))] as string[];
+    // EVERY shared batch the venue holds lines in, a chunk of ids at a time
+    // (it used to be the first 100 ids, so batch 101 would have vanished).
+    // Each request answers at most one row per id asked for.
     // deno-lint-ignore no-explicit-any
-    let shared: any[] = [];
-    if (sharedIds.length) {
+    const shared: any[] = [];
+    for (let i = 0; i < sharedIds.length; i += PAYOUT_ID_CHUNK) {
       const { data, error } = await applyPayoutLiveFilter(platformAdmin.from('adyen_payouts')
-        .select('*').in('id', sharedIds.slice(0, 100)));
+        .select('*').in('id', sharedIds.slice(i, i + PAYOUT_ID_CHUNK)));
       if (error) return json({ error: `shared payouts read failed: ${error.message}` }, 500);
-      shared = data ?? [];
+      shared.push(...(data ?? []));
     }
     // deno-lint-ignore no-explicit-any
     const shape = (p: any, isShared: boolean) => {
@@ -458,7 +495,7 @@ Deno.serve(async (req) => {
       return { ...base, kind: 'settlement', gross_minor: t.gross_minor, fees_minor: t.fees_minor, receives_minor: t.receives_minor, fees_unrated: t.fees_unrated, line_count: t.line_count };
     };
     // deno-lint-ignore no-explicit-any
-    const payouts = [...(own ?? []).map((p: any) => shape(p, false)), ...shared.map((p: any) => shape(p, true))]
+    const payouts = [...own.map((p: any) => shape(p, false)), ...shared.map((p: any) => shape(p, true))]
       .sort((a, b) => String(b.payout_date ?? '').localeCompare(String(a.payout_date ?? '')));
     return json({ ok: true, payouts, timezone: venueTz, environment: venueEnv });
   }
@@ -474,20 +511,22 @@ Deno.serve(async (req) => {
     // The same test and live fence as the payouts list.
     if (!payoutVisible(payout)) return json({ error: 'payout not found for this venue' }, 404);
 
-    // fee_minor and net_minor (Adyen's cost and net) are deliberately NOT read.
-    const { data: allLines, error: lErr } = await platformAdmin.from('adyen_payout_lines')
-      .select('id, payout_id, psp_reference, line_type, gross_minor, gratuity_minor, currency, location_id')
-      .eq('payout_id', payoutId).order('id', { ascending: true }).limit(2000);
-    if (lErr) return json({ error: `payout lines read failed: ${lErr.message}` }, 500);
-
     // Venue fence: own the payout, or hold lines inside it. A shared batch
-    // shows ONLY this venue's lines (no leaking another venue's transactions).
+    // shows ONLY this venue's lines (no leaking another venue's transactions),
+    // and the fence is in the QUERY: for a batch the venue does not own
+    // outright the database is asked for this venue's lines alone, so another
+    // venue's lines are never fetched. Paged on the line id (a shared batch
+    // holds thousands of lines and one request answers at most 1000).
+    // fee_minor and net_minor (Adyen's cost and net) are deliberately NOT read.
     const isOwner = payout.location_id === loc.id;
-    // deno-lint-ignore no-explicit-any
-    const hasLines = (allLines ?? []).some((l: any) => l.location_id === loc.id);
-    if (!isOwner && !hasLines) return json({ error: 'payout not found for this venue' }, 404);
-    // deno-lint-ignore no-explicit-any
-    const lines = isOwner ? (allLines ?? []) : (allLines ?? []).filter((l: any) => l.location_id === loc.id);
+    const DETAIL_LINE_COLS = 'id, payout_id, psp_reference, line_type, gross_minor, gratuity_minor, currency, location_id';
+    const lineRead = await readAllRows(() => {
+      const q = platformAdmin.from('adyen_payout_lines').select(DETAIL_LINE_COLS).eq('payout_id', payoutId);
+      return (isOwner ? q : q.eq('location_id', loc.id)).order('id', { ascending: true });
+    }, PAYOUT_LINES_CEILING, 'payout lines');
+    if (lineRead.error) return json({ error: lineRead.error }, 500);
+    const lines = lineRead.rows;
+    if (!isOwner && !lines.length) return json({ error: 'payout not found for this venue' }, 404);
 
     // Join to this venue's payments for card, reference, timing and its fee.
     // deno-lint-ignore no-explicit-any

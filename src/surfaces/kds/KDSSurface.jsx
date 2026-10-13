@@ -28,6 +28,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { supabase, isMock } from '../../lib/supabase';
+import { liveRow } from '../../lib/liveRow';
 import { updateDeviceHeartbeat } from '../../lib/db';
 import { playOrderChime } from '../../lib/orderChime';
 import { withTimeout } from '../../lib/withTimeout';
@@ -385,13 +386,19 @@ export function KDSSurface() {
     let subscribedOnce = false;
     const channel = supabase
       .channel(`kds-tickets-${locationId}${centreId ? `-${centreId}` : ''}`)
+      // 12 Oct 2026, WHY liveRow. A live change that carries an error has no record: the realtime
+      // library hands it over as new = {}, and the server sends it to every screen on the table.
+      // mapRow({}) is a blank pending ticket (no id, no lines) that cannot be bumped. Such a
+      // change is skipped in both handlers; the 20 s reload below re-reads the real tickets.
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
+        if (!liveRow(payload)) return;
         const t = withLocalTicksRef.current(mapRow(payload.new));
         if (centreId && t.centreId !== centreId) return;
         if (t.status !== 'pending' && t.status !== 'held') return;
         setRows(prev => prev.some(r => r.id === t.id) ? prev.map(r => r.id === t.id ? t : r) : [...prev, t]);
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
+        if (!liveRow(payload)) return;
         const t = withLocalTicksRef.current(mapRow(payload.new));
         if (payload.new.status === 'bumped') {
           // Unguarded on purpose: it also cleans up rows that leaked in before v5.5.913.
