@@ -8,7 +8,7 @@
 export const CHANGELOG = [
   {
     v: '5.11.52',
-    date: '12 Oct 2026',
+    date: '13 Oct 2026',
     items: [
       "Menu board and order screen TVs: a TV no longer drops to its pairing code because of one bad live update. At 03:09 on 12 Oct the live update service sent every TV a blank update of its own screen, the TV believed it, and 24 TVs made themselves a new screen. A TV now ignores a live update that is blank, carries an error or is for another screen, and checks properly instead.",
       "TVs: only Back Office can take a board down (Remove or Unpaired). A network drop, a failed read or a lost sign in keeps the board on screen, and a TV no longer goes blank after a network drop.",
