@@ -11,7 +11,13 @@
 //     (Huddersfield 28 Sep: Xero worked out 1.33 where the till booked 1.34);
 //   - one payment per clearing account, so the invoice shows Paid and each clearing account
 //     holds exactly the money waiting for its payout or banking;
-//   - refunds as a credit note SOS-<SITE>-<YYYYMMDD>-R with its refund payments.
+//   - refunds made that day as MINUS lines on the same invoice (13 Oct 2026, asked for by the
+//     venue's accountant: "much easier for us if the refunds were included in the original
+//     invoice", as Lightspeed did), each starting "Refund: ", with the till's own refunded VAT,
+//     and each clearing account paid its takings less its refunds. A day whose refunds cannot go
+//     on its invoice (see planXeroInvoiceDay) sends them the older way, as a credit note
+//     SOS-<SITE>-<YYYYMMDD>-R with its refund payments. A day is never mixed: what an earlier
+//     attempt sent decides (refundWayStarted).
 // Pure JS, no network: xero-sales sends what this plans (_shared/xeroInvoicePost.ts). The
 // card fee bill and the cash variance are hooks here, OFF in this slice.
 //
@@ -405,17 +411,35 @@ const rateText = (b) => (b.key === 'none' ? 'no tax rate' : b.mode === 'inclusiv
  *   mapping   xero_config.mapping (site, tracking, groups, discounts, clearing, ...)
  *   detail    xero_config.detail (salesTaxRates, site.contactId, site.tracking)
  *   site      { name, code }
- * Returns { invoice, payments, creditNote, refundPayments, vatTie, warnings, blocked,
- * blockedRates, notReady, hooks, totals }. invoice and creditNote carry { number, reference,
- * contactName, total, lineAmountTypes, lines, payload }; payments { key, kinds, account,
- * amount, reference, payload }. Money in the plan is minor units, payloads are Xero's (major).
+ *   started   how an earlier attempt sent, or started to send, this day's refunds, from the log
+ *             row the run holds (refundWayStarted): null (nothing sent, free to decide),
+ *             'lines', 'credit_note', or 'refused' (Xero refused the invoice with refund lines)
+ * Returns { invoice, payments, creditNote, refundPayments, refundWay, refundWayReason, vatTie,
+ * warnings, blocked, blockedRates, notReady, hooks, totals }. invoice and creditNote carry
+ * { number, reference, contactName, total, lineAmountTypes, lines, payload }; payments { key,
+ * kinds, account, amount, reference, payload }. Money in the plan is minor units, payloads are
+ * Xero's (major).
+ *
+ * The day's refunds go ONE way (13 Oct 2026), refundWay:
+ *   'lines'        minus lines on the invoice (each marked refund: true, described "Refund: ..."),
+ *                  the invoice total is sales less refunds, each clearing account is paid its
+ *                  takings less its refunds (a payment of zero is left out), no credit note.
+ *   'credit_note'  the older way, exactly as before: the invoice for the sales, a credit note
+ *                  for the refunds and its refund payments. Used when the refunds cannot go on
+ *                  the invoice (Xero takes minus lines, but not an invoice of zero or less, and
+ *                  not a minus payment): no sales that day, refunds as large as the sales, more
+ *                  refunded from a clearing account than it took, or more VAT refunded than
+ *                  charged; and for a day an earlier attempt started that way. The plan then
+ *                  carries the warning 'refunds_as_credit_note' with the reason.
+ *   null           the day has no refunds.
+ * totals and vatTie keep both sides as positive figures whichever way is used.
  */
 /**
  * @param {any} grouped
- * @param {{ mapping?: any, detail?: any, site?: { name?: string, code?: string }, date?: string, currency?: string | null, fees?: any, cash?: any }} [opts]
+ * @param {{ mapping?: any, detail?: any, site?: { name?: string, code?: string }, date?: string, currency?: string | null, fees?: any, cash?: any, started?: null | 'lines' | 'credit_note' | 'refused' }} [opts]
  * @returns {any}
  */
-export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = {}, date, currency = null, fees = null, cash = null } = {}) {
+export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = {}, date, currency = null, fees = null, cash = null, started = null } = {}) {
   const m = mapping || {};
   const summary = grouped?.summary || {};
   const groups = grouped?.groups || {};
@@ -482,10 +506,12 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
     return a;
   };
   const vatLarge = [];
+  const refundVatLarge = [];
   const zeroWithVat = new Set();
 
   // Lines for one side (sales or refunds): goods per group and rate, then discount lines.
-  const sideLines = (side, totals, credits, withDiscounts, vatTie) => {
+  // `large` takes this side's "VAT differs from what Xero would work out" notes.
+  const sideLines = (side, totals, credits, withDiscounts, vatTie, large) => {
     const lines = [];
     const rates = new Set([...Object.keys(totalsByRate(totals)), ...Object.keys(totalsByRate(credits)), ...Object.keys(side || {})]);
     const keys = [...rates].sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9) || a.localeCompare(b));
@@ -536,7 +562,7 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
         const calc = exclusive ? Math.round(((amount - t) * pct) / 100) : inclusiveTaxMinor(amount, pct);
         if (!noVat && t && ZERO_TYPES.has(taxType)) zeroWithVat.add(b.name || r);
         // Added-on tax sits wholly on the goods lines, so it is compared per rate below, not per line.
-        if (!noVat && !exclusive && far(t, calc)) vatLarge.push(`${description}: ServOS ${major(t).toFixed(2)}, Xero would work out ${major(calc).toFixed(2)}`);
+        if (!noVat && !exclusive && far(t, calc)) large.push(`${description}: ServOS ${major(t).toFixed(2)}, Xero would work out ${major(calc).toFixed(2)}`);
         invoiceVat += t; xeroCalc += calc;
         lines.push({ kind, group, rateKey: r, description, account, taxType, amount, tax: t, xeroCalc: calc });
       };
@@ -546,7 +572,7 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
         if (!amt) return;
         push('discount', d, `${DISCOUNT_GROUP_NAMES[d] || d} ${label}`.trim(), discountAccount(d), -amt, -DT[d]);
       });
-      if (!noVat && exclusive && far(invoiceVat, xeroCalc)) vatLarge.push(`${b.name || r}: ServOS ${major(invoiceVat).toFixed(2)}, Xero would work out ${major(xeroCalc).toFixed(2)}`);
+      if (!noVat && exclusive && far(invoiceVat, xeroCalc)) large.push(`${b.name || r}: ServOS ${major(invoiceVat).toFixed(2)}, Xero would work out ${major(xeroCalc).toFixed(2)}`);
       if (gift && b.pct > 0) warnings.push({ code: 'gift_card_vat_charged', message: `Gift cards were sold at ${b.name || r}, so the till charged VAT on them. They post with No VAT; give gift card items a No VAT rate in ServOS.` });
       vatTie.push({ key: r, label: b.name || r, pct: b.pct ?? null, taxType, tillVat: tillTax, invoiceVat, xeroCalc });
     }
@@ -588,8 +614,8 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   });
   const contact = detail?.site?.contactId ? { ContactID: detail.site.contactId } : { Name: cName };
 
-  // Payments per clearing account, from the day's money rows.
-  const paymentsFor = (rows, docNumber, refund) => {
+  // The day's money per clearing account, from its money rows: Map(account -> { account, kinds, amount }).
+  const moneyByAccount = (rows, refund) => {
     const byAcct = new Map();
     for (const row of rows || []) {
       if (!MONEY_KINDS.has(row.kind) || !row.gross) continue;
@@ -604,9 +630,13 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
       p.amount += row.gross;
       byAcct.set(c.account, p);
     }
+    return byAcct;
+  };
+  // One payment per clearing account in the list, on the invoice (or the refund of the credit note).
+  const paymentsOf = (list, docNumber, refund) => {
     const out = [];
     const usedRefs = new Set();
-    for (const p of byAcct.values()) {
+    for (const p of list) {
       let ref = `${docNumber} ${p.kinds.join(' and ')}`;
       if (usedRefs.has(ref)) ref = `${ref} ${shortHash(p.account).slice(0, 4)}`;
       usedRefs.add(ref);
@@ -620,53 +650,108 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   };
 
   const vatTie = [];
-  // ── the invoice
+  const refundTie = [];
+  const sum = (list, f) => list.reduce((s, x) => s + f(x), 0);
+  // ── both sides of the day, as lines (refunds as positive figures, as the credit note carries them)
   const st = summary.sales?.totals || { gross: 0, tip: 0, service: 0 };
   const salesLines = [
-    ...sideLines(groups.sales, st, summary.sales?.credits, true, vatTie),
+    ...sideLines(groups.sales, st, summary.sales?.credits, true, vatTie, vatLarge),
   ];
   const giftSold = Object.values(groups.sales || {}).reduce((s, b) => s + (b.gift || 0), 0);
   if (giftSold) salesLines.push(giftLine(giftSold, 'Gift cards sold'));
   salesLines.push(...extras(st, false));
+  const rt = summary.refunds?.totals || { gross: 0, tip: 0, service: 0 };
+  const refundLines = [...sideLines(groups.refunds, rt, summary.refunds?.credits, false, refundTie, refundVatLarge)];
+  const giftBack = Object.values(groups.refunds || {}).reduce((s, b) => s + (b.gift || 0), 0);
+  if (giftBack) refundLines.push(giftLine(giftBack, 'Gift cards refunded'));
+  refundLines.push(...extras(rt, true));
+  const hasSales = salesLines.some((l) => l.amount);
+  const hasRefunds = refundLines.some((l) => l.amount);
+  const salesTotal = sum(salesLines, (l) => l.amount);
+  const refundTotal = sum(refundLines, (l) => l.amount);
+  const salesMoney = hasSales ? moneyByAccount(summary.sales?.byMethod, false) : new Map();
+  const refundMoney = hasRefunds ? moneyByAccount(summary.refunds?.byMethod, true) : new Map();
+
+  // ── which way the day's refunds go: minus lines on the invoice, or the credit note
+  // Xero takes minus line items, but not an invoice of zero or less, and a payment must be above
+  // zero. So the refunds go on the invoice only when what is left is a real invoice: above zero,
+  // every clearing account took at least what it refunded (an account with refunds and no takings
+  // is short too), and the VAT left is not below zero. Otherwise the whole day goes the older way.
+  const short = [...refundMoney.values()].filter((r) => r.amount > (salesMoney.get(r.account)?.amount || 0));
+  let why = null;
+  if (hasRefunds) {
+    if (!hasSales) why = 'no_sales';
+    else if (salesTotal - refundTotal <= 0) why = 'total_not_positive';
+    else if (short.length) why = 'account_short';
+    else if (sum(salesLines, (l) => l.tax) - sum(refundLines, (l) => l.tax) < 0) why = 'vat_negative';
+  }
+  // A day is never mixed: what an earlier attempt started stands, whatever the day looks like now.
+  const forced = started === 'lines' ? 'lines' : (started === 'credit_note' || started === 'refused') ? 'credit_note' : null;
+  const refundWay = !hasRefunds ? null : forced || (why ? 'credit_note' : 'lines');
+  const refundWayReason = !hasRefunds ? null : started === 'refused' ? 'xero_refused'
+    : forced === 'credit_note' ? 'started_credit_note' : forced === 'lines' ? 'started_lines' : why;
+  const asLines = refundWay === 'lines';
+  // A refund line on the invoice: the credit note's line with the sign turned (`|| 0`: never -0).
+  // A loyalty or promo credit put back is a minus line on the credit note, so a plus line here.
+  const REFUND_NAME = { gift: 'Gift cards', tip: 'Tips', service: 'Service charge' };
+  const minus = (l) => ({ ...l, refund: true, description: `Refund: ${REFUND_NAME[l.kind] || l.description}`,
+    amount: -l.amount || 0, tax: -l.tax || 0, xeroCalc: -l.xeroCalc || 0 });
+  // Started with its refunds on the invoice, and they no longer fit: never switched to a credit
+  // note (part of the day may be in Xero at the net figure), so the day stops with plain words.
+  if (asLines && why) blockOnce({ code: 'refund_lines_changed', message: 'This day was started in Xero with its refunds on the invoice, and the day has changed since, so the refunds no longer fit on it. Finish the day in Xero by hand.' });
+
+  // ── the invoice
   let invoice = null, payments = [];
-  if (salesLines.some((l) => l.amount)) {
-    const total = salesLines.reduce((s, l) => s + l.amount, 0);
-    if (total !== (st.gross || 0)) blockOnce({ code: 'totals_mismatch', message: `The invoice lines come to ${major(total).toFixed(2)} but the day's takings are ${major(st.gross || 0).toFixed(2)}. Nothing was posted.` });
-    if (total < 0) blockOnce({ code: 'negative_invoice', message: 'The day comes to less than nothing after discounts, so it cannot be an invoice.' });
-    payments = paymentsFor(summary.sales?.byMethod, number, false);
+  if (hasSales) {
+    if (salesTotal !== (st.gross || 0)) blockOnce({ code: 'totals_mismatch', message: `The invoice lines come to ${major(salesTotal).toFixed(2)} but the day's takings are ${major(st.gross || 0).toFixed(2)}. Nothing was posted.` });
+    if (salesTotal < 0) blockOnce({ code: 'negative_invoice', message: 'The day comes to less than nothing after discounts, so it cannot be an invoice.' });
+    if (asLines && refundTotal !== (rt.gross || 0)) blockOnce({ code: 'refund_totals_mismatch', message: `The refund lines come to ${major(refundTotal).toFixed(2)} but the day's refunds are ${major(rt.gross || 0).toFixed(2)}. Nothing was posted.` });
+    const lines = asLines ? [...salesLines, ...refundLines.map(minus)] : salesLines;
+    const total = asLines ? salesTotal - refundTotal : salesTotal;
+    // One payment per clearing account: its takings, less its refunds when they are on the
+    // invoice. Every reference is worked out over the full list first (so it is the one the
+    // older way gives), then a payment that nets to nothing is left out.
+    const money = [...salesMoney.values()].map((p) => (asLines ? { ...p, amount: p.amount - (refundMoney.get(p.account)?.amount || 0) } : p));
+    payments = paymentsOf(money, number, false).filter((p) => !asLines || p.amount > 0);
     const paid = payments.reduce((s, p) => s + p.amount, 0);
-    if (!blocked.some((b) => b.code === 'clearing_unmapped') && paid !== total) blockOnce({ code: 'payments_mismatch', message: `The payments come to ${major(paid).toFixed(2)} but the invoice to ${major(total).toFixed(2)}.` });
+    if (!blocked.some((b) => b.code === 'clearing_unmapped' || b.code === 'refund_lines_changed') && paid !== total) blockOnce({ code: 'payments_mismatch', message: `The payments come to ${major(paid).toFixed(2)} but the invoice to ${major(total).toFixed(2)}.` });
     invoice = {
-      number, reference, contactName: cName, total, lineAmountTypes, lines: salesLines,
+      number, reference, contactName: cName, total, lineAmountTypes, lines,
       payload: {
         Type: 'ACCREC', Contact: contact, InvoiceNumber: number, Reference: reference, Date: day, DueDate: day,
         Status: 'AUTHORISED', LineAmountTypes: lineAmountTypes, ...(currency ? { CurrencyCode: currency } : {}),
-        LineItems: salesLines.map(payloadLine),
+        LineItems: lines.map(payloadLine),
       },
     };
   }
 
-  // ── the credit note for the day's refunds
-  const rt = summary.refunds?.totals || { gross: 0, tip: 0, service: 0 };
-  const refundTie = [];
-  const refundLines = [...sideLines(groups.refunds, rt, summary.refunds?.credits, false, refundTie)];
-  const giftBack = Object.values(groups.refunds || {}).reduce((s, b) => s + (b.gift || 0), 0);
-  if (giftBack) refundLines.push(giftLine(giftBack, 'Gift cards refunded'));
-  refundLines.push(...extras(rt, true));
+  // ── the credit note for the day's refunds, when they do not go on the invoice
   let creditNote = null, refundPayments = [];
-  if (refundLines.some((l) => l.amount)) {
-    const total = refundLines.reduce((s, l) => s + l.amount, 0);
-    if (total !== (rt.gross || 0)) blockOnce({ code: 'refund_totals_mismatch', message: `The credit note lines come to ${major(total).toFixed(2)} but the day's refunds are ${major(rt.gross || 0).toFixed(2)}. Nothing was posted.` });
-    refundPayments = paymentsFor(summary.refunds?.byMethod, cnNumber, true);
+  if (hasRefunds && !asLines) {
+    if (refundTotal !== (rt.gross || 0)) blockOnce({ code: 'refund_totals_mismatch', message: `The credit note lines come to ${major(refundTotal).toFixed(2)} but the day's refunds are ${major(rt.gross || 0).toFixed(2)}. Nothing was posted.` });
+    refundPayments = paymentsOf([...refundMoney.values()], cnNumber, true);
     creditNote = {
-      number: cnNumber, reference: `${reference} refunds`, contactName: cName, total, lineAmountTypes, lines: refundLines,
+      number: cnNumber, reference: `${reference} refunds`, contactName: cName, total: refundTotal, lineAmountTypes, lines: refundLines,
       payload: {
         Type: 'ACCRECCREDIT', Contact: contact, CreditNoteNumber: cnNumber, Reference: `${reference} refunds`, Date: day,
         Status: 'AUTHORISED', LineAmountTypes: lineAmountTypes, ...(currency ? { CurrencyCode: currency } : {}),
         LineItems: refundLines.map(payloadLine),
       },
     };
+    // Said plainly on the day: its refunds went as a credit note, and why.
+    const names = short.map((r) => r.kinds.join(' and ')).join(', ');
+    const WHY = {
+      no_sales: 'This day has refunds and no sales, so there is no invoice to put them on. The refunds go to Xero as a credit note.',
+      total_not_positive: 'The refunds on this day come to as much as its sales or more, and Xero does not take an invoice of zero or less. The refunds go to Xero as a credit note.',
+      account_short: `More was refunded by ${names} on this day than was taken by ${names}, and Xero does not take a minus payment. The refunds go to Xero as a credit note.`,
+      vat_negative: `The ${taxWord} on the refunds of this day is more than the ${taxWord} on its sales. The refunds go to Xero as a credit note.`,
+      started_credit_note: 'This day was started in Xero with its refunds as a credit note, so it stays that way.',
+      xero_refused: 'Xero did not take this day with its refunds on the invoice, so the refunds go to Xero as a credit note.',
+    };
+    warnings.push({ code: 'refunds_as_credit_note', reason: refundWayReason, message: WHY[refundWayReason] });
   }
+  // The "VAT differs" notes of the refund side, named as the lines they are on.
+  if (asLines) vatLarge.push(...refundVatLarge.map((x) => `Refund: ${x}`)); else vatLarge.push(...refundVatLarge);
 
   // ── warnings and blocks
   // 8 Oct 2026 (the VAT audit): a day holding a sale with no VAT recorded is never posted (it
@@ -708,6 +793,7 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   return {
     model: 'sales_invoice',
     number, creditNoteNumber: cnNumber, reference, contactName: cName,
+    refundWay, refundWayReason,
     invoice, payments, creditNote, refundPayments,
     vatTie: [...vatTie.map((v) => ({ side: 'sales', ...v })), ...refundTie.map((v) => ({ side: 'refunds', ...v }))],
     warnings, blocked, blockedRates: blockedList, notReady, hooks,
@@ -749,7 +835,11 @@ export function seenFromGrouped(grouped) {
   };
 }
 
-/** The ordered postings of a plan: [{ key, type, doc }] with type 'invoice' | 'payment' | 'credit_note' | 'refund'. */
+/**
+ * The ordered postings of a plan: [{ key, type, doc }] with type 'invoice' | 'payment' | 'credit_note' | 'refund'.
+ * A day whose refunds are minus lines on the invoice has no credit note, so its steps are the
+ * invoice and its payments only (INVOICE, PAY:<account>).
+ */
 export function planSteps(plan) {
   const out = [];
   if (plan?.invoice) out.push({ key: 'INVOICE', type: 'invoice', doc: plan.invoice });
@@ -809,16 +899,123 @@ export function stepIdempotencyKey(locationId, date, step) {
 /** The plan in major units, for the Back Office (Check figures and the result of a post). */
 export function planView(plan) {
   if (!plan) return null;
-  const line = (l) => ({ kind: l.kind, description: l.description, account: l.account, taxType: l.taxType, amount: major(l.amount), vat: major(l.tax), xeroVat: major(l.xeroCalc) });
+  const line = (l) => ({ kind: l.kind, refund: !!l.refund, description: l.description, account: l.account, taxType: l.taxType, amount: major(l.amount), vat: major(l.tax), xeroVat: major(l.xeroCalc) });
   const doc = (d) => (d ? { number: d.number, reference: d.reference, contactName: d.contactName, total: major(d.total), lineAmountTypes: d.lineAmountTypes, lines: d.lines.map(line), payload: d.payload } : null);
   const pay = (p) => ({ key: p.key, kinds: p.kinds, account: p.account, amount: major(p.amount), reference: p.reference, payload: p.payload });
   const tracking = plan.invoice?.payload?.LineItems?.[0]?.Tracking || plan.creditNote?.payload?.LineItems?.[0]?.Tracking || null;
   return {
     model: 'sales_invoice', number: plan.number, creditNoteNumber: plan.creditNoteNumber, reference: plan.reference, contactName: plan.contactName,
+    refundWay: plan.refundWay || null, refundWayReason: plan.refundWayReason || null,
     tracking: tracking ? tracking.map((t) => `${t.Name}: ${t.Option}`).join(', ') : null,
     invoice: doc(plan.invoice), payments: (plan.payments || []).map(pay),
     creditNote: doc(plan.creditNote), refundPayments: (plan.refundPayments || []).map(pay),
     vatTie: (plan.vatTie || []).map((v) => ({ ...v, tillVat: major(v.tillVat), invoiceVat: major(v.invoiceVat), xeroCalc: major(v.xeroCalc) })),
     totals: { sales: major(plan.totals?.sales || 0), refunds: major(plan.totals?.refunds || 0), vat: major(plan.totals?.vat || 0) },
   };
+}
+
+// ── how a day's refunds were sent (13 Oct 2026) ──────────────────────────────
+//
+// A day is never mixed. The planner is pure and never sees the log row, so the caller reads the
+// way from the row its run HOLDS (xero_sync_log.detail) and passes it in as `started`:
+//   detail.postings            INVOICE, PAY:<account>, CREDIT, REFUND:<account>, each 'sending' or 'posted'
+//   detail.refundWay           'lines' | 'credit_note' | null, saved BEFORE anything is sent
+//                              (refundWayToRecord). Rows written before 13 Oct 2026 have none.
+//   detail.refundLinesRefused  { at, message }, only after Xero refused an invoice with refund lines
+// Every day sent before 13 Oct 2026 has an invoice for the gross figure and no marker, so it
+// reads as the credit note way and finishes exactly as it was started.
+
+const INV_KEY = (k) => k === 'INVOICE' || /^PAY:/.test(k);
+const CN_KEY = (k) => k === 'CREDIT' || /^REFUND:/.test(k);
+
+/**
+ * How an earlier attempt sent, or started to send, the day's refunds: null | 'lines' | 'credit_note' | 'refused'.
+ *   null           nothing of the sales invoice was sent (no row, a blocked or failed attempt that
+ *                  sent nothing, older bank transaction keys only, a replace day after its old
+ *                  entries were removed): the day is free to decide. A left over marker is ignored.
+ *   'credit_note'  a CREDIT or REFUND: record exists, or an INVOICE or PAY: record with no 'lines'
+ *                  marker (the invoice went for the gross figure).
+ *   'lines'        an INVOICE or PAY: record with the 'lines' marker.
+ *   'refused'      the 'lines' marker, Xero's refusal recorded, and nothing but the invoice still
+ *                  'sending': the day goes the credit note way.
+ */
+/**
+ * @param {any} detail
+ * @returns {null | 'lines' | 'credit_note' | 'refused'}
+ */
+export function refundWayStarted(detail) {
+  const postings = detail?.postings && typeof detail.postings === 'object' ? detail.postings : {};
+  const keys = Object.keys(postings).filter((k) => postings[k] && typeof postings[k] === 'object' && (INV_KEY(k) || CN_KEY(k)));
+  if (!keys.length) return null;
+  if (keys.some(CN_KEY)) return 'credit_note';
+  if (detail.refundWay !== 'lines') return 'credit_note';
+  if (detail.refundLinesRefused && keys.length === 1 && keys[0] === 'INVOICE' && postings.INVOICE.status === 'sending') return 'refused';
+  return 'lines';
+}
+
+/** The value for detail.refundWay, saved before anything is sent. What an earlier attempt started always stands. */
+export const refundWayToRecord = (started, plan) => (started === 'refused' ? 'credit_note' : started || plan?.refundWay || null);
+
+/** Xero refused the invoice of a day whose refunds were minus lines (HTTP 400), and nothing of the day is in Xero. */
+export function refundLinesRefused(plan, postings, httpStatus) {
+  if (plan?.refundWay !== 'lines' || Number(httpStatus) !== 400) return false;
+  const p = postings && typeof postings === 'object' ? postings : {};
+  const keys = Object.keys(p).filter((k) => p[k] && typeof p[k] === 'object' && (INV_KEY(k) || CN_KEY(k)));
+  return keys.length === 1 && keys[0] === 'INVOICE' && p.INVOICE.status === 'sending';
+}
+
+/**
+ * The numbers a day would use in Xero. The credit note number is still checked on any day with
+ * refunds: a day whose refund lines Xero refuses falls back to the credit note.
+ */
+export const dayNumbers = (plan) => ({
+  invoice: plan?.invoice ? plan.number : null,
+  creditNote: plan?.creditNote || plan?.refundWay === 'lines' ? plan.creditNoteNumber : null,
+});
+
+/**
+ * A posted day against the day as it comes to now: one sentence per document whose total
+ * differs. `plan` must be made the way the day was posted (started from its own row), or every
+ * older day with refunds would read as changed.
+ */
+/**
+ * @param {any} plan
+ * @param {any[] | null | undefined} documents
+ * @returns {string[]}
+ */
+export function postedDayChanges(plan, documents) {
+  const docs = Array.isArray(documents) ? documents : [];
+  const changed = [];
+  const was = (t) => docs.find((d) => d?.type === t);
+  for (const [t, doc] of [['invoice', plan?.invoice], ['credit_note', plan?.creditNote]]) {
+    const posted = was(t);
+    const now = doc ? doc.total / 100 : 0;
+    const then = posted ? Number(posted.total) : 0;
+    if (Math.abs(now - then) > 0.005) changed.push(`${posted?.number || doc?.number}: posted ${then.toFixed(2)}, now ${now.toFixed(2)}`);
+  }
+  return changed;
+}
+
+/**
+ * The documents of a history row for the Postings tab, with Open in Xero links: the documents
+ * recorded when the day finished, else the lines of an older bank transactions day, else what
+ * the postings say is in Xero. A day posted with a credit note keeps showing it.
+ */
+/**
+ * @param {any} row
+ * @param {string | null} shortCode
+ * @returns {any[]}
+ */
+export function historyDocs(row, shortCode) {
+  if (Array.isArray(row.documents) && row.documents.length) {
+    return row.documents.map((d) => ({ type: d.type, number: d.number, reference: d.reference, total: d.total, xeroId: d.xeroId, link: d.link || (d.type === 'invoice' || d.type === 'credit_note' ? xeroDocLink(d.type, d.xeroId, shortCode) : null) }));
+  }
+  if (Array.isArray(row.lines) && row.lines.length) {
+    return row.lines.filter((l) => l.bankTransactionID).map((l) => ({ type: 'bank', number: l.reference, reference: l.reference, total: l.total, xeroId: l.bankTransactionID, direction: l.direction, link: l.link || xeroDocLink('bank', l.bankTransactionID, shortCode) }));
+  }
+  const postings = row.postings && typeof row.postings === 'object' ? row.postings : {};
+  return Object.entries(postings).filter(([, p]) => p?.status === 'posted' && p.id).map(([k, p]) => {
+    const type = p.type || (k.startsWith('RECEIVE') || k.startsWith('SPEND') ? 'bank' : k === 'INVOICE' ? 'invoice' : k === 'CREDIT' ? 'credit_note' : 'payment');
+    return { type, number: p.number || p.reference, reference: p.reference, total: p.total, xeroId: p.id, direction: k.startsWith('SPEND') ? 'refunds' : 'takings', link: type === 'invoice' || type === 'credit_note' || type === 'bank' ? xeroDocLink(type, p.id, shortCode) : null };
+  });
 }
