@@ -324,16 +324,16 @@ test('the stamp block, run as written: whatever fails inside it, nothing escapes
   assert.deepEqual(junk.warned, []);
 });
 
-test('the notice block, run as written: one delayed toast, one info event, and a failure there never escapes', () => {
+test('the notice block, run as written: one toast, one info event, and a failure there never escapes', () => {
   const from = ROUTE.indexOf('      try {\n        if (routeWords && Object.keys(byCentre).length > 0) {');
   assert.ok(from > 0);
   const endMark = "} catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }";
   const block = ROUTE.slice(from, ROUTE.indexOf(endMark, from) + endMark.length);
-  const names = ['routeWords', 'byCentre', 'typeFallback', 'useStore', 'logActivity', 'locId', 'order', 'routeStamp', 'setTimeout', 'console'];
+  const names = ['routeWords', 'byCentre', 'typeFallback', 'toastOnScreen', 'useStore', 'logActivity', 'locId', 'order', 'routeStamp', 'setTimeout', 'console'];
   const run = (over = {}) => {
     const timers = []; const toasts = []; const events = []; const warned = [];
     const env = {
-      routeWords: { toast: 'T', title: 'Ti', body: 'B' }, byCentre: { food: [{}] }, typeFallback: false,
+      routeWords: { toast: 'T', title: 'Ti', body: 'B' }, byCentre: { food: [{}] }, typeFallback: false, toastOnScreen: false,
       useStore: { getState: () => ({ showToast: (...a) => toasts.push(a) }) },
       logActivity: (loc, ev) => { events.push([loc, ev]); return Promise.reject(new Error('offline')); },
       locId: 'loc-A', order: { ref: 'QR-1' }, routeStamp: { deviceName: 'POS' },
@@ -343,12 +343,18 @@ test('the notice block, run as written: one delayed toast, one info event, and a
     new Function(...names, block)(...names.map((n) => env[n]));
     return { timers, toasts, events, warned };
   };
+  // v5.11.52 (the quiet till): the routed toast it used to wait behind is gone, so with nothing
+  // on the till and no order type warning the notice is shown at once.
   const a = run();
-  assert.deepEqual(a.timers, [3200]);
+  assert.deepEqual(a.timers, [0]);
   assert.deepEqual(a.toasts, [['T', 'warning', 9000]]);
   assert.deepEqual(a.events, [['loc-A', { kind: 'ops', severity: 'info', title: 'Ti', body: 'B', refType: 'kitchen_route', refId: 'QR-1', actorName: 'POS' }]]);
-  // Behind the order type warning when there is one.
-  assert.deepEqual(run({ typeFallback: true }).timers, [6200]);
+  // Behind the order type warning when there is one (that warning is shown at once, for 2800 ms).
+  assert.deepEqual(run({ typeFallback: true }).timers, [3000]);
+  // Behind a message that was on the till (did not print, did NOT reach the kitchen screen).
+  assert.deepEqual(run({ toastOnScreen: true }).timers, [3200]);
+  // Behind both: the message, then the order type warning, then this. The timings before v5.11.52.
+  assert.deepEqual(run({ toastOnScreen: true, typeFallback: true }).timers, [6200]);
   // Nothing to say, or nothing was routed: no toast, no event.
   for (const over of [{ routeWords: null }, { byCentre: {} }]) {
     const q = run(over);
@@ -381,11 +387,11 @@ test('notices never block: raised last, after the status write, in their own try
   assert.match(line, /^\s*logActivity\(locId, \{ kind: 'ops', severity: 'info', title: routeWords\.title, body: routeWords\.body, refType: 'kitchen_route', refId: order\.ref, actorName: routeStamp\?\.deviceName \|\| null \}\)\.catch\(\(\) => \{\}\);$/);
   assert.ok(!ROUTE.includes('await logActivity'));
   const tail = ROUTE.slice(statusWrite);
-  assert.match(tail, /try \{\n\s*if \(routeWords && Object\.keys\(byCentre\)\.length > 0\) \{\n\s*setTimeout\(\(\) => useStore\.getState\(\)\.showToast\?\.\(routeWords\.toast, 'warning', 9000\), typeFallback \? 6200 : 3200\);\n\s*logActivity\(/);
+  assert.match(tail, /try \{\n\s*if \(routeWords && Object\.keys\(byCentre\)\.length > 0\) \{\n\s*setTimeout\(\(\) => useStore\.getState\(\)\.showToast\?\.\(routeWords\.toast, 'warning', 9000\), \(toastOnScreen \? 3200 : 0\) \+ \(typeFallback \? 3000 : 0\)\);\n\s*logActivity\(/);
   assert.ok(tail.includes("} catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }"));
   // The existing delivery app toast is still there, once, and is not reworded.
   assert.equal(count(ROUTE, 'item(s) not in our menu'), 1);
-  assert.equal(count(ROUTE, "if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning');"), 1);
+  assert.equal(count(ROUTE, "if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning', toastOnScreen ? 3000 : 0);"), 1);
 });
 
 test('person triggers: Accept, Send to kitchen again and a catering order opened early route now, stamped manual, with no gate', () => {

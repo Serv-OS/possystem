@@ -20,6 +20,7 @@ import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
 import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND, kioskAccent, kioskBackground, kioskBackgroundTooDark, OLD_DEFAULT_ACCENT, OLD_DEFAULT_BG } from '../../lib/kioskTheme';
 import KioskTipping from './KioskTipping';
 import MenuTranslations from './MenuTranslations';
+import { terminalProcessor } from '../../lib/payments/terminalProcessor.js';
 
 // v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
 // designs. The stored values are unchanged (lib/kioskFlow.js kioskStartModel explains each).
@@ -883,7 +884,7 @@ function KioskCardTerminalSection({ kioskId, locationId }) {
           {terminals.map(t => {
             const mine = t.bound_pos_device_id === kioskId;
             const other = t.bound_pos_device_id && !mine;
-            const linked = !!t.ryft_terminal_id;
+            const linked = !!terminalProcessor(t);   // Adyen or Ryft (13 Oct 2026: it tested Ryft only)
             return (
               <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: 'var(--bg2)', border: '1.5px solid ' + (mine ? 'var(--acc)' : 'var(--bdr)'), borderRadius: 8 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
