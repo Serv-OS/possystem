@@ -14,6 +14,9 @@
 // cannot go on its invoice, or one an earlier attempt started that way. Nothing here decides
 // which: it sends the steps of the plan it is given (planSteps), and the plan is made the way
 // the log row says the day was started (refundWayStarted in _shared/xeroInvoicePlan.js).
+// 13 Oct 2026, card fees: a site that switched them on has one more line on its invoice (Card
+// fees) and its card payment is net of it. Nothing here knows: the invoice and the payments are
+// sent at the totals and amounts of the plan, as always.
 // Every step is recorded 'sending' WITH the exact payload before the call and 'posted' with
 // Xero's id after it, so the Postings history shows exactly what was sent. Xero keeps sales
 // invoice numbers unique, so a second SOS-LEEDS-20260929 is refused; that answer is handled as
@@ -68,14 +71,19 @@ export class NotReadyError extends Error {
   }
 }
 
-/** The business day read with its items and grouped by sales group and rate. */
+/**
+ * The business day read with its items and grouped by sales group and rate. `rows` are the
+ * closed_checks rows it was built from ({ sale, refund }): the card fees of the day are matched
+ * to their card payments from them (13 Oct 2026, _shared/xeroCardFees.ts), because the grouped
+ * day sums each kind of money and keeps no payment reference.
+ */
 export async function loadInvoiceDay(ops: any, platform: any, locationId: string, date: string, venue: any, opts: { fromMs?: number | null; mapping?: any } = {}) {
   const loaded: any = await loadAccountingDay(ops, platform, locationId, date, venue, { fromMs: opts.fromMs ?? null, withItems: true, keepRows: true });
   const rows = loaded.rows || { sale: [], refund: [] };
   const categories = await venueCategories(ops, locationId, [...rows.sale, ...rows.refund]);
   const resolver = makeGroupResolver(opts.mapping || {}, categories);
   const grouped = buildGroupedDay({ day: loaded.day, saleRows: rows.sale, refundRows: rows.refund, venue, taxRates: loaded.taxRates, resolver });
-  return { grouped, taxRates: loaded.taxRates, day: loaded.day, categories };
+  return { grouped, taxRates: loaded.taxRates, day: loaded.day, categories, rows };
 }
 
 async function ensureSiteContact(token: string, tenantId: string, id: string | null, name: string): Promise<string> {

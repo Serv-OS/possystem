@@ -18,13 +18,18 @@
 // invoice is in Xero (historyRefundNote in xeroUi.js, where it is tested). A day posted with a
 // credit note (before this, or one whose refunds could not go on its invoice) keeps showing its
 // credit note and refund payment.
+// 13 Oct 2026, card fees: a day held back for a card fee that has not arrived reads "Waiting for
+// card fees" with the words of the wait, and while it waits it shows no red "not in Xero" line
+// and no Push button (showsGap: the nightly run tries it again each hour, and a push would only
+// repeat the wait; once the wait is over the button is back); an opened day planned with card
+// fees says whether its invoice carries the Card fees line (historyFeeNote).
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { xeroHistory, xeroHistoryDetail, xeroGaps, xeroSyncSales } from '../../../lib/xero';
 import { money } from '../../../lib/currency';
 import { offerForRow } from '../../../../supabase/functions/_shared/xeroReplacePlan.js';
 import { markGaps } from '../../../../supabase/functions/_shared/xeroGaps.js';
-import { S, STATUS_LABEL, STATUS_COLOUR, historyRefundNote } from './xeroUi';
+import { S, STATUS_LABEL, STATUS_COLOUR, historyRefundNote, historyFeeNote, showsGap } from './xeroUi';
 import { Bullets } from './controls';
 import ReplaceDay from './ReplaceDay';
 
@@ -34,16 +39,21 @@ function Detail({ d, note }) {
   if (!d) return <div style={S.note}>Loading…</div>;
   const postings = Object.entries(d.postings || {});
   const refundNote = historyRefundNote(d);
+  const feeNote = historyFeeNote(d);
+  // A day waiting for a card fee: its own words once, as a note, not as an error.
+  const waiting = d.status === 'fees_wait';
   return (
     <div style={{ padding: '10px 4px' }}>
       {note && <div style={{ ...S.info, maxWidth: 'none' }}>{note}</div>}
-      {d.error && <div style={{ ...S.banner(false), maxWidth: 'none' }}>{d.error}</div>}
-      {(d.notReady || []).length > 0 && (
+      {waiting && <div style={{ ...S.info, maxWidth: 'none' }}>{(d.notReady || []).map((n) => n.message).join(' ')}</div>}
+      {!waiting && d.error && <div style={{ ...S.banner(false), maxWidth: 'none' }}>{d.error}</div>}
+      {!waiting && (d.notReady || []).length > 0 && (
         <div style={{ ...S.banner(false), maxWidth: 'none' }}>
           Not ready: {(d.notReady || []).map((n) => n.message).join(' ')}
         </div>
       )}
       {refundNote && <div style={{ ...S.note, marginBottom: 8 }}>{refundNote}</div>}
+      {feeNote && <div style={{ ...S.note, marginBottom: 8 }}>{feeNote}</div>}
       {postings.length === 0 && <div style={S.note}>Nothing was sent for this day.</div>}
       {postings.map(([k, p]) => (
         <details key={k} style={{ marginBottom: 8 }}>
@@ -162,12 +172,12 @@ export default function PostingsHistory({ locId, hasSiblings, currency, postMode
                         {(r.documents || []).filter((d) => d.link).map((d) => (
                           <div key={`${d.type}${d.xeroId}`}><a href={d.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--acc)', fontWeight: 700, textDecoration: 'none' }}>{d.type === 'bank' ? (d.direction === 'refunds' ? 'Spend money' : 'Receive money') : `${DOC[d.type] || d.type} ${d.number || ''}`} ↗</a></div>
                         ))}
-                        {r.status === 'blocked' && r.notReady && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{r.notReady.map((n) => n.message).join(' ')}</div>}
+                        {(r.status === 'blocked' || r.status === 'fees_wait') && r.notReady && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{r.notReady.map((n) => n.message).join(' ')}</div>}
                         {r.status === 'failed' && r.error && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{String(r.error).slice(0, 160)}</div>}
-                        {r.gap && (
+                        {showsGap(r) && (
                           <div style={{ fontSize: 11.5, color: '#c33' }}>{r.gap.sales === 1 ? '1 sale' : `${r.gap.sales} sales`}, {money(r.gap.gross, currency)}, not in Xero</div>
                         )}
-                        {r.gap && <GapPush locationId={r.locationId} date={r.date} onDone={load} />}
+                        {showsGap(r) && <GapPush locationId={r.locationId} date={r.date} onDone={load} />}
                         {offer.show === 'button' && replacing !== k && (
                           <button style={{ ...S.small, marginTop: 4 }} onClick={(e) => { e.stopPropagation(); setReplacing(k); }}>Replace with invoice</button>
                         )}

@@ -10,6 +10,9 @@
 // refund payment blocks stay for a day whose refunds could not go on its invoice and for days
 // posted before this. An older xero-sales sends no refundWay: the screen then reads as before.
 // What is said and when is decided in previewWords (xeroUi.js), where it is tested.
+// 13 Oct 2026, card fees: a site that switched them on has one last line, Card fees, on the
+// invoice, and the card payment is net of it. One sentence under the payments says how much and
+// what the card payment comes to (words.feeNote). A site with card fees off shows nothing new.
 
 import { money } from '../../../lib/currency';
 import { dayLabel } from '../../../../supabase/functions/_shared/xeroInvoicePlan.js';
@@ -130,6 +133,7 @@ export default function InvoicePreview({ result, accounts = [], currency }) {
       <Doc doc={view.invoice} title="Sales invoice" date={date} view={view} accounts={accounts} cur={cur} tw={tw} tagFor={words.tagFor} />
       {words.note && <div style={{ ...S.note, marginTop: 8 }}>{words.note}</div>}
       <Payments list={view.payments} accounts={accounts} cur={cur} title={words.paymentsTitle} />
+      {words.feeNote && <div style={{ ...S.note, marginTop: 8 }}>{words.feeNote}</div>}
       <Doc doc={words.creditNote} title="Credit note for refunds" date={date} view={view} accounts={accounts} cur={cur} tw={tw} tagFor={words.tagFor} />
       <Payments list={words.refundPayments} accounts={accounts} cur={cur} title="Refund payments" />
       {tie(sales, `${tw} per rate: the till against the invoice`)}

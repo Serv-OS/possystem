@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.54',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: card fees can now go on each day's sales invoice as one minus line called Card fees, with no VAT. The card payment on the invoice is then the takings less refunds less fees, which is what the card processor pays the venue for that day.",
+      "Xero, VAT and accounts, Payments: a new Card fees section. Tick Put card fees on the daily invoice, then press Create a Card fees account in Xero or pick an expense account. It is off until a site switches it on, and a site that leaves it off posts exactly as before.",
+      "Xero: switching card fees on asks you to check a day's figures again, so you see the Card fees line and the smaller card payment before anything posts.",
+      "Xero: if the fee for a card payment has not arrived yet the day waits and tries again each hour, for up to 16 hours, and shows Waiting for card fees in Postings. After that it posts with the fees it has and says what is missing. A fee is never estimated.",
+      "Xero: a refunded card payment gives its fee back on the day of the refund, the same figure Back Office Payouts shows.",
+    ],
+  },
+  {
     v: '5.11.53',
     date: '13 Oct 2026',
     items: [
