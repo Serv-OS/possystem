@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.53',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: a refund now goes on the sales invoice of the day it was made, as a minus line that starts with Refund. It used to arrive as a separate credit note. The card and cash payments on the invoice are that day's takings less its refunds.",
+      "Xero: a day still posts as an invoice plus a credit note when Xero could not take it the new way, for example a day with refunds and no sales, or more refunded from an account than it took that day. The day says why in Postings.",
+      "Xero: days already posted are not changed, and a day that was part posted the old way finishes the old way.",
+      "Back Office, Card payments, Payouts: the list now shows every settlement and each one in full. It had stopped at a venue's first 1,000 card payments.",
+    ],
+  },
+  {
     v: '5.11.52',
     date: '13 Oct 2026',
     items: [
