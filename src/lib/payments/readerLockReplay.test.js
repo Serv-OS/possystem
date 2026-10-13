@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setImmediate } from 'node:timers';
@@ -54,6 +55,19 @@ let served = null;
 const background = [];
 globalThis.Deno = { env: { get: (k) => ENV[k] }, serve: (h) => { served = h; } };
 globalThis.EdgeRuntime = { waitUntil: (p) => { background.push(p); } };
+
+// THE ONE REAL WAIT ON THIS PATH IS TAKEN OUT. A note's id is a SHA-256 of its key
+// (activityIdFor), and crypto.subtle.digest does that work on another thread and answers in its
+// own real time. The replay clock is frozen and stepped by hand, so that one real wait raced it:
+// on a busy runner the note landed seconds "late", or after the replay had ended and inside the
+// next one (the first run of this file on GitHub failed two tests exactly that way). Here the
+// same hash is worked out at once, so every step of a replay happens on the stepped clock.
+mock.method(globalThis.crypto.subtle, 'digest', async (algorithm, data) => {
+  const name = typeof algorithm === 'string' ? algorithm : algorithm?.name;
+  assert.equal(name, 'SHA-256', 'the replay only knows the one hash the card path uses');
+  const out = createHash('sha256').update(new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength)).digest();
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+});
 
 const require = createRequire(import.meta.url);
 const { build } = await import(pathToFileURL(createRequire(require.resolve('vite/package.json')).resolve('rolldown')).href);
