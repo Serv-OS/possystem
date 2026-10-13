@@ -14,13 +14,17 @@
 // post says so in grey. Leeds 30 Sep 2026 (143 sales) sat as a grey "Not posted" for a week, the
 // same as a quiet day. Push posts that one day through xero-sales exactly as the Posting tab
 // does; nothing posts by itself.
+// 13 Oct 2026: a day whose refunds are minus lines on its invoice says so when opened, once that
+// invoice is in Xero (historyRefundNote in xeroUi.js, where it is tested). A day posted with a
+// credit note (before this, or one whose refunds could not go on its invoice) keeps showing its
+// credit note and refund payment.
 
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { xeroHistory, xeroHistoryDetail, xeroGaps, xeroSyncSales } from '../../../lib/xero';
 import { money } from '../../../lib/currency';
 import { offerForRow } from '../../../../supabase/functions/_shared/xeroReplacePlan.js';
 import { markGaps } from '../../../../supabase/functions/_shared/xeroGaps.js';
-import { S, STATUS_LABEL, STATUS_COLOUR } from './xeroUi';
+import { S, STATUS_LABEL, STATUS_COLOUR, historyRefundNote } from './xeroUi';
 import { Bullets } from './controls';
 import ReplaceDay from './ReplaceDay';
 
@@ -29,6 +33,7 @@ const DOC = { invoice: 'Invoice', credit_note: 'Credit note', payment: 'Payment'
 function Detail({ d, note }) {
   if (!d) return <div style={S.note}>Loading…</div>;
   const postings = Object.entries(d.postings || {});
+  const refundNote = historyRefundNote(d);
   return (
     <div style={{ padding: '10px 4px' }}>
       {note && <div style={{ ...S.info, maxWidth: 'none' }}>{note}</div>}
@@ -38,6 +43,7 @@ function Detail({ d, note }) {
           Not ready: {(d.notReady || []).map((n) => n.message).join(' ')}
         </div>
       )}
+      {refundNote && <div style={{ ...S.note, marginBottom: 8 }}>{refundNote}</div>}
       {postings.length === 0 && <div style={S.note}>Nothing was sent for this day.</div>}
       {postings.map(([k, p]) => (
         <details key={k} style={{ marginBottom: 8 }}>

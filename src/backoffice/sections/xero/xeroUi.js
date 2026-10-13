@@ -65,3 +65,42 @@ export const STATUS_COLOUR = {
 
 /** The outline on a field ServOS filled in for the person to check. */
 export const suggested = (on) => (on ? { outline: '2px solid rgba(200,150,40,.65)', outlineOffset: 1 } : undefined);
+
+// ── a day's refunds on the screens (13 Oct 2026) ────────────────────────────────
+// What the invoice preview and the Postings history say about a day's refunds is decided here,
+// in one place, so it is tested (src/lib/accounting/xeroRefundLines.test.js): a new day has its
+// refunds as minus lines on the invoice, a day that fell back and every day posted before this
+// keep their credit note, and an answer from an older xero-sales (no refundWay) reads as before.
+
+const LINE_KIND = { sales: 'Sales', discount: 'Discount', gift: 'Gift cards', tip: 'Tips', service: 'Service' };
+
+/**
+ * The words and choices of the invoice preview for one plan view (planView of xero-sales).
+ * `tw` is 'VAT' or 'Tax'; `fmt` turns an amount into money as the screen shows it.
+ *   asLines         the day's refunds are minus lines on the invoice
+ *   note            the sentence under the invoice, only when its refunds are on it ('' otherwise)
+ *   paymentsTitle   the heading of the payments on the invoice
+ *   creditNote      the credit note to show, or null: a day with one always shows it
+ *   refundPayments  its refund payments ([] on a day with none)
+ *   refundTieTitle  the heading of the VAT per rate table of the refund side
+ *   tagFor(line)    the small word under a line: 'Refund' only on a refund line
+ */
+export function previewWords(view, { tw = 'VAT', fmt = (n) => Number(n || 0).toFixed(2) } = {}) {
+  const asLines = view?.refundWay === 'lines';
+  return {
+    asLines,
+    note: asLines && view.invoice ? `Refunds are the minus lines at the end. Sales ${fmt(view.totals?.sales || 0)} less refunds ${fmt(view.totals?.refunds || 0)} makes the invoice total.` : '',
+    paymentsTitle: asLines ? 'Payments on the invoice, takings less refunds (it shows as Paid)' : 'Payments on the invoice (it shows as Paid)',
+    creditNote: view?.creditNote || null,
+    refundPayments: view?.refundPayments || [],
+    refundTieTitle: asLines ? `${tw} per rate on the refund lines` : `${tw} per rate on refunds`,
+    tagFor: (line) => (line?.refund ? 'Refund' : (LINE_KIND[line?.kind] || line?.kind || '')),
+  };
+}
+
+/**
+ * The line an opened day shows in the Postings history when its refunds are on its invoice: only
+ * once that invoice IS in Xero. A day Xero refused, or one whose answer was lost, says nothing
+ * here (its own message says what happened); a credit note day never shows it.
+ */
+export const historyRefundNote = (d) => (d?.refundWay === 'lines' && d.postings?.INVOICE?.status === 'posted' ? 'Refunds are on the invoice as minus lines.' : '');

@@ -275,7 +275,8 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
         <Bullets items={[
           ['One invoice a day:', `each business day posts to Xero as one sales invoice, with a line per sales group and ${tw} rate.`],
           ['Discounts', 'post as minus lines. Tips, service charge and gift cards go to their own accounts.'],
-          ['Paid:', 'it is paid into this site’s clearing accounts, so it shows as Paid. Refunds post as a credit note.'],
+          ['Paid:', 'it is paid into this site’s clearing accounts, so it shows as Paid.'],
+          ['Refunds', 'are minus lines on the invoice of the day the refund was made, each starting “Refund:”. A day whose refunds cannot go on its invoice sends them as a credit note.'],
           [`${addedOn ? 'Tax' : 'VAT'} ties:`, `each line carries the till’s own ${tw}, to the penny.`],
         ]} />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
@@ -313,7 +314,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
         {!SITE_CODE_RE.test(code) && <div style={{ ...S.note, color: '#c33' }}>The code must be 2 to 12 capital letters or digits.</div>}
         {siblings.some((x) => x.code && x.code === code) && <div style={{ ...S.note, color: '#c33' }}>Another site on this Xero already uses {code}.</div>}
         <Bullets style={{ marginTop: 6 }} items={[
-          [`For ${day}:`, <>invoice <b>{invoiceNumber(code || 'CODE', day)}</b>, credit note <b>{creditNoteNumber(code || 'CODE', day)}</b>, to <b>{contactName(siteName || 'Site')}</b>, reference &ldquo;{takingsReference(siteName || 'Site', day)}&rdquo;.</>],
+          [`For ${day}:`, <>invoice <b>{invoiceNumber(code || 'CODE', day)}</b>, to <b>{contactName(siteName || 'Site')}</b>, reference &ldquo;{takingsReference(siteName || 'Site', day)}&rdquo;. A credit note, when a day needs one, is <b>{creditNoteNumber(code || 'CODE', day)}</b>.</>],
           ['Keep the code', 'once days are posted. Invoice numbers use it, so a day part sent under the old code stops until the code is put back.'],
         ]} />
       </div>

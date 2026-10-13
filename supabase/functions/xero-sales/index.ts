@@ -28,11 +28,21 @@
 //
 // DAILY SALES INVOICE (30 Sep 2026): a site whose xero_config.post_mode is 'sales_invoice'
 // posts each business day from its start day as ONE sales invoice (SOS-<SITE>-<YYYYMMDD>)
-// with lines by sales group and VAT rate, paid into its clearing accounts, plus a credit note
-// for refunds (_shared/xeroInvoicePlan.js, _shared/xeroInvoicePost.ts). Every other site keeps
+// with lines by sales group and VAT rate, paid into its clearing accounts
+// (_shared/xeroInvoicePlan.js, _shared/xeroInvoicePost.ts). Every other site keeps
 // the bank transactions below. A day is never mixed: what an earlier attempt sent decides
 // (dayModel), and a day already posted the old way is left alone. A site that is not Ready
 // records the day as blocked and sends nothing.
+// REFUNDS (13 Oct 2026, asked for by the venue's accountant): a day's refunds are MINUS lines on
+// that day's own invoice, and each clearing account is paid its takings less its refunds. The
+// credit note (SOS-<SITE>-<YYYYMMDD>-R, with its refund payments) is now the fall back, for a
+// day whose refunds cannot go on its invoice, and the way every day started before this
+// finishes. The way is read from the log row the run HOLDS (refundWayStarted) and recorded on it
+// (detail.refundWay) before anything is sent, so a day is never sent both ways. If Xero refuses
+// an invoice with refund lines outright, the row says so and the next push sends the credit note.
+// If Xero then refuses the invoice without them too, or names a lock date, the refund lines were
+// not the cause: the day is free again and goes with its refund lines once that is put right
+// (invoiceRefusal).
 // Site safety (phase 0, both models): the site's name is in every older reference and line,
 // and a transaction found by reference is adopted only when it is this site's own.
 //
@@ -73,12 +83,15 @@ import { venueClock, loadAccountingDay, venueSite } from '../_shared/accountingD
 import { businessDayWindow, isYmd, isBusinessDayOver, lastCompletedBusinessDay, currentBusinessDay, wallClock, addDays } from '../_shared/businessDay.js';
 import { buildAccountingDay } from '../_shared/accountingDay.js';
 import { planXeroDay, requiredDefaults, DEFAULT_ACCOUNTS, postingStep, idempotencyKey, postingVat, blockedMessage, sampleSaleRows, SAMPLE_TAX_NOTES, adoptable } from '../_shared/xeroPostingPlan.js';
-import { planXeroInvoiceDay, planView, planSteps, dayModel, invoiceReadiness, siteNameFrom, siteCodeFromSlug, seenFromGrouped, mappingHash, xeroDocLink, setupTabName } from '../_shared/xeroInvoicePlan.js';
+import {
+  planXeroInvoiceDay, planView, planSteps, dayModel, invoiceReadiness, siteNameFrom, siteCodeFromSlug, seenFromGrouped, mappingHash, xeroDocLink, setupTabName,
+  refundWayStarted, refundWayToRecord, invoiceRefusal, refusalPatch, refusalWords, dayNumbers, postedDayChanges,
+} from '../_shared/xeroInvoicePlan.js';
 import { loadInvoiceDay, refreshSiteDetail, postInvoiceDay, NotReadyError, DayChangedError } from '../_shared/xeroInvoicePost.ts';
 import { revenueTaxRates, expenseTaxRates, healedTaxType } from '../_shared/xeroTax.js';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
-import { replaceability, replaceAnswer, replaceInFlight, replaceDone, replacedWarning, pendingInvoiceError, previewView, progressMessage, replaceVerdict, bankPostings, interrupted, OLD_REMOVED } from '../_shared/xeroReplacePlan.js';
+import { replaceability, replaceAnswer, replaceInFlight, replaceDone, replacedWarning, pendingInvoiceError, previewView, progressMessage, replaceVerdict, bankPostings, interrupted, OLD_REMOVED, xeroErrorWords } from '../_shared/xeroReplacePlan.js';
 import { readOldTransactions, numbersTaken, takenMessage, removeOldDay, stopRun } from '../_shared/xeroReplaceRun.ts';
 import { scanXeroGaps, noticeXeroGaps } from '../_shared/xeroGapScan.ts';
 
@@ -424,15 +437,10 @@ async function invoiceAlreadyAnswer(prior: any, base: any, locationId: string, d
     const from = prior.detail?.window?.from ? Date.parse(prior.detail.window.from) : null;
     const { grouped } = await loadInvoiceDay(sb, platform, locationId, date, venue, { fromMs: from, mapping });
     const { name } = await siteNameFor(locationId, mapping, false);
-    const plan = planXeroInvoiceDay(grouped, { mapping, detail: cfgRow?.detail || {}, site: { name, code: mapping.site?.code || prior.detail?.site?.code || '' }, date, currency: venue.currency });
-    const changed: string[] = [];
-    const was = (t: string) => docs.find((d: any) => d.type === t);
-    for (const [t, doc] of [['invoice', plan.invoice], ['credit_note', plan.creditNote]] as [string, any][]) {
-      const posted = was(t);
-      const now = doc ? doc.total / 100 : 0;
-      const then = posted ? Number(posted.total) : 0;
-      if (Math.abs(now - then) > 0.005) changed.push(`${posted?.number || doc?.number}: posted ${then.toFixed(2)}, now ${now.toFixed(2)}`);
-    }
+    // Planned the way the day was POSTED (13 Oct 2026): refunds as minus lines on the invoice, or
+    // the older credit note. Planned any other way, every older day with refunds would read as changed.
+    const plan = planXeroInvoiceDay(grouped, { mapping, detail: cfgRow?.detail || {}, site: { name, code: mapping.site?.code || prior.detail?.site?.code || '' }, date, currency: venue.currency, started: refundWayStarted(prior.detail) });
+    const changed: string[] = postedDayChanges(plan, docs);
     if (changed.length) out.warnings.push({ code: 'changed_since_posted', message: `This day has changed since it was posted (checks or refunds arrived later). They are not in Xero; adjust there. ${changed.join('; ')}` });
   } catch (e) { console.warn('[xero-sales] could not compare the posted invoice day:', (e as Error)?.message); }
   return out;
@@ -441,18 +449,22 @@ async function invoiceAlreadyAnswer(prior: any, base: any, locationId: string, d
 // What stops a day posting as a sales invoice, from the choices and the day alone (nothing is
 // read from Xero): the plan's own gaps, then the mapping-only items of the Ready checklist
 // (site, tracking, tips, figures checked, a start day).
-function invoiceNotReady(grouped: any, mapping: any, detail: any, siteArg: any, date: string, venue: any) {
+// `started`: how an earlier attempt sent this day's refunds (refundWayStarted on the row), so the
+// plan here is the same one that is then posted.
+function invoiceNotReady(grouped: any, mapping: any, detail: any, siteArg: any, date: string, venue: any, started: any = null) {
   const seen = seenFromGrouped(grouped);
   const addedOn = grouped.summary.defaultTaxBucket?.key === 'excl';
-  const pre = planXeroInvoiceDay(grouped, { mapping, detail: detail || {}, site: siteArg, date, currency: venue.currency });
+  const pre = planXeroInvoiceDay(grouped, { mapping, detail: detail || {}, site: siteArg, date, currency: venue.currency, started });
   const ready = invoiceReadiness(mapping, { addedOn, seen: { ...seen, groups: [], discountGroups: [], moneyKeys: [], gift: false, service: false } });
   const notReady = [...pre.notReady, ...ready.items.filter((i: any) => !i.ok).map((i: any) => ({ code: i.key, message: i.detail || i.label }))];
   return { pre, notReady, addedOn, seen };
 }
 
-// The daily sales invoice: dry run (Check figures) or a real post.
-async function invoiceDay(o: { base: any; locationId: string; date: string; venue: any; clock: any; auto: boolean; dryRun: boolean; cfgRow: any; key: any; fromMs: number | null }) {
-  const { base, locationId, date, venue, clock, auto, dryRun, cfgRow, key, fromMs } = o;
+// The daily sales invoice: dry run (Check figures) or a real post. `prior` is the day's log row
+// as the caller read it: a dry run shows the day the way that row started its refunds. A real
+// post never trusts it: the way is read again from the row the run holds.
+async function invoiceDay(o: { base: any; locationId: string; date: string; venue: any; clock: any; auto: boolean; dryRun: boolean; cfgRow: any; key: any; fromMs: number | null; prior?: any }) {
+  const { base, locationId, date, venue, clock, auto, dryRun, cfgRow, key, fromMs, prior } = o;
   const mapping = cfgRow?.mapping || {};
   const { name: siteName, site } = await siteNameFor(locationId, mapping, !dryRun);
   let code = String(mapping.site?.code || '');
@@ -478,7 +490,8 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
   const siteArg = { name: siteName, code };
 
   if (dryRun) {
-    const plan = planXeroInvoiceDay(grouped, { mapping, detail: cfgRow?.detail || {}, site: siteArg, date, currency: venue.currency });
+    const started = refundWayStarted(prior?.detail);
+    const plan = planXeroInvoiceDay(grouped, { mapping, detail: cfgRow?.detail || {}, site: siteArg, date, currency: venue.currency, started });
     const warnings = [...summary.warnings, ...plan.warnings];
     if (!Array.isArray(cfgRow?.detail?.salesTaxRates)) {
       warnings.push({ code: 'tax_rates_unknown', message: "Xero's tax rates have not been read for this venue yet, so these VAT rates assume a UK organisation. Posting reads them from Xero first." });
@@ -499,11 +512,18 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
   const run = claim.run;
   const changed = await modelChanged(run, cfgRow, date, 'sales_invoice', auto, base);
   if (changed) return changed;
+  // 13 Oct 2026: how the day's refunds go (minus lines on the invoice, or the older credit note)
+  // is decided on the row this run HOLDS, never on the first read: a day is never sent both ways,
+  // and a day an earlier attempt started finishes the way it was started.
+  const started = refundWayStarted(run.detail);
+  // The last invoice this day sent, if Xero refused it for a cause that was not its refund lines.
+  const refusedBefore = run.postings.INVOICE?.refusedNotLines || null;
   const window = { from: summary.fromIso, to: summary.toIso };
   const addedOn = summary.defaultTaxBucket?.key === 'excl';
+  let plan: any = null;
   try {
     // Nothing is sent while the site is not Ready (the mapping-only checks, then the plan's own).
-    const { notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
+    const { notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started);
     if (notReady.length) throw new NotReadyError(notReady);
     const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
     if (setupMadeForAnother(cfgRow?.detail, tenantId)) throw new NotReadyError([await refuseSetupMadeForAnother(locationId, cfgRow?.detail, tenantId, tenantName, setupTabName(addedOn))]);
@@ -511,9 +531,10 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
       throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
     }
-    const plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency });
+    plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency, started });
     const warnings = [...summary.warnings, ...plan.warnings];
-    await run.save({ detail: { model: 'sales_invoice', date, venue: clock, window, warnings, summary: summaryView(summary), site: siteArg, totals: planView(plan)?.totals || null, notReady: null } });
+    // The way the refunds go is on the row BEFORE anything is sent (refundWay), so a retry reads it back.
+    await run.save({ detail: { model: 'sales_invoice', date, venue: clock, window, warnings, summary: summaryView(summary), site: siteArg, totals: planView(plan)?.totals || null, notReady: null, refundWay: refundWayToRecord(started, plan) } });
     if (plan.blocked.length) throw Object.assign(new Error(plan.blocked.map((b: any) => b.message).join(' ')), { blocked: plan.blockedRates, problems: plan.blocked });
     if (plan.notReady.length) throw new NotReadyError(plan.notReady);
 
@@ -539,14 +560,22 @@ async function invoiceDay(o: { base: any; locationId: string; date: string; venu
     const problems = dayChanged || (e as any)?.problems || null;
     const done = Object.values(run.postings).filter((p: any) => p?.status === 'posted').length;
     const status = done ? 'partial' : 'error';
-    const said = notReady ? `This site is not ready to post its sales invoice, so nothing was sent. ${msg}`
-      : dayChanged ? msg
-        : problems ? `${msg}${done ? '' : ' Nothing was posted.'}`
-          : done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg;
+    // 13 Oct 2026: Xero's own "no" to the invoice this run sent, and nothing of the day is in Xero
+    // (invoiceRefusal). 'lines': it had refund lines, so the row says so and the next push sends
+    // the refunds as a credit note. 'other': the refund lines were not the cause (refused without
+    // them too, or a lock date), so the day is free again and the row gives Xero's own words.
+    const xeroWords = xeroErrorWords(msg);
+    const refusal = invoiceRefusal(plan, { started, postings: run.postings, before: refusedBefore, error: { status: (e as any)?.status, message: msg, words: xeroWords } });
+    const said = refusal ? refusalWords(refusal, xeroWords)
+      : notReady ? `This site is not ready to post its sales invoice, so nothing was sent. ${msg}`
+        : dayChanged ? msg
+          : problems ? `${msg}${done ? '' : ' Nothing was posted.'}`
+            : done ? `Part of the day reached Xero before this failed: ${msg}. Press again to finish; what is already in Xero will not be sent twice.` : msg;
     // 2 Oct 2026: the old bank transactions of this day were removed for this invoice. Until the
     // invoice is in Xero the row says so, so the day never looks posted when nothing is there.
     const error = pendingInvoiceError(run.detail?.replace, said, !!done);
-    if (!run.lost) await run.finish(status, { detail: { model: 'sales_invoice', window, error, notReady, problems } }, { ok: false, auto, model: 'sales_invoice', error, posted: done }).catch(() => {});
+    const refused = refusalPatch(refusal, run.postings, { at: new Date().toISOString(), message: msg, words: xeroWords });
+    if (!run.lost) await run.finish(status, { detail: { model: 'sales_invoice', window, error, notReady, problems, ...refused } }, { ok: false, auto, model: 'sales_invoice', error, posted: done }).catch(() => {});
     return json({ ...base, model: 'sales_invoice', error, partial: !!done, ...(notReady ? { notReady } : {}), ...((e as any)?.blocked ? { blocked: (e as any).blocked } : {}) }, notReady ? 400 : 500);
   }
 }
@@ -595,14 +624,13 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
   const summary = grouped.summary;
   if (summary.empty) return refuse({ ...can, replaceable: false, reason: 'empty', message: 'ServOS has no sales or refunds for this day now, so there is no invoice to send in its place. Nothing was changed.' });
   if (!CLIENT_ID || !CLIENT_SECRET) return json({ error: 'Xero is not configured.' }, 400);
-  const numbers = (plan: any) => ({ invoice: plan.invoice ? plan.number : null, creditNote: plan.creditNote ? plan.creditNoteNumber : null });
 
   if (dryRun) {
-    const { pre: plan, notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
+    const { pre: plan, notReady } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, refundWayStarted(prior?.detail));
     const { accessToken, tenantId } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
     const api = (path: string, init?: any) => xeroApi(accessToken, tenantId, path, init);
     const checked = await readOldTransactions(api, bankPostings(prior?.detail));
-    const taken = await numbersTaken(api, numbers(plan));
+    const taken = await numbersTaken(api, dayNumbers(plan));
     const problems = [...notReady.map((n: any) => n.message), ...plan.blocked.map((b: any) => b.message), ...(taken.length ? [takenMessage(taken)] : [])];
     return json({
       ok: true, dryRun: true, ...base, model: 'bank_tx', replace: replaceAnswer(can),
@@ -625,7 +653,10 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
       await run.finish(run.status, {}, { ok: false, action: 'replace_day', auto: false, error: now.message });
       return refuse(now);
     } else {
-      const { notReady, addedOn } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue);
+      // The row this run holds still has only the old bank transactions, so the refunds are free
+      // to go on the invoice; read from the row all the same, as every plan of a day is.
+      const started = refundWayStarted(run.detail);
+      const { notReady, addedOn } = invoiceNotReady(grouped, mapping, cfgRow?.detail, siteArg, date, venue, started);
       if (notReady.length) throw new NotReadyError(notReady);
       const { accessToken, tenantId, tenantName } = await getValidAccessToken(sb, locationId, CLIENT_ID, CLIENT_SECRET);
       // The same rule as any push: a replace never refreshes its way past a setup made for another organisation.
@@ -634,11 +665,11 @@ async function replaceDay(o: { base: any; locationId: string; date: string; venu
       if (detail.site?.baseCurrency && String(detail.site.baseCurrency).toUpperCase() !== String(venue.currency).toUpperCase()) {
         throw new NotReadyError([{ code: 'currency', message: `Xero's base currency is ${detail.site.baseCurrency} but this venue trades in ${venue.currency}.` }]);
       }
-      const plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency });
+      const plan = planXeroInvoiceDay(grouped, { mapping, detail, site: siteArg, date, currency: venue.currency, started });
       if (plan.blocked.length) throw Object.assign(new Error(plan.blocked.map((b: any) => b.message).join(' ')), { blocked: plan.blockedRates });
       if (plan.notReady.length) throw new NotReadyError(plan.notReady);
       const api = (path: string, init?: any) => xeroApi(accessToken, tenantId, path, init);
-      const taken = await numbersTaken(api, numbers(plan));
+      const taken = await numbersTaken(api, dayNumbers(plan));
       if (taken.length) throw Object.assign(new Error(takenMessage(taken)), { refused: true });
       // 2. The old transactions, removed from Xero (or the run stops and the row says how far it got).
       const res = await removeOldDay(run, api, { by: user });
@@ -756,7 +787,7 @@ Deno.serve(async (req) => {
       : dayModel(prior, cfg?.post_mode, cfg?.mapping?.invoiceStartDate, date);
     base.model = model;
     const fromMs = await switchoverFromMs(locationId, date);
-    if (model === 'sales_invoice') return await invoiceDay({ base, locationId, date, venue, clock, auto, dryRun, cfgRow: cfg, key, fromMs });
+    if (model === 'sales_invoice') return await invoiceDay({ base, locationId, date, venue, clock, auto, dryRun, cfgRow: cfg, key, fromMs, prior });
 
     let { summary, taxRates } = await loadAccountingDay(sb, platform, locationId, date, venue, { fromMs });
     if (fromMs != null) {

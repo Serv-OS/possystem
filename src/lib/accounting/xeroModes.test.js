@@ -5,7 +5,8 @@
  * Pinned:
  *   1. dayModel: a day is never mixed. What an earlier attempt sent decides (Receive or Spend
  *      Money: the older model; an invoice or payment: the new one); a day posted the old way
- *      stays; with nothing sent, the site's post_mode and start day decide.
+ *      stays; with nothing sent, the site's post_mode and start day decide. The same for how a
+ *      sales invoice day's refunds go (refundWayStarted, 13 Oct 2026).
  *   2. The Ready checklist: each item passes and fails on its own facts; checking figures lapses
  *      when the choices change.
  *   3. validateInvoiceMapping refuses bad codes, keys, accounts, and the fee bill or cash variance.
@@ -25,7 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  dayModel, invoiceReadiness, validateInvoiceMapping, mappingHash, adoptable as adoptableReexport,
+  dayModel, invoiceReadiness, validateInvoiceMapping, mappingHash, adoptable as adoptableReexport, refundWayStarted,
 } from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
 import { planXeroDay, adoptable } from '../../../supabase/functions/_shared/xeroPostingPlan.js';
 import { buildAccountingDay } from '../../../supabase/functions/_shared/accountingDay.js';
@@ -52,6 +53,16 @@ test('dayModel: never mixed; the earlier attempt decides, then post_mode and the
   assert.equal(dayModel(row(['CREDIT']), 'invoice', null, '2026-10-02'), 'sales_invoice');
   // A day posted before v5.9.11 (UTC, ok with no postings) is the older model.
   assert.equal(dayModel({ status: 'ok', detail: {} }, 'sales_invoice', '2026-09-01', '2026-10-02'), 'bank_tx');
+  // 13 Oct 2026: the same rule one level down. Within a sales invoice day its refunds go ONE way
+  // (minus lines on the invoice, or the older credit note), and what an earlier attempt sent
+  // decides (xeroRefundLines.test.js has every case).
+  assert.equal(refundWayStarted(row(['RECEIVE:6026f133']).detail), null, 'bank transactions are not a sales invoice');
+  assert.equal(refundWayStarted(row(['INVOICE']).detail), 'credit_note', 'an invoice sent before refunds went on it is the gross figure');
+  assert.equal(refundWayStarted(row(['PAY:CARDCLR']).detail), 'credit_note');
+  assert.equal(refundWayStarted(row(['CREDIT']).detail), 'credit_note');
+  assert.equal(refundWayStarted(row(['INVOICE', 'CREDIT'], { detail: { refundWay: 'lines' } }).detail), 'credit_note', 'a credit note in Xero always wins');
+  assert.equal(refundWayStarted(row(['INVOICE'], { detail: { refundWay: 'lines' } }).detail), 'lines');
+  assert.equal(refundWayStarted({ refundWay: 'lines', postings: {} }), null, 'nothing sent: free to decide');
 });
 
 const ACCOUNTS = [

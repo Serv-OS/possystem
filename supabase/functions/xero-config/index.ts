@@ -26,6 +26,7 @@
 //                 choices as they are now (it lapses when they change)
 //     history     { locationId, scope: 'site' | 'org', days } -> one row per site per day
 //     history_detail { locationId, date, forLocationId? } -> exactly what was sent that day
+//                 (refundWay 'lines' when its refunds are minus lines on the invoice, 13 Oct 2026)
 //     gaps        { locationId, scope } -> days with sales and no ok posting over the last 14
 //                 completed business days (8 Oct 2026, D5), per site; writes the venue notice
 //                 for a gap older than two days. Nothing posts: the Postings tab offers Push.
@@ -48,7 +49,7 @@ import { currentBusinessDay, lastCompletedBusinessDay, isYmd, addDays } from '..
 import { buildGroupedDay, makeGroupResolver, OTHER_GROUP, DISCOUNT_GROUPS } from '../_shared/accountingGroups.js';
 import {
   planXeroInvoiceDay, invoiceReadiness, validateInvoiceMapping, mappingHash, seenFromGrouped, siteNameFrom, siteCodeFromSlug,
-  xeroDocLink, dayModel,
+  dayModel, historyDocs,
 } from '../_shared/xeroInvoicePlan.js';
 import { suggestFromLightspeed, xeroDate } from '../_shared/lightspeedSuggest.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -171,19 +172,7 @@ function historyStatus(row: any): string {
   return s || 'failed';
 }
 
-function historyDocs(row: any, shortCode: string | null) {
-  if (Array.isArray(row.documents) && row.documents.length) {
-    return row.documents.map((d: any) => ({ type: d.type, number: d.number, reference: d.reference, total: d.total, xeroId: d.xeroId, link: d.link || (d.type === 'invoice' || d.type === 'credit_note' ? xeroDocLink(d.type, d.xeroId, shortCode) : null) }));
-  }
-  if (Array.isArray(row.lines) && row.lines.length) {
-    return row.lines.filter((l: any) => l.bankTransactionID).map((l: any) => ({ type: 'bank', number: l.reference, reference: l.reference, total: l.total, xeroId: l.bankTransactionID, direction: l.direction, link: l.link || xeroDocLink('bank', l.bankTransactionID, shortCode) }));
-  }
-  const postings = row.postings && typeof row.postings === 'object' ? row.postings : {};
-  return Object.entries(postings).filter(([, p]: [string, any]) => p?.status === 'posted' && p.id).map(([k, p]: [string, any]) => {
-    const type = p.type || (k.startsWith('RECEIVE') || k.startsWith('SPEND') ? 'bank' : k === 'INVOICE' ? 'invoice' : k === 'CREDIT' ? 'credit_note' : 'payment');
-    return { type, number: p.number || p.reference, reference: p.reference, total: p.total, xeroId: p.id, direction: k.startsWith('SPEND') ? 'refunds' : 'takings', link: type === 'invoice' || type === 'credit_note' || type === 'bank' ? xeroDocLink(type, p.id, shortCode) : null };
-  });
-}
+// The documents of a history row (historyDocs) live in _shared/xeroInvoicePlan.js, where they are tested.
 
 const RECOMMENDED: Record<string, (site: { name: string; code: string }) => any> = {
   cardClearing: (x) => ({ Name: `Card clearing ${x.name}`.slice(0, 150), Code: `CC${x.code}`.slice(0, 10), Type: 'CURRENT', EnablePaymentsToAccount: true, Description: 'Card takings waiting for the processor payout (ServOS).' }),
@@ -529,6 +518,7 @@ Deno.serve(async (req) => {
         date: row.ref_date, status: historyStatus({ ...row, notReady: d.notReady, problems: d.problems, lock: d.lock }), model: d.model || (Object.keys(d.postings || {}).some((k) => /^(RECEIVE|SPEND):/.test(k)) ? 'bank_tx' : d.model || 'bank_tx'),
         postings, documents: d.documents || [], lines: d.lines || [], warnings: d.warnings || [], summary: d.summary || null, error: d.error || null,
         notReady: d.notReady || null, problems: d.problems || null, site: d.site || null, attempts: (d.history || []).slice(-10),
+        refundWay: d.refundWay || null,
       });
     }
 
