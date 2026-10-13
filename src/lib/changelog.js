@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.56',
+    date: '13 Oct 2026',
+    items: [
+      'Manager app: a "No venue yet? Try the demo" button on the pairing screen. It links the phone to your demo venue with no Back Office step, so an App Store reviewer, or someone you are showing the app to, can get in on their own. The staff PIN still guards the venue, and only a venue marked as the demo can be reached.',
+    ],
+  },
+  {
     v: '5.11.55',
     date: '13 Oct 2026',
     items: [
