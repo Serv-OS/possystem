@@ -86,7 +86,7 @@ export default function ManagerHome({ ctx }) {
       {/* takings hero (only if this person can see money) */}
       {flags.reports_view && m && (
         <button onClick={() => setTab('reports')} className="sv-glass" style={{ width: '100%', textAlign: 'left', padding: '18px 20px', marginTop: 12, borderRadius: 18, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontFamily: 'inherit', ...(split ? (needNow.length ? L.s.homeHero : L.s.homeHeroTall) : null) }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, ...L.s.heroTop }}>
           <div>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Takings today (ex-VAT)</div>
             <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--acc)', lineHeight: 1.1, margin: '6px 0 0', ...syne, ...L.s.heroValue }}>{money(Number(m.net) || 0, m.currency)}</div>
@@ -119,7 +119,7 @@ export default function ManagerHome({ ctx }) {
       )}
 
       {/* live status bento — each tile role-gated */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, ...(split ? L.s.homeBento : L.phone ? null : { gridTemplateColumns: cols(Math.max(1, Math.min(tileCount, L.statCols))) }) }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, ...(split ? L.s.homeBento : L.phone ? null : { gridTemplateColumns: cols(Math.max(1, Math.min(tileCount, tileCount > 3 ? L.homeCols : L.statCols))) }) }}>
         {flags.reports_view && floor && (
           <StatusTile icon="floor" label="open" value={openCount}
             sub={floor.stalled.length ? `${floor.stalled.length} stalled · ${floor.seated_no_order.length} no order` : floor.seated_no_order.length ? `${floor.seated_no_order.length} awaiting order` : 'all moving'}

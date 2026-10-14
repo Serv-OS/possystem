@@ -15,12 +15,14 @@ function subscribe(cb) {
   if (typeof window === 'undefined') return () => {};
   // iOS can fire orientationchange before the new size is readable, so ask once more on
   // the next frame.
-  const turned = () => { cb(); requestAnimationFrame(cb); };
+  let raf = 0;
+  const turned = () => { cb(); raf = requestAnimationFrame(cb); };
   window.addEventListener('resize', cb);
   window.addEventListener('orientationchange', turned);
   return () => {
     window.removeEventListener('resize', cb);
     window.removeEventListener('orientationchange', turned);
+    cancelAnimationFrame(raf);
   };
 }
 
