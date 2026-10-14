@@ -17,6 +17,7 @@ import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { mustChangeRows } from '../lib/rowWrites';
 import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
+import { readShowsKitchenScreen } from '../lib/queueDevice';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -40,6 +41,12 @@ export async function startSessionReconciler() {
 
   const reconcile = async () => {
     try {
+      // v5.9.72: a kitchen screen only READS tables, so nothing is reconciled on one: no heal, no
+      // clear, no delete. 12 Oct 2026: this was decided once, by the page's mode word, where the
+      // reconciler is started (sync/SyncBridge.jsx). It is now asked on every pass
+      // (lib/queueDeleteRule.js showsKitchenScreen), so every shape of kitchen screen stands
+      // still, and a page whose profile changes to a till while it is open reconciles again.
+      if (readShowsKitchenScreen(useStore.getState().deviceConfig)) return;
       // v5.5.892: two-phase DELTA poll. Phase 1 fetches ONLY (table_id, updated_at) — tiny.
       // The heavy session jsonb blobs are fetched in phase 2 solely for rows whose updated_at
       // moved since the last poll, then cached. Downstream logic reads the cache, so the ghost

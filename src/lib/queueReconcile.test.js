@@ -233,7 +233,7 @@ test('QueueSync uses the rule at boot, stamps every confirmed row, and the recon
   assert.ok(rec.includes('reconcileList(') && rec.includes('changedKeys('));
   assert.match(rec, /setInterval\(/);
   assert.ok(rec.includes("addEventListener('online'") && rec.includes('visibilitychange'));
-  assert.ok(rec.includes('setReplayGuard({ before: beforeReplay, keep: keepBufferedWrite })'), 'a reconnect re-checks the server before buffered writes replay');
+  assert.ok(rec.includes('setReplayGuard({ before: beforeReplay, keep: keepBufferedWrite, drop: dropBufferedWrite })'), 'a reconnect re-checks the server before buffered writes replay');
   assert.ok(/latchRows\(r\.next\);\s*\n\s*if \(r\.changed\) useStore\.setState/.test(rec), 'adopted and updated rows are latched before the store change wakes the flush');
   assert.ok(qs.includes('export function latchQueueRows(') && qs.includes('latchQueueRows(r.next)'), 'boot latches the same way');
   // The store is read after the network wait and written in the same synchronous step

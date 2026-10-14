@@ -7,6 +7,21 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.59',
+    date: '14 Oct 2026',
+    items: [
+      "Kitchen screens never put a table back, in every shape. On 26 Sep we stopped a kitchen screen sending tables to the tills, after one in Leeds kept putting a voided table back. That fix only knew the ServOS KDS app. A tablet set up as a Kitchen Display inside the normal till page was missed, and so was a POS device on a profile that opens straight on the kitchen screen. Both are covered now. A kitchen screen reads tables. It never sends one, deletes one or puts one back.",
+      "A till inside the ServOS KDS app sends its tables again. A device that runs the KDS app but is paired as a till, on a till profile, shows the PIN pad and the till. The old fix stopped that till sending tables too, so a table opened on it did not reach the other tills. It now sends them like any till.",
+      "If a device is moved between a kitchen profile and a till profile while the app is open, the new rule applies at once. No restart is needed.",
+      "The Bookings host stand is not changed. It seats tables, so it still sends them.",
+      "Kitchen screens no longer delete orders. Until now every device answered a finished order with its own delete of that order number, kitchen tablets included, and sent the same deletes again from its saved list after each restart (one drinks screen sent 32 in two minutes on 12 Oct; the records show none of them removed an order). A kitchen screen, a kiosk, a host stand and Back Office now only read the open orders list. They never add to it, change it or delete from it.",
+      "Kitchen screens no longer delete bar tabs. A kitchen tablet running the ServOS KDS app treated every open bar tab it could see as removed and deleted it. That is fixed by the same rule: only a till writes bar tabs.",
+      "Tills delete an order only for a reason. An order paid, rejected, voided or marked collected on that till is removed as before. An order another device finished is no longer deleted a second time. An order the kitchen marked collected is cleared only while it still says collected, so a newer order that has been given the same number can never be removed by mistake.",
+      "A catering order moved to a later day now stays in the system. A till that already had it on its Orders screen used to delete it when it dropped off the live list.",
+      "Orders that were already finished when an app starts are never deleted by number again at start up.",
+    ],
+  },
+  {
     v: '5.11.58',
     date: '14 Oct 2026',
     items: [
