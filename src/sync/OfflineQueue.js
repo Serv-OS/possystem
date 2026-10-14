@@ -136,6 +136,8 @@ let _replaying = false;
 // dropped here first); `keep(item)` then decides per buffered STATE write whether it still
 // describes a row this till holds. Without it a buffered order_queue upsert replayed after a
 // reconnect re-created an order every other till had already cleared.
+// 12 Oct 2026: `drop(item)` says a buffered order_queue or bar_tabs write must never be sent from
+// this page at all (it is not a till, and the write came from the list sync of an older build).
 let _guard = null;
 export function setReplayGuard(guard) { _guard = guard && typeof guard === 'object' ? guard : null; }
 
@@ -330,6 +332,19 @@ export async function replayQueue(supabase) {
     const isSessionDelete = (it) => it.type === 'delete' && it.table === 'active_sessions' && !(it.match && it.match[OCCUPATION_KEY]);
     const live = [];
     for (const it of candidates) {
+      // 12 Oct 2026: a page that is not a till never syncs the open orders or bar tabs
+      // (lib/queueDeleteRule.js). A write its list sync buffered on an older build (a kitchen
+      // tablet's delete of an order or a tab, parked while it was not linked) is dropped here,
+      // never sent. The guard says which: named staff actions are kept.
+      if (_guard?.drop && isStateWrite(it)) {
+        let drop = false;
+        try { drop = _guard.drop(it) === true; } catch { drop = false; }
+        if (drop) {
+          try { await dbDelete(it.id); } catch { /* tried again with the next replay */ }
+          console.warn(`[OfflineQueue] dropped a buffered ${it.table} ${it.type}: this device does not sync that list`);
+          continue;
+        }
+      }
       if (_guard && !reconciled && isStateWrite(it)) continue;   // left queued, order preserved
       if (_guard?.keep && (it.type === 'upsert' || it.type === 'update') && isStateWrite(it)) {
         let keep = true;
