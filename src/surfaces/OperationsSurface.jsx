@@ -369,8 +369,8 @@ function Temperature({ loc, onBack, onPick }) {
   return (
     <div>
       <Header title="Temperature checks" sub={`${roundName} · ${summary.total} units`} right={`${summary.due + summary.missed} due`} rightState={summary.missed ? 'over' : 'due'} onBack={onBack} />
-      <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, marginBottom: 12, gap: 4, ...L.s.ctl }}>
-        {['C', 'F'].map(u => <button key={u} onClick={() => setUnit(u)} style={{ flex: 1, padding: '8px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', background: unit === u ? 'var(--acc)' : 'transparent', color: unit === u ? '#06130C' : 'var(--t2)' }}>°{u}</button>)}
+      <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, marginBottom: 12, gap: 4, ...L.s.ctlNarrow }}>
+        {['C', 'F'].map(u => <button key={u} onClick={() => setUnit(u)} style={{ flex: 1, padding: '8px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', background: unit === u ? 'var(--acc)' : 'transparent', color: unit === u ? '#06130C' : 'var(--t2)', ...L.s.segLabel }}>°{u}</button>)}
       </div>
       {loading && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>

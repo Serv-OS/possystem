@@ -144,7 +144,7 @@ export default function ManagerTeam({ ctx }) {
   };
 
   return (
-    <div style={two ? L.s.page2 : undefined}>
+    <div style={two ? L.s.teamPage2 : undefined}>
       <Header title="Team" sub={flags.team_approvals ? 'Live + approvals' : 'Live floor'} />
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load the team ({err}).</div>}

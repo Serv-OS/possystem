@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.58',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad, tidy up: the forecast badge on Home no longer crowds the edge of the takings card on a 13 inch iPad held upright, and the four Home tiles sit two by two on smaller iPads so their lines do not break in the middle.",
+      "Manager app on iPad, tidy up: the manager PIN box on Team fills its panel, the Kitchen order sheet lines up with the stock list, document names are no longer cut short on the iPad mini, and the C and F switch in Ops is a sensible size.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
     v: '5.11.57',
     date: '14 Oct 2026',
     items: [

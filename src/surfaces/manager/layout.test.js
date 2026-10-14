@@ -52,7 +52,8 @@ test('bands', () => {
 });
 
 test('columns: the reference table', () => {
-  // width: [band, contentW, statCols, rowCols, textCols, tileCols]
+  // width: [band, contentW, statCols, rowCols, textCols, tileCols]. Rows are 340 wide at least,
+  // so the iPad mini in landscape (981) shows two across and document titles are not cut.
   const table = {
     660: ['tablet', 516, 2, 1, 1, 2],
     678: ['tablet', 534, 2, 1, 1, 2],
@@ -61,7 +62,7 @@ test('columns: the reference table', () => {
     834: ['tablet', 690, 4, 2, 1, 3],
     981: ['tablet', 837, 4, 2, 1, 3],
     1024: ['wide', 872, 4, 2, 2, 3],
-    1133: ['wide', 981, 4, 3, 2, 4],
+    1133: ['wide', 981, 4, 2, 2, 4],
     1180: ['wide', 1028, 4, 3, 2, 4],
     1194: ['wide', 1042, 4, 3, 2, 4],
     1366: ['wide', 1120, 4, 3, 2, 4],
@@ -119,7 +120,7 @@ test('THE PHONE GUARD: a phone gets fragments that change nothing', () => {
     assert.ok(frag === undefined || Object.keys(frag).length === 0, `PHONE.s.${name} must be undefined or empty`);
   }
   // Whole style fragments are undefined (no style attribute at all), spread ones are empty.
-  for (const n of ['page2', 'capKeypad', 'capForm', 'capRun', 'homeSplit']) assert.equal(PHONE.s[n], undefined, n);
+  for (const n of ['page2', 'teamPage2', 'capKeypad', 'capForm', 'capRun', 'homeSplit']) assert.equal(PHONE.s[n], undefined, n);
   assert.equal(PHONE.navIcon, 20);
   assert.equal(PHONE.deviceWord, 'phone');
   assert.equal(PHONE.panes, 1);
@@ -130,7 +131,7 @@ test('every band carries the same fragment names', () => {
   for (const w of SAMPLES) assert.deepEqual(Object.keys(layoutFor(w).s).sort(), names, `${w}`);
   // Spread fragments are never undefined outside the phone band either (spreading is safe,
   // but a builder may read a key).
-  const whole = new Set(['page2', 'homeSplit']);
+  const whole = new Set(['page2', 'teamPage2', 'homeSplit']);
   for (const w of SAMPLES) {
     for (const [name, frag] of Object.entries(layoutFor(w).s)) {
       if (whole.has(name)) continue;
@@ -161,7 +162,8 @@ test('bad input is a phone', () => {
 
 test('identity and freezing', () => {
   assert.equal(layoutFor(820, 1180), layoutFor(834, 1194));
-  assert.equal(layoutFor(1133, 744), layoutFor(1194, 834));
+  assert.equal(layoutFor(1180, 820), layoutFor(1194, 834));
+  assert.notEqual(layoutFor(1133, 744), layoutFor(1194, 834));
   assert.equal(layoutFor(1366, 1024), layoutFor(1376, 1032));
   assert.notEqual(layoutFor(744, 1133), layoutFor(820, 1180));
   assert.notEqual(layoutFor(1194, 834), layoutFor(1366, 1024));
@@ -256,4 +258,26 @@ test('Kitchen stat pair spans the page and takes the pane gap on wide only', () 
   assert.equal(Object.keys(PHONE.s.kitchenStats).length, 0);
   assert.deepEqual(layoutFor(820, 1180).s.kitchenStats, { gridColumn: '1 / -1' });
   assert.deepEqual(layoutFor(1194, 834).s.kitchenStats, { gridColumn: '1 / -1', gap: 28 });
+});
+
+test('review fixes: fit at the band edges', () => {
+  // Home takings figure scales just above 1000 so the forecast pill stays inside the card.
+  assert.deepEqual(layoutFor(820).s.heroValue, { fontSize: 44 });
+  for (const w of [1000, 1024, 1194, 1366]) assert.deepEqual(layoutFor(w).s.heroValue, { fontSize: 'clamp(36px, 3.6vw, 44px)' }, `${w}`);
+  assert.deepEqual(layoutFor(820).s.heroTop, { flexWrap: 'wrap' });
+  // Home tiles: four in a row only from 820 of content (964 wide); two by two below it.
+  assert.deepEqual([660, 820, 834, 963, 964, 999].map((w) => layoutFor(w).homeCols), [2, 2, 2, 2, 4, 4]);
+  assert.equal(PHONE.homeCols, 2);
+  assert.equal(layoutFor(834).s.tileSub.minHeight, undefined);
+  assert.equal(layoutFor(981).s.tileSub.minHeight, 32);
+  assert.deepEqual(layoutFor(1024).s.tileSub, { fontSize: 'clamp(11px, 1.1vw, 12px)' });
+  // Team: the approvals pane is the wider one, and the lock card fills it.
+  assert.equal(layoutFor(820).s.teamPage2, undefined);
+  assert.equal(layoutFor(1024).s.teamPage2.gridTemplateColumns, 'minmax(0, 0.9fr) minmax(0, 1.1fr)');
+  assert.deepEqual(layoutFor(820).s.lockCard, { maxWidth: 440 });
+  assert.equal(Object.keys(layoutFor(1194).s.lockCard).length, 0);
+  // Kitchen order sheet lines up with the rows: no cap in any band.
+  for (const w of SAMPLES) assert.equal(Object.keys(layoutFor(w).s.orderSheet).length, 0, `${w}`);
+  // The C / F switch.
+  for (const w of SAMPLES) { assert.deepEqual(layoutFor(w).s.ctlNarrow, { maxWidth: 220 }); assert.deepEqual(layoutFor(w).s.segLabel, { fontSize: 14 }); }
 });

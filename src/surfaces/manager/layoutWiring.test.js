@@ -62,19 +62,68 @@ test('the two device words are text swaps inside the same sentences', () => {
   assert.match(surface, /link this \{L\.deviceWord\} to your venue/);
 });
 
+// The ways a later edit could let the layout decide WHAT renders. Kept as a function so the
+// test below can prove it on sample lines as well as on the real screens.
+const esc = (n) => n.replace(/[$]/g, '\\$');
+function remountFaults(text) {
+  const faults = [];
+  // L.x ? <A/> : <B/>, L.x && <A/>, with a comparison in between (L.panes === 2 && <A/>) or
+  // a null branch first (L.phone ? null : <A/>).
+  if (/\bL\.[\w.]+[^;\n{}]{0,40}?(\?|&&)\s*(null\s*:\s*)?\(?\s*</.test(text)) faults.push('the layout picks what renders');
+  // An early return or a branch on the layout.
+  if (/\bif\s*\(\s*!?\s*\(?\s*L\./.test(text)) faults.push('a branch on the layout');
+  // A key built from the layout would re mount the element when the band changes.
+  if (/\bkey=\{[^}]*\b(L\.|layout\b)/.test(text)) faults.push('a key from the layout');
+  // Screens read the context. Only useLayout.js calls the layout function.
+  if (/\blayoutFor\(|\bbandFor\(/.test(text)) faults.push('calls the layout function itself');
+  // The same through any name declared from the layout (Team "two", Home "split").
+  const names = new Set();
+  for (const m of text.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*[^;\n]*\bL\./g)) names.add(m[1]);
+  for (const n of names) {
+    const v = esc(n);
+    if (new RegExp(`(^|[^\\w.$])!?${v}\\s*(\\?|&&)\\s*(null\\s*:\\s*)?\\(?\\s*<`).test(text)) faults.push(`"${n}" (from the layout) picks what renders`);
+    if (new RegExp(`\\bif\\s*\\(\\s*!?\\s*\\(?\\s*${v}\\b`).test(text)) faults.push(`a branch on "${n}" (from the layout)`);
+    if (new RegExp(`<${v}[\\s/>]`).test(text)) faults.push(`"${n}" (from the layout) is used as a component`);
+    if (new RegExp(`\\bkey=\\{[^}]*\\b${v}\\b`).test(text)) faults.push(`a key from "${n}" (from the layout)`);
+  }
+  return faults;
+}
+
 test('no re mount: the layout never chooses a component, an element or a key', () => {
   for (const [name, text] of Object.entries(SCREENS)) {
-    // L.x ? <A/> : <B/>   and   L.x && <A/>
-    assert.doesNotMatch(text, /\bL\.[\w.]+\s*(\?|&&)\s*\(?\s*</, `${name}: the layout picks what renders`);
-    // The same through the two names derived from it (Team "two", Home "split").
-    assert.doesNotMatch(text, /\b(two|split)\s*(\?|&&)\s*\(?\s*</, `${name}: a layout flag picks what renders`);
-    // An early return or a branch on the layout.
-    assert.doesNotMatch(text, /\bif\s*\(\s*!?\s*(L\.|two\b|split\b)/, `${name}: a branch on the layout`);
-    // A key built from the layout would re mount the element when the band changes.
-    assert.doesNotMatch(text, /\bkey=\{[^}]*\b(L\.|layout\b)/, `${name}: a key from the layout`);
-    // Screens read the context. Only useLayout.js calls the layout function.
-    assert.doesNotMatch(text, /\blayoutFor\(|\bbandFor\(/, `${name}: calls the layout function itself`);
+    assert.deepEqual(remountFaults(text), [], name);
   }
+});
+
+test('the no re mount guard catches the likely mistakes and allows style only uses', () => {
+  const bad = [
+    '{L.phone ? <A/> : <B/>}',
+    '{!L.phone && <Rail/>}',
+    '{L.panes && (<A/>)}',
+    '{L.panes === 2 && <Side/>}',
+    '{L.band === "wide" ? <A/> : <B/>}',
+    '{L.phone ? null : <Rail/>}',
+    '{L.statCols > 2 && (<X/>)}',
+    'const wide = L.panes === 2; return wide ? <A/> : <B/>;',
+    'const wide = L.panes === 2;\n  return <div>{wide && <A/>}</div>;',
+    'const wide = L.panes === 2;\n  if (!wide) return null;',
+    'const C = L.phone ? PhoneNav : RailNav;\n  return <C />;',
+    'const band = L.band;\n  return <div key={band} />;',
+    'if (L.panes === 2) return <A/>;',
+    '<div key={L.band} />',
+    'const x = layoutFor(800);',
+  ];
+  for (const line of bad) assert.notDeepEqual(remountFaults(line), [], line);
+  const good = [
+    '<div style={two ? L.s.page2 : undefined}>',
+    'const two = L.panes === 2 && flags.team_approvals;\n  <div style={{ gap: 8, ...(two ? null : L.s.rows) }}>',
+    "<div style={{ gap: 10, ...(split ? L.s.homeBento : L.phone ? null : { gridTemplateColumns: cols(L.statCols) }) }}>",
+    '<Icon name={t.icon} size={L.navIcon} />',
+    '<div data-mgr-layout={L.phone ? undefined : L.band}>',
+    'Pair this {L.deviceWord}</div>',
+    "<button style={{ flex: 1, ...L.s.decideBtn }}>{busy ? <Spinner /> : 'Save'}</button>",
+  ];
+  for (const line of good) assert.deepEqual(remountFaults(line), [], line);
 });
 
 test('one source of width: no screen measures the window or sniffs the device', () => {

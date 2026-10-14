@@ -66,16 +66,16 @@ function phoneFragments() {
     pairCard: EMPTY, pairLabel: EMPTY, pairCode: EMPTY, pairBody: EMPTY, pairBtn: EMPTY,
     pinBlock: EMPTY, pinVenue: EMPTY, pinTitle: EMPTY, pinDot: EMPTY, pinGrid: EMPTY, pinKey: EMPTY,
     span: EMPTY,
-    title: EMPTY, heroValue: EMPTY, sectionLabel: EMPTY, statBox: EMPTY, statValue: EMPTY, statLabel: EMPTY,
+    title: EMPTY, heroTop: EMPTY, heroValue: EMPTY, sectionLabel: EMPTY, statBox: EMPTY, statValue: EMPTY, statLabel: EMPTY,
     heroStatValue: EMPTY, heroStatLabel: EMPTY,
     tile: EMPTY, tileValue: EMPTY, tileLabel: EMPTY, tileSub: EMPTY,
-    page2: undefined,
+    page2: undefined, teamPage2: undefined,
     pane: CONTENTS, paneA: CONTENTS, paneB: CONTENTS,
     statGrid: EMPTY, statGridSpan: EMPTY,
     rows: EMPTY, paneRows: EMPTY, textRows: EMPTY,
     opsTiles: EMPTY,
     capKeypad: undefined, capForm: undefined, capRun: undefined,
-    ctl: EMPTY,
+    ctl: EMPTY, ctlNarrow: EMPTY, segLabel: EMPTY,
     lockCard: EMPTY, pinInput: EMPTY, editGrid: EMPTY, saveBtn: EMPTY, decideRow: EMPTY, decideBtn: EMPTY,
     orderSheet: EMPTY, cta: EMPTY, kitchenStats: EMPTY,
     homeSplit: undefined,
@@ -98,7 +98,7 @@ function shellFor(wide, capped) {
   };
 }
 
-function tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }) {
+function tabletFragments({ wide, capped, statCols, homeCols, rowCols, textCols, tileCols }) {
   const rows = { display: 'grid', gridTemplateColumns: cols(rowCols), gap: 10 };
   return {
     // Shell, header, rail, toast
@@ -130,7 +130,10 @@ function tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }
     // Shared primitives (ui.jsx)
     span: { gridColumn: '1 / -1' },
     title: { fontSize: 26 },
-    heroValue: { fontSize: 44 },
+    // Just above 1000 the takings column is at its narrowest, so the figure scales with the
+    // viewport (36 at 1000, 44 from 1222) and the forecast pill may drop under it.
+    heroTop: { flexWrap: 'wrap' },
+    heroValue: wide ? { fontSize: 'clamp(36px, 3.6vw, 44px)' } : { fontSize: 44 },
     sectionLabel: { fontSize: 12 },
     statBox: { padding: '14px 12px', minWidth: 0 },
     statValue: { overflowWrap: 'anywhere' },
@@ -141,8 +144,10 @@ function tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }
     tile: { minHeight: 128, padding: 18 },
     tileValue: { fontSize: 28 },
     tileLabel: { fontSize: 13.5 },
-    // Four in a row (820 to 999): the sub line can wrap, so hold two lines to keep the numbers level.
-    tileSub: !wide && statCols === 4 ? { fontSize: 12, minHeight: 32 } : { fontSize: 12 },
+    // Four in a row (964 to 999): a long sub line can wrap, so hold two lines to keep the numbers level.
+    // In the wide bento the tiles are at their narrowest just above 1000, so the sub line scales
+    // like the takings figure (11 at 1000, 12 from 1091) and stays on one line.
+    tileSub: wide ? { fontSize: 'clamp(11px, 1.1vw, 12px)' } : homeCols === 4 ? { fontSize: 12, minHeight: 32 } : { fontSize: 12 },
     homeSplit: wide ? { display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)', gridTemplateRows: 'auto 1fr auto', columnGap: 16 } : undefined,
     homeHero: wide ? { gridColumn: 1, gridRow: 2 } : EMPTY,
     homeHeroTall: wide ? { gridColumn: 1, gridRow: '2 / span 2' } : EMPTY,
@@ -151,6 +156,8 @@ function tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }
     needLine: { whiteSpace: 'normal' },
     // Two pane tab bodies (Reports, Team, Kitchen). The pane divs exist at every width.
     page2: wide ? { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', columnGap: 28, alignItems: 'start' } : undefined,
+    // Team: the approvals pane (right) carries Edit and Approve beside each row, so it gets the wider share.
+    teamPage2: wide ? { display: 'grid', gridTemplateColumns: 'minmax(0, 0.9fr) minmax(0, 1.1fr)', columnGap: 28, alignItems: 'start' } : undefined,
     pane: wide ? { minWidth: 0 } : CONTENTS,
     paneA: wide ? { minWidth: 0, order: 1 } : CONTENTS,
     paneB: wide ? { minWidth: 0, order: 2 } : CONTENTS,
@@ -166,15 +173,20 @@ function tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }
     capForm: { maxWidth: CAP_FORM, margin: '0 auto' },
     capRun: { maxWidth: CAP_RUN, margin: '0 auto' },
     ctl: { maxWidth: CAP_CTL },
+    // A two way switch with one letter labels (the C / F switch).
+    ctlNarrow: { maxWidth: 220 },
+    segLabel: { fontSize: 14 },
     // Team
-    lockCard: { maxWidth: 440 },
+    // In a pane the lock card fills it, like the approval cards it turns into.
+    lockCard: wide ? EMPTY : { maxWidth: 440 },
     pinInput: { flex: '0 1 220px' },
     editGrid: { gridTemplateColumns: 'repeat(3, minmax(0, 160px))' },
     saveBtn: { flex: '0 1 240px' },
     decideRow: { justifyContent: 'flex-end' },
     decideBtn: { flex: '0 1 160px' },
     // Kitchen
-    orderSheet: wide ? EMPTY : { maxWidth: 560 },
+    // The order sheet lines up with the stock rows around it in every band.
+    orderSheet: EMPTY,
     cta: wide ? EMPTY : { alignSelf: 'flex-start', minWidth: 280, padding: '12px 22px' },
     // The two Kitchen stat tiles sit above the two panes, so they share the pane gap on wide.
     kitchenStats: wide ? { gridColumn: '1 / -1', gap: 28 } : { gridColumn: '1 / -1' },
@@ -195,18 +207,20 @@ export function layoutFor(width, height) { // eslint-disable-line no-unused-vars
   const capped = wide && width >= CAP_MIN;
   const contentW = contentWidthFor(width);
   const statCols = phone ? 2 : contentW >= 660 ? 4 : 2;
-  const rowCols = phone ? 1 : clamp(Math.floor((contentW + 10) / 320), 1, 3);
+  // Home tiles go four in a row only where a two part sub line still fits on one line.
+  const homeCols = phone ? 2 : contentW >= 820 ? 4 : 2;
+  const rowCols = phone ? 1 : clamp(Math.floor((contentW + 10) / 340), 1, 3);
   const textCols = phone ? 1 : clamp(Math.floor((contentW + 10) / 440), 1, 2);
   const tileCols = phone ? 2 : contentW >= 900 ? 4 : contentW >= 560 ? 3 : 2;
-  const key = `${band}|${capped ? 1 : 0}|${statCols}|${rowCols}|${textCols}|${tileCols}`;
+  const key = `${band}|${capped ? 1 : 0}|${statCols}|${homeCols}|${rowCols}|${textCols}|${tileCols}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const made = deepFreeze({
     key, band, phone, capped, panes: wide ? 2 : 1,
-    statCols, rowCols, textCols, tileCols,
+    statCols, homeCols, rowCols, textCols, tileCols,
     navIcon: phone ? 20 : 24,
     deviceWord: phone ? 'phone' : 'device',
-    s: phone ? phoneFragments() : tabletFragments({ wide, capped, statCols, rowCols, textCols, tileCols }),
+    s: phone ? phoneFragments() : tabletFragments({ wide, capped, statCols, homeCols, rowCols, textCols, tileCols }),
   });
   cache.set(key, made);
   return made;
