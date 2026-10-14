@@ -1,13 +1,15 @@
 // src/surfaces/manager/ui.jsx — shared presentational bits for the Manager tabs (glass system).
 import { Icon } from '../../components/ServOSIcons';
+import { useLayout } from './useLayout';
 
 export const mono = { fontFamily: 'var(--font-mono)' };
 export const syne = { fontFamily: 'Syne, Space Grotesk, sans-serif' };
 
 export function SectionTitle({ children, right }) {
+  const L = useLayout();
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '18px 2px 10px' }}>
-      <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{children}</span>
+      <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono, ...L.s.sectionLabel }}>{children}</span>
       {right != null && <span style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{right}</span>}
     </div>
   );
@@ -15,10 +17,11 @@ export function SectionTitle({ children, right }) {
 
 /** Big hero number (Syne) with an eyebrow label — the §6 expressive read. */
 export function Hero({ label, value, sub, accent = 'var(--acc)' }) {
+  const L = useLayout();
   return (
     <div className="sv-glass" style={{ padding: '18px 20px' }}>
       <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{label}</div>
-      <div style={{ fontSize: 34, fontWeight: 800, color: accent, lineHeight: 1.1, margin: '6px 0 2px', ...syne }}>{value}</div>
+      <div style={{ fontSize: 34, fontWeight: 800, color: accent, lineHeight: 1.1, margin: '6px 0 2px', ...syne, ...L.s.heroValue }}>{value}</div>
       {sub && <div style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>{sub}</div>}
     </div>
   );
@@ -26,10 +29,11 @@ export function Hero({ label, value, sub, accent = 'var(--acc)' }) {
 
 /** Compact stat tile for a grid. */
 export function Stat({ label, value, tone = 'var(--t1)' }) {
+  const L = useLayout();
   return (
-    <div className="sv-glass" style={{ padding: '14px 16px' }}>
-      <div style={{ fontSize: 22, fontWeight: 800, color: tone, ...mono }}>{value}</div>
-      <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 2, ...mono }}>{label}</div>
+    <div className="sv-glass" style={{ padding: '14px 16px', ...L.s.statBox }}>
+      <div style={{ fontSize: 22, fontWeight: 800, color: tone, ...mono, ...L.s.statValue }}>{value}</div>
+      <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 2, ...mono, ...L.s.statLabel }}>{label}</div>
     </div>
   );
 }
@@ -48,9 +52,10 @@ export function NavCard({ icon, title, sub, onClick, accent = 'var(--acc)' }) {
 }
 
 export function Header({ title, sub }) {
+  const L = useLayout();
   return (
-    <div style={{ padding: '4px 2px 4px' }}>
-      <div style={{ fontSize: 22, fontWeight: 800, ...syne }}>{title}</div>
+    <div style={{ padding: '4px 2px 4px', ...L.s.span }}>
+      <div style={{ fontSize: 22, fontWeight: 800, ...syne, ...L.s.title }}>{title}</div>
       {sub && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', marginTop: 2, ...mono }}>{sub}</div>}
     </div>
   );

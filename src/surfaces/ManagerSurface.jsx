@@ -1,8 +1,12 @@
 // src/surfaces/ManagerSurface.jsx
 //
-// ServOS Manager (?mode=manager) — the owner app + ops tablet merged into one role-adaptive phone
-// app. Flow mirrors the Ops surface: pair the phone (Back Office → Operations → Devices) → staff PIN → app.
+// ServOS Manager (?mode=manager): the owner app and the ops tablet merged into one role-adaptive
+// phone and tablet app. Flow mirrors the Ops surface: pair the device (Back Office, Operations,
+// Devices), then staff PIN, then the app.
 // Floating bottom tab bar: Home · Reports · Team · Ops · Kitchen, shown per the signed-in role.
+// From 660 wide the same bar is a left rail and the content fills the screen. Every width
+// decision lives in manager/layout.js and reaches the screens as style values only, so a
+// rotation or a Split View drag never re mounts anything.
 //
 // ADDITIVE + reuse-first: pairing/PIN reuse the ops device layer (opsHeartbeat/opsRegisterDevice/
 // opsPinLogin); the liquid-glass skin + tokens are the shared [data-skin="servos"] system; the
@@ -22,10 +26,11 @@ import ManagerReports from './manager/ManagerReports';
 import ManagerTeam from './manager/ManagerTeam';
 import ManagerOps from './manager/ManagerOps';
 import ManagerKitchen from './manager/ManagerKitchen';
+import { LayoutContext, useLayout, useViewportLayout } from './manager/useLayout';
 
 const mono = { fontFamily: 'var(--font-mono)' };
 
-export default function ManagerSurface() {
+function ManagerApp() {
   const [stage, setStage] = useState('boot');     // boot | pair | pin | app
   const [loc, setLoc] = useState(null);
   const [venueName, setVenueName] = useState('');
@@ -150,6 +155,13 @@ export default function ManagerSurface() {
   );
 }
 
+// The ONE viewport subscription. ManagerApp never reads the layout, so its stage, operator,
+// tab, snapshot and the skin and viewport effects cannot be disturbed by a resize.
+export default function ManagerSurface() {
+  const layout = useViewportLayout();
+  return <LayoutContext.Provider value={layout}><ManagerApp /></LayoutContext.Provider>;
+}
+
 // ── chrome ───────────────────────────────────────────────────────────────────
 // v5.5.971 — THE MANAGER APP NEVER RENDERED TOASTS. store.showToast() sets `toast`,
 // but the only <Toast> in the app lives inside the POS shell (App.jsx ValidatedPOSApp)
@@ -157,7 +169,8 @@ export default function ManagerSurface() {
 // raised anywhere in the Manager tree (the Ops tab included) has been silently
 // discarded. Same family as the vanishing-categories saga: the app knew, the manager
 // never did. Mirrors BackOfficeToast in src/backoffice/BackOfficeApp.jsx.
-function ManagerToast() {
+function ManagerToast({ rail }) {
+  const L = useLayout();
   const toast = useStore(s => s.toast);
   if (!toast) return null;
   const map = {
@@ -169,56 +182,60 @@ function ManagerToast() {
   const c = map[toast.type] || map.info;
   return (
     <div className="toast" key={toast.key}
-      style={{ background: c.bg, border: `1px solid ${c.bdr}`, color: c.color, zIndex: 100003 }}>
+      style={{ background: c.bg, border: `1px solid ${c.bdr}`, color: c.color, zIndex: 100003, ...(rail ? L.s.toastRail : L.s.toastPlain) }}>
       {toast.msg}
     </div>
   );
 }
 
 function Screen({ children }) {
+  const L = useLayout();
   return <div style={{
     minHeight: '100vh', display: 'grid', placeItems: 'center',
     padding: 'calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px))',
-    background: 'var(--bg)', color: 'var(--t1)',
+    background: 'var(--bg)', color: 'var(--t1)', ...L.s.screen,
   }}>{children}<ManagerToast /></div>;
 }
 
 function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
+  const L = useLayout();
   return (
-    <div style={{
+    <div data-mgr-layout={L.phone ? undefined : L.band} style={{
       height: '100%', minHeight: '100vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch',
-      background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto',
+      background: 'var(--bg)', color: 'var(--t1)', margin: '0 auto',
       // The notch eats the top and the home indicator eats the bottom. The page
       // paints its own background through both, so the app looks continuous.
-      padding: '0 14px calc(92px + env(safe-area-inset-bottom, 0px))',
-      paddingTop: 'env(safe-area-inset-top, 0px)',
+      // Width and the four paddings come from the layout: the 480 column with the
+      // tab bar reserve on a phone, the full screen right of the rail from 660 wide.
+      ...L.s.shell,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '14px 4px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '14px 4px 12px', ...L.s.header }}>
         <div className="sv-glass" style={{ width: 36, height: 36, borderRadius: 11, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
-        <button onClick={onLogout} title="Switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ctx.venueName || 'ServOS Manager'}</div>
-          {ctx.operator && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>{ctx.operator.name} · {ctx.operator.role || 'staff'}</div>}
+        <button onClick={onLogout} title="Switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit', ...L.s.switchUser }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...L.s.venueName }}>{ctx.venueName || 'ServOS Manager'}</div>
+          {ctx.operator && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono, ...L.s.operatorLine }}>{ctx.operator.name} · {ctx.operator.role || 'staff'}</div>}
         </button>
         {/* The snapshot refreshes itself every 30s, but there was no way to ASK
             for fresh numbers, which is the first thing anyone does when a figure
             looks stale (Peter, 26 Aug). Spins while it fetches so the tap is
             visibly acknowledged. */}
         <RefreshButton onRefresh={ctx.refreshSnap} />
-        <button onClick={ctx.toggleTheme} aria-label="Theme" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+        <button onClick={ctx.toggleTheme} aria-label="Theme" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0, ...L.s.hit }}>
           {ctx.dark ? '☾' : '☀'}
         </button>
-        <button onClick={onLogout} aria-label="Sign out" title="Sign out" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--red)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+        <button onClick={onLogout} aria-label="Sign out" title="Sign out" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--red)', border: '1px solid var(--bdr)', flexShrink: 0, ...L.s.hit }}>
           <Icon name="signout" size={18} />
         </button>
       </div>
       {children}
       <TabBar tabs={tabs} active={active} onTab={onTab} />
-      <ManagerToast />
+      <ManagerToast rail />
     </div>
   );
 }
 
 function RefreshButton({ onRefresh }) {
+  const L = useLayout();
   const [busy, setBusy] = useState(false);
   const go = async () => {
     if (busy || !onRefresh) return;
@@ -238,7 +255,7 @@ function RefreshButton({ onRefresh }) {
       style={{
         width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center',
         cursor: busy ? 'default' : 'pointer', color: busy ? 'var(--acc)' : 'var(--t1)',
-        border: '1px solid var(--bdr)', flexShrink: 0, fontSize: 17, lineHeight: 1,
+        border: '1px solid var(--bdr)', flexShrink: 0, fontSize: 17, lineHeight: 1, ...L.s.hit,
       }}
     >
       <span style={{ display: 'block', animation: busy ? 'spin .7s linear infinite' : 'none' }}>↻</span>
@@ -246,20 +263,23 @@ function RefreshButton({ onRefresh }) {
   );
 }
 
+// One component, one set of elements: a floating pill along the bottom on a phone, the same
+// pill stood up as a rail on the left edge from 660 wide. Only the styles differ.
 function TabBar({ tabs, active, onTab }) {
+  const L = useLayout();
   return (
-    <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, display: 'flex', justifyContent: 'center', padding: '0 14px calc(14px + env(safe-area-inset-bottom, 0px))', pointerEvents: 'none', zIndex: 30 }}>
-      <div className="sv-glass" style={{ pointerEvents: 'auto', display: 'flex', gap: 2, padding: 6, borderRadius: 999, maxWidth: 480, width: '100%', justifyContent: 'space-around' }}>
+    <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, display: 'flex', justifyContent: 'center', padding: '0 14px calc(14px + env(safe-area-inset-bottom, 0px))', pointerEvents: 'none', zIndex: 30, ...L.s.navWrap }}>
+      <div className="sv-glass" style={{ pointerEvents: 'auto', display: 'flex', gap: 2, padding: 6, borderRadius: 999, maxWidth: 480, width: '100%', justifyContent: 'space-around', ...L.s.navPill }}>
         {tabs.map((t) => {
           const on = t.key === active;
           return (
             <button key={t.key} onClick={() => onTab(t.key)} style={{
               flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '8px 4px',
               background: on ? 'var(--acc-d)' : 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer',
-              color: on ? 'var(--acc)' : 'var(--t3)', fontFamily: 'inherit', minWidth: 44,
+              color: on ? 'var(--acc)' : 'var(--t3)', fontFamily: 'inherit', minWidth: 44, ...L.s.navBtn,
             }}>
-              <Icon name={t.icon} size={20} />
-              <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', ...mono }}>{t.label}</span>
+              <Icon name={t.icon} size={L.navIcon} />
+              <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', ...mono, ...L.s.navLabel }}>{t.label}</span>
             </button>
           );
         })}
@@ -269,19 +289,20 @@ function TabBar({ tabs, active, onTab }) {
 }
 
 function PairScreen({ code, onDemo, demoErr }) {
+  const L = useLayout();
   return (
     <Screen>
-      <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 340 }}>
-        <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this phone</div>
-        <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: '.12em', margin: '14px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
+      <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 340, ...L.s.pairCard }}>
+        <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono, ...L.s.pairLabel }}>Pair this {L.deviceWord}</div>
+        <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: '.12em', margin: '14px 0', color: 'var(--acc)', ...mono, ...L.s.pairCode }}>{code || '······'}</div>
         {/* Operations → Devices, NOT Settings → Devices. Manager registers through
             the ops device layer (opsRegisterDevice), which is the same list the
             Ops tablet pairs into. The Settings group has no Devices page at all. */}
-        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Operations → Devices, enter this code to link this phone to your venue. This screen updates automatically once it&apos;s paired.</div>
+        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5, ...L.s.pairBody }}>In Back Office → Operations → Devices, enter this code to link this {L.deviceWord} to your venue. This screen updates automatically once it&apos;s paired.</div>
         {onDemo && (
           <>
             <button type="button" onClick={onDemo}
-              style={{ marginTop: 18, width: '100%', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'transparent', color: 'var(--t2)', fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+              style={{ marginTop: 18, width: '100%', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'transparent', color: 'var(--t2)', fontSize: 14, fontFamily: 'inherit', cursor: 'pointer', ...L.s.pairBtn }}>
               No venue yet? Try the demo
             </button>
             {demoErr && <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--red)' }}>{demoErr}</div>}
@@ -293,6 +314,7 @@ function PairScreen({ code, onDemo, demoErr }) {
 }
 
 function PinScreen({ loc, venueName, onOk }) {
+  const L = useLayout();
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
   const submit = async (p) => {
@@ -303,14 +325,14 @@ function PinScreen({ loc, venueName, onOk }) {
   const tap = (d) => { setErr(''); const next = (pin + d).slice(0, 6); setPin(next); if (next.length === 4) submit(next); };
   return (
     <Screen>
-      <div style={{ textAlign: 'center', width: 280 }}>
-        <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{venueName || 'ServOS Manager'}</div>
-        <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px' }}>Enter your PIN</div>
+      <div style={{ textAlign: 'center', width: 280, ...L.s.pinBlock }}>
+        <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono, ...L.s.pinVenue }}>{venueName || 'ServOS Manager'}</div>
+        <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px', ...L.s.pinTitle }}>Enter your PIN</div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18 }}>
-          {[0, 1, 2, 3].map((i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
+          {[0, 1, 2, 3].map((i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)', ...L.s.pinDot }} />)}
         </div>
         {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, ...L.s.pinGrid }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => <PinKey key={n} onClick={() => tap(String(n))}>{n}</PinKey>)}
           <div /><PinKey onClick={() => tap('0')}>0</PinKey>
           <PinKey onClick={() => setPin(pin.slice(0, -1))}>⌫</PinKey>
@@ -319,6 +341,9 @@ function PinScreen({ loc, venueName, onOk }) {
     </Screen>
   );
 }
-const PinKey = ({ children, onClick }) => (
-  <button onClick={onClick} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
-);
+const PinKey = ({ children, onClick }) => {
+  const L = useLayout();
+  return (
+    <button onClick={onClick} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer', border: '1px solid var(--bdr)', ...mono, ...L.s.pinKey }}>{children}</button>
+  );
+};
