@@ -805,3 +805,6 @@ body[data-kiosk-staff-alert-open] .toast{ z-index:100030; }
 /* ---- Customer menu (storefront) themeable header animations ---- */
 @keyframes mh-flicker { 0%,100% { opacity:.5; } 45% { opacity:.72; } 70% { opacity:.58; } }
 @keyframes mh-dotpulse { 0%,100% { box-shadow:0 0 0 0 rgba(34,197,94,.55); } 60% { box-shadow:0 0 0 6px rgba(34,197,94,0); } }
+
+/* Manager app, tablet widths only: the attribute exists only on the Manager Shell from 660 wide. */
+[data-mgr-layout] button, [data-mgr-layout] select, [data-mgr-layout] input:not([type="file"]):not([type="checkbox"]):not([type="radio"]) { min-height: 44px; }

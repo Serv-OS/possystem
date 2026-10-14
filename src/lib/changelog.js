@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.57',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad: the app now uses the whole screen. The tabs sit in a rail down the left side, and in landscape Home, Reports, Team and Kitchen show two panels side by side. Before, an iPad showed a narrow phone sized column in the middle of the screen.",
+      "Manager app on iPad: the pairing screen and the PIN pad are larger, Ops tiles and lists use the width, and every button is at least finger sized. Turning the iPad or using Split View keeps whatever you were typing.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
     v: '5.11.56',
     date: '13 Oct 2026',
     items: [

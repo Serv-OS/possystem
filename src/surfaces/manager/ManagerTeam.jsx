@@ -10,6 +10,8 @@ import { managerApprove } from '../../lib/manager/data';
 import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
+import { useLayout } from './useLayout';
+import { cols } from './layout';
 
 const TZ_DEFAULT = 'Europe/London';
 const hm = (mins) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
@@ -47,6 +49,9 @@ const fieldStyle = { width: '100%', marginTop: 4, padding: '9px 10px', borderRad
 
 export default function ManagerTeam({ ctx }) {
   const { flags, snap, snapErr: err, loc, refreshSnap } = ctx;
+  // Layout feeds style values only (manager/layout.js). Two panes need the approvals inbox.
+  const L = useLayout();
+  const two = L.panes === 2 && flags.team_approvals;
   const [acting, setActing] = useState(null);   // target key being acted on (disables its buttons)
   const [done, setDone] = useState({});         // optimistic hide after a successful decision
   const [actErr, setActErr] = useState('');
@@ -139,14 +144,14 @@ export default function ManagerTeam({ ctx }) {
   };
 
   return (
-    <div>
+    <div style={two ? L.s.page2 : undefined}>
       <Header title="Team" sub={flags.team_approvals ? 'Live + approvals' : 'Live floor'} />
-      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono }}>Loading…</div>}
-      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13 }}>Couldn’t load the team ({err}).</div>}
+      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
+      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load the team ({err}).</div>}
 
       {team && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, ...(two ? L.s.statGridSpan : L.phone ? null : { gridTemplateColumns: cols(L.statCols) }) }}>
             <Stat label="On shift now" value={on.length} tone="var(--grn)" />
             <Stat label="Live labour" value={money(labourMinor / 100, snap.money?.currency)} />
             <Stat label="No-shows" value={noshow.length} tone={noshow.length ? 'var(--red)' : 'var(--grn)'} />
@@ -155,12 +160,12 @@ export default function ManagerTeam({ ctx }) {
 
           {/* ── Approvals (gated by the team_approvals flag) ── */}
           {flags.team_approvals && (
-            <>
+            <div style={L.s.paneB}>
               <SectionTitle right={pendingCount ? `${pendingCount} pending` : undefined}>Approvals</SectionTitle>
               {pendingCount === 0 ? (
                 <div className="sv-glass" style={{ padding: 14, color: 'var(--t3)', fontSize: 13 }}>Nothing to approve — all caught up.</div>
               ) : !pin ? (
-                <div className="sv-glass" style={{ padding: 16 }}>
+                <div className="sv-glass" style={{ padding: 16, ...L.s.lockCard }}>
                   <div style={{ fontSize: 13, fontWeight: 800 }}>Manager PIN required</div>
                   <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>Approvals write to payroll and the audit trail — confirm it’s you.</div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -168,7 +173,7 @@ export default function ManagerTeam({ ctx }) {
                       onChange={(e) => { setPinErr(''); setEntry(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
                       onKeyDown={(e) => { if (e.key === 'Enter' && entry.length >= 4) setPin(entry); }}
                       placeholder="PIN"
-                      style={{ flex: 1, padding: '11px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none' }} />
+                      style={{ flex: 1, padding: '11px 14px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none', ...L.s.pinInput }} />
                     <button onClick={() => { if (entry.length >= 4) setPin(entry); }} disabled={entry.length < 4} className="sv-glass"
                       style={{ padding: '0 18px', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: entry.length >= 4 ? 'pointer' : 'default', color: 'var(--grn)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit', opacity: entry.length >= 4 ? 1 : 0.5 }}>Unlock</button>
                   </div>
@@ -218,7 +223,7 @@ export default function ManagerTeam({ ctx }) {
 
                         {isEd && (
                           <div style={{ marginTop: 12, borderTop: '1px solid var(--bdr)', paddingTop: 12 }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, ...L.s.editGrid }}>
                               <label style={{ display: 'block' }}>
                                 <span style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>Start</span>
                                 <input type="time" value={eform.start} onChange={(e) => setEform((f) => ({ ...f, start: e.target.value }))} style={fieldStyle} />
@@ -241,7 +246,7 @@ export default function ManagerTeam({ ctx }) {
                               <button onClick={() => setEditId(null)} disabled={busy} className="sv-glass"
                                 style={{ flex: '0 0 auto', padding: '10px 16px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
                               <button onClick={() => approveTs(t.id, buildEdit(t))} disabled={busy} className="sv-glass"
-                                style={{ flex: 1, padding: '10px 16px', borderRadius: 12, border: '1px solid var(--grn-b)', background: 'var(--grn-d)', cursor: busy ? 'default' : 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 13.5, fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                                style={{ flex: 1, padding: '10px 16px', borderRadius: 12, border: '1px solid var(--grn-b)', background: 'var(--grn-d)', cursor: busy ? 'default' : 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 13.5, fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, ...L.s.saveBtn }}>
                                 <Icon name="check" size={15} /> {busy ? 'Saving…' : 'Save & approve'}
                               </button>
                             </div>
@@ -264,13 +269,13 @@ export default function ManagerTeam({ ctx }) {
                       {dayLbl(l.startDate, tz)}{l.endDate && l.endDate !== l.startDate ? ` → ${dayLbl(l.endDate, tz)}` : ''}{l.days ? ` · ${l.days} day${l.days > 1 ? 's' : ''}` : ''}
                     </div>
                     {l.note && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>{l.note}</div>}
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, ...L.s.decideRow }}>
                       <button onClick={() => decideTo(l.id, 'denied')} disabled={busyOk || busyNo} className="sv-glass"
-                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>
+                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit', ...L.s.decideBtn }}>
                         {busyNo ? '…' : 'Decline'}
                       </button>
                       <button onClick={() => decideTo(l.id, 'approved')} disabled={busyOk || busyNo} className="sv-glass"
-                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit' }}>
+                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', ...L.s.decideBtn }}>
                         {busyOk ? '…' : 'Approve'}
                       </button>
                     </div>
@@ -279,12 +284,13 @@ export default function ManagerTeam({ ctx }) {
               })}
                 </>
               )}
-            </>
+            </div>
           )}
 
+          <div style={L.s.paneA}>
           {noshow.length > 0 && <>
             <SectionTitle>No-shows</SectionTitle>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(two ? null : L.s.rows) }}>
               {noshow.map((n) => (
                 <div key={n.staffId} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--red-b)' }}>
                   <Icon name="warn" size={18} style={{ color: 'var(--red)' }} />
@@ -299,7 +305,7 @@ export default function ManagerTeam({ ctx }) {
 
           {breaks.length > 0 && <>
             <SectionTitle>Breaks due</SectionTitle>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(two ? null : L.s.rows) }}>
               {breaks.map((b) => (
                 <div key={b.staffId} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14 }}>
                   <Icon name="clock" size={18} style={{ color: 'var(--orn)' }} />
@@ -313,7 +319,7 @@ export default function ManagerTeam({ ctx }) {
           </>}
 
           <SectionTitle>On shift now</SectionTitle>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(flags.team_approvals ? null : L.s.rows) }}>
             {on.length === 0 && <div className="sv-glass" style={{ padding: 14, color: 'var(--t3)', fontSize: 13 }}>Nobody clocked in.</div>}
             {on.map((p) => (
               <div key={p.id || p.staffId} className="sv-glass" style={{ padding: '12px 14px', borderRadius: 14 }}>
@@ -338,7 +344,7 @@ export default function ManagerTeam({ ctx }) {
                       <input type="password" inputMode="numeric" autoComplete="off" autoFocus value={outEntry} placeholder="PIN"
                         onChange={(e) => { setOutErr({ id: null, msg: '' }); setOutEntry(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
                         onKeyDown={(e) => { if (e.key === 'Enter' && outEntry.length >= 4 && acting !== p.id) clockOut(p, outEntry); }}
-                        style={{ flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none' }} />
+                        style={{ flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none', ...L.s.pinInput }} />
                       <button onClick={() => { setOutFor(null); setOutEntry(''); setOutErr({ id: null, msg: '' }); }} disabled={acting === p.id} className="sv-glass"
                         style={{ padding: '0 12px', borderRadius: 11, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>Cancel</button>
                       <button onClick={() => clockOut(p, outEntry)} disabled={outEntry.length < 4 || acting === p.id} className="sv-glass"
@@ -351,6 +357,7 @@ export default function ManagerTeam({ ctx }) {
                 {outErr.id === p.id && outErr.msg && <div style={{ color: 'var(--red)', fontSize: 12.5, marginTop: 8 }}>{outErr.msg}</div>}
               </div>
             ))}
+          </div>
           </div>
         </>
       )}
