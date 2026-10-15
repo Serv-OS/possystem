@@ -44,6 +44,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { supabase, isMock, kitchenClient } from '../../lib/supabase';
+import { liveRow } from '../../lib/liveRow';
 import { updateDeviceHeartbeat } from '../../lib/db';
 import { playOrderChime } from '../../lib/orderChime';
 import { withTimeout } from '../../lib/withTimeout';
@@ -507,9 +508,13 @@ export function KDSSurface() {
       channel = supabase
         .channel(`kds-tickets-${locationId}${centreId ? `-${centreId}` : ''}-${joins}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
+          // 12 Oct 2026 (main, liveRow): a live change that carries an error has no record (new = {}),
+          // and the server sends it to every screen on the table. Skipped; the list read decides.
+          if (!liveRow(payload)) return;
           if (alive) eng.liveInsert(payload.new);
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'kds_tickets', filter: `location_id=eq.${locationId}` }, (payload) => {
+          if (!liveRow(payload)) return;
           if (alive) eng.liveUpdate(payload.new);
         })
         .subscribe((status) => {

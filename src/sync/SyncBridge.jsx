@@ -9,7 +9,7 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode, isBackOfficeMode } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, isBackOfficeMode } from '../lib/supabase';
 import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
@@ -371,6 +371,16 @@ export default function SyncBridge({ onSyncPulse }) {
           const floorRes    = unwrap(floorSt);
           const itemsRes    = unwrap(itemsSt);
           const catsRes     = unwrap(catsSt);
+          // 12 Oct 2026 (Preston): the category read SUCCEEDED for this venue and found none. The
+          // master till must hold this venue's menu before it sends a QR, online or kiosk order
+          // to the kitchen (lib/channelRouteGate.js venueHoldsMenu). "Boot finished" is no proof:
+          // a failed leg reads as data null. No new read, this is the leg above.
+          // Review, same day: ONLY for a read with no rows. This line used to mark any successful
+          // read, and the rows of that read reach the store several awaited reads further down
+          // (the boot patch), so in between the gate said "no categories on file, go" with an
+          // empty tree and the real master could repeat Preston. A venue WITH categories is
+          // ready when they are in the store, which the gate already watches.
+          if (!catsRes.error && Array.isArray(catsRes.data) && catsRes.data.length === 0) useStore.setState({ _catsReadLocationId: locationId });
           const menusRes    = unwrap(menusSt);
           const linksRes    = unwrap(linksSt);
           const sessionsRes = unwrap(sessionsSt);
@@ -741,7 +751,10 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     // v5.9.72: not on a kitchen screen, which only reads tables and must never put one back.
-    if (!isMock && getDeviceMode() !== 'kds') startSessionReconciler();
+    // 12 Oct 2026: that is now the reconciler's own test, asked on every pass and for every shape
+    // of kitchen screen (sync/SessionReconciler.js), not the mode word read once here. So it is
+    // started on every page, and stands still while the page shows the kitchen screen.
+    if (!isMock) startSessionReconciler();
     // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
     if (!isMock) startTablePlanSync();
     // v5.5.846 — close tables paid on the PAX. 28 Sep 2026: on every device that mounts this

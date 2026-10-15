@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { Icon } from '../../components/ServOSIcons';
 import OpsDocViewer from '../../components/OpsDocViewer';
+import { useLayout } from '../manager/useLayout';
 import { photoInputProps, photoButtonLabel } from '../../lib/cameraCapture';
 import { reportSave } from '../../lib/saveHealth';
 import { fetchDocuments, uploadDocument, openDocument } from '../../lib/ops/documents';
@@ -35,9 +36,10 @@ const fieldLbl = { fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase
 const HUE = { documents: 260, forms: 330 };
 
 function Header({ title, sub, onBack }) {
+  const L = useLayout();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-      {onBack && <button onClick={onBack} aria-label="Back" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', fontSize: 18, border: '1px solid var(--bdr)' }}>‹</button>}
+      {onBack && <button onClick={onBack} aria-label="Back" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', fontSize: 18, border: '1px solid var(--bdr)', ...L.s.hit }}>‹</button>}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 17, fontWeight: 800 }}>{title}</div>
         {sub && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>{sub}</div>}
@@ -52,6 +54,7 @@ const Chip = ({ on, onClick, children }) => (
 
 // ── Documents ────────────────────────────────────────────────────────────────
 export function OpsDocuments({ loc, operator, onBack }) {
+  const L = useLayout();
   const [rows, setRows] = useState(null);
   const [absent, setAbsent] = useState('');
   const [err, setErr] = useState('');
@@ -88,7 +91,7 @@ export function OpsDocuments({ loc, operator, onBack }) {
       <Header title="Documents" sub={rows == null ? '' : `${list.length} document${list.length === 1 ? '' : 's'}`} onBack={onBack} />
       {absent ? <Note>{absent}</Note> : (
         <>
-          <button onClick={() => setUploading(true)} className="btn btn-acc" style={{ width: '100%', padding: 13, marginBottom: 12, fontSize: 14, fontWeight: 800, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={() => setUploading(true)} className="btn btn-acc" style={{ width: '100%', padding: 13, marginBottom: 12, fontSize: 14, fontWeight: 800, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, ...L.s.ctl }}>
             <Icon name="plus" size={16} /> Upload a document
           </button>
           <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6, marginBottom: 8 }}>
@@ -97,7 +100,7 @@ export function OpsDocuments({ loc, operator, onBack }) {
           {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</div>}
           {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading...</div>}
           {rows && shown.length === 0 && !err && <Note>{list.length === 0 ? 'No documents yet.' : 'No documents in this category.'}</Note>}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>
             {shown.map((d) => (
               <div key={d.id}>
                 <button onClick={() => open(d)} disabled={!!opening} className="sv-tile" style={{ '--h': HUE.documents, width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
@@ -121,6 +124,7 @@ export function OpsDocuments({ loc, operator, onBack }) {
 }
 
 function UploadDocument({ loc, operator, onDone }) {
+  const L = useLayout();
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('food_safety');
@@ -147,7 +151,7 @@ function UploadDocument({ loc, operator, onDone }) {
   };
 
   return (
-    <div>
+    <div style={L.s.capForm}>
       <Header title="Upload a document" sub="Any file, up to 20 MB" onBack={() => onDone(false)} />
       <input ref={fileRef} type="file" onChange={pick} style={{ display: 'none' }} />
       <button type="button" onClick={() => fileRef.current?.click()} style={{ width: '100%', border: '1.5px dashed var(--bdr3)', borderRadius: 14, padding: 22, textAlign: 'center', color: file ? 'var(--t1)' : 'var(--t3)', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
@@ -173,6 +177,7 @@ function UploadDocument({ loc, operator, onDone }) {
 
 // ── Forms ────────────────────────────────────────────────────────────────────
 export function OpsForms({ loc, operator, onBack }) {
+  const L = useLayout();
   const [forms, setForms] = useState(null);
   const [absent, setAbsent] = useState('');
   const [err, setErr] = useState('');
@@ -200,12 +205,12 @@ export function OpsForms({ loc, operator, onBack }) {
           {forms && list.length === 0 && !err && <Note>No forms yet. A manager builds and names them in Back Office, under Operations, Forms.</Note>}
           {list.length > 0 && (
             <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a form by name"
-              aria-label="Find a form by name" autoComplete="off" style={{ ...fieldStyle, marginBottom: 12 }} />
+              aria-label="Find a form by name" autoComplete="off" style={{ ...fieldStyle, marginBottom: 12, ...L.s.ctl }} />
           )}
           {list.length > 0 && shown.length === 0 && (
             <Note>No form called &quot;{find.trim()}&quot;. Check the spelling, or ask a manager to add it in Back Office.</Note>
           )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>
             {shown.map((f) => (
               <button key={f.id} onClick={() => setActive(f)} className="sv-tile" style={{ '--h': HUE.forms, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
                 <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${HUE.forms} / 0.18)`, color: `oklch(0.85 0.14 ${HUE.forms})`, flexShrink: 0 }}><Icon name="edit" size={19} /></div>
@@ -225,6 +230,7 @@ export function OpsForms({ loc, operator, onBack }) {
 }
 
 export function FormFill({ loc, operator, form, onDone }) {
+  const L = useLayout();
   const [answers, setAnswers] = useState({});
   const [errors, setErrors] = useState({});
   const [previews, setPreviews] = useState({});        // question id to an object URL of the chosen photo
@@ -297,7 +303,7 @@ export function FormFill({ loc, operator, form, onDone }) {
 
   if (saved) {
     return (
-      <div>
+      <div style={L.s.capForm}>
         <Header title={form.name} sub="Saved" onBack={onDone} />
         <div className="sv-glass" style={{ padding: 24, textAlign: 'center', marginBottom: 14 }}>
           <div style={{ width: 48, height: 48, borderRadius: 999, margin: '0 auto 10px', display: 'grid', placeItems: 'center', background: 'var(--grn-d)', color: 'var(--grn)' }}><Icon name="check" size={26} /></div>
@@ -311,7 +317,7 @@ export function FormFill({ loc, operator, form, onDone }) {
   }
 
   return (
-    <div>
+    <div style={L.s.capForm}>
       <Header title={form.name} sub={`${form.fields.length} question${form.fields.length === 1 ? '' : 's'}`} onBack={onDone} />
       {form.description && <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5, marginBottom: 6 }}>{form.description}</div>}
       <input ref={photoRef} {...photoInputProps()} onChange={onPhoto} style={{ display: 'none' }} />

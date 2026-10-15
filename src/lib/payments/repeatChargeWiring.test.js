@@ -60,7 +60,12 @@ test("adyen-terminal-charge 'result' never cancels a tender under 120 s from an 
   assert.ok(result.includes('const tenderStalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;'));
   assert.equal((result.match(/if \(v\.verdict === 'nothing' && !tenderStalled\) \{/g) || []).length, 2, 'the unreachable and the unknown branches both wait');
   before(result, "if (v.verdict === 'nothing' && !tenderStalled) {", "if (v.verdict === 'nothing') {", 'the guard comes before the cancel');
-  assert.equal((result.match(/return json\(\{ ok: true, state: 'processing', status: job\.status \}\);/g) || []).length >= 4, true);
+  // 13 Oct 2026: "still in flight" is one helper now (it adds the reason and two times; ok, state
+  // and status are what they were). Both young guards answer through it.
+  assert.ok(result.includes("const processing = (why: string, extra: Record<string, unknown> = {}) => json({\n      ok: true, state: 'processing', status: job.status, why,"));
+  assert.equal((result.match(/return processing\(/g) || []).length >= 8, true);
+  assert.equal((result.match(/if \(v\.verdict === 'nothing' && !tenderStalled\) \{\n\s*console\.log\([^\n]*\n\s*return processing\('no_answer_yet'\);/g) || []).length, 2, 'each young guard answers "processing"');
+  assert.ok(!result.includes("return json({ ok: true, state: 'processing', status: job.status });"), 'no bare copy of the old answer is left before the not found branch');
 });
 
 test('terminal-job-create answers 409 POSSIBLE_REPEAT (or TERMINAL_BUSY) with the detail, unless repeat_ok_job_id names that job; the ack is written to the draft', () => {
@@ -78,7 +83,8 @@ test('terminal-job-create answers 409 POSSIBLE_REPEAT (or TERMINAL_BUSY) with th
 
 test('the 23505 TERMINAL_BUSY path carries the same detail (job id, amount, time, ref, items, adoptable)', () => {
   const busy = create.slice(create.indexOf('// 2. Terminal busy with another bill.'), create.indexOf('// 3. THE PRIMARY KEY.'));
-  assert.ok(busy.includes("select('id, check_key, status, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')"));
+  // 13 Oct 2026: processor rides along, so the busy words can tell an Adyen reader from a PAX.
+  assert.ok(busy.includes("select('id, check_key, status, processor, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')"));
   assert.ok(busy.includes('const detail = repeatDetail(busy as Record<string, unknown>, null, { now: Date.now() });'));
   assert.ok(busy.includes("const adoptable = !!pos_device_id && busy.pos_device_id === pos_device_id && busyDraft.source === 'pos_send_to_terminal';"));
   assert.ok(busy.includes("code: 'TERMINAL_BUSY',"));

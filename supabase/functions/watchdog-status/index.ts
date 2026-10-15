@@ -75,20 +75,30 @@ Deno.serve(async (req) => {
   const openWithin = clamp(w.orders_open?.within, 1, 10080, 1440);
 
   try {
-    const [venuesRes, strandedRes, lostRes, stuckRes, openRes] = await Promise.all([
-      admin.from('locations').select('id,name').limit(500),
-      admin.from('terminal_jobs').select('location_id')
+    // 14 Oct 2026, Peter: "this is a test location we dont need notifications". A venue
+    // flagged is_demo (migration 20261013a, the App Review demo venue) is left out of every
+    // venue signal below. It is filtered IN the queries, not after them, so a demo venue with
+    // hundreds of stuck test jobs can never use up the 500 row window and hide a real venue.
+    // The database and watchdog signals still cover it: they are about the system, not a venue.
+    const venuesRes = await admin.from('locations').select('id,name,is_demo').limit(500);
+    if (venuesRes.error) return json({ ok: false, reason: 'db', detail: venuesRes.error.message }, 503);
+    const demoIds = (venuesRes.data ?? []).filter((l) => l.is_demo === true).map((l) => String(l.id));
+    // deno-lint-ignore no-explicit-any
+    const realVenues = (q: any) => (demoIds.length ? q.not('location_id', 'in', `(${demoIds.join(',')})`) : q);
+
+    const [strandedRes, lostRes, stuckRes, openRes] = await Promise.all([
+      realVenues(admin.from('terminal_jobs').select('location_id'))
         .in('status', ['charging', 'charging_unsent']).lt('created_at', ago(cardOlder)).limit(500),
-      admin.from('print_jobs').select('location_id')
+      realVenues(admin.from('print_jobs').select('location_id'))
         .eq('status', 'failed_permanent').gt('created_at', ago(lostWithin)).limit(500),
-      admin.from('print_jobs').select('location_id')
+      realVenues(admin.from('print_jobs').select('location_id'))
         .in('status', ['pending', 'claimed']).lt('created_at', ago(printOlder)).limit(500),
-      admin.from('order_queue').select('location_id')
+      realVenues(admin.from('order_queue').select('location_id'))
         .not('status', 'in', '(collected,cancelled)')
         .lt('created_at', ago(openOlder)).gt('created_at', ago(openWithin)).limit(500),
     ]);
 
-    for (const r of [venuesRes, strandedRes, lostRes, stuckRes, openRes]) {
+    for (const r of [strandedRes, lostRes, stuckRes, openRes]) {
       // The database answered with a complaint. Say WHICH, so a wrong query of
       // ours is never dressed up as a venue outage.
       if (r.error) return json({ ok: false, reason: 'db', detail: r.error.message }, 503);
@@ -109,6 +119,7 @@ Deno.serve(async (req) => {
       ok: true,
       at: new Date().toISOString(),
       venuesKnown: names.size,
+      demoVenuesSkipped: demoIds.length,
       cardStranded: byVenue(strandedRes.data as Row[]),
       ticketsLost: byVenue(lostRes.data as Row[]),
       printStuck: byVenue(stuckRes.data as Row[]),

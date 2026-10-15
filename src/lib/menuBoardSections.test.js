@@ -93,7 +93,7 @@ test('no blocks = top level categories in menu order; empty sections dropped; a 
 test('pins: the TV and the builder read this module, not their own copies', () => {
   const tv = read('surfaces/MenuBoardSurface.jsx');
   assert.match(tv, /boardItemsByCategory\(data\.items\)/);
-  assert.match(tv, /boardSections\(\{ blocks: data\.board\?\.layout\?\.blocks, cats: data\.cats, itemsByCat, addOnsByCat \}\)/);
+  assert.match(tv, /boardSections\(\{ blocks: board\?\.layout\?\.blocks, cats: data\.cats, itemsByCat, addOnsByCat \}\)/);
   assert.match(read('surfaces/menuboard/BoardParts.jsx'), /\}\}>\{sec\.title\}<\/div>/, 'the heading is the section title (block heading, else the category name)');
   assert.doesNotMatch(tv, /filter\(\(c\) => !c\.parent_id && !c\.is_special\)/, 'top level only filter is gone');
   const bo = read('backoffice/sections/MenuBoards.jsx');
@@ -190,7 +190,7 @@ test('sizes and colours: today\'s look by default, each element its own choice',
 test('pins: the TV and the builder draw with the shared parts and size with the shared rule', () => {
   const tv = read('surfaces/MenuBoardSurface.jsx');
   assert.match(tv, /from '\.\/menuboard\/BoardParts'/);
-  assert.match(tv, /<BoardHeader theme=\{theme\} name=\{data\.board\?\.name\} basePx=\{headerPx\} \/>/, 'v5.9.77: the header is sized by the screen');
+  assert.match(tv, /<BoardHeader theme=\{theme\} name=\{board\?\.name\} basePx=\{headerPx\} \/>/, 'v5.9.77: the header is sized by the screen');
   assert.match(tv, /const headerPx = headerBasePx\(stage\.w, stage\.h\);/);
   // v5.9.76: the body measures, packs and fits (BoardParts BoardBody); the surfaces only pick the column count.
   assert.match(tv, /<BoardBody rootRef=\{boardRef\} sections=\{sections\} cols=\{cols\} textScale=\{textScale\} fontRange=\{FIT\} gapEm=\{1\.7\} whole=\{boardKeepsWhole\(disp\)\} fitKey=\{fitKey\}/);

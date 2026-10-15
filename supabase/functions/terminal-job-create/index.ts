@@ -47,6 +47,8 @@ import { shouldServerKick, clientOwnsCreateKick, LOST_CAS_ASK_AFTER_MS } from '.
 import { secondStepRefusal } from '../_shared/second-step.ts';
 // 30 Sep 2026: the double charge net (see § 3e below).
 import { shouldCheckRepeat, findPossibleRepeat, repeatRefusal, repeatWarning, repeatAckRecord, repeatDetail, repeatMessage, REPEAT_WINDOW_MS } from '../_shared/repeatCharge.js';
+// 13 Oct 2026: a refused Pay press asks the reader about the payment that is holding it.
+import { busyPressAskDelays } from '../_shared/readerLock.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -128,8 +130,9 @@ const SERVER_KICK_GRACE_MS = 1500;
  * minutes later.
  *
  * This is an ASK, never another kick: 'result' settles from the reader's own
- * answer, leaves a live tender alone inside 120s, and resets a job the reader
- * never saw back to charging_unsent for the sweep to re-kick safely.
+ * answer and leaves a live tender alone inside 120s. A job the reader never saw
+ * is cancelled once that is proven (13 Oct 2026, _shared/readerLock.js); it is
+ * no longer put back to charging_unsent and nothing re sends it.
  */
 function scheduleReaderAsk(jobId: string, why: string) {
   const run = async () => {
@@ -151,6 +154,82 @@ function scheduleReaderAsk(jobId: string, why: string) {
   if (rt?.waitUntil) rt.waitUntil(run());
   else run();
   console.log(`[terminal-job-create] reader ask scheduled for job ${jobId} in ${LOST_CAS_ASK_AFTER_MS}ms (${why})`);
+}
+
+/**
+ * THE SECOND TRIGGER FOR THE READER ASKS (review 13 Oct 2026).
+ *
+ * A payment the card machine never had is cleared by conservative status asks
+ * (adyen-terminal-charge 'result', conservative true). Their only other trigger
+ * is the every minute cron, and on 13 Oct the cron's calls did not arrive for
+ * 15 minutes (06:32 to 06:47 UTC, every cron driven function at once), which is
+ * exactly when the Huddersfield job was stuck. So the cron cannot be the only
+ * one. The moment the lock hurts is a Pay press that is refused as TERMINAL_BUSY,
+ * and that press is a request that always reaches us. It now books the same
+ * asks for the job that is holding the reader: once now, then at each timer ask
+ * time still ahead, up to 185 s after the send (busyPressAskDelays, pure and
+ * tested in _shared/readerLock.js; nothing for a job under 45 s old, a PAX or
+ * Ryft job, a job not sent yet, or one the device drives over the local bridge).
+ *
+ * These are ASKS, never a kick and never an abort: a conservative ask may only
+ * settle a payment the reader or Adyen's ledger proves, or cancel one proven
+ * never taken (and a silent reader only once the send is dead, 155 s). The
+ * refusal itself is unchanged and is on the wire first: this runs under
+ * waitUntil and never throws. A read that fails here books nothing (the slower,
+ * safer path: the cron and the lease are still there).
+ */
+function scheduleBusyAsks(busy: Record<string, unknown>, why: string) {
+  const jobId = String(busy?.job_id ?? '');
+  // The cheap part of the rule first, so a young or non Adyen job costs no read at all.
+  if (!jobId || !busyPressAskDelays(busy, { now: Date.now() }).length) return;
+  const askAfter = async (delayMs: number) => {
+    try {
+      await new Promise((r) => setTimeout(r, Math.max(0, delayMs)));
+      const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ action: 'result', job_id: jobId, asked_by: 'busy_press', conservative: true }),
+      });
+      const out = await res.text();
+      console.log(`[terminal-job-create] busy press ask for job ${jobId}: ${res.status} ${out.slice(0, 200)}`);
+    } catch (e) {
+      console.error(`[terminal-job-create] busy press ask for job ${jobId} failed to send: ${(e as Error)?.message || e}`);
+    }
+  };
+  const run = async () => {
+    try {
+      // The local bridge check needs the two sign in ids of the BUSY job (its reader and its
+      // till can be other rows than this request's).
+      const [term, dev] = await Promise.all([
+        busy.target_terminal_id
+          ? opsAdmin.from('terminal_devices').select('id, device_uid').eq('id', String(busy.target_terminal_id)).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        busy.pos_device_id
+          ? opsAdmin.from('devices').select('id, device_uid').eq('id', String(busy.pos_device_id)).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+      ]);
+      if (term.error || dev.error) {
+        console.error(`[terminal-job-create] busy press asks for job ${jobId} not booked: could not read its reader or till (${term.error?.message || dev.error?.message})`);
+        return;
+      }
+      const delays = busyPressAskDelays(busy, {
+        now: Date.now(),
+        terminalDeviceUid: ((term.data as any)?.device_uid as string | null) ?? null,
+        posDeviceUid: ((dev.data as any)?.device_uid as string | null) ?? null,
+      });
+      if (!delays.length) return;
+      console.log(`[terminal-job-create] busy press: ${delays.length} ask(s) booked for job ${jobId} (${why}): ${JSON.stringify(delays)}`);
+      await Promise.all(delays.map(askAfter));
+    } catch (e) {
+      console.error(`[terminal-job-create] busy press asks for job ${jobId} failed: ${(e as Error)?.message || e}`);
+    }
+  };
+  const booked = run();
+  try {
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(booked);
+  } catch { /* the asks still run; they are only not held open */ }
 }
 
 function scheduleServerKick(jobId: string, why: string) {
@@ -574,7 +653,7 @@ Deno.serve(async (req) => {
         : `target_terminal_id.eq.${target_terminal_id}`;
       const { data: recent, error: recentErr } = await opsAdmin
         .from('terminal_jobs')
-        .select('id, check_key, status, location_id, pos_device_id, target_terminal_id, due_minor, charge_minor, currency, closed_check_id, check_draft, card, simulated, training, created_at, dispatched_at, charged_at, settled_at, updated_at')
+        .select('id, check_key, status, processor, location_id, pos_device_id, target_terminal_id, due_minor, charge_minor, currency, closed_check_id, check_draft, card, simulated, training, created_at, dispatched_at, charged_at, settled_at, updated_at')
         .eq('location_id', locationId)
         .or(sameDevice)
         .neq('check_key', check_key)
@@ -603,6 +682,8 @@ Deno.serve(async (req) => {
             job_id, tier: hit.tier, prior: hit.job.job_id, prior_ref: hit.job.ref, prior_booked: hit.job.booked,
             same_items: hit.same_items, subset_items: hit.subset_items, adoptable: hit.adoptable, ack_sent: body.repeat_ok_job_id ?? null,
           }));
+          // 13 Oct 2026: a press refused because a payment is still live asks the reader about it.
+          if (refusal.code === 'TERMINAL_BUSY') scheduleBusyAsks(hit.job as Record<string, unknown>, 'repeat check');
           return json({
             error: refusal.error,
             code: refusal.code,
@@ -747,7 +828,7 @@ Deno.serve(async (req) => {
     //    the reconcile queue and must never take a terminal out of service.
     const { data: busy } = await opsAdmin
       .from('terminal_jobs')
-      .select('id, check_key, status, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')
+      .select('id, check_key, status, processor, due_minor, charge_minor, currency, check_draft, pos_device_id, target_terminal_id, closed_check_id, card, created_at, dispatched_at, settled_at')
       .eq('target_terminal_id', target_terminal_id)
       .in('status', ['claimed', 'tipping', 'charging_unsent', 'charging'])
       .order('created_at', { ascending: false })
@@ -761,6 +842,8 @@ Deno.serve(async (req) => {
       const busyDraft = (busy.check_draft as Record<string, unknown> | null) ?? {};
       const adoptable = !!pos_device_id && busy.pos_device_id === pos_device_id && busyDraft.source === 'pos_send_to_terminal';
       const hit = { tier: 'live', job: detail, adoptable, same_items: false, subset_items: false, same_amount: false };
+      // 13 Oct 2026: the same asks as the § 3e refusal books (see scheduleBusyAsks).
+      scheduleBusyAsks(detail as Record<string, unknown>, 'reader index');
       const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', locationId).maybeSingle();
       return json({
         error: repeatMessage(hit, { tz: (loc?.timezone as string | undefined) || 'Europe/London' }),

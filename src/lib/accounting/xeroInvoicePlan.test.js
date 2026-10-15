@@ -9,14 +9,17 @@
  *      the till booked 1.34 on; the invoice sends 1.34).
  *   2. The payments come to the invoice total, one per clearing account, and equal what the
  *      older bank transaction posting received per account; the credit note and its refunds
- *      equal what it spent.
+ *      equal what it spent. Since 13 Oct 2026 a day's refunds are minus lines on its invoice
+ *      (xeroRefundLines.test.js), so each payment is what the older posting received less what
+ *      it spent; the credit note way is pinned here as it was, planned with started
+ *      'credit_note' (how a day an earlier attempt started that way is planned).
  *   3. Numbering SOS-LEEDS-20260929, the -R credit note, the reference and contact, site codes
  *      from slugs (LEEDS, HUDDERSFIELD, STATION, a digit on a clash).
  *   4. A US venue (tax added on top) posts Exclusive: amounts before tax, TaxAmount set, total
  *      equal to the money. The till works US tax out after discounts and loyalty or promo
  *      credits, so all of tax_amount is on the goods lines and the discount and credit lines
  *      carry none (a $10 item with a $2 reward posts 10.00 + 0.80 and -2.00).
- *   5. Refunds only: a credit note and no invoice. A payment kind with no clearing account and
+ *   5. Refunds only: a credit note and no invoice (said plainly on the day). A payment kind with no clearing account and
  *      a 0% Xero rate carrying VAT refuse the day; a group with no account goes to Other sales.
  *   6. Payloads are deterministic (so idempotency keys are stable); fee and cash hooks stay off.
  *   7. An item's own discount posts as its discount line; the groups keep their full sales.
@@ -48,7 +51,13 @@ const sumBy = (list, f) => list.reduce((s, x) => s + f(x), 0);
 
 test('the fixture day: lines by group and rate, VAT per rate is the till VAT to the penny', () => {
   const g = grouped(saleRows(), refundRows());
-  const p = plan(g);
+  // The credit note way, exactly as before 13 Oct 2026: how a day started that way is planned.
+  const p = plan(g, mapping(), DETAIL, { started: 'credit_note' });
+  assert.equal(p.refundWay, 'credit_note');
+  // The only thing new on it is one plain warning saying why the refunds are a credit note.
+  assert.deepEqual(p.warnings.filter((w) => w.code === 'refunds_as_credit_note').map((w) => [w.reason, w.message]),
+    [['started_credit_note', 'This day was started in Xero with its refunds as a credit note, so it stays that way.']]);
+  assert.deepEqual(p.warnings.filter((w) => w.code !== 'refunds_as_credit_note'), plan(g).warnings);
   assert.deepEqual(p.blocked, []);
   assert.deepEqual(p.notReady, []);
   const inv = p.invoice;
@@ -119,13 +128,22 @@ test('the Huddersfield 28 Sep case: the till booked 1.34, Xero would work out 1.
 
 test('payments per account equal the older posting per account; the credit note equals its refunds', () => {
   const g = grouped(saleRows(), refundRows());
-  const p = plan(g);
   const old = planXeroDay(g.summary, { mapping: { paymentMap: { card: 'CARDCLR', cash: 'CASHTILL' } }, detail: DETAIL, site: SITE });
   const receive = Object.fromEntries(old.transactions.filter((t) => t.direction === 'RECEIVE').map((t) => [t.accountId, t.totals.gross]));
   const spend = Object.fromEntries(old.transactions.filter((t) => t.direction === 'SPEND').map((t) => [t.accountId, t.totals.gross]));
-  assert.deepEqual(Object.fromEntries(p.payments.map((x) => [x.account, x.amount])), receive);
-  assert.deepEqual(Object.fromEntries(p.refundPayments.map((x) => [x.account, x.amount])), spend);
-  assert.equal(p.invoice.total - p.creditNote.total, sumBy(Object.values(receive), (v) => v) - sumBy(Object.values(spend), (v) => v));
+  const net = sumBy(Object.values(receive), (v) => v) - sumBy(Object.values(spend), (v) => v);
+  // Refunds on the invoice: each clearing account is paid what the older posting received less what it spent.
+  const p = plan(g);
+  assert.equal(p.refundWay, 'lines');
+  assert.deepEqual(Object.fromEntries(p.payments.map((x) => [x.account, x.amount])), Object.fromEntries(Object.entries(receive).map(([a, v]) => [a, v - (spend[a] || 0)])));
+  assert.deepEqual(p.refundPayments, []);
+  assert.equal(p.creditNote, null);
+  assert.equal(p.invoice.total, net);
+  // The credit note way: the payments are what it received, the refund payments what it spent.
+  const cn = plan(g, mapping(), DETAIL, { started: 'credit_note' });
+  assert.deepEqual(Object.fromEntries(cn.payments.map((x) => [x.account, x.amount])), receive);
+  assert.deepEqual(Object.fromEntries(cn.refundPayments.map((x) => [x.account, x.amount])), spend);
+  assert.equal(cn.invoice.total - cn.creditNote.total, net);
   // The same VAT as the older posting books: the till's.
   const oldVat = old.transactions.filter((t) => t.direction === 'RECEIVE').reduce((s, t) => s + t.vat.booked, 0);
   assert.equal(p.totals.vat, oldVat);
@@ -140,7 +158,8 @@ test('generated days: every rate ties, payments equal the invoice, the credit no
       tenderMethod: row.tenders.some((t) => t.method === 'card') ? 'card' : 'cash', cardStatus: 'accepted', timestamp: atMs(21), items: [{ ...row.items[0], refundQty: 1 }] }] }));
     const m = mapping({ clearing: { card: 'CARDCLR', cash: 'CASHTILL' } });
     const g = grouped(rows, refunds, m);
-    const p = plan(g, m);
+    // The credit note way (a day started that way): as before 13 Oct 2026.
+    const p = plan(g, m, DETAIL, { started: 'credit_note' });
     assert.deepEqual(p.blocked, [], `seed ${seed}`);
     assert.equal(p.invoice.total, g.summary.sales.totals.gross);
     assert.equal(sumBy(p.payments, (x) => x.amount), p.invoice.total);
@@ -148,6 +167,17 @@ test('generated days: every rate ties, payments equal the invoice, the credit no
     assert.equal(sumBy(p.refundPayments, (x) => x.amount), p.creditNote.total);
     for (const t of p.vatTie) assert.equal(t.invoiceVat, t.tillVat, `seed ${seed} ${t.side} ${t.key}`);
     assert.equal(cents(sumBy(p.invoice.payload.LineItems, (l) => l.UnitAmount)), p.invoice.total);
+    // Refunds on the invoice: sales less refunds, paid in full, every rate still ties on both sides.
+    const n = plan(g, m);
+    assert.deepEqual(n.blocked, [], `seed ${seed}`);
+    assert.equal(n.refundWay, 'lines', `seed ${seed}`);
+    assert.equal(n.creditNote, null);
+    assert.deepEqual(n.refundPayments, []);
+    assert.equal(n.invoice.total, g.summary.sales.totals.gross - g.summary.refunds.totals.gross);
+    assert.equal(sumBy(n.payments, (x) => x.amount), n.invoice.total);
+    assert.deepEqual(n.vatTie, p.vatTie);
+    assert.equal(cents(sumBy(n.invoice.payload.LineItems, (l) => l.UnitAmount)), n.invoice.total);
+    assert.equal(cents(sumBy(n.invoice.payload.LineItems, (l) => l.TaxAmount)), n.totals.vat - n.totals.refundVat);
   }
 });
 
@@ -321,7 +351,8 @@ test("an item's own discount posts as its discount line (the staff 50% on a muff
 });
 
 test('a retry stops before sending when what Xero already holds no longer matches the day', () => {
-  const p = plan(grouped(saleRows(), refundRows()));
+  // A day started the credit note way (the invoice is in Xero for the gross 28.01).
+  const p = plan(grouped(saleRows(), refundRows()), mapping(), DETAIL, { started: 'credit_note' });
   const inv = { status: 'posted', id: 'inv-1', number: 'SOS-LEEDS-20260929', total: p.invoice.total / 100 };
   const card = { status: 'posted', id: 'pay-1', reference: 'SOS-LEEDS-20260929 Card', total: p.payments[0].amount / 100 };
   // The same day: nothing in the way (the cash payment is still to send).
@@ -354,6 +385,10 @@ test('a day with refunds only posts a credit note and no invoice', () => {
   assert.deepEqual(p.payments, []);
   assert.equal(p.creditNote.total, 380);
   assert.deepEqual(planSteps(p).map((s) => s.key), ['CREDIT', 'REFUND:CARDCLR']);
+  // There is no invoice to put the refund on, and the day says so.
+  assert.deepEqual([p.refundWay, p.refundWayReason], ['credit_note', 'no_sales']);
+  assert.deepEqual(p.warnings.filter((w) => w.code === 'refunds_as_credit_note').map((w) => [w.reason, w.message]),
+    [['no_sales', 'This day has refunds and no sales, so there is no invoice to put them on. The refunds go to Xero as a credit note.']]);
 });
 
 test('refused and warned: money with no clearing account, a 0% rate with VAT, a group with no account', () => {
@@ -431,13 +466,31 @@ test('the view for the Back Office is in major units and keeps the exact payload
   const p = plan(grouped(saleRows(), refundRows()));
   const v = planView(p);
   assert.equal(v.number, 'SOS-LEEDS-20260929');
+  assert.equal(v.creditNoteNumber, 'SOS-LEEDS-20260929-R');
   assert.equal(v.tracking, 'Location: Leeds');
-  assert.equal(v.invoice.total, 28.01);
+  // The refund is on the invoice: the total is sales less refunds, and so is each payment.
+  assert.deepEqual([v.refundWay, v.refundWayReason], ['lines', null]);
+  assert.equal(v.invoice.total, 24.21);
   assert.equal(v.invoice.lines[1].vat, 3.23);
+  assert.deepEqual(v.invoice.lines.map((l) => l.refund), [false, false, false, false, false, false, false, false, true]);
+  assert.deepEqual(v.invoice.lines.at(-1), { kind: 'sales', refund: true, description: 'Refund: Hot drinks 20%', account: '201', taxType: 'OUTPUT2', amount: -3.8, vat: -0.63, xeroVat: -0.63 });
   assert.deepEqual(v.invoice.payload, p.invoice.payload);
-  assert.equal(v.payments[0].amount, 23.1);
-  assert.equal(v.creditNote.total, 3.8);
+  assert.equal(v.payments[0].amount, 19.3);
+  assert.equal(v.creditNote, null);
+  assert.deepEqual(v.refundPayments, []);
+  // The totals keep their meaning: the day's sales, its refunds, and the VAT on the sales.
   assert.deepEqual(v.totals, { sales: 28.01, refunds: 3.8, vat: 3.75 });
+  // A day posted the credit note way reads as it always did.
+  const old = planView(plan(grouped(saleRows(), refundRows()), mapping(), DETAIL, { started: 'credit_note' }));
+  assert.deepEqual([old.refundWay, old.refundWayReason], ['credit_note', 'started_credit_note']);
+  assert.equal(old.invoice.total, 28.01);
+  assert.equal(old.payments[0].amount, 23.1);
+  assert.equal(old.creditNote.total, 3.8);
+  assert.deepEqual(old.refundPayments.map((x) => [x.key, x.amount]), [['REFUND:CARDCLR', 3.8]]);
+  assert.ok(old.invoice.lines.every((l) => l.refund === false) && old.creditNote.lines.every((l) => l.refund === false));
+  assert.deepEqual(old.totals, { sales: 28.01, refunds: 3.8, vat: 3.75 });
+  // A day with no refunds has no way.
+  assert.equal(planView(plan(grouped(saleRows()))).refundWay, null);
 });
 
 test('no tracking when the site is alone on its Xero; the contact by name before it exists', () => {

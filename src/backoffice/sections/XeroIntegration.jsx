@@ -405,7 +405,7 @@ export default function XeroIntegration() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>Push sales to Xero</div>
             {postMode === 'sales_invoice'
-              ? <div style={S.note}>This site posts each day from its start day as one <b>sales invoice</b>, paid into its clearing accounts, with a credit note for refunds (set up under {tabName}). Days before the start day post as bank transactions, as before.</div>
+              ? <div style={S.note}>This site posts each day from its start day as one <b>sales invoice</b>, paid into its clearing accounts (set up under {tabName}). A refund is a minus line on the invoice of the day it was made. Days before the start day post as bank transactions, as before.</div>
               : <div style={S.note}>Posts that day’s takings into Xero as “received money” in a clearing account per payment type (card, cash and gift card kept separate), and that day’s refunds as “spent money”. When your card <b>payout</b> lands in the bank, reconcile it against the clearing account. That is how sales connect to the cash in the bank.</div>}
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
               <input type="date" value={syncDate} max={venue?.lastCompletedDay || undefined} onChange={e => setSyncDate(e.target.value)}

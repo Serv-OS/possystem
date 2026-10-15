@@ -26,6 +26,8 @@
 //                 choices as they are now (it lapses when they change)
 //     history     { locationId, scope: 'site' | 'org', days } -> one row per site per day
 //     history_detail { locationId, date, forLocationId? } -> exactly what was sent that day
+//                 (refundWay 'lines' when its refunds are minus lines on the invoice, 13 Oct 2026;
+//                 cardFees, in major units, only for a day planned with card fees)
 //     gaps        { locationId, scope } -> days with sales and no ok posting over the last 14
 //                 completed business days (8 Oct 2026, D5), per site; writes the venue notice
 //                 for a gap older than two days. Nothing posts: the Postings tab offers Push.
@@ -33,7 +35,15 @@
 //                 Lightspeed setup" (read only); the tracking option picks this site's invoices
 //     site_create { locationId, kind: 'accounts' | 'tracking', keys?, categoryName?, optionName? }
 //                 creates the recommended accounts or tracking option in Xero (the only Xero
-//                 write here; the screen asks first) and returns the choices to fill in
+//                 write here; the screen asks first) and returns the choices to fill in. The
+//                 accounts and the loop that creates or reuses them are in
+//                 _shared/xeroSiteAccounts.ts; key 'cardFees' is the "Card fees" expense account
+// 13 Oct 2026, card fees on the daily invoice: the choice is mapping.cardFees { enabled, account },
+// saved like any other (validateInvoiceMapping), in the figures hash only while it is on
+// (mappingHash) and on the Ready checklist only while it is on (invoiceReadiness). It is never
+// copied from another site: switching it on is each site's own choice. A day waiting for a card
+// fee reads 'fees_wait' in the history, with the words of the wait. site_data answers
+// canCardFees: true, which is what lets the Setup tab show the Card fees section at all.
 //     copy_site   { locationId, fromLocationId } -> another site's choices on this Xero, to fill in
 // Save keeps the server owned invoiceStartDate and figuresChecked, validates the invoice choices,
 // and refuses auto posting for a sales invoice site that is not Ready.
@@ -47,9 +57,10 @@ import { revenueTaxRates, expenseTaxRates, canApplyToRevenue, canApplyToExpenses
 import { currentBusinessDay, lastCompletedBusinessDay, isYmd, addDays } from '../_shared/businessDay.js';
 import { buildGroupedDay, makeGroupResolver, OTHER_GROUP, DISCOUNT_GROUPS } from '../_shared/accountingGroups.js';
 import {
-  planXeroInvoiceDay, invoiceReadiness, validateInvoiceMapping, mappingHash, seenFromGrouped, siteNameFrom, siteCodeFromSlug,
-  xeroDocLink, dayModel,
+  planXeroInvoiceDay, invoiceReadiness, validateInvoiceMapping, mappingHash, seenFromGrouped, siteNameFrom, siteCodeFromSlug, cardFeesView,
+  dayModel, historyDocs,
 } from '../_shared/xeroInvoicePlan.js';
+import { recommendedKeys, createRecommendedAccounts } from '../_shared/xeroSiteAccounts.ts';
 import { suggestFromLightspeed, xeroDate } from '../_shared/lightspeedSuggest.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { scanXeroGaps, noticeXeroGaps } from '../_shared/xeroGapScan.ts';
@@ -167,32 +178,16 @@ function historyStatus(row: any): string {
     const live = row.lock?.until && Date.parse(row.lock.until) > Date.now();
     return live ? 'sending' : 'failed';
   }
+  // 13 Oct 2026: a day waiting for a card fee is neither blocked nor failed. It posts by itself.
+  if (s === 'error' && row.notReady?.[0]?.code === 'card_fees_wait') return 'fees_wait';
   if (s === 'error') return row.notReady || row.problems ? 'blocked' : 'failed';
   return s || 'failed';
 }
 
-function historyDocs(row: any, shortCode: string | null) {
-  if (Array.isArray(row.documents) && row.documents.length) {
-    return row.documents.map((d: any) => ({ type: d.type, number: d.number, reference: d.reference, total: d.total, xeroId: d.xeroId, link: d.link || (d.type === 'invoice' || d.type === 'credit_note' ? xeroDocLink(d.type, d.xeroId, shortCode) : null) }));
-  }
-  if (Array.isArray(row.lines) && row.lines.length) {
-    return row.lines.filter((l: any) => l.bankTransactionID).map((l: any) => ({ type: 'bank', number: l.reference, reference: l.reference, total: l.total, xeroId: l.bankTransactionID, direction: l.direction, link: l.link || xeroDocLink('bank', l.bankTransactionID, shortCode) }));
-  }
-  const postings = row.postings && typeof row.postings === 'object' ? row.postings : {};
-  return Object.entries(postings).filter(([, p]: [string, any]) => p?.status === 'posted' && p.id).map(([k, p]: [string, any]) => {
-    const type = p.type || (k.startsWith('RECEIVE') || k.startsWith('SPEND') ? 'bank' : k === 'INVOICE' ? 'invoice' : k === 'CREDIT' ? 'credit_note' : 'payment');
-    return { type, number: p.number || p.reference, reference: p.reference, total: p.total, xeroId: p.id, direction: k.startsWith('SPEND') ? 'refunds' : 'takings', link: type === 'invoice' || type === 'credit_note' || type === 'bank' ? xeroDocLink(type, p.id, shortCode) : null };
-  });
-}
+// The documents of a history row (historyDocs) live in _shared/xeroInvoicePlan.js, where they are tested.
 
-const RECOMMENDED: Record<string, (site: { name: string; code: string }) => any> = {
-  cardClearing: (x) => ({ Name: `Card clearing ${x.name}`.slice(0, 150), Code: `CC${x.code}`.slice(0, 10), Type: 'CURRENT', EnablePaymentsToAccount: true, Description: 'Card takings waiting for the processor payout (ServOS).' }),
-  cashInTill: (x) => ({ Name: `Cash in till ${x.name}`.slice(0, 150), Code: `CT${x.code}`.slice(0, 10), Type: 'BANK', BankAccountNumber: `SOS-CASH-${x.code}`.slice(0, 30) }),
-  giftLiability: () => ({ Name: 'Gift card liability', Code: 'SOSGIFT', Type: 'CURRLIAB', EnablePaymentsToAccount: true, Description: 'Gift cards sold and not yet spent (ServOS).' }),
-  tipsPayable: () => ({ Name: 'ServOS Tips Payable', Code: 'SOSTIPS', Type: 'CURRLIAB', Description: 'Tips owed to staff (ServOS).' }),
-  servicePayable: () => ({ Name: 'ServOS Service Charge Payable', Code: 'SOSSVCCHG', Type: 'CURRLIAB', Description: 'Service charge owed to staff (ServOS).' }),
-  discounts: () => ({ Name: 'Sales discounts', Code: 'SOSDISC', Type: 'REVENUE', Description: 'Discounts, rewards and comps given at the till (ServOS).' }),
-};
+// The accounts ServOS can create for a site (the recommended ones, and the card fees account)
+// live in _shared/xeroSiteAccounts.ts with the loop that creates or reuses them, where they are tested.
 
 // The tender methods this venue has actually taken, as xero-sales will post them (v5.9.11:
 // read through the same tender rules, so a split bill lists card and cash, an older split
@@ -337,6 +332,11 @@ Deno.serve(async (req) => {
         categories: cats, discountLabels: grouped.groups.discountLabels, groupNames: grouped.groups.names, seen,
         otherGroup: OTHER_GROUP, discountGroups: DISCOUNT_GROUPS, mappingHash: mappingHash(mapping),
         totals: { goods: grouped.groups.goodsTotal / 100, unresolved: grouped.groups.unresolved.goods / 100 },
+        // 13 Oct 2026: this xero-config knows the Card fees choice (it validates it, hashes it and
+        // can create the account). The Setup tab shows the Card fees section only when it reads
+        // this, so a Back Office that is live before the function never offers a choice the
+        // server would save unchecked and leave out of the figures hash.
+        canCardFees: true,
       });
     }
 
@@ -529,6 +529,9 @@ Deno.serve(async (req) => {
         date: row.ref_date, status: historyStatus({ ...row, notReady: d.notReady, problems: d.problems, lock: d.lock }), model: d.model || (Object.keys(d.postings || {}).some((k) => /^(RECEIVE|SPEND):/.test(k)) ? 'bank_tx' : d.model || 'bank_tx'),
         postings, documents: d.documents || [], lines: d.lines || [], warnings: d.warnings || [], summary: d.summary || null, error: d.error || null,
         notReady: d.notReady || null, problems: d.problems || null, site: d.site || null, attempts: (d.history || []).slice(-10),
+        refundWay: d.refundWay || null,
+        // 13 Oct 2026: the card fees the day was planned with (major units). No key for a day planned without.
+        ...(d.cardFees ? { cardFees: cardFeesView(d.cardFees) } : {}),
       });
     }
 
@@ -602,38 +605,17 @@ Deno.serve(async (req) => {
         return json({ ok: true, patch: { tracking: { categoryId: cat.TrackingCategoryID, categoryName: cat.Name, optionId: opt.TrackingOptionID, optionName: opt.Name } } });
       }
       if (body.kind !== 'accounts') return json({ error: 'Unknown kind' }, 400);
-      const keys = (Array.isArray(body.keys) ? body.keys : []).filter((k: string) => RECOMMENDED[k]);
+      const keys = recommendedKeys(body.keys);
       if (!keys.length) return json({ error: 'Choose which accounts to create.' }, 400);
       const conn = await connectionOf(locationId);
       const siblings = await siblingsOf(locationId, conn?.tenant_id || tenantId);
       const site = await siteIdentity(locationId, mapping, siblings);
       const who = { name: site.name || 'Site', code: String(mapping.site?.code || site.suggestedCode || 'SITE') };
-      const accRes = await xeroApi(accessToken, tenantId, '/Accounts');
-      const accounts: any[] = accRes?.Accounts || [];
-      const created: any[] = [];
-      const patch: any = {};
-      const ref = (a: any) => a.Code || a.AccountID;
-      for (const k of keys) {
-        const def = RECOMMENDED[k](who);
-        let a = accounts.find((x) => String(x.Name || '').toLowerCase() === String(def.Name).toLowerCase() || (def.Code && String(x.Code || '').toUpperCase() === String(def.Code).toUpperCase()));
-        const existed = !!a;
-        if (!a) {
-          a = (await xeroApi(accessToken, tenantId, '/Accounts', { method: 'PUT', body: JSON.stringify(def) }))?.Accounts?.[0];
-          if (!a) return json({ error: `Xero did not create ${def.Name}.`, created }, 500);
-          if (def.EnablePaymentsToAccount && a.EnablePaymentsToAccount !== true) {
-            a = (await xeroApi(accessToken, tenantId, `/Accounts/${a.AccountID}`, { method: 'POST', body: JSON.stringify({ EnablePaymentsToAccount: true }) }))?.Accounts?.[0] || a;
-          }
-          accounts.push(a);
-        }
-        created.push({ key: k, name: a.Name, code: a.Code || '', id: a.AccountID, existed });
-        if (k === 'cardClearing') patch.clearing = { ...(patch.clearing || {}), card: ref(a) };
-        if (k === 'cashInTill') patch.clearing = { ...(patch.clearing || {}), cash: ref(a) };
-        if (k === 'giftLiability') { patch.giftLiabilityAccount = ref(a); patch.clearing = { ...(patch.clearing || {}), gift_card: ref(a) }; }
-        if (k === 'tipsPayable') patch.tipsAccount = ref(a);
-        if (k === 'servicePayable') patch.serviceAccount = ref(a);
-        if (k === 'discounts') patch.discountAccount = ref(a);
-      }
-      return json({ ok: true, created, patch });
+      // Read Xero's accounts, reuse one with the same name or code, else create it. The card fees
+      // account (key 'cardFees') goes through the same loop as the clearing accounts.
+      const made = await createRecommendedAccounts((path: string, init?: any) => xeroApi(accessToken, tenantId, path, init), keys, who);
+      if (!made.ok) return json({ error: made.error, created: made.created }, made.status);
+      return json({ ok: true, created: made.created, patch: made.patch });
     }
 
     if (action === 'copy_site') {

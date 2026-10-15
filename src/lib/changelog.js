@@ -7,6 +7,113 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.60',
+    date: '14 Oct 2026',
+    items: [
+      "Menu boards: a new Playlist screen. Pick any of your boards (menus or marketing slideshows) in order, set how many seconds each one stays, and choose Fade, Slide or Cut. Put the playlist on a TV exactly as you put a board on one today.",
+      "Menu boards: a marketing slideshow inside a playlist plays its slides through once, then the next board comes on. A price change or a sold out item updates the playlist without sending it back to the first board.",
+    ],
+  },
+  {
+    v: '5.11.59',
+    date: '14 Oct 2026',
+    items: [
+      "Kitchen screens never put a table back, in every shape. On 26 Sep we stopped a kitchen screen sending tables to the tills, after one in Leeds kept putting a voided table back. That fix only knew the ServOS KDS app. A tablet set up as a Kitchen Display inside the normal till page was missed, and so was a POS device on a profile that opens straight on the kitchen screen. Both are covered now. A kitchen screen reads tables. It never sends one, deletes one or puts one back.",
+      "A till inside the ServOS KDS app sends its tables again. A device that runs the KDS app but is paired as a till, on a till profile, shows the PIN pad and the till. The old fix stopped that till sending tables too, so a table opened on it did not reach the other tills. It now sends them like any till.",
+      "If a device is moved between a kitchen profile and a till profile while the app is open, the new rule applies at once. No restart is needed.",
+      "The Bookings host stand is not changed. It seats tables, so it still sends them.",
+      "Kitchen screens no longer delete orders. Until now every device answered a finished order with its own delete of that order number, kitchen tablets included, and sent the same deletes again from its saved list after each restart (one drinks screen sent 32 in two minutes on 12 Oct; the records show none of them removed an order). A kitchen screen, a kiosk, a host stand and Back Office now only read the open orders list. They never add to it, change it or delete from it.",
+      "Kitchen screens no longer delete bar tabs. A kitchen tablet running the ServOS KDS app treated every open bar tab it could see as removed and deleted it. That is fixed by the same rule: only a till writes bar tabs.",
+      "Tills delete an order only for a reason. An order paid, rejected, voided or marked collected on that till is removed as before. An order another device finished is no longer deleted a second time. An order the kitchen marked collected is cleared only while it still says collected, so a newer order that has been given the same number can never be removed by mistake.",
+      "A catering order moved to a later day now stays in the system. A till that already had it on its Orders screen used to delete it when it dropped off the live list.",
+      "Orders that were already finished when an app starts are never deleted by number again at start up.",
+    ],
+  },
+  {
+    v: '5.11.58',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad, tidy up: the forecast badge on Home no longer crowds the edge of the takings card on a 13 inch iPad held upright, and the four Home tiles sit two by two on smaller iPads so their lines do not break in the middle.",
+      "Manager app on iPad, tidy up: the manager PIN box on Team fills its panel, the Kitchen order sheet lines up with the stock list, document names are no longer cut short on the iPad mini, and the C and F switch in Ops is a sensible size.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
+    v: '5.11.57',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad: the app now uses the whole screen. The tabs sit in a rail down the left side, and in landscape Home, Reports, Team and Kitchen show two panels side by side. Before, an iPad showed a narrow phone sized column in the middle of the screen.",
+      "Manager app on iPad: the pairing screen and the PIN pad are larger, Ops tiles and lists use the width, and every button is at least finger sized. Turning the iPad or using Split View keeps whatever you were typing.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
+    v: '5.11.56',
+    date: '13 Oct 2026',
+    items: [
+      'Manager app: a "No venue yet? Try the demo" button on the pairing screen. It links the phone to your demo venue with no Back Office step, so an App Store reviewer, or someone you are showing the app to, can get in on their own. The staff PIN still guards the venue, and only a venue marked as the demo can be reached.',
+    ],
+  },
+  {
+    v: '5.11.55',
+    date: '13 Oct 2026',
+    items: [
+      "Card readers: when a card machine never receives a payment, it now frees itself in under 3 minutes, and at once when the machine says it never got it. It used to stay busy for 5 minutes or more and refuse every new payment, and restarting the till did not help.",
+      "Card readers: staff are told with a sound when that happens. The message says Card machine is free and the amount that was not charged.",
+      "Card readers: a payment the card machine says is still in progress is never cancelled by the system. If a payment is ever approved after it was cancelled, the till raises an urgent note so it can be put right.",
+      "Back Office, Card readers: Release stuck payment now asks the card machine first, really frees it when that is safe, and says why when it is not.",
+    ],
+  },
+  {
+    v: '5.11.54',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: card fees can now go on each day's sales invoice as one minus line called Card fees, with no VAT. The card payment on the invoice is then the takings less refunds less fees, which is what the card processor pays the venue for that day.",
+      "Xero, VAT and accounts, Payments: a new Card fees section. Tick Put card fees on the daily invoice, then press Create a Card fees account in Xero or pick an expense account. It is off until a site switches it on, and a site that leaves it off posts exactly as before.",
+      "Xero: switching card fees on asks you to check a day's figures again, so you see the Card fees line and the smaller card payment before anything posts.",
+      "Xero: if the fee for a card payment has not arrived yet the day waits and tries again each hour, for up to 16 hours, and shows Waiting for card fees in Postings. After that it posts with the fees it has and says what is missing. A fee is never estimated.",
+      "Xero: a refunded card payment gives its fee back on the day of the refund, the same figure Back Office Payouts shows.",
+    ],
+  },
+  {
+    v: '5.11.53',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: a refund now goes on the sales invoice of the day it was made, as a minus line that starts with Refund. It used to arrive as a separate credit note. The card and cash payments on the invoice are that day's takings less its refunds.",
+      "Xero: a day still posts as an invoice plus a credit note when Xero could not take it the new way, for example a day with refunds and no sales, or more refunded from an account than it took that day. The day says why in Postings.",
+      "Xero: days already posted are not changed, and a day that was part posted the old way finishes the old way.",
+      "Back Office, Card payments, Payouts: the list now shows every settlement and each one in full. It had stopped at a venue's first 1,000 card payments.",
+    ],
+  },
+  {
+    v: '5.11.52',
+    date: '13 Oct 2026',
+    items: [
+      "Menu board and order screen TVs: a TV no longer drops to its pairing code because of one bad live update. At 03:09 on 12 Oct the live update service sent every TV a blank update of its own screen, the TV believed it, and 24 TVs made themselves a new screen. A TV now ignores a live update that is blank, carries an error or is for another screen, and checks properly instead.",
+      "TVs: only Back Office can take a board down (Remove or Unpaired). A network drop, a failed read or a lost sign in keeps the board on screen, and a TV no longer goes blank after a network drop.",
+      "TVs: before a TV makes a new screen for itself it looks for the one it already owns and uses it. A TV left on a pairing code by the 12 Oct fault finds its old screen by itself when it loads this version, where that screen is still in the list.",
+      "Back Office, Menu boards: a small grey note under a screen says when a TV kept its pairing, or that it lost its sign in, with the code to pair it again.",
+      "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
+      "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
+      "Orders: Send to kitchen again now tells you what happened. It says Sent to the kitchen again when it worked, and Not sent when it did not. The button waits while it is sending, so one press sends the order once.",
+      "Guest WiFi sign in page: it now scrolls, so on a small phone you can reach the Connect button. The review page and the waitlist join page had the same fault and are fixed too.",
+      "Till status page, Card readers: an Adyen card reader now reads Connected to Adyen. It used to say Not connected, cannot take card, in red, while the reader was taking payments. Back Office kiosk settings read the same rule.",
+    ],
+  },
+  {
+    v: '5.11.51',
+    date: '12 Oct 2026',
+    items: [
+      "Kitchen screens: QR, online, kiosk and delivery app orders are now sent to the kitchen only by the venue's real master till, with its menu loaded. On a two screen till the customer display could send them instead, with no menu, so an item in a sub category (a Latte under Coffee) landed on the first screen in the list. Preston saw lattes on the Food screen. Barnsley saw kiosk food and frozen drinks on the hot drinks screen.",
+      "Master till: it waits for its menu before sending (up to 20 seconds after it opens), and looks again for unsent orders when it wakes, when the connection returns and when the order feed reconnects. When an item has no kitchen screen the till says which item and where it went, and the activity feed keeps the same note.",
+      "Master till: the master setting now belongs to the till it was given to. It is cleared when that till is unpaired or removed. Back Office, the customer display, kitchen screens and kiosks can never act as the master. A till that is set as master but cannot send says so in red and raises an urgent alert.",
+      "Back Office, Devices: a line at the top says whether the venue's master till is on, when it was last seen, that none is set, or that more than one till is set as master.",
+      "Orders: Send to kitchen again now works on the till that first sent the order.",
+      "If the master till is disconnected or removed, the other tills at the venue show Master POS offline after about 30 seconds until it is back. Before, they carried on while QR, online and kiosk orders waited in silence.",
+      "Each QR, online, kiosk and delivery ticket keeps a hidden record of which till sent it and what it knew, so a ticket on the wrong screen can be traced.",
+    ],
+  },
+  {
     v: '5.11.50',
     date: '11 Oct 2026',
     items: [

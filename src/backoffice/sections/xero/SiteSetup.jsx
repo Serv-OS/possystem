@@ -8,7 +8,12 @@
 //      sales beside each, bulk assign). Menu Manager's accounting group still counts.
 //   4. VAT rates: the Xero rate per ServOS rate (xero/SalesVat.jsx, shared with the Posting tab).
 //   5. Discounts, tips, service charge, gift cards and Other sales.
-//   6. Payments: a clearing account per kind of money (card, cash, gift cards).
+//   6. Payments: a clearing account per kind of money (card, cash, gift cards). And, 13 Oct
+//      2026, card fees: off by default; on, each day's invoice gets one "Card fees" minus line
+//      on an expense account and the card payment is net of it. One button creates the
+//      "Card fees" account in Xero (an existing one is reused), or an expense account is picked.
+//      The section shows only when xero-config says it knows the choice (site_data canCardFees),
+//      so a Back Office that is live before the function never offers it.
 //   7. The Ready checklist, 8. Check figures, 9. the switch with its start day.
 //   Helpers above: Copy my Lightspeed setup, Copy from another site, Create recommended accounts.
 // The form is unsaved until Save; the start day and "figures checked" are kept on the server.
@@ -25,7 +30,7 @@ import { groupKeyOf, makeGroupResolver, DISCOUNT_GROUPS, DISCOUNT_GROUP_NAMES, O
 import {
   invoiceNumber, creditNoteNumber, takingsReference, contactName, clearingLabel, SITE_CODE_RE, mappingHash, taxRatesSection,
 } from '../../../../supabase/functions/_shared/xeroInvoicePlan.js';
-import { S, btn, sel, input, fieldRow, flabel, accountRef, canTakePayments, suggested } from './xeroUi';
+import { S, btn, sel, input, fieldRow, flabel, accountRef, canTakePayments, suggested, mergePatch, setCardFeesOn, setCardFeesAccount, expenseAccounts } from './xeroUi';
 import { AcctSelect, Bullets } from './controls';
 import LightspeedCopy from './LightspeedCopy';
 import CheckFigures from './CheckFigures';
@@ -35,26 +40,7 @@ import SalesVat from './SalesVat';
 const PREFILL_WORDS = { site: 'the site name and code', otherSalesAccount: 'Other sales', clearing: 'the card and cash clearing accounts' };
 
 const stable = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
-const NESTED = ['groups', 'clearing', 'itemGroups'];
-
-// Merge suggested choices into the form: nested maps merge, category choices already made stay.
-function mergePatch(map, patch) {
-  const next = { ...map };
-  for (const [k, v] of Object.entries(patch || {})) {
-    if (k === 'discountAccount') {
-      const accounts = { ...(next.discounts?.accounts || {}) };
-      for (const d of DISCOUNT_GROUPS) if (!accounts[d]) accounts[d] = v;
-      next.discounts = { ...(next.discounts || {}), accounts };
-    } else if (k === 'discounts') {
-      next.discounts = { ...(next.discounts || {}), ...v, accounts: { ...(next.discounts?.accounts || {}), ...(v?.accounts || {}) }, labels: { ...(next.discounts?.labels || {}), ...(v?.labels || {}) } };
-    } else if (k === 'categoryGroups') {
-      next.categoryGroups = { ...(v || {}), ...(next.categoryGroups || {}) };
-    } else if (NESTED.includes(k)) {
-      next[k] = { ...(next[k] || {}), ...(v || {}) };
-    } else next[k] = v;
-  }
-  return next;
-}
+// mergePatch (suggested choices merged into the form) lives in xeroUi.js, where it is tested.
 
 const RECOMMEND = [
   ['cardClearing', 'Card clearing for this site (payments enabled)'],
@@ -96,6 +82,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
   const [picked, setPicked] = useState({});
   const [bulk, setBulk] = useState('');
   const [startDate, setStartDate] = useState('');
+  const [feeMsg, setFeeMsg] = useState(null);   // { ok, words } under the Card fees account button
 
   const checkReady = useCallback(async (start) => {
     setReadyErr('');
@@ -145,6 +132,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
   const nonBank = accounts.filter((a) => !a.bank);
   const liabilities = accounts.filter((a) => cls(a) === 'LIABILITY' || ['CURRLIAB', 'LIABILITY', 'TERMLIAB'].includes(String(a.type).toUpperCase()));
   const payable = accounts.filter(canTakePayments);
+  const expenses = expenseAccounts(accounts);
   const dirty = stable(map) !== stable(server);
   const set = (patch) => setMap((m) => ({ ...m, ...patch }));
   const setIn = (key, sub, value) => setMap((m) => {
@@ -206,6 +194,20 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
       setNote(`${r.created.map((c) => `${c.name}${c.existed ? ' (already there)' : ' (created)'}`).join(', ')}. They are filled in below; press Save.`);
       setShowCreate(false);
     } catch (e) { setErr(e.message || 'Could not create the accounts'); } finally { setBusy(''); }
+  };
+
+  // 13 Oct 2026: the organisation's "Card fees" expense account, made in Xero with one button (the
+  // same create or reuse rule as the clearing accounts). Only the account is filled in; the tick
+  // stays the person's own, and nothing is saved until Save.
+  const createFeeAccount = async () => {
+    if (!window.confirm('Create the account "Card fees" in Xero (one that already exists is reused)?')) return;
+    setBusy('fees'); setFeeMsg(null);
+    try {
+      const r = await xeroSiteCreate(locId, { kind: 'accounts', keys: ['cardFees'] });
+      setMap((m) => mergePatch(m, r.patch));
+      setOpts(await xeroOptions(locId));
+      setFeeMsg({ ok: true, words: `${r.created.map((c) => `${c.name}${c.existed ? ' (already there)' : ' (created)'}`).join(', ')}. It is chosen in the list above. Press Save.` });
+    } catch (e) { setFeeMsg({ ok: false, words: e.message || 'Could not create the account' }); } finally { setBusy(''); }
   };
 
   const createOption = async () => {
@@ -275,7 +277,8 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
         <Bullets items={[
           ['One invoice a day:', `each business day posts to Xero as one sales invoice, with a line per sales group and ${tw} rate.`],
           ['Discounts', 'post as minus lines. Tips, service charge and gift cards go to their own accounts.'],
-          ['Paid:', 'it is paid into this site’s clearing accounts, so it shows as Paid. Refunds post as a credit note.'],
+          ['Paid:', 'it is paid into this site’s clearing accounts, so it shows as Paid.'],
+          ['Refunds', 'are minus lines on the invoice of the day the refund was made, each starting “Refund:”. A day whose refunds cannot go on its invoice sends them as a credit note.'],
           [`${addedOn ? 'Tax' : 'VAT'} ties:`, `each line carries the till’s own ${tw}, to the penny.`],
         ]} />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
@@ -313,7 +316,7 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
         {!SITE_CODE_RE.test(code) && <div style={{ ...S.note, color: '#c33' }}>The code must be 2 to 12 capital letters or digits.</div>}
         {siblings.some((x) => x.code && x.code === code) && <div style={{ ...S.note, color: '#c33' }}>Another site on this Xero already uses {code}.</div>}
         <Bullets style={{ marginTop: 6 }} items={[
-          [`For ${day}:`, <>invoice <b>{invoiceNumber(code || 'CODE', day)}</b>, credit note <b>{creditNoteNumber(code || 'CODE', day)}</b>, to <b>{contactName(siteName || 'Site')}</b>, reference &ldquo;{takingsReference(siteName || 'Site', day)}&rdquo;.</>],
+          [`For ${day}:`, <>invoice <b>{invoiceNumber(code || 'CODE', day)}</b>, to <b>{contactName(siteName || 'Site')}</b>, reference &ldquo;{takingsReference(siteName || 'Site', day)}&rdquo;. A credit note, when a day needs one, is <b>{creditNoteNumber(code || 'CODE', day)}</b>.</>],
           ['Keep the code', 'once days are posted. Invoice numbers use it, so a day part sent under the old code stops until the code is put back.'],
         ]} />
       </div>
@@ -481,6 +484,33 @@ export default function SiteSetup({ locId, venue, siblings = [], postMode, onMod
             </div>
           ))}
         </div>
+
+        {data.canCardFees === true && (
+          <>
+            <div style={S.h3}>Card fees</div>
+            <Bullets items={[
+              ['Off:', 'the invoice shows card takings in full, so the card clearing account keeps the fees as a balance.'],
+              ['On:', 'each day’s invoice gets one minus line, Card fees, and the card payment is less by the fees, so the clearing account no longer keeps them.'],
+              ['The fee', 'is the one on each card payment under Card payments. It is never worked out from a percentage.'],
+              ['No fee found:', 'a card payment whose till record has no card processor reference is left out of the line. The day’s warning says how many and how much.'],
+            ]} />
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0', fontSize: 13, color: 'var(--t1)' }}>
+              <input type="checkbox" checked={map.cardFees?.enabled === true} onChange={(e) => setMap((m) => setCardFeesOn(m, e.target.checked))} />
+              Put card fees on the daily invoice
+            </label>
+            {map.cardFees?.enabled === true && (
+              <>
+                <div style={fieldRow}>
+                  <span style={flabel}>Card fees account</span>
+                  <AcctSelect value={map.cardFees?.account} list={expenses} placeholder="Choose an expense account" onChange={(v) => setMap((m) => setCardFeesAccount(m, v))} />
+                </div>
+                <button style={S.small} onClick={createFeeAccount} disabled={!!busy}>{busy === 'fees' ? 'Creating…' : 'Create a Card fees account in Xero'}</button>
+                {feeMsg && <div style={{ ...S.note, marginTop: 6, color: feeMsg.ok ? '#2f8f4e' : '#c33' }}>{feeMsg.words}</div>}
+                <div style={{ ...S.note, marginTop: 8 }}>Posts with No {tw}. After you save, check a day’s figures again: the preview then shows the Card fees line and the card payment.</div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       <div style={{ ...S.wide, position: 'sticky', bottom: 8, zIndex: 5, display: 'flex', gap: 12, alignItems: 'center', boxShadow: '0 4px 18px rgba(0,0,0,.18)' }}>

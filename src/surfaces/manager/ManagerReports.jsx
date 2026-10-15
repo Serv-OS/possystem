@@ -6,8 +6,10 @@ import { classifyFloor } from '../../lib/manager/floor';
 import { sendNudge } from '../../lib/nudge';
 import { money } from '../../lib/currency';
 import { Header, Hero, Stat, SectionTitle, mono } from './ui';
+import { useLayout } from './useLayout';
 
 export default function ManagerReports({ ctx }) {
+  const L = useLayout();
   const { flags, snap, snapErr: err, loc, operator } = ctx;
   const [nudged, setNudged] = useState({});
   const nudge = (s) => {
@@ -20,31 +22,31 @@ export default function ManagerReports({ ctx }) {
   const cur = (v) => money(Number(v) || 0, m?.currency);
 
   return (
-    <div>
+    <div style={L.s.page2}>
       <Header title="Reports" sub={flags.reports_readonly ? "Today · view only" : "Today's takings + floor"} />
-      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono }}>Loading…</div>}
-      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13 }}>Couldn’t load takings ({err}). Pull again shortly.</div>}
+      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
+      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load takings ({err}). Pull again shortly.</div>}
 
       {m && (
-        <>
+        <div style={L.s.pane}>
           <div style={{ marginTop: 12 }}>
             <Hero label="Net sales today (ex-VAT)" value={cur(m.net)}
               sub={m.forecastPct != null ? `${m.forecastPct}% of ${cur(m.forecast)} forecast` : `${m.orders} orders`} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10, ...L.s.statGrid }}>
             <Stat label="Orders" value={m.orders} />
             <Stat label="Avg check" value={cur(m.avgCheck)} />
             <Stat label="Tips" value={cur(m.tips)} />
             <Stat label="Labour %" value={m.labourPct != null ? `${m.labourPct}%` : '—'}
               tone={m.labourPct != null && m.labourTargetPct != null && m.labourPct > m.labourTargetPct * 100 ? 'var(--red)' : 'var(--t1)'} />
           </div>
-        </>
+        </div>
       )}
 
       {floor && (
-        <>
+        <div style={L.s.pane}>
           <SectionTitle right={`${floor.dining.length + floor.held.length + floor.seated_no_order.length + floor.stalled.length} open`}>Live floor</SectionTitle>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, ...L.s.statGrid }}>
             <Stat label="Dining" value={floor.dining.length} tone="var(--grn)" />
             <Stat label="Seated · no order" value={floor.seated_no_order.length} tone={floor.seated_no_order.length ? 'var(--orn)' : 'var(--t1)'} />
             <Stat label="Held / bill" value={floor.held.length} />
@@ -72,9 +74,9 @@ export default function ManagerReports({ ctx }) {
               </div>
             </>
           )}
-        </>
+        </div>
       )}
-      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, lineHeight: 1.5, ...mono }}>
+      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, lineHeight: 1.5, ...mono, ...L.s.span }}>
         Net sales are ex-VAT. This venue only — multi-site reporting lives in Back Office.
       </div>
     </div>

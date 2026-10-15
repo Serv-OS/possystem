@@ -6,7 +6,14 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
-import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, channelFallbackCentre } from '../lib/productionRouting';
+import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
+// 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
+// thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
+// lib/masterTillDevice.js), and every channel ticket records who routed it and with what
+// (lib/channelRouteGate.js). Nothing in these three reads the network.
+import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig } from '../lib/masterTillDevice';
+import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbackNotice } from '../lib/channelRouteGate';
+import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
@@ -27,7 +34,7 @@ import { kitchenOverride, receiptOverride, kitchenLineName, isSizeOnlyKitchenNam
 // for one case (2 Oct 2026, lib/itemDisplay.js): a kitchen name that is only the size at the end
 // of "<product> — <size>" is skipped, so the kitchen always reads the product AND the size.
 const tillKitchenName = (i) => (!isSizeOnlyKitchenName(i) && i.kitchenName) || i.menu_name || i.menuName || i.name;
-import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
+import { buildTicketMeta, joinNotes, withRouteStamp } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates, mapTaxRateRow } from '../lib/rowMapping';
 import { createMenuWriters, categoryInsertRetry, runItemEditWrites, putBackFollowers } from '../lib/menuWriters';
@@ -51,6 +58,8 @@ import { persistTransfer } from '../sync/SessionSync';
 // Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
 // change a row count the rows they changed and are kept while this device is not linked.
 import { mustChangeRow } from '../lib/rowWrites';
+import { mayRemoveQueueRow } from '../lib/queueDeleteRule';
+import { readQueueRole } from '../lib/queueDevice';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
@@ -847,12 +856,23 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
 // shared catParentMapOf (lib/productionRouting.js buildCatParentMap), the same one the
 // Back Office Production centres screen uses, so the tree the till routes by and the tree
 // the screen shows are one tree.
+// 12 Oct 2026 (Preston, D7): the till's OWN tree, merged, the live store first. This used to
+// read the 'rpos-config-snapshot' key whenever it held a menuCategories array, an empty one
+// too, and only then the store. That key is written by Back Office alone, at push time, so on
+// a browser that also runs Back Office it is whichever venue was pushed last. Now a parent
+// known by either copy is used, and a snapshot of another venue is ignored
+// (snapshotCategoriesFor). No network (Peter: local first, towards offline, not away from it).
+// The venue is tabVenue(): on a till that is its paired venue, exactly as before; in a Back
+// Office tab it is the venue THIS tab resolved, never the key every tab shares (27 Sep 2026).
 const buildCatParentMap = () => {
+  let fromStore = {};
+  try { fromStore = catParentMapOf(useStore.getState().menuCategories || []); } catch { fromStore = {}; }
+  let fromSnapshot = {};
   try {
-    const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
-    const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-    return catParentMapOf(cats);
-  } catch { return {}; }
+    const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || 'null');
+    fromSnapshot = catParentMapOf(snapshotCategoriesFor(snap, tabVenue()));
+  } catch { fromSnapshot = {}; }
+  return mergeCatParentMaps(fromStore, fromSnapshot);
 };
 
 // The word before ' · Name' on a walk in kitchen ticket and KDS card. Every key
@@ -1050,6 +1070,13 @@ export const useStore = create((set, get) => ({
   // after loading data. If a subsequent boot detects a mismatch, it purges
   // stale data BEFORE loading fresh — preventing cross-location bleed.
   _dataLocationId: null,
+  // 12 Oct 2026 (Preston): the venue whose category read SUCCEEDED at boot and found NONE.
+  // SyncBridge sets it from the read it already makes. lib/channelRouteGate.js venueHoldsMenu
+  // reads it, so a brand new venue with no categories is not made to wait for a menu that
+  // will never come, and a boot whose category read failed is not taken for "no categories".
+  // It is NOT set for a read that found rows (review, same day): those rows reach the store
+  // later in the boot, and until they do this till does not hold its menu.
+  _catsReadLocationId: null,
 
   // ── Auth ──────────────────────────────────
   staff: null,
@@ -1523,9 +1550,14 @@ export const useStore = create((set, get) => ({
         return cfg;
       }
       // Fall back to localStorage device config (set when device was paired/profiled)
-      const localConfig = localStorage.getItem('rpos-device-config');
-      if (localConfig) {
-        const cfg = JSON.parse(localConfig);
+      // 12 Oct 2026 (review): through hydratableDeviceConfig, not the key itself. The tenant
+      // fence now KEEPS this key when the browser moves to another venue (the paired till needs
+      // it, lib/supabase.js TENANT_FENCE_KEEP) and it used to wipe it. So a Back Office,
+      // Bookings, Waitlist or kiosk page for another venue would have started from a till's
+      // config for good. The paired till's own page reads it as before; any other page only
+      // for the venue this browser was last used for (lib/masterTill.js hydratableConfig).
+      const cfg = hydratableDeviceConfig();
+      if (cfg) {
         // Backfill serviceCharge from stored profiles if missing
         if (!cfg.serviceCharge && cfg.profileId) {
           const profiles = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
@@ -1540,10 +1572,14 @@ export const useStore = create((set, get) => ({
   // v5.5.645: per-device Training Mode. Initialised from the cached device config at
   // module load (so a training till is gated before App's profile fetch completes)
   // and kept authoritative by setDeviceConfig (boot + device_profiles realtime).
+  // 12 Oct 2026 (review): the shared copy is read through hydratableDeviceConfig (see the
+  // deviceConfig initialiser above). Training mode is the one that matters: a till's training
+  // flag carried into a Bookings or Back Office page for ANOTHER venue made that page answer
+  // "saved" while saving nothing. This tab's own session copy is read first, as before.
   trainingMode: (() => {
     try {
-      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
-      const cfg = raw ? JSON.parse(raw) : null;
+      const tab = sessionStorage.getItem('rpos-terminal-config');
+      const cfg = tab ? JSON.parse(tab) : hydratableDeviceConfig();
       const on = !!cfg?.trainingMode;
       applyTrainingFlag(on);   // seed the module singleton read by db.js / sync gates
       return on;
@@ -3848,13 +3884,20 @@ export const useStore = create((set, get) => ({
   // Throttled to ~5 min; piggybacks the SyncBridge 60s tick.
   releaseDueCateringOrders: async () => {
     if (!supabase) return;
-    let isMaster = false;
-    try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch { /* default false */ }
-    if (!isMaster) return;
+    // 12 Oct 2026 (Preston): the ONE master rule (lib/masterTill.js). This read the flag in
+    // 'rpos-device-config' straight from storage, so a Back Office tab or a bookings screen in
+    // a browser that had once been a master till ran this sweep too, for whatever venue it had open.
+    if (!isMasterTillHere()) return;
     if (useStore._cateringReleaseRunning) return;   // no overlapping runs
     useStore._cateringReleaseRunning = true;
     const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
     if (!locId || locId === 'loc-demo') { useStore._cateringReleaseRunning = false; return; }
+    // 12 Oct 2026: the rule again now the venue is known (a till only ever releases its own
+    // venue's orders), and the same menu gate as the live route. It is asked once per tick and
+    // the 60 s tick is the retry, so a tick that must wait for the menu reads no row and
+    // books no courier.
+    const sweepGate = autoRouteGate(useStore.getState(), locId);
+    if (sweepGate !== 'route' && sweepGate !== 'route-blind') { useStore._cateringReleaseRunning = false; return; }
     try {
       // Drain all due catering oldest-fire-first; loop while a full page returns so a big
       // same-time batch clears in one tick (not 50/5-min). routeKioskOrderPrints' atomic
@@ -3891,7 +3934,7 @@ export const useStore = create((set, get) => ({
             items: row.items || [], customer: row.customer || null,
             collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
-          });
+          }, { trigger: 'catering' });
           // v5.5.653: FIRE-TIME courier dispatch — a catering delivery order set to 'uber' mode
           // dispatches its courier now (event day), not at order time. Master-only (this fn is
           // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
@@ -4856,6 +4899,9 @@ export const useStore = create((set, get) => ({
     // that resets on reload), so a finished/collected order RESURRECTED on the next boot
     // (loadQueues re-pulls any row that isn't status 'collected'). Location-scoped because
     // refs (e.g. #1002) collide across locations.
+    // 12 Oct 2026: only a named staff action on a till or in Back Office removes the row from the
+    // database (lib/queueDeleteRule.js). A kitchen screen, a kiosk or a host stand never does.
+    if (!mayRemoveQueueRow(readQueueRole(get().deviceConfig))) return;
     try {
       const locId = getActiveLocationSync();
       if (supabase && locId && ref) {
@@ -8326,9 +8372,14 @@ export const useStore = create((set, get) => ({
     const printerId = centre?.printer?.id || null;
 
     // No printer mapped → still creates KDS ticket, warns staff
+    // v5.11.52 (the quiet till): not when the caller marks the centre as a kitchen screen with
+    // no printer by choice (job.kdsOnly, set only by routeKioskOrderPrints, from the saved
+    // routing). Until v5.11.52 the "routed" toast replaced this warning the moment it was
+    // raised; with that toast gone it would have shown on every QR, online and kiosk order at a
+    // venue that runs screens only. The 'no-printer' marker is kept; only the words are left off.
     if (!printerId) {
       set(s => ({ printJobs: [{ ...basePrintJob, status: 'no-printer' }, ...s.printJobs.slice(0, 49)] }));
-      get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
+      if (!job.kdsOnly) get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
       return;
     }
 
@@ -8456,19 +8507,17 @@ export const useStore = create((set, get) => ({
   routeKioskOrderPrints: async (order, opts = {}) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
-    // v5.5.131: surface routing diagnostics as on-screen toasts on the master
+    // v5.5.131: surface routing PROBLEMS as on-screen toasts on the master
     // device — DevTools isn't accessible on Sunmi/Android-APK installs.
+    // v5.11.52 (the quiet till): problems only. An order that is routed with nothing wrong
+    // shows NOTHING on the till. Peter, 12 Oct 2026: "we dont want it to show on the POS a
+    // routing message, whats the point, it just needs to do it".
     const showToast = useStore.getState().showToast;
-    // NB: named srcUpper, NOT srcLabel. A second `const srcLabel` is declared later INSIDE the
-    // try block (SRC_LABEL[...]); reusing the name here put the "Routing …" toast below in that
-    // inner const's temporal dead zone → a silent ReferenceError AFTER the kitchen_routed_at
-    // claim but BEFORE the KDS/print writes, so channel orders claimed-but-never-printed (v5.5.861
-    // regression, fixed v5.5.867). Keep these two names distinct.
-    const srcUpper = order.source ? order.source.toUpperCase() : 'ORDER';
-    // v5.5.861: console entry log stays here, but the on-screen "Routing …" toast moved
-    // BELOW the dedup/staleness/claim guards — it used to fire on every backfill pass
-    // (every Back Office refresh re-toasted the same held/already-printed order, reading
-    // as a repeated new-order notification).
+    // NB: a `const srcLabel` is declared later INSIDE the try block (SRC_LABEL[...]). Nothing
+    // above that line may use the name. v5.5.861 did, in a toast, which threw a silent
+    // ReferenceError (temporal dead zone) AFTER the kitchen_routed_at claim but BEFORE the
+    // KDS/print writes, so channel orders were claimed and never printed (fixed v5.5.867 with a
+    // second const, srcUpper, which went with its "Routing" toast in v5.11.52).
     console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
       'items:', order.items.map(i => ({
         id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
@@ -8496,7 +8545,8 @@ export const useStore = create((set, get) => ({
         console.log('[routeKioskOrderPrints] deferring', order.ref,
           'until', new Date(sentAtMs).toISOString(),
           `(in ${Math.round(cappedWait/60000)} min)`);
-        setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
+        // 12 Oct 2026: opts ride along, so the ticket still says what triggered it when the timer fires.
+        setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order, opts), cappedWait);
         return;
       }
       // STALENESS BACKSTOP — universal guard for every routing path (catering release, master
@@ -8533,7 +8583,10 @@ export const useStore = create((set, get) => ({
       const ROUTED_LS = 'rpos-routed-refs';
       const routedBefore = (ref) => { try { return JSON.parse(localStorage.getItem(ROUTED_LS) || '[]').includes(ref); } catch { return false; } };
       const markRouted = (ref) => { try { const a = JSON.parse(localStorage.getItem(ROUTED_LS) || '[]'); if (!a.includes(ref)) { a.push(ref); while (a.length > 300) a.shift(); localStorage.setItem(ROUTED_LS, JSON.stringify(a)); } } catch {} };
-      if (!order.force && routedBefore(order.ref)) {
+      // 12 Oct 2026: force rides in opts (Orders, "Send to kitchen again"). This line read it off
+      // the order, where it never is, so the button did nothing on the till that had first
+      // routed the order, which at a one till venue is the only till.
+      if (!opts?.force && routedBefore(order.ref)) {
         console.log('[routeKioskOrderPrints] already printed on this device — skipping', order.ref);
         return;
       }
@@ -8581,10 +8634,9 @@ export const useStore = create((set, get) => ({
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
       const claimedRow = r.data?.[0] || null;
-      // v5.5.861: we are now COMMITTED to printing this order on this device — this is
-      // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
-      // passes above stay silent instead of re-notifying on every boot).
-      showToast?.(`Routing ${srcUpper} ${order.ref}…`, 'info');
+      // v5.11.52 (the quiet till): we are now COMMITTED to sending this order on this device,
+      // and from here on the till speaks only when something needs attention. The "Routing"
+      // message that was raised at this point for every order is gone.
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen).
       // v5.5.868: load the routing config FRESH from the DB. The device that routes a channel
@@ -8629,7 +8681,7 @@ export const useStore = create((set, get) => ({
         });
       });
       // The fallback warning is raised at the END of this action (see below), because the
-      // routed / did-not-print toast further down would overwrite it: showToast is one slot.
+      // did-not-print toast further down would overwrite it: showToast is one slot.
 
       // v5.5.850 (supersedes v5.5.555's whole-order-only fallback): PER-ITEM fallback — any
       // item that matched no centre (e.g. a HubRise sku_ref that isn't in our catalog) still
@@ -8643,6 +8695,33 @@ export const useStore = create((set, get) => ({
         const fb = channelFallbackCentre(routingConfig);
         if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];
       }
+
+      // 12 Oct 2026 (Preston, D5 + D6): who routed this and with what, and which lines had no screen.
+      // At Preston a Latte fell to the first centre (Food) in silence, and nothing on the ticket
+      // said which app had sent it or that it held no category tree. This sits AFTER the claim,
+      // so it has its own try and both values start as null: if anything here fails, the ticket
+      // goes exactly as before with the stamp and the notice left off. It never leaves this
+      // action early, and it never uses the channel label const declared just below it (see
+      // the note at the top of this action).
+      let routeStamp = null;
+      let routeWords = null;
+      try {
+        const st = useStore.getState();
+        const who = routerIdentity();
+        const menu = venueHoldsMenu({ venueId: locId, categories: st.menuCategories, bootLocationId: st.bootLocationId, catsReadLocationId: st._catsReadLocationId });
+        const fbCentre = unrouted.length ? channelFallbackCentre(routingConfig) : null;
+        routeStamp = buildRouteStamp({
+          deviceId: who.deviceId, deviceName: who.deviceName, mode: who.mode, version: VERSION,
+          trigger: opts?.trigger, categoryCount: (st.menuCategories || []).length,
+          parentLinks: countParentLinks(routingCtx.catParents), menuHeld: menu.ready,
+          fallbackNames: unrouted.map(i => i?.name), at: Date.now(),
+        });
+        routeWords = fallbackNotice({
+          ref: order.ref,
+          names: fbCentre ? noticeLines({ unrouted, source: order.source, menuItems: allMenuItems }).map(i => i?.name) : [],
+          centreName: fbCentre?.name || null, menuHeld: menu.ready,
+        });
+      } catch (e) { console.warn('[routeKioskOrderPrints] route stamp failed:', e?.message || e); }
 
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
@@ -8782,7 +8861,8 @@ export const useStore = create((set, get) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
         location_id: ticketLocationId,
         centre_id: centreId,
-        meta: _kdsMeta,
+        // 12 Oct 2026 (D5): the same meta plus who routed it, under one key no reader takes.
+        meta: withRouteStamp(_kdsMeta, routeStamp),
         course: 1,
         all_courses: [1],
         fired_courses: [1],
@@ -8801,8 +8881,20 @@ export const useStore = create((set, get) => ({
         server: serverName,
         covers: 1,
       }));
+      // v5.11.52: true when the kitchen screen refused the ticket. Read once, by the outcome this
+      // action hands back at its very end (see there). It changes nothing that is sent.
+      let kitchenScreenRefused = false;
       if (tickets.length) {
         let { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
+        // 12 Oct 2026 (D5): the stamp must never cost a ticket. A refused insert is tried once
+        // more with the meta exactly as it was before the stamp existed. The SAME rows and ids,
+        // so a retry after a lost reply cannot double a ticket: a duplicate key answer means the
+        // first try did land. The missing column retry below then runs as before.
+        if (kdsErr && routeStamp && !isMissingColumnError(kdsErr, 'meta')) {
+          console.warn('[routeKioskOrderPrints] kds insert refused, once more without the route stamp:', kdsErr?.message || kdsErr);
+          const again = await supabase.from('kds_tickets').insert(tickets.map(t => ({ ...t, meta: _kdsMeta })));
+          kdsErr = again.error && again.error.code !== '23505' ? again.error : null;   // 23505: the first try did land
+        }
         // v5.8.66: until the kds_tickets.meta migration is run the column is missing and
         // PostgREST rejects the whole insert. Retry without it so the kitchen never loses
         // the order; the KDS reads these rows from table_label exactly as before.
@@ -8812,6 +8904,7 @@ export const useStore = create((set, get) => ({
         // v5.5.971: a rejected ticket insert means the kitchen never sees the order.
         reportSave('kitchen ticket', kdsErr);
         if (kdsErr) {
+          kitchenScreenRefused = true;
           console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
           useStore.getState().showToast?.(`${order.ref} did NOT reach the kitchen screen — ${kdsErr.message}`, 'error');
         }
@@ -8852,6 +8945,10 @@ export const useStore = create((set, get) => ({
           })),
           type: 'kitchen',
           delivery: deliveryBlock,
+          // v5.11.52 (the quiet till): the saved routing says this centre is a kitchen screen
+          // with no printer. That is a chosen setup, so routePrintJob keeps its "No printer
+          // mapped" warning to itself. Words only: the job is handed over exactly as before.
+          kdsOnly: !printerId,
         });
       });
 
@@ -8907,25 +9004,21 @@ export const useStore = create((set, get) => ({
         // types now, and the per-item fallback means the CATEGORY is what failed here.
         else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre that takes ${orderTypeLabelOf(typeKey) || 'this order type'}`;
         showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
-      } else {
-        const centreNames = Object.keys(byCentre).map(cid =>
-          routingConfig.centres?.find(c => c.id === cid)?.name || cid
-        );
-        // Also report which (if any) centres lack a printer mapping.
-        const noPrinter = centreNames.filter((_, idx) => {
-          const cid = Object.keys(byCentre)[idx];
-          const c = routingConfig.centres?.find(c => c.id === cid);
-          return !c?.printer?.id;
-        });
-        if (noPrinter.length) {
-          showToast?.(`⚠ ${srcLabel} ${order.ref} routed to ${centreNames.join(', ')} — but ${noPrinter.join(', ')} has no printer mapped (KDS only)`, 'warning');
-        } else {
-          showToast?.(`✓ ${srcLabel} ${order.ref} routed → ${centreNames.join(', ')}`, 'success');
-        }
       }
-      // v5.8.63: now that the routed / did-not-print toast has been raised, queue the
-      // order type fallback warning behind it so the operator actually reads it.
-      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning');
+      // v5.11.52 (the quiet till): an order that was routed with nothing wrong shows NOTHING on
+      // the till. The "routed" tick and the "no printer mapped (KDS only)" warning that were
+      // raised here are gone. A kitchen screen with no printer is a chosen setup, not a fault,
+      // and at a venue that runs screens only that warning showed on every single order.
+      // The console lines above stay as they are.
+      //
+      // The two warnings below used to queue behind the routed toast. Now they wait only when a
+      // message really is on the till at this moment (did not print, did NOT reach the kitchen
+      // screen, an item not in our menu): the toast is one slot and a new one replaces it. With
+      // nothing on the till they are shown at once.
+      const toastOnScreen = !!useStore.getState().toast;
+      // v5.8.63: the order type fallback warning, behind that message when there is one, so the
+      // operator actually reads both.
+      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning', toastOnScreen ? 3000 : 0);
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
       // durable so the row was at minimum queued), flip status from
@@ -8949,6 +9042,28 @@ export const useStore = create((set, get) => ({
           console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
         }
       }
+      // 12 Oct 2026 (Preston, D4 + D6): never silent. When a line had no kitchen screen, or this
+      // till sent the order before it held its menu, the till says so and one activity feed
+      // event records it. Raised LAST, after the status write, in its own try, and the event is
+      // not waited for, so it can never delay or stop the route. The toast is one slot, so this
+      // one waits behind a message that was on the till (3200 ms) and behind the order type
+      // warning (3000 ms more). v5.11.52: with neither it is shown at once, because the routed
+      // toast it used to wait for is gone.
+      // Severity info: action and urgent chime on every till of the venue.
+      try {
+        if (routeWords && Object.keys(byCentre).length > 0) {
+          setTimeout(() => useStore.getState().showToast?.(routeWords.toast, 'warning', 9000), (toastOnScreen ? 3200 : 0) + (typeFallback ? 3000 : 0));
+          logActivity(locId, { kind: 'ops', severity: 'info', title: routeWords.title, body: routeWords.body, refType: 'kitchen_route', refId: order.ref, actorName: routeStamp?.deviceName || null }).catch(() => {});
+        }
+      } catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }
+      // v5.11.52: what happened, for a person's press (Orders, "Send to kitchen again"). The
+      // action itself stays quiet. That button now says "Sent to the kitchen again" in its own
+      // words, because the "Routing" and "routed" messages were the only sign it had worked.
+      // sent is true only here, at the very end, when at least one centre took the order and
+      // the kitchen screen did not refuse the ticket. Every early return above, and the catch
+      // below, hand back nothing, which the button reads as not sent. The automatic callers
+      // (sync/ChannelAutoRouter.js, the catering sweep, Accept) do not read it.
+      return { sent: Object.keys(byCentre).length > 0 && !kitchenScreenRefused };
     } catch (e) {
       console.warn('[routeKioskOrderPrints] failed:', e?.message);
     }
@@ -9218,7 +9333,7 @@ export const useStore = create((set, get) => ({
       collectionTime: o.collectionTime || null,
       isASAP: !!o.isASAP,
       sentAt: Date.now(),
-    });
+    }, { trigger: 'manual' });   // 12 Oct 2026: a person pressed Accept. It routes now, on any till, with no master question.
     if (o.source === 'hubrise') {
       // manual: staff pressed Accept. Accepting a channel order placed days ahead is a
       // deliberate act, so its receipt is not subject to the auto-print age gate.
