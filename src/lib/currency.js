@@ -62,6 +62,15 @@ export function money(amount, code) {
   return `${currencySymbol(code)}${(Number.isFinite(n) ? n : 0).toFixed(2)}`;
 }
 
+// v5.11.65: a negative amount reads "-£19.63", the sign before the symbol. money() itself keeps
+// "£-19.63": the till, receipts and payments print it that way and are outside the stock work;
+// the Back Office stock screens and the report kit (Back Office only) use this one.
+export function signedMoney(amount, code) {
+  const n = Number(amount);
+  const v = Number.isFinite(n) ? n : 0;
+  return v < 0 ? `-${money(-v, code)}` : money(v, code);
+}
+
 // Format a MINOR-unit amount (pence/cents) as money: moneyMinor(1234) -> "£12.34".
 export function moneyMinor(minor, code) {
   const n = Number(minor);
