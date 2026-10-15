@@ -1,7 +1,7 @@
 /** kitchen.test.js — Manager Kitchen below-par + batch status. Run: `node --test` */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { belowPar, bySupplier, batchStatus, groupBatches } from './kitchen.js';
+import { belowPar, bySupplier, batchStatus, groupBatches, roundQty, qtyText } from './kitchen.js';
 
 const NOW = 1_800_000_000_000;
 const min = (n) => NOW - n * 60000;
@@ -39,4 +39,21 @@ test('groupBatches: counts + notRecorded', () => {
   assert.equal(g.counts.overdue, 1);
   assert.equal(g.counts.due, 1);
   assert.equal(g.notRecorded, 2);
+});
+test('qtyText: whole numbers for counted units, two decimals for weight and volume, unit appended', () => {
+  assert.equal(qtyText(70.44800000000001, 'l'), '70.45 l');
+  assert.equal(qtyText(39.4, 'kg'), '39.4 kg');
+  assert.equal(qtyText(15.04, 'l'), '15.04 l');
+  assert.equal(qtyText(1080, 'each'), '1080 each');
+  assert.equal(qtyText(2.4, 'each'), '3 each');        // you cannot order 2.4 patties
+  assert.equal(qtyText(5, null), '5');
+  assert.equal(qtyText('nonsense', 'kg'), '0 kg');
+  assert.equal(roundQty(29.552, 'l'), 29.55);
+  assert.equal(roundQty(3, 'each'), 3);               // an exact whole stays itself
+});
+test('belowPar: the shortfall is already rounded for its unit', () => {
+  const r = belowPar([{ itemId: 'k', name: 'Keg', onHand: 29.552, par: 100, unit: 'l', supplier: 'A' }]);
+  assert.equal(r[0].shortfall, 70.45);
+  const w = belowPar([{ itemId: 'b', name: 'Buns', onHand: 10.5, par: 20, unit: 'each', supplier: 'A' }]);
+  assert.equal(w[0].shortfall, 10);
 });

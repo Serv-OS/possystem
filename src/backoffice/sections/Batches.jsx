@@ -29,9 +29,13 @@ export default function Batches() {
   const [queue, setQueue] = useState([]);
   const [completing, setCompleting] = useState(null);   // batch being completed → qty prompt
   const [actualIn, setActualIn] = useState('');
+  // v5.11.64 — the venue's calendar day, so "To make" and the "today" label never read the
+  // device clock (the old toISOString() was UTC, a third clock again).
+  const [todayYmd, setTodayYmd] = useState(buildScheduleCtx(null).ymd);
   const loadQueue = async () => {
     const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
     if (!loc) return;
+    try { setTodayYmd(buildScheduleCtx((await getLocationConfig(loc))?.timezone).ymd); } catch { /* London default stands */ }
     await ensureTodaysPlannedBatches(loc);              // the schedule BUILDS the batches
     const { data } = await fetchBatches(loc, 300);
     setQueue(data || []);
@@ -44,8 +48,13 @@ export default function Batches() {
     showToast?.(`Made ${actualIn} ${completing.outputUnit} — stock updated`, 'success');
     setCompleting(null); setActualIn(''); loadQueue();
   };
+  // "To make" is today's plan and anything ahead. A plan from a past day that was never
+  // completed is not today's work (a 9 Sep plan was sitting beside today's on 15 Oct); it
+  // stays under All until it is completed or cancelled.
+  const isToMake = (b) => b.status === 'PLANNED' && (!b.plannedFor || b.plannedFor >= todayYmd);
+  const toMakeCount = queue.filter(isToMake).length;
   const queueView = queue
-    .filter(b => queueTab === 'all' ? true : queueTab === 'todo' ? b.status === 'PLANNED' : b.status === 'COMPLETED')
+    .filter(b => queueTab === 'all' ? true : queueTab === 'todo' ? isToMake(b) : b.status === 'COMPLETED')
     .filter(b => !queueQ.trim() || (b.outputName || '').toLowerCase().includes(queueQ.trim().toLowerCase()));
 
   const r1 = (v) => Math.round(Number(v) * 10) / 10;
@@ -173,7 +182,7 @@ export default function Batches() {
           {[['todo', 'To make'], ['done', 'Done'], ['all', 'All']].map(([t, l]) => (
             <button key={t} onClick={() => setQueueTab(t)} style={{ padding: '6px 13px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: queueTab === t ? 700 : 500,
               border: `1px solid ${queueTab === t ? 'var(--acc)' : 'var(--bdr)'}`, background: queueTab === t ? 'var(--acc-d, var(--bg2))' : 'transparent', color: queueTab === t ? 'var(--acc)' : 'var(--t3)' }}>
-              {l}{t === 'todo' && queue.filter(b => b.status === 'PLANNED').length > 0 ? ` (${queue.filter(b => b.status === 'PLANNED').length})` : ''}
+              {l}{t === 'todo' && toMakeCount > 0 ? ` (${toMakeCount})` : ''}
             </button>
           ))}
           <input value={queueQ} onChange={e => setQueueQ(e.target.value)} placeholder="Search batches…"
@@ -186,7 +195,7 @@ export default function Batches() {
             <b style={{ color: 'var(--t1)', flex: 1 }}>{b.outputName || itemName(b.outputItemId)}</b>
             <span style={{ color: 'var(--t3)', fontSize: 12 }}>
               {b.status === 'PLANNED'
-                ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === new Date().toISOString().slice(0, 10) ? 'today' : b.plannedFor}` : ''}`
+                ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === todayYmd ? 'today' : b.plannedFor}` : ''}`
                 : `made ${b.actualQty} ${b.outputUnit} · ${b.producedAt ? new Date(b.producedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`}
             </span>
             {b.status === 'PLANNED'

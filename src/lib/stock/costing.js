@@ -322,7 +322,32 @@ function walk(recipe, outputItem, ctx, orderType, scale, out, stack) {
 export function resolveItemSupplierId(item) {
   if (!item) return null;
   if (item.defaultSupplierId) return item.defaultSupplierId;
-  const packs = (item.supplierProducts || []).filter(p => p && p.supplierId);
+  return pickSupplierProduct(item)?.supplierId ?? null;
+}
+
+/**
+ * Which supplier PACK do we buy this item in? ONE rule for the Order pad, the Orders screen
+ * and the Manager app (v5.11.64: three screens each had their own answer, so the same item
+ * sat under a different supplier on each).
+ *
+ * Order: the pack flagged preferred → the pack from the item's default supplier → the
+ * cheapest per base unit. Never "whichever row came back first".
+ *
+ * @param {object} item inventory item with optional supplierProducts[] and defaultSupplierId
+ * @returns {object|null} the supplier product (pack) to order, or null when there is none
+ */
+export function pickSupplierProduct(item) {
+  const packs = (item?.supplierProducts || []).filter(p => p && p.supplierId);
   if (!packs.length) return null;
-  return (packs.find(p => p.isPreferred) || packs[0]).supplierId;
+  const preferred = packs.find(p => p.isPreferred);
+  if (preferred) return preferred;
+  if (item.defaultSupplierId) {
+    const def = packs.find(p => p.supplierId === item.defaultSupplierId);
+    if (def) return def;
+  }
+  const cost = (p) => {
+    const c = Number(p.baseUnitCost);
+    return Number.isFinite(c) && c >= 0 ? c : Infinity;
+  };
+  return [...packs].sort((a, b) => cost(a) - cost(b))[0];
 }

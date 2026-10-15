@@ -182,6 +182,20 @@ export const completePlannedBatch = async (batchId, actualQty, locationId = null
     actual_cost: plan.totalCost, theoretical_cost: plan.totalCost, output_unit_cost: plan.outputUnitCost,
     produced_at: nowIso(), updated_at: nowIso(),
   }).eq('location_id', locationId).eq('id', batchId).select().maybeSingle();
+  // v5.11.64 — a scheduled cook completed from Back Office is DONE in the Manager app too.
+  // The Manager Kitchen tab reads "done today" from prep_log; this path never wrote one, so
+  // a batch finished here stayed due/overdue on the phone all day. ignoreDuplicates keeps
+  // the Manager Record row (with the operator's name) when it got there first. Best effort:
+  // the stock is already moved, a log hiccup must not fail the completion.
+  if (!error && b.schedule_id && b.planned_for) {
+    try {
+      await supabase.from('prep_log').upsert({
+        location_id: locationId, schedule_id: b.schedule_id, name: b.output_name || rec.name || 'Prep',
+        prep_date: b.planned_for, actual_qty: Number(actualQty), unit: b.output_unit || rec.yield_unit || null,
+        recorded_by_name: 'Back Office', recorded_at: nowIso(),
+      }, { onConflict: 'location_id,schedule_id,prep_date', ignoreDuplicates: true });
+    } catch { /* the batch is complete; the Manager app catches up on its next snapshot */ }
+  }
   return { data: done ? batchFromRow(done) : null, error };
 };
 

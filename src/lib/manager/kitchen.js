@@ -13,10 +13,32 @@ export function belowPar(items) {
     .filter((i) => i && (i.eightySixed || (i.par != null && Number(i.onHand) < Number(i.par))))
     .map((i) => ({
       ...i,
-      shortfall: i.par != null ? Math.max(0, Number(i.par) - Number(i.onHand || 0)) : 0,
+      shortfall: i.par != null ? roundQty(Math.max(0, Number(i.par) - Number(i.onHand || 0)), i.unit) : 0,
       belowReorder: i.reorderPoint != null && Number(i.onHand || 0) <= Number(i.reorderPoint),
     }))
     .sort((a, b) => ((b.eightySixed ? 1 : 0) - (a.eightySixed ? 1 : 0)) || (b.shortfall - a.shortfall));
+}
+
+// Units counted in wholes: a shortfall of 2.4 patties is 3 patties to order.
+const WHOLE_UNITS = new Set(['', 'each', 'ea', 'unit', 'units', 'pack', 'packs', 'portion', 'portions', 'bottle', 'bottles', 'can', 'cans', 'keg', 'kegs', 'case', 'cases', 'tray', 'trays', 'bag', 'bags', 'box', 'boxes']);
+const isWholeUnit = (unit) => WHOLE_UNITS.has(String(unit || '').trim().toLowerCase());
+
+/**
+ * A stock quantity rounded for a human: whole numbers for things you count (each, bottles),
+ * two decimals for things you weigh or pour (kg, l, g, ml). v5.11.64: the Kitchen tab printed
+ * "+70.44800000000001", the raw subtraction, with no unit.
+ */
+export function roundQty(n, unit) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return isWholeUnit(unit) ? Math.ceil(v - 1e-9) : Math.round(v * 100) / 100;
+}
+
+/** "70.45 l", "1080 each", "3 kg": the rounded quantity with its unit when one is known. */
+export function qtyText(n, unit) {
+  const v = roundQty(n, unit);
+  const u = String(unit || '').trim();
+  return u ? `${v} ${u}` : String(v);
 }
 
 /** Group below-par items by supplier (for raising one PO per supplier). */

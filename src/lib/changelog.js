@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.64',
+    date: '15 Oct 2026',
+    items: [
+      "Order pad: every order is now born with its expected delivery date, the supplier's next delivery day (tomorrow for a supplier with no schedule). Until now orders made from the pad had no date at all.",
+      "Orders: the expected date can be changed on an order that has already been sent. It was locked with every other field once an order left the building. The change saves on its own and never touches the order lines.",
+      "Order pad: a pack is pack size times inner size, the same reading costing and receiving use. A case of 6 x 2 litres was being read as 2 litres, so the pad suggested six times too many cases and the order told the supplier 32 packs where 5 or 6 were meant. The order line now carries the real pack size.",
+      "Order pad: the On hand column shows what is already on open orders. A suggested 0 used to look like a broken button when the truth was that the need was already on order. Fill from forecast now says so when there is nothing to order, and clears lines that need nothing instead of writing 0 into them.",
+      "Order pad and Orders: when the supplier email does not send, the message says why in plain words (for example an address the mail provider refuses) and that the order is saved with a Resend button in Orders. It no longer shows the raw error 'Edge Function returned a non-2xx status code'. Sending from the Orders screen keeps the order on the books as Sent in that case, as the pad already did.",
+      "Suppliers: delivery days saved as numbers (1 to 7) are read the same as day names, so a supplier set up that way gets the right cover days and truck icon on the pad.",
+      "One rule for an item's supplier across the Order pad, the Orders screen, Stock reports and the Manager app: the pack flagged preferred, then the item's default supplier, then the cheapest per unit. Before this each screen had its own rule and the same item could sit under a different supplier on each. The Manager app now names the supplier from the pack, so Unassigned only appears for an item with truly no supplier (needs the manager-snapshot function deployed).",
+      "Orders: adding an item to an order only uses that supplier's pack. The old fallback silently priced the line off another supplier's pack. The item picker lists that supplier's items first, with a tick box to show all items.",
+      "Batches: To make shows today's plan and anything ahead, on the venue's calendar. A plan from a past day that was never completed moves out of the way (it stays under All). The 'today' label uses the venue's day, not the device clock.",
+      "Batches and the Manager app agree: completing a scheduled cook in Back Office now marks it done in the Manager app Kitchen tab, which used to show it overdue all day. With the manager-snapshot function deployed, a batch planned for today is listed in the Manager app even when the schedule's weekday does not match, and a batch completed in Back Office reads as done there.",
+      "Manager app Kitchen tab: stock to order shows rounded quantities with their unit ('+70.45 l', '+3 each') instead of the raw subtraction with no unit ('+70.44800000000001').",
+    ],
+  },
+  {
     v: '5.11.62',
     date: '15 Oct 2026',
     items: [

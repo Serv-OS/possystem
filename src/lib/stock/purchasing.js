@@ -12,6 +12,7 @@ import { convert } from './conversion.js';
 import { movingAverageCost } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
 import { purchaseNet } from '../tax.js';
+import { cleanFnError } from './purchasingRules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -142,6 +143,35 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
   return { data: poFromRow(data), error: null };
 };
 
+/**
+ * Plain text for a failed edge function call. The Supabase client reports every non-2xx
+ * answer as "Edge Function returned a non-2xx status code" and hides the body in
+ * error.context; this reads the body and hands back one sentence a venue can act on.
+ */
+export const fnErrorText = async (res, error, fallback = 'send failed') => {
+  let raw = res?.error || null;
+  if (!raw && error?.context) {
+    try { raw = (await error.context.json())?.error || null; } catch { raw = null; }
+  }
+  if (!raw) raw = error?.message || null;
+  return cleanFnError(raw, fallback);
+};
+
+/**
+ * Change when an order is due, on its own. v5.11.64: an order the pad has already sent
+ * had every field locked, including the one date the venue needs to correct. This is a
+ * one column update: it NEVER goes through savePurchaseOrder, which deletes and reinserts
+ * po_lines and would orphan the receive idempotency keys.
+ */
+export const setPOExpectedDate = async (poId, ymd, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const clean = /^\d{4}-\d{2}-\d{2}$/.test(String(ymd || '')) ? ymd : null;
+  return supabase.from('purchase_orders').update({ expected_date: clean, updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', poId);
+};
+
 export const setPOStatus = async (poId, status, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -264,8 +294,10 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
  * Create purchase orders from an order-pad basket, split by supplier (one PO per
  * supplier). lines: [{ supplierId, inventoryItemId, description, qtyPacks, packQty,
  * innerQty, innerUnit, unitPrice }]. Returns { data: { created }, error }.
+ * opts.expectedDateBySupplier: { [supplierId]: 'YYYY-MM-DD' } — the delivery date each
+ * order is born with (v5.11.64: before this every pad order had no expected date at all).
  */
-export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId = null) => {
+export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId = null, { expectedDateBySupplier = null } = {}) => {
   if (isMock || !supabase) return { data: { created: 0 }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
@@ -278,7 +310,8 @@ export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId
   const poIds = [];   // v5.5.922: callers need the ids to send each order on to its supplier
   const supplierIds = [];
   for (const [supplierId, group] of Object.entries(bySupplier)) {
-    const { data: po, error } = await savePurchaseOrder({ supplierId, status }, group, locationId);
+    const expectedDate = expectedDateBySupplier?.[supplierId] || null;
+    const { data: po, error } = await savePurchaseOrder({ supplierId, status, expectedDate }, group, locationId);
     if (!error) { created++; if (po?.id) { poIds.push(po.id); supplierIds.push(supplierId); } }
   }
   return { data: { created, poIds, supplierIds }, error: null };

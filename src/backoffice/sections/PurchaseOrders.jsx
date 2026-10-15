@@ -8,7 +8,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId, supabase } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
-import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices } from '../../lib/stock/purchasing';
+import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
 import { reportSave } from '../../lib/saveHealth';
 import { PageHeader, PrimaryBtn, Tag } from './reports/reportKit';
 
@@ -66,7 +66,11 @@ export default function PurchaseOrders() {
 
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
   const addItemLine = (it) => {
-    const sp = (it.supplierProducts || []).find(s => s.supplierId === draft.supplierId) || (it.supplierProducts || [])[0];
+    // v5.11.64: ONLY this supplier's pack. The old fallback to "any pack" priced a bakery
+    // order off the milk supplier's pack without a word. No pack on file = a zero price and
+    // a warning, never another supplier's price.
+    const sp = (it.supplierProducts || []).find(s => s.supplierId === draft.supplierId) || null;
+    if (!sp) showToast?.(`${it.name}: no pack from ${supName(draft.supplierId)} on file. Check the pack size and price before sending.`, 'info');
     setDraft(d => ({ ...d, lines: [...d.lines, {
       inventoryItemId: it.id, description: it.name, qtyPacks: 1,
       packQty: sp?.packQty || 1, innerQty: sp?.innerQty || 1, innerUnit: sp?.innerUnit || it.baseUnit,
@@ -109,13 +113,31 @@ export default function PurchaseOrders() {
     });
     setBusy(false);
     if (error || res?.error) {
-      const msg = res?.error === 'supplier_has_no_email'
-        ? 'This supplier has no email on file — add one in Suppliers, or use Mark sent.'
-        : (res?.error || error?.message || 'Send failed');
-      showToast?.(msg, 'error'); return;
+      if (res?.error === 'supplier_has_no_email') {
+        showToast?.('This supplier has no email on file. Add one in Suppliers, or use Mark sent.', 'error'); return;
+      }
+      // v5.11.64: the order is real even when the email is not. Keep it on the books as SENT,
+      // exactly as the Order pad does, so it counts as on order and the Resend button appears;
+      // and say what went wrong in plain words, not the SDK's "non-2xx status code".
+      const reason = await fnErrorText(res, error, 'the email could not be sent');
+      await setPOStatus(saved.id, 'SENT', locId);
+      await reload(saved.id);
+      showToast?.(`Order saved and on the books, but the email did not send: ${reason}. Use Resend to supplier once the address is fixed.`, 'error');
+      return;
     }
     showToast?.(`Order emailed to ${res?.to}`, 'success');
     await reload(saved.id);
+  };
+  // Expected date on an order already sent: a one column update (never the full save, which
+  // would reinsert the lines and break receiving). Draft orders keep the normal save path.
+  const changeExpectedDate = async (value) => {
+    upd('expectedDate', value);
+    if (!draft?.id || editable) return;
+    const { error } = await setPOExpectedDate(draft.id, value || null, locId);
+    reportSave('purchase order date', error);
+    if (error) { showToast?.('Expected date NOT saved', 'error'); return; }
+    showToast?.(value ? `Expected date updated to ${value}` : 'Expected date cleared', 'success');
+    await reload(draft.id);
   };
   const openReceive = () => {
     // Seed with what was ordered — staff correct only what differs, which for a clean
@@ -169,6 +191,14 @@ export default function PurchaseOrders() {
   };
 
   const editable = !draft?.id || draft.status === 'DRAFT';
+  // The one field a sent order still needs: when it is due. Received and cancelled stay read only.
+  const dateEditable = editable || ['SENT', 'PARTIAL'].includes(draft?.status);
+  const [showAllItems, setShowAllItems] = useState(false);
+  const pickerItems = useMemo(() => {
+    if (showAllItems || !draft?.supplierId) return items;
+    const mine = items.filter(i => (i.supplierProducts || []).some(s => s.supplierId === draft.supplierId));
+    return mine.length ? mine : items;
+  }, [items, draft?.supplierId, showAllItems]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
@@ -220,7 +250,7 @@ export default function PurchaseOrders() {
                 </select>
               </div>
               <div><label style={lbl}>Reference</label><input disabled={!editable} value={draft.reference || ''} onChange={e => upd('reference', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Expected date</label><input disabled={!editable} type="date" value={draft.expectedDate || ''} onChange={e => upd('expectedDate', e.target.value)} style={field} /></div>
+              <div><label style={lbl}>Expected date</label><input disabled={!dateEditable} type="date" value={draft.expectedDate || ''} onChange={e => changeExpectedDate(e.target.value)} style={field} title={dateEditable && !editable ? 'Saved as soon as you pick a date' : undefined} /></div>
             </div>
 
             <label style={lbl}>Lines</label>
@@ -239,7 +269,17 @@ export default function PurchaseOrders() {
                 </div>
               ))}
             </div>
-            {editable && <ItemPicker items={items} onPick={addItemLine} />}
+            {editable && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <ItemPicker items={pickerItems} onPick={addItemLine} />
+                {draft.supplierId && (
+                  <label style={{ fontSize: 12, color: 'var(--t3)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={showAllItems} onChange={e => setShowAllItems(e.target.checked)} />
+                    Show all items, not just {supName(draft.supplierId)}’s
+                  </label>
+                )}
+              </div>
+            )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 14, color: 'var(--t1)', marginRight: 'auto' }}>

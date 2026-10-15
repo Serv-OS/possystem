@@ -3,7 +3,7 @@
 // snapshot; the pure decisions live in src/lib/manager/kitchen.js. Recording a cook writes prep_log
 // (training-gated, RLS-fenced). The goods-in CHECK stays in the Ops tab → Deliveries. NOT the KDS rail.
 import { useState } from 'react';
-import { belowPar, bySupplier, groupBatches } from '../../lib/manager/kitchen';
+import { belowPar, bySupplier, groupBatches, qtyText } from '../../lib/manager/kitchen';
 import { recordPrep } from '../../lib/prep';
 import { managerRaisePO } from '../../lib/manager/data';
 import { Header, Stat, SectionTitle, mono } from './ui';
@@ -123,10 +123,10 @@ export default function ManagerKitchen({ ctx }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 14, fontWeight: 700 }}>{i.name}</div>
                       <div style={{ fontSize: 11, color: i.belowReorder ? 'var(--red)' : 'var(--t3)', ...mono }}>
-                        {i.onHand} on hand · par {i.par ?? '—'}{i.belowReorder ? ' · below reorder' : ''}
+                        {qtyText(i.onHand, i.unit)} on hand · par {i.par != null ? qtyText(i.par, i.unit) : '—'}{i.belowReorder ? ' · below reorder' : ''}
                       </div>
                     </div>
-                    {i.shortfall > 0 && <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--orn)', ...mono }}>+{i.shortfall}</span>}
+                    {i.shortfall > 0 && <span style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--orn)', ...mono }}>+{qtyText(i.shortfall, i.unit)}</span>}
                   </div>
                 ))}
 

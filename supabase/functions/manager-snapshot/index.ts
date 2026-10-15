@@ -209,24 +209,34 @@ Deno.serve(async (req) => {
         .select('inventory_item_id, par_level, reorder_point').eq('location_id', loc).order('id'));
       const ids = pars.map((p: any) => p.inventory_item_id).filter(Boolean);
       if (ids.length) {
-        const [invs, sups] = await Promise.all([
-          pagedRows('stock items', () => sb.from('inventory_items').select('id, name, on_hand, default_supplier_id')
+        // v5.11.64: the supplier is the one the Order pad names. default_supplier_id is an optional
+        // preference the Back Office editor never writes; the real purchasing link is the supplier
+        // pack (supplier_products), preferred first. Reading only the default put every normally
+        // added item under "Unassigned" here while the pad knew its supplier.
+        const [invs, sups, packs] = await Promise.all([
+          pagedRows('stock items', () => sb.from('inventory_items').select('id, name, on_hand, base_unit, default_supplier_id')
             .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
           pagedRows('suppliers', () => sb.from('suppliers').select('id, name').eq('location_id', loc).order('id')),
+          pagedRows('supplier packs', () => sb.from('supplier_products').select('inventory_item_id, supplier_id, is_preferred, created_at, id')
+            .eq('location_id', loc).in('inventory_item_id', ids).order('is_preferred', { ascending: false }).order('created_at').order('id')),
         ]);
         const supName: Record<string, string> = {};
         for (const s of sups) supName[s.id] = s.name;
+        const packSup: Record<string, string> = {};
+        for (const p of packs) if (p.inventory_item_id && p.supplier_id) packSup[p.inventory_item_id] ??= p.supplier_id;
         const parBy: Record<string, any> = {};
         for (const p of pars) parBy[p.inventory_item_id] = p;
         kitchenItems = invs.map((i: any) => {
           const p = parBy[i.id] || {};
+          const sid = i.default_supplier_id || packSup[i.id] || null;
           return {
             itemId: i.id, name: i.name,
             onHand: Number(i.on_hand) || 0,
+            unit: i.base_unit || 'each',
             par: p.par_level != null ? Number(p.par_level) : null,
             reorderPoint: p.reorder_point != null ? Number(p.reorder_point) : null,
-            supplier: i.default_supplier_id ? (supName[i.default_supplier_id] || null) : null,
-            supplierId: i.default_supplier_id || null,   // po.raise needs the id, not just the display name
+            supplier: sid ? (supName[sid] || null) : null,
+            supplierId: sid,   // po.raise needs the id, not just the display name
             eightySixed: false,
           };
         });
@@ -277,14 +287,25 @@ Deno.serve(async (req) => {
 
     // ── Kitchen batch cooks: today's scheduled prep (prep_schedule for today's weekday) + any completion
     //    (prep_log for today). The client builds dueAtMs in its own (venue-local) tz, so we pass the raw
-    //    dueDate+dueTime rather than an absolute ms. Isolated: missing tables/failures default to []. ──
+    //    dueDate+dueTime rather than an absolute ms. Isolated: missing tables/failures default to [].
+    //    v5.11.64: the Back Office Batches queue (production_batches) is the SAME work item. A planned
+    //    batch for today whose schedule is not on today's weekday is still listed, and a batch completed
+    //    in Back Office counts as done here even when no prep_log row was written. ──
     let kitchenBatches: any[] = [];
     try {
       const dow = new Date(today + 'T00:00:00Z').getUTCDay();   // 0=Sun..6=Sat for the venue-local date
-      const { data: scheds } = await sb.from('prep_schedule')
-        .select('id, name, qty, unit, due_time, days_of_week, active, sort_order')
-        .eq('location_id', loc).eq('active', true).order('sort_order').limit(500);
-      const todays = (scheds ?? []).filter((s: any) => !Array.isArray(s.days_of_week) || s.days_of_week.length === 0 || s.days_of_week.includes(dow));
+      const [{ data: scheds }, { data: pbs }] = await Promise.all([
+        sb.from('prep_schedule')
+          .select('id, name, qty, unit, due_time, days_of_week, active, sort_order')
+          .eq('location_id', loc).eq('active', true).order('sort_order').limit(500),
+        sb.from('production_batches')
+          .select('schedule_id, status, actual_qty, produced_at, due_time')
+          .eq('location_id', loc).eq('planned_for', today).not('schedule_id', 'is', null).neq('status', 'CANCELLED').limit(500),
+      ]);
+      const pbBy: Record<string, any> = {};
+      for (const b of (pbs ?? [])) if (b.schedule_id) pbBy[b.schedule_id] = b;
+      const onToday = (s: any) => !Array.isArray(s.days_of_week) || s.days_of_week.length === 0 || s.days_of_week.includes(dow);
+      const todays = (scheds ?? []).filter((s: any) => onToday(s) || pbBy[s.id]);
       if (todays.length) {
         const logs = await pagedRows('prep log', () => sb.from('prep_log')
           .select('schedule_id, actual_qty, recorded_at, recorded_by_name').eq('location_id', loc).eq('prep_date', today).order('id'));
@@ -292,13 +313,16 @@ Deno.serve(async (req) => {
         for (const l of logs) if (l.schedule_id) logBy[l.schedule_id] = l;
         kitchenBatches = todays.map((s: any) => {
           const l = logBy[s.id];
+          const pb = pbBy[s.id];
+          const doneByBatch = !l && pb?.status === 'COMPLETED';
+          const dueTime = s.due_time || pb?.due_time || null;
           return {
             id: s.id, scheduleId: s.id, name: s.name,
             plannedQty: s.qty != null ? Number(s.qty) : null, unit: s.unit || null,
-            dueDate: today, dueTime: s.due_time ? String(s.due_time).slice(0, 5) : null,
-            completedAtMs: l ? ms(l.recorded_at) : null,
-            actualQty: l?.actual_qty != null ? Number(l.actual_qty) : null,
-            assignee: l?.recorded_by_name || null,
+            dueDate: today, dueTime: dueTime ? String(dueTime).slice(0, 5) : null,
+            completedAtMs: l ? ms(l.recorded_at) : (doneByBatch ? ms(pb.produced_at) : null),
+            actualQty: l?.actual_qty != null ? Number(l.actual_qty) : (doneByBatch && pb.actual_qty != null ? Number(pb.actual_qty) : null),
+            assignee: l?.recorded_by_name || (doneByBatch ? 'Back Office' : null),
           };
         });
       }

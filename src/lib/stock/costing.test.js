@@ -23,6 +23,7 @@ import {
   lineAppliesToOrderType,
   costBreakdownByPurchasedItem,
   resolveItemSupplierId,
+  pickSupplierProduct,
 } from './costing.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `expected ${a} ≈ ${b}`);
@@ -296,6 +297,23 @@ test('resolveItemSupplierId: falls back to the purchasing link when no default i
   assert.equal(resolveItemSupplierId({ supplierProducts:[] }), null);
   assert.equal(resolveItemSupplierId({}), null);
   assert.equal(resolveItemSupplierId(null), null);
+});
+
+test('pickSupplierProduct: preferred flag, then the default supplier\'s pack, then cheapest per base unit', () => {
+  // the star wins
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:'a', baseUnitCost:0.10 }, { id:'p2', supplierId:'b', isPreferred:true, baseUnitCost:0.20 }] }).id, 'p2');
+  // no star: the item's default supplier beats the row that happened to come back first
+  assert.equal(pickSupplierProduct({ defaultSupplierId:'b', supplierProducts:[{ id:'p1', supplierId:'a' }, { id:'p2', supplierId:'b' }] }).id, 'p2');
+  // no star, default has no pack here: cheapest per base unit
+  assert.equal(pickSupplierProduct({ defaultSupplierId:'z', supplierProducts:[{ id:'p1', supplierId:'a', baseUnitCost:0.30 }, { id:'p2', supplierId:'b', baseUnitCost:0.25 }] }).id, 'p2');
+  // no costs known: first row, same as before
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:'a' }, { id:'p2', supplierId:'b' }] }).id, 'p1');
+  // a pack with no supplier is not a pack
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:null }] }), null);
+  assert.equal(pickSupplierProduct({ supplierProducts:[] }), null);
+  assert.equal(pickSupplierProduct(null), null);
+  // the reports' resolver follows the same pack when there is no explicit default
+  assert.equal(resolveItemSupplierId({ supplierProducts:[{ supplierId:'a', baseUnitCost:0.30 }, { supplierId:'b', baseUnitCost:0.25 }] }), 'b');
 });
 
 // ── Drive thru (16 Sep 2026): takeaway by another door ──────────────────────
