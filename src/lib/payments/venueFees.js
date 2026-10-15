@@ -29,11 +29,16 @@
 // only rated when its captured amount is known and matches amount_minor, so a
 // fee is never worked out on money that was never taken.
 //
-// REFUNDS. The split refunds by ratio (refund: deductAccordingToSplitRatio),
-// so the venue fee shrinks in proportion to what is refunded:
-//   fee = half up rounding of commission * (amount - refunded) / amount
-// A half refund of £2.50 at 7p is 3.5p, which rounds up to 4p, so the venue
-// receives 250 - 125 - 4 = 121.
+// REFUNDS (15 Oct 2026, the refund rule). Each row carries fee_refund_policy,
+// the rule Adyen booked its refunds under (adyenRules.js REFUND_FEE_POLICY):
+//   'none'   the venue bears the refund and keeps NO fee back. The fee stays
+//            the full fee; You receive = amount - refunded - fee. This is what
+//            every venue's bank has received since go live, so a row with no
+//            policy (null) reads as 'none'.
+//   'ratio'  the fee comes back in proportion (deductAccordingToSplitRatio):
+//            fee = half up rounding of commission * (amount - refunded) / amount
+//            A half refund of £2.50 at 7p is 3.5p, which rounds up to 4p, so
+//            the venue receives 250 - 125 - 4 = 121.
 //
 // VISIBILITY. adyen_payments.live is true for the Adyen live environment,
 // false for test, null on rows from before 7 Sep 2026. A live venue shows only
@@ -96,20 +101,27 @@ function commissionFor(row) {
   return Math.max(0, Math.round(commission));
 }
 
-// The fee left after `refunded` of `amount` is refunded (integer half up).
-function feeAfterRefund(fee, amount, refunded) {
-  if (refunded <= 0) return fee;
+// The refund rule a row was booked under: 'ratio' only when the row says so,
+// else 'none' (what Adyen did on every row written before the column existed).
+export function rowRefundPolicy(row) {
+  return String(row?.fee_refund_policy ?? '').trim().toLowerCase() === 'ratio' ? 'ratio' : 'none';
+}
+
+// The fee left after `refunded` of `amount` is refunded: the whole fee under
+// 'none', the kept share (integer half up) under 'ratio'.
+export function feeAfterRefund(fee, amount, refunded, policy = 'none') {
+  if (refunded <= 0 || policy !== 'ratio') return fee;
   if (amount <= 0) return 0;
   const kept = Math.max(0, amount - refunded);
   return Math.max(0, Math.floor((2 * fee * kept + amount) / (2 * amount)));
 }
 
-// The venue fee in minor units, reduced by the refund ratio. null when the
-// row is not a counted payment or has no fee on record.
+// The venue fee in minor units after refunds, under the row's refund rule.
+// null when the row is not a counted payment or has no fee on record.
 export function venueFeeFor(row) {
   const commission = commissionFor(row);
   if (commission === null) return null;
-  return feeAfterRefund(commission, minor(row.amount_minor), Math.max(0, minor(row.amount_refunded_minor)));
+  return feeAfterRefund(commission, minor(row.amount_minor), Math.max(0, minor(row.amount_refunded_minor)), rowRefundPolicy(row));
 }
 
 // What the venue receives: amount minus refunded minus the venue fee. null
@@ -168,9 +180,11 @@ const PAYOUT_REFUND_LINE_TYPES = Object.freeze(['Refunded', 'RefundedExternally'
 // One line's venue figures, or null for a line a venue never sees. Each line
 // carries what the split booked in ITS batch, so every payout matches the bank:
 //   sale line   : the full venue fee (commission, before any refund)
-//   refund line : the fee that refund gave back, as a negative fee, so its
-//                 receives is the refund less the returned fee (a £1.25
-//                 refund of £2.50 at 7p gives back 3p: receives -122)
+//   refund line : under 'none' no fee moves: fee 0, receives = the gross (the
+//                 money that left). Under 'ratio' the fee that refund gave
+//                 back, as a negative fee, so its receives is the refund less
+//                 the returned fee (a £1.25 refund of £2.50 at 7p gives back
+//                 3p: receives -122)
 //   reversed    : a refund reversal takes that fee again (positive gross)
 //   dispute line: no fee, receives = gross
 // The lines of one payment add up to venueFeeFor and venueReceivesFor. With
@@ -187,7 +201,7 @@ export function venuePayoutLine(line, payment) {
   const commission = payment ? commissionFor(payment) : null;
   if (commission === null) return { gross_minor: gross, fee_minor: null, receives_minor: null, unrated: true };
   if (isSale) return { gross_minor: gross, fee_minor: commission, receives_minor: gross - commission, unrated: false };
-  const returned = commission - feeAfterRefund(commission, minor(payment.amount_minor), Math.abs(gross));
+  const returned = commission - feeAfterRefund(commission, minor(payment.amount_minor), Math.abs(gross), rowRefundPolicy(payment));
   const fee = returned === 0 ? 0 : (gross < 0 ? -returned : returned);
   return { gross_minor: gross, fee_minor: fee, receives_minor: gross - fee, unrated: false };
 }

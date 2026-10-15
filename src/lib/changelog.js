@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.64',
+    v: '5.11.65',
     date: '15 Oct 2026',
     items: [
       "Order pad: every order is now born with its expected delivery date, the supplier's next delivery day (tomorrow for a supplier with no schedule). Until now orders made from the pad had no date at all.",
@@ -26,6 +26,30 @@ export const CHANGELOG = [
       "Manager app: receive a delivery on the phone. Type what arrived (or tap All as ordered), or photograph the delivery note and the lines are matched to the order by the supplier's product code, then our SKU, then the name; lines that differ from the order are highlighted amber and lines on the note that are not on the order are listed. Enter the delivery temperature (or tick Dry goods), PIN to confirm. Stock, costs, the goods in temperature record and the order status update exactly as Back Office receiving does; short lines go on a balance order; the note is kept on the order as paperwork. Over 8 C the button becomes Reject delivery and nothing is booked. Before this the Kitchen tab sent the manager to the Ops Deliveries screen, which a paired phone cannot read, so it always said No deliveries due today.",
       "Supplier invoices (Back Office): a scanned line is matched by the supplier's product code first, then our SKU, then the name. The scanner is now asked for the code printed on each line.",
       "Order pad and Orders: a supplier with no email address, or an address the mail service refuses, is now named in plain words in the toast (with the address that was refused), instead of the raw token supplier_has_no_email.",
+    ],
+  },
+  {
+    v: '5.11.64',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates: the first live write was refused by Adyen because the rule list named 17 card types Adyen does not publish (mcbusiness, visaprepaid, mcelectronic and the like). The list now holds only names on Adyen's published variant table, 50 rules instead of 67, and a test keeps it that way. Every card type seen at the venues in the last four months is still named; a card with a name Adyen does not publish pays the catch all price on both sides, so Adyen and Back Office still agree.",
+    ],
+  },
+  {
+    v: '5.11.63',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates (review fixes before the first write): the charge Adyen took before the cutover is never guessed from a tiered profile, it is set from the bank; every American Express card name has its own rule, so an Amex card in Apple Pay pays the Amex price on both sides; business cards with no credit or debit word in their name (visacorporate, mccorporate and the like) pay the Amex and business price; switching on card type data adds to the webhook settings and never replaces them; a replay of past payment notices never undoes the restatement; the Read panel counts payments that missed the cutover; the tie check shows the rounding residual per batch.",
+    ],
+  },
+  {
+    v: '5.11.63',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates: what Adyen charges a venue and what Back Office records are now ONE rule. The owner found the venue's bank receiving a few pounds more per settlement than Back Office showed: Adyen was taking a flat 0.85% on every card and giving nothing back on refunds, while our records charged 0.9% on in person cards, the Amex price on business cards, and gave the fee back in proportion on a refund. From now the rules written to Adyen are built from the rate card on the card type name (debit, prepaid, business) and the channel, and every new payment is recorded from the rules read back from Adyen itself.",
+      "Card rates: three new panels under the rate card editor on a venue's Processing page. Read what Adyen charges shows the rules on the venue's payments location in plain words, the refund rule, and how they compare with the card. Write these rates to Adyen previews every change rule by rule, then writes on the typed word LIVE. Switch on card type data asks Adyen to send the card type on every payment notice, or shows the exact clicks to do it in the Customer Area.",
+      "Refunds: the venue keeps paying the card fee on a refunded payment, as its bank has done since go live. Back Office Payments, Payouts, the statement and the Xero Card fees line all show it that way now. Past payments are made to match the bank by a file ServOS runs after the write; nothing is restated twice.",
+      "The Amex and business cards row says which cards pay it: Visa and Mastercard business, corporate, purchasing and fleet cards.",
     ],
   },
   {

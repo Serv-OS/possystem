@@ -921,6 +921,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
       // A debit rate is priced apart and Adyen has not yet sent us a debit or
       // credit flag for this venue: said before the send, never a block.
       ledgerWarning: str(r.ledgerWarning),
+      // 15 Oct 2026: the before and after rule by rule, the refund rule, and
+      // anything on Adyen's profile that ServOS did not write (carried over).
+      ruleLines: lines(r.ruleLines), refundLine: str(r.refundLine), preservedWarnings: lines(r.preservedWarnings),
       // Handed back on Send: the server works it out again from the rates as
       // they are then, so what is sent is what was shown here.
       fingerprint: str(r.fingerprint),
@@ -1796,6 +1799,14 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                                 {ratePreview.lines.map((l) => <p key={l} style={{ ...S.say, margin: '0 0 6px' }}>{l}</p>)}
                                 {ratePreview.overLimit.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
                                 {ratePreview.ledgerWarning && !ratePreview.same && <p style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{ratePreview.ledgerWarning}</p>}
+                                {ratePreview.preservedWarnings.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
+                                {ratePreview.refundLine && !ratePreview.same && <p style={{ ...S.say, fontWeight: 700, margin: '8px 0 6px' }}>{ratePreview.refundLine}</p>}
+                                {ratePreview.ruleLines.length > 0 && !ratePreview.same && (
+                                  <details style={{ margin: '6px 0 0' }}>
+                                    <summary style={{ ...S.say, cursor: 'pointer', margin: 0 }}>{ratePreview.ruleLines.length} rule changes, one by one</summary>
+                                    <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{ratePreview.ruleLines.map((l, i) => <li key={`${i}:${l}`} style={{ ...S.say, margin: '0 0 2px' }}>{l}</li>)}</ul>
+                                  </details>
+                                )}
                                 <p style={{ ...S.quiet, margin: '8px 0 0' }}>
                                   {ratePreview.live ? 'This venue takes real cards. ' : 'This venue is on test cards. '}
                                   Nothing has been sent yet. New payments use the new rates from the moment you send. Past payments do not change.

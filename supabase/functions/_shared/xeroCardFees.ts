@@ -304,6 +304,10 @@ export function cardFeesPreviewRow(prior: any, mapping: any): { detailRow: any; 
 // Adyen's own cost (fee_minor, fee_breakdown) is not in this list and must never be.
 export const CARD_FEE_COLS = 'psp_reference, location_id, amount_minor, amount_refunded_minor, success, last_event_code, commission_minor, authorised_at, capture_required, captured_at, '
   + 'applied_mods:raw->applied_modifications, captured_minor:raw->captured_minor, last_mod_code:raw->last_modification->>eventCode, last_mod_ok:raw->last_modification->>success, last_mod_amount:raw->last_modification->amount->>value';
+// 15 Oct 2026: the refund rule each row was booked under (venueFees rowRefundPolicy). The column
+// arrives with 20261015_PLATFORM_adyen_rates_cutover.sql; a read is retried without it until then.
+export const CARD_FEE_POLICY_COL = 'fee_refund_policy';
+const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
 
 /**
  * Read the day's card fees from the Platform database. `rows` are the day's closed_checks rows
@@ -324,8 +328,14 @@ export async function loadCardFees(platform: any, opsLocationId: string, { day, 
     catch (e) { throw new Error(`Could not read the card fees: ${(e as Error)?.message || String(e)}`); }
   }
   if (!pid) throw new Error('This venue has no card payments record, so its card fees cannot be read.');
+  let withPolicy = true;
   for (let i = 0; i < psps.length; i += CHUNK) {
-    const { data, error } = await platform.from('adyen_payments').select(CARD_FEE_COLS).eq('location_id', pid).in('psp_reference', psps.slice(i, i + CHUNK));
+    const slice = psps.slice(i, i + CHUNK);
+    let { data, error } = await platform.from('adyen_payments').select(withPolicy ? `${CARD_FEE_COLS}, ${CARD_FEE_POLICY_COL}` : CARD_FEE_COLS).eq('location_id', pid).in('psp_reference', slice);
+    if (error && withPolicy && isMissingColumn(error.message)) {
+      withPolicy = false;
+      ({ data, error } = await platform.from('adyen_payments').select(CARD_FEE_COLS).eq('location_id', pid).in('psp_reference', slice));
+    }
     if (error) throw new Error(`Could not read the card fees: ${error.message}`);
     for (const r of data || []) if (r?.psp_reference) found.set(String(r.psp_reference), r);
   }

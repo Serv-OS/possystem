@@ -95,6 +95,10 @@
 //                  17 Sep 2026: on a LIVE venue it needs { confirm_live:
 //                  'LIVE' } (the typed word), and the profile carries debit
 //                  and prepaid rules when a debit rate is priced apart
+//   read_split    → ADMIN. GET only: what Adyen charges this venue now, in
+//                   words, against the rate card (15 Oct 2026)
+//   webhook_settings → ADMIN. { step: read | write | check } card type data on
+//                   the standard webhook (15 Oct 2026)
 //   preview_split → ADMIN. { environment? } the DRY RUN of set_split: the
 //                  same checks and reads, then the exact requests that WOULD
 //                  be sent plus what would change against the profile on the
@@ -256,8 +260,8 @@ import {
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, sweepRows, pickPayoutInstrument, PAYOUT_CAPABILITY,
-  buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
-  rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint, debitTiersApart,
+  tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
+  rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -267,6 +271,8 @@ import {
   type PlatformSettingsLearned,
 } from '../_shared/adyenLink.ts';
 import { createSplitOnStore, planSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
+// 15 Oct 2026: ONE rule engine for both sides (src/lib/payments/adyenRules.test.js).
+import { rulesFromRateCard, preservedLogicFrom, annotateRules, describeRules, ruleDiff, legacyChargeFrom, latestRulesEntry, refundWords, mergedWebhookSettings, lostWebhookSettings, REFUND_FEE_POLICY } from '../_shared/adyenRules.js';
 import { resellerRateFor, resellerRateLine } from '../_shared/resellerRate.ts';
 import { buildPaymentBreakdown, paymentCardLabel, ruleForTier, ruleRate, venueRateLine } from '../_shared/paymentBreakdown.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -3440,6 +3446,14 @@ Deno.serve(async (req) => {
       noStore: 'The payments location is not saved on the venue yet. Do step 3 first.',
       noHolder: 'The business account is not saved on the venue yet. Do step 2 first.',
     };
+    // 15 Oct 2026: the two SQL files of the rates cutover, named in answers.
+    const RATES_CUTOVER_MIGRATION = 'supabase/migrations/20261015_PLATFORM_adyen_rates_cutover.sql';
+    const RATES_RESTATEMENT_FILE = 'supabase/data_fixes/20261015_PLATFORM_adyen_rates_restatement.sql';
+    // The Customer Area clicks when the Management API shows no setting key.
+    const WEBHOOK_SETTINGS_CLICKS = [
+      'Developers', 'Webhooks', 'the standard webhook that points at adyen-webhook', 'Edit webhook', 'Additional Settings',
+      'tick Include Funding Source, Include detailed Card Bin information, Include Shopper Interaction and Include Store (Include Subvariant is already on)', 'Save configuration',
+    ];
     // THE ENVIRONMENT THE SCREEN IS LOOKING AT must be the one the venue is on
     // (9 Sep 2026): the flow looks at live by default while a test venue is
     // still on test, and these writes act on the venue's OWN row and account,
@@ -3563,8 +3577,42 @@ Deno.serve(async (req) => {
         logLink('set_split_refused', loc.id, { environment: env, region, storeId, balanceAccountId, balanceAccountHolder: baHolder || null, rowHolder: holderId });
         return json({ ok: false, foreign_balance_account: true, error: 'Where the money lands is not the venue’s own business account, so the rates were not applied.', detail: `balance account ${balanceAccountId} belongs to account holder ${baHolder || '(none)'}; the venue names ${holderId}. Save the business account again in step 2.` }, 200);
       }
-      const profile = buildTieredProfile({ description: `ServOS ${loc.name ?? 'venue'} rates`, currency: stepCurrency, tiers });
-      if (!profile) return json({ ok: false, error: 'No rate is set for any payment type. Set the venue rate card in Processing first.' }, 200);
+      // THE PROFILE ON THE STORE NOW is read BEFORE building (15 Oct 2026): every
+      // split logic key we do not set on purpose is carried over from it
+      // (preservedLogicFrom), and the before and after is drawn from it. A read
+      // that fails still builds, from the defaults, and the answer says so.
+      const profileIdNow = String(storeNow?.splitConfigurationId ?? '').trim() || null;
+      let profileNow: Dict | null = null;
+      let profileUnread: string | null = null;
+      if (profileIdNow) {
+        const pr = await readProfileRates(cfg, useMerchant, profileIdNow);
+        profileNow = pr.raw;
+        profileUnread = pr.error;
+      }
+      const preserved = preservedLogicFrom(profileNow);
+      // THE RULES (15 Oct 2026, OWNER RULE "the rates are the rates"): built from
+      // the rate card on the card VARIANT and the channel, the shape both Adyen
+      // and the ledger can match on, so the stamp equals the charge. The refund
+      // rule is REFUND_FEE_POLICY, one word in adyenRules.js.
+      const plan = rulesFromRateCard(tiers, { currency: stepCurrency, preserved: preserved.logic, refundPolicy: REFUND_FEE_POLICY });
+      if (!plan.rules.length) return json({ ok: false, lacking: plan.lacking, error: `No rate is set yet for: ${tierRowList(plan.lacking)}. Set the venue rate card in Processing first.` }, 200);
+      const profile = { description: `ServOS ${loc.name ?? 'venue'} rates`.slice(0, 300), rules: plan.rules };
+      const refundLine = refundWords(plan.rules[0].splitLogic);
+      // The venue row must be able to KEEP the rules before Adyen is sent them
+      // (20261015_PLATFORM_adyen_rates_cutover.sql): a write the ledger cannot
+      // record would charge the new rules while stamping the old ones.
+      let rowNow: Dict | null = null;
+      let rulesColumns = true;
+      {
+        const { data, error } = await platformAdmin.from('merchant_adyen_accounts').select('adyen_rules, rates_live_at, legacy_charge').eq('location_id', loc.id).maybeSingle();
+        if (error) {
+          if (isUnknownColumnError(error, 'adyen_rules') || isUnknownColumnError(error, 'rates_live_at') || isUnknownColumnError(error, 'legacy_charge')) rulesColumns = false;
+          else return json({ ok: false, error: 'The venue row could not be read, so the rates were not applied.', detail: error.message }, 200);
+        } else rowNow = (data as Dict | null) ?? null;
+      }
+      if (!dryRun && !rulesColumns) {
+        return json({ ok: false, migration_file: RATES_CUTOVER_MIGRATION, error: 'One database update is waiting on ServOS before rates can be written. Nothing was sent to Adyen.', detail: `Run ${RATES_CUTOVER_MIGRATION} on the platform project, then press Preview again.` }, 200);
+      }
       // The exact requests, and their fingerprint. The preview hands the
       // fingerprint out; the send must hand the SAME one back, worked out
       // again here from the rates as they are NOW. So what is sent is what
@@ -3580,15 +3628,7 @@ Deno.serve(async (req) => {
       // profile the STORE carries now is read (one more GET) and set against
       // what would be sent. Nothing is created, patched, stamped or deleted.
       if (dryRun) {
-        const profileIdNow = String(storeNow?.splitConfigurationId ?? '').trim() || null;
-        let profileNow: Dict | null = null;
-        let profileUnread: string | null = null;
-        if (profileIdNow) {
-          const pr = await readProfileRates(cfg, useMerchant, profileIdNow);
-          profileNow = pr.raw;
-          profileUnread = pr.error;
-        }
-        const basePreview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
+        const basePreview = ratesChangePreview(profileNow, rateTiers, stepCurrency, { rules: plan.rules });
         // THE RULES ARE NOT THE WHOLE STORY (review 17 Sep 2026): a store whose profile matches but
         // which sends the rest of each sale to another account, or to none, still needs the send that
         // points it at the venue. Without this the preview said "Nothing to send" and hid Send.
@@ -3597,26 +3637,13 @@ Deno.serve(async (req) => {
         const preview = wrongAccount && basePreview.canSend
           ? { ...basePreview, same: false, lines: [storeBaNow ? 'Adyen sends the rest of each sale to a different account. Sending points it at the venue.' : 'Adyen does not say where the rest of each sale goes. Sending points it at the venue.', ...basePreview.lines.filter((l) => !/already holds these rates/.test(l))] }
           : basePreview;
-        // CAN OUR LEDGER TELL DEBIT FROM CREDIT YET? Adyen can the moment the
-        // rules land, but adyen-webhook only stamps a debit category when the
-        // event carries additionalData.fundingSource ("Include Funding Source"
-        // on the standard webhook). With a debit rate priced apart and no
-        // payment of this venue on this environment ever seen with one, the
-        // ledger would book debit payments at the credit rate while Adyen
-        // takes the debit rate, so the preview says so BEFORE the send. A
-        // read that fails says nothing (null), it never blocks.
-        let ledgerWarning: string | null = null;
-        if (debitTiersApart(rateTiers).length) {
-          try {
-            const { data: seen, error: seenErr } = await platformAdmin.from('adyen_payments')
-              .select('psp_reference').eq('location_id', loc.id).eq('live', env === 'live')
-              .not('card->>fundingSource', 'is', null).limit(1);
-            if (!seenErr && (seen ?? []).length === 0) {
-              ledgerWarning = 'Adyen has not told ServOS which cards are debit for this venue yet. Until it does, our own records will show debit payments at the credit rate.';
-            }
-          } catch { ledgerWarning = null; }
-        }
-        logLink('preview_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, balanceAccountId, profileIdNow, rulesNow: preview.rulesNow, rulesNext: preview.rulesNext, same: preview.same });
+        // 15 Oct 2026: the debit rules are written on the card VARIANT, which the
+        // webhook sees on nearly every payment, so the ledger tells debit from
+        // credit the moment the rules land. Card type data (Include Funding
+        // Source) is a cross check now, not a dependency: no warning here. The
+        // only thing said before the send is a database update not yet run.
+        const ledgerWarning: string | null = rulesColumns ? null : `One database update is waiting on ServOS (${RATES_CUTOVER_MIGRATION}). Until it runs, the rates cannot be written.`;
+        logLink('preview_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, balanceAccountId, profileIdNow, rulesNow: preview.rulesNow, rulesNext: preview.rulesNext, same: preview.same, refundPolicy: plan.refundPolicy, preservedWarnings: preserved.warnings });
         return json({
           ok: true, dry_run: true, sent: false,
           environment: env, live: env === 'live', region, currency: stepCurrency,
@@ -3629,6 +3656,18 @@ Deno.serve(async (req) => {
           ledgerWarning,
           tiers: rateTiers, line: rateCardLine(rateTiers, stepCurrency),
           requests, fingerprint,
+          // 15 Oct 2026: the before and after, rule by rule, in words; the
+          // refund rule in one line; the split logic carried over from the
+          // store's profile and anything about it that is not what ServOS
+          // has always written; the rules on the store now and the rules
+          // that would be written, each as one plain line.
+          ruleLines: preview.ruleLines ?? [],
+          refundLine, refundPolicy: plan.refundPolicy,
+          preservedWarnings: preserved.warnings, preservedFrom: preserved.source,
+          rulesNowLines: profileNow ? describeRules(profileNow, { currency: stepCurrency }) : [],
+          rulesNextLines: describeRules({ rules: plan.rules }, { currency: stepCurrency }),
+          rulesColumnsReady: rulesColumns, migration_file: rulesColumns ? null : RATES_CUTOVER_MIGRATION,
+          ratesLiveAt: rowNow?.rates_live_at ?? null,
         });
       }
       const previousProfileId = String(maa?.split_profile_id ?? '').trim() || storeNow?.splitConfigurationId || null;
@@ -3654,19 +3693,247 @@ Deno.serve(async (req) => {
             : adyenRefusalMessage(split.status, raw),
         }, 200);
       }
-      // ONLY NOW the row, and ONLY the profile id: the rates themselves live
-      // on the venue rate card (or the platform default) and were never typed
-      // here, and the legacy markup columns are never written again.
-      const { error: stampErr, warning: stampWarning } = await upsertAccountRow({ location_id: loc.id, split_profile_id: split.splitConfigurationId, updated_at: new Date().toISOString() });
-      if (stampErr) warnings.push(`The rates are on Adyen but the venue row could not be updated: ${stampErr.message}`);
+      // THE CUTOVER INSTANT (15 Oct 2026): the server clock the moment Adyen put
+      // the new rules on the store. From this instant Adyen charges them and the
+      // webhook stamps from them. Set once, never moved by a later write.
+      const liveAt = new Date().toISOString();
+      // THE RULES AS ADYEN HOLDS THEM, read back (ruleIds included) and marked
+      // with our tier name beside each one: this is what the webhook matches on,
+      // never the rate card directly. A read back that fails keeps the rules as
+      // sent and says so.
+      const readBack = await readProfileRates(cfg, useMerchant, split.splitConfigurationId as string);
+      const returnedRules = Array.isArray((readBack.raw as Dict | null)?.rules) ? ((readBack.raw as Dict).rules as unknown[]) : plan.rules;
+      if (!readBack.read) warnings.push(`The new rules could not be read back from Adyen (${readBack.error}). The rules as sent are kept on the venue instead.`);
+      const annotated = annotateRules(returnedRules, plan);
+      const unnamed = annotated.filter((r) => !r.servos_tier).length;
+      if (unnamed) warnings.push(`${unnamed} rule${unnamed === 1 ? '' : 's'} on the new profile ${unnamed === 1 ? 'is' : 'are'} not one ServOS sent. A payment matching ${unnamed === 1 ? 'it' : 'them'} will show no fee until this is looked at.`);
+      const entry = { from: liveAt, profile_id: split.splitConfigurationId, refund_policy: plan.refundPolicy, read_back: readBack.read, rules: annotated };
+      const list: unknown[] = Array.isArray(rowNow?.adyen_rules) ? [...(rowNow!.adyen_rules as unknown[])] : [];
+      list.push(entry);
+      // ONLY NOW the row: the profile id, the rules read back (appended, never
+      // replaced), the cutover instant if this is the first write, and the flat
+      // charge the previous profile took if none is kept yet (the restatement
+      // reads it). The rates themselves live on the venue rate card.
+      const patch: Record<string, unknown> = { location_id: loc.id, split_profile_id: split.splitConfigurationId, updated_at: liveAt, adyen_rules: list };
+      const firstWrite = !rowNow?.rates_live_at;
+      if (firstWrite) patch.rates_live_at = liveAt;
+      // The flat charge the OLD profile took is filled in ONLY when that profile
+      // was truly flat (one price on every rule). A tiered profile's catch all is
+      // not what the bank took (review 15 Oct 2026: the 22 Sep profile said 0.9%
+      // on its catch all and the bank took 0.85% on every card), so the charge is
+      // left for Peter to set from the bank in part 1 of the restatement file.
+      const legacy = rowNow?.legacy_charge ? null : legacyChargeFrom(profileNow);
+      if (legacy) patch.legacy_charge = legacy;
+      const legacyUnknown = firstWrite && !rowNow?.legacy_charge && !legacy && Array.isArray(profileNow?.rules) && (profileNow!.rules as unknown[]).length > 0;
+      if (legacyUnknown) warnings.push('The old profile had more than one price, so the charge Adyen actually took before today is not filled in. Set legacy_charge by hand from the bank (part 1 of the restatement file) before running the restatement.');
+      const { error: stampErr, warning: stampWarning } = await upsertAccountRow(patch);
+      if (stampErr) warnings.push(`The rates are on Adyen but the venue row could not be updated: ${stampErr.message}. New payments are still stamped the old way until it is.`);
       if (stampWarning) warnings.push(stampWarning);
+      if (firstWrite) warnings.push('Payments taken in the next few seconds may still be recorded the old way. The Read panel counts them under missed the cutover; a webhook backfill of the last hour puts them right.');
       const line = rateCardLine(rateTiers, stepCurrency);
-      console.log(`[adyen-terminal-admin] ${caller.id} set_split for ${loc.id} on ${useMerchant} (${region} ${env}): ${split.splitConfigurationId} (${profile.rules.length} rules) on ${storeId} to ${balanceAccountId}, ${line}`);
+      logLink('set_split_rules', loc.id, { environment: env, region, splitConfigurationId: split.splitConfigurationId, liveAt, firstWrite, readBack: readBack.read, rules: annotated.length, unnamed, refundPolicy: plan.refundPolicy, legacyChargeSet: !!legacy, legacyUnknown, previousProfileId: profileIdNow, stampError: stampErr?.message ?? null });
+      console.log(`[adyen-terminal-admin] ${caller.id} set_split for ${loc.id} on ${useMerchant} (${region} ${env}): ${split.splitConfigurationId} (${profile.rules.length} rules) on ${storeId} to ${balanceAccountId}, ${line}; rules live from ${firstWrite ? liveAt : String(rowNow?.rates_live_at)}`);
       return json({
         ok: true, splitConfigurationId: split.splitConfigurationId, storeId, balanceAccountId,
         rules: profile.rules.length, tiers: rateTiers, line, previousProfileId: split.previousProfileId,
+        ratesLiveAt: firstWrite ? liveAt : rowNow?.rates_live_at ?? null, firstWrite, readBack: readBack.read, refundPolicy: plan.refundPolicy, refundLine,
+        legacyCharge: legacy ?? rowNow?.legacy_charge ?? null, legacyUnknown,
+        rulesLines: describeRules({ rules: annotated }, { currency: stepCurrency }),
+        pastPayments: 'Past payments are not changed by this. Run the restatement file to make them match the bank.',
+        restatementFile: RATES_RESTATEMENT_FILE,
         warnings, warning: warnings.join(' ') || null,
       });
+    }
+
+    // ── read_split: what Adyen charges this venue NOW (15 Oct 2026) ──────────
+    // GET only, nothing written, not even the row. The store, its profile, one
+    // plain line per rule in Adyen's priority order, the refund line, and the
+    // diff against what the rate card would write. Beside it the ledger side:
+    // how many live payments in 30 days carry a card variant, a funding source
+    // and a shopper interaction, and the last stamped payment's rule.
+    if (action === 'read_split') {
+      if (!isServosAdmin) return adminOnly();
+      const storeId = String(maa?.store_id ?? '').trim();
+      if (!storeId) return json({ ok: false, error: stepPlainErrors.noStore }, 200);
+      const storeRead = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
+      if (!storeRead.ok) return json({ ok: false, error: 'The payments location could not be read.', detail: refusalText(cfg, storeRead, 'managementKey', 'the Management API role "Stores read"') }, 200);
+      const storeNow = storeSummary(storeRead.data);
+      const useMerchant = String(storeNow?.merchantId ?? '').trim() || merchant;
+      const profileIdNow = String(storeNow?.splitConfigurationId ?? '').trim() || null;
+      let profileNow: Dict | null = null;
+      let profileUnread: string | null = null;
+      if (profileIdNow) {
+        const pr = await readProfileRates(cfg, useMerchant, profileIdNow);
+        profileNow = pr.raw;
+        profileUnread = pr.error;
+      }
+      const venueRates = await readVenueRates(loc.id, maa as Dict | null);
+      const rateTiers = tiersFromResolved(venueRates.cards);
+      const tiers = tiersForProfile(venueRates.cards);
+      const preserved = preservedLogicFrom(profileNow);
+      const plan = rulesFromRateCard(tiers, { currency: stepCurrency, preserved: preserved.logic, refundPolicy: REFUND_FEE_POLICY });
+      const preview = plan.rules.length ? ratesChangePreview(profileNow, rateTiers, stepCurrency, { rules: plan.rules }) : null;
+      const diff = plan.rules.length && profileNow ? ruleDiff(profileNow, plan.rules, { currency: stepCurrency }) : null;
+      // The ledger side, this venue, live rows, 30 days. A count that fails is null, never a block.
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+      const count = async (shape: (q: any) => any): Promise<number | null> => {
+        try {
+          const { count: n, error } = await shape(platformAdmin.from('adyen_payments').select('psp_reference', { count: 'exact', head: true })
+            .eq('location_id', loc.id).eq('live', env === 'live').gte('created_at', since));
+          return error ? null : (n ?? 0);
+        } catch { return null; }
+      };
+      const ledger = {
+        since,
+        payments: await count((q) => q),
+        withVariant: await count((q) => q.not('raw->authorisation->additionalData->>paymentMethodVariant', 'is', null)),
+        withFundingSource: await count((q) => q.not('raw->authorisation->additionalData->>fundingSource', 'is', null)),
+        withShopperInteraction: await count((q) => q.not('raw->authorisation->additionalData->>shopperInteraction', 'is', null)),
+        stampedFromRules: await count((q) => q.like('fee_rule', 'adyen_rules:%')),
+        stampedLegacy: await count((q) => q.eq('fee_rule', 'legacy_flat')),
+        unmatched: await count((q) => q.like('fee_rule', '%:unmatched')),
+        missedCutover: null as number | null,
+      };
+      let last: Dict | null = null;
+      try {
+        const { data } = await platformAdmin.from('adyen_payments').select('psp_reference, created_at, rate_category, commission_minor, amount_minor, fee_rule, fee_refund_policy')
+          .eq('location_id', loc.id).eq('live', env === 'live').order('created_at', { ascending: false }).limit(1).maybeSingle();
+        last = (data as Dict | null) ?? null;
+      } catch { last = null; }
+      // The venue row's rules side (null when the columns are not there yet).
+      let row: Dict | null = null;
+      let rulesColumns = true;
+      {
+        const { data, error } = await platformAdmin.from('merchant_adyen_accounts').select('adyen_rules, rates_live_at, legacy_charge, split_profile_id').eq('location_id', loc.id).maybeSingle();
+        if (error) rulesColumns = !(isUnknownColumnError(error, 'adyen_rules') || isUnknownColumnError(error, 'rates_live_at') || isUnknownColumnError(error, 'legacy_charge'));
+        else row = (data as Dict | null) ?? null;
+      }
+      // Rows authorised at or after the cutover that carry no fee_rule: stamped the
+      // old way in the seconds after the Write (a stale cache), or before the deploy.
+      // The restatement skips them (authorised after the cutover), so they are
+      // counted here and a webhook backfill is the fix (review 15 Oct 2026).
+      if (row?.rates_live_at) {
+        try {
+          const { count: n, error } = await platformAdmin.from('adyen_payments').select('psp_reference', { count: 'exact', head: true })
+            .eq('location_id', loc.id).eq('live', env === 'live').gte('authorised_at', String(row.rates_live_at)).is('fee_rule', null);
+          ledger.missedCutover = error ? null : (n ?? 0);
+        } catch { ledger.missedCutover = null; }
+      }
+      const latest = latestRulesEntry(row?.adyen_rules) as Dict | null;
+      const ledgerRules = latest ? { from: latest.from ?? null, profile_id: latest.profile_id ?? null, refund_policy: latest.refund_policy ?? null, rules: Array.isArray(latest.rules) ? (latest.rules as unknown[]).length : 0 } : null;
+      // Variants seen in 30 days on this venue that no rule names: they pay the catch all on both
+      // sides. Amex names are NOT skipped (review 15 Oct 2026): an Amex name no rule names pays the
+      // catch all too, and must be seen.
+      let unseenVariants: string[] = [];
+      try {
+        const { data } = await platformAdmin.from('adyen_payments').select('variant:raw->authorisation->additionalData->>paymentMethodVariant')
+          .eq('location_id', loc.id).eq('live', env === 'live').gte('created_at', since).not('raw->authorisation->additionalData->>paymentMethodVariant', 'is', null).limit(1000);
+        const named = new Set(plan.rules.map((r) => String(r.paymentMethod).toLowerCase()));
+        unseenVariants = [...new Set((data ?? []).map((r: any) => String(r.variant ?? '').toLowerCase()).filter((v: string) => v && !named.has(v)))].sort();
+      } catch { unseenVariants = []; }
+      logLink('read_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, profileIdNow, rules: Array.isArray(profileNow?.rules) ? (profileNow!.rules as unknown[]).length : 0, same: preview?.same ?? null, ledger });
+      return json({
+        ok: true, environment: env, live: env === 'live', region, currency: stepCurrency, merchant: useMerchant, storeId,
+        profileIdNow, rowProfileId: String(maa?.split_profile_id ?? '').trim() || null,
+        profileUnread: !!profileUnread, profileUnreadDetail: profileUnread,
+        rules: Array.isArray(profileNow?.rules) ? (profileNow!.rules as unknown[]).length : 0,
+        lines: profileNow ? describeRules(profileNow, { currency: stepCurrency }) : [],
+        refundLine: profileNow ? refundWords(((profileNow.rules as Dict[] | undefined) ?? []).find((r) => String(r.paymentMethod ?? 'ANY').toUpperCase() === 'ANY' && String(r.shopperInteraction ?? 'ANY').toUpperCase() === 'ANY')?.splitLogic ?? null) : null,
+        preservedWarnings: preserved.warnings,
+        card: { tiers: rateTiers, line: rateCardLine(rateTiers, stepCurrency), errors: venueRates.errors, lacking: plan.lacking },
+        next: { rules: plan.rules.length, lines: describeRules({ rules: plan.rules }, { currency: stepCurrency }), refundLine: plan.rules.length ? refundWords(plan.rules[0].splitLogic) : null, refundPolicy: plan.refundPolicy },
+        same: preview?.same ?? false, preview, diff,
+        ledger, last, ledgerRules, ratesLiveAt: row?.rates_live_at ?? null, legacyCharge: row?.legacy_charge ?? null,
+        rulesColumnsReady: rulesColumns, migration_file: rulesColumns ? null : RATES_CUTOVER_MIGRATION,
+        unseenVariants,
+      });
+    }
+
+    // ── webhook_settings: card type data on the standard webhook (15 Oct 2026) ─
+    //   { step: 'read' }   GET /merchants/{m}/webhooks: each standard webhook's
+    //                      url, active flag and additionalSettings AS RETURNED
+    //                      (the property keys are not documented, so they are
+    //                      shown verbatim), with the ones that point at
+    //                      adyen-webhook marked ours, and the keys we are looking
+    //                      for that are present and false (candidates)
+    //   { step: 'write', webhook_id, keys: [...], confirm: 'ON' }
+    //                      PATCH { additionalSettings: <the object read, with the
+    //                      asked keys set true> } for keys that a fresh GET shows
+    //                      present and false and that match the allow list: ADDED,
+    //                      never replaced (mergedWebhookSettings), so the event code
+    //                      lists and every property already on (Include Subvariant,
+    //                      which the variant rules rest on) survive; the answer is
+    //                      the GET after, checked key by key (lostWebhookSettings)
+    //   { step: 'check', since }
+    //                      live payments of this venue since the instant, and how
+    //                      many carry a funding source
+    // If the GET shows no such key the screen shows the Customer Area clicks.
+    if (action === 'webhook_settings') {
+      if (!isServosAdmin) return adminOnly();
+      const step = String(body.step ?? 'read');
+      const WANTED: ReadonlyArray<readonly [string, RegExp]> = [
+        ['funding source', /funding/i], ['detailed card bin', /cardbin|card_bin|detailedcard|bin/i], ['shopper interaction', /shopperinteraction|shopper_interaction/i],
+        ['store', /^store$|includestore|include_store/i], ['subvariant', /subvariant|variant/i],
+      ];
+      const readAll = async () => {
+        const r = await mgmt<Dict>(cfg, 'GET', `/merchants/${encodeURIComponent(merchant)}/webhooks?pageSize=100`);
+        if (!r.ok) return { ok: false as const, error: refusalText(cfg, r, 'managementKey', 'the Management API role "Webhooks read"'), hooks: [] as Dict[] };
+        const list = Array.isArray(r.data?.data) ? (r.data.data as Dict[]) : [];
+        const hooks = list.map((h) => {
+          const props = (h.additionalSettings as Dict | undefined)?.properties;
+          const properties: Dict = props && typeof props === 'object' ? (props as Dict) : {};
+          const candidates = Object.entries(properties)
+            .filter(([k, v]) => v === false && WANTED.some(([, re]) => re.test(k)))
+            .map(([k]) => ({ key: k, name: WANTED.find(([, re]) => re.test(k))?.[0] ?? k }));
+          return {
+            id: String(h.id ?? ''), type: h.type ?? null, url: String(h.url ?? ''), active: h.active === true, description: h.description ?? null,
+            ours: /adyen-webhook/i.test(String(h.url ?? '')), additionalSettings: h.additionalSettings ?? null, properties, candidates,
+          };
+        });
+        return { ok: true as const, error: null, hooks };
+      };
+      if (step === 'check') {
+        const since = String(body.since ?? '').trim() || new Date(Date.now() - 86_400_000).toISOString();
+        const base = () => platformAdmin.from('adyen_payments').select('psp_reference', { count: 'exact', head: true }).eq('location_id', loc.id).eq('live', env === 'live').gte('created_at', since);
+        const all = await base();
+        const withFs = await base().not('raw->authorisation->additionalData->>fundingSource', 'is', null);
+        const withSi = await base().not('raw->authorisation->additionalData->>shopperInteraction', 'is', null);
+        return json({ ok: true, since, payments: all.error ? null : all.count ?? 0, withFundingSource: withFs.error ? null : withFs.count ?? 0, withShopperInteraction: withSi.error ? null : withSi.count ?? 0 });
+      }
+      const before = await readAll();
+      if (!before.ok) return json({ ok: false, error: 'The webhooks could not be read.', detail: before.error }, 200);
+      if (step === 'read') {
+        logLink('webhook_settings_read', loc.id, { environment: env, region, merchant, hooks: before.hooks.map((h) => ({ id: h.id, ours: h.ours, active: h.active, candidates: h.candidates.length })) });
+        return json({ ok: true, environment: env, live: env === 'live', merchant, hooks: before.hooks, clicks: WEBHOOK_SETTINGS_CLICKS });
+      }
+      if (step !== 'write') return json({ ok: false, error: 'step must be read, write or check' }, 400);
+      const webhookId = String(body.webhook_id ?? '').trim();
+      const hook = before.hooks.find((h) => h.id === webhookId);
+      if (!hook) return json({ ok: false, error: 'That webhook is not on this merchant account. Press Read again.' }, 200);
+      const asked = Array.isArray(body.keys) ? body.keys.map((k: unknown) => String(k)) : [];
+      const keys = asked.filter((k: string) => hook.candidates.some((c) => c.key === k));
+      if (!keys.length) return json({ ok: false, error: 'None of the settings asked for is present and off on that webhook. Press Read again.' }, 200);
+      if (env === 'live' && String(body.confirm ?? '').trim().toUpperCase() !== 'ON') return json({ ok: false, needs_confirm: true, error: 'This venue takes real cards. Type ON to switch the settings on.' }, 200);
+      // ADDED, NEVER REPLACED: the whole additionalSettings object as read seconds
+      // ago, with the asked keys set true. A body carrying only the new keys could
+      // drop the event code lists and every property already on.
+      const additionalSettings = mergedWebhookSettings(hook.additionalSettings, keys);
+      const patched = await mgmt<Dict>(cfg, 'PATCH', `/merchants/${encodeURIComponent(merchant)}/webhooks/${encodeURIComponent(webhookId)}`, { additionalSettings });
+      logLink('webhook_settings_write', loc.id, { environment: env, region, merchant, webhookId, keys, sent: additionalSettings, httpStatus: patched.status, ok: patched.ok, response: patched.ok ? null : patched.data });
+      if (!patched.ok) return json({ ok: false, error: 'Adyen would not change the webhook settings.', detail: refusalText(cfg, patched, 'managementKey', 'the Management API role "Webhooks read and write"') }, 200);
+      const after = await readAll();
+      const hookAfter = after.ok ? after.hooks.find((h) => h.id === webhookId) ?? null : null;
+      const lost = hookAfter ? lostWebhookSettings(hook.additionalSettings, hookAfter.additionalSettings) : { lost: [], lists: [], ok: true };
+      if (!lost.ok) {
+        logLink('webhook_settings_lost', loc.id, { environment: env, region, merchant, webhookId, before: hook.additionalSettings, after: hookAfter?.additionalSettings ?? null, lost });
+        return json({
+          ok: false, written: keys, hooks: after.hooks, readAfter: true, clicks: WEBHOOK_SETTINGS_CLICKS,
+          error: 'The settings asked for are on, but Adyen dropped something that was on before. Restore it in the Customer Area now.',
+          detail: [lost.lost.length ? `Settings that were on and are not now: ${lost.lost.join(', ')}.` : '', lost.lists.length ? `Event code lists that changed: ${lost.lists.join(', ')}.` : ''].filter(Boolean).join(' '),
+          before: hook.additionalSettings, after: hookAfter?.additionalSettings ?? null,
+        }, 200);
+      }
+      return json({ ok: true, written: keys, hooks: after.ok ? after.hooks : before.hooks, readAfter: after.ok, clicks: WEBHOOK_SETTINGS_CLICKS });
     }
 
     // ── request_payouts: ask Adyen for the payout capability (step 5b) ────────

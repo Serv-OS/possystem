@@ -79,6 +79,11 @@ import {
   adyenSecretName, ADYEN_REGIONS, adyenRegionForMerchantAccount, type AdyenConfig, type AdyenRegion, type WebhookKeyCandidate,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.ts';
+// 15 Oct 2026: ONE rule engine for both sides. The stamp comes from the rules
+// read back from Adyen (merchant_adyen_accounts.adyen_rules) after a venue's
+// cutover, from the flat legacy charge before it, and from today's path for a
+// venue never cut over. src/lib/payments/webhookStamp.test.js is the contract.
+import { stampForPayment, restampForAmount, keepExistingStamp, paymentFacts } from '../_shared/adyenRules.js';
 // Booking payment gate (10 Sep 2026): the pure covers check and the one
 // promote door shared with booking-widget.
 import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
@@ -393,6 +398,41 @@ async function resolveVenueTiers(locationId: string): Promise<any | null> {
   }
 }
 
+// THE VENUE'S RULES (15 Oct 2026): adyen_rules, rates_live_at and legacy_charge
+// from the venue row, cached like the tiers. The three columns arrive with
+// 20261015_PLATFORM_adyen_rates_cutover.sql; until then this answers null and
+// the stamp is today's, unchanged. Review 15 Oct 2026: a FAILED read is never
+// cached (the next event tries again, so a transient outage cannot stamp a
+// minute of payments unmarked), and a venue NOT YET cut over is cached for a
+// few seconds only, so the moment Peter presses Write the next payment sees
+// rates_live_at instead of a stale null for up to a minute.
+const rulesCache = new Map<string, { at: number; venue: any }>();
+const RULES_PENDING_TTL_MS = 5_000;
+async function resolveVenueRules(locationId: string): Promise<any | null> {
+  try {
+    const hit = rulesCache.get(locationId);
+    if (hit) {
+      const ttl = hit.venue?.rates_live_at ? TIER_TTL_MS : RULES_PENDING_TTL_MS;
+      if (Date.now() - hit.at < ttl) return hit.venue;
+    }
+    const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
+      .select('adyen_rules, rates_live_at, legacy_charge').eq('location_id', locationId).maybeSingle();
+    if (error) {
+      // A missing column is a steady state until the DDL runs: cached briefly.
+      // Any other failure is not cached at all.
+      if (isMissingColumn(error.message)) rulesCache.set(locationId, { at: Date.now(), venue: null });
+      else console.error('[adyen-webhook] venue rules read failed:', error.message);
+      return null;
+    }
+    const venue = data ?? null;
+    rulesCache.set(locationId, { at: Date.now(), venue });
+    return venue;
+  } catch (e) {
+    console.error('[adyen-webhook] resolveVenueRules:', (e as Error).message);
+    return null;
+  }
+}
+
 // ── v5.7.5 TIP ON PRINTED RECEIPT: capture-window side effects ───────────────
 // Ops terminal_captures is the ledger of manual-capture auths (US signature
 // tip flow). Three events drive it here:
@@ -683,9 +723,17 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
     const LEDGER_READ_COLS = 'psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, rate_category, raw';
     // capture_required (20260826) decides whether a smaller CAPTURE shrinks a
     // hold. Retried without it so the ledger read never breaks on its account.
+    // fee_rule and fee_refund_policy (20261015) ride on the first try: the CAPTURE
+    // restamp needs to know which rule stamped the row, and the AUTHORISATION
+    // replay must not demote a stamp (keepExistingStamp reads commission_minor
+    // and captured_at too).
     let { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
-      .select(`${LEDGER_READ_COLS}, capture_required`)
+      .select(`${LEDGER_READ_COLS}, capture_required, commission_minor, captured_at, fee_rule, fee_refund_policy`)
       .eq('psp_reference', rowKey).maybeSingle();
+    if (readErr && isMissingColumn(readErr.message)) {
+      ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
+        .select(`${LEDGER_READ_COLS}, capture_required, commission_minor, captured_at`).eq('psp_reference', rowKey).maybeSingle());
+    }
     if (readErr && isMissingColumn(readErr.message)) {
       ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
         .select(LEDGER_READ_COLS).eq('psp_reference', rowKey).maybeSingle());
@@ -723,11 +771,21 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
               const loc = existing?.location_id ?? null;
               if (rc && loc) {
                 const tiers = await resolveVenueTiers(loc);
-                if (tiers) patch.commission_minor = commissionForAmount(capMinor, tiers[rc]);
+                const todayFee = tiers ? commissionForAmount(capMinor, tiers[rc]) : null;
+                // 15 Oct 2026: the SAME rule the row was stamped with (webhookStamp.test.js).
+                const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, capMinor, String(item?.eventDate ?? new Date().toISOString()), await resolveVenueRules(loc), todayFee);
+                patch.commission_minor = re.commission_minor;
+                patch.fee_rule = re.fee_rule ?? null;
+                patch.fee_refund_policy = re.fee_refund_policy ?? null;
+                if (re.rate_category) patch.rate_category = re.rate_category;
               }
             }
             if (stampCaptured) patch.raw = { ...raw, captured_minor: capMinor };
-            const { error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey);
+            let { error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey);
+            if (fixErr && isMissingColumn(fixErr.message) && ('fee_rule' in patch || 'fee_refund_policy' in patch)) {
+              delete patch.fee_rule; delete patch.fee_refund_policy;
+              ({ error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey));
+            }
             if (fixErr) console.error('[adyen-webhook] duplicate-capture repair failed:', fixErr.message, rowKey);
           }
         }
@@ -841,6 +899,27 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
         // commission on the CAPTURED total, or the invoice loses the tip margin.
         row.commission_minor = tiers ? commissionForAmount(effAmount, tiers[rateCategory]) : null;
       }
+      // 15 Oct 2026: ONE rule engine for both sides. After the venue's cutover the
+      // stamp is the rule Adyen itself applies (read back from Adyen, matched on
+      // the card variant and the channel); before it, the flat charge Adyen took
+      // (the restatement's own formula, so a replay never undoes it); for a venue
+      // never cut over, today's answer above, unchanged. fee_rule says which.
+      if (location_id) {
+        const venueRules = await resolveVenueRules(location_id);
+        const engine = stampForPayment(
+          { amountMinor: effAmount, authorisedAt: (row.authorised_at as string | undefined) ?? null, ok: okEvent, facts: paymentFacts(item, channel as string | null) },
+          venueRules,
+          { rate_category: rateCategory, commission_minor: row.commission_minor },
+        );
+        // Review 15 Oct 2026: a replay never demotes a row already stamped under
+        // the new scheme (an unmarked answer when the venue row could not be
+        // read, or the legacy answer on a hold captured under the new profile).
+        const stamped = keepExistingStamp(existing as Record<string, unknown> | null, engine, venueRules);
+        row.rate_category = stamped.rate_category;
+        row.commission_minor = stamped.commission_minor;
+        row.fee_rule = stamped.fee_rule;
+        row.fee_refund_policy = stamped.fee_refund_policy;
+      }
     } else {
       // Modifications never rewrite the payment amount or its success flag —
       // a failed refund is not a failed payment. They move last_event_code
@@ -883,6 +962,16 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
         // the payment instead of silently billing the stale pre-tip commission
         // beside the post-tip amount.
         row.commission_minor = restamped;
+        // 15 Oct 2026: at the SAME rule the row was stamped with; a hold captured
+        // after the cutover is charged by Adyen under the new profile, so the
+        // capture instant decides for a row with no rule yet (webhookStamp.test.js).
+        if (location_id) {
+          const re = restampForAmount({ ...(existing as Record<string, unknown>), raw }, amountMinor, String(item?.eventDate ?? row.captured_at ?? new Date().toISOString()), await resolveVenueRules(location_id), restamped);
+          row.commission_minor = re.commission_minor;
+          row.fee_rule = re.fee_rule ?? null;
+          row.fee_refund_policy = re.fee_refund_policy ?? null;
+          if (re.rate_category) row.rate_category = re.rate_category;
+        }
       }
       if (code === 'REFUND' && okEvent && Number.isFinite(amountMinor)) {
         row.amount_refunded_minor = Number(existing?.amount_refunded_minor ?? 0) + amountMinor;
@@ -909,6 +998,13 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
 
     let { error: upErr } = await platformAdmin.from('adyen_payments')
       .upsert(row, { onConflict: 'psp_reference' });
+    // 20261015: fee_rule and fee_refund_policy first, on their own, so a deploy
+    // before that DDL loses only the marker and keeps every older column.
+    if (upErr && isMissingColumn(upErr.message) && ('fee_rule' in row || 'fee_refund_policy' in row)) {
+      delete row.fee_rule;
+      delete row.fee_refund_policy;
+      ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
+    }
     if (upErr && isMissingColumn(upErr.message)
         && ('rate_category' in row || 'commission_minor' in row
           || 'authorised_at' in row || 'capture_required' in row || 'captured_at' in row || 'live' in row)) {
