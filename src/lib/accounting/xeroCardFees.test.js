@@ -44,7 +44,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as planner from '../../../supabase/functions/_shared/xeroInvoicePlan.js';
 import {
-  pspOf, cardFeeItems, sumCardFees, CARD_FEE_WAIT_MS, cardFeesWait, loadCardFees, cardFeesFor, CARD_FEE_COLS,
+  pspOf, cardFeeItems, sumCardFees, CARD_FEE_WAIT_MS, cardFeesWait, loadCardFees, cardFeesFor, CARD_FEE_COLS, CARD_FEE_POLICY_COL,
   waitNotReady, missingWhileWaiting, cardFeesPreviewRow,
 } from '../../../supabase/functions/_shared/xeroCardFees.ts';
 import { postInvoiceDay, NotReadyError } from '../../../supabase/functions/_shared/xeroInvoicePost.ts';
@@ -577,6 +577,27 @@ test('9. the fee given back on a refund is the Back Office Payouts figure, to th
   assert.equal(sumCardFees({ sales: [{ checkId: 'c', minor: 250, psp: psp(1) }], refunds: [], cardSales: 250, cardRefunds: 0 }, new Map([[psp(1), refundedSince]])).charged, 7);
 });
 
+test("9b. the refund rule 'none' (15 Oct 2026): a refund gives NO fee back, the sale is charged the full fee", () => {
+  // The same table as test 9, on rows booked under today's rule (fee_refund_policy 'none', or
+  // none at all): returned is 0 every time, charged is the full fee, and the Payouts refund line
+  // carries fee 0. The 'ratio' rows of test 9 keep their figures.
+  const table = [[250, 7, 125], [100, 1, 50], [830, 13, 380], [800, 13, 800], [2599, 41, 1300]];
+  for (const policy of ['none', null]) {
+    for (const [amount, fee, refunded] of table) {
+      const pay = paymentRow(1, amount, fee, { fee_refund_policy: policy });
+      const items = { cardAccount: 'CARDCLR', sales: [], refunds: [{ checkId: 'c', minor: refunded, psp: psp(1) }], cardSales: 0, cardRefunds: refunded };
+      const got = sumCardFees(items, new Map([[psp(1), pay]]));
+      assert.deepEqual([got.charged, got.returned, got.unknown, got.refunds], [0, 0, [], { count: 1, known: 1 }], `${policy}: ${refunded} of ${amount} at ${fee}`);
+      assert.deepEqual(venuePayoutLine({ line_type: 'Refunded', gross_minor: -refunded }, pay), { gross_minor: -refunded, fee_minor: 0, receives_minor: -refunded, unrated: false });
+      assert.equal(venueFeeFor({ ...pay, amount_refunded_minor: refunded }), fee);
+      const sale = sumCardFees({ sales: [{ checkId: 'c', minor: amount, psp: psp(1) }], refunds: [], cardSales: amount, cardRefunds: 0 }, { [psp(1)]: pay });
+      assert.equal(sale.charged, fee);
+    }
+  }
+  // the column the rows are read with, and the retry without it
+  assert.equal(CARD_FEE_POLICY_COL, 'fee_refund_policy');
+});
+
 test('10. a refund on a later day than its sale: the sale day carries the full fee, the refund day less', () => {
   const day2 = businessDayWindow('2026-09-30', UK.timezone, UK.dayStart);
   const F = { ...E, id: 'F', closed_at: new Date(day2.fromMs + H).toISOString(), tenders: [{ method: 'card', amount: 8.0, tip: 0, processor: 'adyen', psp_ref: tillRef(10) }] };
@@ -981,10 +1002,11 @@ test('19. why a payment has no fee, and which of them can still arrive; Adyen\'s
   // What is read from adyen_payments: the venue's fee and what rates it. Never Adyen's cost.
   const cols = CARD_FEE_COLS.split(',').map((c) => c.trim().split(':')[0]);
   assert.ok(cols.includes('commission_minor') && cols.includes('psp_reference') && cols.includes('location_id'));
-  assert.ok(!cols.some((c) => /^fee_|fee_breakdown|rate_category/.test(c)), cols.join(' '));
+  // fee_minor and fee_breakdown are Adyen's cost and never read; fee_refund_policy is the venue's own refund rule (15 Oct 2026).
+  assert.ok(!cols.some((c) => /^fee_minor|fee_breakdown|rate_category/.test(c)), cols.join(' '));
   assert.doesNotMatch(CARD_FEE_COLS, /fee_minor|fee_breakdown/);
   const src = read('supabase/functions/_shared/xeroCardFees.ts');
-  assert.deepEqual(src.match(/\.from\('adyen_payments'\)\.select\(([A-Z_a-z]+)\)/g), [".from('adyen_payments').select(CARD_FEE_COLS)"], 'one read, with that list');
+  assert.deepEqual(src.match(/\.from\('adyen_payments'\)\.select\(([^)]*CARD_FEE_COLS[^)]*)\)/g)?.length, 2, 'one read with that list, and its retry without the refund rule column');
   assert.doesNotMatch(src.replace(/^\s*\/\/.*$/gm, ''), /fee_breakdown|\bpercent|rate_category|\* 0\.0/, 'no cost of Adyen, no percentage, no estimate');
   assert.doesNotMatch(src, /from '[^']*adyen-webhook|from 'https?:/, 'no remote import, nothing from the webhook');
 });
@@ -1003,7 +1025,8 @@ test('20. reading the fees: fenced to the venue, 200 references at a time, and a
   const given = fakePlatform();
   assert.equal((await loadCardFees(given, 'leeds', { ...args, platformId: 'platform-leeds' })).charged, 43);
   assert.deepEqual(given.calls.map((c) => c.table), ['adyen_payments'], 'no location read when the id is known');
-  assert.equal(given.calls[0].cols, CARD_FEE_COLS);
+  // 15 Oct 2026: the refund rule column rides with the list; a read is retried without it until the column exists.
+  assert.equal(given.calls[0].cols, `${CARD_FEE_COLS}, ${CARD_FEE_POLICY_COL}`);
   assert.deepEqual([given.calls[0].in[0], [...given.calls[0].in[1]].sort()], ['psp_reference', [psp(1), psp(2), psp(3), psp(4)]], 'each reference once (the refund is of payment 1)');
   // Another venue's payment under the same reference is never read: the fence is the location.
   const other = fakePlatform({ payments: [...PAYMENTS.values()].map((p) => ({ ...p, location_id: 'platform-barnsley' })) });

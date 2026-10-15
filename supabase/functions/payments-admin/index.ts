@@ -454,14 +454,36 @@ Deno.serve(async (req) => {
     const aLoc = await resolveLocation(location_id);
     if (!aLoc) return json({ error: 'location not found in platform DB' }, 404);
     const ACCT_COLS = 'markup_percent, markup_fixed_pence, receive_payments_ok, payouts_ok, balance_account_id, store_id';
+    // 15 Oct 2026: the rules on Adyen and the cutover (20261015_PLATFORM_adyen_rates_cutover.sql),
+    // read first with those columns, then without them, then without the rate card.
+    const RULE_COLS = 'split_profile_id, rates_live_at, legacy_charge, adyen_rules';
+    let rulesLive = true;
     let { data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
-      .select(`${ACCT_COLS}, rate_card`).eq('location_id', aLoc.id).maybeSingle();
+      .select(`${ACCT_COLS}, rate_card, ${RULE_COLS}`).eq('location_id', aLoc.id).maybeSingle();
+    if (aErr && isMissingColumn(aErr.message)) {
+      rulesLive = false;
+      ({ data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .select(`${ACCT_COLS}, rate_card`).eq('location_id', aLoc.id).maybeSingle());
+    }
     if (aErr && isMissingColumn(aErr.message)) {
       rateCardLive = false;
       ({ data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
         .select(ACCT_COLS).eq('location_id', aLoc.id).maybeSingle());
     }
     if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
+    // The latest rules entry, summarised for the Card rates box (never the rules themselves here).
+    const acctAny = acct as Record<string, unknown> | null;
+    const rulesList = Array.isArray(acctAny?.adyen_rules) ? (acctAny!.adyen_rules as Array<Record<string, unknown>>) : [];
+    const latest = rulesList.filter((e) => e && typeof e === 'object').reduce<Record<string, unknown> | null>((b, e) => (!b || Date.parse(String(e.from)) >= Date.parse(String(b.from)) ? e : b), null);
+    const rates = {
+      ready: rulesLive,
+      migration_file: rulesLive ? null : '20261015_PLATFORM_adyen_rates_cutover.sql',
+      live_at: acctAny?.rates_live_at ?? null,
+      legacy_charge: acctAny?.legacy_charge ?? null,
+      split_profile_id: acctAny?.split_profile_id ?? null,
+      latest: latest ? { from: latest.from ?? null, profile_id: latest.profile_id ?? null, refund_policy: latest.refund_policy ?? null, rules: Array.isArray(latest.rules) ? (latest.rules as unknown[]).length : 0 } : null,
+      writes: rulesList.length,
+    };
     const resolved = resolveAdyenRateCard(
       { rate_card: (acct as Record<string, unknown> | null)?.rate_card ?? null, markup_percent: acct?.markup_percent, markup_fixed_pence: acct?.markup_fixed_pence },
       { default_adyen_rate_card: defaults.rate_card, default_adyen_markup_percent: defaults.default_markup_percent, default_adyen_markup_fixed_pence: defaults.default_markup_fixed_pence },
@@ -482,6 +504,8 @@ Deno.serve(async (req) => {
       },
       // The full resolved card, per tier: { percent, fixed_pence, source }.
       resolved,
+      // 15 Oct 2026: what Adyen holds and from when, for the Card rates box.
+      rates,
       // Legacy flat shape the v5.7.0 client reads — now the resolved
       // card_present tier, so the old UI keeps showing a true number.
       effective: {

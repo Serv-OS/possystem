@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.63',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates (review fixes before the first write): the charge Adyen took before the cutover is never guessed from a tiered profile, it is set from the bank; every American Express card name has its own rule, so an Amex card in Apple Pay pays the Amex price on both sides; business cards with no credit or debit word in their name (visacorporate, mccorporate and the like) pay the Amex and business price; switching on card type data adds to the webhook settings and never replaces them; a replay of past payment notices never undoes the restatement; the Read panel counts payments that missed the cutover; the tie check shows the rounding residual per batch.",
+    ],
+  },
+  {
+    v: '5.11.63',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates: what Adyen charges a venue and what Back Office records are now ONE rule. The owner found the venue's bank receiving a few pounds more per settlement than Back Office showed: Adyen was taking a flat 0.85% on every card and giving nothing back on refunds, while our records charged 0.9% on in person cards, the Amex price on business cards, and gave the fee back in proportion on a refund. From now the rules written to Adyen are built from the rate card on the card type name (debit, prepaid, business) and the channel, and every new payment is recorded from the rules read back from Adyen itself.",
+      "Card rates: three new panels under the rate card editor on a venue's Processing page. Read what Adyen charges shows the rules on the venue's payments location in plain words, the refund rule, and how they compare with the card. Write these rates to Adyen previews every change rule by rule, then writes on the typed word LIVE. Switch on card type data asks Adyen to send the card type on every payment notice, or shows the exact clicks to do it in the Customer Area.",
+      "Refunds: the venue keeps paying the card fee on a refunded payment, as its bank has done since go live. Back Office Payments, Payouts, the statement and the Xero Card fees line all show it that way now. Past payments are made to match the bank by a file ServOS runs after the write; nothing is restated twice.",
+      "The Amex and business cards row says which cards pay it: Visa and Mastercard business, corporate, purchasing and fleet cards.",
+    ],
+  },
+  {
     v: '5.11.62',
     date: '15 Oct 2026',
     items: [
