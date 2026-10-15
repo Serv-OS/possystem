@@ -8,6 +8,7 @@ import { fetchPrepSchedule, savePrepItem, deletePrepItem } from '../../../lib/pr
 import { fetchInventoryItems } from '../../../lib/stock/data';
 import { fetchRecipes } from '../../../lib/stock/recipes';
 import { Icon } from '../../../components/ServOSIcons';
+import { scheduleUnitOptions } from '../../../lib/stock/productionRules';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -81,7 +82,7 @@ export default function OpsPrepSchedule() {
             {items.map((it) => (
               <tr key={it.id}>
                 <td style={{ ...td, fontWeight: 700 }}>{it.name}</td>
-                <td style={td}>{it.qty != null ? `${it.qty}${it.unit || ''}` : '—'}</td>
+                <td style={td}>{it.qty != null ? `${it.qty} ${it.unit || ''}`.trim() : '—'}</td>
                 <td style={td}>{it.dueTime || '—'}</td>
                 <td style={{ ...td, color: 'var(--t3)' }}>{daysLabel(it.daysOfWeek)}</td>
                 <td style={td}>{it.active ? <span style={{ color: 'var(--grn, #22c55e)', fontWeight: 700 }}>Active</span> : <span style={{ color: 'var(--t4)' }}>Off</span>}</td>
@@ -129,9 +130,23 @@ export default function OpsPrepSchedule() {
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Unit</label>
-                <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })} style={field}>
-                  {UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
-                </select>
+                {(() => {
+                  // v5.11.65: a cook linked to a stock item offers only that item's units (its base
+                  // unit, its own named packs) plus batch, one recipe yield. 'portions' on a litre
+                  // item used to complete as litres; now it cannot be chosen, and one already saved
+                  // is shown as not understood. A reminder only cook keeps the free list.
+                  const linked = madeItems.find(m => m.id === editing.outputItemId);
+                  const opts = linked ? scheduleUnitOptions({ baseUnit: linked.baseUnit, packaging: linked.packaging || [] }, editing.unit) : UNITS.map(u => ({ value: u, label: u }));
+                  const stale = opts.find(o => o.stale);
+                  return (
+                    <>
+                      <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })} style={{ ...field, borderColor: stale && stale.value === editing.unit ? 'var(--red, #ef4444)' : undefined }}>
+                        {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      {stale && stale.value === editing.unit && <div style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4 }}>Pick a unit the item is measured in, or batch, or the cook cannot be completed.</div>}
+                    </>
+                  );
+                })()}
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Due by</label>

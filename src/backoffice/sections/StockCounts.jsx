@@ -8,13 +8,19 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money } from '../../lib/currency';
+import { getLocationConfig } from '../../lib/locationTime';
+import { signedMoney } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, deleteCount, removeCountLine } from '../../lib/stock/counts';
+import { approvalOutcomeText } from '../../lib/stock/countRules';
 import { toBase, fromBase, formatToken } from '../../lib/stock/uom';
+import { countName, fmtVenueDateTime } from '../../lib/venueDate';
 import { reportSave } from '../../lib/saveHealth';
+import NumberField from '../../components/NumberField';
 
-const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '10px 12px', fontSize: 16, outline: 'none', boxSizing: 'border-box', textAlign: 'right' };
+// v5.11.65 (15 Oct 2026 audit): the quantity boxes are the shared NumberField (wide enough for
+// "12.55", unit inside the box, no spinner); every date is the venue's, in words; a reopened
+// sheet saves only lines the operator touched; and Approve refuses an empty sheet.
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 
 export default function StockCounts() {
@@ -24,12 +30,15 @@ export default function StockCounts() {
   const [counts, setCounts] = useState([]);
   const [active, setActive] = useState(null);   // { ...count, lines }
   const [edits, setEdits] = useState({});       // lineId -> value (local)
+  const [dirty, setDirty] = useState({});       // lineId -> true once the operator typed in it
+  const [venueTz, setVenueTz] = useState(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
+    getLocationConfig(loc).then(c => setVenueTz(c?.timezone || null)).catch(() => {});
     const [{ data: its }, { data: cs }] = await Promise.all([fetchInventoryItems(loc), fetchCounts(loc)]);
     setItems(its || []); setCounts(cs || []); setLoading(false);
   }, [locId]);
@@ -86,47 +95,60 @@ export default function StockCounts() {
     // Seed any previously-counted lines into their default unit so editing resumes.
     const init = {};
     data.lines.forEach(l => {
-      if (l.countedQty != null) { const tok = defaultTokenFor(l.inventoryItemId); const inU = fromBase(l.countedQty, tok, uomFor(l.inventoryItemId)); init[l.id] = { [tok]: inU == null ? '' : String(r3(inU)) }; }
+      // full precision, and nothing is written back until the operator edits the line: the old
+      // 3dp seed plus save-on-blur re-saved 29.552 l as 29.55 l on every reopen (2 ml of drift a time)
+      if (l.countedQty != null) { const tok = defaultTokenFor(l.inventoryItemId); const inU = fromBase(l.countedQty, tok, uomFor(l.inventoryItemId)); init[l.id] = { [tok]: inU == null ? '' : String(Math.round(inU * 1e6) / 1e6) }; }
     });
-    setActive(data); setEdits(init);
+    setActive(data); setEdits(init); setDirty({});
   };
   const startCount = async () => {
+    // A sheet already open is the one to walk: two identical drafts side by side is how
+    // "Count 10/15/2026" came to appear twice at the demo venue.
+    const open = counts.find(c => c.status !== 'APPROVED');
+    if (open && window.confirm(`"${open.name}" is still open. Carry on with that count instead of starting another?`)) { openCount(open.id); return; }
     setBusy(true);
-    const { data, error } = await createCount({ name: `Count ${new Date().toLocaleDateString()}`, countType: 'FULL' }, locId);
+    const { data, error } = await createCount({ name: countName(new Date(), venueTz, 'FULL'), countType: 'FULL' }, locId);
     setBusy(false);
     reportSave('stock count', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     await reload();
     if (data) openCount(data.id);
   };
-  const onEdit = (lineId, token, v) => setEdits(e => ({ ...e, [lineId]: { ...(e[lineId] || {}), [token]: v } }));
+  const onEdit = (lineId, token, v) => { setEdits(e => ({ ...e, [lineId]: { ...(e[lineId] || {}), [token]: v } })); setDirty(d => ({ ...d, [lineId]: true })); };
+  const clearDirty = (ids) => setDirty(d => { const n = { ...d }; ids.forEach(id => { delete n[id]; }); return n; });
   const onBlur = async (line) => {
-    if (!edits[line.id]) return;
+    if (!edits[line.id] || !dirty[line.id]) return;   // only a line the operator changed is written
     const base = countedBase(line);
     const { error } = await saveCountLine(line.id, base == null ? '' : base, locId);
     reportSave('stock count line', error);
     // The typed figure stays in `edits` so the shelf walk isn't lost — Save progress retries it.
     if (error) showToast?.(`${itemName(line.inventoryItemId)} count NOT saved`, 'error');
+    else clearDirty([line.id]);
   };
-  /** Push every edited line; returns how many the database refused. */
+  /** Push every changed line; returns how many the database refused. */
   const flush = async () => {
-    let failed = 0;
+    let failed = 0; const saved = [];
     for (const line of active.lines) {
-      if (!edits[line.id]) continue;
+      if (!edits[line.id] || !dirty[line.id]) continue;
       const base = countedBase(line);
       const { error } = await saveCountLine(line.id, base == null ? '' : base, locId);
       reportSave('stock count line', error);
-      if (error) failed++;
+      if (error) failed++; else saved.push(line.id);
     }
+    if (saved.length) clearDirty(saved);
     return failed;
   };
+  const countedLines = () => (active ? active.lines.filter(l => countedBase(l) != null || (l.countedQty != null && !edits[l.id])).length : 0);
   const saveProgress = async () => {
     const failed = await flush();
     if (failed) { showToast?.(`${failed} line${failed === 1 ? '' : 's'} NOT saved — check the connection`, 'error'); return; }
     showToast?.('Progress saved', 'success');
   };
   const approve = async () => {
-    if (!confirm('Approve this count? It will adjust on-hand to your counted figures and post the differences to the ledger.')) return;
+    const counted = countedLines();
+    if (counted === 0) { showToast?.('Nothing has been counted yet. Enter at least one figure before approving.', 'error'); return; }
+    const uncounted = active.lines.length - counted;
+    if (!confirm(`Approve this count? ${counted} counted line${counted === 1 ? '' : 's'} will adjust stock to your figures and post the differences to the ledger.${uncounted ? ` ${uncounted} uncounted line${uncounted === 1 ? '' : 's'} will be left as the system has them.` : ''}`)) return;
     setBusy(true);
     // Approving reconciles on-hand to what is STORED on the lines, so a line that
     // failed to save would silently reconcile stock to the old figure.
@@ -136,11 +158,11 @@ export default function StockCounts() {
       showToast?.(`${failed} line${failed === 1 ? '' : 's'} could not be saved — not approved, so no stock was changed`, 'error');
       return;
     }
-    const { error } = await approveCount(active.id, locId);
+    const { error, data: outcome } = await approveCount(active.id, locId);
     setBusy(false);
     reportSave('stock count approval', error);
     if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.('Count approved — stock reconciled', 'success');
+    showToast?.(approvalOutcomeText({ posted: outcome?.posted ?? 0, total: outcome?.total ?? 0 }), 'success');
     const { data } = await fetchCount(active.id, locId);
     setActive(data); setEdits({}); await reload();
   };
@@ -150,7 +172,7 @@ export default function StockCounts() {
   // ── Count sheet ──
   if (active) {
     const approved = active.status === 'APPROVED';
-    const countedNum = active.lines.filter(l => countedBase(l) != null || (l.countedQty != null && !edits[l.id])).length;
+    const countedNum = countedLines();
     return (
       <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '18px 20px', maxWidth: 640, margin: '0 auto' }}>
         <button onClick={() => { setActive(null); reload(); }} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 13, marginBottom: 10 }}>← All counts</button>
@@ -158,7 +180,7 @@ export default function StockCounts() {
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: 'var(--t1)' }}>{active.name}</h1>
           <span style={{ fontSize: 11, fontWeight: 700, color: approved ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{active.status}</span>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14 }}>{countedNum}/{active.lines.length} counted{approved ? ` · variance ${money(active.varianceValue || 0)}` : ''}</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14 }}>{countedNum}/{active.lines.length} counted{approved ? ` · variance ${signedMoney(active.varianceValue || 0)}` : ''}</div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 80 }}>
           {active.lines.map(line => {
@@ -174,7 +196,7 @@ export default function StockCounts() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
                   <div style={{ fontSize: 14, color: 'var(--t1)' }}>{itemName(line.inventoryItemId)}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>system: {r3(expDisp == null ? line.expectedQty : expDisp)} {dLabel}</div>
+                    <div style={{ fontSize: 11, color: line.expectedQty < 0 ? 'var(--red, #ef4444)' : 'var(--t3)' }} title={line.expectedQty < 0 ? 'The system has this below zero: more was sold or used than was ever received' : undefined}>system: {r3(expDisp == null ? line.expectedQty : expDisp)} {dLabel}</div>
                     {/* drop a single item off the sheet without binning the whole count */}
                     {!approved && (
                       <button onClick={() => removeLine(line)} title={`Remove ${itemName(line.inventoryItemId)} from this count`}
@@ -185,12 +207,8 @@ export default function StockCounts() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
                   {units.map(uo => (
-                    <div key={uo.token} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <input type="number" inputMode="decimal" step="any" disabled={approved} value={edits[line.id]?.[uo.token] ?? ''}
-                        onChange={e => onEdit(line.id, uo.token, e.target.value)} onBlur={() => onBlur(line)}
-                        placeholder="0" style={{ ...field, width: 64, textAlign: 'right' }} />
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>{uo.label}</span>
-                    </div>
+                    <NumberField key={uo.token} width={112} unit={uo.label} disabled={approved} value={edits[line.id]?.[uo.token] ?? ''}
+                      onChange={v => onEdit(line.id, uo.token, v)} onBlur={() => onBlur(line)} inputStyle={{ fontSize: 16 }} />
                   ))}
                 </div>
                 {base != null && (() => {
@@ -232,12 +250,12 @@ export default function StockCounts() {
           <div key={c.id} onClick={() => openCount(c.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '12px 16px', cursor: 'pointer' }}>
             <div>
               <div style={{ fontSize: 14, color: 'var(--t1)' }}>{c.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{new Date(c.createdAt).toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{fmtVenueDateTime(c.createdAt, venueTz)}</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: c.status === 'APPROVED' ? 'var(--grn)' : 'var(--t3)' }}>{c.status}</div>
-                {c.varianceValue != null && <div style={{ fontSize: 12, color: c.varianceValue < 0 ? 'var(--red)' : 'var(--t2)', marginTop: 2 }}>{money(c.varianceValue)}</div>}
+                {c.varianceValue != null && <div style={{ fontSize: 12, color: c.varianceValue < 0 ? 'var(--red)' : 'var(--t2)', marginTop: 2 }}>{signedMoney(c.varianceValue)}</div>}
               </div>
               {/* v5.5.823: an approved count has already adjusted stock and is the
                   evidence behind those movements, so only unapproved sheets can go. */}

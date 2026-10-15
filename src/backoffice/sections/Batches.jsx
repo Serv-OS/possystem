@@ -12,6 +12,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId , isMock, supabase } from '../../lib/supabase';
 import { getLocationConfig, buildScheduleCtx } from '../../lib/locationTime';
 import { money, currencySymbol } from '../../lib/currency';
+import { fmtVenueDate, fmtVenueDateTime, fmtYmd } from '../../lib/venueDate';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchInventoryItems } from '../../lib/stock/data';
@@ -32,10 +33,11 @@ export default function Batches() {
   // v5.11.64 — the venue's calendar day, so "To make" and the "today" label never read the
   // device clock (the old toISOString() was UTC, a third clock again).
   const [todayYmd, setTodayYmd] = useState(buildScheduleCtx(null).ymd);
+  const [venueTz, setVenueTz] = useState(null);   // v5.11.65: every date on this screen is the venue's, in words
   const loadQueue = async () => {
     const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
     if (!loc) return;
-    try { setTodayYmd(buildScheduleCtx((await getLocationConfig(loc))?.timezone).ymd); } catch { /* London default stands */ }
+    try { const tz = (await getLocationConfig(loc))?.timezone || null; setVenueTz(tz); setTodayYmd(buildScheduleCtx(tz).ymd); } catch { /* London default stands */ }
     await ensureTodaysPlannedBatches(loc);              // the schedule BUILDS the batches
     const { data } = await fetchBatches(loc, 300);
     setQueue(data || []);
@@ -138,22 +140,22 @@ export default function Batches() {
 
   /* Batch history — flat, read-only. Columns match the previous table 1:1. */
   const batchCols = useMemo(() => [
-    { key: 'date', label: 'Date', render: b => <span style={{ color: 'var(--t3)' }}>{b.producedAt ? new Date(b.producedAt).toLocaleDateString() : '—'}</span> },
+    { key: 'date', label: 'Date', render: b => <span style={{ color: 'var(--t3)' }}>{fmtVenueDate(b.producedAt, venueTz) || '—'}</span> },
     { key: 'item', label: 'Item', render: b => <span style={{ color: 'var(--t1)', fontWeight: 500 }}>{b.outputName || itemName(b.outputItemId)}</span> },
-    { key: 'output', label: 'Output', align: 'right', render: b => <span style={{ color: 'var(--t1)' }}>{b.actualQty} {b.outputUnit}</span> },
+    { key: 'output', label: 'Output', align: 'right', render: b => <span style={{ color: 'var(--t1)' }}>{b.actualQty != null ? `${b.actualQty} ${b.outputUnit}` : '—'}</span> },
     {
       key: 'planned', label: 'Planned', align: 'right',
       render: b => {
         const variance = b.plannedQty != null && b.actualQty != null && b.actualQty < b.plannedQty;
-        return <span style={{ color: variance ? 'var(--red)' : 'var(--t3)' }}>{b.plannedQty} {b.outputUnit}</span>;
+        return <span style={{ color: variance ? 'var(--red)' : 'var(--t3)' }}>{b.plannedQty != null ? `${b.plannedQty} ${b.outputUnit}` : '—'}</span>;
       },
     },
     { key: 'cost', label: 'Cost', align: 'right', render: b => <Money v={b.actualCost} /> },
     { key: 'unitCost', label: 'Unit cost', align: 'right', render: b => <span style={{ color: 'var(--t3)' }}>{b.outputUnitCost == null ? '—' : currencySymbol() + Number(b.outputUnitCost).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}</span> },
     { key: 'lot', label: 'Lot', render: b => <span style={{ color: 'var(--t3)' }}>{b.lotCode || ''}</span> },
-    { key: 'expiry', label: 'Use-by', render: b => <span style={{ color: 'var(--t3)' }}>{b.expiryAt ? new Date(b.expiryAt).toLocaleDateString() : ''}</span> },
+    { key: 'expiry', label: 'Use-by', render: b => <span style={{ color: 'var(--t3)' }}>{b.expiryAt ? fmtYmd(String(b.expiryAt).slice(0, 10)) : ''}</span> },
     { key: 'status', label: 'Status', render: b => (b.status ? <Tag label={b.status} tone={b.status === 'COMPLETED' ? 'good' : 'neutral'} /> : null) },
-  ], [itemName]);
+  ], [itemName, venueTz]);
 
   const produce = async () => {
     if (!recipe) { showToast?.('Pick a recipe', 'error'); return; }
@@ -196,7 +198,7 @@ export default function Batches() {
             <span style={{ color: 'var(--t3)', fontSize: 12 }}>
               {b.status === 'PLANNED'
                 ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === todayYmd ? 'today' : b.plannedFor}` : ''}`
-                : `made ${b.actualQty} ${b.outputUnit} · ${b.producedAt ? new Date(b.producedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}`}
+                : `made ${b.actualQty ?? '—'} ${b.outputUnit} · ${fmtVenueDateTime(b.producedAt, venueTz, { year: false })}`}
             </span>
             {b.status === 'PLANNED'
               ? (completing?.id === b.id

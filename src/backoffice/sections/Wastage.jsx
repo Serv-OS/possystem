@@ -7,7 +7,9 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
+import { fmtVenueDateTime, daysAgoYmd, venueRangeIso } from '../../lib/venueDate';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
@@ -18,7 +20,6 @@ const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', bor
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
-const isoDaysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); d.setHours(0, 0, 0, 0); return d.toISOString(); };
 
 export default function Wastage() {
   const showToast = useStore(s => s.showToast);
@@ -32,11 +33,16 @@ export default function Wastage() {
   const [q, setQ] = useState('');
   const [row, setRow] = useState({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });
   const [busy, setBusy] = useState(false);
+  const [venueTz, setVenueTz] = useState(null);
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [its, { data: w }] = await Promise.all([fetchInventoryItems(loc), fetchWaste(isoDaysAgo(30), null, loc)]);
+    // v5.11.65: "last 30 days" starts at the venue's business day 30 days back, not the device's midnight
+    const cfg = await getLocationConfig(loc).catch(() => null);
+    const tz = cfg?.timezone || null; setVenueTz(tz);
+    const since = venueRangeIso(daysAgoYmd(30, tz), daysAgoYmd(0, tz), tz, cfg?.businessDayStart)?.fromIso || new Date(Date.now() - 30 * 86400000).toISOString();
+    const [its, { data: w }] = await Promise.all([fetchInventoryItems(loc), fetchWaste(since, null, loc)]);
     setItems(its?.data || []); setItemsError(!!its?.error); setLog(w || []); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
@@ -128,7 +134,7 @@ export default function Wastage() {
           <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Item', 'Qty', 'Reason', 'Cost', 'Lost sale', 'Note'].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
           <tbody>{log.map(w => (
             <tr key={w.id} style={{ color: 'var(--t1)' }}>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{new Date(w.occurredAt).toLocaleString()}</td>
+              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{fmtVenueDateTime(w.occurredAt, venueTz)}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.itemName}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.qty} {w.unit}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.reason}</td>

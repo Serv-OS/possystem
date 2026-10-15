@@ -9,6 +9,8 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { postStockMovement } from './data.js';
+import { countApprovalPlan, approvalOutcomeText } from './countRules.js';
+import { countName } from '../venueDate.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -83,7 +85,7 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
   (items || []).forEach(i => { itemsById[i.id] = i; });
   if (!ids || !ids.length) ids = (items || []).map(i => i.id);
   const { data: c, error } = await supabase.from('stock_counts').insert({
-    location_id: locationId, name: name || `Count ${new Date().toLocaleDateString()}`, count_type: countType, status: 'DRAFT', storage_area: storageArea || null,
+    location_id: locationId, name: name || countName(new Date(), 'Europe/London', countType, storageArea), count_type: countType, status: 'DRAFT', storage_area: storageArea || null,
   }).select().maybeSingle();
   if (error || !c) return { data: null, error: error || new Error('Could not start count') };
   const lines = ids.map((id, i) => ({
@@ -165,27 +167,34 @@ export const approveCount = async (countId, locationId = null) => {
   const { data: lines } = await supabase.from('stock_count_lines').select('*').eq('location_id', locationId).eq('count_id', countId);
   if (!lines?.length) return { error: new Error('No lines') };
   const ids = lines.map(l => l.inventory_item_id);
-  const { data: items } = await supabase.from('inventory_items').select('id, on_hand, current_cost').eq('location_id', locationId).in('id', ids);
-  const onHand = {}; const cost = {};
-  (items || []).forEach(i => { onHand[i.id] = Number(i.on_hand) || 0; cost[i.id] = i.current_cost == null ? 0 : Number(i.current_cost); });
-  let varianceValue = 0;
-  for (const l of lines) {
-    if (l.counted_qty == null) continue;
-    const counted = Number(l.counted_qty);
-    const cur = onHand[l.inventory_item_id] || 0;
-    const delta = counted - cur;
-    const varQty = counted - (Number(l.expected_qty) || 0);
-    varianceValue += varQty * (cost[l.inventory_item_id] || 0);
-    if (delta !== 0) {
-      await postStockMovement({
-        inventoryItemId: l.inventory_item_id, qtyBase: delta, movementType: 'STOCK_COUNT_ADJ',
-        sourceType: 'stock_count', sourceId: countId, idempotencyKey: `count:${countId}:${l.inventory_item_id}`,
+  const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).in('id', ids);
+  const onHand = {}; const cost = {}; const names = {};
+  (items || []).forEach(i => { onHand[i.id] = Number(i.on_hand) || 0; cost[i.id] = i.current_cost == null ? 0 : Number(i.current_cost); names[i.id] = i.name; });
+  // v5.11.65: the plan is worked out first (countRules, tested), then EVERY write is checked.
+  // The old loop awaited each write and read none of the results, so a refused movement still
+  // ended in "Count approved" with some adjustments missing. The first failure stops the
+  // approval and the count stays open; a retry cannot post a line twice (one key per count+item).
+  const plan = countApprovalPlan(lines, onHand, cost);
+  if (!plan.adjustments.length) return { error: new Error('Nothing has been counted on this sheet yet') };
+  const total = plan.adjustments.length;
+  let posted = 0;
+  for (const a of plan.adjustments) {
+    if (a.delta !== 0) {
+      const mv = await postStockMovement({
+        inventoryItemId: a.itemId, qtyBase: a.delta, movementType: 'STOCK_COUNT_ADJ',
+        sourceType: 'stock_count', sourceId: countId, idempotencyKey: `count:${countId}:${a.itemId}`,
         notes: 'Stock count',
       }, locationId);
+      if (mv?.error) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: mv.error })), data: { posted, total } };
     }
-    await supabase.from('stock_count_lines').update({ variance_qty: varQty }).eq('location_id', locationId).eq('id', l.id);
+    const { error: lineErr } = await supabase.from('stock_count_lines').update({ variance_qty: a.varQty }).eq('location_id', locationId).eq('id', a.lineId);
+    if (lineErr) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: lineErr })), data: { posted, total } };
+    posted++;
   }
-  await supabase.from('stock_counts').update({ status: 'APPROVED', approved_at: nowIso(), variance_value: varianceValue, updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', countId);
-  return { error: null };
+  const { data: head, error: headErr } = await supabase.from('stock_counts')
+    .update({ status: 'APPROVED', approved_at: nowIso(), variance_value: plan.varianceValue, updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', countId).select('id');
+  if (headErr) return { error: headErr, data: { posted, total } };
+  if (!head?.length) return { error: new Error('The adjustments posted but the count could not be marked approved. Approve again (nothing will post twice).'), data: { posted, total } };
+  return { error: null, data: { posted, total, varianceValue: plan.varianceValue, uncounted: plan.uncounted } };
 };

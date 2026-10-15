@@ -8,7 +8,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money, currencySymbol } from '../../lib/currency';
+import { money, currencySymbol, signedMoney } from '../../lib/currency';
+import { lineValue, negativeStock } from '../../lib/stock/valuation';
 import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel } from '../../lib/stock/data';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchRecipes } from '../../lib/stock/recipes';
@@ -43,11 +44,18 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
   const purchasable = items.filter(i => i.kind === 'PURCHASED');
   const priced = purchasable.filter(i => i.currentCost != null && i.currentCost > 0);
   const noPrice = purchasable.filter(i => !(i.currentCost != null && i.currentCost > 0));
-  const stockValue = items.reduce((s, i) => s + (Number(i.onHand) || 0) * (Number(i.currentCost) || 0), 0);
+  // v5.11.65: stock below zero is worth nothing, not less than nothing (valuation.js); the
+  // items below zero are named so the hole is seen, not folded into the total.
+  const stockValue = items.reduce((s, i) => s + lineValue(i.onHand, i.currentCost), 0);
+  const negatives = negativeStock(items);
+  const negTotal = negatives.reduce((s, n) => s + n.value, 0);
   const withStock = items.filter(i => (Number(i.onHand) || 0) > 0);
   const dishes = d.recipes.filter(r => r.recipeType === 'MENU');
   const linkedMenuIds = new Set(dishes.map(r => String(r.menuItemId)).filter(Boolean));
-  const sellable = menuItems.filter(m => !m.archived && m.type !== 'subitem');
+  // a variants parent (a sized drink's container) is never sold and cannot carry a recipe, so it
+  // is not a menu item "without a recipe" (Recipe GP leaves it out for the same reason)
+  const parentIds = new Set(menuItems.filter(m => m.parentId && !m.archived).map(m => String(m.parentId)));
+  const sellable = menuItems.filter(m => !m.archived && m.type !== 'subitem' && m.type !== 'variants' && !parentIds.has(String(m.id)));
   const unlinked = sellable.filter(m => !linkedMenuIds.has(String(m.id)));
   const itemName = (id) => items.find(i => i.id === id)?.name || '—';
 
@@ -55,7 +63,7 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
     { n: 1, label: 'Add your stock items', done: items.length > 0, detail: `${items.length} item${items.length === 1 ? '' : 's'}`, cta: 'Stock items', to: 'stock-items' },
     { n: 2, label: 'Set a price on each item', done: purchasable.length > 0 && noPrice.length === 0, detail: `${priced.length} of ${purchasable.length} priced`, cta: 'Add prices', to: 'stock-items' },
     { n: 3, label: 'Build recipes & link to menu', done: dishes.length > 0, detail: `${dishes.length} dish recipe${dishes.length === 1 ? '' : 's'} · ${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without one`, cta: 'Recipes', to: 'recipes' },
-    { n: 4, label: 'Count your stock on hand', done: withStock.length > 0, detail: `${withStock.length} item${withStock.length === 1 ? '' : 's'} with stock`, cta: 'Set counts', to: 'stock-items' },
+    { n: 4, label: 'Count your stock on hand', done: withStock.length > 0, detail: `${withStock.length} item${withStock.length === 1 ? '' : 's'} with stock`, cta: 'Stock counts', to: 'stock-counts' },
     { n: 5, label: 'Add suppliers & receive deliveries', done: d.suppliers.length > 0, detail: `${d.suppliers.length} supplier${d.suppliers.length === 1 ? '' : 's'} · ${d.pos.length} order${d.pos.length === 1 ? '' : 's'}`, cta: 'Purchasing', to: 'suppliers' },
   ];
   const doneCount = steps.filter(s => s.done).length;
@@ -75,7 +83,9 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
       {/* Stat row */}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 22 }}>
-        {stat('Stock on hand', money(stockValue), `${items.length} item${items.length === 1 ? '' : 's'} tracked`)}
+        {stat('Stock value', money(stockValue), negatives.length
+          ? `${items.length} items tracked · ${negatives.length} below zero (${signedMoney(negTotal)} left out)`
+          : `${items.length} item${items.length === 1 ? '' : 's'} tracked`, negatives.length && can('stock-counts') ? () => go('stock-counts') : null)}
         {stat('Need a price', String(noPrice.length), noPrice.length ? 'tap to fix' : 'all priced ✓', noPrice.length ? () => go('stock-items') : null, noPrice.length ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
         {stat('Recipes', String(dishes.length), `${unlinked.length} menu items unlinked`, can('recipes') ? () => go('recipes') : null)}
         {stat('Suppliers', String(d.suppliers.length), `${d.pos.length} purchase order${d.pos.length === 1 ? '' : 's'}`, can('suppliers') ? () => go('suppliers') : null)}
@@ -107,11 +117,14 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
         {/* Right column: attention + activity */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {(noPrice.length > 0 || unlinked.length > 0) && (
+          {(noPrice.length > 0 || unlinked.length > 0 || negatives.length > 0) && (
             <div style={card}>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Needs attention</div>
               {noPrice.length > 0 && (
                 <Attn color="var(--red, #ef4444)" title={`${noPrice.length} item${noPrice.length === 1 ? '' : 's'} with no price`} sub="costs & GP can’t be worked out until these have a supplier price" items={noPrice.slice(0, 4).map(i => i.name)} cta="Fix prices" onClick={() => go('stock-items')} />
+              )}
+              {negatives.length > 0 && (
+                <Attn color="var(--red, #ef4444)" title={`${negatives.length} item${negatives.length === 1 ? '' : 's'} below zero`} sub={`more sold or used than was ever received (${signedMoney(negTotal)} not counted in the value). Record the delivery or batch, or count the shelf.`} items={negatives.slice(0, 4).map(n => n.name)} cta="Stock counts" onClick={can('stock-counts') ? () => go('stock-counts') : null} />
               )}
               {unlinked.length > 0 && (
                 <Attn color="#e8a020" title={`${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without a recipe`} sub="these won’t deplete stock or show a cost when sold" items={unlinked.slice(0, 4).map(i => i.name)} cta="Build recipes" onClick={can('recipes') ? () => go('recipes') : null} />
@@ -132,7 +145,7 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
                     <span style={{ width: 92, color: 'var(--t3)', flexShrink: 0 }}>{movementLabel(m.movementType)}</span>
                     <span style={{ flex: 1, minWidth: 0, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(m.inventoryItemId)}</span>
                     <span style={{ color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)', flexShrink: 0 }}>{pos ? '+' : ''}{disp.qty} {disp.label}</span>
-                    <span style={{ width: 60, textAlign: 'right', color: 'var(--t3)', flexShrink: 0 }}>{m.valueDelta == null ? '' : money(m.valueDelta)}</span>
+                    <span style={{ width: 60, textAlign: 'right', color: 'var(--t3)', flexShrink: 0 }}>{m.valueDelta == null ? '' : signedMoney(m.valueDelta)}</span>
                   </div>
                 );
               })}

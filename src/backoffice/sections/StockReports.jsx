@@ -18,7 +18,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money, currencySymbol } from '../../lib/currency';
+import { getLocationConfig } from '../../lib/locationTime';
+import { money, currencySymbol, signedMoney } from '../../lib/currency';
+import { daysAgoYmd, venueRangeIso, fmtVenueDateTime } from '../../lib/venueDate';
+import { lineValue, negativeStock } from '../../lib/stock/valuation';
 import { toCsv, downloadCsv } from './reports/_csv';
 import { fetchInventoryItems, fetchMovementsRange, fetchSuppliers, movementLabel } from '../../lib/stock/data';
 import { fetchBatches } from '../../lib/stock/production';
@@ -37,10 +40,11 @@ import {
 const TABS = ['Valuation', 'Recipe GP', 'Production', 'Movements', 'The Gap', 'By supplier'];
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
-const INBOUND = new Set(['PURCHASE_RECEIPT', 'TRANSFER_IN', 'RETURN', 'PRODUCTION_OUTPUT', 'OPENING_BALANCE']);
+// v5.11.65: The Gap's "Received" is deliveries only; what the kitchen MADE has its own column,
+// and an opening balance or a return is neither (they used to read as goods received).
+const RECEIVED = new Set(['PURCHASE_RECEIPT', 'TRANSFER_IN']);
+const MADE = new Set(['PRODUCTION_OUTPUT']);
 const OUTBOUND = new Set(['SALE_DEPLETION', 'PRODUCTION_CONSUME', 'TRANSFER_OUT']);
-const isoDaysAgo = (days) => { const d = new Date(); d.setDate(d.getDate() - days); d.setHours(0, 0, 0, 0); return d.toISOString().slice(0, 10); };
-const todayIso = () => new Date().toISOString().slice(0, 10);
 const RANGED = new Set(['Movements', 'The Gap', 'By supplier']);
 
 function ExportBtn({ rows, headers, name }) {
@@ -63,8 +67,12 @@ export default function StockReports() {
   const [suppliers, setSuppliers] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });
-  const [from, setFrom] = useState(isoDaysAgo(30));
-  const [to, setTo] = useState(todayIso());
+  // v5.11.65: From/To are venue days and the range runs business day to business day (06:00
+  // to 06:00 by default), never the device's midnight or the UTC date. Until the venue clock
+  // arrives the London default stands; it is replaced as soon as the config is read.
+  const [clock, setClock] = useState({ timezone: null, businessDayStart: '06:00' });
+  const [from, setFrom] = useState(daysAgoYmd(30, null));
+  const [to, setTo] = useState(daysAgoYmd(0, null));
   const [moves, setMoves] = useState([]);
   const [checks, setChecks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -87,6 +95,11 @@ export default function StockReports() {
   const loadBase = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
+    getLocationConfig(loc).then(cfg => {
+      const tz = cfg?.timezone || null;
+      setClock({ timezone: tz, businessDayStart: cfg?.businessDayStart || '06:00' });
+      setFrom(daysAgoYmd(30, tz)); setTo(daysAgoYmd(0, tz));
+    }).catch(() => {});
     const [{ data: its }, { data: recs }, c, sup] = await Promise.all([
       fetchInventoryItems(loc), fetchRecipes(loc), buildCostingCtx(loc), fetchSuppliers(loc).catch(() => ({ data: [] })),
     ]);
@@ -99,9 +112,10 @@ export default function StockReports() {
     const run = movesRun.current += 1;
     const live = () => run === movesRun.current;
     setMovesFault(null); setMovesLoad({ done: 0, total: 1 });
+    const range = venueRangeIso(from, to, clock.timezone, clock.businessDayStart) || { fromIso: `${from}T00:00:00`, toIso: `${to}T23:59:59` };
     let res;
     try {
-      res = await fetchMovementsRange(`${from}T00:00:00`, `${to}T23:59:59`, loc, {
+      res = await fetchMovementsRange(range.fromIso, range.toIso, loc, {
         onProgress: (p) => { if (live()) setMovesLoad(p); },
         stop: () => !live(),
       });
@@ -110,7 +124,7 @@ export default function StockReports() {
     setMovesLoad(null);
     if (res.error) setMovesFault(res.tooMany ? 'too_long' : 'failed');
     setMoves(res.data || []);
-  }, [from, to, locId]);
+  }, [from, to, locId, clock]);
   useEffect(() => { if (tab === 'Movements' || tab === 'The Gap') loadMoves(); }, [tab, loadMoves]);
 
   // Sales for the supplier tab only — don't pay for this query on other tabs.
@@ -120,9 +134,10 @@ export default function StockReports() {
     const run = checksRun.current += 1;
     const live = () => run === checksRun.current;
     setChecksFault(null); setChecksLoad({ done: 0, total: 1 });
+    const range = venueRangeIso(from, to, clock.timezone, clock.businessDayStart) || { fromIso: `${from}T00:00:00`, toIso: `${to}T23:59:59` };
     let res;
     try {
-      res = await fetchClosedChecksRange(loc, new Date(`${from}T00:00:00`), new Date(`${to}T23:59:59`), {
+      res = await fetchClosedChecksRange(loc, new Date(range.fromIso), new Date(range.toIso), {
         onProgress: (p) => { if (live()) setChecksLoad(p); },
         stop: () => !live(),
       });
@@ -131,11 +146,12 @@ export default function StockReports() {
     setChecksLoad(null);
     if (res.error) setChecksFault(res.tooMany ? 'too_long' : 'failed');
     setChecks(res.data || []);
-  }, [from, to, locId]);
+  }, [from, to, locId, clock]);
   useEffect(() => { if (tab === 'By supplier') loadChecks(); }, [tab, loadChecks]);
 
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
   const itemUnit = useCallback((id) => items.find(i => i.id === id)?.baseUnit || '', [items]);
+  const itemById = useMemo(() => Object.fromEntries(items.map(i => [i.id, i])), [items]);
   const supplierName = useCallback((id) => suppliers.find(s => s.id === id)?.name || null, [suppliers]);
 
   const periodLabel = `${from} → ${to}`;
@@ -164,14 +180,14 @@ export default function StockReports() {
       {loading && <div style={{ color:'var(--t3)', fontSize:13 }}>Loading…</div>}
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
       {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
-      {!loading && tab === 'Production'  && <ProductionReport itemName={itemName}/>}
+      {!loading && tab === 'Production'  && <ProductionReport itemName={itemName} venueTz={clock.timezone}/>}
       {!loading && rangeBusy && <div style={{ color:'var(--t3)', fontSize:13 }}>{loadingText(rangeLoad)}</div>}
       {!loading && rangeBad && (
         <div style={{ color:'var(--t2)', fontSize:14, padding:'24px 0' }}>
           {faultText(rangeFault)}
         </div>
       )}
-      {!loading && !rangeBusy && !rangeBad && tab === 'Movements'   && <Movements moves={moves} itemName={itemName}/>}
+      {!loading && !rangeBusy && !rangeBad && tab === 'Movements'   && <Movements moves={moves} itemName={itemName} itemById={itemById} venueTz={clock.timezone}/>}
       {!loading && !rangeBusy && !rangeBad && tab === 'The Gap'     && <TheGap moves={moves} itemName={itemName} itemUnit={itemUnit}/>}
       {!loading && !rangeBusy && !rangeBad && tab === 'By supplier' && (
         <BySupplier items={items} suppliers={suppliers} recipes={recipes} ctx={ctx}
@@ -195,9 +211,13 @@ function Valuation({ items, supplierName }) {
       supplier: supplierName(resolveItemSupplierId(i)) || null,
       onHandRaw: Number(i.onHand) || 0, onHand: oh.qty, unit: oh.label,
       cost: i.currentCost == null ? null : Number(i.currentCost),
-      value: r3((Number(i.onHand) || 0) * (Number(i.currentCost) || 0)),
+      // v5.11.65: below zero is worth nothing (valuation.js); negValue is what it WOULD have taken off
+      value: r3(lineValue(i.onHand, i.currentCost)),
+      negValue: r3(Math.min(0, (Number(i.onHand) || 0) * (Number(i.currentCost) || 0))),
     };
   }), [items, supplierName]);
+  const negatives = useMemo(() => negativeStock(items.filter(i => !i.archivedAt)), [items]);
+  const negTotal = negatives.reduce((s, n) => s + n.value, 0);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -242,7 +262,11 @@ function Valuation({ items, supplierName }) {
     { key:'category', label:'Category', render:r => r.category ? <Tag label={r.category}/> : <span style={{ color:'var(--t4)' }}>—</span> },
     { key:'onHand', label:'On hand', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color: r.onHandRaw>0?'var(--t2)':'var(--t4)' }}>{r.onHand} {r.unit}</span> },
     { key:'cost', label:'Unit cost', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t3)' }}>{fmtCost(r.cost)}</span> },
-    { key:'value', label:'Value', align:'right', sortable:true, width:150, render:r => r.value > 0
+    { key:'value', label:'Value', align:'right', sortable:true, width:150, render:r => r.onHandRaw < 0
+        ? <span style={{ display:'inline-flex', alignItems:'center', gap:6, justifyContent:'flex-end' }} title="Stock below zero is valued at nothing. This is what it would have taken off the total.">
+            <Tag label="negative stock" tone="bad"/><span style={{ fontVariantNumeric:'tabular-nums', color:'var(--red)' }}>{signedMoney(r.negValue)}</span>
+          </span>
+        : r.value > 0
         ? <BarCell v={r.value} max={maxVal} text={money(r.value)}/>
         : <span style={{ color:'var(--t4)' }}>{money(0)}</span> },
   ];
@@ -254,7 +278,8 @@ function Valuation({ items, supplierName }) {
         { label:'Total stock value', value: money(total) },
         { label:'Suppliers', value: supCount, sub:`across ${catCount} categor${catCount===1?'y':'ies'}` },
         { label:'Top holding', value: top ? money(top.value) : money(0), sub: top?.name },
-        { label:'Zero-stock items', value: zero, tone: zero ? 'warn' : undefined, sub:'not counted this period' },
+        { label:'At or below zero', value: zero, tone: zero ? 'warn' : undefined, sub:`${zero === 1 ? 'item' : 'items'} with no stock on hand` },
+        { label:'Negative stock', value: negatives.length, tone: negatives.length ? 'bad' : 'good', sub: negatives.length ? `${signedMoney(negTotal)} left out of the total` : 'none below zero' },
       ]}/>
       <SubToolbar count={`${filtered.length} item${filtered.length===1?'':'s'}`}>
         <Chips value={stock} onChange={setStock} options={[{id:'all',label:'All'},{id:'in',label:'In stock'},{id:'zero',label:'Zero stock'}]}/>
@@ -309,6 +334,9 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
     const mi = byId[String(r.menuItemId)];
     if (!mi || mi.archived) return false;
     if (mi.type === 'variants' || variantParentIds.has(String(mi.id))) return false;
+    // v5.11.65: a modifier sub item (the bun, the cheese slice) sells at 0 inside a dish; it is
+    // costed through the dish, never listed as an "Unpriced" dish of its own.
+    if (mi.type === 'subitem') return false;
     return true;
   }).map(r => {
     const c = costRecipeWith(r, ctx);
@@ -380,7 +408,7 @@ const TYPE_TONE = (label) => /waste/i.test(label) ? 'warn' : /count/i.test(label
 // wrote (planned qty, actual qty, ingredient cost, output unit cost, lot, who/when).
 // The ledger reports already count the stock effect (PRODUCTION_OUTPUT inbound,
 // PRODUCTION_CONSUME outbound) — this view explains it batch by batch.
-function ProductionReport({ itemName }) {
+function ProductionReport({ itemName, venueTz }) {
   const [days, setDays] = useState(30);
   const [batches, setBatches] = useState(null);
   useEffect(() => {
@@ -418,7 +446,7 @@ function ProductionReport({ itemName }) {
       ) : (
         <ReportTable
           columns={[
-            { key: 'when', label: 'Produced', sortable: true, render: b => new Date(b.producedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) },
+            { key: 'when', label: 'Produced', sortable: true, render: b => fmtVenueDateTime(b.producedAt, venueTz, { year: false }) },
             { key: 'item', label: 'Item', sortable: true, render: b => <b style={{ color: 'var(--t1)' }}>{b.outputName || itemName(b.outputItemId)}</b> },
             { key: 'planned', label: 'Planned', align: 'right', render: b => b.plannedQty != null ? `${b.plannedQty} ${b.outputUnit}` : '—' },
             { key: 'actual', label: 'Made', align: 'right', render: b => <b>{b.actualQty} {b.outputUnit}</b> },
@@ -438,17 +466,25 @@ function ProductionReport({ itemName }) {
   );
 }
 
-function Movements({ moves, itemName }) {
+function Movements({ moves, itemName, itemById = {}, venueTz = null }) {
   const [search, setSearch] = useState('');
   const [type, setType] = useState('all');
   const [sort, onSort] = useSort('date');
 
-  const base = useMemo(() => moves.map((m, i) => ({
-    id: m.id ?? i, ts: m.occurredAt ? new Date(m.occurredAt).getTime() : 0,
-    date: m.occurredAt ? new Date(m.occurredAt).toLocaleString() : '—',
-    item: itemName(m.inventoryItemId), type: movementLabel(m.movementType),
-    qty: r3(m.qtyBase), value: m.valueDelta == null ? null : r3(m.valueDelta),
-  })), [moves, itemName]);
+  // v5.11.65: the date is the venue's, in words; the quantity is in the item's count unit to
+  // three places WITH the unit (9 g of beans read as "-0.01" with nothing to say what).
+  const base = useMemo(() => moves.map((m, i) => {
+    const it = itemById[m.inventoryItemId];
+    const disp = it
+      ? displayInUnits(m.qtyBase, { baseUnit: it.baseUnit, formats: it.packaging || [], itemConversions: it.conversions || [] })
+      : { qty: r3(m.qtyBase), label: '' };
+    return {
+      id: m.id ?? i, ts: m.occurredAt ? new Date(m.occurredAt).getTime() : 0,
+      date: m.occurredAt ? fmtVenueDateTime(m.occurredAt, venueTz) : '—',
+      item: itemName(m.inventoryItemId), type: movementLabel(m.movementType),
+      qty: disp.qty, unit: disp.label, value: m.valueDelta == null ? null : r3(m.valueDelta),
+    };
+  }), [moves, itemName, itemById, venueTz]);
 
   const types = useMemo(() => ['all', ...Array.from(new Set(base.map(r => r.type)))], [base]);
   const filtered = useMemo(() => {
@@ -467,7 +503,7 @@ function Movements({ moves, itemName }) {
     { key:'date', label:'Date', sortable:true, render:r => <span style={{ color:'var(--t3)' }}>{r.date}</span> },
     { key:'item', label:'Item', sortable:true, render:r => <span style={{ color:'var(--t1)', fontWeight:500 }}>{r.item}</span> },
     { key:'type', label:'Type', sortable:true, render:r => <Tag label={r.type} tone={TYPE_TONE(r.type)}/> },
-    { key:'qty',  label:'Qty', align:'right', sortable:true, render:r => <Signed v={r.qty}/> },
+    { key:'qty',  label:'Qty', align:'right', sortable:true, render:r => <Signed v={r.qty} unit={r.unit} dp={3}/> },
     { key:'value',label:'Value', align:'right', sortable:true, render:r => r.value == null ? <span style={{ color:'var(--t4)' }}>—</span> : <Money v={r.value}/> },
   ];
 
@@ -476,18 +512,18 @@ function Movements({ moves, itemName }) {
       <KpiBand items={[
         { label:'Movements', value: base.length },
         { label:'Sales', value: base.filter(r => /sale/i.test(r.type)).length },
-        { label:'Waste value', value: money(wasteVal), tone: wasteVal < 0 ? 'warn' : undefined, sub:`${waste.length} waste event${waste.length===1?'':'s'}` },
-        { label:'Net value', value: money(base.reduce((s,r)=>s+(r.value||0),0)) },
+        { label:'Waste value', value: signedMoney(wasteVal), tone: wasteVal < 0 ? 'warn' : undefined, sub:`${waste.length} waste event${waste.length===1?'':'s'}` },
+        { label:'Net value', value: signedMoney(base.reduce((s,r)=>s+(r.value||0),0)) },
       ]}/>
       <SubToolbar count={`${filtered.length} movement${filtered.length===1?'':'s'}`}>
         <Chips value={type} onChange={setType} options={types.map(t => ({ id:t, label: t === 'all' ? 'All' : t }))}/>
         <span style={{ marginLeft:'auto' }}/>
         <SearchField value={search} onChange={setSearch} placeholder="Search item or type…"/>
         <ExportBtn rows={filtered.map(r => ({ ...r, value: r.value ?? '' }))} name="stock-movements" headers={[
-          {label:'Date',key:'date'},{label:'Item',key:'item'},{label:'Type',key:'type'},{label:'Qty',key:'qty'},{label:'Value',key:'value'}]}/>
+          {label:'Date',key:'date'},{label:'Item',key:'item'},{label:'Type',key:'type'},{label:'Qty',key:'qty'},{label:'Unit',key:'unit'},{label:'Value',key:'value'}]}/>
       </SubToolbar>
       <ReportTable columns={columns} rows={sorted} sort={sort} onSort={onSort}
-        totals={{ date:'Net value', value: money(net) }} empty="No movements in this period."/>
+        totals={{ date:'Net value', value: signedMoney(net) }} empty="No movements in this period."/>
     </div>
   );
 }
@@ -500,20 +536,21 @@ function TheGap({ moves, itemName, itemUnit }) {
     for (const m of moves) {
       const k = m.inventoryItemId;
       if (!k) continue;
-      const a = by[k] || (by[k] = { used: 0, received: 0, waste: 0, countQty: 0, varValue: 0 });
+      const a = by[k] || (by[k] = { used: 0, received: 0, made: 0, waste: 0, countQty: 0, varValue: 0 });
       if (OUTBOUND.has(m.movementType)) a.used += -m.qtyBase;
-      else if (INBOUND.has(m.movementType)) a.received += m.qtyBase;
+      else if (RECEIVED.has(m.movementType)) a.received += m.qtyBase;
+      else if (MADE.has(m.movementType)) a.made += m.qtyBase;
       if (m.movementType === 'WASTE') a.waste += -m.qtyBase;
       if (m.movementType === 'STOCK_COUNT_ADJ') { a.countQty += m.qtyBase; a.varValue += (m.valueDelta || 0); }
     }
     return Object.entries(by).map(([id, a]) => ({
-      id, item: itemName(id), unit: itemUnit(id), used: r3(a.used), received: r3(a.received),
+      id, item: itemName(id), unit: itemUnit(id), used: r3(a.used), received: r3(a.received), made: r3(a.made),
       waste: r3(a.waste), countQty: r3(a.countQty), varValue: r3(a.varValue),
     })).filter(r => r.countQty !== 0 || r.varValue !== 0);
   }, [moves, itemName, itemUnit]);
 
   const sorted = useMemo(() => sortRows(base, sort, {
-    item:(r)=>r.item, used:(r)=>r.used, received:(r)=>r.received, waste:(r)=>r.waste, countQty:(r)=>r.countQty, varValue:(r)=>r.varValue,
+    item:(r)=>r.item, used:(r)=>r.used, received:(r)=>r.received, made:(r)=>r.made, waste:(r)=>r.waste, countQty:(r)=>r.countQty, varValue:(r)=>r.varValue,
   }), [base, sort]);
 
   const loss = base.reduce((s, r) => s + Math.min(0, r.varValue), 0);
@@ -524,6 +561,7 @@ function TheGap({ moves, itemName, itemUnit }) {
     { key:'item', label:'Item', sortable:true, render:r => <span style={{ color:'var(--t1)', fontWeight:500 }}>{r.item}</span> },
     { key:'used', label:'Sold/used', align:'right', sortable:true, render:r => muted(r.used, r.unit) },
     { key:'received', label:'Received', align:'right', sortable:true, render:r => muted(r.received, r.unit) },
+    { key:'made', label:'Made', align:'right', sortable:true, render:r => muted(r.made, r.unit) },
     { key:'waste', label:'Waste', align:'right', sortable:true, render:r => muted(r.waste, r.unit) },
     { key:'countQty', label:'Count adj', align:'right', sortable:true, render:r => <span style={{ fontVariantNumeric:'tabular-nums', color:'var(--t2)' }}>{r.countQty} {r.unit}</span> },
     { key:'varValue', label:'Variance £', align:'right', sortable:true, render:r => <Money v={r.varValue} bold/> },
@@ -537,18 +575,18 @@ function TheGap({ moves, itemName, itemUnit }) {
         <b> counted</b> in this period appear.
       </Callout>
       <KpiBand items={[
-        { label:'Unexplained loss', value: money(loss), tone: loss < 0 ? 'bad' : 'good' },
+        { label:'Unexplained loss', value: signedMoney(loss), tone: loss < 0 ? 'bad' : 'good' },
         { label:'Lines counted', value: base.length },
-        { label:'Total variance', value: money(totalVar), tone: totalVar < 0 ? 'warn' : undefined },
+        { label:'Total variance', value: signedMoney(totalVar), tone: totalVar < 0 ? 'warn' : undefined },
       ]}/>
       <SubToolbar count={`${base.length} counted item${base.length===1?'':'s'}`}>
         <span style={{ marginLeft:'auto' }}/>
         <ExportBtn rows={base} name="the-gap" headers={[
-          {label:'Item',key:'item'},{label:'Sold/used',key:'used'},{label:'Received',key:'received'},
+          {label:'Item',key:'item'},{label:'Sold/used',key:'used'},{label:'Received',key:'received'},{label:'Made',key:'made'},{label:'Unit',key:'unit'},
           {label:'Waste',key:'waste'},{label:'Count adj qty',key:'countQty'},{label:'Variance £',key:'varValue'}]}/>
       </SubToolbar>
       <ReportTable columns={columns} rows={sorted} sort={sort} onSort={onSort}
-        empty="No counted items in this period yet. Run a stock count (Stock items → Stock tab) to start measuring the gap."/>
+        empty="No counted items in this period yet. Run a stock count (Inventory > Stock counts) to start measuring the gap."/>
     </div>
   );
 }
@@ -600,7 +638,7 @@ function BySupplier({ items, suppliers, recipes, ctx, menuItems, taxRates, check
 
     // stock held
     items.filter(i => !i.archivedAt).forEach(i => {
-      bump(resolveItemSupplierId(i), { stockValue: (Number(i.onHand)||0) * (Number(i.currentCost)||0) });
+      bump(resolveItemSupplierId(i), { stockValue: lineValue(i.onHand, i.currentCost) });
     });
 
     // sales → split each dish's GP across the suppliers behind its plate cost

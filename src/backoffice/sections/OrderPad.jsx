@@ -33,6 +33,7 @@ import { fetchInventoryItems, fetchSuppliers, fetchUsageRates, fetchUsageByWeekd
 import { fetchParLevels } from '../../lib/stock/counts';
 import { fetchPurchaseOrders, createOrdersFromBasket, setPOStatus, fnErrorText } from '../../lib/stock/purchasing';
 import { pickSupplierProduct } from '../../lib/stock/costing';
+import { outstandingOnOrder } from '../../lib/stock/onOrder';
 import { coverDaysFromSchedule, nextDeliveryYmd, normDeliveryDays, packContent, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
 
@@ -60,6 +61,7 @@ export default function OrderPad() {
   const [usage, setUsage] = useState({});       // itemId -> avg daily base
   const [weekday, setWeekday] = useState(null); // itemId -> [sun..sat avg daily base]; null until the RPC is migrated
   const [onOrder, setOnOrder] = useState({});   // itemId -> base on order
+  const [staleOrders, setStaleOrders] = useState([]);   // open orders long past due, left out of on order (v5.11.65)
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);          // default cover for unscheduled suppliers
   const [safetyDays, setSafetyDays] = useState(1);
@@ -80,12 +82,13 @@ export default function OrderPad() {
     const [{ data: its }, { data: sup }, { data: par }, { data: rate }, { data: pos }, { data: wk }] = await Promise.all([
       fetchInventoryItems(loc), fetchSuppliers(loc), fetchParLevels(loc), fetchUsageRates(USAGE_DAYS, loc), fetchPurchaseOrders(loc), fetchUsageByWeekday(8, loc),
     ]);
-    // on order from open POs (outstanding packs × base content per pack)
-    const oo = {};
-    (pos || []).filter(p => ['DRAFT', 'SENT', 'PARTIAL'].includes(p.status)).forEach(p => {
-      (p.lines || []).forEach(l => { if (!l.inventoryItemId) return; const out = (Number(l.qtyPacks) || 0) - (Number(l.qtyReceived) || 0); if (out > 0) oo[l.inventoryItemId] = (oo[l.inventoryItemId] || 0) + out * (Number(l.packQty) || 1) * (Number(l.innerQty) || 0); });
-    });
-    setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setLoading(false);
+    // v5.11.65: on order = SENT and PARTIAL only (a draft was never sent), each line converted to
+    // the item's base unit as receiving does, and an order more than a week past its date left
+    // out and named: a July order that will never arrive stopped its items being suggested again.
+    const cfg = await getLocationConfig(loc).catch(() => null);
+    const byId = Object.fromEntries((its || []).map(i => [i.id, i]));
+    const { byItem: oo, stale } = outstandingOnOrder(pos, byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
+    setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setStaleOrders(stale); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
@@ -257,6 +260,12 @@ export default function OrderPad() {
             <span>{noSupplier} item{noSupplier === 1 ? '' : 's'} have no supplier — add one on the item’s Suppliers tab to order them.</span>
           </div>
         )}
+        {staleOrders.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, padding: '8px 12px', borderRadius: 10, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)', border: '1px solid var(--amber, #F5A623)', fontSize: 12, color: 'var(--amber, #F5A623)' }}>
+            <span aria-hidden="true">⚠</span>
+            <span>{staleOrders.length} open order{staleOrders.length === 1 ? '' : 's'} more than a week past due ({staleOrders.map(s => `${supName(s.supplierId)}${s.reference ? ` ${s.reference}` : ''}`).join(', ')}) {staleOrders.length === 1 ? 'is' : 'are'} not counted as on order. Receive or cancel {staleOrders.length === 1 ? 'it' : 'them'} in Orders.</span>
+          </div>
+        )}
       </div>
 
       {/* Scroll pane. minHeight:0 keeps this the only scroller so the sticky <thead>
@@ -278,8 +287,12 @@ export default function OrderPad() {
             ))}</tr></thead>
             <tbody>
               {filtered.map((r, ri) => {
-                const oh = displayInUnits(r.onHand, r.it);
-                const use = displayInUnits(r.avgDaily, r.it);
+                // v5.11.65: the count unit (Keg, Case), as every other stock screen shows it; the raw item
+                // carried `packaging` and `conversions`, names displayInUnits does not read, so this pad
+                // alone fell back to litres and grams.
+                const uom = { baseUnit: r.it.baseUnit, formats: r.it.packaging || [], itemConversions: r.it.conversions || [] };
+                const oh = displayInUnits(r.onHand, uom);
+                const use = displayInUnits(r.avgDaily, uom);
                 const n = qty[r.it.id] ?? '';
                 const low = r.par != null && r.onHand <= (pars[r.it.id]?.reorderPoint ?? -Infinity);
                 const nextDel = r.sp ? normDeliveryDays(supById[r.sp.supplierId]?.deliveryDays) : [];
@@ -291,7 +304,7 @@ export default function OrderPad() {
                     <td style={{ ...cell, ...numCell, textAlign: 'right' }}>
                       {oh.qty} <span style={{ color: 'var(--t4)' }}>{oh.label}</span>
                       {/* What is already on open orders. Without this a correct suggested 0 looked broken. */}
-                      {r.oo > 0 && (() => { const o = displayInUnits(r.oo, r.it); return (
+                      {r.oo > 0 && (() => { const o = displayInUnits(r.oo, uom); return (
                         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, whiteSpace: 'nowrap' }} title="Outstanding on open orders (Orders screen)">+{r2(o.qty)} {o.label} on order</div>
                       ); })()}
                     </td>
@@ -302,7 +315,7 @@ export default function OrderPad() {
                           in words, at a readable size. Quiet days are silence, not zeros. */}
                       {r.prof && (() => {
                         const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-                        const busy = r.prof.map((v, d) => ({ d, q: displayInUnits(v, r.it).qty }))
+                        const busy = r.prof.map((v, d) => ({ d, q: displayInUnits(v, uom).qty }))
                           .filter(x => x.q >= 0.5).sort((a, b) => b.q - a.q).slice(0, 3);
                         if (!busy.length) return null;
                         return <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, whiteSpace: 'nowrap' }}>

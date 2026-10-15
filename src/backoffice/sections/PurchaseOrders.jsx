@@ -10,6 +10,8 @@ import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
 import { reportSave } from '../../lib/saveHealth';
+import { fmtYmd } from '../../lib/venueDate';
+import NumberField from '../../components/NumberField';
 import { PageHeader, PrimaryBtn, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -226,7 +228,7 @@ export default function PurchaseOrders() {
                 <span style={{ fontSize: 13, color: 'var(--t1)' }}>{supName(p.supplierId)}</span>
                 <Tag label={p.status} tone={STATUS_TONE[p.status]} />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}{p.expectedDate ? ` · due ${p.expectedDate}` : ''}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}{p.expectedDate ? ` · due ${fmtYmd(p.expectedDate, { weekday: true, year: false })}` : ''}</div>
             </div>
           ))}
         </div>
@@ -258,9 +260,10 @@ export default function PurchaseOrders() {
               {draft.lines.map((l, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
                   <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.inventoryItemId) || l.description}</span>
-                  <input disabled={!editable} type="number" min="0" step="any" value={l.qtyPacks} onChange={e => updLine(i, 'qtyPacks', e.target.value)} style={{ ...field, width: 64 }} title="packs" />
-                  <span style={{ fontSize: 11, color: 'var(--t3)' }}>× {l.packQty}×{l.innerQty}{l.innerUnit} @</span>
-                  <input disabled={!editable} type="number" min="0" step="any" value={l.unitPrice} onChange={e => updLine(i, 'unitPrice', e.target.value)} style={{ ...field, width: 78 }} title="price per pack, ex VAT" />
+                  {/* v5.11.65: the shared NumberField (wide enough for 125.50, unit inside, no spinner); the pack reads as words, not a formula */}
+                  <NumberField disabled={!editable} width={104} unit="packs" value={l.qtyPacks} onChange={v => updLine(i, 'qtyPacks', v)} title="packs ordered" />
+                  <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>of {l.packQty} x {l.innerQty} {l.innerUnit} at {currencySymbol()}</span>
+                  <NumberField disabled={!editable} width={112} unit="a pack" value={l.unitPrice} onChange={v => updLine(i, 'unitPrice', v)} title="price per pack, ex VAT" />
                   {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title="purchase VAT">+{Math.round(lineRateDec(l) * 100)}%</span>}
                   {draft.status === 'RECEIVED' && Number(l.qtyReceived) !== Number(l.qtyPacks) && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }} title="short — remainder on the balance order">rec {Number(l.qtyReceived) || 0}</span>}
                   <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money(qtyFor(l) * (Number(l.unitPrice) || 0))}</span>
@@ -318,12 +321,10 @@ export default function PurchaseOrders() {
                   return (
                     <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--bdr)' }}>
                       <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{l.description || itemName(l.inventoryItemId)}</span>
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>ordered {l.qtyPacks}</span>
-                      <input type="number" min="0" step="any" value={r.qtyPacks ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: e.target.value } }))}
-                        style={{ ...field, width: 74, borderColor: short ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="packs received" />
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>@</span>
-                      <input type="number" min="0" step="any" value={r.unitPrice ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: e.target.value } }))}
-                        style={{ ...field, width: 84, borderColor: priceChanged ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="pack price on the delivery note, ex VAT" />
+                      <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>ordered {l.qtyPacks}</span>
+                      <NumberField width={104} unit="packs" value={r.qtyPacks ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: v } }))} tone={short ? 'warn' : undefined} title="packs received" />
+                      <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>at {currencySymbol()}</span>
+                      <NumberField width={112} unit="a pack" value={r.unitPrice ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: v } }))} tone={priceChanged ? 'warn' : undefined} title="pack price on the delivery note, ex VAT" />
                       {short && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }}>short</span>}
                     </div>
                   );
