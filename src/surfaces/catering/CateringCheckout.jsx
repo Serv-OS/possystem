@@ -15,6 +15,7 @@ import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { publicCheckTaxFields } from '../../lib/publicCheckTax';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
@@ -283,10 +284,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       const closedCheck = {
         id: checkId, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
-        subtotal, service: deliveryFee, tip, tax_amount: taxBk?.totalTax || null, total, method: 'card',
+        subtotal, service: deliveryFee, tip, total, method: 'card',
         tenders: singleTender('card', total, tip, { pspRef: payId, processor }),   // v5.9.11
-        // v5.9.12: the named lines, only when added-on tax was charged (UK rows unchanged).
-        ...(taxBk?.hasExclusiveTax && exclusiveTax > 0 ? { tax_breakdown: taxBk } : {}),
+        // 2 Oct 2026: tax_amount in pence and the tax record by rate whenever a rate was resolved,
+        // UK included (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
+        ...publicCheckTaxFields(taxBk),
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };

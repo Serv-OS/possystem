@@ -12,6 +12,9 @@ import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { dayOfCheck, dayText, prevRangeDays, rangeDays, weekdayOf } from './_filters';
+import { isSplit, sumFields, trendFromSums } from '../../../lib/reportSplit.js';
+import { useParts, exportSites } from './_siteSplit';
+import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
 
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
@@ -44,9 +47,16 @@ function buildDayBuckets(checks, days, clock) {
 
 // range = getPeriodRange's answer: fromDay/toDay are the venue business days, and
 // timeZone/dayStart the clock each check is put on a day with.
-export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }) {
-  // Day axis for the active range, and for the comparison period (same number of
-  // business days, immediately before)
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file. One site is the report exactly as it was.
+export default function DailyTrend(props) {
+  return isSplit(props.sites) ? <DailyTrendSites {...props}/> : <DailyTrendOne {...props}/>;
+}
+
+function DailyTrendOne({ checks, prevChecks = [], fmt, fmtN, range }) {
+  // Day axis for the active range, and for what it is compared to (range.compare, the one
+  // percent rule: the same days of the week or month before, or the whole period before)
   const days     = useMemo(() => rangeDays(range),     [range]);
   const prevDays = useMemo(() => prevRangeDays(range), [range]);
 
@@ -96,9 +106,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
     const prevTotalCov = sum(series.prevCovers);
     const avgCheck     = totalChecks ? totalRevenue / totalChecks : 0;
     const tipRate      = totalRevenue ? (totalTips / totalRevenue) * 100 : 0;
-    const revenueDelta = prevTotalRev ? ((totalRevenue - prevTotalRev) / prevTotalRev) * 100 : null;
-    const coversDelta  = prevTotalCov ? ((totalCovers  - prevTotalCov) / prevTotalCov) * 100 : null;
-    return { totalRevenue, totalCovers, totalChecks, totalTips, avgCheck, tipRate, revenueDelta, coversDelta };
+    return { totalRevenue, totalCovers, totalChecks, totalTips, avgCheck, tipRate, prevTotalRev, prevTotalCov };
   }, [series, buckets, days]);
 
   // Best / worst day
@@ -159,9 +167,9 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
       {/* KPI tiles with vs-prev compare chips */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:18 }}>
         <StatTile label="Revenue" value={fmt(totals.totalRevenue)}
-          compare={totals.revenueDelta} sub="vs previous period"/>
+          vs={range?.compare} values={[totals.totalRevenue, totals.prevTotalRev]}/>
         <StatTile label="Covers"  value={fmtN(totals.totalCovers)}
-          compare={totals.coversDelta} sub="vs previous period"/>
+          vs={range?.compare} values={[totals.totalCovers, totals.prevTotalCov]} noun="covers"/>
         <StatTile label="Avg check" value={fmt(totals.avgCheck)}
           sub={`across ${fmtN(totals.totalChecks)} check${totals.totalChecks === 1 ? '' : 's'}`}/>
         <StatTile label="Tip rate" value={`${totals.tipRate.toFixed(1)}%`}
@@ -178,7 +186,7 @@ export default function DailyTrend({ checks, prevChecks = [], fmt, fmtN, range }
 
       {/* Charts grid */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(420px, 1fr))', gap:14 }}>
-        <ChartCard title="Daily revenue" sub="orange = revenue · faint = previous period · dotted = 7d rolling avg"
+        <ChartCard title="Daily revenue" sub={`orange = revenue · faint = ${(range?.compare?.label || 'vs previous period').replace(/^vs /, '')} · dotted = 7d rolling avg`}
           values={series.revenue} prev={series.prevRevenue} rolling={series.rolling}
           format={fmt} days={days}/>
         <ChartCard title="Covers per day" sub="seated guests"
@@ -266,6 +274,93 @@ function ChartCard({ title, sub, values, prev, rolling, format, days, integer, p
           </text>
         ))}
       </svg>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the group's days on top, then a column per site.
+// A sale is put on a day by ITS OWN site's clock and business day start (part.clock), so
+// a 02:00 sale at a site that starts its day at 06:30 is the day before, and the same
+// instant at a site that starts at 00:00 is the new day. For a long period the days come
+// from the server day sums, which cut each site's days the same way in the database.
+// ─────────────────────────────────────────────────────────────────────────────
+const DAY_FIELDS = ['revenue', 'covers', 'checks', 'tips'];
+
+function DailyTrendSites(props) {
+  const { fmtN, range } = props;
+  const { parts, blocks, fromSums } = useParts(props);
+  const days = useMemo(() => rangeDays(range), [range]);
+
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const buckets = p.sums
+      ? Object.fromEntries(p.sums.days.map(d => [d.day, trendFromSums(d)]))
+      : buildDayBuckets(p.rows, days, p.clock);
+    const prevDays = p.site.range ? prevRangeDays(p.site.range) : [];
+    const prev = p.sums
+      ? trendFromSums(p.prevSums?.totals)
+      : sumFields(Object.values(buildDayBuckets(p.prevRows, prevDays, p.clock)), DAY_FIELDS);
+    return [p.id, { buckets, total: sumFields(days.map(d => buckets[d]), DAY_FIELDS), prev }];
+  })), [parts, days]);
+
+  const onExport = () => {
+    const rows = [];
+    for (const p of parts) for (const d of days) {
+      const b = bySite.get(p.id).buckets[d] || {};
+      rows.push({ siteName: p.name, currency: p.currency || '', date: d, dow: DOW[weekdayOf(d)], ...b });
+    }
+    exportSites('daily-trend', rows, [
+      { label:'Currency',  key:'currency' },
+      { label:'Date',      key:'date' },
+      { label:'Day',       key:'dow' },
+      { label:'Revenue',   key: r => (r.revenue || 0).toFixed(2) },
+      { label:'Covers',    key: r => r.covers || 0 },
+      { label:'Checks',    key: r => r.checks || 0 },
+      { label:'Avg check', key: r => (r.checks ? r.revenue / r.checks : 0).toFixed(2) },
+      { label:'Tips',      key: r => (r.tips || 0).toFixed(2) },
+      { label:'Tip %',     key: r => (r.revenue ? (r.tips / r.revenue) * 100 : 0).toFixed(1) },
+      // Items are counted from the checks themselves; the day sums do not carry them.
+      ...(fromSums ? [] : [{ label:'Items sold', key: r => r.items || 0 }]),
+    ]);
+  };
+
+  if (!days.length || parts.every(p => bySite.get(p.id).total.checks === 0)) {
+    return <EmptyState icon="📈" message="No closed checks at these sites in this range. Try widening the period."/>;
+  }
+
+  return (
+    <div>
+      <SplitHeader parts={parts} fromSums={fromSums} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const all = sumFields(b.parts.map(p => bySite.get(p.id).total), DAY_FIELDS);
+        const perDay = days.map(d => b.parts.reduce((s, p) => s + (bySite.get(p.id).buckets[d]?.revenue || 0), 0));
+        const rows = days.map((d, i) => ({
+          key: d, label: fmtDayFull(d), total: perDay[i],
+          bySite: Object.fromEntries(b.parts.map(p => [p.id, bySite.get(p.id).buckets[d]?.revenue || 0])),
+        }));
+        rows.unshift(
+          { key:'total', label:'Revenue', strong:true, total: all.revenue, bySite: Object.fromEntries(b.parts.map(p => [p.id, bySite.get(p.id).total.revenue])) },
+          { key:'change', label:'Change', render: p => <SiteChange part={p} values={[bySite.get(p.id).total.revenue, bySite.get(p.id).prev.revenue]}/> },
+        );
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:18 }}>
+              <StatTile label="Revenue" value={b.fmt(all.revenue)}
+                sub={<GroupChange block={b} pairs={b.parts.map(p => ({ current: bySite.get(p.id).total.revenue, previous: bySite.get(p.id).prev.revenue }))}/>}/>
+              <StatTile label="Covers" value={fmtN(all.covers)}/>
+              <StatTile label="Avg check" value={b.fmt(all.checks ? all.revenue / all.checks : 0)}
+                sub={`across ${fmtN(all.checks)} check${all.checks === 1 ? '' : 's'}`}/>
+              <StatTile label="Tip rate" value={`${(all.revenue ? (all.tips / all.revenue) * 100 : 0).toFixed(1)}%`}
+                sub={b.fmt(all.tips) + ' total tips'}/>
+            </div>
+            <div style={{ marginBottom:14 }}>
+              <ChartCard title={`Daily revenue, all ${b.parts.length} sites`} sub="each site's days are its own business days"
+                values={perDay} format={b.fmt} days={days}/>
+            </div>
+            <SiteMatrix block={b} rows={rows} first="Business day" fmtN={fmtN}/>
+          </>
+        );
+      }}</Blocks>
     </div>
   );
 }

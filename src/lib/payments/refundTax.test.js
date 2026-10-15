@@ -97,7 +97,9 @@ test('refundCheck uses refundTaxAmount; the History loaders carry tenders', () =
   assert.doesNotMatch(store, /amount \/ Number\(chkBefore\.total\)/);
   // 28 Sep 2026: both loaders map tenders through the shared row map (closedCheckRefundFields).
   const db = fs.readFileSync(path.join(here, '../db.js'), 'utf8');
-  assert.equal((db.match(/\.\.\.closedCheckRefundFields\(c\),/g) || []).length, 2);
+  // 8 Oct 2026 (review): one shared row map (mapClosedCheckRow) used by every closed_checks loader.
+  assert.equal((db.match(/\.\.\.closedCheckRefundFields\(c\),/g) || []).length, 1);
+  assert.equal((db.match(/result\.data\.map\(mapClosedCheckRow\)/g) || []).length, 3);
   const map = fs.readFileSync(path.join(here, '../closedCheckRefundFields.js'), 'utf8');
   assert.match(map, /tenders: Array\.isArray\(row\?\.tenders\) \? row\.tenders : null,/);
 });

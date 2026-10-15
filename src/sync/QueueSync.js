@@ -15,14 +15,22 @@
  * and published, the server's copy wins when it changed), and QueueReconciler.js keeps running
  * that rule every 15 s. The echo latch (_lastSentQueue) is seeded from the stamps at boot, so
  * a restart never re-uploads rows the server already has (the old zombie path).
+ *
+ * 12 Oct 2026: who may write, and why a row is deleted, is lib/queueDeleteRule.js. A page that is
+ * not a till (kitchen screen, kiosk, host stand, Back Office) never syncs these two lists, and a
+ * till deletes a row only with a reason. Before this every device sent a DELETE for any row that
+ * was no longer open in its own list: a kitchen tablet echoed every finished order, and a kitchen
+ * tablet in kitchen mode deleted every open bar tab it knew of.
  */
 
-import { supabase, getLocationId, getDeviceMode } from '../lib/supabase';
+import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
+import { maySyncQueue, queueDeleteDecision, tabDeleteDecision } from '../lib/queueDeleteRule';
+import { readQueueRole } from '../lib/queueDevice';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
 export const QUEUE_ROW_CAP = 500;
@@ -62,6 +70,9 @@ const _publishedTab = new Map();
 // came up can never age into an old copy while it waits for its first full read.
 const _bootUnstampedQ = new Map();
 const _bootUnstampedT = new Map();
+// Orders that were already finished (collected) in the saved list at boot. Their numbers may
+// belong to a newer order by now, so they are never deleted by number alone (queueDeleteDecision).
+const _bootDoneQ = new Set();
 let _bootCaptured = false;
 
 // Keep FUTURE catering pre-orders out of the live in-memory queue. Catering rows are long-lived
@@ -195,6 +206,7 @@ export function captureQueueBoot() {
   _bootCaptured = true;
   const st = useStore.getState();
   for (const o of (st.orderQueue || [])) if (o?.ref && !o._sync?.hash) _bootUnstampedQ.set(String(o.ref), queueAgeMs(o));
+  for (const o of (st.orderQueue || [])) if (o?.ref && o.status === 'collected') _bootDoneQ.add(String(o.ref));
   for (const t of (st.tabs || [])) if (t?.id && !t._sync?.hash) _bootUnstampedT.set(String(t.id), tabAgeMs(t));
 }
 /**
@@ -394,13 +406,18 @@ function rowToTab(row) {
 export async function flushQueues() {
   // TRAINING MODE: never publish walk-in orders / bar tabs to order_queue / bar_tabs.
   if (isTrainingMode()) return;
+  // 12 Oct 2026: only a till syncs these lists (lib/queueDeleteRule.js). A kitchen screen, a kiosk,
+  // a host stand and Back Office read them and never publish, update or delete from here. The
+  // v5.9.72 form of this fence ("tabs = [] on a kitchen screen") stopped the publish but made the
+  // delete loop below read every tab the screen knew of as removed here, and delete it.
+  const role = readQueueRole(useStore.getState().deviceConfig);
+  if (!maySyncQueue(role)) return;
   if (!_locationId) _locationId = await getLocationId().catch(() => null);
   if (!_locationId) return;
   primeQueueSync(_locationId);   // whichever path resolved the location, never flush against an empty latch
   const state = useStore.getState();
   const queue = state.orderQueue || [];
-  // v5.9.72: a kitchen screen never publishes bar tabs (it only reads them); see SessionSync.
-  const tabs = getDeviceMode() === 'kds' ? [] : (state.tabs || []);
+  const tabs = state.tabs || [];
 
   // Scale: collect changed rows and fire ONE batched write per table instead of one network
   // round-trip per row (a busy venue / catering wave could otherwise emit hundreds per flush).
@@ -408,7 +425,7 @@ export async function flushQueues() {
   // live direct write is batched. Echo-suppression (_lastSent) is unchanged — it just decides
   // which rows enter the arrays. Both paths are idempotent on the conflict key.
   const online = isOnline();
-  const queueUpserts = [], queueUpdates = [], queueDeletes = [], tabUpserts = [], tabUpdates = [], tabDeletes = [];
+  const queueUpserts = [], queueUpdates = [], queueDeletes = [], queueFinished = [], tabUpserts = [], tabUpdates = [], tabDeletes = [];
 
   const activeQueueRefs = new Set();
   for (const o of queue) {
@@ -419,6 +436,7 @@ export async function flushQueues() {
     if (o.training === true) continue;
     if (o.status === 'collected') continue;
     activeQueueRefs.add(o.ref);
+    _bootDoneQ.delete(String(o.ref));   // open again (a newer order with this number): not the row that was finished at boot
     // A copy from before this boot waits for the first full read to judge it (old copy or unsent).
     if (!_judged && !o._sync && _bootUnstampedQ.has(String(o.ref))) continue;
     const row = queueToRow(o, _locationId);
@@ -436,11 +454,30 @@ export async function flushQueues() {
       queueUpserts.push(row);
     }
   }
+  // A row this till no longer holds open is deleted only with a reason (lib/queueDeleteRule.js).
+  // Rows the SERVER removed never reach this loop: they are marked dropped where that is learned
+  // (the reconcile, the realtime delete), so no delete of our own follows them.
+  const heldByRef = new Map();
+  for (const o of queue) if (o?.ref) heldByRef.set(String(o.ref), o);
   for (const ref of Object.keys(_lastSentQueue)) {
     if (activeQueueRefs.has(ref)) continue;
     if (_lastSentQueue[ref] === 'cleared') continue;
+    const held = heldByRef.get(String(ref));
+    const decision = queueDeleteDecision({
+      role, present: !!held, done: held?.status === 'collected',
+      pending: !!held && isPendingLocal(held, queueHash), doneAtBoot: _bootDoneQ.has(String(ref)),
+    });
+    if (decision === 'none') continue;
     _lastSentQueue[ref] = 'cleared';
     _finishedQueue.set(String(ref), { finishedAt: Date.now() });
+    if (decision === 'delete_if_done') {
+      // The server already says finished (another device marked it collected, or it was finished
+      // before this app started): removed only while the server still says so. A newer order that
+      // carries the same number is never touched.
+      queueWrite({ type: 'delete', table: 'order_queue', match: { location_id: _locationId, ref, status: 'collected' } });
+      queueFinished.push(ref);
+      continue;
+    }
     queueWrite({ type: 'delete', table: 'order_queue', match: { location_id: _locationId, ref } });
     queueDeletes.push(ref);
   }
@@ -467,6 +504,7 @@ export async function flushQueues() {
   for (const id of Object.keys(_lastSentTab)) {
     if (activeTabIds.has(id)) continue;
     if (_lastSentTab[id] === 'cleared') continue;
+    if (tabDeleteDecision({ role }) === 'none') continue;
     _lastSentTab[id] = 'cleared';
     _finishedTab.set(String(id), { finishedAt: Date.now() });
     queueWrite({ type: 'delete', table: 'bar_tabs', match: { id } });
@@ -507,6 +545,7 @@ export async function flushQueues() {
         .catch(e => console.warn('[QueueSync] order_queue update:', e.message));
     }
     if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().eq('location_id', _locationId).in('ref', queueDeletes)).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
+    if (queueFinished.length) Promise.resolve(supabase.from('order_queue').delete().eq('location_id', _locationId).eq('status', 'collected').in('ref', queueFinished)).catch(e => console.warn('[QueueSync] order_queue finished delete:', e.message));
     if (tabUpserts.length) {
       const sent = new Map(tabUpserts.map(r => [r.id, rowHash(r)]));
       Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' }).select('id, updated_at'))
@@ -639,6 +678,10 @@ export function applyQueueRealtimeEvent(payload) {
     if (!ref) return;
     if (_lastSentQueue[ref] === 'cleared') return;
     const next = queue.filter(o => o.ref !== ref);
+    // 12 Oct 2026: the server has removed it (another device finished it). It is dropped here and
+    // marked so, BEFORE the store change wakes the flush: this device used to answer every delete
+    // it heard with a delete of its own for the same number.
+    if (next.length !== queue.length || _lastSentQueue[ref] !== undefined) markQueueDropped(ref);
     if (next.length !== queue.length) useStore.setState({ orderQueue: next });
     return;
   }
@@ -648,7 +691,9 @@ export function applyQueueRealtimeEvent(payload) {
   // If one is lingering from a prior state, evict it.
   if (_isFutureCatering(row)) {
     const next = queue.filter(o => o.ref !== row.ref);
-    if (next.length !== queue.length) useStore.setState({ orderQueue: next });
+    // 12 Oct 2026: evicted from THIS list only. The order is alive on the server (moved to a later
+    // day), so it is marked dropped first: the flush used to delete it from the database.
+    if (next.length !== queue.length) { markQueueDropped(row.ref); useStore.setState({ orderQueue: next }); }
     return;
   }
   const incoming = queueFromRow(row);
@@ -683,6 +728,8 @@ export function applyTabRealtimeEvent(payload) {
     if (!id) return;
     if (_lastSentTab[id] === 'cleared') return;
     const next = tabs.filter(t => t.id !== id);
+    // 12 Oct 2026: removed by the server, so dropped here with no delete of our own (see orders).
+    if (next.length !== tabs.length || _lastSentTab[id] !== undefined) markTabDropped(id);
     if (next.length !== tabs.length) useStore.setState({ tabs: next });
     return;
   }

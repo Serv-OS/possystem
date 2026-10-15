@@ -5,6 +5,12 @@ import { reportSave } from '../../lib/saveHealth';
 import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
 import { MIN_PASSWORD_LENGTH } from '../../lib/secondStep/rules';
 import { currentAccessToken } from '../../lib/secondStep/client';
+import { isMissingRpc } from '../../lib/deviceFence';
+import {
+  BO_SECTION_KEYS, SECTIONS, FRANCHISEE_SECTIONS, allowedKeys, isEverythingRole, canEditSectionsFor,
+  sectionsToStore, sectionsToTicks, describeSections, sameSections, withinSections, sectionsFromAnswer,
+  isSectionsColumnMissing, canSwitchLoginOn,
+} from '../../lib/boSections';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -42,14 +48,94 @@ function randomColor() {
   return palette[Math.floor(Math.random()*palette.length)];
 }
 
-export default function StaffManager() {
+// ── What can they open? (8 Oct 2026) ─────────────────────────────────────────
+// Peter: "we need to be able to limit what they can see via each tab ... MO is a franchisee ...
+// we only want to give him access to workforce, reports, team and customers, nothing else."
+// The 15 top level parts of Back Office as tick boxes, with his two shortcuts. `ticks` is a
+// list of section keys; every box ticked means everything (lib/boSections.js sectionsToStore).
+// This chooses which SCREENS a login is shown. It is not a database lock.
+function SectionPicker({ ticks, onChange, disabled = false }) {
+  const all = ticks.length === BO_SECTION_KEYS.length;
+  const franchisee = sameSections(ticks, [...FRANCHISEE_SECTIONS]);
+  const toggle = (key) => onChange(ticks.includes(key) ? ticks.filter(k => k !== key) : [...ticks, key]);
+  const shortcut = (on) => ({
+    padding:'5px 12px', borderRadius:10, cursor: disabled ? 'default' : 'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700,
+    border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`, background: on ? 'var(--acc-d)' : 'var(--bg3)', color: on ? 'var(--acc)' : 'var(--t2)',
+  });
+  return (
+    <div data-testid="bo-section-picker">
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:6 }}>
+        <button type="button" disabled={disabled} onClick={() => onChange([...BO_SECTION_KEYS])} style={shortcut(all)}>Everything</button>
+        <button type="button" disabled={disabled} onClick={() => onChange([...FRANCHISEE_SECTIONS])} style={shortcut(franchisee)}>Franchisee</button>
+      </div>
+      <div style={{ fontSize:11, color:'var(--t3)', marginBottom:8 }}>Franchisee is {describeSections([...FRANCHISEE_SECTIONS])}.</div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4 }}>
+        {SECTIONS.map(({ key, label }) => {
+          const has = ticks.includes(key);
+          return (
+            <button type="button" key={key} role="checkbox" aria-checked={has} disabled={disabled} onClick={() => toggle(key)}
+              style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', borderRadius:8, cursor: disabled ? 'default' : 'pointer', fontFamily:'inherit', textAlign:'left',
+                border:`1.5px solid ${has ? 'var(--acc)' : 'var(--bdr)'}`, background: has ? 'var(--acc-d)' : 'var(--bg3)' }}>
+              <span style={{ width:16, height:16, borderRadius:4, border:`2px solid ${has ? 'var(--acc)' : 'var(--bdr2)'}`, background: has ? 'var(--acc)' : 'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                {has && <span style={{ width:6, height:6, borderRadius:1, background:'#0b0c10' }}/>}
+              </span>
+              <span style={{ fontSize:12, fontWeight: has ? 600 : 400, color: has ? 'var(--acc)' : 'var(--t1)' }}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// The Back Office logins behind these ids, as this person is allowed to read them (their own
+// row and their teammates'). 8 Oct 2026: role and bo_sections ride along so each login can say
+// what it can open. bo_sections is dropped from the read ONLY when the database says that
+// column does not exist (section access not installed: everyone opens everything). It has its
+// own step so a missing bo_sections never takes bo_access down with it.
+async function readLogins(ids) {
+  if (!ids.length) return [];
+  const read = (cols) => supabase.from('user_profiles').select(cols).in('id', ids);
+  let hasSections = true;
+  let { data, error } = await read('id, email, role, bo_access, bo_sections');
+  if (error && isSectionsColumnMissing(error)) {
+    hasSections = false;
+    ({ data, error } = await read('id, email, role, bo_access'));
+  }
+  // Defensive — fall back without bo_access if column missing
+  if (error && /bo_access|column.*not.*exist|PGRST204/i.test(error.message || '')) {
+    hasSections = false;
+    ({ data } = await read('id, email'));
+  }
+  return (data || []).map(p => ({
+    authUserId: p.id, email: p.email, boAccess: p.bo_access !== false, role: p.role ?? null,
+    // null = everything, a list = only those, undefined = could not be read (never shown as everything).
+    sections: hasSections ? sectionsFromAnswer(p.bo_sections) : null,
+  }));
+}
+
+export default function StaffManager({ orgCtx = null } = {}) {
   const { staffMembers, addStaffMember, updateStaffMember, removeStaffMember, markBOChange, showToast } = useStore();
+
+  // Who is looking at this screen (8 Oct 2026, section access). orgCtx is the signed in login's
+  // own profile, read once by BackOfficeApp. Only an owner or ServOS staff is offered the tick
+  // boxes; the database decides again in set_bo_sections, whatever this screen shows.
+  const myId = orgCtx?.userId || null;
+  const myRole = orgCtx?.role || null;
+  const sectionsInstalled = !isMock && orgCtx?.sectionsInstalled === true;
+  // What this person may open themselves: null = everything, else their own list.
+  const mySections = isMock ? null : allowedKeys({ role: myRole, sections: orgCtx?.boSections });
+  const iSetSections = isEverythingRole(myRole);
+  const [grantTicks, setGrantTicks] = useState(() => [...BO_SECTION_KEYS]);
+  const [editSections, setEditSections] = useState(null); // { staffId, ticks } | null
+  const [sectionsBusy, setSectionsBusy] = useState(false);
 
   // v5.5.17: BO-access state. Each staff member can optionally be linked to
   // an auth user (user_profiles.id stored in staff_members.auth_user_id).
   // The map below caches the auth user's profile so the detail panel can
   // show email + bo_access flag without re-querying on every render.
-  // Keyed by staff_member.id; value is { authUserId, email, boAccess } | null.
+  // Keyed by staff_member.id; value is { authUserId, email, boAccess, role, sections } | null
+  // (sections: null = everything, a list = only those parts of Back Office, undefined = unknown).
   const [authLinks, setAuthLinks] = useState({});
   const [showGrantBO, setShowGrantBO] = useState(null); // staff_member.id | null
   const [grantForm, setGrantForm] = useState({ email:'', password:'', confirmPassword:'' });
@@ -99,22 +185,12 @@ export default function StaffManager() {
         // Bulk-fetch profiles for any linked auth users
         const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
         if (linkedIds.length > 0) {
-          let { data: profiles, error: profErr } = await supabase
-            .from('user_profiles')
-            .select('id, email, bo_access')
-            .in('id', linkedIds);
-          // Defensive — fall back without bo_access if column missing
-          if (profErr && /bo_access|column.*not.*exist|PGRST204/i.test(profErr.message || '')) {
-            ({ data: profiles } = await supabase
-              .from('user_profiles')
-              .select('id, email')
-              .in('id', linkedIds));
-          }
+          const logins = await readLogins(linkedIds);
           const linkMap = {};
           rows.forEach(r => {
             if (!r.auth_user_id) return;
-            const p = (profiles || []).find(x => x.id === r.auth_user_id);
-            if (p) linkMap[r.id] = { authUserId: p.id, email: p.email, boAccess: p.bo_access !== false };
+            const p = logins.find(x => x.authUserId === r.auth_user_id);
+            if (p) linkMap[r.id] = p;
           });
           setAuthLinks(linkMap);
         }
@@ -342,6 +418,11 @@ export default function StaffManager() {
     if (grantForm.password.length < MIN_PASSWORD_LENGTH) { setGrantError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
     if (grantForm.password !== grantForm.confirmPassword) { setGrantError('Passwords do not match'); return; }
     if (isMock) { setGrantError('Mock mode — auth user creation not available'); return; }
+    // What this login should open (8 Oct 2026). Only an owner or ServOS staff choose, and only
+    // once the database has the column. undefined = nothing is sent: the server then gives the
+    // login everything, or, when the person making it is limited, exactly their own list.
+    const wanted = (iSetSections && sectionsInstalled) ? sectionsToStore(grantTicks) : undefined;
+    if (Array.isArray(wanted) && wanted.length === 0) { setGrantError('Tick at least one part of Back Office.'); return; }
 
     setGrantBusy(true);
     try {
@@ -364,12 +445,39 @@ export default function StaffManager() {
           orgId,
           locationId: locId || null,
           role: 'manager',
+          ...(wanted !== undefined ? { sections: wanted } : {}),
         }),
       });
       const result = await resp.json();
       if (result.error) { setGrantError(result.error); setGrantBusy(false); return; }
       const newUserId = result.userId || result.id;   // fn returns userId; result.id kept for compat
       if (!newUserId) { setGrantError('Edge function did not return a user id'); setGrantBusy(false); return; }
+
+      // ── Did the limit land? (8 Oct 2026) ──────────────────────────────────
+      // `expected` is the limit this login MUST have: the one ticked here, or, for a limited
+      // person, their own list (a login never opens more than whoever made it). null = no limit.
+      // The server answers with what it stored (`sections`). An answer WITHOUT it comes from an
+      // older create-user that knows nothing about lists, so that login opens EVERYTHING,
+      // whatever was asked: it is never treated as limited.
+      const expected = wanted !== undefined ? wanted : mySections;
+      let landed = sectionsFromAnswer(result.sections);
+      let limitSaved = expected === null || withinSections(landed, expected);
+      if (!limitSaved && iSetSections) {
+        // The owner's own way in: the same change through the database function.
+        const { data: fix, error: fixErr } = await supabase.rpc('set_bo_sections', { p_user: newUserId, p_sections: expected });
+        const fixed = !fixErr && fix?.ok === true ? sectionsFromAnswer(fix.sections) : undefined;
+        if (withinSections(fixed, expected)) { landed = fixed; limitSaved = true; }
+        else console.warn('[grantBOAccess] the limit could not be saved:', fixErr?.message || 'no answer');
+      }
+      // FAIL CLOSED: a login that should be limited and is not must not be usable. This one was
+      // made a moment ago by this screen, so switching it off takes nothing away from anybody.
+      // (An email that ALREADY had a login is left alone: switching that off could lock a
+      // person out of a Back Office they already use.)
+      let switchedOff = false;
+      if (!limitSaved && !result.alreadyExisted) {
+        const { data: off, error: offErr } = await supabase.from('user_profiles').update({ bo_access: false }).eq('id', newUserId).select('id');
+        switchedOff = !offErr && Array.isArray(off) && off.length > 0;
+      }
 
       // Link the new auth user to this staff_member.
       const { error: linkErr } = await supabase
@@ -383,8 +491,14 @@ export default function StaffManager() {
         return;
       }
 
-      // Update local state
-      setAuthLinks(prev => ({ ...prev, [staffId]: { authUserId: newUserId, email: grantForm.email.trim(), boAccess: true } }));
+      // Update local state, from the row itself where it can be read (what the login REALLY
+      // has: its role, whether it is on, what it can open), never from what was asked for.
+      const [fresh] = await readLogins([newUserId]).catch(() => []);
+      const link = fresh || {
+        authUserId: newUserId, email: grantForm.email.trim(), boAccess: !switchedOff, role: null,
+        sections: limitSaved ? landed : undefined,
+      };
+      setAuthLinks(prev => ({ ...prev, [staffId]: link }));
       useStore.setState({
         staffMembers: useStore.getState().staffMembers.map(s =>
           s.id === staffId ? { ...s, authUserId: newUserId } : s
@@ -394,7 +508,16 @@ export default function StaffManager() {
       setShowGrantBO(null);
       setGrantForm({ email:'', password:'', confirmPassword:'' });
       setGrantBusy(false);
-      showToast(`✓ Back-office access granted — ${grantForm.email.trim()} can now sign in`, 'success');
+      if (limitSaved) {
+        const opens = isEverythingRole(link.role) || link.sections === undefined ? '' : ` It can open: ${describeSections(link.sections)}.`;
+        showToast(`Back Office login made. ${grantForm.email.trim()} can now sign in.${opens}`, 'success');
+      } else if (switchedOff) {
+        showToast(iSetSections
+          ? 'The login was made, but its limit was NOT saved, so it is switched off. Set what it can open, then switch it on.'
+          : 'The login was made, but its limit was NOT saved, so it is switched off. Ask the owner to set what it can open.', 'error', 15000);
+      } else {
+        showToast('The limit was NOT saved. This login can open EVERYTHING in Back Office. Switch its access off now, then ask ServOS.', 'error', 20000);
+      }
     } catch (e) {
       setGrantError(e.message);
       setGrantBusy(false);
@@ -407,6 +530,15 @@ export default function StaffManager() {
     const link = authLinks[staffId];
     if (!link) return;
     const next = !link.boAccess;
+    // 8 Oct 2026 (review): switching ON is for a person who can open everything the login can.
+    // A limited login could otherwise undo the switch off grantBOAccess does when a new login's
+    // limit did not land, or switch an unlimited teammate login back on after the owner turned it
+    // off. Off is always allowed. The database refuses the same write (the guard on
+    // user_profiles); this is the plain word before the request is made.
+    if (next && !canSwitchLoginOn(link.sections, mySections)) {
+      showToast('Only the owner can switch this login on.', 'error');
+      return;
+    }
     const { error } = await supabase
       .from('user_profiles')
       .update({ bo_access: next })
@@ -421,6 +553,83 @@ export default function StaffManager() {
     }
     setAuthLinks(prev => ({ ...prev, [staffId]: { ...link, boAccess: next } }));
     showToast(next ? '✓ Back-office access enabled' : 'Back-office access disabled', 'success');
+  };
+
+  // saveSections (8 Oct 2026): what an existing login can open. The ONLY way a person changes
+  // it is the database function set_bo_sections, which checks again who is asking (an owner of
+  // the same company or ServOS staff, never your own login, never an owner's). The screen
+  // believes the function's answer, not what it sent.
+  const saveSections = async () => {
+    if (!editSections) return;
+    const { staffId, ticks } = editSections;
+    const link = authLinks[staffId];
+    if (!link) return;
+    if (!ticks.length) { showToast('Tick at least one. To stop this login, switch its Back Office access off.', 'error'); return; }
+    const toStore = sectionsToStore(ticks);
+    setSectionsBusy(true);
+    try {
+      const { data, error } = await supabase.rpc('set_bo_sections', { p_user: link.authUserId, p_sections: toStore });
+      if (error) {
+        showToast(isMissingRpc(error) ? 'Not saved. This needs a database update first.' : `Not saved. ${error.message}`, 'error', 9000);
+        return;
+      }
+      const landed = data?.ok === true ? sectionsFromAnswer(data.sections) : undefined;
+      if (!sameSections(landed, toStore)) { showToast('Not saved. Reload the page and check.', 'error', 9000); return; }
+      setAuthLinks(prev => (prev[staffId] ? { ...prev, [staffId]: { ...prev[staffId], sections: landed } } : prev));
+      setEditSections(null);
+      showToast('Saved. It applies the next time they open Back Office.', 'success', 5000);
+    } catch (e) {
+      showToast(`Not saved. ${e?.message || 'Try again.'}`, 'error', 9000);
+    } finally {
+      setSectionsBusy(false);
+    }
+  };
+
+  // What a login can open, in plain words, and whether this person may change it. Rendered
+  // inside the Back-office access card of a staff member who has a login.
+  const sectionAccess = (staffId, link) => {
+    const everything = isEverythingRole(link.role) || !sectionsInstalled;
+    const words = everything ? 'Everything' : (link.sections === undefined ? 'Not known' : describeSections(link.sections));
+    const editable = sectionsInstalled && link.sections !== undefined
+      && canEditSectionsFor({ callerRole: myRole, callerId: myId, targetId: link.authUserId, targetRole: link.role });
+    // One plain line saying why there are no tick boxes, when there are none.
+    let why = '';
+    if (!sectionsInstalled) why = 'Choosing what a login can open needs a database update.';
+    else if (isEverythingRole(link.role)) why = 'An owner always opens everything.';
+    else if (myId && link.authUserId === myId) why = 'This is your own login. You cannot change it.';
+    else if (!iSetSections) why = 'Only the owner can change this.';
+    else if (link.sections === undefined) why = 'Could not read what this login can open. Reload the page.';
+    const editing = editable && editSections?.staffId === staffId;
+    return (
+      <div data-testid="bo-section-access" style={{ borderTop:'1px solid var(--bdr)', paddingTop:10, marginBottom:8 }}>
+        <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>What can they open?</div>
+            <div style={{ fontSize:12, color: link.sections === undefined && !everything ? 'var(--red)' : 'var(--t2)', fontWeight:600 }}>{words}</div>
+            {why && <div style={{ fontSize:10, color:'var(--t3)', marginTop:3 }}>{why}</div>}
+          </div>
+          {editable && !editing && (
+            <button onClick={()=>setEditSections({ staffId, ticks: sectionsToTicks(link.sections) })}
+              style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>Change</button>
+          )}
+        </div>
+        {editing && (
+          <div style={{ marginTop:10 }}>
+            <SectionPicker ticks={editSections.ticks} disabled={sectionsBusy} onChange={(ticks)=>setEditSections({ staffId, ticks })}/>
+            <div style={{ display:'flex', gap:8, marginTop:10 }}>
+              <button onClick={()=>setEditSections(null)} disabled={sectionsBusy} style={{ flex:1, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
+              <button onClick={saveSections} disabled={sectionsBusy || editSections.ticks.length === 0}
+                style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:(sectionsBusy || editSections.ticks.length === 0) ? .5 : 1 }}>
+                {sectionsBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            {editSections.ticks.length === 0 && (
+              <div style={{ fontSize:10, color:'var(--t3)', marginTop:6 }}>Tick at least one. To stop this login, switch its Back Office access off.</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   // unlinkBOAccess: clears auth_user_id from staff_members. Does NOT delete
@@ -576,10 +785,10 @@ export default function StaffManager() {
                     <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                       <div style={{ flex:1 }}>
                         <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Back-office access</div>
-                        <div style={{ fontSize:10, color:'var(--t3)' }}>Give this staff member email + password to sign in to the back office for reports, menu, settings, etc.</div>
+                        <div style={{ fontSize:10, color:'var(--t3)' }}>Give this staff member an email and password to sign in to Back Office.{iSetSections && sectionsInstalled ? ' You choose what they can open.' : ''}</div>
                       </div>
                       <button
-                        onClick={()=>{ setShowGrantBO(sel.id); setGrantForm({ email:'', password:'', confirmPassword:'' }); setGrantError(''); }}
+                        onClick={()=>{ setShowGrantBO(sel.id); setGrantForm({ email:'', password:'', confirmPassword:'' }); setGrantTicks([...BO_SECTION_KEYS]); setGrantError(''); }}
                         style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}
                       >Grant access</button>
                     </div>
@@ -592,17 +801,26 @@ export default function StaffManager() {
                         <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Back-office access</div>
                         <div style={{ fontSize:10, color:'var(--t3)', fontFamily:'monospace' }}>{link.email}</div>
                       </div>
-                      <button
-                        onClick={()=>toggleBOAccess(sel.id)}
-                        style={{
-                          padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
-                          background: link.boAccess ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.16)',
-                          border: link.boAccess ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(239,68,68,0.4)',
-                          color: link.boAccess ? '#86efac' : '#fca5a5',
-                          fontSize:11, fontWeight:700,
-                        }}
-                      >{link.boAccess ? '✓ Enabled — click to disable' : '✗ Disabled — click to enable'}</button>
+                      {/* 8 Oct 2026 (review): a switched off login that this person may not switch
+                          on (it opens more than they do) gets plain words, not a dead button. */}
+                      {link.boAccess || canSwitchLoginOn(link.sections, mySections) ? (
+                        <button
+                          onClick={()=>toggleBOAccess(sel.id)}
+                          style={{
+                            padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+                            background: link.boAccess ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.16)',
+                            border: link.boAccess ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(239,68,68,0.4)',
+                            color: link.boAccess ? '#86efac' : '#fca5a5',
+                            fontSize:11, fontWeight:700,
+                          }}
+                        >{link.boAccess ? '✓ Enabled — click to disable' : '✗ Disabled — click to enable'}</button>
+                      ) : (
+                        <div data-testid="bo-switch-on-owner-only" style={{ padding:'6px 14px', borderRadius:8, background:'rgba(239,68,68,0.16)', border:'1px solid rgba(239,68,68,0.4)', color:'#fca5a5', fontSize:11, fontWeight:700, textAlign:'right', lineHeight:1.4 }}>
+                          Switched off.<br/>Only the owner can switch this login on.
+                        </div>
+                      )}
                     </div>
+                    {sectionAccess(sel.id, link)}
                     <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
                       <button
                         onClick={()=>unlinkBOAccess(sel.id)}
@@ -699,11 +917,10 @@ export default function StaffManager() {
       {/* v5.5.17: Grant back-office access modal */}
       {showGrantBO && (
         <div className="modal-back" onClick={e=>e.target===e.currentTarget&&setShowGrantBO(null)}>
-          <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:420, padding:22, boxShadow:'var(--sh3)' }}>
+          <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:460, maxHeight:'92vh', overflowY:'auto', padding:22, boxShadow:'var(--sh3)' }}>
             <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>Grant back-office access</div>
             <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>
-              Create sign-in credentials for {staffMembers.find(s=>s.id===showGrantBO)?.name}.
-              They'll be able to sign in to the back office to view reports, edit the menu, etc.
+              Make an email and password for {staffMembers.find(s=>s.id===showGrantBO)?.name} to sign in to Back Office.
             </div>
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
               <div>
@@ -717,6 +934,22 @@ export default function StaffManager() {
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Confirm password *</label>
                 <input style={inp} type="password" value={grantForm.confirmPassword} onChange={e=>setGrantForm(f=>({...f,confirmPassword:e.target.value}))} placeholder="Repeat password"/>
+              </div>
+              {/* 8 Oct 2026: what the new login can open. An owner (or ServOS) chooses; anybody
+                  else is told plainly what it will be. A limited person passes on their own list. */}
+              <div data-testid="bo-grant-sections">
+                <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>What can they open?</label>
+                {iSetSections && sectionsInstalled ? (
+                  <SectionPicker ticks={grantTicks} onChange={setGrantTicks} disabled={grantBusy}/>
+                ) : (
+                  <div style={{ fontSize:12, color:'var(--t2)', lineHeight:1.5 }}>
+                    {mySections !== null
+                      ? `The same as you: ${describeSections(mySections)}.`
+                      : iSetSections
+                        ? 'Everything. Choosing what a login can open needs a database update.'
+                        : 'Everything. Only the owner can limit a login.'}
+                  </div>
+                )}
               </div>
               {grantError && (
                 <div style={{ padding:'8px 12px', background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:8, color:'#fca5a5', fontSize:12 }}>

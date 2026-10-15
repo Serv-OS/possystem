@@ -277,8 +277,13 @@ export function productsWithoutOwnRate(items, rates, locationId) {
  * unknown id is dropped, so the line falls to the product's own rate. Only
  * when the till holds rates: with none loaded yet (boot), nothing is judged
  * and the ids pass through as they are. Channel lines never come here (their
- * '__not_in_menu__' opt out is built elsewhere and stays).
- * Returns { taxRateId, taxOverrides, dropped: [ids] }.
+ * '__not_in_menu__' sentinel is built elsewhere and stays).
+ * Returns { taxRateId, taxOverrides, dropped: [ids] } and, ONLY when something
+ * was dropped, taxFallback: { reason, rateId } for the till to stamp on the
+ * line (8 Oct 2026, D4): the tax engine then records the line in the sale's
+ * tax_breakdown.fallbacks, so a rate the venue does not have is never cleaned
+ * away quietly. The reason is 'rate-not-found' when the item's own rate was
+ * dropped, else 'override-rate-not-found'; rateId the first id dropped.
  */
 export function lineTaxRefs(taxRateId, taxOverrides, rates) {
   // An inactive rate charges nothing (resolveTaxRate), so it is not a rate this till holds.
@@ -291,7 +296,8 @@ export function lineTaxRefs(taxRateId, taxOverrides, rates) {
   const known = new Set(list.map((r) => String(r.id)));
   const dropped = [];
   let rateId = taxRateId || null;
-  if (rateId && !known.has(String(rateId))) { dropped.push(rateId); rateId = null; }
+  let ownDropped = false;
+  if (rateId && !known.has(String(rateId))) { dropped.push(rateId); rateId = null; ownDropped = true; }
   let outOv = ov;
   for (const [k, v] of Object.entries(ov)) {
     if (v && !known.has(String(v))) {
@@ -300,7 +306,13 @@ export function lineTaxRefs(taxRateId, taxOverrides, rates) {
       dropped.push(v);
     }
   }
-  return { taxRateId: rateId, taxOverrides: outOv, dropped };
+  if (!dropped.length) return { taxRateId: rateId, taxOverrides: outOv, dropped };
+  return {
+    taxRateId: rateId,
+    taxOverrides: outOv,
+    dropped,
+    taxFallback: { reason: ownDropped ? 'rate-not-found' : 'override-rate-not-found', rateId: dropped[0] },
+  };
 }
 
 /**

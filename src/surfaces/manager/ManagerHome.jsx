@@ -8,13 +8,16 @@ import { venueBreakPolicy } from '../../staff/breaks.js';
 import { belowPar } from '../../lib/manager/kitchen';
 import { money } from '../../lib/currency';
 import { syne, mono } from './ui';
+import { useLayout } from './useLayout';
+import { cols } from './layout';
 import { Icon } from '../../components/ServOSIcons';
 
 function HeroStat({ label, value, tone = 'var(--t1)' }) {
+  const L = useLayout();
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 18, fontWeight: 800, color: tone, ...mono }}>{value}</div>
-      <div style={{ fontSize: 9, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginTop: 1, ...mono }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: tone, ...mono, ...L.s.heroStatValue }}>{value}</div>
+      <div style={{ fontSize: 9, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginTop: 1, ...mono, ...L.s.heroStatLabel }}>{label}</div>
     </div>
   );
 }
@@ -22,20 +25,22 @@ function HeroStat({ label, value, tone = 'var(--t1)' }) {
 // One bento status tile: icon chip, headline number, label, sub-line, state dot.
 const DOT = { good: 'var(--grn)', warn: 'var(--orn)', bad: 'var(--red)' };
 function StatusTile({ icon, label, value, sub, state = 'good', accent = 'var(--acc)', onClick }) {
+  const L = useLayout();
   return (
-    <button onClick={onClick} className="sv-glass" style={{ position: 'relative', textAlign: 'left', padding: 15, borderRadius: 16, cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', fontFamily: 'inherit', minHeight: 104, display: 'flex', flexDirection: 'column' }}>
+    <button onClick={onClick} className="sv-glass" style={{ position: 'relative', textAlign: 'left', padding: 15, borderRadius: 16, cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', fontFamily: 'inherit', minHeight: 104, display: 'flex', flexDirection: 'column', ...L.s.tile }}>
       <span style={{ position: 'absolute', top: 13, right: 13, width: 9, height: 9, borderRadius: 999, background: DOT[state], boxShadow: `0 0 8px ${DOT[state]}` }} />
       <div style={{ width: 32, height: 32, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--acc-d)', color: accent, marginBottom: 'auto' }}><Icon name={icon} size={17} /></div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, marginTop: 12 }}>
-        <span style={{ fontSize: 22, fontWeight: 800, ...syne }}>{value}</span>
-        <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{label}</span>
+        <span style={{ fontSize: 22, fontWeight: 800, ...syne, ...L.s.tileValue }}>{value}</span>
+        <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700, ...L.s.tileLabel }}>{label}</span>
       </div>
-      <div style={{ fontSize: 11, color: state === 'bad' ? 'var(--red)' : state === 'warn' ? 'var(--orn)' : 'var(--t3)', marginTop: 2, ...mono }}>{sub}</div>
+      <div style={{ fontSize: 11, color: state === 'bad' ? 'var(--red)' : state === 'warn' ? 'var(--orn)' : 'var(--t3)', marginTop: 2, ...mono, ...L.s.tileSub }}>{sub}</div>
     </button>
   );
 }
 
 export default function ManagerHome({ ctx }) {
+  const L = useLayout();
   const { operator, flags, setTab, snap } = ctx;
   const h = new Date().getHours();
   const greeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -63,11 +68,16 @@ export default function ManagerHome({ ctx }) {
   if (flags.team_live && breaks.length) needNow.push({ label: `${breaks.length} break${breaks.length > 1 ? 's' : ''} due`, go: () => setTab('team') });
   if (flags.ops_checks && opsAlerts) needNow.push({ label: `${opsAlerts} ops alert${opsAlerts > 1 ? 's' : ''}`, go: goOpsAlerts });
 
+  // iPad: from 1000 wide the hero and the need bar sit left of the tiles (styles only, see layout.js).
+  const showHero = !!(flags.reports_view && m);
+  const split = L.panes === 2 && showHero;
+  const tileCount = (flags.reports_view && floor ? 1 : 0) + (flags.team_live && snap?.team ? 1 : 0) + (flags.ops_checks ? 1 : 0) + (flags.kitchen ? 1 : 0);
+
   return (
-    <div>
+    <div style={split ? L.s.homeSplit : undefined}>
       {/* greeting */}
-      <div style={{ padding: '6px 2px 2px' }}>
-        <div style={{ fontSize: 22, fontWeight: 800, ...syne }}>{greeting}{first ? `, ${first}` : ''}</div>
+      <div style={{ padding: '6px 2px 2px', ...L.s.span }}>
+        <div style={{ fontSize: 22, fontWeight: 800, ...syne, ...L.s.title }}>{greeting}{first ? `, ${first}` : ''}</div>
         <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
           {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }).toUpperCase()} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}{ctx.venueName ? ` · ${ctx.venueName}` : ''}
         </div>
@@ -75,11 +85,11 @@ export default function ManagerHome({ ctx }) {
 
       {/* takings hero (only if this person can see money) */}
       {flags.reports_view && m && (
-        <button onClick={() => setTab('reports')} className="sv-glass" style={{ width: '100%', textAlign: 'left', padding: '18px 20px', marginTop: 12, borderRadius: 18, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontFamily: 'inherit' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <button onClick={() => setTab('reports')} className="sv-glass" style={{ width: '100%', textAlign: 'left', padding: '18px 20px', marginTop: 12, borderRadius: 18, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontFamily: 'inherit', ...(split ? (needNow.length ? L.s.homeHero : L.s.homeHeroTall) : null) }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, ...L.s.heroTop }}>
           <div>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Takings today (ex-VAT)</div>
-            <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--acc)', lineHeight: 1.1, margin: '6px 0 0', ...syne }}>{money(Number(m.net) || 0, m.currency)}</div>
+            <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--acc)', lineHeight: 1.1, margin: '6px 0 0', ...syne, ...L.s.heroValue }}>{money(Number(m.net) || 0, m.currency)}</div>
           </div>
           {m.forecastPct != null && (
             <span style={{ fontSize: 12, fontWeight: 800, color: m.forecastPct >= 100 ? 'var(--grn)' : 'var(--orn)', background: 'var(--acc-d)', padding: '5px 10px', borderRadius: 999, whiteSpace: 'nowrap', ...mono }}>
@@ -98,18 +108,18 @@ export default function ManagerHome({ ctx }) {
 
       {/* need you now */}
       {needNow.length > 0 && (
-        <button onClick={() => needNow[0].go()} className="sv-glass" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginTop: 10, borderRadius: 14, border: '1px solid var(--red-b)', background: 'var(--red-d)', cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
+        <button onClick={() => needNow[0].go()} className="sv-glass" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginTop: 10, borderRadius: 14, border: '1px solid var(--red-b)', background: 'var(--red-d)', cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit', ...(split ? L.s.homeNeed : null) }}>
           <span style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--red)', boxShadow: '0 0 8px var(--red)', flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>{needNow.length} need{needNow.length === 1 ? 's' : ''} you now</div>
-            <div style={{ fontSize: 11, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono }}>{needNow.map(n => n.label).join(' · ')}</div>
+            <div style={{ fontSize: 11, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono, ...L.s.needLine }}>{needNow.map(n => n.label).join(' · ')}</div>
           </div>
           <span style={{ color: 'var(--t4)', fontSize: 18 }}>›</span>
         </button>
       )}
 
       {/* live status bento — each tile role-gated */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, ...(split ? L.s.homeBento : L.phone ? null : { gridTemplateColumns: cols(Math.max(1, Math.min(tileCount, tileCount > 3 ? L.homeCols : L.statCols))) }) }}>
         {flags.reports_view && floor && (
           <StatusTile icon="floor" label="open" value={openCount}
             sub={floor.stalled.length ? `${floor.stalled.length} stalled · ${floor.seated_no_order.length} no order` : floor.seated_no_order.length ? `${floor.seated_no_order.length} awaiting order` : 'all moving'}

@@ -9,10 +9,12 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken, getDeviceMode, isBackOfficeMode } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, isBackOfficeMode } from '../lib/supabase';
 import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
+import { flushVenueMessageTaps } from '../lib/venueMessageTaps';
+import { confirmVenueMessage } from '../lib/venueMessages';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 import { startQueueReconciler, stopQueueReconciler } from './QueueReconciler';
@@ -369,6 +371,16 @@ export default function SyncBridge({ onSyncPulse }) {
           const floorRes    = unwrap(floorSt);
           const itemsRes    = unwrap(itemsSt);
           const catsRes     = unwrap(catsSt);
+          // 12 Oct 2026 (Preston): the category read SUCCEEDED for this venue and found none. The
+          // master till must hold this venue's menu before it sends a QR, online or kiosk order
+          // to the kitchen (lib/channelRouteGate.js venueHoldsMenu). "Boot finished" is no proof:
+          // a failed leg reads as data null. No new read, this is the leg above.
+          // Review, same day: ONLY for a read with no rows. This line used to mark any successful
+          // read, and the rows of that read reach the store several awaited reads further down
+          // (the boot patch), so in between the gate said "no categories on file, go" with an
+          // empty tree and the real master could repeat Preston. A venue WITH categories is
+          // ready when they are in the store, which the gate already watches.
+          if (!catsRes.error && Array.isArray(catsRes.data) && catsRes.data.length === 0) useStore.setState({ _catsReadLocationId: locationId });
           const menusRes    = unwrap(menusSt);
           const linksRes    = unwrap(linksSt);
           const sessionsRes = unwrap(sessionsSt);
@@ -416,6 +428,8 @@ export default function SyncBridge({ onSyncPulse }) {
               quickScreenEnabled: p.quick_screen_enabled !== false,
               menuId: p.menu_id,
               serviceCharge: p.service_charge || null,
+              defaultOrderType: p.default_order_type || null,        // 30 Sep 2026 (lib/tillOrderType.js)
+              dineInFlagPrompt: p.dine_in_flag_prompt === true,
             }));
             try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
           }
@@ -507,6 +521,15 @@ export default function SyncBridge({ onSyncPulse }) {
             if (!(isBackOfficeMode() && useStore.getState().menuReadLocationId === locationId)) {
               const taxRows = taxRes && !taxRes.error && Array.isArray(taxRes.data) ? { data: taxRes.data.map(mapTaxRateRow), error: null } : taxRes;
               useStore.setState(s => ({ taxRates: ratesAfterRead(taxRows, locationId, s.taxRates, { trusted: isBackOfficeMode() }) }));
+            }
+            // 8 Oct 2026 (VAT audit, Fix 3): a till left without rates although its menu names
+            // some (a failed read, or an empty answer) reads again on its own until it has them,
+            // staff see one plain toast, and a venue that really has none alerts the owner once a
+            // day (store afterTaxRatesRead, lib/tillVatGate.js). Payments wait at the gate meanwhile.
+            // The store waits for the menu itself before judging whether it names rates.
+            if (!isBackOfficeMode()) {
+              const ratesTrusted = await clientTrustsEmpty(sb);
+              try { useStore.getState().afterTaxRatesRead?.({ res: taxRes, trusted: ratesTrusted }); } catch { /* the gate says */ }
             }
           }
 
@@ -728,7 +751,10 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     // v5.9.72: not on a kitchen screen, which only reads tables and must never put one back.
-    if (!isMock && getDeviceMode() !== 'kds') startSessionReconciler();
+    // 12 Oct 2026: that is now the reconciler's own test, asked on every pass and for every shape
+    // of kitchen screen (sync/SessionReconciler.js), not the mode word read once here. So it is
+    // started on every page, and stands still while the page shows the kitchen screen.
+    if (!isMock) startSessionReconciler();
     // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
     if (!isMock) startTablePlanSync();
     // v5.5.846 — close tables paid on the PAX. 28 Sep 2026: on every device that mounts this
@@ -806,6 +832,9 @@ export default function SyncBridge({ onSyncPulse }) {
         await onReconnect();
         await flushRedemptions();
       } catch {}
+      // 5 Oct 2026: a Got it tap (message from ServOS) made with no internet, on a till that
+      // has since gone back to the PIN screen. Nothing saved = no request at all.
+      try { await flushVenueMessageTaps({ send: confirmVenueMessage }); } catch { /* best-effort */ }
     };
     if (!isMock) window.addEventListener('online', onBackOnline);
 
@@ -816,6 +845,8 @@ export default function SyncBridge({ onSyncPulse }) {
           // v4.6.27: static import above (ADR-008)
           await periodicSync();
         } catch {}
+        // 5 Oct 2026: the same saved Got it taps, in case the 'online' event never fired.
+        try { await flushVenueMessageTaps({ send: confirmVenueMessage }); } catch { /* best-effort */ }
         try {
           // v4.6.29: fire any scheduled collection orders whose fire time
           // has been reached. Piggy-backs on the existing 60s cadence so we

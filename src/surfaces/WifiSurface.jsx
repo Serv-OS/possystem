@@ -271,7 +271,10 @@ export default function WifiSurface({ location }) {
 }
 
 const S = {
-  page: { minHeight: '100vh', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '28px 16px', fontFamily: '"Hanken Grotesk", system-ui, -apple-system, sans-serif' },
+  // The app locks page scrolling (globals.css: html, body, #root are overflow hidden), so a public page
+  // must be its own scroller or anything below the fold cannot be reached (13 Oct 2026: the Connect
+  // button on a small phone). Pinned by src/lib/publicPageScroll.test.js.
+  page: { position: 'fixed', inset: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '28px 16px calc(28px + env(safe-area-inset-bottom, 0px))', fontFamily: '"Hanken Grotesk", system-ui, -apple-system, sans-serif' },
   card: { width: '100%', maxWidth: 440, background: '#fff', borderRadius: 26, overflow: 'hidden', boxShadow: '0 14px 40px rgba(0,0,0,0.28)' },
   hero: { padding: '30px 22px', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 96 },
   logoBox: { border: '1.5px dashed', borderRadius: 12, padding: '12px 20px', fontSize: 18, fontWeight: 800, letterSpacing: '-0.01em' },

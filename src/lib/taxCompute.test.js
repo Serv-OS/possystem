@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeOrderTaxUnified, buildLocalTaxCtx, prepareTaxCtx, taxCtxHasConfig } from './taxCompute.js';
+import { computeOrderTaxUnified, buildLocalTaxCtx, prepareTaxCtx, taxCtxHasConfig, taxFallbacksOf } from './taxCompute.js';
 import { calculateOrderTax } from './tax.js';
 import { legacyProfileId } from './taxAdapter.js';
 
@@ -57,7 +57,7 @@ const UK_ITEMS = [
   { id: 'd', price: 4.00, qty: 2, taxRateId: 'vat5' },
   { id: 'e', price: 2.50, qty: 1, taxRateId: 'zero' },
   { id: 'f', price: 6.00, qty: 1, taxRateId: 'vat20', taxOverrides: { takeaway: 'zero' } },
-  { id: 'g', price: 5.00, qty: 1, taxRateId: '__not_in_menu__' },          // channel opt-out
+  { id: 'g', price: 5.00, qty: 1, taxRateId: '__not_in_menu__' },          // channel line not on our menu: venue default, flagged (8 Oct 2026)
   { id: 'h', price: 99.00, qty: 1, taxRateId: 'vat20', voided: true },
 ];
 
@@ -112,11 +112,32 @@ test('minimal { taxRates } ctx (channelMoney default) behaves like calculateOrde
   assert.equal(uni.exclusiveTax, 0);
 });
 
-test('the __not_in_menu__ sentinel books zero through the seam on both paths', () => {
-  const items = [{ id: 'x', price: 10, qty: 1, taxRateId: '__not_in_menu__' }];
-  const uk = computeOrderTaxUnified(items, ukCtx(), 'delivery');
-  assert.equal(uk.totalTax, 0);
-  assert.deepEqual(uk.breakdown, []);
+test('8 Oct 2026 (D4): the __not_in_menu__ sentinel books the venue default through the seam, and the record says so', () => {
+  // Until 8 Oct 2026 this test locked the opposite: a channel line not on our menu booked ZERO on
+  // purpose, and 17 HubRise sales at Provo (£692.71) carried £0 VAT. The owner's rule: no channel
+  // decides VAT. The line takes the venue default and the sale records why, so the owner can map it.
+  const items = [{ id: 'hr-33', name: 'Double Smash Burger', price: 10, qty: 1, taxRateId: '__not_in_menu__' }];
+  for (const ctx of [ukCtx(), { taxRates: UK_RATES }]) {
+    const uk = computeOrderTaxUnified(items, ctx, 'delivery');
+    assert.equal(Math.round(uk.totalTax * 100), 167, '£10 at 20% inside the price');
+    assert.equal(uk.breakdown[0].rate.id, 'vat20');
+    assert.deepEqual(uk.fallbacks, [{ source: 'fallback', reason: 'item-not-on-menu', lineId: 'hr-33', itemId: 'hr-33', name: 'Double Smash Burger', rateId: '__not_in_menu__' }]);
+    assert.deepEqual(taxFallbacksOf(uk), uk.fallbacks);
+  }
+  // The profiles path (a venue with a real assignment) notes the same line through the cascade.
+  const chicago = buildLocalTaxCtx({
+    taxProfiles: [{ id: 'p-chi', name: 'Chicago', active: true, rounding: { mode: 'half_up', level: 'invoice' },
+      lines: [{ id: 'il', name: 'IL', lineType: 'rate', rate: 0.0625, mode: 'exclusive', orderTypes: ['all'], sortOrder: 0, active: true }] }],
+    menuItems: [{ id: 'pizza', tax_profile_id: 'p-chi' }],
+    taxRates: UK_RATES,
+  });
+  const pro = computeOrderTaxUnified([{ id: 'pizza', price: 10, qty: 1 }, ...items], chicago, 'delivery');
+  assert.equal(pro.source, 'profiles');
+  assert.deepEqual(pro.fallbacks.map(f => [f.reason, f.lineId]), [['item-not-on-menu', 'hr-33']]);
+  // An ordinary sale carries no `fallbacks` key at all, so its record keeps exactly its old keys.
+  assert.equal('fallbacks' in computeOrderTaxUnified(UK_ITEMS.filter(i => i.id !== 'g'), ukCtx(), 'dine-in'), false);
+  assert.deepEqual(taxFallbacksOf(null), []);
+  assert.deepEqual(taxFallbacksOf({ fallbacks: 'no' }), []);
 });
 
 // ── 2. The Cabin: one exclusive default profile via venue default ───────────

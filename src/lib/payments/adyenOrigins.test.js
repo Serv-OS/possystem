@@ -644,3 +644,14 @@ test('golive_state: automatic registration only on the checkout\'s own store and
   // ensure passes the method on to the throttle
   assert.match(ADMIN, /applePayRetryDue\(prev\.state, \{ now: Date\.now\(\), host, merchant: regMerchant, trigger, paymentMethodId \}\)/);
 });
+
+// 2 Oct 2026: Adyen's addApplePayDomains refuses a bare host ("is not a correct URL"), so the
+// function must send the https URL of each host. Coffee Boy Preston was refused twice this way.
+test('adyen-terminal-admin sends Apple Pay domains to Adyen as https URLs', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ADMIN = readFileSync(new URL('../../../supabase/functions/adyen-terminal-admin/index.ts', import.meta.url), 'utf8');
+  assert.ok(ADMIN.includes("addApplePayDomains`, { domains: [customDomainOrigin(domain) || domain] }"), 'the add call sends the https URL');
+  assert.ok(!ADMIN.includes("addApplePayDomains`, { domains: [domain] }"), 'no bare host is sent');
+  assert.equal(customDomainOrigin('coffee-boy-preston.serv-os.app'), 'https://coffee-boy-preston.serv-os.app');
+  assert.equal(domainKey('https://coffee-boy-preston.serv-os.app'), 'coffee-boy-preston.serv-os.app');
+});

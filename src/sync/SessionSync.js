@@ -8,7 +8,7 @@
  * - Supabase Realtime subscription → apply incoming changes from other devices instantly
  */
 
-import { supabase, getLocationId, getDeviceMode } from '../lib/supabase';
+import { supabase, getLocationId } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
@@ -18,6 +18,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
 import { isSessionClosed } from './sessionClosure';
 import { sessionVenueOk, stampLocalSessionsFor } from '../lib/localSessions';
+import { readShowsKitchenScreen } from '../lib/queueDevice';
 
 let _locationId = null;
 let _debounceTimer = null;
@@ -37,7 +38,11 @@ export async function flushSessions() {
   if (isTrainingMode()) return;
   // v5.9.72: a kitchen screen only READS tables. It never publishes a session (Leeds, 26 Sep: a
   // KDS that booted with a leaked order kept putting it back after the till voided it).
-  if (getDeviceMode() === 'kds') return;
+  // 12 Oct 2026: the test was the page's mode word (kds), which missed a tablet paired as a
+  // Kitchen Display inside a till mode page, and stopped a till inside the kitchen app. The rule
+  // now follows what the page SHOWS (lib/queueDeleteRule.js showsKitchenScreen), read on every
+  // call. The Bookings host stand is not stopped: it seats tables and publishes them here.
+  if (readShowsKitchenScreen(useStore.getState().deviceConfig)) return;
   // v4.5.0: log every entry + every short-circuit. Silent failures here cost us a real
   // order on 25 Apr 2026 (active_sessions writes were never firing for hours and we
   // had no visibility because the function returned silently).
@@ -282,7 +287,7 @@ export function scheduleFlush() {
 // session, so this never resurrects a legitimately-closed/empty table.
 export function reassertSession(tableId) {
   if (!tableId) return;
-  if (getDeviceMode() === 'kds') return;   // v5.9.72: a kitchen screen never resurrects a table
+  if (readShowsKitchenScreen(useStore.getState().deviceConfig)) return;   // v5.9.72: a kitchen screen never resurrects a table
   // TOMBSTONE GUARD — the one place that stops a cashed-off table being resurrected.
   // Every "the shared row vanished, put ours back" path funnels through here: the
   // SessionReconciler self-heal and both realtime DELETE handlers. If this occupation

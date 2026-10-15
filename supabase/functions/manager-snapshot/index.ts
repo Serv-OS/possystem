@@ -15,7 +15,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
-import { SALES_CHECK_COLS, emptySales, addCheckSales } from '../_shared/snapshotSales.js';
+import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
+
+// A refund counts on the day it was MADE, so older checks that carry one are read too: the same
+// reach as Daily trading (trading-report REFUND_LOOKBACK_DAYS) and the Owner app (8 Oct 2026).
+const REFUND_LOOKBACK_DAYS = 400;
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -66,6 +70,9 @@ Deno.serve(async (req) => {
     const now = new Date();
     const today = ymd(now, tz);
     const startIso = new Date(now.getTime() - 36 * 3600 * 1000).toISOString(); // pad ±tz; filter to `today` below
+    // 8 Oct 2026 (review): a refund made today on a sale older than those 36 hours comes off today
+    // too, so the tile agrees with Daily trading (which reads refunds back 400 days) and the Owner app.
+    const refundsSinceIso = new Date(now.getTime() - REFUND_LOOKBACK_DAYS * 86400000).toISOString();
 
     // Every list read pages (_shared/pagedRows.js): PostgREST returns at most 1000 rows a request
     // whatever .limit() asks for (.limit(20000) came back with 1000). A failed read is an error
@@ -73,8 +80,10 @@ Deno.serve(async (req) => {
     // v5.10.2: the timesheets read carries `id`. Each punch sends it as the target of the Team
     // tab's Clock out (manager-approve 'timesheet.clock_out'); without it the button (v5.8.21)
     // never rendered (snapshotSales.test.js pins it).
-    const [checks, { data: fc }, tsRows, shifts, staff, sess, ftables] = await Promise.all([
+    const [checks, olderRefunds, { data: fc }, tsRows, shifts, staff, sess, ftables] = await Promise.all([
       pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
+      // Older checks that carry a refund (few): only their refunds are read, never their sales.
+      pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
       pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
       pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).order('id')),
@@ -95,6 +104,14 @@ Deno.serve(async (req) => {
     //    count for nothing (_shared/snapshotSales.js, the same reading as owner-snapshot) ──
     const sales = emptySales();
     for (const c of checks) if (ymd(new Date(c.closed_at), tz) === today) addCheckSales(sales, c);
+    // 8 Oct 2026: a refund made today comes off today, with its VAT (as Daily trading and Xero),
+    // whether its sale closed today or weeks ago (olderRefunds, 8 Oct 2026 review).
+    for (const c of [...checks, ...olderRefunds]) {
+      for (const e of (Array.isArray(c.refunds) ? c.refunds : [])) {
+        const at = refundMadeAt(e, c);
+        if (at != null && ymd(new Date(at), tz) === today) addRefundSales(sales, e, c);
+      }
+    }
     const { net, vat, gross, orders, tips } = sales;
     let labour = 0;
     for (const t of tsRows) {
@@ -110,6 +127,8 @@ Deno.serve(async (req) => {
       forecast: r2(forecast), forecastPct: forecast > 0 ? Math.round((net / forecast) * 100) : null,
       labour: r2(labour), labourPct: net > 0 ? r2((labour / net) * 100) : null,
       labourTargetPct: vs?.labour_target_pct != null ? Number(vs.labour_target_pct) : null,
+      // 8 Oct 2026: refunds made today (already off net and vat) and sales with no VAT recorded, named.
+      refunds: r2(sales.refunds || 0), refundVat: r2(sales.refund_vat || 0), vatMissing: sales.vat_missing || 0, vatMissingRefs: sales.vat_missing_refs || [],
     };
 
     // ── Floor (active_sessions.session jsonb → floor.js input shape) ──

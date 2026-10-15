@@ -92,7 +92,8 @@ test('(d) the Orders Hub reopen, the kiosk and the customer display never join b
 
 test('the POS customer modal joins only on an email typed in it, with the phone fields showing', () => {
   const src = code(read('components/CustomerModal.jsx'));
-  assert.match(src, /if \(!nameOnly && phone\.trim\(\) && typeof autoJoinCustomerByEmail === 'function'\)/);
+  // 30 Sep 2026: the phone fields show when the customer details rule shows them (fields.phoneShown).
+  assert.match(src, /if \(fields\.phoneShown && phone\.trim\(\) && typeof autoJoinCustomerByEmail === 'function'\)/);
   assert.match(src, /autoJoinCustomerByEmail\(customer, \{ openedWithEmail: existing\?\.email \|\| '' \}\)/);
   // before the save and the hand on, so the order uses the joined profile
   const join = src.indexOf('autoJoinCustomerByEmail(customer');

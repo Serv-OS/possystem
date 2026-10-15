@@ -13,6 +13,7 @@
 
 import { supabase, isMock, platformSupabase } from '../supabase';
 import { CUSTOMER_ROOT } from '../env';
+import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
@@ -291,14 +292,26 @@ export async function moveBookingTables(id, tableIds, primaryTableId, locationId
 export async function loadBookingsRange(locationId, fromISO, toISO) {
   if (isMock || !supabase || !isRealLoc(locationId)) return { data: [] };
   try {
-    const { data, error } = await supabase
-      .from('bookings').select('*')
+    // 5 Oct 2026: read in pages of 1,000 (lib/pagedRead.js); it had no limit and the API
+    // answers 1,000 rows at most, so a long range would have lost its LATEST bookings.
+    const { data, error, tooMany } = await readAllPagesResult('bookings', (first) => supabase
+      .from('bookings').select('*', first ? { count: 'exact' } : undefined)
       .eq('location_id', locationId)
       .gte('booking_date', fromISO).lte('booking_date', toISO)
-      .order('booking_date').order('start_time');
-    if (error) { warnAbsentOr(error, 'loadBookingsRange'); return { data: [] }; }
+      .order('booking_date').order('start_time').order('id'));
+    // A venue without the bookings tables has no bookings: that stays an empty list. Any
+    // other fault (a failed page, the ceiling) goes back as { error, tooMany } so the
+    // report can say so; it used to come back as "no bookings", zero covers.
+    if (error) {
+      if (warnAbsentOr(error.cause || error, 'loadBookingsRange')) return { data: [] };
+      console.warn('[bookingsData] loadBookingsRange:', error.message);
+      return { data: [], error, tooMany: !!tooMany };
+    }
     return { data: (data || []).map((r) => rowToBooking(r)).filter(Boolean) };
-  } catch (e) { warnAbsentOr(e, 'loadBookingsRange'); return { data: [] }; }
+  } catch (e) {
+    if (warnAbsentOr(e, 'loadBookingsRange')) return { data: [] };
+    return { data: [], error: e, tooMany: false };
+  }
 }
 
 // ── per-seat pre-orders ───────────────────────────────────────────────────────

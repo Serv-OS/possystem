@@ -164,10 +164,11 @@ export function selectUnsentSweepCandidates(jobs, {
     if (age > maxAgeMs) { skipped.push({ id: job.id, reason: 'too old (DB sweeper owns it)' }); continue; }
 
     // BACKOFF. A 'start' that Adyen rejected outright (4xx before any card
-    // interaction) CAS-reverts the row to charging_unsent and bumps updated_at;
-    // so does a 'result' NotFound revert. Wait the same minimum age again after
-    // that write, so a rejecting reader is asked every ~20s, not on every tick
-    // of every sweeper at the venue.
+    // interaction) CAS-reverts the row to charging_unsent and bumps updated_at.
+    // (Until 13 Oct 2026 a 'result' NotFound reverted it too. It no longer does:
+    // see _shared/readerLock.js. A reader's "not found" never leads to a re send.)
+    // Wait the same minimum age again after that write, so a rejecting reader is
+    // asked every ~20s, not on every tick of every sweeper at the venue.
     const updated = ms(job.updated_at);
     if (Number.isFinite(updated) && now - updated < minAgeMs) { skipped.push({ id: job.id, reason: 'recently touched' }); continue; }
 
@@ -210,13 +211,20 @@ export function selectUnsentSweepCandidates(jobs, {
 // done since v5.7.37 and which is safe by construction:
 //   - the reader says it is mid-tender and the job is younger than 120s: the
 //     answer is "processing" and nothing is disturbed,
-//   - the reader never saw it: the row resets to charging_unsent, where the
-//     unsent sweep re-kicks it, which is the retry that is actually safe,
+//   - the reader never saw it: since 13 Oct 2026 the job is CANCELLED once that
+//     is proven (Adyen has finished with the send, or 155 s have passed, and
+//     Adyen's ledger is empty) and staff take the payment again. Until it is
+//     proven the job is left as it is and asked about again. It is never put
+//     back to charging_unsent and never re-kicked: on 15 Aug 2026 a reader said
+//     "not found" 25 s after the send and approved the payment 5 s later
+//     (_shared/readerLock.js has the rule),
 //   - the reader is stuck past 120s with nothing in Adyen's ledger: it is
-//     aborted and cancelled, and the customer is told instead of stranded.
+//     aborted and cancelled, and the customer is told instead of stranded
+//     (only when a till or a person asks; a timer never ends a tender).
 //
 // So a lost CAS now schedules one early ask, and the reconciler asks before it
-// quarantines anything as needs_human.
+// quarantines anything as needs_human. Since 13 Oct 2026 the every minute cron
+// also asks about every sent job from 45 s after the send (readerLock.js).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**

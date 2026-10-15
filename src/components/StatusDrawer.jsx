@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
+import { defaultOrderTypeFor } from '../lib/tillOrderType';   // 30 Sep 2026
 import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
 import { mustChangeRow } from '../lib/rowWrites';
@@ -345,6 +346,8 @@ export default function StatusDrawer({ onClose }) {
                 <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:5 }}>{deviceConfig.profileName || 'Custom config'}</div>
                 <Row label="Screen" value={deviceConfig.defaultSurface}/>
                 <Row label="Order types" value={(deviceConfig.enabledOrderTypes||[]).join(', ')}/>
+                <Row label="Starts on" value={defaultOrderTypeFor(deviceConfig)}/>
+                {deviceConfig.dineInFlagPrompt && <Row label="Flag number" value="Asked on dine in orders"/>}
                 <Row label="Table service" value={deviceConfig.tableServiceEnabled ? '✓ On' : '✕ Off'}/>
               </div>
             ) : (

@@ -39,6 +39,7 @@ test('a plain refund row changes nothing but what it always did', () => {
 
 test('realtime merges through serverTipFields on the closed_checks UPDATE', () => {
   const src = readFileSync(new URL('./realtime.js', import.meta.url), 'utf8');
-  assert.match(src, /import \{ closedCheckRefundFields, serverTipFields \} from '\.\/closedCheckRefundFields'/);
+  // 8 Oct 2026: closedCheckTaxFields rides in the same import (every copy carries the VAT booked).
+  assert.match(src, /import \{ closedCheckRefundFields, closedCheckTaxFields, serverTipFields \} from '\.\/closedCheckRefundFields'/);
   assert.match(src, /\.\.\.serverTipFields\(check\),/);
 });

@@ -1,0 +1,317 @@
+[
+ {
+  "ref": "QR-N2IYX",
+  "location_id": "5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9",
+  "venue": "Coffee Boy Huddersfield",
+  "order_type": "dine-in",
+  "subtotal": 3.75,
+  "total": 3.75,
+  "tax_amount": 0.63,
+  "closed_at": "2026-09-29 11:35:17.173658+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_5c9bdaa9",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.75,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-HAFUU",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tax_amount": 0.81,
+  "closed_at": "2026-10-01 15:24:17.905374+00",
+  "items": [
+   {
+    "itemId": "m-1790045533928_8e52e0fa",
+    "parentId": null,
+    "name": "Berry Go Round",
+    "price": 4.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-186RY",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 5.85,
+  "total": 5.85,
+  "tax_amount": 0.97,
+  "closed_at": "2026-10-01 15:40:03.419054+00",
+  "items": [
+   {
+    "itemId": "m-1789995550481_8e52e0fa",
+    "parentId": "m-1789995542460_8e52e0fa",
+    "name": "Toffee Apple Matcha — Big Boy",
+    "price": 5.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-2ODON",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.4,
+  "total": 4.4,
+  "tax_amount": 0.73,
+  "closed_at": "2026-10-01 15:51:14.641269+00",
+  "items": [
+   {
+    "itemId": "m-1789999898410_8e52e0fa",
+    "parentId": "m-1789999873622_8e52e0fa",
+    "name": "Matcha — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-6CYF8",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.4,
+  "total": 4.4,
+  "tax_amount": 0.73,
+  "closed_at": "2026-10-02 07:00:02.712553+00",
+  "items": [
+   {
+    "itemId": "m-1789999898410_8e52e0fa",
+    "parentId": "m-1789999873622_8e52e0fa",
+    "name": "Matcha — Small Boy",
+    "price": 4.4,
+    "qty": 1,
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "QR-PVON8",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 5.15,
+  "total": 5.15,
+  "tax_amount": 0.86,
+  "closed_at": "2026-10-02 07:42:27.976168+00",
+  "items": [
+   {
+    "itemId": "m-1789994276688_8e52e0fa",
+    "parentId": "m-1789994263373_8e52e0fa",
+    "name": "Blueberry Iced Matcha — Big Boy",
+    "price": 5.15,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-FAUOB",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "order_type": "dine-in",
+  "subtotal": 5.6,
+  "total": 5.6,
+  "tax_amount": 0.93,
+  "closed_at": "2026-10-02 10:35:46.992346+00",
+  "items": [
+   {
+    "itemId": "m-1789995489544_5c26956b",
+    "parentId": "m-1789995447762_5c26956b",
+    "name": "Mont Blanc — Big Boy",
+    "price": 5.6,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-8IFJ5",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "order_type": "dine-in",
+  "subtotal": 3.85,
+  "total": 3.85,
+  "tax_amount": 0.64,
+  "closed_at": "2026-10-02 13:26:01.62768+00",
+  "items": [
+   {
+    "itemId": "m-1789669490611_5c26956b",
+    "parentId": null,
+    "name": "Flat White",
+    "price": 3.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-J99J4",
+  "location_id": "1e252e7c-c875-4971-b91d-1e945c26956b",
+  "venue": "Coffee Boy Leeds",
+  "order_type": "dine-in",
+  "subtotal": 3.8,
+  "total": 3.8,
+  "tax_amount": 0.63,
+  "closed_at": "2026-10-02 13:27:16.362082+00",
+  "items": [
+   {
+    "itemId": "m-1789160862696_5c26956b",
+    "parentId": "m-1789160788884_5c26956b",
+    "name": "Latte — Small Boy",
+    "price": 3.8,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-9AWBI",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tax_amount": 0.81,
+  "closed_at": "2026-10-03 09:14:02.28662+00",
+  "items": [
+   {
+    "itemId": "m-1790045576340_8e52e0fa",
+    "parentId": null,
+    "name": "Big 5",
+    "price": 4.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-6ZVYQ",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.3,
+  "total": 4.3,
+  "tax_amount": 0.72,
+  "closed_at": "2026-10-03 09:18:57.772992+00",
+  "items": [
+   {
+    "itemId": "m-1789160871459_8e52e0fa",
+    "parentId": "m-1789160788884_8e52e0fa",
+    "name": "Latte — XL Boy ",
+    "price": 4.3,
+    "qty": 1,
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     },
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "ref": "QR-4OGI7",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 4.85,
+  "total": 4.85,
+  "tax_amount": 0.81,
+  "closed_at": "2026-10-08 11:18:34.114893+00",
+  "items": [
+   {
+    "itemId": "m-1790046914854_8e52e0fa",
+    "parentId": null,
+    "name": "Mixed Berry Cooler",
+    "price": 4.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-WBDGS",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 8.35,
+  "total": 8.35,
+  "tax_amount": 1.39,
+  "closed_at": "2026-10-08 14:35:51.861259+00",
+  "items": [
+   {
+    "itemId": "m-impmumnjwf6-1_8e52e0fa",
+    "parentId": null,
+    "name": "Kinder Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "mods": []
+   },
+   {
+    "itemId": "m-1790045914908_8e52e0fa",
+    "parentId": null,
+    "name": "Pash 'n' Shoot",
+    "price": 4.85,
+    "qty": 1,
+    "mods": []
+   }
+  ]
+ },
+ {
+  "ref": "QR-I6BI0",
+  "location_id": "ab45c80b-416d-4631-93e2-05048e52e0fa",
+  "venue": "Coffee Boy Preston",
+  "order_type": "dine-in",
+  "subtotal": 7.9,
+  "total": 7.9,
+  "tax_amount": 1.32,
+  "closed_at": "2026-10-08 14:43:04.728884+00",
+  "items": [
+   {
+    "itemId": "m-impmumnjwf6-1_8e52e0fa",
+    "parentId": null,
+    "name": "Kinder Cookie",
+    "price": 3.5,
+    "qty": 1,
+    "mods": []
+   },
+   {
+    "itemId": "m-1789993275989_8e52e0fa",
+    "parentId": "m-1789993262178_8e52e0fa",
+    "name": "Iced White Mocha — Big Boy",
+    "price": 4.4,
+    "qty": 1,
+    "mods": [
+     {
+      "price": 0,
+      "qty": null
+     }
+    ]
+   }
+  ]
+ }
+]

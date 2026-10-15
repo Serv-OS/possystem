@@ -59,12 +59,16 @@ export default function ReportsScreen() {
 
   // ── the range fetch (mount + location resolve + midnight rollover) ──────────
   const [fetched, setFetched] = useState(null);  // null = in flight
+  // 5 Oct 2026: true when the week's read failed. The live diary below still shows, so the
+  // screen keeps its figures and says plainly that the earlier days may be missing.
+  const [weekFailed, setWeekFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     setFetched(null);
+    setWeekFailed(false);
     loadBookingsRange(currentLocationId, fromISO, toISO)
-      .then(({ data }) => { if (alive) setFetched(data || []); })
-      .catch(() => { if (alive) setFetched([]); });
+      .then(({ data, error }) => { if (alive) { setFetched(data || []); setWeekFailed(!!error); } })
+      .catch(() => { if (alive) { setFetched([]); setWeekFailed(true); } });
     return () => { alive = false; };
   }, [currentLocationId, fromISO, toISO]);
 
@@ -136,7 +140,12 @@ export default function ReportsScreen() {
         <span style={{ fontSize: 11, color: 'var(--t4)' }}>today's diary is live — figures move as bookings land</span>
       </div>
 
-      {rows.length === 0 && (
+      {weekFailed && (
+        <div style={{ marginBottom: 14, fontSize: 12.5, color: 'var(--red)' }}>
+          The last 7 days could not be loaded, so these figures only count the bookings on this screen today. Check the connection and open Reports again.
+        </div>
+      )}
+      {rows.length === 0 && !weekFailed && (
         <div style={{ marginBottom: 14 }}>
           <EmptyNote title="No bookings in the last 7 days" sub="These figures light up as the diary fills." />
         </div>

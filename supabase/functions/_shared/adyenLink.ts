@@ -1254,7 +1254,13 @@ export interface SweepSummary {
   status: string | null;
   transferInstrumentId: string | null;
   currency: string | null;
+  // 10 Oct 2026: Adyen's transfer priorities in order, lower case (empty when
+  // the sweep carries none), and the one speed word the screen and the
+  // Faster payouts switch read from them (sweepSpeedOf).
+  priorities: string[];
+  speed: SweepSpeed;
 }
+export type SweepSpeed = 'fast' | 'regular';
 
 export type PayoutCapabilityState = 'allowed' | 'pending' | 'needs_details' | 'rejected' | 'unrequested' | 'unknown';
 
@@ -1965,6 +1971,44 @@ export const PLATFORM_STEP_DETAIL = 'ServOS cannot search Adyen for this venue u
 // and the screen draws the picker on it.
 export const HOLDER_AMBIGUOUS_DETAIL = 'More than one business account carries the code.';
 
+// ── PAYOUT SPEED (10 Oct 2026) ───────────────────────────────────────────────
+// Adyen pays a sweep by the first priority in its list that the bank can
+// take, so the ORDER is the setting. regular is the ordinary transfer (1 to
+// 2 working days). fast is Faster Payments in the UK (same day, a higher fee
+// per transfer); instant is the same idea where a bank offers it. One speed
+// word stands for the list, on the screen and in the admin actions:
+//   fast      priorities ['fast', 'regular']    (regular is the fallback)
+//   regular   priorities ['regular', 'fast']
+// WHY a GBP payout defaults to fast (10 Oct 2026): Adyen support told Peter to
+// change the venue sweeps to priority fast, and Adyen's platforms payouts
+// guide says "For the UK, set the transfer priority to Fast". Every other
+// currency stays regular until the Faster payouts switch is flipped.
+export const SWEEP_SPEEDS: SweepSpeed[] = ['fast', 'regular'];
+// The words the screen shows after "Payouts:".
+export const SWEEP_SPEED_LABELS: Record<SweepSpeed, string> = {
+  fast: 'fast (same day)',
+  regular: 'regular (1 to 2 working days)',
+};
+// The speed word of a priorities list: fast when fast or instant comes
+// first, else regular (a missing list reads as regular, Adyen's own default).
+export function sweepSpeedOf(priorities: unknown): SweepSpeed {
+  const first = Array.isArray(priorities) ? lower(priorities[0]) : '';
+  return first === 'fast' || first === 'instant' ? 'fast' : 'regular';
+}
+// The priorities list for a speed word (anything but fast is regular).
+export function sweepPriorities(speed: unknown): string[] {
+  return lower(speed) === 'fast' ? ['fast', 'regular'] : ['regular', 'fast'];
+}
+// The speed a currency gets when nobody chose one: GBP fast, the rest regular.
+export function defaultSweepSpeed(currency: unknown): SweepSpeed {
+  return str(currency).toUpperCase() === 'GBP' ? 'fast' : 'regular';
+}
+// The speed asked for when it is a known word, else the currency's default.
+export function resolveSweepSpeed(speed: unknown, currency: unknown): SweepSpeed {
+  const s = lower(speed);
+  return s === 'fast' || s === 'regular' ? s : defaultSweepSpeed(currency);
+}
+
 // Rows of GET /balanceAccounts/{id}/sweeps ({ sweeps: [...] }) or a bare array.
 export function sweepRows(response: unknown): Dict[] {
   if (Array.isArray(response)) return response.filter(isObj);
@@ -1976,6 +2020,7 @@ export function sweepRows(response: unknown): Dict[] {
 export function sweepSummary(sweep: unknown): SweepSummary | null {
   if (!isObj(sweep)) return null;
   const cp: Dict = isObj(sweep.counterparty) ? sweep.counterparty : {};
+  const priorities: string[] = Array.isArray(sweep.priorities) ? (sweep.priorities as unknown[]).map((p) => lower(p)).filter(Boolean) : [];
   return {
     id: orNull(sweep.id),
     type: lower(sweep.type) || null,
@@ -1984,6 +2029,8 @@ export function sweepSummary(sweep: unknown): SweepSummary | null {
     status: lower(sweep.status) || null,
     transferInstrumentId: orNull(cp.transferInstrumentId),
     currency: str(sweep.currency).toUpperCase() || null,
+    priorities,
+    speed: sweepSpeedOf(priorities),
   };
 }
 
@@ -2000,18 +2047,21 @@ export function findPushSweep(list: unknown, transferInstrumentId?: unknown): Sw
 
 // POST /balanceAccounts/{id}/sweeps: the full available balance to the bank
 // on the schedule (daily by default). No sweepAmount, targetAmount or
-// triggerAmount, so everything goes.
-export function sweepPayload({ transferInstrumentId, currency, schedule = 'daily', cronExpression, description }: {
-  transferInstrumentId?: unknown; currency?: unknown; schedule?: unknown; cronExpression?: unknown; description?: unknown;
+// triggerAmount, so everything goes. `speed` (10 Oct 2026) picks the
+// priorities: fast or regular, else the currency's default (a GBP payout
+// goes fast, and so does a payload with no currency, which is GBP).
+export function sweepPayload({ transferInstrumentId, currency, schedule = 'daily', cronExpression, description, speed }: {
+  transferInstrumentId?: unknown; currency?: unknown; schedule?: unknown; cronExpression?: unknown; description?: unknown; speed?: unknown;
 } = {}): Dict {
   const type = ['daily', 'weekly', 'monthly', 'balance', 'cron'].includes(lower(schedule)) ? lower(schedule) : 'daily';
   const sched: Dict = { type };
   if (type === 'cron' && str(cronExpression)) sched.cronExpression = str(cronExpression);
+  const ccy = str(currency).toUpperCase() || 'GBP';
   return {
     counterparty: { transferInstrumentId: str(transferInstrumentId) },
-    currency: str(currency).toUpperCase() || 'GBP',
+    currency: ccy,
     category: 'bank',
-    priorities: ['regular', 'fast'],
+    priorities: sweepPriorities(resolveSweepSpeed(speed, ccy)),
     schedule: sched,
     status: 'active',
     type: 'push',

@@ -566,6 +566,10 @@ export default function BarSurface() {
       const linkGate = await confirmLinkBeforeCard();
       if (!linkGate.ok) { setHoldCloseErr(linkGate.message); setHoldCloseState('error'); return; }
     }
+    // 8 Oct 2026 (VAT audit, Fix 3): no capture on a till that cannot book the tab's VAT
+    // (lib/tillVatGate.js through store.vatGate). The hold stays; the reason is shown.
+    const vatGate = useStore.getState().vatGate?.();
+    if (vatGate) { setHoldCloseErr(vatGate.message); setHoldCloseState('error'); return; }
     setHoldCloseState('capturing'); setHoldCloseErr(null);
     try {
       let capturedMinor;

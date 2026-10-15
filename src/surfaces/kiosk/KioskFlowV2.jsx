@@ -327,7 +327,9 @@ export default function KioskFlowV2({
         cart={engine.cart}
         submitting={engine.submitting}
         error={engine.submitError}
-        onPaid={() => engine.submitOrder(...checkout.submitArgs)}
+        onPaid={(paid) => engine.submitOrder(...checkout.submitArgs, paid)}
+        ensureCheckId={engine.ensureCheckId}
+        heldPayment={engine.heldCardPayment}
         onBack={() => { engine.setSubmitError(null); engine.setScreen('review'); }}
         loyaltyRedemption={engine.loyaltyRedemption}
         onCancel={cancel}

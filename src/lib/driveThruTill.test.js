@@ -13,6 +13,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+// 30 Sep 2026: the prompt, Send and the form ask lib/customerDetailsRule.js, so drive thru's quick
+// service path is checked on the rule and the surfaces are checked for calling it.
+import { promptsOnTypeChange, sendsWithoutPrompt, customerFieldsFor } from './customerDetailsRule.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const has = (text, needle, where) => assert.ok(text.includes(needle), `${where} carries ${needle}`);
@@ -29,11 +32,14 @@ function declaration(src, name, file) {
 
 test('POSSurface.jsx: drive thru follows takeaway through the prompt, Send and the modal result', () => {
   const src = read('../surfaces/POSSurface.jsx');
-  // Quick service 'none' fast path on the segmented control.
-  has(src, "takeawayCustomerDetails === 'none' && (t === 'takeaway' || t === 'collection' || t === 'drive-thru')", 'handleTypeChange');
+  // Quick service 'none' fast path on the segmented control (the rule, 30 Sep 2026).
+  has(src, "promptsOnTypeChange({ orderType: t, mode: takeawayCustomerDetails })", 'handleTypeChange');
+  assert.equal(promptsOnTypeChange({ orderType: 'drive-thru', mode: 'none' }), false, 'drive thru under none skips the prompt');
+  assert.equal(promptsOnTypeChange({ orderType: 'drive-thru', mode: 'full' }), true, 'drive thru under full prompts');
   // Send never falls into OrderTypeModal for a drive thru order.
-  has(src, "orderType === 'delivery' || orderType === 'drive-thru')", 'preSelected');
-  has(src, "takeawayCustomerDetails === 'none' && (orderType === 'takeaway' || orderType === 'collection' || orderType === 'drive-thru')", 'skipDetails');
+  has(src, "sendsWithoutPrompt({ orderType, mode: takeawayCustomerDetails, hasName: !!customer?.name })", 'skipDetails');
+  assert.equal(sendsWithoutPrompt({ orderType: 'drive-thru', mode: 'none', hasName: false }), true, 'drive thru under none sends straight through');
+  assert.equal(sendsWithoutPrompt({ orderType: 'drive-thru', mode: 'full', hasName: true }), true, 'a named drive thru order sends straight through');
   // The modal result reaches setOrderType + sendToKitchen like takeaway and collection.
   has(src, "result.type === 'takeaway' || result.type === 'collection' || result.type === 'drive-thru'", 'OrderTypeModal onComplete');
   // Segment icon and on screen label.
@@ -64,7 +70,11 @@ test('OrderTypeModal.jsx: drive thru entry, quick service fast path, name only s
 test('CustomerModal.jsx: name only, heading, subtitle and button', () => {
   const src = read('../components/CustomerModal.jsx');
   has(src, "const isDriveThru = orderType === 'drive-thru';", 'isDriveThru');
-  has(src, 'const nameOnly = isDriveThru || (', 'nameOnly');
+  // Name only whatever the setting (the rule, 30 Sep 2026): no phone on the form, none required.
+  has(src, 'customerFieldsFor({ orderType, mode: takeawayCustomerDetails })', 'fields');
+  for (const mode of ['full', 'name', 'none']) {
+    assert.deepEqual(customerFieldsFor({ orderType: 'drive-thru', mode }), { name: true, phone: false, phoneShown: false, address: false }, `drive thru is name only under ${mode}`);
+  }
   has(src, "isDriveThru ? '🚗 Drive thru order'", 'heading');
   has(src, "isDriveThru ? 'Confirm drive thru →'", 'button');
   // No slot grid and no address for drive thru: those stay keyed on collection and delivery.

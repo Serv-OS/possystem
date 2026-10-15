@@ -10,7 +10,10 @@ import {
   KDS_TYPES, KDS_STATUS, buildTicketMeta, parseLegacyTicket, ticketMeta, needsTypeLookup, fallbackTypeForChannel,
   kdsTypeKey, ticketHeadline, identityLine, ticketLine, courseGroups, minutesSince, formatElapsed,
   statusOf, sortTickets, typeCounts, rollUp, shortRef, joinNotes, normaliseOrderType, applyQueueLookup, ticketView, identityParts, venueBusinessDayStart,
+  voidState, ROUTE_STAMP_KEY, withRouteStamp,
 } from './kdsTicket.js';
+import { metaWithKdsNote, kdsNoteOf } from './kdsOrderNote.js';
+import { buildRouteStamp } from '../channelRouteGate.js';
 
 test('six types, delivery is pink, drive thru is blue and red stays the LATE colour only', () => {
   assert.deepEqual(Object.keys(KDS_TYPES), ['dineinName', 'dineinTable', 'takeaway', 'collection', 'delivery', 'drivethru']);
@@ -79,6 +82,27 @@ test('buildTicketMeta: tables and bar tabs never carry a number, tills carry the
   const till = buildTicketMeta({ channel: 'till', orderType: 'takeaway', customerName: '  Peter  Roberts ', orderRef: 'R32635' });
   assert.equal(till.orderNo, '35');
   assert.equal(till.customerName, 'Peter Roberts');
+});
+
+test('buildTicketMeta carries the FULL ref (30 Sep 2026) and ticketMeta keeps it, while orderNo stays short', () => {
+  const till = buildTicketMeta({ channel: 'till', orderType: 'takeaway', customerName: 'Sam', orderRef: 'R32697' });
+  assert.equal(till.ref, 'R32697');
+  assert.equal(till.orderNo, '97');
+  const back = ticketMeta({ meta: till });
+  assert.equal(back.ref, 'R32697');
+  assert.equal(back.orderNo, '97', 'not shortened a second time');
+  const kiosk = buildTicketMeta({ channel: 'kiosk', orderType: 'takeaway', orderRef: 'R3962' });
+  assert.equal(kiosk.ref, 'R3962');
+  const hub = buildTicketMeta({ channel: 'hubrise', orderType: 'delivery', orderRef: 'HR-g23er44', appCode: '8455' });
+  assert.equal(hub.ref, 'HR-g23er44');
+  assert.equal(hub.orderNo, '8455');
+  assert.equal(ticketMeta({ meta: hub }).orderNo, '8455');
+  // No ref for a table send or a bar round, and a stored row from before this change has null.
+  assert.equal(buildTicketMeta({ channel: 'table', isTable: true }).ref, null);
+  assert.equal(buildTicketMeta({ channel: 'bar', customerName: 'Neil' }).ref, null);
+  assert.equal(ticketMeta({ meta: { v: 1, channel: 'till', orderNo: '35' } }).ref, null);
+  // A legacy channel row reads its ref from the label.
+  assert.equal(parseLegacyTicket({ table_label: 'Kiosk R17' }).ref, 'R17');
 });
 
 test('buildTicketMeta: a delivery app code wins over our ref (Peter: #8455)', () => {
@@ -346,4 +370,98 @@ test('venueBusinessDayStart: the venue clock, not the device clock, and DST corr
   // Missing settings fall back to London 06:00.
   assert.equal(iso(venueBusinessDayStart(Date.parse('2026-09-14T05:30:00Z'))), '2026-09-14T05:00:00.000Z');
   assert.throws(() => venueBusinessDayStart(Date.now(), 'Not/AZone'));
+});
+
+// 30 Sep 2026 (Peter, Coffee Boy): a void reaches the kitchen. The till flags the voided lines on
+// the ticket row; the card shows them struck through under a red block, off the course groups.
+test('voidState: the void notice a ticket carries', () => {
+  const items = [
+    { uid: 'a', name: 'Burger', qty: 2, course: 1 },
+    { uid: 'b', name: 'Chips', qty: 1, course: 1, voided: true },
+  ];
+  const one = voidState(items);
+  assert.equal(one.lines.length, 1);
+  assert.equal(one.lines[0].name, 'Chips');
+  assert.equal(one.lines[0].index, 1, 'the ticket index, so the line matches the row');
+  assert.equal(one.all, false);
+  assert.equal(one.label, 'VOID 1 LINE');
+  const all = voidState(items.map(i => ({ ...i, voided: true })));
+  assert.equal(all.all, true);
+  assert.equal(all.label, 'ORDER VOIDED');
+  assert.equal(voidState(items.map(i => ({ ...i, voided: false }))).label, null);
+  assert.equal(voidState([]).all, false, 'an empty ticket is not a voided one');
+  assert.equal(voidState(null).lines.length, 0);
+  // The course groups still leave voided lines off, and the view carries both.
+  const view = ticketView({ id: 'k1', table: 'T4', items, firedCourses: [0, 1], meta: buildTicketMeta({ channel: 'table', isTable: true }) });
+  assert.equal(view.groups[0].lines.length, 1);
+  assert.equal(view.groups[0].lines[0].name, 'Burger');
+  assert.equal(view.voids.label, 'VOID 1 LINE');
+  assert.equal(voidState(items.map(i => ({ ...i, voided: true }))).lines.length, 2);
+  assert.equal(courseGroups(items.map(i => ({ ...i, voided: true })), [0, 1]).length, 0, 'a fully voided ticket shows only the red block');
+});
+
+// ── 12 Oct 2026 (Preston): who routed a channel ticket, stamped inside meta ──
+// QR drinks landed on the Food screen and nothing on the ticket said which app had sent them.
+// The stamp rides under ONE key that no reader looks at, so every screen reads the ticket as before.
+
+const ROUTE_STAMP = buildRouteStamp({
+  deviceId: 'dev-1', deviceName: 'POS', mode: 'pos', version: '5.11.51', trigger: 'live',
+  categoryCount: 41, parentLinks: 28, menuHeld: true, fallbackNames: [], at: Date.parse('2026-10-12T09:00:00Z'),
+});
+// The meta of a real Preston QR ticket (read from live kds_tickets, the customer name changed).
+const QR_META = buildTicketMeta({ channel: 'qr', orderType: 'dine-in', isTable: true, customerName: 'Sam Smith', orderRef: 'QR-QRJZK', source: 'QR' });
+
+test('ROUTE_STAMP_KEY is routedBy, and is none of the names a meta reader takes', () => {
+  assert.equal(ROUTE_STAMP_KEY, 'routedBy');
+  const taken = ['channel', 'orderType', 'isTable', 'customerName', 'orderRef', 'appCode', 'source', 'staff', 'note', 'v', 'ref', 'orderNo', 'kdsNote'];
+  assert.ok(!taken.includes(ROUTE_STAMP_KEY));
+  // The names buildTicketMeta writes are all in that list, so the stamp can never land on one.
+  for (const k of Object.keys(buildTicketMeta({}))) assert.ok(taken.includes(k), k);
+});
+
+test('withRouteStamp adds the stamp under routedBy and leaves the ten meta keys as they are', () => {
+  const stamped = withRouteStamp(QR_META, ROUTE_STAMP);
+  assert.deepEqual(stamped, { ...QR_META, routedBy: ROUTE_STAMP });
+  assert.deepEqual(Object.keys(stamped), [...Object.keys(QR_META), 'routedBy']);
+  assert.equal(Object.keys(QR_META).length, 10);
+  assert.ok(!('routedBy' in QR_META), 'the input is not changed');
+  // No stamp (it could not be built): the very same meta object goes on the ticket.
+  assert.equal(withRouteStamp(QR_META, null), QR_META);
+  assert.equal(withRouteStamp(QR_META, undefined), QR_META);
+  // Junk meta is handed back as it is, never spread.
+  assert.equal(withRouteStamp(null, ROUTE_STAMP), null);
+  assert.equal(withRouteStamp('x', ROUTE_STAMP), 'x');
+});
+
+test('readers ignore the stamp: ticketMeta and the card are the same with it and without it', () => {
+  const plainRow = { id: 'kds-1-pc1-aaaa', table: 'Table 9', table_label: 'Table 9', server: 'Sam Smith', covers: 1, items: [{ qty: 1, name: 'Latte Big Boy', course: 1 }], meta: QR_META };
+  const stampedRow = { ...plainRow, meta: withRouteStamp(QR_META, ROUTE_STAMP) };
+  assert.deepEqual(ticketMeta(stampedRow), ticketMeta(plainRow));
+  assert.ok(!('routedBy' in ticketMeta(stampedRow)), 'the normalised meta drops the stamp');
+  assert.equal(ticketMeta(stampedRow).ref, 'QR-QRJZK');
+  // The board maps a row with the normalised meta, then builds the card from it.
+  const card = (row) => ticketView({ ...row, meta: ticketMeta(row) });
+  assert.deepEqual(card(stampedRow), card(plainRow));
+  assert.equal(card(stampedRow).typeKey, 'dineinTable');
+  assert.equal(needsTypeLookup(ticketMeta(stampedRow)), needsTypeLookup(ticketMeta(plainRow)));
+});
+
+test('a row with no meta still reads through parseLegacyTicket exactly as before', () => {
+  // The missing column retry writes a channel ticket with meta stripped whole.
+  const legacy = { id: 'k', table_label: 'QR QR-QRJZK', server: 'Sam Smith', items: [] };
+  assert.deepEqual(ticketMeta(legacy), parseLegacyTicket(legacy));
+  assert.equal(ticketMeta(legacy).legacy, true);
+  assert.equal(ticketMeta(legacy).channel, 'qr');
+  assert.equal(ticketMeta(legacy).customerName, 'Sam Smith');
+  // A meta that holds ONLY the stamp (no v) is still a legacy row: the stamp is not a version.
+  const onlyStamp = { ...legacy, meta: withRouteStamp({}, ROUTE_STAMP) };
+  assert.deepEqual(ticketMeta(onlyStamp), parseLegacyTicket(legacy));
+});
+
+test('the kitchen note save keeps the stamp, and clearing the note keeps it too', () => {
+  const stamped = withRouteStamp(QR_META, ROUTE_STAMP);
+  const noted = metaWithKdsNote(stamped, 'oat milk');
+  assert.deepEqual(noted.routedBy, ROUTE_STAMP);
+  assert.equal(kdsNoteOf(noted), 'oat milk');
+  assert.deepEqual(metaWithKdsNote(noted, null), stamped);
 });

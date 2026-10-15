@@ -21,8 +21,9 @@ import { useStore } from '../store';
 import { isDeviceLinkUncertain } from '../lib/deviceLink';
 import { trustSharedRead } from '../lib/deviceFence';
 import { checkClosesOccupation } from '../lib/rowWriteFence';
-import { bookedTaxRecord } from '../lib/taxShare';
-import { closedCheckRefundFields } from '../lib/closedCheckRefundFields';
+import { closedCheckRefundFields, closedCheckTaxFields } from '../lib/closedCheckRefundFields';
+import { readMasterTill } from '../lib/masterTillDevice';
+import { masterBeatRole } from '../lib/masterTill';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
 // Jitter every poller ±20% so a fleet of devices doesn't hit the API in
@@ -43,6 +44,14 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
 
   const beat = async () => {
     try {
+      // 12 Oct 2026 (review): the beat follows the ONE rule at every beat, no network. The role
+      // was fixed at page load and this timer is never stopped, so a page that had stopped
+      // sending orders (disconnected by another session, removed, its master answer cleared)
+      // went on writing "master" and the Back Office Devices screen said "Master till is on".
+      // For the real master the row is the same as always. A page with no till session writes
+      // nothing (lib/masterTill.js masterBeatRole says why).
+      const role = masterBeatRole(readMasterTill({ venueId: locationId }));
+      if (!role) return;
       const tables = useStore.getState().tables || [];
       const openTables = tables.filter(t => t.session?.items?.length > 0).length;
       // Get local IP hint (best effort) — CACHED: spinning up an
@@ -69,7 +78,7 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
         device_id:   deviceId,
         location_id: locationId,
         device_name: deviceName,
-        role:        'master',
+        role,
         last_seen:   new Date().toISOString(),
         version,
         open_tables: openTables,
@@ -240,9 +249,9 @@ export async function forceSyncFromSupabase() {
         tableLabel: c.table_label,
         tableId: c.table_id,
         // v5.9.12: tax as booked (refunds and reprints of a US check read it).
-        // Inclusive rows get no new keys, as before.
         // 27 Sep 2026: a scaled UK record too (taxShare.bookedTaxRecord), so reports read its booked VAT.
-        ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxAmount: c.tax_amount ?? null, taxBreakdown: c.tax_breakdown } : {}),
+        // 8 Oct 2026: every copy carries the VAT booked and its record (lib/closedCheckRefundFields.js).
+        ...closedCheckTaxFields(c),
         // 28 Sep 2026: the raw row only has snake_case names, and the refund reads
         // stripePaymentIntentId / paymentIntents / giftCard, so a force sync used to leave
         // every one of today's card sales with no card leg to refund.

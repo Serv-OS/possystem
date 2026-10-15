@@ -16,13 +16,23 @@ import { StatTile, ExportBtn, EmptyState, Heatmap, HourBar } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { classifyShift, daypartGrid, reportClock, venueHour } from './_filters';
 import { currencySymbol } from '../../../lib/currency';
+import { isSplit } from '../../../lib/reportSplit.js';
+import { useParts, exportSites } from './_siteSplit';
+import { SplitHeader, Blocks, SiteMatrix } from './SiteSplit';
 
 const DOW_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
 const tileSt = { padding:'14px 16px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12 };
 const lblSt  = { fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 };
 
-export default function Daypart({ checks, fmt, locationConfig }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file. One site is the report exactly as it was.
+export default function Daypart(props) {
+  return isSplit(props.sites) ? <DaypartSites {...props}/> : <DaypartOne {...props}/>;
+}
+
+function DaypartOne({ checks, fmt, locationConfig }) {
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const { grid, byHour, byDow, peakCell, totalRev } = useMemo(() => {
     const { grid, byHour, byDow } = daypartGrid(checks, clock);
@@ -129,6 +139,67 @@ export default function Daypart({ checks, fmt, locationConfig }) {
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:16 }}>Revenue by hour (all days combined)</div>
         <HourBar values={byHour} maxLabel={v => `${currencySymbol()}${Math.round(v)}`} nowHour={nowHour}/>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the group's hours and weekdays on top, then a column per site.
+// Every sale is put in an hour and a weekday on ITS OWN site's clock (part.clock), so
+// "12:00" is each site's own lunchtime and a late sale counts on that site's business day.
+// Services are not shown here: each site names and times its own, so pick one site for them.
+// ─────────────────────────────────────────────────────────────────────────────
+function DaypartSites(props) {
+  const { parts, blocks } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => [p.id, daypartGrid(p.rows, p.clock)])), [parts]);
+
+  const onExport = () => {
+    const rows = [];
+    for (const p of parts) {
+      const { grid } = bySite.get(p.id);
+      for (let d = 0; d < 7; d++) for (let h = 0; h < 24; h++) {
+        if (grid[d][h] > 0) rows.push({ siteName: p.name, currency: p.currency || '', day: DOW_LABELS[d], hour: `${h}:00`, revenue: grid[d][h].toFixed(2) });
+      }
+    }
+    exportSites('daypart', rows, [
+      { label:'Currency', key:'currency' },
+      { label:'Day',      key:'day' },
+      { label:'Hour',     key:'hour' },
+      { label:'Revenue',  key:'revenue' },
+    ]);
+  };
+
+  if (parts.every(p => bySite.get(p.id).byHour.every(v => v === 0))) {
+    return <EmptyState icon="🕓" message="No sales at these sites in this period to chart."/>;
+  }
+
+  return (
+    <div>
+      <SplitHeader parts={parts} onExport={onExport}>
+        <div style={{ color:'var(--t4)' }}>Hours are each site's own wall clock. Pick one site to see its service periods and heatmap.</div>
+      </SplitHeader>
+      <Blocks blocks={blocks}>{b => {
+        const line = (pick, key, label) => {
+          const cells = Object.fromEntries(b.parts.map(p => [p.id, pick(bySite.get(p.id))]));
+          return { key, label, bySite: cells, total: Object.values(cells).reduce((s, v) => s + v, 0) };
+        };
+        const hours = Array.from({ length:24 }, (_, h) => line(g => g.byHour[h], `h${h}`, `${h}:00`));
+        const dows  = DOW_LABELS.map((l, d) => line(g => g.byDow[d], `d${d}`, l));
+        const total = line(g => g.byHour.reduce((s, v) => s + v, 0), '__total', 'Revenue');
+        const peakH = hours.reduce((a, r) => (r.total > a.total ? r : a), hours[0]);
+        const peakD = dows.reduce((a, r) => (r.total > a.total ? r : a), dows[0]);
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:18 }}>
+              <StatTile label="Revenue"      value={b.fmt(total.total)} color="var(--acc)"/>
+              <StatTile label="Busiest hour" value={peakH.label} sub={b.fmt(peakH.total)}/>
+              <StatTile label="Busiest day"  value={peakD.label} sub={b.fmt(peakD.total)}/>
+            </div>
+            <SiteMatrix block={b} rows={[{ ...total, strong:true }, ...hours.filter(r => r.total > 0)]} first="Hour (site's own clock)" title="Revenue by hour"/>
+            <SiteMatrix block={b} rows={dows} first="Business day of the week" title="Revenue by day of week"/>
+          </>
+        );
+      }}</Blocks>
     </div>
   );
 }

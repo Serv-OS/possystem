@@ -1,30 +1,70 @@
 // src/surfaces/OwnerSurface.jsx  (?mode=owner)
 //
-// The owner phone app — a top-down snapshot of the whole business at a glance.
+// The owner phone app: a top-down snapshot of the whole business at a glance.
 // Mobile-first PWA surface: back-office login (owners' existing credentials),
-// then a rollup across every location they can access plus a per-venue card —
+// then a rollup across every location they can access plus a per-venue card:
 // today's sales vs forecast, labour %, live orders/tables, WTD vs last week and
 // today's top items. All figures come from the owner-snapshot edge fn in one
 // round trip. Read-only by design.
+//
+// 2 Oct 2026, Peter: "On the owner app I want to be able to have quick filters for
+// today, this week, this month." Three chips under the header choose the period for
+// the group card and every venue card; the phone remembers the last one. Today is
+// the default and reads the same fields as before. The words and the fallback for a
+// function from before the filters are in src/lib/ownerPeriod.js.
+//
+// 5 Oct 2026 (Peter's decisions on multi site reporting):
+//   * THE COMPARISON LINE IS ALWAYS DRAWN, on every venue card and on the group card, and it
+//     says what it compares to: "+2% vs last Monday by 2pm", "+2% vs same days last week",
+//     "New this week" and "No sales yet today" in grey (never a red minus 100%), and for the
+//     group "Same days last week £881 · +177% (2 of 6 venues, 4 new)". The percent and the
+//     reason word are the function's; the words are src/lib/ownerCompare.js.
+//   * TAP A CARD. A venue card opens that venue's seven reports, the group card the same
+//     seven across all sites (src/surfaces/owner/OwnerDetail.jsx). The chips stay on top and
+//     the phone's own back closes the screen, as the Back button does.
+//   * CURRENCIES ARE NEVER ADDED TOGETHER: a login with pound and dollar venues gets one
+//     group card per currency (the function's rollup.by_currency).
+//   * AN OLD FUNCTION (no `compare` block, no detail call): the cards draw exactly what they
+//     drew before, and the venue screen says "More reports need a ServOS update".
+//
+// 8 Oct 2026, Peter: "what is Food/drink/other split ... in hospitality a valued piece of data".
+// Every venue card and every group card gets a thin sales mix bar under its sales figure (Food,
+// Drinks, Other, with each group's share and its change in points), from the function's own
+// `mix` blocks through src/lib/ownerMix.js (src/surfaces/owner/MixBar.jsx draws it). Only when
+// the function says it has the mix (canMix); a function from before it shows no bar at all.
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { withTimeout, TimeoutError } from '../lib/withTimeout';
+import {
+  PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod, shownPeriod,
+  venueView, rollupView, likeForLikeNote, rangeLabel, sharedRange, signedPct, groupCards,
+} from '../lib/ownerPeriod';
+import { compareBlock, groupCompareBlock, compareLine, groupLine, sharedCompareRange } from '../lib/ownerCompare';
+import { canDetail, canMix, groupTarget, venueTarget } from '../lib/ownerDetail';
+import { cardBar, allOtherByCurrency } from '../lib/ownerMix';
+import OwnerDetail from './owner/OwnerDetail';
+import MixBar from './owner/MixBar';
+import { money, toneColor, periodChip, periodChipOn } from './owner/style';
 
 /** A refresh that has not answered by now is never going to (a woken phone). */
 const LOAD_TIMEOUT_MS = 15000;
+/** This month reads two months of checks for every venue, so it is given longer to answer. */
+const MONTH_LOAD_TIMEOUT_MS = 30000;
+/** The screen refreshes itself every two minutes; a month is a heavier read, so every ten. */
+const REFRESH_MS = 120000;
+const MONTH_REFRESH_MS = 600000;
+// Private browsing can throw on the very mention of localStorage.
+const phoneStorage = () => { try { return window.localStorage; } catch { return null; } };
 
-const money = (n, currency = 'GBP', dp = 0) => {
-  try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency, minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
-  catch { return `£${(Number(n) || 0).toFixed(dp)}`; }
-};
 const pctTone = (p, good = 'up') => p == null ? 'var(--t3)' : (good === 'up' ? (p >= 100 ? 'var(--grn)' : p >= 85 ? 'var(--amber)' : 'var(--red)') : 'var(--t1)');
 
 export default function OwnerSurface() {
-  const [session, setSession] = useState(undefined); // undefined=checking
+  // undefined = checking; with no backend (the demo build) there is no session to check for.
+  const [session, setSession] = useState(isMock || !supabase ? null : undefined);
   // SECOND SIGN IN STEP (docs/SECOND_STEP.md): the Owner app signs in with Back Office
   // credentials and its token can read everything the Back Office can, so it asks for the
   // same second step. Closed again whenever the session drops back to password only.
@@ -34,11 +74,11 @@ export default function OwnerSurface() {
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('rpos-theme') || 'dark'; } catch { return 'dark'; } });
   const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
 
-  useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch {} }, []);
-  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch {} }, [theme]);
+  useEffect(() => { try { document.documentElement.setAttribute('data-skin', 'servos'); } catch { /* no document */ } }, []);
+  useEffect(() => { try { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('rpos-theme', theme); } catch { /* storage closed to us */ } }, [theme]);
 
   // The app globally locks html/body/#root to height:100% + overflow:hidden
-  // (kiosk/POS style — no page scroll). The owner app is a normal scrollable
+  // (kiosk/POS style, no page scroll). The owner app is a normal scrollable
   // mobile page, so unlock scrolling while it's mounted and restore on unmount.
   useEffect(() => {
     const nodes = [document.documentElement, document.body, document.getElementById('root')].filter(Boolean);
@@ -62,7 +102,7 @@ export default function OwnerSurface() {
   }, []);
 
   useEffect(() => {
-    if (isMock || !supabase) { setSession(null); return; }
+    if (isMock || !supabase) return undefined;
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       setSession(s || null);
@@ -157,14 +197,21 @@ function Login({ theme, onToggleTheme }) {
   );
 }
 
-function Dashboard({ email, theme, onToggleTheme }) {
+function Dashboard({ theme, onToggleTheme }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [updated, setUpdated] = useState('');
+  // The chip. `period` is what the owner asked for; what the cards SAY always comes from the
+  // answer itself (shownPeriod), so numbers and labels can never be for different periods.
+  const [period, setPeriod] = useState(() => readStoredPeriod(phoneStorage()));
+  const [needsUpdate, setNeedsUpdate] = useState(false);
+  // Chips can be tapped faster than answers come back: only the latest request is shown.
+  const seq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (want) => {
+    const mine = ++seq.current;
     // 27 Sep 2026: tapping refresh looked like it did nothing at all. On a phone that has
     // been asleep the call can hang for good (a stalled auth lock or a socket the OS
     // dropped), and nothing here ever finished: no new time, no error, no spinner. So the
@@ -173,22 +220,82 @@ function Dashboard({ email, theme, onToggleTheme }) {
     setErr(''); setBusy(true);
     try {
       const { data: d, error } = await withTimeout(
-        supabase.functions.invoke('owner-snapshot', { body: {} }), LOAD_TIMEOUT_MS, 'Owner snapshot');
-      if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
+        supabase.functions.invoke('owner-snapshot', { body: { period: want } }),
+        want === 'month' ? MONTH_LOAD_TIMEOUT_MS : LOAD_TIMEOUT_MS, 'Owner snapshot');
+      if (error) { let b = null; try { b = await error.context?.json?.(); } catch { /* no body to read */ } throw new Error(b?.error || error.message); }
       if (d?.error) throw new Error(d.error);
+      if (mine !== seq.current) return;
       setData(d);
       setUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+      // A function from before the filters answers a week or a month with today's numbers and
+      // no echo. They are shown as today's, the chip goes back to Today, and one line says why.
+      if (shownPeriod(d, want).needsUpdate) {
+        setNeedsUpdate(true);
+        setPeriod('today');
+        storePeriod(phoneStorage(), 'today');
+      }
     } catch (e) {
+      if (mine !== seq.current) return;
       setErr(e instanceof TimeoutError
         ? 'Could not reach ServOS. Tap the arrow to try again, or close and reopen the app.'
         : (e.message || 'Could not load'));
     }
-    finally { setBusy(false); setLoading(false); }
+    finally { if (mine === seq.current) { setBusy(false); setLoading(false); } }
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 120000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    load(period);
+    const t = setInterval(() => load(period), period === 'month' ? MONTH_REFRESH_MS : REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load, period]);
+
+  // The screen behind a card: which venue (or group) is open, null for the cards. Opening adds
+  // a step to the phone's history so its own back (the Android button, the iOS swipe) closes
+  // the screen and does not leave the app.
+  const [open, setOpen] = useState(null);
+  const [tick, setTick] = useState(0);
+  const cardsScroll = useRef(0);
+  const openDetail = useCallback((target) => {
+    try { cardsScroll.current = window.scrollY || 0; } catch { /* no window */ }
+    try { window.history.pushState({ ...(window.history.state || {}), ownerDetail: true }, ''); } catch { /* history closed to us: the Back button still works */ }
+    setOpen(target);
+  }, []);
+  const closeDetail = useCallback(() => {
+    let went = false;
+    try { if (window.history.state?.ownerDetail) { window.history.back(); went = true; } } catch { /* fall through to a plain close */ }
+    if (!went) setOpen(null);
+  }, []);
+  useEffect(() => {
+    const onPop = () => setOpen(null);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  // The reports start at the top; the cards come back where they were left.
+  const isOpen = !!open;
+  useEffect(() => { try { window.scrollTo(0, isOpen ? 0 : cardsScroll.current); } catch { /* no window */ } }, [isOpen]);
+  const refresh = useCallback(() => { load(period); setTick((n) => n + 1); }, [load, period]);
+
+  const pick = useCallback((id) => {
+    setNeedsUpdate(false);
+    storePeriod(phoneStorage(), id);
+    if (id === period) load(id); else setPeriod(id);
+  }, [load, period]);
 
   const r = data?.rollup;
   const multi = (data?.locations?.length || 0) > 1;
+  // The period the numbers on screen are for (the function's own word, never the chip's).
+  const shown = shownPeriod(data, period).period;
+  const dates = shown === 'today' ? null : sharedRange(data?.locations);
+  // One group card, or one per currency when the venues do not share one.
+  const groups = groupCards(data);
+  // 8 Oct 2026: the sales mix bars, only from a function that sends the mix. A venue card in a
+  // currency with nothing set up anywhere stays quiet; its group card carries the one hint.
+  const mixOn = canMix(data);
+  const quietBy = allOtherByCurrency(groups);
+  // The numbers on screen are for another period than the lit chip: they stay, dimmed, under
+  // their own labels, until an answer for the chip lands. NOT only while the call is running:
+  // a This month call that failed left Today's figures at full brightness under a lit
+  // This month chip, with only the red line to say they were not the month's.
+  const waiting = !!data && shown !== period;
 
   return (
     <>
@@ -202,11 +309,20 @@ function Dashboard({ email, theme, onToggleTheme }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <ThemeBtn theme={theme} onClick={onToggleTheme} />
-          <button onClick={load} disabled={busy} title="Refresh" aria-busy={busy}
+          <button onClick={refresh} disabled={busy} title="Refresh" aria-busy={busy}
             style={{ ...iconBtn, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>{busy ? '⋯' : '↻'}</button>
           <button onClick={() => supabase.auth.signOut()} title="Sign out" style={iconBtn}>⎋</button>
         </div>
       </div>
+
+      {/* ── Quick filters: the period for the group card and every venue card ── */}
+      <div role="group" aria-label="Period" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 14 }}>
+        {PERIOD_CHIPS.map((c) => (
+          <button key={c.id} onClick={() => pick(c.id)} aria-pressed={period === c.id}
+            style={{ ...periodChip, ...(period === c.id ? periodChipOn : null) }}>{c.label}</button>
+        ))}
+      </div>
+      {needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-4px 0 12px' }}>{NEEDS_UPDATE}</div>}
 
       {loading && !data && <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '60px 0' }}>Loading your business…</div>}
       {err && <div style={{ color: 'var(--red)', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>{err}</div>}
@@ -215,34 +331,83 @@ function Dashboard({ email, theme, onToggleTheme }) {
         <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '50px 16px', fontSize: 14 }}>No locations are linked to your account yet.</div>
       )}
 
-      {/* ── Rollup (all venues today) ── */}
-      {r && data.locations.length > 0 && (
-        <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16 }}>
-          <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{multi ? `Today · ${r.locations} venues` : 'Today'}</div>
-          <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(r.net_sales, data.locations[0]?.currency)}</div>
-          {r.forecast > 0 && (
-            <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(r.forecast_pct) }}>
-              {r.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(r.forecast, data.locations[0]?.currency)})</span>
-            </div>
-          )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
-            <Mini label="Orders" value={r.orders} />
-            <Mini label="Labour" value={r.labour_pct != null ? `${r.labour_pct}%` : '—'} tone={r.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
-            <Mini label="Live now" value={r.live_orders} />
-            <Mini label="On floor" value={r.open_tables} />
-          </div>
-          {r.wtd_vs_last_week_pct != null && (
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
-              Week to date {money(r.wtd_net, data.locations[0]?.currency)} ·{' '}
-              <span style={{ color: r.wtd_vs_last_week_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{r.wtd_vs_last_week_pct >= 0 ? '+' : ''}{r.wtd_vs_last_week_pct}%</span> vs last week
-            </div>
+      {open && (
+        <OwnerDetail target={open} period={period} supported={canDetail(data)} tick={tick} onBack={closeDetail} backLabel="Back" />
+      )}
+
+      {!open && (
+        <div style={{ opacity: waiting ? 0.5 : 1, transition: 'opacity .15s' }}>
+          {/* ── Rollup (all venues of one currency, the period shown) ── */}
+          {groups.map((g) => (
+            <GroupCard key={g.currency} g={g} shown={shown} multi={multi} mixed={groups.length > 1}
+              bar={mixOn ? cardBar(g.rollup.mix, { hint: true }) : null}
+              onOpen={() => openDetail(groupTarget(groups.length > 1 ? g.currency : (r.currency || null), g.rollup.locations))} />
+          ))}
+
+          {/* ── Per-venue cards ── */}
+          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates}
+            bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null} onOpen={() => openDetail(venueTarget(l))} />)}
+        </div>
+      )}
+    </>
+  );
+}
+
+// A card that opens a screen: a tap, or Enter or Space from a keyboard.
+const tapProps = (onOpen, label) => ({
+  role: 'button', tabIndex: 0, 'aria-label': label, onClick: onOpen,
+  onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } },
+});
+const MoreHint = () => <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, flexShrink: 0 }}>Reports ›</span>;
+
+function GroupCard({ g, shown, multi, mixed, onOpen, bar }) {
+  const r = g.rollup;
+  const cur = g.currency;
+  const copy = PERIOD_COPY[shown];
+  const rv = rollupView(r, shown);
+  const dates = sharedRange(g.locations);
+  const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates)].filter(Boolean).join(' · ');
+  // The function's own comparison for the period shown; null from a function before the reason word.
+  const cmp = groupCompareBlock(r, rv.period);
+  const line = cmp ? groupLine(cmp, sharedCompareRange(g.locations), rv.period) : null;
+  return (
+    <div {...tapProps(onOpen, `Reports for ${mixed ? `${cur} venues` : 'all venues'}`)}
+      style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '18px 18px 16px', marginBottom: 16, cursor: 'pointer' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{heading}</div>
+        <MoreHint />
+      </div>
+      <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rv.net_sales, cur)}</div>
+      {rv.forecast > 0 && (
+        <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
+          {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
+        </div>
+      )}
+      {/* 8 Oct 2026: the sales mix of this currency's venues, from the function; nothing from an old one. */}
+      <MixBar bar={bar} size="group"/>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
+        <Mini label="Orders" value={rv.orders} />
+        <Mini label="Labour" value={rv.labour_pct != null ? `${rv.labour_pct}%` : '-'} tone={rv.labour_pct > 35 ? 'var(--red)' : 'var(--t1)'} />
+        <Mini label="Live now" value={rv.live_orders} />
+        <Mini label="On floor" value={rv.open_tables} />
+      </div>
+      {/* The comparison line is ALWAYS drawn, and the pounds are always the comparison's. */}
+      {line && (
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
+          {line.grey ? <span style={{ fontWeight: 700 }}>{line.grey}</span> : (
+            <>{line.label} {money(line.amount, cur)} ·{' '}
+              <span style={{ color: toneColor(line.tone), fontWeight: 700 }}>{line.pct}</span>{line.note}</>
           )}
         </div>
       )}
-
-      {/* ── Per-venue cards ── */}
-      {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} />)}
-    </>
+      {/* A function from before the reason word: the line it has always had. */}
+      {!line && rv.vs_pct != null && (
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
+          {rv.period === 'today' ? 'Week to date' : copy.before} {money(rv.before, cur)} ·{' '}
+          <span style={{ color: rv.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rv.vs_pct)}</span>{rv.period === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -255,15 +420,23 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName }) {
-  const t = l.today;
+function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
+  const t = venueView(l, period);
+  const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
+  // The function's own comparison for the period shown; null from a function before the reason word.
+  const cmp = compareBlock(l, t.period);
+  const line = cmp ? compareLine(cmp, l.range, t.period) : null;
   return (
-    <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 16, marginBottom: 12 }}>
-      {showName && <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>{l.name}</div>}
+    <div {...tapProps(onOpen, `Reports for ${l.name}`)}
+      style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: 16, marginBottom: 12, cursor: 'pointer' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{showName ? l.name : ''}</div>
+        <MoreHint />
+      </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Net sales today</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{copy.sales}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
           <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(t.net_sales, l.currency)}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
@@ -279,24 +452,29 @@ function VenueCard({ l, showName }) {
           <div style={{ height: '100%', width: `${Math.min(100, fpct || 0)}%`, background: pctTone(fpct), borderRadius: 99 }} />
         </div>
       )}
+      {/* 8 Oct 2026: the sales mix bar (Food, Drinks, Other), from the function; nothing from an old one. */}
+      <MixBar bar={bar}/>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 14 }}>
         <Stat label="Orders" value={t.orders} />
         <Stat label="Avg check" value={money(t.avg_check, l.currency, 2)} />
-        <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '—'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
+        <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '-'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <Chip>● {l.live.orders} live order{l.live.orders === 1 ? '' : 's'}</Chip>
         <Chip>▢ {l.live.tables} on floor</Chip>
         {t.tips > 0 && <Chip>{money(t.tips, l.currency)} tips</Chip>}
-        {l.wtd.vs_last_week_pct != null && <Chip tone={l.wtd.vs_last_week_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>WTD {l.wtd.vs_last_week_pct >= 0 ? '+' : ''}{l.wtd.vs_last_week_pct}% vs last wk</Chip>}
+        {/* A function from before the reason word: the chip it has always had. */}
+        {!line && t.vs_pct != null && <Chip tone={t.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(t.vs_pct)} vs last wk` : `${signedPct(t.vs_pct)} ${copy.versus}`}</Chip>}
       </div>
+      {/* The comparison line is ALWAYS drawn: a percent with what it is against, or the reason in grey. */}
+      {line && <div style={{ fontSize: 12.5, fontWeight: 700, color: toneColor(line.tone), marginTop: 10 }}>{line.text}</div>}
 
-      {l.top_items?.length > 0 && (
+      {t.top_items.length > 0 && (
         <div style={{ marginTop: 14, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>Top sellers today</div>
-          {l.top_items.map((it, i) => (
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}</div>
+          {t.top_items.map((it, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', color: 'var(--t2)' }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.qty}× {it.name}</span>
               <span style={{ color: 'var(--t3)', marginLeft: 10, flexShrink: 0 }}>{money(it.rev, l.currency)}</span>

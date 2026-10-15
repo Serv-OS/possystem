@@ -9,9 +9,11 @@ import { useStore } from '../store';
 export default function ConfigSyncBanner() {
   const { configUpdateAvailable, configUpdateSnapshot, applyConfigUpdate } = useStore();
   const [applying, setApplying] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  // 30 Sep 2026: "Later" hides THIS push only. It used to be a plain true that stayed set, so
+  // every later push was hidden too until someone signed out.
+  const [dismissedSnap, setDismissedSnap] = useState(null);
 
-  if (!configUpdateAvailable || dismissed) return null;
+  if (!configUpdateAvailable || (dismissedSnap && dismissedSnap === configUpdateSnapshot)) return null;
 
   const snap = configUpdateSnapshot;
   const time = snap?.pushedAt
@@ -60,7 +62,7 @@ export default function ConfigSyncBanner() {
       {/* Actions */}
       <div style={{ display:'flex', gap:8, flexShrink:0 }}>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={() => setDismissedSnap(configUpdateSnapshot)}
           style={{ padding:'5px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'transparent', border:'1px solid var(--acc-b)', color:'var(--t3)', fontSize:12, fontWeight:600 }}
         >Later</button>
         <button

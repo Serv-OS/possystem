@@ -11,6 +11,7 @@ import { readCustomerByPhone } from '../../supabase/functions/_shared/customerPh
 import { activePhoneRegion } from '../lib/customerLookup';
 import { money, currencySymbol } from '../lib/currency';
 import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSectionView } from '../lib/sectionPlan';
+import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -1151,7 +1152,7 @@ export default function TablesSurface() {
                   // 29 Sep 2026: read back by the one phone match key, under every shape it is stored
                   const { data } = await readCustomerByPhone(supabase, {
                     orgId: _cachedOrgId, phone: phoneN, typed: res.phone, region: activePhoneRegion(),
-                    cols: 'id, name, phone, phone_raw, email, allergens, marketing_opt_in, notes',
+                    cols: 'id, name, phone, phone_raw, email, allergens, marketing_opt_in',
                   });
                   if (data) customerObj = data;
                 }
@@ -1163,7 +1164,10 @@ export default function TablesSurface() {
             // back as the explicit customer field on the reservation object.
             const { customer: _cust, ...resCore } = res;
             void _cust;
-            const reservationWithCustomer = customerObj ? { ...resCore, customer: customerObj } : resCore;
+            // 30 Sep 2026 (Barnsley KDS #58 "6 expired"): the reservation keeps the guest, never
+            // the customer RECORD's notes: seatTable puts this customer on the table's order and
+            // the kitchen reads its notes (lib/orderCustomerNotes.js).
+            const reservationWithCustomer = customerObj ? { ...resCore, customer: withoutRecordNotes(customerObj) } : resCore;
             setReservation(selectedTable.id, reservationWithCustomer);
             setShowReservation(false);
             showToast(`${selectedTable.label} reserved for ${res.name} at ${res.time}`, 'success');

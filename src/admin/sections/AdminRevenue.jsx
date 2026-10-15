@@ -236,6 +236,11 @@ export default function AdminRevenue() {
               Margin needs what Adyen charges us per payment, which arrives with settlement report ingestion. No payment in this month carries fee data yet, so the table shows commission without a margin column value.
             </div>
           )}
+          {(data.not_live_rows ?? 0) > 0 && (
+            <div style={S.note}>
+              {data.not_live_rows} payment{data.not_live_rows === 1 ? ' is' : 's are'} not counted: test environment payments, or payments recorded before ServOS stamped live or test (7 Sep 2026). The FranPOS statement leaves out the same ones.
+            </div>
+          )}
           {data.capped && (
             <div style={S.note}>This month hit the 20,000-payment read cap — totals cover the first 20,000 payments of the month.</div>
           )}

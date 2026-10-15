@@ -16,6 +16,7 @@ import { supabase, isMock } from '../supabase';
 import { reportSave } from '../saveHealth';
 import { normaliseDisplay, normalisePairCode, isAbsentError, friendlyPairError } from './orderScreenStatus';
 import { withTimeout } from '../withTimeout';
+import { autoStatusSettings } from '../kds/kdsAutoStatus';
 
 const ASSET_BUCKET = 'receipt-assets';
 const ABSENT_MESSAGE = 'Order screens need a database update before you can use them. Ask ServOS support to switch them on.';
@@ -223,6 +224,40 @@ export async function saveKeepPaidSetting(locationId, value) {
     reportSave('order screen setting', failure);
     if (failure) return fail(failure, 'Could not save. Try again.');
     return ok(value === true);
+  }, 'Could not save. Try again.');
+}
+
+// ── Venue setting: the kitchen's bump marks the order ready / collected ──────────────
+// 30 Sep 2026 (Peter, Coffee Boy). Two keys in locations.pos_settings, off by default:
+// kds_auto_ready and kds_auto_collected (the second only counts with the first on). The rule
+// itself is src/lib/kds/kdsAutoStatus.js; the KDS reads these keys and runs it after a bump.
+
+/** { ready, collected } as the KDS reads them (collected is false when ready is off). */
+export async function loadKdsAutoStatusSettings(locationId) {
+  if (isMock || !supabase || !realLoc(locationId)) return ok(autoStatusSettings(null));
+  return guard(async () => {
+    const { data, error } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+    if (error) return fail(error, 'Could not load this setting.');
+    return ok(autoStatusSettings(data?.pos_settings));
+  }, 'Could not load this setting.');
+}
+
+/** Read, modify, merge so other pos_settings keys survive. A failed read never writes. */
+export async function saveKdsAutoStatusSettings(locationId, { ready, collected }) {
+  if (isMock || !supabase) return notLive();
+  if (!realLoc(locationId)) return fail(new Error('No venue chosen'), 'Choose a venue at the top of Back Office first.');
+  return guard(async () => {
+    const { data: cur, error: readErr } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+    if (readErr) return fail(readErr, 'Could not save. Try again.');
+    if (!cur) return fail(new Error('Venue not found'), 'Could not save. Try again.');
+    const next = autoStatusSettings({ kds_auto_ready: ready === true, kds_auto_collected: collected === true });
+    const { data, error } = await supabase.from('locations').update({
+      pos_settings: { ...(cur.pos_settings || {}), kds_auto_ready: next.ready, kds_auto_collected: next.collected },
+    }).eq('id', locationId).select('id');
+    const failure = error || zeroRows(data, 'Save');
+    reportSave('kitchen bump setting', failure);
+    if (failure) return fail(failure, 'Could not save. Try again.');
+    return ok(next);
   }, 'Could not save. Try again.');
 }
 

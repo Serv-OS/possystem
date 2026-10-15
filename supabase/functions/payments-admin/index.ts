@@ -685,7 +685,7 @@ Deno.serve(async (req) => {
 
     // Payments for the month, paged. Retry ladder drops the columns whose
     // migrations have not been hand-applied yet (20260821b, then 20260820).
-    const BASE_COLS = 'location_id, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
+    const BASE_COLS = 'location_id, live, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
     const LADDER = [
       `${BASE_COLS}, rate_category, commission_minor, fee_minor`,
       `${BASE_COLS}, fee_minor`,
@@ -712,6 +712,12 @@ Deno.serve(async (req) => {
     }
     const classified = ladderIdx === 0;
     const feesLive = ladderIdx <= 1;
+    // Live money only, the twin of the reseller statement's rule: test
+    // environment payments (live=false) and rows from before the live flag
+    // (null, before 7 Sep 2026) are not revenue.
+    const rowsRead = rows.length;
+    const notLiveRows = rows.filter((r) => r.live !== true).length;
+    rows.splice(0, rows.length, ...rows.filter((r) => r.live === true));
 
     // Location names (platform) + the ops mapping for the SaaS join.
     const { data: locs, error: locErr } = await platformAdmin.from('locations')
@@ -888,7 +894,527 @@ Deno.serve(async (req) => {
       saas: { plans: planCounts, typed: saasTyped, unmapped: saasUnmapped },
       classified,
       fees_live: feesLive,
-      capped: rows.length >= CAP,
+      not_live_rows: notLiveRows,
+      capped: rowsRead >= CAP,
+    });
+  }
+
+  // These five actions are platform wide (the FranPOS invoice ledger spans every
+  // venue), so they run BEFORE the single venue gate below. They sat after it
+  // from 26 Aug to 6 Oct 2026 and every call was refused with location_id required.
+  // ── Reseller (FranPOS) residuals ──────────────────────────────────────────
+  // We process on FranPOS's Adyen account, so every venue's card markup settles
+  // to FranPOS. They keep the buy rate (0.10% + 5 minor units per transaction,
+  // reseller terms 26 Aug 2026) and owe us the rest of each payment's stamped
+  // commission. These actions compute that residual and run the invoice ledger,
+  // because nothing arrives unless we bill them.
+
+  if (action === 'reseller_statement' || action === 'reseller_invoice_create') {
+    const month = String(body.month ?? '');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: 'month must be YYYY-MM' }, 400);
+    // An invoice for a month that has not finished would silently exclude the
+    // rest of the month, and the live unique key would then block the real one.
+    // Statements for the open month remain viewable. UTC deliberately: the
+    // bucketing below is on UTC boundaries, so UTC month-end is period close.
+    if (action === 'reseller_invoice_create') {
+      const nowMonth = new Date().toISOString().slice(0, 7);
+      if (month >= nowMonth) {
+        return json({ error: `${month} is still open. Create the invoice after the month ends so it covers every payment.` }, 400);
+      }
+    }
+    const from = new Date(`${month}-01T00:00:00Z`);
+    const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
+    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
+
+    // The buy rate for THIS month. Rate changes are effective-dated in
+    // adyen_reseller_rate_history so a renegotiation never reprices history:
+    // regenerating an old month resolves the rate that governed that month.
+    // select('*') on the singleton row on purpose: naming the columns errors
+    // whenever the deploy precedes the hand-applied migration, and that error
+    // would silently revert a renegotiated rate to the hardcoded fallback.
+    // PER CURRENCY (10 Sep 2026, owner): FranPOS's fixed fee is 5 US cents,
+    // which is 3p in GBP, so a history entry may carry fixed_minor_by_currency
+    // ({ GBP, USD, EUR }). _shared/resellerRate.ts resolves the governing entry
+    // the way this action always did and then picks the currency's fixed fee;
+    // an entry without the map reads exactly as before.
+    let resellerSettings: ResellerSettings = {};
+    {
+      const { data: st, error: stErr } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
+      if (!stErr && st) {
+        resellerSettings = {
+          history: (st as any).adyen_reseller_rate_history,
+          buyPercent: (st as any).adyen_reseller_buy_percent,
+          buyFixedMinor: (st as any).adyen_reseller_buy_fixed_minor,
+        };
+      }
+    }
+    const rateByCur = new Map<string, ResellerRate>();
+    const rateFor = (cur: string): ResellerRate => {
+      if (!rateByCur.has(cur)) rateByCur.set(cur, resellerRateFor(resellerSettings, cur, month));
+      return rateByCur.get(cur)!;
+    };
+    // The single numbers the answer has always carried (old readers): the
+    // percent and the entry's own fixed_minor, as the GBP-less legacy read.
+    const legacyRate = resellerRateFor({ ...resellerSettings, history: Array.isArray(resellerSettings.history)
+      ? (resellerSettings.history as any[]).map((h) => (h && typeof h === 'object' ? { ...h, fixed_minor_by_currency: undefined } : h))
+      : resellerSettings.history }, 'GBP', month);
+    const buyPercent = legacyRate.percent;
+    const buyFixedMinor = legacyRate.fixedMinor;
+    const buyFromSettings = legacyRate.source !== 'default';
+
+    // Column ladder so a pre-migration ledger degrades honestly instead of
+    // erroring. applied_mods rides the raw jsonb (always present) because it is
+    // the settlement truth for rows written before the captured_at column.
+    // live (20260907_PLATFORM_adyen_environment, applied): the webhook stamps
+    // true on live environment payments and false on test ones; rows from
+    // before 7 Sep 2026 are null.
+    const BASE = 'psp_reference, location_id, live, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
+    const LADDER = [
+      `${BASE}, commission_minor, authorised_at, capture_required, captured_at`,
+      `${BASE}, commission_minor`,
+      BASE,
+    ];
+    let ladderIdx = 0;
+    const rows: any[] = [];
+    // Bucket on the month the payment was AUTHORISED where stamped, with
+    // created_at as the fallback for pre-migration rows. FranPOS reconciles
+    // from Adyen's own payment dates, so webhook-arrival-month bucketing turns
+    // every boundary payment (and every backfill-minted row) into a dispute.
+    const monthFilter = (ladder: number) => ladder === 0
+      ? `and(authorised_at.gte.${from.toISOString()},authorised_at.lt.${to.toISOString()}),and(authorised_at.is.null,created_at.gte.${from.toISOString()},created_at.lt.${to.toISOString()})`
+      : null;
+    // The pager fails LOUDLY at a ceiling instead of truncating: a silently
+    // short statement under-bills FranPOS forever with nothing to notice it.
+    // Secondary sort on the primary key: created_at ties (bulk ingests) make
+    // offset paging over a non-unique key skip or duplicate boundary rows.
+    const PAGE = 1000;
+    const HARD_CEILING = 200000;
+    for (let fromIdx = 0; ; fromIdx += PAGE) {
+      const build = (ladder: number) => {
+        let q = platformAdmin.from('adyen_payments').select(LADDER[ladder]);
+        const or = monthFilter(ladder);
+        if (or) q = q.or(or);
+        else q = q.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
+        // Test environment payments (live=false) never settled on FranPOS's
+        // live account, so they are never read. Null (before the flag) rows are
+        // read, counted and shown below, but not invoiced.
+        return q.not('live', 'is', false)
+          .order('created_at', { ascending: true })
+          .order('psp_reference', { ascending: true })
+          .range(fromIdx, fromIdx + PAGE - 1);
+      };
+      let res = await build(ladderIdx);
+      while (res.error && isMissingColumn(res.error.message) && ladderIdx < LADDER.length - 1) {
+        ladderIdx++;
+        res = await build(ladderIdx);
+      }
+      if (res.error) return json({ error: `payments read failed: ${res.error.message}` }, 500);
+      const batch = (res.data ?? []) as any[];
+      rows.push(...batch);
+      if (batch.length < PAGE) break;
+      if (rows.length > HARD_CEILING) {
+        return json({ error: `More than ${HARD_CEILING} payments in ${month}. Move the aggregation into a SQL RPC before invoicing this month.` }, 500);
+      }
+    }
+
+    // How many successful test environment payments the month holds, so the
+    // screen can say they were left out rather than silently not showing them.
+    let testExcludedCount = 0;
+    {
+      let c = platformAdmin.from('adyen_payments').select('psp_reference', { count: 'exact', head: true })
+        .eq('live', false).eq('success', true);
+      const or = monthFilter(ladderIdx);
+      if (or) c = c.or(or);
+      else c = c.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
+      const { count, error: countErr } = await c;
+      if (!countErr) testExcludedCount = count ?? 0;
+    }
+
+    const { data: locs } = await platformAdmin.from('locations').select('id, name');
+    const nameById = new Map<string, string>();
+    for (const l of locs ?? []) nameById.set(l.id, l.name);
+
+    // Per currency, per venue. One invoice per currency: FranPOS cannot be
+    // billed a GBP+USD blend on one line, and minor units never cross currencies.
+    const isPayment = (r: any) => r.success === true && r.last_event_code !== 'CANCELLATION';
+    // Did any capture SUCCEED on this row? raw.applied_modifications is the
+    // settlement truth that survives out-of-order webhooks: a stale
+    // CAPTURE_FAILED from an earlier attempt can overwrite last_event_code on a
+    // payment that DID settle, and pre-migration rows have no captured_at.
+    const hasSuccessfulCapture = (r: any) => Array.isArray(r.applied_mods)
+      && r.applied_mods.some((m: any) => String(m).startsWith('CAPTURE:') && String(m).endsWith(':true'));
+    // A payment whose money never actually moved on FranPOS's Adyen account
+    // must not be invoiced: FranPOS reconciles against settlement and would
+    // dispute it. Two shapes: a capture that failed with no successful capture
+    // anywhere, and a manual-capture auth (US tip flow) never captured.
+    const isUnsettled = (r: any) => {
+      if (r.last_event_code === 'CAPTURE_FAILED' && !hasSuccessfulCapture(r)) return true;
+      if (r.capture_required === true && !r.captured_at && !hasSuccessfulCapture(r)) return true;
+      return false;
+    };
+    type VLine = {
+      location_id: string; name: string;
+      count: number; volume_minor: number;
+      gross_commission_minor: number; buy_share_minor: number; net_due_minor: number;
+      unrated_count: number; unrated_volume_minor: number;
+      unsettled_count: number; unsettled_volume_minor: number; refunds_minor: number;
+      unflagged_count: number; unflagged_volume_minor: number;
+    };
+    const byCur = new Map<string, Map<string, VLine>>();
+    for (const r of rows) {
+      const cur = String(r.currency || 'GBP');
+      if (!byCur.has(cur)) byCur.set(cur, new Map());
+      const perLoc = byCur.get(cur)!;
+      const key = r.location_id ?? 'unmatched';
+      if (!perLoc.has(key)) {
+        perLoc.set(key, {
+          location_id: key, name: key === 'unmatched' ? '(unmatched payments)' : (nameById.get(key) ?? key),
+          count: 0, volume_minor: 0, gross_commission_minor: 0, buy_share_minor: 0, net_due_minor: 0,
+          unrated_count: 0, unrated_volume_minor: 0,
+          unsettled_count: 0, unsettled_volume_minor: 0, refunds_minor: 0,
+          unflagged_count: 0, unflagged_volume_minor: 0,
+        });
+      }
+      const line = perLoc.get(key)!;
+      if (r.live !== true) {
+        // Before the live flag (7 Sep 2026) nothing says whether this money moved
+        // on FranPOS's live account. Shown as left out, never invoiced, and its
+        // refunds never net against live money.
+        if (isPayment(r)) {
+          line.unflagged_count++;
+          line.unflagged_volume_minor += Number(r.amount_minor) || 0;
+        }
+        continue;
+      }
+      line.refunds_minor += Number(r.amount_refunded_minor) || 0;
+      if (!isPayment(r)) continue;
+      const amount = Number(r.amount_minor) || 0;
+      if (isUnsettled(r)) {
+        // Withheld, and SHOWN as withheld: hiding these would make the statement
+        // disagree with FranPOS's settlement data with no visible reason.
+        line.unsettled_count++;
+        line.unsettled_volume_minor += amount;
+        continue;
+      }
+      line.count++;
+      line.volume_minor += amount;
+      const gross = ladderIdx === 0 && r.commission_minor != null ? Number(r.commission_minor) : null;
+      if (gross === null) {
+        // No stamped commission: flag it, never invent it. These payments are
+        // excluded from the invoice total and surfaced for a backfill.
+        line.unrated_count++;
+        line.unrated_volume_minor += amount;
+        continue;
+      }
+      // FranPOS's cut, rounded the same half-up way commissionForAmount rounds
+      // ours, so the two sides of the split are computed identically. The
+      // fixed fee is the payment currency's (3p in GBP, 5c in USD).
+      const buy = resellerMarginFor(amount, rateFor(cur)).totalMinor;
+      // A tiny payment can price below the buy rate. That is a real loss on the
+      // transaction, and hiding it by clamping to zero would overstate what
+      // FranPOS owes across the month.
+      line.gross_commission_minor += gross;
+      line.buy_share_minor += buy;
+      line.net_due_minor += gross - buy;
+    }
+
+    const statements = [...byCur.entries()].map(([currency, perLoc]) => {
+      const lines = [...perLoc.values()].sort((a, b) => b.net_due_minor - a.net_due_minor);
+      const sum = (f: (l: VLine) => number) => lines.reduce((s, l) => s + f(l), 0);
+      return {
+        currency,
+        lines,
+        totals: {
+          count: sum((l) => l.count), volume_minor: sum((l) => l.volume_minor),
+          gross_commission_minor: sum((l) => l.gross_commission_minor),
+          buy_share_minor: sum((l) => l.buy_share_minor),
+          net_due_minor: sum((l) => l.net_due_minor),
+          unrated_count: sum((l) => l.unrated_count), unrated_volume_minor: sum((l) => l.unrated_volume_minor),
+          unsettled_count: sum((l) => l.unsettled_count), unsettled_volume_minor: sum((l) => l.unsettled_volume_minor),
+          refunds_minor: sum((l) => l.refunds_minor),
+          unflagged_count: sum((l) => l.unflagged_count), unflagged_volume_minor: sum((l) => l.unflagged_volume_minor),
+        },
+      };
+    }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0 || s.totals.unflagged_count > 0);
+    // Only live money makes an invoice; a currency that holds nothing but
+    // unflagged rows is shown with its note and never billed.
+    const billable = statements.filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
+
+    // fixed_by_currency: the fixed fee that priced each editor currency this
+    // month; rate_by_currency: the full rate and its words for every currency
+    // the statement actually holds.
+    const rateByCurrency: Record<string, { percent: number; fixed_minor: number; from_month: string | null; source: string; line: string }> = {};
+    for (const s of statements) {
+      const r = rateFor(s.currency);
+      rateByCurrency[s.currency] = { percent: r.percent, fixed_minor: r.fixedMinor, from_month: r.fromMonth, source: r.source, line: resellerRateLine(r, s.currency) };
+    }
+    const config = {
+      buy_percent: buyPercent, buy_fixed_minor: buyFixedMinor, from_settings: buyFromSettings, commission_classified: ladderIdx === 0,
+      fixed_by_currency: resellerFixedTable(resellerSettings, month),
+      rate_by_currency: rateByCurrency,
+    };
+
+    if (action === 'reseller_statement') return json({ success: true, month, config, statements, test_excluded_count: testExcludedCount });
+
+    // ── create: persist one invoice per currency ──
+    if (!billable.length) return json({ error: 'Nothing to invoice for that month.' }, 400);
+    const created: any[] = [];
+    for (const s of billable) {
+      // Revision-aware numbering: after a void-and-regenerate, FranPOS's
+      // accounts payable must never receive a SECOND document with the SAME
+      // number and different totals. That reads as fraud and freezes payment.
+      // At insert time any prior rows for this key can only be void ones (a
+      // live one makes the insert fail on reseller_invoices_live_key).
+      const { count: prior, error: priorErr } = await platformAdmin.from('reseller_invoices')
+        .select('id', { count: 'exact', head: true })
+        .eq('counterparty', 'FranPOS').eq('period', month).eq('currency', s.currency);
+      if (priorErr && !isMissingColumn(priorErr.message) && !/does not exist|42P01/i.test(String(priorErr.message))) {
+        return json({ error: `invoice numbering check failed: ${priorErr.message}`, created }, 500);
+      }
+      const revision = (prior ?? 0) + 1;
+      // The rate THIS currency's invoice was priced at, stamped on the row:
+      // buy_fixed_minor is the currency's own fixed fee (3p on a GBP invoice),
+      // and breakdown.rate keeps the words and where the rate came from.
+      const curRate = rateFor(s.currency);
+      const row = {
+        counterparty: 'FranPOS',
+        period: month,
+        currency: s.currency,
+        invoice_number: revision === 1 ? `FP-${month}-${s.currency}` : `FP-${month}-${s.currency}-R${revision}`,
+        payment_count: s.totals.count,
+        volume_minor: s.totals.volume_minor,
+        gross_commission_minor: s.totals.gross_commission_minor,
+        buy_share_minor: s.totals.buy_share_minor,
+        net_due_minor: s.totals.net_due_minor,
+        unrated_count: s.totals.unrated_count,
+        unrated_volume_minor: s.totals.unrated_volume_minor,
+        buy_percent: curRate.percent,
+        buy_fixed_minor: curRate.fixedMinor,
+        breakdown: {
+          rate: {
+            currency: s.currency, percent: curRate.percent, fixed_minor: curRate.fixedMinor,
+            from_month: curRate.fromMonth, source: curRate.source, line: resellerRateLine(curRate, s.currency),
+          },
+          lines: s.lines,
+          refunds_minor: s.totals.refunds_minor,
+          unsettled_count: s.totals.unsettled_count,
+          unsettled_volume_minor: s.totals.unsettled_volume_minor,
+          replaces_note: revision > 1 ? `Replaces a voided earlier invoice for ${month} ${s.currency}` : null,
+        },
+        created_by: caller.id ?? null,
+      };
+      const { data: inv, error: invErr } = await platformAdmin.from('reseller_invoices')
+        .insert(row).select().single();
+      if (invErr) {
+        const dup = /duplicate key|reseller_invoices_live_key/i.test(String(invErr.message));
+        return json({
+          error: dup
+            ? `An invoice for ${month} ${s.currency} already exists. Void it first if it needs regenerating.`
+            : (isMissingColumn(invErr.message)
+              ? 'The reseller_invoices table is missing. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.'
+              : `invoice insert failed: ${invErr.message}`),
+          created,
+        }, dup ? 409 : 500);
+      }
+      created.push(inv);
+    }
+    return json({ success: true, month, config, invoices: created });
+  }
+
+  if (action === 'reseller_invoices') {
+    // The remittance block (addresses, bank details, payment terms, tax line)
+    // rides along so the printed invoice carries what accounts payable demands.
+    // Read BEFORE the invoices select so it survives the table_missing return.
+    let remit: unknown = null;
+    {
+      const { data: st, error: rerr } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
+      if (!rerr) remit = (st as any)?.reseller_invoice_remit ?? null;
+    }
+    const { data, error } = await platformAdmin.from('reseller_invoices')
+      .select('*').order('period', { ascending: false }).order('created_at', { ascending: false }).limit(60);
+    if (error) {
+      return /does not exist|42P01/i.test(String(error.message))
+        ? json({ success: true, invoices: [], table_missing: true, remit })
+        : json({ error: error.message }, 500);
+    }
+    return json({ success: true, invoices: data ?? [], remit });
+  }
+
+  if (action === 'reseller_invoice_mark') {
+    const id = String(body.id ?? '');
+    const status = String(body.status ?? '');
+    if (!id) return json({ error: 'id required' }, 400);
+    if (!['sent', 'paid', 'void'].includes(status)) return json({ error: 'status must be sent, paid or void' }, 400);
+    // let, not const: the pre-migration fallback below reassigns it (a const here
+    // threw Assignment to constant variable at runtime on that path).
+    let { data: cur, error: curErr } = await platformAdmin.from('reseller_invoices')
+      .select('status, status_history, notes').eq('id', id).maybeSingle();
+    if (curErr && !/does not exist|42703|PGRST204|Could not find the/i.test(String(curErr.message))) {
+      // Any other read error is reported as itself, never as a missing invoice.
+      return json({ error: `invoice read failed: ${curErr.message}` }, 500);
+    }
+    if (curErr) {
+      // Pre-migration table shape (status_history arrived in the v5.7.66 file; a
+      // table built from v5.7.65 lacks it): degrade to the status column alone.
+      const { data: bare, error: bareErr } = await platformAdmin.from('reseller_invoices').select('status, notes').eq('id', id).maybeSingle();
+      if (bareErr) return json({ error: `invoice read failed: ${bareErr.message}` }, 500);
+      if (!bare) return json({ error: 'invoice not found' }, 404);
+      cur = { ...bare, status_history: null } as typeof cur;
+    }
+    if (!cur) return json({ error: 'invoice not found' }, 404);
+    // Forward only, plus void from anywhere. Paid never silently un-pays.
+    const legal: Record<string, string[]> = { draft: ['sent', 'void'], sent: ['paid', 'void'], paid: ['void'], void: [] };
+    if (!legal[cur.status]?.includes(status)) {
+      return json({ error: `cannot move an invoice from ${cur.status} to ${status}` }, 409);
+    }
+    // A void with no reason is unanswerable in six months when FranPOS asks
+    // what happened to the number they were sent.
+    const note = typeof body.notes === 'string' ? body.notes.slice(0, 2000) : '';
+    if (status === 'void' && !note.trim()) return json({ error: 'A void needs a reason. Pass notes.' }, 400);
+    const patch: Record<string, unknown> = { status };
+    if (status === 'sent') patch.sent_at = new Date().toISOString();
+    if (status === 'paid') patch.paid_at = new Date().toISOString();
+    if (status === 'void') patch.voided_at = new Date().toISOString();
+    // Audit trail: append, never overwrite. Who, when, from, to, why.
+    const trail = Array.isArray((cur as any).status_history) ? [...(cur as any).status_history] : [];
+    trail.push({ at: new Date().toISOString(), by: caller.id ?? null, from: cur.status, to: status, note: note || null });
+    patch.status_history = trail;
+    // Notes append with a stamp: an overwrite destroyed the previous note.
+    if (note) {
+      const stamped = `[${new Date().toISOString().slice(0, 16)}] ${note}`;
+      patch.notes = cur.notes ? `${cur.notes}\n${stamped}`.slice(0, 8000) : stamped;
+    }
+    let { data, error } = await platformAdmin.from('reseller_invoices').update(patch).eq('id', id).select().single();
+    if (error && /does not exist|42703|PGRST204|Could not find the/i.test(String(error.message))) {
+      // Audit columns not applied yet: keep the transition, drop the trail.
+      delete patch.status_history;
+      delete patch.voided_at;
+      ({ data, error } = await platformAdmin.from('reseller_invoices').update(patch).eq('id', id).select().single());
+    }
+    if (error) return json({ error: error.message }, 500);
+    return json({ success: true, invoice: data });
+  }
+
+  if (action === 'reseller_config') {
+    if (body.set) {
+      // A blank percent is not 0%: Number('') is 0, which saved FranPOS's
+      // percent as 0.00% with no sentence.
+      const pctRaw = body.set.buy_percent;
+      const pct = Number(pctRaw);
+      if (pctRaw === undefined || pctRaw === null || String(pctRaw).trim() === '' || !Number.isFinite(pct) || pct < 0 || pct > 5) {
+        return json({ error: 'The percent of the sale must be from 0 to 5.' }, 400);
+      }
+      // PER CURRENCY (10 Sep 2026): buy_fixed_by_currency { GBP, USD, EUR },
+      // whole numbers 0 to 100, lands on the new history entry as
+      // fixed_minor_by_currency. When the map is sent, EVERY currency must be
+      // in it (review: a GBP-only map made the GBP pence the fallback fee for
+      // USD and EUR). fixed_minor stays on the entry for old readers:
+      // buy_fixed_minor when given, else the USD fee (the contract is written
+      // in US cents).
+      const byCur = parseFixedByCurrency(body.set.buy_fixed_by_currency, { requireAll: true });
+      if (byCur.error) return json({ error: byCur.error }, 400);
+      const givenFixed = body.set.buy_fixed_minor;
+      const fixed = givenFixed !== undefined && givenFixed !== null && givenFixed !== ''
+        ? Number(givenFixed)
+        : (byCur.fixed ? byCur.fixed.USD : NaN);
+      if (!Number.isInteger(fixed) || fixed < 0 || fixed > 100) return json({ error: 'The fixed fee must be a whole number, from 0 to 100.' }, 400);
+      // Effective-dated: by default the change governs from the CURRENT month
+      // onward and is APPENDED to the rate history, so a statement or a
+      // void-and-recreate for an old month always resolves the rate that
+      // governed that month. A renegotiation must never quietly reprice history.
+      // set.from_month 'YYYY-MM' (review, 10 Sep 2026: the seeded 2026-08
+      // entry has no per currency map, so the first invoice, August GBP,
+      // prices FranPOS at 5p) lets the rate start in an EARLIER month, and
+      // only while no live invoice was made from the rate that month change
+      // would replace. Whether August is 3p is the owner's call.
+      const { data: st0 } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
+      const hist = Array.isArray((st0 as any)?.adyen_reseller_rate_history) ? [...(st0 as any).adyen_reseller_rate_history] : [];
+      const nowMonth = new Date().toISOString().slice(0, 7);
+      const rawMonth = body.set.from_month;
+      const fromMonth = rawMonth === undefined || rawMonth === null || String(rawMonth).trim() === '' ? nowMonth : String(rawMonth).trim();
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(fromMonth)) return json({ error: 'Write the month as year and month, for example 2026-08.' }, 400);
+      if (fromMonth > nowMonth) return json({ error: 'A rate can start this month or an earlier month, not a later one.' }, 400);
+      // The next entry after this month, if any: the change governs up to it.
+      const nextFrom = hist
+        .map((h: any) => (typeof h?.from_month === 'string' ? h.from_month : ''))
+        .filter((m: string) => m > fromMonth)
+        .sort()[0] ?? null;
+      if (fromMonth < nowMonth) {
+        let q = platformAdmin.from('reseller_invoices').select('invoice_number, period').gte('period', fromMonth).neq('status', 'void');
+        if (nextFrom) q = q.lt('period', nextFrom);
+        const { data: liveInv, error: invErr } = await q.limit(1);
+        if (invErr && !isUnknownRelationError(invErr, 'reseller_invoices')) {
+          return json({ error: 'The invoices could not be checked, so the rate was not saved.', detail: invErr.message }, 500);
+        }
+        if (Array.isArray(liveInv) && liveInv.length) {
+          return json({ error: `Invoice ${(liveInv[0] as any).invoice_number} already uses this rate. Void it before changing ${(liveInv[0] as any).period}.` }, 409);
+        }
+      }
+      const idx = hist.findIndex((h: any) => h?.from_month === fromMonth);
+      const entry: Record<string, unknown> = { percent: pct, fixed_minor: fixed, from_month: fromMonth, set_by: caller.id ?? null, set_at: new Date().toISOString() };
+      if (byCur.fixed) entry.fixed_minor_by_currency = byCur.fixed;
+      if (idx >= 0) hist[idx] = entry; else hist.push(entry);
+      const patch: Record<string, unknown> = {
+        adyen_reseller_rate_history: hist,
+        updated_at: new Date().toISOString(),
+        updated_by_user_id: caller.id ?? null,
+      };
+      // The flat columns are "the current rate": only an entry with no later
+      // entry after it may set them.
+      if (!nextFrom) {
+        patch.adyen_reseller_buy_percent = pct;
+        patch.adyen_reseller_buy_fixed_minor = fixed;
+      }
+      let { error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true);
+      if (error && /does not exist|42703|PGRST204/i.test(String(error.message))) {
+        // History column not applied yet: keep the flat rate change working
+        // for this month. An earlier month lives only in the history.
+        if (fromMonth !== nowMonth) return json({ error: 'The rate history is not set up yet, so an earlier month cannot be changed.' }, 400);
+        delete patch.adyen_reseller_rate_history;
+        ({ error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true));
+      }
+      if (error) {
+        return /does not exist|42703|PGRST204/i.test(String(error.message))
+          ? json({ error: 'platform_settings is missing the reseller columns. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.' }, 400)
+          : json({ error: error.message }, 500);
+      }
+    }
+    if (body.set_remit !== undefined) {
+      // The invoice remittance block: from address, billed-to, bank details,
+      // payment terms, tax line. Owner-entered, never hardcoded in the repo.
+      const r = body.set_remit;
+      if (r !== null && (typeof r !== 'object' || Array.isArray(r))) return json({ error: 'set_remit must be an object or null' }, 400);
+      const clean = r === null ? null : Object.fromEntries(
+        Object.entries(r).filter(([k]) => ['from_block', 'billed_to_block', 'bank_block', 'terms_days', 'tax_line'].includes(k))
+          .map(([k, v]) => [k, k === 'terms_days' ? (Number(v) || 0) : String(v ?? '').slice(0, 1200)]),
+      );
+      const { error } = await platformAdmin.from('platform_settings')
+        .update({ reseller_invoice_remit: clean, updated_at: new Date().toISOString(), updated_by_user_id: caller.id ?? null })
+        .eq('id', true);
+      if (error) {
+        return /does not exist|42703|PGRST204/i.test(String(error.message))
+          ? json({ error: 'platform_settings is missing reseller_invoice_remit. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.' }, 400)
+          : json({ error: error.message }, 500);
+      }
+    }
+    const { data: st } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
+    // The rate that governs THIS month, per editor currency, so the screen's
+    // three boxes and its rate line read what the statement will charge.
+    const nowSettings: ResellerSettings = {
+      history: (st as any)?.adyen_reseller_rate_history,
+      buyPercent: (st as any)?.adyen_reseller_buy_percent,
+      buyFixedMinor: (st as any)?.adyen_reseller_buy_fixed_minor,
+    };
+    const nowMonth = new Date().toISOString().slice(0, 7);
+    return json({
+      success: true,
+      buy_percent: (st as any)?.adyen_reseller_buy_percent ?? 0.10,
+      buy_fixed_minor: (st as any)?.adyen_reseller_buy_fixed_minor ?? 5,
+      fixed_by_currency: resellerFixedTable(nowSettings, nowMonth),
+      current_percent: resellerRateFor(nowSettings, 'GBP', nowMonth).percent,
+      from_settings: (st as any)?.adyen_reseller_buy_percent != null,
+      rate_history: (st as any)?.adyen_reseller_rate_history ?? [],
+      remit: (st as any)?.reseller_invoice_remit ?? null,
     });
   }
 
@@ -1107,477 +1633,6 @@ Deno.serve(async (req) => {
     return json({ error: ryftErr(link.data) || `Couldn't create a Ryft portal link (${link.status})`, ryft: link.data }, 502);
   }
 
-  // ── Reseller (FranPOS) residuals ──────────────────────────────────────────
-  // We process on FranPOS's Adyen account, so every venue's card markup settles
-  // to FranPOS. They keep the buy rate (0.10% + 5 minor units per transaction,
-  // reseller terms 26 Aug 2026) and owe us the rest of each payment's stamped
-  // commission. These actions compute that residual and run the invoice ledger,
-  // because nothing arrives unless we bill them.
-
-  if (action === 'reseller_statement' || action === 'reseller_invoice_create') {
-    const month = String(body.month ?? '');
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: 'month must be YYYY-MM' }, 400);
-    // An invoice for a month that has not finished would silently exclude the
-    // rest of the month, and the live unique key would then block the real one.
-    // Statements for the open month remain viewable. UTC deliberately: the
-    // bucketing below is on UTC boundaries, so UTC month-end is period close.
-    if (action === 'reseller_invoice_create') {
-      const nowMonth = new Date().toISOString().slice(0, 7);
-      if (month >= nowMonth) {
-        return json({ error: `${month} is still open. Create the invoice after the month ends so it covers every payment.` }, 400);
-      }
-    }
-    const from = new Date(`${month}-01T00:00:00Z`);
-    const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
-    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
-
-    // The buy rate for THIS month. Rate changes are effective-dated in
-    // adyen_reseller_rate_history so a renegotiation never reprices history:
-    // regenerating an old month resolves the rate that governed that month.
-    // select('*') on the singleton row on purpose: naming the columns errors
-    // whenever the deploy precedes the hand-applied migration, and that error
-    // would silently revert a renegotiated rate to the hardcoded fallback.
-    // PER CURRENCY (10 Sep 2026, owner): FranPOS's fixed fee is 5 US cents,
-    // which is 3p in GBP, so a history entry may carry fixed_minor_by_currency
-    // ({ GBP, USD, EUR }). _shared/resellerRate.ts resolves the governing entry
-    // the way this action always did and then picks the currency's fixed fee;
-    // an entry without the map reads exactly as before.
-    let resellerSettings: ResellerSettings = {};
-    {
-      const { data: st, error: stErr } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
-      if (!stErr && st) {
-        resellerSettings = {
-          history: (st as any).adyen_reseller_rate_history,
-          buyPercent: (st as any).adyen_reseller_buy_percent,
-          buyFixedMinor: (st as any).adyen_reseller_buy_fixed_minor,
-        };
-      }
-    }
-    const rateByCur = new Map<string, ResellerRate>();
-    const rateFor = (cur: string): ResellerRate => {
-      if (!rateByCur.has(cur)) rateByCur.set(cur, resellerRateFor(resellerSettings, cur, month));
-      return rateByCur.get(cur)!;
-    };
-    // The single numbers the answer has always carried (old readers): the
-    // percent and the entry's own fixed_minor, as the GBP-less legacy read.
-    const legacyRate = resellerRateFor({ ...resellerSettings, history: Array.isArray(resellerSettings.history)
-      ? (resellerSettings.history as any[]).map((h) => (h && typeof h === 'object' ? { ...h, fixed_minor_by_currency: undefined } : h))
-      : resellerSettings.history }, 'GBP', month);
-    const buyPercent = legacyRate.percent;
-    const buyFixedMinor = legacyRate.fixedMinor;
-    const buyFromSettings = legacyRate.source !== 'default';
-
-    // Column ladder so a pre-migration ledger degrades honestly instead of
-    // erroring. applied_mods rides the raw jsonb (always present) because it is
-    // the settlement truth for rows written before the captured_at column.
-    const BASE = 'psp_reference, location_id, amount_minor, amount_refunded_minor, success, last_event_code, currency, applied_mods:raw->applied_modifications';
-    const LADDER = [
-      `${BASE}, commission_minor, authorised_at, capture_required, captured_at`,
-      `${BASE}, commission_minor`,
-      BASE,
-    ];
-    let ladderIdx = 0;
-    const rows: any[] = [];
-    // Bucket on the month the payment was AUTHORISED where stamped, with
-    // created_at as the fallback for pre-migration rows. FranPOS reconciles
-    // from Adyen's own payment dates, so webhook-arrival-month bucketing turns
-    // every boundary payment (and every backfill-minted row) into a dispute.
-    const monthFilter = (ladder: number) => ladder === 0
-      ? `and(authorised_at.gte.${from.toISOString()},authorised_at.lt.${to.toISOString()}),and(authorised_at.is.null,created_at.gte.${from.toISOString()},created_at.lt.${to.toISOString()})`
-      : null;
-    // The pager fails LOUDLY at a ceiling instead of truncating: a silently
-    // short statement under-bills FranPOS forever with nothing to notice it.
-    // Secondary sort on the primary key: created_at ties (bulk ingests) make
-    // offset paging over a non-unique key skip or duplicate boundary rows.
-    const PAGE = 1000;
-    const HARD_CEILING = 200000;
-    for (let fromIdx = 0; ; fromIdx += PAGE) {
-      const build = (ladder: number) => {
-        let q = platformAdmin.from('adyen_payments').select(LADDER[ladder]);
-        const or = monthFilter(ladder);
-        if (or) q = q.or(or);
-        else q = q.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
-        return q.order('created_at', { ascending: true })
-          .order('psp_reference', { ascending: true })
-          .range(fromIdx, fromIdx + PAGE - 1);
-      };
-      let res = await build(ladderIdx);
-      while (res.error && isMissingColumn(res.error.message) && ladderIdx < LADDER.length - 1) {
-        ladderIdx++;
-        res = await build(ladderIdx);
-      }
-      if (res.error) return json({ error: `payments read failed: ${res.error.message}` }, 500);
-      const batch = (res.data ?? []) as any[];
-      rows.push(...batch);
-      if (batch.length < PAGE) break;
-      if (rows.length > HARD_CEILING) {
-        return json({ error: `More than ${HARD_CEILING} payments in ${month}. Move the aggregation into a SQL RPC before invoicing this month.` }, 500);
-      }
-    }
-
-    const { data: locs } = await platformAdmin.from('locations').select('id, name');
-    const nameById = new Map<string, string>();
-    for (const l of locs ?? []) nameById.set(l.id, l.name);
-
-    // Per currency, per venue. One invoice per currency: FranPOS cannot be
-    // billed a GBP+USD blend on one line, and minor units never cross currencies.
-    const isPayment = (r: any) => r.success === true && r.last_event_code !== 'CANCELLATION';
-    // Did any capture SUCCEED on this row? raw.applied_modifications is the
-    // settlement truth that survives out-of-order webhooks: a stale
-    // CAPTURE_FAILED from an earlier attempt can overwrite last_event_code on a
-    // payment that DID settle, and pre-migration rows have no captured_at.
-    const hasSuccessfulCapture = (r: any) => Array.isArray(r.applied_mods)
-      && r.applied_mods.some((m: any) => String(m).startsWith('CAPTURE:') && String(m).endsWith(':true'));
-    // A payment whose money never actually moved on FranPOS's Adyen account
-    // must not be invoiced: FranPOS reconciles against settlement and would
-    // dispute it. Two shapes: a capture that failed with no successful capture
-    // anywhere, and a manual-capture auth (US tip flow) never captured.
-    const isUnsettled = (r: any) => {
-      if (r.last_event_code === 'CAPTURE_FAILED' && !hasSuccessfulCapture(r)) return true;
-      if (r.capture_required === true && !r.captured_at && !hasSuccessfulCapture(r)) return true;
-      return false;
-    };
-    type VLine = {
-      location_id: string; name: string;
-      count: number; volume_minor: number;
-      gross_commission_minor: number; buy_share_minor: number; net_due_minor: number;
-      unrated_count: number; unrated_volume_minor: number;
-      unsettled_count: number; unsettled_volume_minor: number; refunds_minor: number;
-    };
-    const byCur = new Map<string, Map<string, VLine>>();
-    for (const r of rows) {
-      const cur = String(r.currency || 'GBP');
-      if (!byCur.has(cur)) byCur.set(cur, new Map());
-      const perLoc = byCur.get(cur)!;
-      const key = r.location_id ?? 'unmatched';
-      if (!perLoc.has(key)) {
-        perLoc.set(key, {
-          location_id: key, name: key === 'unmatched' ? '(unmatched payments)' : (nameById.get(key) ?? key),
-          count: 0, volume_minor: 0, gross_commission_minor: 0, buy_share_minor: 0, net_due_minor: 0,
-          unrated_count: 0, unrated_volume_minor: 0,
-          unsettled_count: 0, unsettled_volume_minor: 0, refunds_minor: 0,
-        });
-      }
-      const line = perLoc.get(key)!;
-      line.refunds_minor += Number(r.amount_refunded_minor) || 0;
-      if (!isPayment(r)) continue;
-      const amount = Number(r.amount_minor) || 0;
-      if (isUnsettled(r)) {
-        // Withheld, and SHOWN as withheld: hiding these would make the statement
-        // disagree with FranPOS's settlement data with no visible reason.
-        line.unsettled_count++;
-        line.unsettled_volume_minor += amount;
-        continue;
-      }
-      line.count++;
-      line.volume_minor += amount;
-      const gross = ladderIdx === 0 && r.commission_minor != null ? Number(r.commission_minor) : null;
-      if (gross === null) {
-        // No stamped commission: flag it, never invent it. These payments are
-        // excluded from the invoice total and surfaced for a backfill.
-        line.unrated_count++;
-        line.unrated_volume_minor += amount;
-        continue;
-      }
-      // FranPOS's cut, rounded the same half-up way commissionForAmount rounds
-      // ours, so the two sides of the split are computed identically. The
-      // fixed fee is the payment currency's (3p in GBP, 5c in USD).
-      const buy = resellerMarginFor(amount, rateFor(cur)).totalMinor;
-      // A tiny payment can price below the buy rate. That is a real loss on the
-      // transaction, and hiding it by clamping to zero would overstate what
-      // FranPOS owes across the month.
-      line.gross_commission_minor += gross;
-      line.buy_share_minor += buy;
-      line.net_due_minor += gross - buy;
-    }
-
-    const statements = [...byCur.entries()].map(([currency, perLoc]) => {
-      const lines = [...perLoc.values()].sort((a, b) => b.net_due_minor - a.net_due_minor);
-      const sum = (f: (l: VLine) => number) => lines.reduce((s, l) => s + f(l), 0);
-      return {
-        currency,
-        lines,
-        totals: {
-          count: sum((l) => l.count), volume_minor: sum((l) => l.volume_minor),
-          gross_commission_minor: sum((l) => l.gross_commission_minor),
-          buy_share_minor: sum((l) => l.buy_share_minor),
-          net_due_minor: sum((l) => l.net_due_minor),
-          unrated_count: sum((l) => l.unrated_count), unrated_volume_minor: sum((l) => l.unrated_volume_minor),
-          unsettled_count: sum((l) => l.unsettled_count), unsettled_volume_minor: sum((l) => l.unsettled_volume_minor),
-          refunds_minor: sum((l) => l.refunds_minor),
-        },
-      };
-    }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
-
-    // fixed_by_currency: the fixed fee that priced each editor currency this
-    // month; rate_by_currency: the full rate and its words for every currency
-    // the statement actually holds.
-    const rateByCurrency: Record<string, { percent: number; fixed_minor: number; from_month: string | null; source: string; line: string }> = {};
-    for (const s of statements) {
-      const r = rateFor(s.currency);
-      rateByCurrency[s.currency] = { percent: r.percent, fixed_minor: r.fixedMinor, from_month: r.fromMonth, source: r.source, line: resellerRateLine(r, s.currency) };
-    }
-    const config = {
-      buy_percent: buyPercent, buy_fixed_minor: buyFixedMinor, from_settings: buyFromSettings, commission_classified: ladderIdx === 0,
-      fixed_by_currency: resellerFixedTable(resellerSettings, month),
-      rate_by_currency: rateByCurrency,
-    };
-
-    if (action === 'reseller_statement') return json({ success: true, month, config, statements });
-
-    // ── create: persist one invoice per currency ──
-    if (!statements.length) return json({ error: 'Nothing to invoice for that month.' }, 400);
-    const created: any[] = [];
-    for (const s of statements) {
-      // Revision-aware numbering: after a void-and-regenerate, FranPOS's
-      // accounts payable must never receive a SECOND document with the SAME
-      // number and different totals. That reads as fraud and freezes payment.
-      // At insert time any prior rows for this key can only be void ones (a
-      // live one makes the insert fail on reseller_invoices_live_key).
-      const { count: prior, error: priorErr } = await platformAdmin.from('reseller_invoices')
-        .select('id', { count: 'exact', head: true })
-        .eq('counterparty', 'FranPOS').eq('period', month).eq('currency', s.currency);
-      if (priorErr && !isMissingColumn(priorErr.message) && !/does not exist|42P01/i.test(String(priorErr.message))) {
-        return json({ error: `invoice numbering check failed: ${priorErr.message}`, created }, 500);
-      }
-      const revision = (prior ?? 0) + 1;
-      // The rate THIS currency's invoice was priced at, stamped on the row:
-      // buy_fixed_minor is the currency's own fixed fee (3p on a GBP invoice),
-      // and breakdown.rate keeps the words and where the rate came from.
-      const curRate = rateFor(s.currency);
-      const row = {
-        counterparty: 'FranPOS',
-        period: month,
-        currency: s.currency,
-        invoice_number: revision === 1 ? `FP-${month}-${s.currency}` : `FP-${month}-${s.currency}-R${revision}`,
-        payment_count: s.totals.count,
-        volume_minor: s.totals.volume_minor,
-        gross_commission_minor: s.totals.gross_commission_minor,
-        buy_share_minor: s.totals.buy_share_minor,
-        net_due_minor: s.totals.net_due_minor,
-        unrated_count: s.totals.unrated_count,
-        unrated_volume_minor: s.totals.unrated_volume_minor,
-        buy_percent: curRate.percent,
-        buy_fixed_minor: curRate.fixedMinor,
-        breakdown: {
-          rate: {
-            currency: s.currency, percent: curRate.percent, fixed_minor: curRate.fixedMinor,
-            from_month: curRate.fromMonth, source: curRate.source, line: resellerRateLine(curRate, s.currency),
-          },
-          lines: s.lines,
-          refunds_minor: s.totals.refunds_minor,
-          unsettled_count: s.totals.unsettled_count,
-          unsettled_volume_minor: s.totals.unsettled_volume_minor,
-          replaces_note: revision > 1 ? `Replaces a voided earlier invoice for ${month} ${s.currency}` : null,
-        },
-        created_by: caller.id ?? null,
-      };
-      const { data: inv, error: invErr } = await platformAdmin.from('reseller_invoices')
-        .insert(row).select().single();
-      if (invErr) {
-        const dup = /duplicate key|reseller_invoices_live_key/i.test(String(invErr.message));
-        return json({
-          error: dup
-            ? `An invoice for ${month} ${s.currency} already exists. Void it first if it needs regenerating.`
-            : (isMissingColumn(invErr.message)
-              ? 'The reseller_invoices table is missing. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.'
-              : `invoice insert failed: ${invErr.message}`),
-          created,
-        }, dup ? 409 : 500);
-      }
-      created.push(inv);
-    }
-    return json({ success: true, month, config, invoices: created });
-  }
-
-  if (action === 'reseller_invoices') {
-    // The remittance block (addresses, bank details, payment terms, tax line)
-    // rides along so the printed invoice carries what accounts payable demands.
-    // Read BEFORE the invoices select so it survives the table_missing return.
-    let remit: unknown = null;
-    {
-      const { data: st, error: rerr } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
-      if (!rerr) remit = (st as any)?.reseller_invoice_remit ?? null;
-    }
-    const { data, error } = await platformAdmin.from('reseller_invoices')
-      .select('*').order('period', { ascending: false }).order('created_at', { ascending: false }).limit(60);
-    if (error) {
-      return /does not exist|42P01/i.test(String(error.message))
-        ? json({ success: true, invoices: [], table_missing: true, remit })
-        : json({ error: error.message }, 500);
-    }
-    return json({ success: true, invoices: data ?? [], remit });
-  }
-
-  if (action === 'reseller_invoice_mark') {
-    const id = String(body.id ?? '');
-    const status = String(body.status ?? '');
-    if (!id) return json({ error: 'id required' }, 400);
-    if (!['sent', 'paid', 'void'].includes(status)) return json({ error: 'status must be sent, paid or void' }, 400);
-    const { data: cur, error: curErr } = await platformAdmin.from('reseller_invoices')
-      .select('status, status_history, notes').eq('id', id).maybeSingle();
-    if (curErr) {
-      // Pre-migration table shape: degrade to the status column alone.
-      const { data: bare } = await platformAdmin.from('reseller_invoices').select('status, notes').eq('id', id).maybeSingle();
-      if (!bare) return json({ error: 'invoice not found' }, 404);
-      (cur as any) = { ...bare, status_history: null };
-    }
-    if (!cur) return json({ error: 'invoice not found' }, 404);
-    // Forward only, plus void from anywhere. Paid never silently un-pays.
-    const legal: Record<string, string[]> = { draft: ['sent', 'void'], sent: ['paid', 'void'], paid: ['void'], void: [] };
-    if (!legal[cur.status]?.includes(status)) {
-      return json({ error: `cannot move an invoice from ${cur.status} to ${status}` }, 409);
-    }
-    // A void with no reason is unanswerable in six months when FranPOS asks
-    // what happened to the number they were sent.
-    const note = typeof body.notes === 'string' ? body.notes.slice(0, 2000) : '';
-    if (status === 'void' && !note.trim()) return json({ error: 'A void needs a reason. Pass notes.' }, 400);
-    const patch: Record<string, unknown> = { status };
-    if (status === 'sent') patch.sent_at = new Date().toISOString();
-    if (status === 'paid') patch.paid_at = new Date().toISOString();
-    if (status === 'void') patch.voided_at = new Date().toISOString();
-    // Audit trail: append, never overwrite. Who, when, from, to, why.
-    const trail = Array.isArray((cur as any).status_history) ? [...(cur as any).status_history] : [];
-    trail.push({ at: new Date().toISOString(), by: caller.id ?? null, from: cur.status, to: status, note: note || null });
-    patch.status_history = trail;
-    // Notes append with a stamp: an overwrite destroyed the previous note.
-    if (note) {
-      const stamped = `[${new Date().toISOString().slice(0, 16)}] ${note}`;
-      patch.notes = cur.notes ? `${cur.notes}\n${stamped}`.slice(0, 8000) : stamped;
-    }
-    let { data, error } = await platformAdmin.from('reseller_invoices').update(patch).eq('id', id).select().single();
-    if (error && /does not exist|42703|PGRST204|Could not find the/i.test(String(error.message))) {
-      // Audit columns not applied yet: keep the transition, drop the trail.
-      delete patch.status_history;
-      delete patch.voided_at;
-      ({ data, error } = await platformAdmin.from('reseller_invoices').update(patch).eq('id', id).select().single());
-    }
-    if (error) return json({ error: error.message }, 500);
-    return json({ success: true, invoice: data });
-  }
-
-  if (action === 'reseller_config') {
-    if (body.set) {
-      // A blank percent is not 0%: Number('') is 0, which saved FranPOS's
-      // percent as 0.00% with no sentence.
-      const pctRaw = body.set.buy_percent;
-      const pct = Number(pctRaw);
-      if (pctRaw === undefined || pctRaw === null || String(pctRaw).trim() === '' || !Number.isFinite(pct) || pct < 0 || pct > 5) {
-        return json({ error: 'The percent of the sale must be from 0 to 5.' }, 400);
-      }
-      // PER CURRENCY (10 Sep 2026): buy_fixed_by_currency { GBP, USD, EUR },
-      // whole numbers 0 to 100, lands on the new history entry as
-      // fixed_minor_by_currency. When the map is sent, EVERY currency must be
-      // in it (review: a GBP-only map made the GBP pence the fallback fee for
-      // USD and EUR). fixed_minor stays on the entry for old readers:
-      // buy_fixed_minor when given, else the USD fee (the contract is written
-      // in US cents).
-      const byCur = parseFixedByCurrency(body.set.buy_fixed_by_currency, { requireAll: true });
-      if (byCur.error) return json({ error: byCur.error }, 400);
-      const givenFixed = body.set.buy_fixed_minor;
-      const fixed = givenFixed !== undefined && givenFixed !== null && givenFixed !== ''
-        ? Number(givenFixed)
-        : (byCur.fixed ? byCur.fixed.USD : NaN);
-      if (!Number.isInteger(fixed) || fixed < 0 || fixed > 100) return json({ error: 'The fixed fee must be a whole number, from 0 to 100.' }, 400);
-      // Effective-dated: by default the change governs from the CURRENT month
-      // onward and is APPENDED to the rate history, so a statement or a
-      // void-and-recreate for an old month always resolves the rate that
-      // governed that month. A renegotiation must never quietly reprice history.
-      // set.from_month 'YYYY-MM' (review, 10 Sep 2026: the seeded 2026-08
-      // entry has no per currency map, so the first invoice, August GBP,
-      // prices FranPOS at 5p) lets the rate start in an EARLIER month, and
-      // only while no live invoice was made from the rate that month change
-      // would replace. Whether August is 3p is the owner's call.
-      const { data: st0 } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
-      const hist = Array.isArray((st0 as any)?.adyen_reseller_rate_history) ? [...(st0 as any).adyen_reseller_rate_history] : [];
-      const nowMonth = new Date().toISOString().slice(0, 7);
-      const rawMonth = body.set.from_month;
-      const fromMonth = rawMonth === undefined || rawMonth === null || String(rawMonth).trim() === '' ? nowMonth : String(rawMonth).trim();
-      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(fromMonth)) return json({ error: 'Write the month as year and month, for example 2026-08.' }, 400);
-      if (fromMonth > nowMonth) return json({ error: 'A rate can start this month or an earlier month, not a later one.' }, 400);
-      // The next entry after this month, if any: the change governs up to it.
-      const nextFrom = hist
-        .map((h: any) => (typeof h?.from_month === 'string' ? h.from_month : ''))
-        .filter((m: string) => m > fromMonth)
-        .sort()[0] ?? null;
-      if (fromMonth < nowMonth) {
-        let q = platformAdmin.from('reseller_invoices').select('invoice_number, period').gte('period', fromMonth).neq('status', 'void');
-        if (nextFrom) q = q.lt('period', nextFrom);
-        const { data: liveInv, error: invErr } = await q.limit(1);
-        if (invErr && !isUnknownRelationError(invErr, 'reseller_invoices')) {
-          return json({ error: 'The invoices could not be checked, so the rate was not saved.', detail: invErr.message }, 500);
-        }
-        if (Array.isArray(liveInv) && liveInv.length) {
-          return json({ error: `Invoice ${(liveInv[0] as any).invoice_number} already uses this rate. Void it before changing ${(liveInv[0] as any).period}.` }, 409);
-        }
-      }
-      const idx = hist.findIndex((h: any) => h?.from_month === fromMonth);
-      const entry: Record<string, unknown> = { percent: pct, fixed_minor: fixed, from_month: fromMonth, set_by: caller.id ?? null, set_at: new Date().toISOString() };
-      if (byCur.fixed) entry.fixed_minor_by_currency = byCur.fixed;
-      if (idx >= 0) hist[idx] = entry; else hist.push(entry);
-      const patch: Record<string, unknown> = {
-        adyen_reseller_rate_history: hist,
-        updated_at: new Date().toISOString(),
-        updated_by_user_id: caller.id ?? null,
-      };
-      // The flat columns are "the current rate": only an entry with no later
-      // entry after it may set them.
-      if (!nextFrom) {
-        patch.adyen_reseller_buy_percent = pct;
-        patch.adyen_reseller_buy_fixed_minor = fixed;
-      }
-      let { error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true);
-      if (error && /does not exist|42703|PGRST204/i.test(String(error.message))) {
-        // History column not applied yet: keep the flat rate change working
-        // for this month. An earlier month lives only in the history.
-        if (fromMonth !== nowMonth) return json({ error: 'The rate history is not set up yet, so an earlier month cannot be changed.' }, 400);
-        delete patch.adyen_reseller_rate_history;
-        ({ error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true));
-      }
-      if (error) {
-        return /does not exist|42703|PGRST204/i.test(String(error.message))
-          ? json({ error: 'platform_settings is missing the reseller columns. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.' }, 400)
-          : json({ error: error.message }, 500);
-      }
-    }
-    if (body.set_remit !== undefined) {
-      // The invoice remittance block: from address, billed-to, bank details,
-      // payment terms, tax line. Owner-entered, never hardcoded in the repo.
-      const r = body.set_remit;
-      if (r !== null && (typeof r !== 'object' || Array.isArray(r))) return json({ error: 'set_remit must be an object or null' }, 400);
-      const clean = r === null ? null : Object.fromEntries(
-        Object.entries(r).filter(([k]) => ['from_block', 'billed_to_block', 'bank_block', 'terms_days', 'tax_line'].includes(k))
-          .map(([k, v]) => [k, k === 'terms_days' ? (Number(v) || 0) : String(v ?? '').slice(0, 1200)]),
-      );
-      const { error } = await platformAdmin.from('platform_settings')
-        .update({ reseller_invoice_remit: clean, updated_at: new Date().toISOString(), updated_by_user_id: caller.id ?? null })
-        .eq('id', true);
-      if (error) {
-        return /does not exist|42703|PGRST204/i.test(String(error.message))
-          ? json({ error: 'platform_settings is missing reseller_invoice_remit. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.' }, 400)
-          : json({ error: error.message }, 500);
-      }
-    }
-    const { data: st } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
-    // The rate that governs THIS month, per editor currency, so the screen's
-    // three boxes and its rate line read what the statement will charge.
-    const nowSettings: ResellerSettings = {
-      history: (st as any)?.adyen_reseller_rate_history,
-      buyPercent: (st as any)?.adyen_reseller_buy_percent,
-      buyFixedMinor: (st as any)?.adyen_reseller_buy_fixed_minor,
-    };
-    const nowMonth = new Date().toISOString().slice(0, 7);
-    return json({
-      success: true,
-      buy_percent: (st as any)?.adyen_reseller_buy_percent ?? 0.10,
-      buy_fixed_minor: (st as any)?.adyen_reseller_buy_fixed_minor ?? 5,
-      fixed_by_currency: resellerFixedTable(nowSettings, nowMonth),
-      current_percent: resellerRateFor(nowSettings, 'GBP', nowMonth).percent,
-      from_settings: (st as any)?.adyen_reseller_buy_percent != null,
-      rate_history: (st as any)?.adyen_reseller_rate_history ?? [],
-      remit: (st as any)?.reseller_invoice_remit ?? null,
-    });
-  }
 
   return json({ error: `unknown action: ${action}` }, 400);
 });

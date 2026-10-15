@@ -26,6 +26,7 @@ import {
   listOrderDisplays, saveOrderDisplay, deleteOrderDisplay,
   listOrderScreens, pairOrderScreen, setOrderScreen, removeOrderScreen,
   loadKeepPaidSetting, saveKeepPaidSetting, uploadOrderScreenLogo, loadVenueName,
+  loadKdsAutoStatusSettings, saveKdsAutoStatusSettings,
   loadNamesEnabled, LOGO_TYPES,
 } from '../../lib/orderScreen/orderScreenData';
 
@@ -156,6 +157,8 @@ export default function OrderScreens() {
       <PairedTvs displays={displays} screens={screens} now={now} onChanged={load} />
 
       <KeepPaidBox locId={locId} />
+
+      <KitchenBumpBox locId={locId} />
     </div>
   );
 }
@@ -312,6 +315,64 @@ function KeepPaidBox({ locId }) {
         disabled={value === null || busy}
         onChange={change}
         label="Keep paid till orders in Orders Hub until they are collected"
+      />
+      {msg.text && <div style={{ ...S.help, marginTop: 8, color: msg.ok ? 'var(--grn)' : 'var(--red)' }} role="status">{msg.text}</div>}
+    </Box>
+  );
+}
+
+// ── Box 4: the kitchen's bump marks the order ready / collected ─────────────────────
+// 30 Sep 2026 (Peter, Coffee Boy: "automatically mark as ready once it's bumped off, then
+// another setting to say mark as collected once bumped too"). Fires when the LAST kitchen
+// screen bumps the order. Rule: src/lib/kds/kdsAutoStatus.js.
+
+function KitchenBumpBox({ locId }) {
+  const [value, setValue] = useState(null);   // { ready, collected } once loaded
+  const [msg, setMsg] = useState({ ok: true, text: '' });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    loadKdsAutoStatusSettings(locId).then(r => {
+      if (!alive) return;
+      if (r.error) setMsg({ ok: false, text: 'Could not load this setting. Refresh to try again.' });
+      else setValue(r.data);
+    });
+    return () => { alive = false; };
+  }, [locId]);
+
+  const change = async (patch) => {
+    const prev = value;
+    const next = { ...(value || { ready: false, collected: false }), ...patch };
+    if (!next.ready) next.collected = false;   // the second switch only counts with the first on
+    setValue(next); setBusy(true); setMsg({ ok: true, text: '' });
+    const r = await saveKdsAutoStatusSettings(locId, next);
+    setBusy(false);
+    if (r.error) { setValue(prev); setMsg({ ok: false, text: 'Could not save. Try again.' }); return; }
+    setValue(r.data);
+    setMsg({ ok: true, text: 'Saved' });
+  };
+
+  return (
+    <Box title="When the kitchen bumps an order" help={[
+      'For coffee shops and counters where the kitchen screen is the last step.',
+      'With the first switch on, the order is marked ready the moment the last kitchen screen bumps it. Staff no longer tap Ready.',
+      'Customers who gave a phone number or email get their ready message as usual, and the order screen moves it to Ready.',
+      'With the second switch on as well, a paid order is then marked collected too, so it leaves the queue. An order that still needs payment stays at Ready.',
+      'Kitchen screens pick up a change within a minute.',
+      'Tills and kitchen screens must be on the latest version. Restart them after turning this on, or orders sent from an older till will not mark ready by themselves.',
+    ]}>
+      <Check
+        checked={value?.ready === true}
+        disabled={value === null || busy}
+        onChange={(on) => change({ ready: on })}
+        label="Mark ready when the kitchen bumps the order"
+      />
+      <Check
+        checked={value?.collected === true}
+        disabled={value === null || busy || value?.ready !== true}
+        onChange={(on) => change({ collected: on })}
+        label="Also mark collected"
       />
       {msg.text && <div style={{ ...S.help, marginTop: 8, color: msg.ok ? 'var(--grn)' : 'var(--red)' }} role="status">{msg.text}</div>}
     </Box>
