@@ -1,5 +1,5 @@
 /**
- * stock/onOrder.js — what is already on its way, for the Order pad. Pure, tested (onOrder.test.js).
+ * stock/onOrder.js: what is already on its way, for the Order pad. Pure, tested (onOrder.test.js).
  *
  * v5.11.65 (15 Oct 2026 audit): "on order" counted DRAFT orders (never sent) and SENT orders
  * from July that will never arrive, so some items were never suggested again; and a line

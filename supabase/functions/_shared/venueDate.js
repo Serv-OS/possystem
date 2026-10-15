@@ -1,5 +1,5 @@
 /**
- * _shared/venueDate.js — the VENUE's calendar, in words a UK venue reads. Pure: no I/O, no
+ * _shared/venueDate.js: the VENUE's calendar, in words a UK venue reads. Pure: no I/O, no
  * imports, so Node's test runner loads it (src/lib/venueDate.test.js), the edge functions
  * import it under Deno (po-send) and src/lib/venueDate.js re-exports it for the browser.
  *

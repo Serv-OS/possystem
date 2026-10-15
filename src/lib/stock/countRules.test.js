@@ -1,4 +1,4 @@
-/** countRules.test.js — approving a count: the plan, the guard, the words. Run: npm test */
+/** countRules.test.js: approving a count: the plan, the guard, the words. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { canApproveCount, countApprovalPlan, approvalOutcomeText } from './countRules.js';
@@ -44,7 +44,7 @@ test('approvalOutcomeText says what happened in plain words', () => {
   const t = approvalOutcomeText({ posted: 1, total: 3, failedItem: 'Oat Milk', error: new Error('x') });
   assert.match(t, /^Not approved: 1 of 3 adjustments posted before the save failed at Oat Milk\./);
   assert.match(t, /approve again/);
-  assert.doesNotMatch(t, /[–—]/, 'no long dashes');
+  assert.doesNotMatch(t, /[\u2013\u2014]/, 'no long dashes');
 });
 
 test('approveCount checks every write and only then marks the count APPROVED', () => {

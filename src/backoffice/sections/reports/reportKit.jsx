@@ -16,7 +16,7 @@
  */
 
 import { useState, useMemo } from 'react';
-import { money, signedMoney } from '../../../lib/currency';
+import { signedMoney } from '../../../lib/currency';
 
 /* ── Grading (GP% and similar rate metrics) ──────────────────────────────────
    ≥60 good · 40–59.9 mid · <40 bad. Amber for "thin", never red-vs-green alone. */

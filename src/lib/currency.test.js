@@ -1,4 +1,4 @@
-/** currency.test.js — money strings. Run: npm test */
+/** currency.test.js: money strings. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { money, signedMoney } from './currency.js';

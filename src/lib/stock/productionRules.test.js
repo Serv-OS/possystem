@@ -1,4 +1,4 @@
-/** productionRules.test.js — the batch row, the schedule units, no guessing. Run: npm test */
+/** productionRules.test.js: the batch row, the schedule units, no guessing. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { batchRow, resolveBatchOutput, scheduleUnitOptions } from './productionRules.js';

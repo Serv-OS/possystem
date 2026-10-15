@@ -1,5 +1,5 @@
 /**
- * stock/valuation.js — how stock is valued on the Overview, the Valuation report and By
+ * stock/valuation.js: how stock is valued on the Overview, the Valuation report and By
  * supplier. Pure, tested (valuation.test.js).
  *
  * v5.11.65 (15 Oct 2026 audit): a negative on hand (an item sold past zero because no batch or

@@ -1,5 +1,5 @@
 /**
- * stock/countRules.js — the pure rules behind approving a stock count. Tested (countRules.test.js).
+ * stock/countRules.js: the pure rules behind approving a stock count. Tested (countRules.test.js).
  *
  * v5.11.65 (15 Oct 2026 audit): approveCount awaited every write and read none of the results,
  * so a refused movement still ended in "Count approved, stock reconciled" and a count locked as

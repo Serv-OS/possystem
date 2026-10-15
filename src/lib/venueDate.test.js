@@ -1,4 +1,4 @@
-/** venueDate.test.js — the venue calendar helper every stock screen formats with. Run: npm test */
+/** venueDate.test.js: the venue calendar helper every stock screen formats with. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

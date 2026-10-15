@@ -1,4 +1,4 @@
-/** valuation.test.js — negative stock is worth nothing, and is shown. Run: npm test */
+/** valuation.test.js: negative stock is worth nothing, and is shown. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { lineValue, negativeValue, totalStockValue, negativeStock } from './valuation.js';

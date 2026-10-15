@@ -155,7 +155,7 @@ export const completePlannedBatch = async (batchId, actualQty, locationId = null
   if (!rec?.output_item_id) return { data: null, error: new Error('Recipe has no output stock item') };
   const recipe = { outputItemId: rec.output_item_id, yieldQty: Number(rec.yield_qty), yieldUnit: rec.yield_unit, wastagePct: Number(rec.wastage_pct) || 0 };
   const mappedLines = (lines || []).map(l => ({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct) }));
-  // v5.11.65 — the schedule's unit is READ, never guessed (productionRules.resolveBatchOutput,
+  // v5.11.65: the schedule's unit is READ, never guessed (productionRules.resolveBatchOutput,
   // tested). 'batch' is one recipe yield, a pack name is its size, each/portions only on an item
   // counted in each; anything else is refused in words. v5.5.934 walked fallbacks instead, which
   // completed 2 batches of 10 l soup as 2 litres and 10 portions as 10 litres.

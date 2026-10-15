@@ -1,5 +1,5 @@
 /**
- * stock/productionRules.js — the pure rules behind making a batch. Tested (productionRules.test.js).
+ * stock/productionRules.js: the pure rules behind making a batch. Tested (productionRules.test.js).
  *
  * v5.11.65 (15 Oct 2026 audit):
  *  - Back Office "Produce batch" inserted a row whose planned_qty and actual_qty sat INSIDE a

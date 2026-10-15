@@ -1,4 +1,4 @@
-/** onOrder.test.js — what the Order pad counts as already on order. Run: npm test */
+/** onOrder.test.js: what the Order pad counts as already on order. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { outstandingOnOrder, ON_ORDER_STATUSES } from './onOrder.js';

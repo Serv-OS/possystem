@@ -1,4 +1,4 @@
-// NumberField — a quantity or price box that shows the whole number and says its unit.
+// NumberField: a quantity or price box that shows the whole number and says its unit.
 //
 // v5.11.65 (15 Oct 2026 stock audit): the stock screens used <input type="number"> boxes 64 to
 // 84px wide with 24px of padding and a browser spinner inside, so "12.55" was clipped to "12.5"
