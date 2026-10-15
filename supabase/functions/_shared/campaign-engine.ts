@@ -110,9 +110,20 @@ function triggerContext(campaign: any, today: string): { rule: any | null; runKe
 
 async function resolveIds(sb: SB, org: string, def: any): Promise<string[]> {
   if (!def) return [];
-  const { data, error } = await sb.rpc('marketing_resolve_segment', { p_org: org, p_def: def, p_limit: null });
-  if (error) throw new Error(`resolve: ${error.message}`);
-  return (data ?? []).map((r: any) => r.customer_id);
+  // 28 Sep 2026: marketing_resolve_segment RETURNS TABLE, and the API hands back at most 1,000 rows
+  // per request, so every audience stopped at 1,000 (Coffee Boy: 2,898 email subscribers, 8,030
+  // customers) and a campaign reached only the first 1,000. Page it, in a fixed order, to the end.
+  const PAGE = 1000;
+  const out: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb.rpc('marketing_resolve_segment', { p_org: org, p_def: def, p_limit: null })
+      .order('customer_id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`resolve: ${error.message}`);
+    const rows = data ?? [];
+    for (const r of rows as any[]) out.push(r.customer_id);
+    if (rows.length < PAGE) break;
+  }
+  return out;
 }
 
 // Issue a unique single-use promo code for a customer against the campaign's offer.

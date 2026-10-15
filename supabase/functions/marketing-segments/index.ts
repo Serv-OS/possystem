@@ -40,9 +40,21 @@ async function orgFor(opsLocationId: string): Promise<string | null> {
 }
 
 async function resolveIds(org_id: string, definition: any, limit?: number): Promise<string[]> {
-  const { data, error } = await opsAdmin.rpc('marketing_resolve_segment', { p_org: org_id, p_def: definition ?? { match: 'all', rules: [] }, p_limit: limit ?? null });
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((r: any) => r.customer_id);
+  // 28 Sep 2026: marketing_resolve_segment RETURNS TABLE, and the API hands back at most 1,000 rows
+  // per request, so every audience stopped at 1,000 (Coffee Boy: 2,898 email subscribers, 8,030
+  // customers) and a campaign reached only the first 1,000. Page it, in a fixed order, to the end.
+  const PAGE = 1000;
+  const out: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await opsAdmin.rpc('marketing_resolve_segment', { p_org: org_id, p_def: definition ?? { match: 'all', rules: [] }, p_limit: limit ?? null })
+      .order('customer_id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    const rows = data ?? [];
+    for (const r of rows as any[]) out.push(r.customer_id);
+    if (rows.length < PAGE) break;
+    if (limit && out.length >= limit) break;
+  }
+  return limit ? out.slice(0, limit) : out;
 }
 
 Deno.serve(async (req) => {
