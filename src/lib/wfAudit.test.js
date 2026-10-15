@@ -119,16 +119,17 @@ test('every wf_audit write in the edge functions goes through the chain writer',
   const ma = read('manager-approve');
   const calls = ma.match(/await audit\(/g) || [];
   const checked = ma.match(/const auditErr = await audit\(/g) || [];
-  assert.equal(calls.length, 4, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise');
+  // v5.11.64: po.receive audits a rejected delivery and a receive (two more).
+  assert.equal(calls.length, 6, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise, po.reject_delivery, po.receive');
   assert.equal(checked.length, calls.length, 'an audit result is ignored');
-  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 4);
+  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 6);
 });
 
 test("manager-approve's audit failure words do not send the Manager app back to the PIN pad", () => {
   // ManagerTeam onResult and ManagerKitchen submitPO clear the PIN on /pin|not allowed|approve/i.
   const ma = read('manager-approve');
   const whats = [...ma.matchAll(/auditFailed\('([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(whats, ['The clock out', 'The timesheet sign off', 'The time off decision']);
+  assert.deepEqual(whats, ['The clock out', 'The timesheet sign off', 'The time off decision', 'The rejection', 'The receive']);
   const template = ma.match(/error: `\$\{what\} ([^`]+)`/)[1];
   for (const w of whats) assert.doesNotMatch(`${w} ${template}`, /pin|not allowed|approve/i);
   for (const m of ma.matchAll(/error: [`'](Order \$\{reference\}[^`']*|could not raise the order: its audit record did not save)[`']/g)) {

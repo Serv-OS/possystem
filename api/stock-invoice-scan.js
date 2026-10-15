@@ -4,8 +4,10 @@
  * swappable: change only this file to use a different vision model.
  *
  * POST { image: <base64 (no data: prefix)>, media_type: 'image/jpeg'|'image/png'|'application/pdf' }
- * → { supplier_name, invoice_number, invoice_date, currency, lines:[{description, qty,
+ * → { supplier_name, invoice_number, invoice_date, currency, lines:[{code, description, qty,
  *     unit, unit_price, line_total}], subtotal, tax, total, confidence }
+ * v5.11.64: code is the supplier's product code as printed (null when none), so a line can be
+ * matched by SKU before its name (purchasingRules.matchScannedLine).
  */
 
 const SYSTEM = `You extract structured data from a supplier invoice or delivery note for a UK hospitality business.
@@ -15,11 +17,11 @@ Return ONLY a single JSON object, no prose, no code fences. Shape:
   "invoice_number": string|null,
   "invoice_date": "YYYY-MM-DD"|null,
   "currency": "GBP"|string|null,
-  "lines": [ { "description": string, "qty": number, "unit": string, "unit_price": number, "line_total": number } ],
+  "lines": [ { "code": string|null, "description": string, "qty": number, "unit": string, "unit_price": number, "line_total": number } ],
   "subtotal": number|null, "tax": number|null, "total": number|null,
   "confidence": number  // 0-1 your overall confidence
 }
-Rules: qty is the number of packs/units billed; unit is the pack/measure word as printed (e.g. "case","kg","each","ltr"); unit_price is the price per that unit (ex-VAT if shown separately); line_total is the line's net amount. Use numbers (not strings) for money/quantities. If a field is missing use null. Never invent lines.`;
+Rules: qty is the number of packs/units billed; unit is the pack/measure word as printed (e.g. "case","kg","each","ltr"); unit_price is the price per that unit (ex-VAT if shown separately); line_total is the line's net amount. Use numbers (not strings) for money/quantities. If a field is missing use null. Never invent lines. code is the supplier's product code or SKU printed on the line (for example SKU-022-HAR), null when none is printed; never invent one.`;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });

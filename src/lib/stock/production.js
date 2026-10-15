@@ -11,6 +11,8 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { getLocationConfig, buildScheduleCtx } from '../locationTime';
 import { convert } from './conversion.js';
+import { toBase } from './uom.js';
+import { batchRow, resolveBatchOutput } from './productionRules.js';
 import { componentUnitCost } from './costing.js';
 import { buildCostingCtx } from './recipes.js';
 import { postStockMovement } from './data.js';
@@ -61,7 +63,9 @@ export function planBatch(recipe, lines, actualQty, outputUnit, ctx) {
   for (const l of lines || []) {
     const comp = ctx.itemsById[l.componentItemId];
     if (!comp) continue;
-    const base = convert(Number(l.qty), l.unit, comp.baseUnit, { itemConversions: comp.itemConversions || [] });
+    // v5.11.65: toBase, as costing does, so a line written in a pack unit ("@<formatId>", the
+    // Recipes screen offers Keg / Case / Bottle) plans and completes instead of failing here.
+    const base = toBase(Number(l.qty), l.unit, comp);
     const usable = (l.usablePct == null ? 100 : Number(l.usablePct)) / 100;
     if (!(usable > 0)) continue;
     const qtyBase = (base / usable) * wf * scale;
@@ -151,18 +155,17 @@ export const completePlannedBatch = async (batchId, actualQty, locationId = null
   if (!rec?.output_item_id) return { data: null, error: new Error('Recipe has no output stock item') };
   const recipe = { outputItemId: rec.output_item_id, yieldQty: Number(rec.yield_qty), yieldUnit: rec.yield_unit, wastagePct: Number(rec.wastage_pct) || 0 };
   const mappedLines = (lines || []).map(l => ({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct) }));
-  // v5.5.934 — schedules store operator-friendly units ('ea', 'portions', 'trays')
-  // that the conversion engine does not know. A unit it cannot read must not kill the
-  // Done button: normalise the obvious ones, then walk fallbacks — the batch's own
-  // unit, the recipe's yield unit, plain 'each'. First one that converts wins.
-  const norm = (u) => ({ ea: 'each', portion: 'each', portions: 'each', trays: 'each', batch: rec.yield_unit }[String(u || '').toLowerCase()] || u);
-  const candidates = [...new Set([norm(b.output_unit), rec.yield_unit, 'each'].filter(Boolean))];
-  let plan = null, planErr = null;
-  for (const u of candidates) {
-    try { plan = planBatch(recipe, mappedLines, actualQty, u, ctx); planErr = null; break; }
-    catch (e) { planErr = e; }
-  }
-  if (!plan) return { data: null, error: new Error(`Cannot work out the quantity: "${b.output_unit}" is not a unit this item understands (${planErr?.message || ''})`) };
+  // v5.11.65: the schedule's unit is READ, never guessed (productionRules.resolveBatchOutput,
+  // tested). 'batch' is one recipe yield, a pack name is its size, each/portions only on an item
+  // counted in each; anything else is refused in words. v5.5.934 walked fallbacks instead, which
+  // completed 2 batches of 10 l soup as 2 litres and 10 portions as 10 litres.
+  const outItem = ctx.itemsById[rec.output_item_id] || {};
+  let plan;
+  try {
+    const out = resolveBatchOutput({ outputUnit: b.output_unit, actualQty, recipe: { yieldQty: recipe.yieldQty, yieldUnit: recipe.yieldUnit },
+      item: { name: outItem.name || b.output_name || rec.name, baseUnit: outItem.baseUnit, formats: outItem.formats || [] } });
+    plan = planBatch(recipe, mappedLines, out.qty, out.unit, ctx);
+  } catch (e) { return { data: null, error: new Error(`Cannot work out the quantity: ${e.message}`) }; }
 
   for (const c of plan.consume) {
     if (!(c.qtyBase > 0)) continue;
@@ -182,6 +185,20 @@ export const completePlannedBatch = async (batchId, actualQty, locationId = null
     actual_cost: plan.totalCost, theoretical_cost: plan.totalCost, output_unit_cost: plan.outputUnitCost,
     produced_at: nowIso(), updated_at: nowIso(),
   }).eq('location_id', locationId).eq('id', batchId).select().maybeSingle();
+  // v5.11.64 — a scheduled cook completed from Back Office is DONE in the Manager app too.
+  // The Manager Kitchen tab reads "done today" from prep_log; this path never wrote one, so
+  // a batch finished here stayed due/overdue on the phone all day. ignoreDuplicates keeps
+  // the Manager Record row (with the operator's name) when it got there first. Best effort:
+  // the stock is already moved, a log hiccup must not fail the completion.
+  if (!error && b.schedule_id && b.planned_for) {
+    try {
+      await supabase.from('prep_log').upsert({
+        location_id: locationId, schedule_id: b.schedule_id, name: b.output_name || rec.name || 'Prep',
+        prep_date: b.planned_for, actual_qty: Number(actualQty), unit: b.output_unit || rec.yield_unit || null,
+        recorded_by_name: 'Back Office', recorded_at: nowIso(),
+      }, { onConflict: 'location_id,schedule_id,prep_date', ignoreDuplicates: true });
+    } catch { /* the batch is complete; the Manager app catches up on its next snapshot */ }
+  }
   return { data: done ? batchFromRow(done) : null, error };
 };
 
@@ -205,17 +222,17 @@ export const produceBatch = async ({ recipeId, actualQty, outputUnit, lotCode, e
   try { plan = planBatch(recipe, mappedLines, actualQty, outUnit, ctx); }
   catch (e) { return { data: null, error: e }; }
 
-  const outName = ctx.itemsById[rec.output_item_id] ? undefined : null;
-  // Create the batch row first so its id keys the idempotent movements.
-  const { data: batchRow, error: insErr } = await supabase.from('production_batches').insert({
-    location_id: locationId, recipe_id: recipeId, output_item_id: rec.output_item_id,
-    output_name: ctx.itemsById?.[rec.output_item_id]?.name || rec.name || outName,   // v5.5.935: ONE name everywhere — the stock item's planned_qty: Number(rec.yield_qty), actual_qty: Number(actualQty),
-    output_unit: outUnit, status: 'DRAFT', theoretical_cost: plan.totalCost, actual_cost: plan.totalCost,
-    output_unit_cost: plan.outputUnitCost, lot_code: lotCode || null, expiry_at: expiryAt || null,
-    produced_at: nowIso(), notes: notes || null,
-  }).select().maybeSingle();
-  if (insErr || !batchRow) return { data: null, error: insErr || new Error('Could not create batch') };
-  const batchId = batchRow.id;
+  // Create the batch row first so its id keys the idempotent movements. v5.11.65: the row is
+  // built by productionRules.batchRow (tested). planned_qty and actual_qty had been swallowed by
+  // a trailing comment here, so every batch made this way had no quantities at all. ONE name
+  // everywhere (v5.5.935): the stock item's, which buildCostingCtx now carries.
+  const { data: inserted, error: insErr } = await supabase.from('production_batches').insert(batchRow({
+    locationId, recipeId, outputItemId: rec.output_item_id,
+    outputName: ctx.itemsById?.[rec.output_item_id]?.name || rec.name || null,
+    plannedQty: rec.yield_qty, actualQty, outputUnit: outUnit, plan, lotCode, expiryAt, notes, producedAt: nowIso(),
+  })).select().maybeSingle();
+  if (insErr || !inserted) return { data: null, error: insErr || new Error('Could not create batch') };
+  const batchId = inserted.id;
 
   // Post consume movements (negative), then the output (positive). Idempotent.
   for (const c of plan.consume) {
@@ -233,5 +250,5 @@ export const produceBatch = async ({ recipeId, actualQty, outputUnit, lotCode, e
 
   const { data: done } = await supabase.from('production_batches')
     .update({ status: 'COMPLETED', updated_at: nowIso() }).eq('location_id', locationId).eq('id', batchId).select().maybeSingle();
-  return { data: batchFromRow(done || batchRow), error: null };
+  return { data: batchFromRow(done || inserted), error: null };
 };

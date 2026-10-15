@@ -19,7 +19,9 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
-import { money, currencySymbol } from '../../lib/currency';
+import { getLocationConfig } from '../../lib/locationTime';
+import { money, currencySymbol, signedMoney } from '../../lib/currency';
+import { fmtVenueDateTime } from '../../lib/venueDate';
 import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import {
@@ -361,6 +363,9 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   const [parBase, setParBase] = useState({ parLevel: '', reorderPoint: '' });
   const [parEdit, setParEdit] = useState({ parLevel: '', reorderPoint: '' });
   const [countUnit, setCountUnit] = useState(() => { const fmts = draft.packaging || []; const cd = fmts.find(f => f.isCountDefault) || fmts[0]; return cd ? formatToken(cd.id) : draft.baseUnit; });
+  // v5.11.65: the movement history is dated on the venue's clock and shown in the count unit
+  const [venueTz, setVenueTz] = useState(null);
+  useEffect(() => { getLocationConfig(locId).then(c => setVenueTz(c?.timezone || null)).catch(() => {}); }, [locId]);
 
   const loadMoves = useCallback(async () => {
     if (!draft.id) return;
@@ -491,14 +496,18 @@ function StockTab({ draft, locId, onChanged, showToast }) {
           <tbody>
             {rows.map(m => {
               const pos = m.qtyBase >= 0;
+              // the count unit with its label, three places (the raw subtraction chain printed 30.688000000000002)
+              const dispItem = { baseUnit: draft.baseUnit, formats: draft.packaging || [], itemConversions: uomItem.itemConversions };
+              const q = displayInUnits(m.qtyBase, dispItem);
+              const bal = displayInUnits(m.balanceAfter, dispItem);
               return (
                 <tr key={m.id} style={{ color: 'var(--t1)' }}>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{new Date(m.occurredAt).toLocaleString()}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{fmtVenueDateTime(m.occurredAt, venueTz)}</td>
                   <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{movementLabel(m.movementType)}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)' }}>{pos ? '+' : ''}{m.qtyBase}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: pos ? 'var(--grn, #16a34a)' : 'var(--red, #ef4444)' }}>{pos ? '+' : ''}{q.qty} {q.label}</td>
                   <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: 'var(--t3)' }}>{fmtUnitCost(m.unitCost)}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right' }}>{m.valueDelta == null ? '—' : money(m.valueDelta)}</td>
-                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', color: 'var(--t2)' }}>{m.balanceAfter}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right' }}>{m.valueDelta == null ? '—' : signedMoney(m.valueDelta)}</td>
+                  <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: m.balanceAfter < 0 ? 'var(--red, #ef4444)' : 'var(--t2)' }}>{bal.qty} {bal.label}</td>
                   <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{m.notes || ''}</td>
                 </tr>
               );
@@ -837,6 +846,12 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
 // that on a separate Recipes screen forced people to know the model; here you pick the
 // kind and the recipe editor is simply the next tab. Saving recomputes the item's cost
 // from its components, so the made item's stock value stays honest.
+// v5.11.65: the save carries what it loaded (wastage %, usable % and order types per line,
+// the recipe's own name and type), so opening this tab and pressing Save no longer resets
+// soup wastage 5 to 0 and potato usable 85 to 100; units are picked from a list the engine
+// understands, not typed; and the toast says when the cost roll up failed instead of
+// "cost updated" over an unchanged cost.
+const sameDimUnits = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
 function RecipeTab({ draft, items, locId, showToast, onChanged }) {
   const [recipe, setRecipe] = useState(null);   // null = loading, {} = none yet
   const [lines, setLines] = useState([]);
@@ -852,7 +867,7 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
       setRecipe(r || {});
       if (r) {
         setYieldQty(String(r.yieldQty ?? 1)); setYieldUnit(r.yieldUnit || draft.baseUnit || 'each');
-        setLines((r.lines || []).map(l => ({ componentItemId: l.componentItemId, qty: String(l.qty), unit: l.unit })));
+        setLines((r.lines || []).map(l => ({ componentItemId: l.componentItemId, qty: String(l.qty), unit: l.unit, usablePct: l.usablePct, note: l.note, orderTypes: l.orderTypes })));
       }
     });
     return () => { live = false; };
@@ -876,20 +891,25 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
     setSaving(true);
     const { data: saved, error } = await upsertRecipe({
       ...(recipe?.id ? { id: recipe.id } : {}),
-      name: `${draft.name} (batch)`, recipeType: 'BATCH', outputItemId: draft.id,
+      name: recipe?.name || `${draft.name} (batch)`, recipeType: recipe?.recipeType || 'BATCH', outputItemId: draft.id,
       yieldQty: Number(yieldQty) || 1, yieldUnit: yieldUnit || draft.baseUnit || 'each',
+      wastagePct: recipe?.wastagePct ?? 0, gpTargetPct: recipe?.gpTargetPct ?? null,
+      method: recipe?.method || null, photo: recipe?.photo || null, status: recipe?.status || 'active',
     }, locId);
     reportSave('recipe', error);
     if (error || !saved) { setSaving(false); showToast?.(error?.message || 'Recipe save failed', 'error'); return; }
     const { error: e2 } = await replaceRecipeLines(saved.id, keep.map((l, i) => ({
       componentItemId: l.componentItemId, qty: Number(l.qty), unit: l.unit || 'each', sortOrder: i,
+      usablePct: l.usablePct == null ? 100 : Number(l.usablePct), note: l.note || null, orderTypes: l.orderTypes || null,
     })), locId);
     reportSave('recipe ingredients', e2);
     if (e2) { setSaving(false); showToast?.(e2.message, 'error'); return; }
-    // Roll the component costs up into this item so its valuation is real.
-    try { await recomputeMadeItemCost(draft.id, locId); } catch { /* cost roll-up is best-effort */ }
+    // Roll the component costs up into this item so its valuation is real, and SAY when it did not.
+    let rc = { ok: false };
+    try { rc = await recomputeMadeItemCost(draft.id, locId); } catch { rc = { ok: false }; }
     setSaving(false);
-    showToast?.('Recipe saved — cost updated from ingredients', 'success');
+    if (rc?.ok) showToast?.('Recipe saved. Cost updated from ingredients.', 'success');
+    else showToast?.('Recipe saved, but the cost was NOT recalculated: check every ingredient has a price and a unit it understands.', 'warning');
     onChanged?.();
   };
 
@@ -902,7 +922,13 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
         <Field label="A batch makes"><input type="number" min="0" step="any" value={yieldQty} onChange={e => setYieldQty(e.target.value)} style={{ ...fieldStyle, width: 100 }} /></Field>
-        <Field label="Unit"><input value={yieldUnit} onChange={e => setYieldUnit(e.target.value)} style={{ ...fieldStyle, width: 100 }} /></Field>
+        <Field label="Unit">
+          <select value={yieldUnit} onChange={e => setYieldUnit(e.target.value)} style={{ ...fieldStyle, width: 150 }}>
+            {unitOptions({ baseUnit: draft.baseUnit, formats: (draft.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })) }, sameDimUnits(draft.baseUnit))
+              .filter(o => !String(o.token).startsWith('@')).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+            {yieldUnit && !sameDimUnits(draft.baseUnit).includes(yieldUnit) && <option value={yieldUnit}>{yieldUnit} (not a unit this item understands)</option>}
+          </select>
+        </Field>
       </div>
       <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.06em', color: 'var(--t4)', marginBottom: 8 }}>INGREDIENTS</div>
       {lines.map((l, i) => (
@@ -912,7 +938,18 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
             {components.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <input type="number" min="0" step="any" placeholder="qty" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...fieldStyle, width: 80 }} />
-          <input placeholder="unit" value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...fieldStyle, width: 74 }} />
+          {(() => {
+            const c = components.find(x => x.id === l.componentItemId);
+            if (!c) return <input placeholder="unit" value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...fieldStyle, width: 74 }} />;
+            const opts = unitOptions({ baseUnit: c.baseUnit, formats: (c.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })) }, sameDimUnits(c.baseUnit));
+            const known = opts.some(o => o.token === l.unit);
+            return (
+              <select value={l.unit || c.baseUnit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...fieldStyle, width: 150, borderColor: known || !l.unit ? 'var(--bdr)' : 'var(--red, #ef4444)' }}>
+                {opts.map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
+                {l.unit && !known && <option value={l.unit}>{l.unit} (not a unit this item understands)</option>}
+              </select>
+            );
+          })()}
           <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
         </div>
       ))}

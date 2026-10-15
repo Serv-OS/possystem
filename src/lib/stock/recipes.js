@@ -135,7 +135,7 @@ export const buildCostingCtx = async (locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { itemsById: {}, recipesByOutputItem: {}, error: null };
   const reads = await Promise.all([
-    supabase.from('inventory_items').select('id, kind, base_unit, current_cost').eq('location_id', locationId),
+    supabase.from('inventory_items').select('id, name, kind, base_unit, current_cost').eq('location_id', locationId),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
     supabase.from('recipes').select('id, output_item_id, yield_qty, yield_unit, wastage_pct, recipe_type').eq('location_id', locationId).is('archived_at', null),
     supabase.from('recipe_lines').select('*').eq('location_id', locationId).order('sort_order'),
@@ -149,7 +149,7 @@ export const buildCostingCtx = async (locationId = null) => {
   const itemsById = {};
   (items || []).forEach((it) => {
     itemsById[it.id] = {
-      id: it.id, kind: it.kind, baseUnit: it.base_unit,
+      id: it.id, name: it.name, kind: it.kind, baseUnit: it.base_unit,
       currentCost: it.current_cost == null ? null : Number(it.current_cost),
       itemConversions: convByItem[it.id] || [], formats: fmtByItem[it.id] || [],
     };

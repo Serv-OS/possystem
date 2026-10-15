@@ -9,12 +9,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 import { convert, canConvert } from './conversion.js';
 import { globalFactor } from './units.js';
 import {
   packBaseUnitCost,
   movingAverageCost,
+  costAfterReceipt,
   componentUnitCost,
   recipeCost,
   foodCostPct,
@@ -23,9 +27,11 @@ import {
   lineAppliesToOrderType,
   costBreakdownByPurchasedItem,
   resolveItemSupplierId,
+  pickSupplierProduct,
 } from './costing.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `expected ${a} ≈ ${b}`);
+const here = dirname(fileURLToPath(import.meta.url));
 
 // ── Per-order-type recipe lines ──────────────────────────────────────────────
 
@@ -115,6 +121,26 @@ test('moving-average cost weights by on-hand', () => {
   near(movingAverageCost({ onHandQty: 10, currentAvg: 1, receivedQty: 10, receivedUnitCost: 2 }), 1.5);
   // no prior stock → take the received cost
   near(movingAverageCost({ onHandQty: 0, currentAvg: 0, receivedQty: 5, receivedUnitCost: 1.6667 }), 1.6667);
+});
+
+test('moving average with stock below zero takes the received cost, on both receiving paths', async () => {
+  // stock sold past zero carries no value to average against: on hand -20 at 1.00, receive 20 at 1.20
+  near(movingAverageCost({ onHandQty: -20, currentAvg: 1, receivedQty: 20, receivedUnitCost: 1.2 }), 1.2);
+  near(movingAverageCost({ onHandQty: -50, currentAvg: 1, receivedQty: 20, receivedUnitCost: 1.2 }), 1.2);
+  near(movingAverageCost({ onHandQty: -500, currentAvg: 2, receivedQty: 200, receivedUnitCost: 3 }), 3);
+  near(costAfterReceipt({ costMethod: 'MOVING_AVG', onHandQty: -10, currentAvg: 2, receivedQty: 10, receivedUnitCost: 3 }), 3);
+  near(costAfterReceipt({ costMethod: 'MOVING_AVG', onHandQty: 10, currentAvg: 1, receivedQty: 10, receivedUnitCost: 2 }), 1.5);
+  near(costAfterReceipt({ costMethod: 'LAST_COST', onHandQty: 10, currentAvg: 1, receivedQty: 10, receivedUnitCost: 2 }), 2);
+  // ONE copy: the browser's costing.js and the Manager app's _shared module are the same function
+  const shared = await import('../../../supabase/functions/_shared/stockCosting.js');
+  assert.equal(shared.movingAverageCost, movingAverageCost);
+  assert.equal(shared.costAfterReceipt, costAfterReceipt);
+  const approve = readFileSync(resolve(here, '../../../supabase/functions/manager-approve/index.ts'), 'utf8');
+  assert.match(approve, /import \{ costAfterReceipt \} from '\.\.\/_shared\/stockCosting\.js';/);
+  assert.match(approve, /newAvg = costAfterReceipt\(/);
+  assert.doesNotMatch(approve, /\|\| 1\)/, 'no inline average with a denominator that falls to 1');
+  const purchasing = readFileSync(resolve(here, './purchasing.js'), 'utf8');
+  assert.match(purchasing, /newAvg = costAfterReceipt\(/);
 });
 
 // ── Crate-of-24 flowing through to a recipe's cost and GP ────────────────────
@@ -296,6 +322,23 @@ test('resolveItemSupplierId: falls back to the purchasing link when no default i
   assert.equal(resolveItemSupplierId({ supplierProducts:[] }), null);
   assert.equal(resolveItemSupplierId({}), null);
   assert.equal(resolveItemSupplierId(null), null);
+});
+
+test('pickSupplierProduct: preferred flag, then the default supplier\'s pack, then cheapest per base unit', () => {
+  // the star wins
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:'a', baseUnitCost:0.10 }, { id:'p2', supplierId:'b', isPreferred:true, baseUnitCost:0.20 }] }).id, 'p2');
+  // no star: the item's default supplier beats the row that happened to come back first
+  assert.equal(pickSupplierProduct({ defaultSupplierId:'b', supplierProducts:[{ id:'p1', supplierId:'a' }, { id:'p2', supplierId:'b' }] }).id, 'p2');
+  // no star, default has no pack here: cheapest per base unit
+  assert.equal(pickSupplierProduct({ defaultSupplierId:'z', supplierProducts:[{ id:'p1', supplierId:'a', baseUnitCost:0.30 }, { id:'p2', supplierId:'b', baseUnitCost:0.25 }] }).id, 'p2');
+  // no costs known: first row, same as before
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:'a' }, { id:'p2', supplierId:'b' }] }).id, 'p1');
+  // a pack with no supplier is not a pack
+  assert.equal(pickSupplierProduct({ supplierProducts:[{ id:'p1', supplierId:null }] }), null);
+  assert.equal(pickSupplierProduct({ supplierProducts:[] }), null);
+  assert.equal(pickSupplierProduct(null), null);
+  // the reports' resolver follows the same pack when there is no explicit default
+  assert.equal(resolveItemSupplierId({ supplierProducts:[{ supplierId:'a', baseUnitCost:0.30 }, { supplierId:'b', baseUnitCost:0.25 }] }), 'b');
 });
 
 // ── Drive thru (16 Sep 2026): takeaway by another door ──────────────────────

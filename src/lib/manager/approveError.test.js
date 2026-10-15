@@ -32,11 +32,11 @@ test('no JSON body, no body, no context: the transport message, never a throw', 
   assert.equal(await approveErrorMessage(null), 'Could not save');
 });
 
-test('both manager-approve callers in data.js read the server message', () => {
+test('every manager-approve caller in data.js reads the server message', () => {
   const src = fs.readFileSync(path.join(here, 'data.js'), 'utf8');
   assert.match(src, /import \{ approveErrorMessage \} from '\.\/approveError\.js';/);
   const calls = src.split("supabase.functions.invoke('manager-approve'").slice(1);
-  assert.equal(calls.length, 2, 'managerApprove and managerRaisePO');
+  assert.equal(calls.length, 3, 'managerApprove, managerRaisePO and managerReceivePO (v5.11.64)');
   for (const c of calls) {
     const tail = c.slice(0, c.indexOf('return data;'));
     assert.match(tail, /if \(error\) return \{ ok: false, error: await approveErrorMessage\(error\) \};/);

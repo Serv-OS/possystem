@@ -8,6 +8,8 @@ import { fetchPrepSchedule, savePrepItem, deletePrepItem } from '../../../lib/pr
 import { fetchInventoryItems } from '../../../lib/stock/data';
 import { fetchRecipes } from '../../../lib/stock/recipes';
 import { Icon } from '../../../components/ServOSIcons';
+import { scheduleUnitOptions } from '../../../lib/stock/productionRules';
+import { unitDimension } from '../../../lib/stock/units';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -81,7 +83,7 @@ export default function OpsPrepSchedule() {
             {items.map((it) => (
               <tr key={it.id}>
                 <td style={{ ...td, fontWeight: 700 }}>{it.name}</td>
-                <td style={td}>{it.qty != null ? `${it.qty}${it.unit || ''}` : '—'}</td>
+                <td style={td}>{it.qty != null ? `${it.qty} ${it.unit || ''}`.trim() : '—'}</td>
                 <td style={td}>{it.dueTime || '—'}</td>
                 <td style={{ ...td, color: 'var(--t3)' }}>{daysLabel(it.daysOfWeek)}</td>
                 <td style={td}>{it.active ? <span style={{ color: 'var(--grn, #22c55e)', fontWeight: 700 }}>Active</span> : <span style={{ color: 'var(--t4)' }}>Off</span>}</td>
@@ -107,8 +109,12 @@ export default function OpsPrepSchedule() {
             <select value={editing.outputItemId || ''} onChange={(e) => {
               const it = madeItems.find(m => m.id === e.target.value);
               const rec = it ? recipesByOutput[it.id] : null;
+              // v5.11.65: a linked cook starts in a unit the item is measured in: the recipe's yield
+              // unit when it is in the item's dimension, else the item's base unit. Never the blank
+              // row's 'L' on an item counted in each.
+              const yieldOk = it && rec?.yieldUnit && unitDimension(rec.yieldUnit) === unitDimension(it.baseUnit);
               setEditing({ ...editing, outputItemId: it?.id || '', recipeId: rec?.id || '',
-                name: it ? it.name : editing.name, unit: rec?.yieldUnit || it?.baseUnit || editing.unit });
+                name: it ? it.name : editing.name, unit: it ? (yieldOk ? rec.yieldUnit : (it.baseUnit || editing.unit)) : editing.unit });
             }} style={{ ...field, marginBottom: 8 }}>
               <option value="">— not linked to stock (reminder only) —</option>
               {/* v5.5.938: EXACTLY the same label as the Batches dropdown — item name first,
@@ -129,9 +135,23 @@ export default function OpsPrepSchedule() {
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Unit</label>
-                <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })} style={field}>
-                  {UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
-                </select>
+                {(() => {
+                  // v5.11.65: a cook linked to a stock item offers only that item's units (its base
+                  // unit, its own named packs) plus batch, one recipe yield. 'portions' on a litre
+                  // item used to complete as litres; now it cannot be chosen, and one already saved
+                  // is shown as not understood. A reminder only cook keeps the free list.
+                  const linked = madeItems.find(m => m.id === editing.outputItemId);
+                  const opts = linked ? scheduleUnitOptions({ baseUnit: linked.baseUnit, packaging: linked.packaging || [] }, editing.unit) : UNITS.map(u => ({ value: u, label: u }));
+                  const stale = opts.find(o => o.stale);
+                  return (
+                    <>
+                      <select value={editing.unit} onChange={(e) => setEditing({ ...editing, unit: e.target.value })} style={{ ...field, borderColor: stale && stale.value === editing.unit ? 'var(--red, #ef4444)' : undefined }}>
+                        {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      {stale && stale.value === editing.unit && <div style={{ fontSize: 11, color: 'var(--red, #ef4444)', marginTop: 4 }}>Pick a unit the item is measured in, or batch, or the cook cannot be completed.</div>}
+                    </>
+                  );
+                })()}
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Due by</label>

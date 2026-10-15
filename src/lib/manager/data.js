@@ -41,11 +41,31 @@ export async function managerApprove(opsLocationId, pin, action, targetId, extra
 
 /** Raise a purchase order for one supplier's below-par lines (Manager Kitchen tab). Same secure
  *  write path as approvals: device fence + server-verified PIN + wf_audit. lines:
- *  [{inventory_item_id, description, qty}]. Returns { ok, po_id, reference }. */
+ *  [{inventory_item_id, description, qty_packs}] in the supplier pack (v5.11.64; an older app sent qty in
+ *  base units and the server turns that into packs). Returns { ok, po_id, reference, subtotal, tax, expected_date }. */
 export async function managerRaisePO(opsLocationId, pin, { supplierId = null, supplierName = null, lines = [] } = {}) {
   if (!supabase || !opsLocationId) return { ok: false, error: 'offline' };
   const { data, error } = await supabase.functions.invoke('manager-approve', {
     body: { action: 'po.raise', ops_location_id: opsLocationId, pin: String(pin || ''), supplier_id: supplierId, supplier_name: supplierName, lines },
+  });
+  if (error) return { ok: false, error: await approveErrorMessage(error) };
+  return data;
+}
+
+/** Receive an order on the phone (Manager Kitchen tab, v5.11.64): manager-approve po.receive books the
+ *  stock, costs, goods in temperature record and order status exactly as Back Office receiving does,
+ *  under the same idempotency key, so a line can never be posted twice. receipts:
+ *  [{ line_id, qty_packs, unit_price? }] (a line left out is shorted and goes on a balance order);
+ *  scan: { invoice_number, invoice_date, total, image_base64, media_type, raw } or null.
+ *  Returns { ok, received, shorted, balance_reference, invoice_id } or { ok: true, rejected: true }. */
+export async function managerReceivePO(opsLocationId, pin, { poId, accept = true, temperatureC = null, rejectionReason = null, receipts = [], scan = null } = {}) {
+  if (!supabase || !opsLocationId) return { ok: false, error: 'offline' };
+  if (!poId) return { ok: false, error: 'No order to receive' };
+  const { data, error } = await supabase.functions.invoke('manager-approve', {
+    body: {
+      action: 'po.receive', ops_location_id: opsLocationId, pin: String(pin || ''), target_id: poId,
+      accept, temperature_c: temperatureC, rejection_reason: rejectionReason, receipts, scan,
+    },
   });
   if (error) return { ok: false, error: await approveErrorMessage(error) };
   return data;

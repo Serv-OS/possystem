@@ -8,8 +8,10 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId, supabase } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
-import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices } from '../../lib/stock/purchasing';
+import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
 import { reportSave } from '../../lib/saveHealth';
+import { fmtYmd } from '../../lib/venueDate';
+import NumberField from '../../components/NumberField';
 import { PageHeader, PrimaryBtn, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -66,7 +68,11 @@ export default function PurchaseOrders() {
 
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
   const addItemLine = (it) => {
-    const sp = (it.supplierProducts || []).find(s => s.supplierId === draft.supplierId) || (it.supplierProducts || [])[0];
+    // v5.11.64: ONLY this supplier's pack. The old fallback to "any pack" priced a bakery
+    // order off the milk supplier's pack without a word. No pack on file = a zero price and
+    // a warning, never another supplier's price.
+    const sp = (it.supplierProducts || []).find(s => s.supplierId === draft.supplierId) || null;
+    if (!sp) showToast?.(`${it.name}: no pack from ${supName(draft.supplierId)} on file. Check the pack size and price before sending.`, 'info');
     setDraft(d => ({ ...d, lines: [...d.lines, {
       inventoryItemId: it.id, description: it.name, qtyPacks: 1,
       packQty: sp?.packQty || 1, innerQty: sp?.innerQty || 1, innerUnit: sp?.innerUnit || it.baseUnit,
@@ -109,13 +115,30 @@ export default function PurchaseOrders() {
     });
     setBusy(false);
     if (error || res?.error) {
-      const msg = res?.error === 'supplier_has_no_email'
-        ? 'This supplier has no email on file — add one in Suppliers, or use Mark sent.'
-        : (res?.error || error?.message || 'Send failed');
-      showToast?.(msg, 'error'); return;
+      // v5.11.64: the order is real even when the email is not. Keep it on the books as SENT,
+      // exactly as the Order pad does, so it counts as on order and the Resend button appears;
+      // and say what went wrong in plain words, not the SDK's "non-2xx status code". A supplier
+      // with no email lands here too (po-send answers 422, so res is null and the old
+      // res?.error check could never match); cleanFnError names that case in plain words.
+      const reason = await fnErrorText(res, error, 'the email could not be sent');
+      await setPOStatus(saved.id, 'SENT', locId);
+      await reload(saved.id);
+      showToast?.(`Order saved and on the books, but the email did not send: ${reason}. Use Resend to supplier once the address is fixed.`, 'error');
+      return;
     }
     showToast?.(`Order emailed to ${res?.to}`, 'success');
     await reload(saved.id);
+  };
+  // Expected date on an order already sent: a one column update (never the full save, which
+  // would reinsert the lines and break receiving). Draft orders keep the normal save path.
+  const changeExpectedDate = async (value) => {
+    upd('expectedDate', value);
+    if (!draft?.id || editable) return;
+    const { error } = await setPOExpectedDate(draft.id, value || null, locId);
+    reportSave('purchase order date', error);
+    if (error) { showToast?.('Expected date NOT saved', 'error'); return; }
+    showToast?.(value ? `Expected date updated to ${fmtYmd(value, { weekday: true })}` : 'Expected date cleared', 'success');
+    await reload(draft.id);
   };
   const openReceive = () => {
     // Seed with what was ordered — staff correct only what differs, which for a clean
@@ -169,6 +192,14 @@ export default function PurchaseOrders() {
   };
 
   const editable = !draft?.id || draft.status === 'DRAFT';
+  // The one field a sent order still needs: when it is due. Received and cancelled stay read only.
+  const dateEditable = editable || ['SENT', 'PARTIAL'].includes(draft?.status);
+  const [showAllItems, setShowAllItems] = useState(false);
+  const pickerItems = useMemo(() => {
+    if (showAllItems || !draft?.supplierId) return items;
+    const mine = items.filter(i => (i.supplierProducts || []).some(s => s.supplierId === draft.supplierId));
+    return mine.length ? mine : items;
+  }, [items, draft?.supplierId, showAllItems]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
@@ -197,7 +228,7 @@ export default function PurchaseOrders() {
                 <span style={{ fontSize: 13, color: 'var(--t1)' }}>{supName(p.supplierId)}</span>
                 <Tag label={p.status} tone={STATUS_TONE[p.status]} />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}{p.expectedDate ? ` · due ${p.expectedDate}` : ''}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{p.reference || ''} · {p.lines.length} line{p.lines.length === 1 ? '' : 's'} · {money(p.subtotal || 0)}{p.expectedDate ? ` · due ${fmtYmd(p.expectedDate, { weekday: true, year: false })}` : ''}</div>
             </div>
           ))}
         </div>
@@ -220,7 +251,7 @@ export default function PurchaseOrders() {
                 </select>
               </div>
               <div><label style={lbl}>Reference</label><input disabled={!editable} value={draft.reference || ''} onChange={e => upd('reference', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Expected date</label><input disabled={!editable} type="date" value={draft.expectedDate || ''} onChange={e => upd('expectedDate', e.target.value)} style={field} /></div>
+              <div><label style={lbl}>Expected date</label><input disabled={!dateEditable} type="date" value={draft.expectedDate || ''} onChange={e => changeExpectedDate(e.target.value)} style={field} title={dateEditable && !editable ? 'Saved as soon as you pick a date' : undefined} /></div>
             </div>
 
             <label style={lbl}>Lines</label>
@@ -229,9 +260,10 @@ export default function PurchaseOrders() {
               {draft.lines.map((l, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 10px' }}>
                   <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemName(l.inventoryItemId) || l.description}</span>
-                  <input disabled={!editable} type="number" min="0" step="any" value={l.qtyPacks} onChange={e => updLine(i, 'qtyPacks', e.target.value)} style={{ ...field, width: 64 }} title="packs" />
-                  <span style={{ fontSize: 11, color: 'var(--t3)' }}>× {l.packQty}×{l.innerQty}{l.innerUnit} @</span>
-                  <input disabled={!editable} type="number" min="0" step="any" value={l.unitPrice} onChange={e => updLine(i, 'unitPrice', e.target.value)} style={{ ...field, width: 78 }} title="price per pack, ex VAT" />
+                  {/* v5.11.65: the shared NumberField (wide enough for 125.50, unit inside, no spinner); the pack reads as words, not a formula */}
+                  <NumberField disabled={!editable} width={104} unit="packs" value={l.qtyPacks} onChange={v => updLine(i, 'qtyPacks', v)} title="packs ordered" />
+                  <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>of {l.packQty} x {l.innerQty} {l.innerUnit} at {currencySymbol()}</span>
+                  <NumberField disabled={!editable} width={112} unit="a pack" value={l.unitPrice} onChange={v => updLine(i, 'unitPrice', v)} title="price per pack, ex VAT" />
                   {lineRateDec(l) > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--t4)' }} title="purchase VAT">+{Math.round(lineRateDec(l) * 100)}%</span>}
                   {draft.status === 'RECEIVED' && Number(l.qtyReceived) !== Number(l.qtyPacks) && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }} title="short — remainder on the balance order">rec {Number(l.qtyReceived) || 0}</span>}
                   <span style={{ width: 70, textAlign: 'right', fontSize: 13, color: 'var(--t2)' }}>{money(qtyFor(l) * (Number(l.unitPrice) || 0))}</span>
@@ -239,7 +271,17 @@ export default function PurchaseOrders() {
                 </div>
               ))}
             </div>
-            {editable && <ItemPicker items={items} onPick={addItemLine} />}
+            {editable && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <ItemPicker items={pickerItems} onPick={addItemLine} />
+                {draft.supplierId && (
+                  <label style={{ fontSize: 12, color: 'var(--t3)', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={showAllItems} onChange={e => setShowAllItems(e.target.checked)} />
+                    Show all items, not just {supName(draft.supplierId)}’s
+                  </label>
+                )}
+              </div>
+            )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 14, color: 'var(--t1)', marginRight: 'auto' }}>
@@ -279,12 +321,10 @@ export default function PurchaseOrders() {
                   return (
                     <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--bdr)' }}>
                       <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{l.description || itemName(l.inventoryItemId)}</span>
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>ordered {l.qtyPacks}</span>
-                      <input type="number" min="0" step="any" value={r.qtyPacks ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: e.target.value } }))}
-                        style={{ ...field, width: 74, borderColor: short ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="packs received" />
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>@</span>
-                      <input type="number" min="0" step="any" value={r.unitPrice ?? ''} onChange={e => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: e.target.value } }))}
-                        style={{ ...field, width: 84, borderColor: priceChanged ? 'var(--org, #f59e0b)' : 'var(--bdr)' }} title="pack price on the delivery note, ex VAT" />
+                      <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>ordered {l.qtyPacks}</span>
+                      <NumberField width={104} unit="packs" value={r.qtyPacks ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], qtyPacks: v } }))} tone={short ? 'warn' : undefined} title="packs received" />
+                      <span style={{ fontSize: 11, color: 'var(--t3)', whiteSpace: 'nowrap' }}>at {currencySymbol()}</span>
+                      <NumberField width={112} unit="a pack" value={r.unitPrice ?? ''} onChange={v => setReceiving(x => ({ ...x, [l.id]: { ...x[l.id], unitPrice: v } }))} tone={priceChanged ? 'warn' : undefined} title="pack price on the delivery note, ex VAT" />
                       {short && <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--org, #f59e0b)' }}>short</span>}
                     </div>
                   );

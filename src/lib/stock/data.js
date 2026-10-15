@@ -14,6 +14,7 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supab
 import { packBaseUnitCost } from './costing.js';
 import { purchaseNet } from '../tax.js';
 import { readAllPagesResult } from '../pagedRead.js';
+import { normDeliveryDays } from './purchasingRules.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -89,7 +90,9 @@ const supplierFromRow = (r) => ({
   id: r.id, locationId: r.location_id, orgId: r.org_id, name: r.name, contactName: r.contact_name,
   email: r.email, phone: r.phone, accountNumber: r.account_number,
   paymentTermsDays: r.payment_terms_days, minOrderValue: r.min_order_value == null ? null : Number(r.min_order_value),
-  deliveryDays: Array.isArray(r.delivery_days) ? r.delivery_days : [], cutoffTime: r.cutoff_time,
+  // v5.11.65: days stored as numbers (1 = Mon .. 7 = Sun, the seed wrote [1,2,3,4,5,6]) read as the
+  // names the Suppliers editor and the Order pad compare, so every venue's schedule is understood.
+  deliveryDays: normDeliveryDays(r.delivery_days), cutoffTime: r.cutoff_time,
   notes: r.notes, archivedAt: r.archived_at,
 });
 const supplierToRow = (s, locationId) => ({
@@ -98,7 +101,7 @@ const supplierToRow = (s, locationId) => ({
   contact_name: s.contactName || null, email: s.email || null, phone: s.phone || null,
   account_number: s.accountNumber || null,
   payment_terms_days: s.paymentTermsDays == null || s.paymentTermsDays === '' ? null : Number(s.paymentTermsDays),
-  min_order_value: num(s.minOrderValue), delivery_days: Array.isArray(s.deliveryDays) ? s.deliveryDays : [],
+  min_order_value: num(s.minOrderValue), delivery_days: normDeliveryDays(s.deliveryDays),
   cutoff_time: s.cutoffTime || null, notes: s.notes || null, updated_at: nowIso(),
 });
 

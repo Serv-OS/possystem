@@ -13,11 +13,18 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getActiveLocationSync, getLocationId, supabase, isMock } from '../../lib/supabase';
+import { getLocationConfig } from '../../lib/locationTime';
+import { fmtVenueDate } from '../../lib/venueDate';
 import { money } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import { readAllPagesResult, faultText } from '../../lib/pagedRead';
 import { PageHeader, Tag } from './reports/reportKit';
 
+// v5.11.65: this screen is about what SUPPLIERS charge. A recipe roll up (a made item's cost moving
+// because an ingredient did) topped the list as +100% with no supplier involved, and the source
+// printed as a raw enum. Deliveries, invoices and catalogue prices only, in words.
+const PRICE_SOURCES = new Set(['PO_RECEIPT', 'INVOICE', 'CATALOG']);
+const SOURCE_LABEL = { PO_RECEIPT: 'Delivery', INVOICE: 'Invoice', CATALOG: 'Catalogue' };
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
 export default function PriceChanges() {
@@ -30,9 +37,11 @@ export default function PriceChanges() {
   // 5 Oct 2026: 'too_long' or 'failed' when the history did not come back whole. A failed
   // read used to show as "No price movements in this window", which reads as a real answer.
   const [fault, setFault] = useState(null);
+  const [venueTz, setVenueTz] = useState(null);
   const runRef = useRef(0);
 
   useEffect(() => { if (!locId) getLocationId().then(id => id && setLocId(id)); }, [locId]);
+  useEffect(() => { if (locId) getLocationConfig(locId).then(c => setVenueTz(c?.timezone || null)).catch(() => {}); }, [locId]);
   const load = useCallback(async () => {
     if (!locId || isMock || !supabase) { setRows([]); return; }
     // The newest window chosen is the only one that may paint (a year can land after 30 days).
@@ -60,6 +69,7 @@ export default function PriceChanges() {
     // Collapse each item's history in the window into first→last, counting steps.
     const byItem = new Map();
     for (const h of (hist || [])) {
+      if (!PRICE_SOURCES.has(h.source)) continue;
       const e = byItem.get(h.inventory_item_id);
       if (!e) byItem.set(h.inventory_item_id, { first: h, last: h, steps: 1 });
       else { e.last = h; e.steps++; }
@@ -139,7 +149,7 @@ export default function PriceChanges() {
                 </td>
                 <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--bdr)', textAlign: 'right', color: 'var(--t3)' }}>{r.steps}</td>
                 <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12 }}>
-                  {new Date(r.last.effective_from).toLocaleDateString('en-GB')} <span style={{ color: 'var(--t4)' }}>· {r.last.source.toLowerCase()}</span>
+                  {fmtVenueDate(r.last.effective_from, venueTz)} <span style={{ color: 'var(--t4)' }}>· {SOURCE_LABEL[r.last.source] || r.last.source}</span>
                 </td>
               </tr>
             ))}

@@ -18,6 +18,7 @@
 
 import { convert } from './conversion.js';
 import { toBase } from './uom.js';
+import { pickSupplierProduct } from './purchasingRules.js';
 
 /**
  * Canonical order types a recipe line can be scoped to. Matches closed_checks.order_type and the
@@ -98,21 +99,9 @@ export function packBaseUnitCost({ packPrice, packQty = 1, innerQty = 1, innerUn
   return { baseContent, baseUnitCost: price / baseContent };
 }
 
-/**
- * New moving-average cost after receiving stock (default valuation policy for food).
- *   new_avg = (onHand·oldAvg + recvQty·recvCost) / (onHand + recvQty)
- * All quantities/costs are per base unit. Falls back to recvCost when there is no
- * prior on-hand.
- */
-export function movingAverageCost({ onHandQty = 0, currentAvg = 0, receivedQty, receivedUnitCost }) {
-  const oh = Number(onHandQty) || 0;
-  const rq = Number(receivedQty);
-  const rc = Number(receivedUnitCost);
-  if (!(rq > 0)) return Number(currentAvg) || 0;
-  const denom = oh + rq;
-  if (!(denom > 0)) return rc;
-  return (oh * (Number(currentAvg) || 0) + rq * rc) / denom;
-}
+// The moving average rule lives in _shared/stockCosting.js (v5.11.65) so the Manager app's receive
+// writes the same cost as Back Office receiving. Re-exported here for every browser caller.
+export { movingAverageCost, costAfterReceipt } from '../../../supabase/functions/_shared/stockCosting.js';
 
 /**
  * @typedef {Object} CostingCtx
@@ -322,7 +311,9 @@ function walk(recipe, outputItem, ctx, orderType, scale, out, stack) {
 export function resolveItemSupplierId(item) {
   if (!item) return null;
   if (item.defaultSupplierId) return item.defaultSupplierId;
-  const packs = (item.supplierProducts || []).filter(p => p && p.supplierId);
-  if (!packs.length) return null;
-  return (packs.find(p => p.isPreferred) || packs[0]).supplierId;
+  return pickSupplierProduct(item)?.supplierId ?? null;
 }
+
+// pickSupplierProduct (preferred pack, then the default supplier's pack, then cheapest per base unit)
+// lives in _shared/purchasingRules.js so the Manager app's server shares it; re-exported here for callers.
+export { pickSupplierProduct };

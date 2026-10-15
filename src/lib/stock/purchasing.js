@@ -9,9 +9,10 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { convert } from './conversion.js';
-import { movingAverageCost } from './costing.js';
+import { costAfterReceipt } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
 import { purchaseNet } from '../tax.js';
+import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText } from './purchasingRules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -26,7 +27,7 @@ async function itemMap(locationId, ids) {
   const uniq = [...new Set(ids.filter(Boolean))];
   if (!uniq.length) return {};
   const [{ data: items }, { data: convs }] = await Promise.all([
-    supabase.from('inventory_items').select('id, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
+    supabase.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq),
   ]);
   const convByItem = {};
@@ -34,7 +35,7 @@ async function itemMap(locationId, ids) {
   const m = {};
   (items || []).forEach((it) => {
     m[it.id] = {
-      baseUnit: it.base_unit, conversions: convByItem[it.id] || [],
+      name: it.name, baseUnit: it.base_unit, conversions: convByItem[it.id] || [],
       onHand: Number(it.on_hand) || 0, currentCost: it.current_cost == null ? 0 : Number(it.current_cost),
       costMethod: it.cost_method || 'MOVING_AVG',
     };
@@ -61,9 +62,8 @@ async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase,
   }, locationId);
   if (res?.data?.duplicate) return; // already received — don't re-cost
   if (!priced) { item.onHand += recvBase; return; }   // stock in, cost untouched
-  const newAvg = item.costMethod === 'LAST_COST'
-    ? unitCostPerBase
-    : movingAverageCost({ onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
+  // one rule with the Manager app's receive (_shared/stockCosting.js)
+  const newAvg = costAfterReceipt({ costMethod: item.costMethod, onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
   await supabase.from('item_cost_history').update({ effective_to: nowIso() })
     .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
   await supabase.from('item_cost_history').insert({
@@ -115,13 +115,9 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
   // line_tax = net line × rate; header tax = Σ line_tax; total payable = subtotal + tax.
   const ratesById = await fetchTaxRateMap(locationId);
   const keepLines = (lines || []).filter(l => l.inventoryItemId || l.description);
-  const lineTaxes = keepLines.map((l) => {
-    const net = (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0);
-    const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
-    return Math.round(net * rate * 100) / 100;
-  });
-  const subtotal = keepLines.reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0);
-  const tax = Math.round(lineTaxes.reduce((s, t) => s + t, 0) * 100) / 100;
+  // v5.11.64: the maths lives in purchasingRules.poTotals so the Manager app's server (which
+  // writes the same two columns) and this file can never drift apart.
+  const { lineTaxes, subtotal, tax } = poTotals(keepLines, ratesById);
   const row = {
     ...(po.id ? { id: po.id } : {}),
     location_id: locationId, supplier_id: po.supplierId || null, reference: po.reference || null,
@@ -140,6 +136,35 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
   }));
   if (lrows.length) await supabase.from('po_lines').insert(lrows);
   return { data: poFromRow(data), error: null };
+};
+
+/**
+ * Plain text for a failed edge function call. The Supabase client reports every non-2xx
+ * answer as "Edge Function returned a non-2xx status code" and hides the body in
+ * error.context; this reads the body and hands back one sentence a venue can act on.
+ */
+export const fnErrorText = async (res, error, fallback = 'send failed') => {
+  let raw = res?.error || null;
+  if (!raw && error?.context) {
+    try { raw = (await error.context.json())?.error || null; } catch { raw = null; }
+  }
+  if (!raw) raw = error?.message || null;
+  return cleanFnError(raw, fallback);
+};
+
+/**
+ * Change when an order is due, on its own. v5.11.64: an order the pad has already sent
+ * had every field locked, including the one date the venue needs to correct. This is a
+ * one column update: it NEVER goes through savePurchaseOrder, which deletes and reinserts
+ * po_lines and would orphan the receive idempotency keys.
+ */
+export const setPOExpectedDate = async (poId, ymd, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const clean = /^\d{4}-\d{2}-\d{2}$/.test(String(ymd || '')) ? ymd : null;
+  return supabase.from('purchase_orders').update({ expected_date: clean, updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', poId);
 };
 
 export const setPOStatus = async (poId, status, locationId = null) => {
@@ -177,6 +202,24 @@ export const setPOStatus = async (poId, status, locationId = null) => {
  * - The zero-price guard in applyReceipt stays: a line left at £0 moves stock at the
  *   item's known cost and does NOT re-cost it.
  */
+/**
+ * Can this order be received at all? The same line check receivePurchaseOrder runs, with no
+ * write. v5.11.65: the Ops tablet's Accept to stock inserted its goods in record first and only
+ * then learned the receive refused, leaving a 'pending' delivery with a temperature logged that was
+ * never accepted or rejected, and another on every retry. Callers that write before receiving ask
+ * here first.
+ */
+export const checkReceivable = async (poId, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: lines } = await supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId);
+  if (!lines?.length) return { error: new Error('No lines') };
+  const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
+  const { bad } = unreceivableLines(lines, map);
+  return { error: bad.length ? new Error(receiveRefusalText(bad)) : null };
+};
+
 export const receivePurchaseOrder = async (poId, locationId = null, receipts = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -193,17 +236,14 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
   // TYPED was discarded without a word, the header totals excluded the line, the shortfall
   // never reached the balance PO — and RECEIVED is terminal, so the stock could never be
   // posted afterwards. A receive that cannot represent every line must not half-happen.
-  if (byLine) {
-    const bad = [];
-    for (const l of lines) {
-      const item = map[l.inventory_item_id];
-      if (!item) { bad.push(l.description || 'unlinked line'); continue; }
-      try {
-        const b = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions });
-        if (!(b > 0)) bad.push(l.description || item.name);
-      } catch { bad.push(l.description || item.name); }
-    }
-    if (bad.length) return { error: new Error(`Cannot receive — fix these lines first (missing stock item or unit conversion): ${bad.join(', ')}`) };
+  // v5.11.65: the FULL receive (the Ops tablet's Accept to stock) ran none of this. A line whose
+  // item was missing or whose unit would not convert was skipped in silence and the order still
+  // went RECEIVED, so 40 kg of beef and 14 l of milk on one demo order never entered stock and,
+  // RECEIVED being final, never could. The same check now guards every path (one copy in
+  // purchasingRules.unreceivableLines; checkReceivable runs it before the Ops tablet writes anything).
+  {
+    const { bad } = unreceivableLines(lines, map);
+    if (bad.length) return { error: new Error(receiveRefusalText(bad)) };
   }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];
@@ -264,8 +304,10 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
  * Create purchase orders from an order-pad basket, split by supplier (one PO per
  * supplier). lines: [{ supplierId, inventoryItemId, description, qtyPacks, packQty,
  * innerQty, innerUnit, unitPrice }]. Returns { data: { created }, error }.
+ * opts.expectedDateBySupplier: { [supplierId]: 'YYYY-MM-DD' } — the delivery date each
+ * order is born with (v5.11.64: before this every pad order had no expected date at all).
  */
-export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId = null) => {
+export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId = null, { expectedDateBySupplier = null } = {}) => {
   if (isMock || !supabase) return { data: { created: 0 }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
@@ -278,7 +320,8 @@ export const createOrdersFromBasket = async (lines, status = 'DRAFT', locationId
   const poIds = [];   // v5.5.922: callers need the ids to send each order on to its supplier
   const supplierIds = [];
   for (const [supplierId, group] of Object.entries(bySupplier)) {
-    const { data: po, error } = await savePurchaseOrder({ supplierId, status }, group, locationId);
+    const expectedDate = expectedDateBySupplier?.[supplierId] || null;
+    const { data: po, error } = await savePurchaseOrder({ supplierId, status, expectedDate }, group, locationId);
     if (!error) { created++; if (po?.id) { poIds.push(po.id); supplierIds.push(supplierId); } }
   }
   return { data: { created, poIds, supplierIds }, error: null };

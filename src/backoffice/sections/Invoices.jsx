@@ -8,31 +8,32 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { photoInputProps } from '../../lib/cameraCapture';
 import { useStore } from '../../store';
 import { supabase, getActiveLocationSync, getLocationId } from '../../lib/supabase';
+import { getLocationConfig } from '../../lib/locationTime';
 import { money, currencySymbol } from '../../lib/currency';
+import { fmtYmd, fmtVenueDate } from '../../lib/venueDate';
+import NumberField from '../../components/NumberField';
 import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
+import { pickSupplierProduct } from '../../lib/stock/costing';
+import { matchScannedLine } from '../../lib/stock/purchasingRules';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 
-const guessMatch = (desc, items) => {
-  const d = (desc || '').toLowerCase();
-  if (!d) return null;
-  let best = null, bestScore = 0;
-  for (const it of items) {
-    const n = it.name.toLowerCase();
-    let score = 0;
-    if (n === d) score = 100;
-    else if (d.includes(n) || n.includes(d)) score = 50 + Math.min(n.length, d.length);
-    else { const words = n.split(/\s+/); score = words.filter(w => w.length > 2 && d.includes(w)).length * 10; }
-    if (score > bestScore) { bestScore = score; best = it; }
-  }
-  return bestScore >= 10 ? best : null;
-};
+// v5.11.64: a read line is matched by the supplier's product code first, then our SKU, then the
+// name (the old scoring, unchanged). The rule lives in purchasingRules.matchScannedLine and is
+// shared with the Manager app's Receive. The supplier SKU comes from the pack of the supplier the
+// header matched (else the item's chosen pack), so a note from Bakehouse matches Bakehouse's codes.
+const candidatesFor = (items, supplierId) => items.filter(it => !it.archivedAt).map(it => {
+  const packs = it.supplierProducts || [];
+  const sp = (supplierId && packs.find(p => p.supplierId === supplierId)) || pickSupplierProduct(it);
+  return { key: it.id, name: it.name, itemSku: it.sku || null, supplierSku: sp?.supplierSku || null, item: it };
+});
+const guessMatch = (line, cands) => matchScannedLine(line, cands).match?.item || null;
 
 export default function Invoices() {
   const showToast = useStore(s => s.showToast);
@@ -52,6 +53,7 @@ export default function Invoices() {
   const [pendingFile, setPendingFile] = useState(null);   // the scanned file — stored + attached to the Xero bill
   const [xeroOn, setXeroOn] = useState(false);
   const [xeroPush, setXeroPush] = useState({});            // invoiceId -> 'busy' | {link} | {error}
+  const [venueTz, setVenueTz] = useState(null);
   // Sorting is applied ONLY to the read-only posted-invoice history (real row ids).
   // The review grid below is addressed by array index and must never be reordered.
   const [histSort, onHistSort] = useSort('date', 'desc');
@@ -59,6 +61,7 @@ export default function Invoices() {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
+    getLocationConfig(loc).then(c => setVenueTz(c?.timezone || null)).catch(() => {});
     const [{ data: s }, { data: it }, { data: h }] = await Promise.all([fetchSuppliers(loc), fetchInventoryItems(loc), fetchInvoices(loc)]);
     setSuppliers(s || []); setItems(it || []); setHistory(h || []);
     if (loc) xeroStatus(loc).then(st => setXeroOn(!!st?.connected)).catch(() => {});
@@ -87,12 +90,14 @@ export default function Invoices() {
       setScanning(true);
       const { data, error } = await scanInvoice(b64, f.type);
       setScanning(false);
-      if (error) { showToast?.(error.message, 'error'); return; }
+      // v5.11.65: scanInvoice answers { error: '<text>' }; reading .message off a string gave an empty toast
+      if (error) { showToast?.(typeof error === 'string' ? error : (error.message || 'Could not read the invoice'), 'error'); return; }
       const sup = suppliers.find(s => (s.name || '').toLowerCase() === (data.supplier_name || '').toLowerCase());
+      const cands = candidatesFor(items, sup?.id || null);
       setReview({
         header: { supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
         lines: (data.lines || []).map(l => {
-          const m = guessMatch(l.description, items);
+          const m = guessMatch(l, cands);
           return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: m?.purchaseTaxRateId || '', priceIncludesTax: false };
         }),
       });
@@ -165,7 +170,7 @@ export default function Invoices() {
   }), [history, histSort, supplierNameOf]);
 
   const historyCols = useMemo(() => [
-    { key: 'date', label: 'Date', sortable: true, render: (inv) => <span style={{ color: 'var(--t3)', whiteSpace: 'nowrap' }}>{inv.invoiceDate || (inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '')}</span> },
+    { key: 'date', label: 'Date', sortable: true, render: (inv) => <span style={{ color: 'var(--t3)', whiteSpace: 'nowrap' }}>{inv.invoiceDate ? fmtYmd(inv.invoiceDate) : fmtVenueDate(inv.createdAt, venueTz)}</span> },
     { key: 'supplier', label: 'Supplier', sortable: true, render: (inv) => <span style={{ color: 'var(--t1)' }}>{supplierNameOf(inv) || '—'}</span> },
     { key: 'number', label: 'Invoice #', sortable: true, render: (inv) => inv.invoiceNumber || '—' },
     { key: 'total', label: 'Total', align: 'right', sortable: true, render: (inv) => <Money v={inv.total} /> },
@@ -184,7 +189,7 @@ export default function Invoices() {
       },
     }] : []),
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  ], [supplierNameOf, xeroOn, xeroPush]);
+  ], [supplierNameOf, xeroOn, xeroPush, venueTz]);
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
@@ -237,9 +242,9 @@ export default function Invoices() {
                         {items.filter(it => !it.archivedAt).map(it => <option key={it.id} value={it.id}>{it.name}</option>)}
                       </select>
                     </td>
-                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} style={{ ...field, width: 64 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><NumberField width={96} value={l.qty} onChange={v => updLine(i, 'qty', v)} /></td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 64 }} /></td>
-                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><input type="number" min="0" step="any" value={l.lineTotal ?? ''} onChange={e => updLine(i, 'lineTotal', e.target.value === '' ? null : Number(e.target.value))} placeholder={money(Number(l.qty) * Number(l.unitPrice))} style={{ ...field, width: 84 }} /></td>
+                    <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)' }}><NumberField width={112} value={l.lineTotal ?? ''} onChange={v => updLine(i, 'lineTotal', v === '' ? null : v)} placeholder={money(Number(l.qty) * Number(l.unitPrice))} /></td>
                     <td style={{ padding: '7px 10px', borderBottom: '1px solid var(--bdr)', whiteSpace: 'nowrap' }}>
                       <select value={l.purchaseTaxRateId || ''} onChange={e => updLine(i, 'purchaseTaxRateId', e.target.value)} style={{ ...field, width: 78, display: 'inline-block' }}>
                         <option value="">No VAT</option>

@@ -170,8 +170,15 @@ export default function Recipes() {
       reportSave('recipe → menu item link', linkErr);
       if (linkErr) { setSaving(false); showToast?.('Saved, but NOT linked to the menu product — cost & GP won’t show', 'error'); return; }
     }
-    if (draft.recipeType === 'PREP' && draft.outputItemId) await recomputeMadeItemCost(draft.outputItemId, locId);
-    setSaving(false); showToast?.('Recipe saved', 'success');
+    // v5.11.65: ANY recipe that produces a made item re costs it. Only PREP did, so editing a
+    // BATCH recipe (Soup of the Day, Cold Brew) left the item and every dish using it on the old
+    // cost; and a roll up that failed was never said.
+    let costNote = '';
+    if (draft.outputItemId) {
+      const rc = await recomputeMadeItemCost(draft.outputItemId, locId);
+      if (!rc?.ok) costNote = '. The item cost was NOT recalculated: check every ingredient has a price and a unit it understands';
+    }
+    setSaving(false); showToast?.(`Recipe saved${costNote}`, costNote ? 'warning' : 'success');
     await reload(draft.recipeType === 'MENU' ? { menuItemId: draft.menuItemId } : { recipeId: rid });
   };
   const archive = async () => {

@@ -16,7 +16,7 @@
  */
 
 import { useState, useMemo } from 'react';
-import { money } from '../../../lib/currency';
+import { signedMoney } from '../../../lib/currency';
 
 /* ── Grading (GP% and similar rate metrics) ──────────────────────────────────
    ≥60 good · 40–59.9 mid · <40 bad. Amber for "thin", never red-vs-green alone. */
@@ -33,15 +33,15 @@ export function Money({ v, bold, muted }) {
   return (
     <span style={{ ...numSt, fontWeight: bold ? 700 : 500,
       color: neg ? 'var(--red)' : muted ? 'var(--t3)' : 'var(--t1)' }}>
-      {money(v)}
+      {signedMoney(v)}
     </span>
   );
 }
 
-export function Signed({ v, unit }) {
+export function Signed({ v, unit, dp = 2 }) {
   const n = Number(v) || 0;
   const c = n > 0 ? 'var(--grn)' : n < 0 ? 'var(--red)' : 'var(--t4)';
-  return <span style={{ ...numSt, fontWeight:600, color:c }}>{n > 0 ? '+' : ''}{n.toLocaleString(undefined,{maximumFractionDigits:2})}{unit ? ` ${unit}` : ''}</span>;
+  return <span style={{ ...numSt, fontWeight:600, color:c }}>{n > 0 ? '+' : ''}{n.toLocaleString('en-GB',{maximumFractionDigits:dp})}{unit ? ` ${unit}` : ''}</span>;
 }
 
 export function Tag({ label, tone = 'neutral' }) {
