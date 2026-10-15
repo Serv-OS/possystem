@@ -35,7 +35,8 @@ export function wrongHostMessage(hostname) {
  * What the sign in screen offers.
  *   'passkey'   this place can use one: the big button
  *   'password'  no passkey maker here (an old browser, a shared PC with none set up, our own
- *               apps and the Sunmi tills): password first, and the emailed code after it
+ *               app builds without the native passkey entitlement, the Sunmi tills): password
+ *               first, and the emailed code after it
  *   'wrong_host' possystem-liard.vercel.app and anything else off our domain
  */
 export function signInPlan({ hostname, supported, allowLocalhost = false } = {}) {
@@ -48,9 +49,10 @@ export function signInPlan({ hostname, supported, allowLocalhost = false } = {})
  * What the second step asks for after a password sign in.
  *   'register_passkey'  the normal path: make one on this device
  *   'prove_email'       a FIRST passkey, and the server wants the emailed code first
- *   'app_code'          this place cannot make a passkey (no biometric, or our own apps), and
- *                       the login has none: an authenticator app is the only way through, so it
- *                       stays as the way in on a device with no biometric
+ *   'app_code'          this place cannot make a passkey (no biometric, or an app build of ours
+ *                       without the passkey entitlement), and the login has none: an authenticator
+ *                       app is the only way through, so it stays as the way in on a device with
+ *                       no biometric
  *   'ok'                nothing to do
  */
 export function secondStepPlan({
@@ -72,11 +74,20 @@ export function secondStepPlan({
   return 'register_passkey';
 }
 
+/**
+ * Inside one of our iOS apps (the user agent carries RposIOS/), on something other than an iPhone.
+ * WKWebView on an iPad asks for desktop pages, so its user agent says Macintosh, not iPad; the iOS
+ * apps never run on a Mac (SUPPORTS_MACCATALYST is off), so that is an iPad. (15 Oct 2026.)
+ */
+function isIPadInOurApp(ua) {
+  return /RposIOS\//.test(ua) && !/iPhone/i.test(ua);
+}
+
 /** A name a person recognises, from the device they are on. Never a fingerprint of them. */
 export function suggestPasskeyName(userAgent) {
   const ua = String(userAgent || '');
   if (/iPhone/i.test(ua)) return 'iPhone';
-  if (/iPad/i.test(ua)) return 'iPad';
+  if (/iPad/i.test(ua) || isIPadInOurApp(ua)) return 'iPad';
   if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
   if (/Windows/i.test(ua)) return 'Windows PC';
   if (/Android/i.test(ua)) return 'Android phone';
@@ -87,7 +98,7 @@ export function suggestPasskeyName(userAgent) {
 /** What the person is asked for, in their own words, by device. */
 export function passkeyPrompt(userAgent) {
   const ua = String(userAgent || '');
-  if (/iPhone|iPad/i.test(ua)) return 'Face ID or your passcode';
+  if (/iPhone|iPad/i.test(ua) || isIPadInOurApp(ua)) return 'Face ID or your passcode';
   if (/Macintosh|Mac OS X/i.test(ua)) return 'Touch ID or your password';
   if (/Windows/i.test(ua)) return 'Windows Hello';
   if (/Android/i.test(ua)) return 'your fingerprint or face';
@@ -109,6 +120,29 @@ export function canRemovePasskey({ passkeys = [], factors = [], id } = {}) {
     reason: 'last',
     message: 'This is your only way in. Add a passkey on another device first, then remove this one.',
   };
+}
+
+/**
+ * Why this device offers no passkey, in words that say what to do. (15 Oct 2026: Peter's iPad
+ * showed no passkey button at all because AutoFill Passwords and Passkeys was switched off, and
+ * nothing on the page said so.) `reason` is the one canUsePasskey() gives; 'host' and 'ok' have
+ * their own words elsewhere, so they return ''.
+ */
+export function noPasskeyNote(reason, userAgent) {
+  const ua = String(userAgent || '');
+  const apple = /iPhone|iPad|Macintosh|Mac OS X/i.test(ua);
+  switch (String(reason || '')) {
+    case 'device':
+      return apple
+        ? 'Passkeys are switched off on this device. In Settings, General, AutoFill & Passwords, turn on AutoFill Passwords and Passkeys, then reload this page.'
+        : 'This device has no screen lock, fingerprint or face set up for passkeys. Set one up in its settings, then reload this page.';
+    case 'browser':
+      return 'This browser cannot use passkeys. Open this page in Safari, Chrome or Edge.';
+    case 'app':
+      return 'This version of the app cannot use passkeys yet. Update the app, or sign in with your password and the code we email you.';
+    default:
+      return '';
+  }
 }
 
 /** Plain words for what went wrong in a passkey ceremony. Never the raw browser error. */

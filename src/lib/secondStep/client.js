@@ -17,8 +17,8 @@
 
 import QRCode from 'qrcode';
 import {
-  TOTP_ISSUER, friendlyName, leftoverFactorIds, rpIdFor, faceIdSupport, isInAppShell, normaliseCode,
-  isCodeComplete,
+  TOTP_ISSUER, friendlyName, leftoverFactorIds, rpIdFor, faceIdSupport, isInAppShell, shellSupportsPasskeys,
+  normaliseCode, isCodeComplete,
 } from './rules';
 import { createPasskeyClient, passkeySupport } from './passkey';
 import { suggestPasskeyName, passkeyHostAllowed } from './passkeyRules';
@@ -49,6 +49,19 @@ function location_() {
   try { return window.location; } catch { return { hostname: '', origin: '' }; }
 }
 
+function window_() {
+  return typeof window !== 'undefined' ? window : null;
+}
+
+/**
+ * Inside one of our own apps, does the app shell block passkeys? (15 Oct 2026.) An app build
+ * that carries the native entitlement sets window.RposIOS.passkeys = true and is treated like
+ * Safari; every older build sets nothing and keeps the emailed code, as before.
+ */
+function shellBlocksPasskeys(ua) {
+  return isInAppShell(ua) && !shellSupportsPasskeys(window_());
+}
+
 export function rememberFaceIdFactor(factorId) {
   try { if (factorId) localStorage.setItem(DEVICE_KEY, factorId); } catch { /* private mode */ }
 }
@@ -65,12 +78,15 @@ export async function detectFaceId({ allowLocalhost = false } = {}) {
   try {
     hasWebAuthn = typeof window !== 'undefined' && !!window.PublicKeyCredential
       && typeof navigator?.credentials?.create === 'function' && typeof navigator?.credentials?.get === 'function';
-    if (hasWebAuthn && !isInAppShell(ua) && rpIdFor(loc.hostname, { allowLocalhost })) {
+    if (hasWebAuthn && !shellBlocksPasskeys(ua) && rpIdFor(loc.hostname, { allowLocalhost })) {
       const fn = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
       platformAuthenticator = typeof fn === 'function' ? !!(await withTimeout(fn.call(window.PublicKeyCredential), 1500, false)) : false;
     }
   } catch { platformAuthenticator = false; }
-  return faceIdSupport({ hostname: loc.hostname, userAgent: ua, hasWebAuthn, platformAuthenticator, allowLocalhost });
+  return faceIdSupport({
+    hostname: loc.hostname, userAgent: ua, hasWebAuthn, platformAuthenticator, allowLocalhost,
+    shellPasskeys: shellSupportsPasskeys(window_()),
+  });
 }
 
 export function createSecondStepClient(supabase, { allowLocalhost = false } = {}) {
@@ -168,11 +184,15 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
     },
   });
 
-  /** Can this place make or use a passkey at all? Host first, then the device itself. */
+  /**
+   * Can this place make or use a passkey at all? Host first, then the app shell, then the device
+   * itself. The 'app' answer fires only when the shell does NOT declare passkeys: an iPad or iPhone
+   * app build with the entitlement goes on to the same device check as Safari.
+   */
   async function canUsePasskey() {
     const host = typeof location !== 'undefined' ? location.hostname : '';
     if (!passkeyHostAllowed(host, { allowLocalhost })) return { usable: false, reason: 'host' };
-    if (isInAppShell(typeof navigator !== 'undefined' ? navigator.userAgent : '')) return { usable: false, reason: 'app' };
+    if (shellBlocksPasskeys(typeof navigator !== 'undefined' ? navigator.userAgent : '')) return { usable: false, reason: 'app' };
     return passkeySupport();
   }
 

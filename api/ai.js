@@ -136,7 +136,7 @@ const TOOL_DEFINITIONS = {
 
   get_pos_health: {
     name: 'get_pos_health',
-    description: "What is currently wrong with this POS: printers that cannot be reached (including the device's own error text), a print agent that has stopped checking in, unacknowledged ops alerts such as temperature breaches, and orders stuck in the queue. Use this for questions like \"what is broken\", \"why is nothing printing\", \"is anything wrong\", and before suggesting a fix, so the advice can be specific rather than generic.",
+    description: "What is currently wrong with this POS: printers that cannot be reached (including the device's own error text), tickets waiting too long to print, unacknowledged ops alerts such as temperature breaches, and orders stuck in the queue. Use this for questions like \"what is broken\", \"why is nothing printing\", \"is anything wrong\", and before suggesting a fix, so the advice can be specific rather than generic.",
     input_schema: { type: 'object', properties: {}, required: [] },
   },
 

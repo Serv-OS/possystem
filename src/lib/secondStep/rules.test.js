@@ -7,7 +7,7 @@ import { Buffer } from 'node:buffer';
 import {
   MIN_PASSWORD_LENGTH, WEBAUTHN_RP_ID, WEBAUTHN_HOSTS,
   decodeJwtClaims, isRealLogin, sessionAal, verifiedFactors, hasVerified, gateStep, passesWithoutNetwork,
-  rpIdFor, faceIdLabel, faceIdSupport, isInAppShell, challengePlan, normaliseCode, isCodeComplete,
+  rpIdFor, faceIdLabel, faceIdSupport, isInAppShell, shellSupportsPasskeys, challengePlan, normaliseCode, isCodeComplete,
   formatSecret, friendlyName, factorLabel, removalCheck, leftoverFactorIds, isSecondStepRefusal,
   passwordProblem, explainError,
 } from './rules.js';
@@ -101,7 +101,7 @@ test('Face ID works only on the serv-os.app addresses Peter lists in Supabase', 
   assert.equal(rpIdFor('localhost', { allowLocalhost: true }), 'localhost');
 });
 
-test('our own apps and the Sunmi tills are recognised (native Face ID is not built yet)', () => {
+test('our own apps and the Sunmi tills are recognised', () => {
   const inApp = [
     'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 RposIOS/1.0.0',
     'Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36 RposAndroid/1.0 ServOS-owner',
@@ -116,6 +116,36 @@ test('our own apps and the Sunmi tills are recognised (native Face ID is not bui
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0',
   ];
   for (const ua of browsers) assert.equal(isInAppShell(ua), false, ua);
+});
+
+test('shellSupportsPasskeys reads the app shell flag and nothing else (15 Oct 2026)', () => {
+  assert.equal(shellSupportsPasskeys(undefined), false, 'no window (node, a worker)');
+  assert.equal(shellSupportsPasskeys(null), false);
+  assert.equal(shellSupportsPasskeys({}), false, 'a browser: no shell marker at all');
+  assert.equal(shellSupportsPasskeys({ RposIOS: { platform: 'ios', version: '1.0.1', hasCamera: true } }), false, 'an older iOS app build sets no flag');
+  assert.equal(shellSupportsPasskeys({ RposIOS: { platform: 'ios', version: '1.0.1', passkeys: false } }), false, 'a target without the entitlement says false');
+  assert.equal(shellSupportsPasskeys({ RposIOS: { platform: 'ios', version: '1.0.1', passkeys: true } }), true, 'POS and Owner builds with the entitlement');
+  assert.equal(shellSupportsPasskeys({ RposAndroid: { passkeys: true } }), true, 'the Android shell, later');
+  assert.equal(shellSupportsPasskeys({ RposIOS: { passkeys: 'true' } }), false, 'only the literal true counts');
+  assert.equal(shellSupportsPasskeys({ RposIOS: null }), false);
+});
+
+test('faceIdSupport inside our apps: blocked until the app build says it can do passkeys (15 Oct 2026)', () => {
+  const ipadInApp = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 RposIOS/1.0.1';
+  const ready = { hostname: 'app.serv-os.app', userAgent: ipadInApp, hasWebAuthn: true, platformAuthenticator: true };
+  // An older app build sets no flag: exactly as today, the emailed code.
+  assert.deepEqual(faceIdSupport(ready), { usable: false, reason: 'app', label: 'Face ID or Touch ID' });
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: false }).reason, 'app');
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: 'true' }).reason, 'app', 'only the literal true counts');
+  // The build with the entitlement: the shell steps aside and the browser and device checks decide.
+  assert.deepEqual(faceIdSupport({ ...ready, shellPasskeys: true }), { usable: true, reason: 'ok', label: 'Face ID or Touch ID' });
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, hasWebAuthn: false }).reason, 'browser');
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, platformAuthenticator: false }).reason, 'device');
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, hostname: 'possystem-liard.vercel.app' }).reason, 'host', 'the flag never unlocks another address');
+  // Outside any app the flag changes nothing.
+  const safari = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) Version/18.0 Mobile/15E148 Safari/604.1';
+  assert.equal(faceIdSupport({ ...ready, userAgent: safari, shellPasskeys: true }).reason, 'ok');
+  assert.equal(faceIdSupport({ ...ready, userAgent: safari, shellPasskeys: false }).reason, 'ok');
 });
 
 test('faceIdSupport says yes only where every piece is there, with a plain reason otherwise', () => {

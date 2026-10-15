@@ -17,9 +17,20 @@ const TERMINAL = ['sent', 'partial', 'skipped'];
 
 async function resolveIds(sb: SB, org: string, def: any): Promise<string[]> {
   if (!def) return [];
-  const { data, error } = await sb.rpc('marketing_resolve_segment', { p_org: org, p_def: def, p_limit: null });
-  if (error) throw new Error(`resolve: ${error.message}`);
-  return (data ?? []).map((r: any) => r.customer_id);
+  // 28 Sep 2026: marketing_resolve_segment RETURNS TABLE, and the API hands back at most 1,000 rows
+  // per request, so every audience stopped at 1,000 (Coffee Boy: 2,898 email subscribers, 8,030
+  // customers) and a campaign reached only the first 1,000. Page it, in a fixed order, to the end.
+  const PAGE = 1000;
+  const out: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb.rpc('marketing_resolve_segment', { p_org: org, p_def: def, p_limit: null })
+      .order('customer_id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`resolve: ${error.message}`);
+    const rows = data ?? [];
+    for (const r of rows as any[]) out.push(r.customer_id);
+    if (rows.length < PAGE) break;
+  }
+  return out;
 }
 
 async function issueCode(sb: SB, org: string, offer: any, customerId: string): Promise<string | null> {
@@ -65,11 +76,19 @@ async function entryAudience(sb: SB, wf: any, opts: WfOpts): Promise<string[]> {
     const { data: caps } = await sb.from('wifi_captures').select('customer_id').not('customer_id', 'is', null).eq('authorized', true).gte('created_at', since);
     ids = [...new Set((caps ?? []).map((r: any) => r.customer_id))];
     // org-scope (wifi_captures has no org_id) + not soft-deleted
-    if (ids.length) { const { data: custs } = await sb.from('customers').select('id').eq('org_id', org).is('deleted_at', null).in('id', ids); ids = (custs ?? []).map((c: any) => c.id); }
+    // 28 Sep 2026: in batches of 200 ids (a long id list overflows the request and a read stops at 1,000 rows).
+    if (ids.length) { const keep: string[] = []; for (let i = 0; i < ids.length; i += 200) { const { data: custs } = await sb.from('customers').select('id').eq('org_id', org).is('deleted_at', null).in('id', ids.slice(i, i + 200)); for (const c of (custs ?? []) as any[]) keep.push(c.id); } ids = keep; }
     // "…but not loyalty": drop anyone who has any loyalty activity (loyalty_transactions, Ops DB).
     if (type === 'wifi_not_loyal' && ids.length) {
-      const { data: loy } = await sb.from('loyalty_transactions').select('customer_id').in('customer_id', ids);
-      const loyal = new Set((loy ?? []).map((r: any) => r.customer_id));
+      // 28 Sep 2026: batched, and paged per batch (one loyal customer can have many rows).
+      const loyal = new Set<string>();
+      for (let i = 0; i < ids.length; i += 200) {
+        for (let from = 0; ; from += 1000) {
+          const { data: loy } = await sb.from('loyalty_transactions').select('customer_id').in('customer_id', ids.slice(i, i + 200)).order('customer_id').range(from, from + 999);
+          for (const r of (loy ?? []) as any[]) loyal.add(r.customer_id);
+          if (!loy || loy.length < 1000) break;
+        }
+      }
       ids = ids.filter((id) => !loyal.has(id));
     }
   } else { return []; }   // manual → only enrolled via the BO action
