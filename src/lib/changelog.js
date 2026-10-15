@@ -11,6 +11,9 @@ export const CHANGELOG = [
     date: '15 Oct 2026',
     items: [
       "Back Office sign in: Face ID and Touch ID (passkeys) now work inside the ServOS iPad and iPhone apps, once the app is updated from TestFlight or the App Store. Older app builds keep the emailed code.",
+      "Owner app sign in: the Sign in with a passkey button is there now, as on Back Office. It never had one.",
+      "Sign in: when a device cannot offer a passkey, the page now says why and where to switch it on (for an iPad: Settings, General, AutoFill & Passwords).",
+      "Shift assistant: no longer reports a print agent as down. No venue runs one, the till prints straight to the printers. It now reports tickets that have waited over 10 minutes to print instead.",
     ],
   },
   {
