@@ -16,6 +16,7 @@
 import { useState } from 'react';
 import { belowPar, bySupplier, groupBatches, qtyText, orderPacksFor, orderValue } from '../../lib/manager/kitchen';
 import { nextDeliveryYmd, matchScannedLine } from '../../lib/stock/purchasingRules';
+import { localToUtcMs } from '../../lib/venueDate';
 import { scanInvoice } from '../../lib/stock/purchasing';
 import { photoInputProps, photoButtonLabel } from '../../lib/cameraCapture';
 import { recordPrep } from '../../lib/prep';
@@ -29,7 +30,7 @@ const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'va
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
 const shortDate = (s) => { if (!s) return null; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }) : null; };
 const timeOf = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
-const qtyLbl = (b) => [b.plannedQty != null ? b.plannedQty : null, b.unit].filter((x) => x != null && x !== '').join('');
+const qtyLbl = (b) => [b.plannedQty != null ? b.plannedQty : null, b.unit].filter((x) => x != null && x !== '').join(' ');   // '10 l', never '10l'
 const packText = (p) => (p ? `${p.packQty || 1} x ${p.innerQty} ${p.innerUnit || ''}`.trim() : '');
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 // The venue's calendar day: the snapshot says it (v5.11.64); an older snapshot gets the tz reading.
@@ -42,6 +43,8 @@ export default function ManagerKitchen({ ctx }) {
   const L = useLayout();   // style values only (manager/layout.js)
   const [recording, setRecording] = useState(null);
   const [recErr, setRecErr] = useState('');
+  const [recQty, setRecQty] = useState({});      // batchId -> what was actually made (v5.11.65; the planned figure used to be logged as made)
+  const [recNote, setRecNote] = useState({});    // batchId -> 'logged, but stock not updated' in red, once hidden behind a green tick
   // Raise PO (per supplier) — secure write path: manager-approve po.raise (device fence + PIN + audit).
   const [poFor, setPoFor] = useState(null);      // supplier group whose order sheet is open
   const [poQty, setPoQty] = useState({});        // itemId -> PACKS (0 = removed from this order)
@@ -157,16 +160,26 @@ export default function ManagerKitchen({ ctx }) {
   const groups = bySupplier(items);
   const supplierNames = Object.keys(groups).sort((a, b) => (a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b)));
 
-  // Batch cooks: snapshot passes raw dueDate+dueTime; build dueAtMs in the device's (venue-local) tz.
-  const batches = (snap?.kitchen?.batches || []).map((b) => ({ ...b, dueAtMs: b.dueTime ? Date.parse(`${b.dueDate}T${b.dueTime}`) : null }));
+  // Batch cooks: the snapshot passes the raw dueDate + dueTime; dueAtMs is that wall clock time in the
+  // VENUE's timezone (snap.tz). v5.11.65: Date.parse read it in the device's zone, so a 10:00 UK cook
+  // viewed from California turned overdue at 10:00 Pacific, eight hours late.
+  const batches = (snap?.kitchen?.batches || []).map((b) => ({ ...b, dueAtMs: b.dueTime ? localToUtcMs(b.dueDate, b.dueTime, snap?.tz) : null }));
   const grp = groupBatches(batches);
   const batchTotal = grp.counts.done + grp.counts.overdue + grp.counts.due;
 
   const doRecord = async (b) => {
+    // what was ACTUALLY made (defaults to the plan); a 38 of 40 batch is not a 100% yield
+    const made = recQty[b.id] === undefined ? b.plannedQty : recQty[b.id];
+    const n = Number(made);
+    if (!(n > 0)) { setRecErr(`${b.name}: enter how much was made before recording.`); return; }
     setRecording(b.id); setRecErr('');
-    const r = await recordPrep({ scheduleId: b.scheduleId, name: b.name, prepDate: b.dueDate, actualQty: b.plannedQty, unit: b.unit, operator }, loc);
+    const r = await recordPrep({ scheduleId: b.scheduleId, name: b.name, prepDate: b.dueDate, actualQty: n, unit: b.unit, operator }, loc);
     setRecording(null);
-    if (r?.ok) refreshSnap?.(); else setRecErr(r?.error || 'Could not record');
+    if (!r?.ok) { setRecErr(r?.error || 'Could not record'); return; }
+    // recordPrep logs the cook even when the batch could not move stock; that used to vanish behind the tick
+    if (r.produceError) setRecNote((m) => ({ ...m, [b.id]: `Logged, but stock was NOT updated: ${r.produceError}` }));
+    else setRecNote((m) => { const next = { ...m }; delete next[b.id]; return next; });
+    refreshSnap?.();
   };
 
   const batchRow = (b, state) => {
@@ -185,12 +198,17 @@ export default function ManagerKitchen({ ctx }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 700 }}>{b.name}{qtyLbl(b) ? <span style={{ color: 'var(--t3)', fontWeight: 600 }}> · {qtyLbl(b)}</span> : null}</div>
           <div style={{ fontSize: 11, color: tone, ...mono }}>{sub}</div>
+          {recNote[b.id] && <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700, marginTop: 3, lineHeight: 1.4 }}>{recNote[b.id]}</div>}
         </div>
         {state !== 'done' && (
-          <button onClick={() => doRecord(b)} disabled={busy} className="sv-glass"
-            style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid var(--grn-b)', cursor: busy ? 'default' : 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', flexShrink: 0 }}>
-            {busy ? '…' : 'Record'}
-          </button>
+          <>
+            {numInput(recQty[b.id] ?? (b.plannedQty ?? ''), (v) => setRecQty((m) => ({ ...m, [b.id]: v })), 64)}
+            {b.unit ? <span style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{b.unit}</span> : null}
+            <button onClick={() => doRecord(b)} disabled={busy} className="sv-glass"
+              style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid var(--grn-b)', cursor: busy ? 'default' : 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', flexShrink: 0 }}>
+              {busy ? '…' : 'Record'}
+            </button>
+          </>
         )}
       </div>
     );

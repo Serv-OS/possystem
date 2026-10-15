@@ -14,6 +14,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+// v5.11.65: the requested delivery day in words ('Fri 16 Oct 2026'), not the raw database string.
+import { fmtYmd } from '../_shared/venueDate.js';
 
 // CORS is inlined per-function in this codebase — there is no shared cors module.
 const corsHeaders = {
@@ -87,7 +89,7 @@ Deno.serve(async (req) => {
   const html = `
   <div style="font-family:Arial,sans-serif;max-width:640px">
     <h2 style="margin:0 0 4px">Purchase order — ${esc(venue)}</h2>
-    <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(po.expected_date)}` : ''}</p>
+    <p style="margin:0 0 8px;color:#555">Ref ${esc(ref)}${po.expected_date ? ` · requested delivery ${esc(fmtYmd(po.expected_date, { weekday: true }))}` : ''}</p>
     ${supplier.account_number ? `<p style="margin:0 0 4px;font-size:14px"><b>Account no:</b> ${esc(supplier.account_number)}</p>` : ''}
     <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}</p>
     <table style="border-collapse:collapse;width:100%;font-size:14px">

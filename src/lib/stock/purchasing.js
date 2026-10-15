@@ -27,7 +27,7 @@ async function itemMap(locationId, ids) {
   const uniq = [...new Set(ids.filter(Boolean))];
   if (!uniq.length) return {};
   const [{ data: items }, { data: convs }] = await Promise.all([
-    supabase.from('inventory_items').select('id, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
+    supabase.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq),
   ]);
   const convByItem = {};
@@ -35,7 +35,7 @@ async function itemMap(locationId, ids) {
   const m = {};
   (items || []).forEach((it) => {
     m[it.id] = {
-      baseUnit: it.base_unit, conversions: convByItem[it.id] || [],
+      name: it.name, baseUnit: it.base_unit, conversions: convByItem[it.id] || [],
       onHand: Number(it.on_hand) || 0, currentCost: it.current_cost == null ? 0 : Number(it.current_cost),
       costMethod: it.cost_method || 'MOVING_AVG',
     };
@@ -219,7 +219,11 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
   // TYPED was discarded without a word, the header totals excluded the line, the shortfall
   // never reached the balance PO — and RECEIVED is terminal, so the stock could never be
   // posted afterwards. A receive that cannot represent every line must not half-happen.
-  if (byLine) {
+  // v5.11.65: the FULL receive (the Ops tablet's Accept to stock) ran none of this. A line whose
+  // item was missing or whose unit would not convert was skipped in silence and the order still
+  // went RECEIVED, so 40 kg of beef and 14 l of milk on one demo order never entered stock and,
+  // RECEIVED being final, never could. The same check now guards every path.
+  {
     const bad = [];
     for (const l of lines) {
       const item = map[l.inventory_item_id];
@@ -229,7 +233,7 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
         if (!(b > 0)) bad.push(l.description || item.name);
       } catch { bad.push(l.description || item.name); }
     }
-    if (bad.length) return { error: new Error(`Cannot receive — fix these lines first (missing stock item or unit conversion): ${bad.join(', ')}`) };
+    if (bad.length) return { error: new Error(`Cannot receive: fix these lines in Back Office first (missing stock item or unit conversion): ${bad.join(', ')}`) };
   }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];

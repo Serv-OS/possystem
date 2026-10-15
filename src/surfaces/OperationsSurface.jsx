@@ -24,6 +24,7 @@ import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } f
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
+import { fmtYmd } from '../lib/venueDate';
 import { OpsDocuments, OpsForms } from './ops/OpsDocsForms';
 import { useLayout } from './manager/useLayout';
 
@@ -511,7 +512,7 @@ function Deliveries({ loc, operator, onBack }) {
             <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'oklch(0.8 0.12 48 / 0.18)', color: 'oklch(0.85 0.14 48)' }}><Icon name="inventory" size={20} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{po.reference || `PO ${String(po.id).slice(0, 6)}`}</div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{po.lines?.length || 0} lines{po.expectedDate ? ` · ${po.expectedDate}` : ''}</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{po.lines?.length || 0} lines{po.expectedDate ? ` · due ${fmtYmd(po.expectedDate, { weekday: true, year: false })}` : ''}</div>
             </div>
             {delivery?.status === 'accepted' ? <Pill state="done">Accepted</Pill> : delivery?.status === 'rejected' ? <Pill state="over">Rejected</Pill> : <Pill state="due">Check</Pill>}
           </button>
