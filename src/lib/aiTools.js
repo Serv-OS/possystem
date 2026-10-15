@@ -110,9 +110,19 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           : `${d} days ago (${new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})`;
       };
 
-      const [{ data: health }, { data: agents }, { data: alerts }, { data: queue }] = await Promise.all([
+      // 15 Oct 2026, Peter: "this must be a false error, we dont use a print agent locally". No
+      // venue runs a LAN print agent: the till prints through its own bridge (lib/printPathWords.js),
+      // so "no print agent" was raised at every venue and meant nothing. The honest printing signal
+      // is a ticket that has WAITED too long: a print job still pending or claimed after 10 minutes
+      // (the same rule as the overnight watchdog). An agent row is only read for the rare venue
+      // that does run one, and only to say it has gone quiet.
+      const [{ data: health }, { data: agents }, { data: stuck }, { data: alerts }, { data: queue }] = await Promise.all([
         supabase.from('printer_health').select('*').eq('location_id', locationId),
         supabase.from('printer_agents').select('*').eq('location_id', locationId),
+        supabase.from('print_jobs').select('id, job_type, created_at, printer_ip')
+          .eq('location_id', locationId).in('status', ['pending', 'claimed'])
+          .lt('created_at', new Date(now - 10 * 60000).toISOString())
+          .order('created_at', { ascending: true }).limit(50),
         supabase.from('ops_alerts').select('id, type, severity, title, body, status, created_at')
           .eq('location_id', locationId).neq('status', 'acknowledged')
           .order('created_at', { ascending: false }).limit(25),
@@ -152,13 +162,20 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         });
       }
 
+      if ((stuck || []).length) {
+        const n = stuck.length;
+        problems.push({
+          area: 'printing', severity: 'high',
+          what: `${n} ticket${n === 1 ? '' : 's'} waiting over 10 minutes to print`,
+          detail: stuck.slice(0, 5).map(j => `${j.job_type || 'ticket'} sent ${ago(j.created_at)}${j.printer_ip ? ` to ${j.printer_ip}` : ''}`).join('; '),
+          since: `oldest sent ${ago(stuck[0].created_at)}`,
+          suggested_fix: 'The till that sends the tickets is off, asleep or not on the same Wi-Fi as the printer. Open the till app on that device, then check the printer is on. The tickets print as soon as the till reaches it.',
+        });
+      }
+      // Only a venue that runs a LAN print agent has a row here. No row is normal, not a fault.
       const agent = (agents || [])[0];
       const agentAge = agent ? Math.round((now - new Date(agent.last_seen).getTime()) / 1000) : null;
-      if (!agent) {
-        problems.push({ area: 'print agent', severity: 'high', what: 'No print agent detected',
-          detail: 'Nothing is listening to send jobs to the printers.',
-          suggested_fix: 'Check the print agent is running on the till or back-office machine.' });
-      } else if (agentAge > 120) {
+      if (agent && agentAge > 120) {
         problems.push({ area: 'print agent', severity: 'high',
           what: `Print agent "${agent.hostname}" last checked in ${Math.round(agentAge / 60)} min ago`,
           detail: 'It should check in every few seconds, so it has probably stopped or lost the network.',
@@ -189,7 +206,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       problems.sort((a, b) => order[a.severity] - order[b.severity]);
       return { result: {
         healthy: problems.length === 0,
-        checked: ['printers', 'print agent', 'ops alerts', 'order queue'],
+        checked: ['printers', 'tickets waiting to print', 'ops alerts', 'order queue'],
         problem_count: problems.length,
         problems,
         note: 'These are live operational signals. The POS does not keep a crash log, so a fault that leaves no trace here will not appear.',
@@ -210,10 +227,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         last_error:   h.last_error || null,
         failures:     h.consecutive_failures || 0,
       }));
+      // 15 Oct 2026: no venue runs a LAN print agent (the till prints through its own bridge), so
+      // a missing row is the normal case and is never reported as a fault.
       const agent = agents?.[0];
       const agentStatus = agent
         ? { hostname: agent.hostname, last_seen: `${Math.round((now - new Date(agent.last_seen)) / 1000)}s ago`, status: agent.status }
-        : { status: 'not detected — is the print agent running?' };
+        : { status: 'none', note: 'Tills print straight to the printers. No print agent is needed.' };
       return { result: { printers, agent: agentStatus } };
     }
 
