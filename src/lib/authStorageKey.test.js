@@ -73,7 +73,7 @@ test('the client and its token helper read the SAME key', () => {
   assert.match(SUPA, /export const AUTH_STORAGE_KEY = storageKeyFor\(getDeviceMode\(\)\);/);
   // both places that name a storage key must use that one constant, or a Back
   // Office tab would write one key and read another
-  assert.equal((SUPA.match(/storageKey: AUTH_STORAGE_KEY/g) || []).length, 2);
+  assert.equal((SUPA.match(/storageKey: AUTH_STORAGE_KEY/g) || []).length, 3);   // 12 Oct 2026: plus the kitchen screen client's token source (kitchenClient)
   assert.doesNotMatch(SUPA, /storageKey: DEFAULT_STORAGE_KEY/);
   assert.match(SUPA, /adoptSharedSession\(localStorage, AUTH_STORAGE_KEY\)/);
   // the staff app keeps its own, as it has since the 6 Aug incident

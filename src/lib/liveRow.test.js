@@ -44,13 +44,17 @@ test('a real row comes back as it is', () => {
 test('the kitchen screen never draws a ticket from a change with no row', () => {
   const kds = read('../surfaces/kds/KDSSurface.jsx');
   assert.match(kds, /import \{ liveRow \} from '\.\.\/\.\.\/lib\/liveRow'/);
-  // Both handlers check the change on the line before they use its row. (The line that uses it is
-  // pinned as it is by kds/kdsItemTicks.test.js, so it is left exactly as it was.)
-  const guarded = "        if (!liveRow(payload)) return;\n        const t = withLocalTicksRef.current(mapRow(payload.new));\n";
-  assert.equal(count(kds, guarded), 2, 'the INSERT handler and the UPDATE handler');
-  assert.equal(count(kds, 'mapRow(payload.new)'), 2, 'and there is no third, unchecked use');
-  assert.equal(count(kds, "(mapRow(payload.new));\n        if (payload.new.status === 'bumped') {"), 1, 'the bumped check reads the row after the guard');
-  assert.equal(count(kds, 'payload.new.status'), 1);
+  // Both handlers check the change on the line before they hand its row to the board engine
+  // (v5.11.62: the engine, lib/kds/kdsBoardEngine.js, owns the live changes; the screen only
+  // guards them).
+  assert.equal(count(kds, "          if (!liveRow(payload)) return;\n          if (alive) eng.liveInsert(payload.new);\n"), 1, 'the INSERT handler');
+  assert.equal(count(kds, "          if (!liveRow(payload)) return;\n          if (alive) eng.liveUpdate(payload.new);\n"), 1, 'the UPDATE handler');
+  // The third use is the screen's own device row (centre_id): apply() ignores a row with no
+  // centre_id, so an empty change does nothing there either.
+  assert.equal(count(kds, 'payload.new'), 3, 'no other use of a live row');
+  assert.equal(count(kds, "(payload) => apply(payload.new))"), 1, 'the device row handler');
+  assert.match(kds, /if \(!alive \|\| !row \|\| !\('centre_id' in row\)\) return;/, 'which ignores a change with no row');
+  assert.equal(count(kds, 'mapRow(payload.new)'), 0, 'the screen no longer maps a live row itself');
 });
 
 test('the till bell and the ops page skip a change with no row', () => {

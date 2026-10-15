@@ -5,6 +5,7 @@ import { runDeviceLink, FENCE_CAPS, isMissingRpc, isMissingColumn, heartbeatArgs
 import { VERSION } from './version';
 import { makeRetryingFetch } from './netRetry';
 import { supabaseBaseUrls, portalAssetUrl } from './wifiPortal';
+import { kitchenTokenSource } from './kds/kdsToken';
 
 // One retry for a request that never completed. 20 Sep 2026: a member of staff
 // building a menu kept getting the red "YOUR CHANGES ARE NOT SAVING" bar with
@@ -84,6 +85,36 @@ export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON
   },
   global: { fetch: retryingFetch },
 });
+
+// ── Kitchen screen client (12 Oct 2026, Coffee Boy Barnsley, K8) ─────────────────
+// Inside the client above every request first asks for the session under ONE lock, and while the
+// hourly sign in renewal holds that lock every other request waits behind it with no time limit.
+// On 12 Oct the drinks screen's renewal could not reach the server for 3.5 minutes and a bump
+// waited all of it, although the device's token was still valid for the first two.
+// This second client is for the kitchen screen's own kds_tickets reads and writes ONLY. It has no
+// sign in machinery of its own: it sends the SAME device token, read straight from where the main
+// client keeps it while that token is still valid, and asks the main client (and so waits) only
+// once it has run out (lib/kds/kdsToken.js). Same URL (through the WiFi front door where that
+// applies), same key, same retrying fetch, same row level security. Made on first use, so no till,
+// kiosk or Back Office ever builds it.
+let _kitchenClient = null;
+export function kitchenClient() {
+  if (isMock) return null;
+  if (!_kitchenClient) {
+    _kitchenClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
+      accessToken: kitchenTokenSource({
+        storage: typeof localStorage !== 'undefined' ? localStorage : null,
+        storageKey: AUTH_STORAGE_KEY,
+        sessionToken: async () => {
+          const { data } = await supabase.auth.getSession();
+          return data?.session?.access_token || null;
+        },
+      }),
+      global: { fetch: retryingFetch },
+    });
+  }
+  return _kitchenClient;
+}
 
 // ── Platform DB (company/user management — separate project) ──────────────────
 const PLATFORM_URL  = SUPABASE_BASES.platformUrl;

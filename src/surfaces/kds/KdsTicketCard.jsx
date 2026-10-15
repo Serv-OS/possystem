@@ -23,6 +23,7 @@ import { identityParts, formatElapsed, statusOf } from '../../lib/kds/kdsTicket'
 import { KDS_NOTE_MAX, cleanKdsNote } from '../../lib/kds/kdsOrderNote';
 import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
+import { BUMP_NOT_SAVED } from '../../lib/kds/kdsLinkHealth';
 import { C, SANS, MONO, LATE_PULSE } from './kdsStyles';
 
 const HELD_TIMER = { label: 'ON HOLD', c: '#AEB8B3', bg: 'rgba(255,255,255,.07)' };
@@ -371,6 +372,8 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
   const { ident, meta } = headParts(view, settings);
   const timer = timerProps(view, mins, settings, mode);
   const canTick = mode === 'live' && !held;
+  // 12 Oct 2026 (K1): this card is back because its bump could not be saved for ten minutes.
+  const notSaved = mode === 'live' && view.unsaved === 'bump';
   // CHECK ID (a kiosk order with alcohol) shows even with Kitchen notes switched off.
   const note = kdsVisibleNote(view.note, show.notes);
 
@@ -418,7 +421,12 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
         {view.kdsNote && <NoteBlock note={view.kdsNote} big={false} z={z} kitchen />}
       </div>
 
-      <div style={{ marginTop: 'auto', padding: `0 ${z.footPad}px ${z.footPad}px`, display: 'flex', gap: 8 }}>
+      {notSaved && (
+        <div style={{ marginTop: 'auto', padding: `0 ${z.footPad}px 8px` }}>
+          <BumpNotSaved big={false} onRetry={() => onBump(view.id)} />
+        </div>
+      )}
+      <div style={{ marginTop: notSaved ? 0 : 'auto', padding: `0 ${z.footPad}px ${z.footPad}px`, display: 'flex', gap: 8 }}>
         {mode === 'history' ? (
           <button type="button" onClick={() => onRecall(view.id)} style={bumpStyle(compact, scale)}>↺ Recall</button>
         ) : (
@@ -435,6 +443,21 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
     </div>
   );
 });
+
+/**
+ * 12 Oct 2026, Barnsley (K1): a bump that could not be saved for ten minutes brings its card back,
+ * and the card SAYS so. Before, the ticket simply reappeared ("recalling items without us touching
+ * anything"). The whole strip is a button: one tap sends the same bump again.
+ */
+function BumpNotSaved({ big, onRetry }) {
+  return (
+    <button type="button" onClick={(e) => { e.stopPropagation(); onRetry(); }} style={{
+      width: '100%', border: '1.5px solid #FF6B6B', background: 'rgba(255,107,107,.18)', color: '#FFFFFF',
+      borderRadius: big ? 14 : 12, padding: big ? '16px 20px' : '10px 12px', minHeight: 44,
+      font: `800 ${big ? 22 : 16}px/1.25 ${SANS}`, textAlign: 'left', cursor: 'pointer',
+    }}>{BUMP_NOT_SAVED}</button>
+  );
+}
 
 /** Bump keeps the design's 52px (44px compact) height at every scale: it is the main touch target. */
 function bumpStyle(compact, scale) {
@@ -481,6 +504,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {mode === 'live' && view.unsaved === 'bump' && <BumpNotSaved big onRetry={() => onBump(view.id)} />}
           <VoidBlock voids={view.voids} big z={z} />
           {note && <NoteBlock note={note} big z={z} />}
           {mode === 'live' && onSaveNote ? (

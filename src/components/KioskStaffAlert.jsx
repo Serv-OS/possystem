@@ -16,6 +16,7 @@ import { kioskStaffAlertView } from '../lib/kioskStaffAlertView';
 import { registerKioskAlertHost, acknowledgeKioskAlert, markKioskAlertChimed } from '../lib/kioskStaffAlerts';
 import { playOrderChime } from '../lib/orderChime';
 import { Icon } from './ServOSIcons';
+import KdsScreenAlert from './KdsScreenAlert';
 
 const EMPTY = [];
 // A tap already on its way when the card appears (or when OK brings up the next alert) must not
@@ -32,7 +33,21 @@ function Fact({ label, value }) {
   );
 }
 
+// 12 Oct 2026, Barnsley (K6): the till must say when a kitchen screen stops showing orders.
+// App.jsx mounts this file's default export once per till, above the PIN screen and every till
+// surface, and App.jsx is not to be touched in this build (two other builds are in it), so the
+// kitchen screen alert rides in the same fixed slot. It decides for itself where it runs (counter
+// tills only: components/KdsScreenAlert.jsx).
 export default function KioskStaffAlert() {
+  return (
+    <>
+      <KioskAlertCard />
+      <KdsScreenAlert />
+    </>
+  );
+}
+
+function KioskAlertCard() {
   const queue = useStore(s => s.kioskStaffAlerts) || EMPTY;
   // An MPOS phone in the customer's hands (tip pass, card, receipt): wait, show when it is back.
   const held = useStore(s => s.tillCustomerFacing === true);

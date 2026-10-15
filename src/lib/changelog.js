@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.62',
+    date: '15 Oct 2026',
+    items: [
+      "Kitchen screens: a slow or dropped link no longer brings a bumped ticket back or loses a bump. Every change carries its own guard, so a late write can never undo a newer tap, and a saved bump is never painted back by a late echo. The board runs on one engine for both the list reads and the live changes.",
+      "Kitchen screens: when the screen cannot reach ServOS, the red banner says so plainly and stays until a read gets through. It does not blame the WiFi when ServOS itself answered with an error. The empty board says nothing while its last bump is unsaved. The N more orders below note is a strip under the board, not a pill over the buttons.",
+      "Till: says when a kitchen screen has stopped showing orders, and the status page tells the truth about it.",
+    ],
+  },
+  {
     v: '5.11.61',
     date: '15 Oct 2026',
     items: [

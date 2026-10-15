@@ -33,9 +33,12 @@ function liveDeps() {
  * 'applied' | 'gone' | 'parked' | 'queued' | 'unlinked' | 'error' (with error), or 'skipped' when
  * there is no database (mock mode). Never throws.
  */
-export async function mustChangeRow(write) {
+export async function mustChangeRow(write, { client = null } = {}) {
   if (!supabase) return { outcome: 'skipped' };
-  try { return await runMustChangeWrite(write, liveDeps()); }
+  // 12 Oct 2026, Barnsley (K8): the kitchen screen hands in its own client (lib/supabase.js
+  // kitchenClient: the same database and the same device token, read without the sign in lock).
+  // Every rule of the fence is unchanged; the link check and the queue still use the main client.
+  try { return await runMustChangeWrite(write, client ? { ...liveDeps(), client } : liveDeps()); }
   catch (e) { return { outcome: 'error', error: e }; }
 }
 

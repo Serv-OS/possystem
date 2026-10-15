@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../store';
 import { defaultOrderTypeFor } from '../lib/tillOrderType';   // 30 Sep 2026
 import { supabase, getLocationId } from '../lib/supabase';
@@ -10,8 +10,16 @@ import { printerErrorGuidance, printerViewingDevice } from '../lib/printerErrorW
 import { resolvePrinterSpec } from '../lib/printerDialects';
 import StatusDrawerCardReaders from './StatusDrawerCardReaders';
 import PrinterErrorHelp from './PrinterErrorHelp';
+import { venueBusinessDayStart } from '../lib/kds/kdsTicket';
+import { serverNowFrom, screenStatus, heardWords, waitingSummary, waitingWords, testTicketWords } from '../lib/kds/kdsScreenWatch';
 
-const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min last_seen threshold
+// 12 Oct 2026, Barnsley: a kitchen screen used to read ONLINE when it had been seen in the last 15
+// minutes OR when ANY screen at the venue had bumped in the last 10. The drinks screen showed
+// nothing for half an hour and still read ONLINE here. A screen is online now only when it has
+// been heard from within 2 minutes of the newest heartbeat at the venue
+// (lib/kds/kdsScreenWatch.js screenStatus).
+const TEST_WATCH_MS = 60 * 1000;   // how long the Test button waits for the screen to bump the test ticket
+const TEST_CHECK_MS = 3000;        // how often it looks at this till's own list in that minute
 
 export default function StatusDrawer({ onClose }) {
   const { deviceConfig, clearDeviceConfig, syncStatus, setAppMode } = useStore();
@@ -23,6 +31,19 @@ export default function StatusDrawer({ onClose }) {
 
   // KDS devices from Supabase
   const [kdsDevices, setKdsDevices] = useState([]);
+  // Per screen: { state, silentMs } from its last heartbeat (lib/kds/kdsScreenWatch.js screenStatus)
+  const [kdsHeard, setKdsHeard] = useState({});
+  // What this till's own list says is waiting on each screen (no read: the store already holds it).
+  const storeTickets = useStore(s => s.kdsTickets);
+  const venueConfig = useStore(s => s.locationConfig);
+  // One watch per screen for its newest test ticket (screen id to timer). Cleared when the drawer closes.
+  const testTimers = useRef(new Map());
+  const drawerOpen = useRef(true);
+  useEffect(() => {
+    const held = testTimers.current;
+    drawerOpen.current = true;
+    return () => { drawerOpen.current = false; held.forEach(clearInterval); held.clear(); };
+  }, []);
 
   // Per-device status: id → 'online'|'offline'|'unknown'|'checking'
   const [statuses, setStatuses] = useState({});
@@ -48,26 +69,25 @@ export default function StatusDrawer({ onClose }) {
     return () => { window.removeEventListener('rpos-printers-updated', update); window.removeEventListener('storage', update); };
   }, []);
 
-  // Load KDS devices from Supabase — also checks recent ticket activity as online signal
+  // Load the venue's devices. One read (it used to be two): every device's last heartbeat, so the
+  // screens are judged against the newest heartbeat at the venue, never against this till's clock.
   const loadKDS = useCallback(async () => {
     if (!supabase) return;
     try {
       const locId = await getLocationId();
       if (!locId) return;
-      const [devicesRes, ticketsRes] = await Promise.all([
-        supabase.from('devices').select('id,name,type,last_seen,status,centre_id').eq('location_id', locId).eq('type', 'kds'),
-        // Recent bumped tickets = KDS was actively used
-        supabase.from('kds_tickets').select('bumped_at').eq('location_id', locId).not('bumped_at', 'is', null).order('bumped_at', { ascending: false }).limit(1),
-      ]);
-      setKdsDevices(devicesRes.data || []);
-      const latestBump = ticketsRes.data?.[0]?.bumped_at ? new Date(ticketsRes.data[0].bumped_at).getTime() : 0;
+      const { data, error } = await supabase.from('devices').select('id,name,type,last_seen,status,centre_id').eq('location_id', locId);
+      if (error || !Array.isArray(data)) return;      // could not tell: keep what is shown
+      const kds = data.filter(d => d.type === 'kds');
+      setKdsDevices(kds);
+      const serverNow = serverNowFrom(data);
       const s = {};
-      (devicesRes.data || []).forEach(d => {
-        const lastSeenAge = d.last_seen ? Date.now() - new Date(d.last_seen).getTime() : Infinity;
-        const bumpAge = latestBump ? Date.now() - latestBump : Infinity;
-        // Online if seen within 15min OR if tickets were bumped within 10min
-        s[d.id] = (lastSeenAge < ONLINE_THRESHOLD_MS || bumpAge < 10 * 60 * 1000) ? 'online' : 'offline';
+      const heard = {};
+      kds.forEach(d => {
+        heard[d.id] = screenStatus({ lastSeenMs: d.last_seen ? new Date(d.last_seen).getTime() : NaN, serverNow });
+        s[d.id] = heard[d.id].state;
       });
+      setKdsHeard(heard);
       setStatuses(prev => ({ ...prev, ...s }));
     } catch {}
   }, []);
@@ -244,8 +264,37 @@ export default function StatusDrawer({ onClose }) {
       };
       const { error } = await insertKDSTicket(testTicket, locId);
       if (error) throw new Error(error.message);
-      setTestState(s => ({ ...s, [device.id]: 'ok' }));
-      setTestMsg(m => ({ ...m, [device.id]: `✓ Test ticket sent to ${device.name}` }));
+      // 12 Oct 2026, Barnsley: staff pressed Test five times and read "Test ticket sent" five times
+      // while the screen showed nothing. Sent only means it is in the database. The till now waits
+      // a minute for the screen to bump it and says plainly which it was.
+      const heard = kdsHeard[device.id];
+      const silent = heard?.state === 'offline';
+      setTestState(s => ({ ...s, [device.id]: silent ? 'timeout' : 'ok' }));
+      setTestMsg(m => ({ ...m, [device.id]: testTicketWords({ state: silent ? 'silent' : 'sent', name: device.name, silentMs: heard?.silentMs || 0 }) }));
+      const sentAt = Date.now();
+      let seen = false;
+      // Test pressed again for the same screen: the newest test ticket is the one that is watched.
+      clearInterval(testTimers.current.get(device.id));
+      const stop = () => { clearInterval(timer); if (testTimers.current.get(device.id) === timer) testTimers.current.delete(device.id); };
+      const finish = (state) => {
+        if (!drawerOpen.current) return;
+        setTestState(s => ({ ...s, [device.id]: state === 'bumped' ? 'ok' : 'timeout' }));
+        setTestMsg(m => ({ ...m, [device.id]: `${state === 'bumped' ? '✓' : '✗'} ${testTicketWords({ state, name: device.name })}` }));
+      };
+      const timer = setInterval(async () => {
+        // The till's own list: the test ticket arrives in it and leaves it when the screen bumps it.
+        const here = (useStore.getState().kdsTickets || []).some(t => t.id === testTicket.id);
+        if (here) seen = true;
+        if (seen && !here) { stop(); finish('bumped'); return; }
+        if (Date.now() - sentAt < TEST_WATCH_MS) return;
+        const mine = testTimers.current.get(device.id) === timer;
+        stop();
+        // One look at the row itself, once, in case this till's live updates are down.
+        let status = null;
+        try { status = (await supabase.from('kds_tickets').select('status').eq('id', testTicket.id).maybeSingle()).data?.status || null; } catch { status = null; }
+        if (mine && !testTimers.current.has(device.id)) finish(status === 'bumped' ? 'bumped' : 'waiting');
+      }, TEST_CHECK_MS);
+      testTimers.current.set(device.id, timer);
     } catch (err) {
       setTestState(s => ({ ...s, [device.id]: 'failed' }));
       setTestMsg(m => ({ ...m, [device.id]: `✗ ${err.message}` }));
@@ -290,6 +339,10 @@ export default function StatusDrawer({ onClose }) {
   const sbg = (s) => ({ online:'var(--grn-d)', offline:'var(--red-d)', checking:'var(--acc-d)', unknown:'var(--bg3)' }[s]||'var(--bg3)');
   const sbdr = (s) => ({ online:'var(--grn-b)', offline:'var(--red-b)', checking:'var(--acc-b)', unknown:'var(--bdr)' }[s]||'var(--bdr)');
   const tc = (s) => ({ ok:'var(--grn)', failed:'var(--red)', timeout:'var(--red)' }[s]||'var(--acc)');
+
+  // Today's tickets only count as waiting (the venue's own business day).
+  let kdsDayStartMs = 0;
+  try { kdsDayStartMs = venueBusinessDayStart(Date.now(), venueConfig?.timezone || 'Europe/London', venueConfig?.businessDayStart || '06:00').getTime(); } catch { kdsDayStartMs = 0; }
 
   const printerForId = (id) => printers.find(p => p.id === id);
   const hasIssues = [...printers, ...kdsDevices].some(d => statuses[d.id] === 'offline') || printJobs.some(j => j.status === 'failed');
@@ -415,15 +468,19 @@ export default function StatusDrawer({ onClose }) {
                   const st = statuses[device.id] || 'unknown';
                   const ts = testState[device.id];
                   const msg = testMsg[device.id];
+                  const waitingLine = waitingWords(waitingSummary(storeTickets, { centreId: device.centre_id || null, now: Date.now(), dayStartMs: kdsDayStartMs }));
                   return (
                     <div key={device.id} style={{ padding:'11px 14px', borderRadius:12, border:`1px solid ${sbdr(st)}`, background:sbg(st) }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                         <span style={{ fontSize:18, flexShrink:0 }}>📺</span>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{device.name}</div>
-                          <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>
-                            Last seen: {timeSince(device.last_seen)}
+                          <div style={{ fontSize:10, color: st === 'offline' ? 'var(--red)' : 'var(--t4)', marginTop:1, fontWeight: st === 'offline' ? 700 : 400 }}>
+                            {heardWords(kdsHeard[device.id] || { state: 'unknown' })}
                           </div>
+                          {waitingLine && (
+                            <div style={{ fontSize:10, color:'var(--t2)', marginTop:1, fontWeight:600 }}>{waitingLine}</div>
+                          )}
                         </div>
                         <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4 }}>
                           <div style={{ display:'flex', alignItems:'center', gap:4 }}>

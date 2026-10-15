@@ -110,12 +110,17 @@ export function seatedAtOf(session) {
  * changed. The OfflineQueue item shape (type, table, payload, match, notMatch) is the same, so a
  * parked write replays through this very builder.
  */
-export function buildWriteQuery(client, { table, type, payload, match = {}, notMatch = {}, inList = null, returning: cols = null } = {}, { returning } = {}) {
+export function buildWriteQuery(client, { table, type, payload, match = {}, notMatch = {}, inList = null, returning: cols = null, signal = null } = {}, { returning } = {}) {
   let q = type === 'delete' ? client.from(table).delete() : client.from(table).update(payload);
   for (const [k, v] of Object.entries(isPlainObject(match) ? match : {})) q = q.eq(k, v);
   for (const [k, v] of Object.entries(isPlainObject(notMatch) ? notMatch : {})) q = q.neq(k, v);
   if (inList && inList.column && Array.isArray(inList.values)) q = q.in(inList.column, inList.values);
-  return q.select(returning || cols || returningColumns(table, match));
+  const built = q.select(returning || cols || returningColumns(table, match));
+  // 12 Oct 2026, Barnsley (K2): a kitchen write had no time limit and waited as long as the
+  // tablet's network let it hang (one bump took 378 s). A caller may hand in an AbortSignal; the
+  // request is then cancelled when the caller's limit passes. A parked or queued copy never carries
+  // one (parkedWriteItem and queuedWriteItem copy named fields only).
+  return signal && typeof built.abortSignal === 'function' ? built.abortSignal(signal) : built;
 }
 
 /** Rows changed, from a { data, error } answer: a number, or null when the answer cannot say. */
