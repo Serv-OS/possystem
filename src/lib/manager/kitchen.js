@@ -5,7 +5,8 @@
 // prep_schedule table; this file only decides what's below par + each batch's status.
 //
 // stockItem: { itemId, name, onHand, unit, par, reorderPoint?, supplier, supplierId, eightySixed, pack? }
-//   pack (v5.11.64, from manager-snapshot): { id, description, packQty, innerQty, innerUnit, perPack, packPrice, vatRate }
+//   pack (v5.11.64, from manager-snapshot): { id, description, packQty, innerQty, innerUnit, perPack, perPackBase?, packPrice, vatRate }
+//     perPack is the pack content in the PACK's unit, perPackBase (v5.11.65) the same in the item's base unit
 // batch:     { id, name, dueAtMs, completedAtMs|null, plannedQty, actualQty?, assignee }
 
 import { packsForBase } from '../stock/purchasingRules.js';
@@ -51,9 +52,15 @@ export function qtyText(n, unit) {
  * in base units turned into whole packs (never fewer than one). v5.11.64: the sheet used to start
  * at the shortfall itself, 32 eggs, and the server wrote that as 32 PACKS of 1 x 1 at a price of 0.
  * An item with no pack answers 0: it cannot be ordered from the phone and the sheet says so.
+ * v5.11.65: the shortfall is in the item's base unit, so it divides by the pack content in that
+ * unit (perPackBase from manager-snapshot). A 4.5 kg shortfall on a 1 x 2.5 kg pack is 2 packs,
+ * not 1800. An older snapshot with no perPackBase falls back to perPack (the pack's own unit),
+ * which is right whenever the pack unit is the item unit, as the Back Office pack editor enforces.
  */
 export function orderPacksFor(item) {
   if (!item?.pack) return 0;
+  const per = Number(item.pack.perPackBase) > 0 ? Number(item.pack.perPackBase) : null;
+  if (per) return Math.max(1, Math.ceil((Number(item.shortfall) || 0) / per - 1e-9));
   return packsForBase(Number(item.shortfall) || 0, item.pack);
 }
 

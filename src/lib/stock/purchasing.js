@@ -9,10 +9,10 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { convert } from './conversion.js';
-import { movingAverageCost } from './costing.js';
+import { costAfterReceipt } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
 import { purchaseNet } from '../tax.js';
-import { cleanFnError, poTotals } from './purchasingRules.js';
+import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText } from './purchasingRules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -62,9 +62,8 @@ async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase,
   }, locationId);
   if (res?.data?.duplicate) return; // already received — don't re-cost
   if (!priced) { item.onHand += recvBase; return; }   // stock in, cost untouched
-  const newAvg = item.costMethod === 'LAST_COST'
-    ? unitCostPerBase
-    : movingAverageCost({ onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
+  // one rule with the Manager app's receive (_shared/stockCosting.js)
+  const newAvg = costAfterReceipt({ costMethod: item.costMethod, onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
   await supabase.from('item_cost_history').update({ effective_to: nowIso() })
     .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
   await supabase.from('item_cost_history').insert({
@@ -203,6 +202,24 @@ export const setPOStatus = async (poId, status, locationId = null) => {
  * - The zero-price guard in applyReceipt stays: a line left at £0 moves stock at the
  *   item's known cost and does NOT re-cost it.
  */
+/**
+ * Can this order be received at all? The same line check receivePurchaseOrder runs, with no
+ * write. v5.11.65: the Ops tablet's Accept to stock inserted its goods in record first and only
+ * then learned the receive refused, leaving a 'pending' delivery with a temperature logged that was
+ * never accepted or rejected, and another on every retry. Callers that write before receiving ask
+ * here first.
+ */
+export const checkReceivable = async (poId, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: lines } = await supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId);
+  if (!lines?.length) return { error: new Error('No lines') };
+  const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
+  const { bad } = unreceivableLines(lines, map);
+  return { error: bad.length ? new Error(receiveRefusalText(bad)) : null };
+};
+
 export const receivePurchaseOrder = async (poId, locationId = null, receipts = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -222,18 +239,11 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
   // v5.11.65: the FULL receive (the Ops tablet's Accept to stock) ran none of this. A line whose
   // item was missing or whose unit would not convert was skipped in silence and the order still
   // went RECEIVED, so 40 kg of beef and 14 l of milk on one demo order never entered stock and,
-  // RECEIVED being final, never could. The same check now guards every path.
+  // RECEIVED being final, never could. The same check now guards every path (one copy in
+  // purchasingRules.unreceivableLines; checkReceivable runs it before the Ops tablet writes anything).
   {
-    const bad = [];
-    for (const l of lines) {
-      const item = map[l.inventory_item_id];
-      if (!item) { bad.push(l.description || 'unlinked line'); continue; }
-      try {
-        const b = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions });
-        if (!(b > 0)) bad.push(l.description || item.name);
-      } catch { bad.push(l.description || item.name); }
-    }
-    if (bad.length) return { error: new Error(`Cannot receive: fix these lines in Back Office first (missing stock item or unit conversion): ${bad.join(', ')}`) };
+    const { bad } = unreceivableLines(lines, map);
+    if (bad.length) return { error: new Error(receiveRefusalText(bad)) };
   }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];

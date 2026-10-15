@@ -17,7 +17,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
 // v5.11.64: the pack rule, pack content and net pack price are the Order pad's own (one copy).
-import { pickSupplierProduct, packContent, netPackPrice } from '../_shared/purchasingRules.js';
+import { pickSupplierProduct, packContent, packContentInBase, netPackPrice } from '../_shared/purchasingRules.js';
 
 // A refund counts on the day it was MADE, so older checks that carry one are read too: the same
 // reach as Daily trading (trading-report REFUND_LOOKBACK_DAYS) and the Owner app (8 Oct 2026).
@@ -218,7 +218,7 @@ Deno.serve(async (req) => {
         // (size, net price, VAT) now travels too, so Raise order can count in packs and show the
         // money before the PIN; a made-here item (kind MADE) is cooked, not ordered, so it is left
         // out exactly as the Order pad leaves it out.
-        const [invs, sups, packs, rates] = await Promise.all([
+        const [invs, sups, packs, rates, convs] = await Promise.all([
           pagedRows('stock items', () => sb.from('inventory_items').select('id, name, kind, on_hand, base_unit, default_supplier_id, purchase_tax_rate_id')
             .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
           pagedRows('suppliers', () => sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('id')),
@@ -226,7 +226,13 @@ Deno.serve(async (req) => {
             .select('id, inventory_item_id, supplier_id, supplier_sku, pack_description, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax, created_at')
             .eq('location_id', loc).in('inventory_item_id', ids).order('is_preferred', { ascending: false }).order('created_at').order('id')),
           pagedRows('tax rates', () => sb.from('tax_rates').select('id, rate').eq('location_id', loc).order('id')),
+          // the item's cross dimension bridges: the pack content is sent in the item's base unit too
+          // (perPackBase), so the phone divides a shortfall in base units by a matching figure
+          pagedRows('unit conversions', () => sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit')
+            .eq('location_id', loc).in('inventory_item_id', ids).order('id')),
         ]);
+        const convBy: Record<string, any[]> = {};
+        for (const c of convs) (convBy[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit });
         const supBy: Record<string, any> = {};
         for (const su of sups) supBy[su.id] = su;
         const rateBy: Record<string, number> = {};
@@ -261,7 +267,8 @@ Deno.serve(async (req) => {
             deliveryDays: sid ? (supBy[sid]?.delivery_days ?? null) : null,
             pack: sp ? {
               id: sp.id, description: sp.packDescription, packQty: sp.packQty, innerQty: sp.innerQty, innerUnit: sp.innerUnit,
-              perPack: packContent(sp), packPrice: netPackPrice(sp, rate), vatRate: rate, purchaseTaxRateId: sp.purchaseTaxRateId || i.purchase_tax_rate_id || null,
+              perPack: packContent(sp), perPackBase: packContentInBase(sp, i.base_unit || 'each', convBy[i.id] || []),
+              packPrice: netPackPrice(sp, rate), vatRate: rate, purchaseTaxRateId: sp.purchaseTaxRateId || i.purchase_tax_rate_id || null,
             } : null,
             eightySixed: false,
           };

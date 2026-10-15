@@ -70,6 +70,15 @@ test('orderPacksFor: the Raise order sheet starts in whole packs, not base units
   assert.equal(orderPacksFor(e), 1);     // 32 eggs short, a pack of 180
   assert.equal(orderPacksFor(a), 2);     // 27 avocados short, trays of 24
   assert.equal(orderPacksFor(n), 0);     // nothing to order it in
+  // v5.11.65: the shortfall is in the item's base unit; a pack in another unit divides by its
+  // content in the item unit (perPackBase from manager-snapshot), so 4.5 kg short on a 1 x 2.5 kg
+  // pack is 2 packs, not 1800
+  const flour = { itemId: 'f', name: 'Flour', onHand: 500, par: 5000, unit: 'g', supplier: 'Mill',
+    pack: { id: 'sp3', packQty: 1, innerQty: 2.5, innerUnit: 'kg', perPack: 2.5, perPackBase: 2500, packPrice: 3, vatRate: 0 } };
+  assert.equal(orderPacksFor(belowPar([flour])[0]), 2);
+  // an older snapshot with no perPackBase still divides by the pack's own figure
+  const old = { ...flour, unit: 'kg', onHand: 0.5, par: 5, pack: { ...flour.pack, perPackBase: undefined } };
+  assert.equal(orderPacksFor(belowPar([old])[0]), 2);
   assert.equal(orderValue([e, a, n], { e: 1, a: 2, n: 5 }), 68.4);   // 32.40 + 2 x 18.00; no pack adds nothing
   assert.equal(orderValue([], {}), 0);
 });

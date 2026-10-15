@@ -14,7 +14,7 @@
  *    never guessed.
  */
 
-import { isKnownUnit, normUnit } from './units.js';
+import { isKnownUnit, normUnit, unitDimension } from './units.js';
 
 /** The production_batches row a one step Produce writes (status DRAFT until its movements post). */
 export function batchRow({ locationId, recipeId, outputItemId, outputName, plannedQty, actualQty, outputUnit, plan, lotCode = null, expiryAt = null, notes = null, producedAt = null }) {
@@ -64,7 +64,12 @@ export function resolveBatchOutput({ outputUnit, actualQty, recipe = {}, item = 
     if (base === 'each') return { qty: n, unit: 'each' };
     throw new Error(`"${raw}" is not a unit ${name} is measured in (its unit is ${base}). Set the prep schedule unit to ${base}, one of the item's own units, or batch.`);
   }
-  if (isKnownUnit(u)) return { qty: n, unit: u };
+  if (isKnownUnit(u)) {
+    // v5.11.65: a known unit of another dimension ('L' on an item counted in each) is refused here
+    // in words, not by the engine's "No conversion path" text at the Done button.
+    if (unitDimension(u) !== unitDimension(base)) throw new Error(`"${raw}" is not a unit ${name} is measured in (its unit is ${base}). Set the prep schedule unit to ${base}, one of the item's own units, or batch.`);
+    return { qty: n, unit: u };
+  }
   throw new Error(`"${raw}" is not a unit ${name} understands. Set the prep schedule unit to ${base}, one of the item's own units, or batch.`);
 }
 
@@ -85,7 +90,8 @@ export function scheduleUnitOptions(item, currentUnit = '') {
   opts.push({ value: 'batch', label: 'batch (one recipe yield)' });
   const cur = String(currentUnit || '').trim();
   if (cur && !opts.some((o) => o.value.toLowerCase() === cur.toLowerCase())) {
-    const ok = isKnownUnit(cur) && !COUNTED.has(cur.toLowerCase());
+    // a known unit of the wrong dimension (the editor's old default 'L' on an each item) is stale too
+    const ok = isKnownUnit(cur) && !COUNTED.has(cur.toLowerCase()) && unitDimension(cur) === unitDimension(base);
     opts.push({ value: cur, label: ok ? cur : `${cur} (not a unit this item understands)`, stale: !ok });
   }
   return opts;

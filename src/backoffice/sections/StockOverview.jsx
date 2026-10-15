@@ -84,7 +84,7 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
       {/* Stat row */}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 22 }}>
         {stat('Stock value', money(stockValue), negatives.length
-          ? `${items.length} items tracked · ${negatives.length} below zero (${signedMoney(negTotal)} left out)`
+          ? `${items.length} item${items.length === 1 ? '' : 's'} tracked · ${negatives.length} below zero (${signedMoney(negTotal)} left out)`
           : `${items.length} item${items.length === 1 ? '' : 's'} tracked`, negatives.length && can('stock-counts') ? () => go('stock-counts') : null)}
         {stat('Need a price', String(noPrice.length), noPrice.length ? 'tap to fix' : 'all priced ✓', noPrice.length ? () => go('stock-items') : null, noPrice.length ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
         {stat('Recipes', String(dishes.length), `${unlinked.length} menu items unlinked`, can('recipes') ? () => go('recipes') : null)}

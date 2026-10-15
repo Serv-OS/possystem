@@ -9,7 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
-import { fetchPurchaseOrders, receivePurchaseOrder } from '../stock/purchasing.js';
+import { fetchPurchaseOrders, receivePurchaseOrder, checkReceivable } from '../stock/purchasing.js';
 import { isTrainingMode } from '../trainingMode';
 import { logActivity } from '../activity';
 
@@ -444,6 +444,14 @@ export const checkDelivery = async ({ poId, supplierId, deliveryUnitId, temperat
   if (isTrainingMode()) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
+
+  // v5.11.65: ask whether the order CAN be received before anything is written. The full receive
+  // now refuses a line whose item is missing or whose unit will not convert; refusing after the
+  // insert below left a 'pending' goods in record with a temperature and no outcome on every try.
+  if (accept && poId) {
+    const { error: cErr } = await checkReceivable(poId, locationId);
+    if (cErr) return { data: null, error: cErr };
+  }
 
   // delivery record first (so the reading can link to it)
   const { data: del, error: dErr } = await supabase.from('deliveries').insert({

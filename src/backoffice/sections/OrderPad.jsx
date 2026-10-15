@@ -34,7 +34,7 @@ import { fetchParLevels } from '../../lib/stock/counts';
 import { fetchPurchaseOrders, createOrdersFromBasket, setPOStatus, fnErrorText } from '../../lib/stock/purchasing';
 import { pickSupplierProduct } from '../../lib/stock/costing';
 import { outstandingOnOrder } from '../../lib/stock/onOrder';
-import { coverDaysFromSchedule, nextDeliveryYmd, normDeliveryDays, packContent, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
+import { coverDaysFromSchedule, nextDeliveryYmd, normDeliveryDays, packContent, packContentInBase, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
 
 const USAGE_DAYS = 28;
@@ -107,7 +107,10 @@ export default function OrderPad() {
     const sp = (overrideId && allSps.find(s => s.id === overrideId)) || pickSupplierProduct(it);
     // A pack is pack_qty x inner_qty, the same convention as costing and receiving. Reading
     // inner_qty alone called a case of 6 x 2 l "2 l" and ordered six times the cases needed.
-    const perPack = packContent(sp);
+    // v5.11.65: read in the ITEM's base unit, because the need below is in base units. A pack of
+    // 1 x 2.5 kg on an item counted in grams is 2500, else a 3 kg need asked for 1200 packs.
+    // Falls back to the pack's own figure when the units cannot be joined.
+    const perPack = sp ? (packContentInBase(sp, it.baseUnit, it.conversions || []) ?? packContent(sp)) : null;
     const onHand = Number(it.onHand) || 0;
     const avgDaily = usage[it.id] || 0;
     const par = pars[it.id]?.parLevel ?? null;
@@ -323,7 +326,7 @@ export default function OrderPad() {
                         </div>;
                       })()}
                     </td>
-                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LABEL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule — default ${days}d + ${safetyDays}d safety`}>
+                    <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LABEL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule: default ${days}d + ${safetyDays}d safety`}>
                       {r.effCover}d{r.sched != null ? ' 🚚' : ''}
                     </td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right', fontWeight: r.suggestedPacks > 0 ? 700 : 400, color: r.suggestedPacks > 0 ? 'var(--acc)' : 'var(--t4)' }}>{r.sp ? r.suggestedPacks : '—'}</td>

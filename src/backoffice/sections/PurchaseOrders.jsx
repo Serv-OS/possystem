@@ -137,7 +137,7 @@ export default function PurchaseOrders() {
     const { error } = await setPOExpectedDate(draft.id, value || null, locId);
     reportSave('purchase order date', error);
     if (error) { showToast?.('Expected date NOT saved', 'error'); return; }
-    showToast?.(value ? `Expected date updated to ${value}` : 'Expected date cleared', 'success');
+    showToast?.(value ? `Expected date updated to ${fmtYmd(value, { weekday: true })}` : 'Expected date cleared', 'success');
     await reload(draft.id);
   };
   const openReceive = () => {

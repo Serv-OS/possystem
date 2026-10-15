@@ -56,4 +56,19 @@ test('approveCount checks every write and only then marks the count APPROVED', (
   const approved = src.indexOf("status: 'APPROVED'");
   const loop = src.indexOf('for (const a of plan.adjustments)');
   assert.ok(loop > 0 && approved > loop, 'APPROVED is written after the adjustments, never before');
+  // v5.11.65: the toast counts movements, not counted lines. 12 counted, 10 matched = "2 lines
+  // adjusted"; every line matched = "no stock moved" (reachable: the plan is not empty).
+  assert.match(src, /const total = plan\.adjustments\.filter\(a => a\.delta !== 0\)\.length;/);
+  const postedAt = src.indexOf('posted++;');
+  const deltaIf = src.indexOf('if (a.delta !== 0) {');
+  const lineUpd = src.indexOf("update({ variance_qty: a.varQty })");
+  assert.ok(deltaIf > 0 && postedAt > deltaIf && postedAt < lineUpd, 'posted++ sits inside the delta branch, before the variance write');
+  // and the words a count with no differences gets, through the caller's own numbers
+  const plan = countApprovalPlan(
+    [{ id: 'l1', inventory_item_id: 'a', expected_qty: 5, counted_qty: 5 }, { id: 'l2', inventory_item_id: 'b', expected_qty: 2, counted_qty: 2 }],
+    { a: 5, b: 2 }, { a: 1, b: 1 });
+  const moving = plan.adjustments.filter(a => a.delta !== 0).length;
+  assert.equal(plan.adjustments.length, 2);
+  assert.equal(moving, 0);
+  assert.equal(approvalOutcomeText({ posted: moving, total: moving }), 'Count approved. Nothing differed from the system, so no stock moved.');
 });

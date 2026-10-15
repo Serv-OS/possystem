@@ -41,7 +41,7 @@ export function Money({ v, bold, muted }) {
 export function Signed({ v, unit, dp = 2 }) {
   const n = Number(v) || 0;
   const c = n > 0 ? 'var(--grn)' : n < 0 ? 'var(--red)' : 'var(--t4)';
-  return <span style={{ ...numSt, fontWeight:600, color:c }}>{n > 0 ? '+' : ''}{n.toLocaleString(undefined,{maximumFractionDigits:dp})}{unit ? ` ${unit}` : ''}</span>;
+  return <span style={{ ...numSt, fontWeight:600, color:c }}>{n > 0 ? '+' : ''}{n.toLocaleString('en-GB',{maximumFractionDigits:dp})}{unit ? ` ${unit}` : ''}</span>;
 }
 
 export function Tag({ label, tone = 'neutral' }) {

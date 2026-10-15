@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import {
   normDay, normDeliveryDays, coverDaysFromSchedule, nextDeliveryYmd, packContent,
   suggestPacks, cleanFnError, createOrdersToast,
-  pickSupplierProduct, packsForBase, netPackPrice, poTotals, normCode, matchScannedLine,
+  pickSupplierProduct, packsForBase, packContentInBase, unreceivableLines, receiveRefusalText,
+  netPackPrice, poTotals, normCode, matchScannedLine,
 } from './purchasingRules.js';
 import { pickSupplierProduct as fromCosting } from './costing.js';
 import { readFileSync } from 'node:fs';
@@ -140,6 +141,49 @@ test('packsForBase: a shortfall in base units becomes whole packs, never fewer t
   assert.equal(packsForBase(10, null), 0);
 });
 
+test('packContentInBase and packsForBase read the pack in the ITEM unit when the units differ', () => {
+  const kgPack = { packQty: 1, innerQty: 2.5, innerUnit: 'kg' };
+  // the item counts in grams: a 1 x 2.5 kg pack is 2500 g, so 3000 g is 2 packs (not 1200)
+  assert.equal(packContentInBase(kgPack, 'g'), 2500);
+  assert.equal(packsForBase(3000, kgPack, { baseUnit: 'g' }), 2);
+  assert.equal(packsForBase(4500, kgPack, { baseUnit: 'g' }), 2);
+  // same unit, or no base unit given: the pack's own figure
+  assert.equal(packContentInBase(kgPack, 'kg'), 2.5);
+  assert.equal(packContentInBase(kgPack), 2.5);
+  assert.equal(packsForBase(60, { packQty: 6, innerQty: 2, innerUnit: 'l' }, { baseUnit: 'l' }), 5);
+  // a cross dimension pack joins through the item's own bridge (1 each = 110 g)
+  const onionBridge = [{ fromQty: 1, fromUnit: 'each', toQty: 110, toUnit: 'g' }];
+  assert.equal(packContentInBase({ packQty: 1, innerQty: 10, innerUnit: 'kg' }, 'each', onionBridge), 10000 / 110);
+  // no path between the units: null, and nothing can be ordered in it (the caller says so)
+  assert.equal(packContentInBase({ packQty: 1, innerQty: 10, innerUnit: 'kg' }, 'each'), null);
+  assert.equal(packsForBase(30, { packQty: 1, innerQty: 10, innerUnit: 'kg' }, { baseUnit: 'each' }), 0);
+  assert.equal(packContentInBase({ packQty: 1, innerQty: 0, innerUnit: 'kg' }, 'g'), null);
+});
+
+test('unreceivableLines names what cannot be booked and the refusal says where the fix lives', () => {
+  const map = {
+    milk: { name: 'Milk', baseUnit: 'l', conversions: [] },
+    onion: { name: 'Onions', baseUnit: 'each', conversions: [] },
+  };
+  const lines = [
+    { id: 'a', inventory_item_id: 'milk', description: 'Whole milk 6 x 2 l', pack_qty: 6, inner_qty: 2, inner_unit: 'l' },
+    { id: 'b', inventory_item_id: 'onion', description: 'Onions 10 kg', pack_qty: 1, inner_qty: 10, inner_unit: 'kg' },   // no bridge
+    { id: 'c', inventory_item_id: 'gone', description: 'Beef mince', pack_qty: 1, inner_qty: 5, inner_unit: 'kg' },      // item missing
+    { id: 'd', inventory_item_id: 'milk', description: 'Milk no size', pack_qty: 1, inner_qty: 0, inner_unit: 'l' },     // no content
+  ];
+  const r = unreceivableLines(lines, map);
+  assert.deepEqual(r.bad, ['Onions 10 kg', 'Beef mince', 'Milk no size']);
+  assert.deepEqual(r.perPackOf, { a: 12 });
+  assert.deepEqual(unreceivableLines(lines.slice(0, 1), map), { bad: [], perPackOf: { a: 12 } });
+  const t = receiveRefusalText(r.bad);
+  assert.match(t, /^Cannot receive: Onions 10 kg, Beef mince, Milk no size\./);
+  assert.match(t, /Units tab/);
+  assert.match(t, /cancel this order and reorder/);
+  assert.match(t, /cannot be edited once sent/);
+  assert.doesNotMatch(t, /fix these lines in Back Office/);
+  assert.doesNotMatch(t, /[\u2013\u2014]/, 'no long dashes');
+});
+
 test('netPackPrice: strips VAT only when the price was entered inc VAT', () => {
   assert.equal(netPackPrice({ packPrice: 32.4, priceIncludesTax: false }, 0.2), 32.4);
   assert.equal(netPackPrice({ packPrice: 12, priceIncludesTax: true }, 0.2), 10);
@@ -189,9 +233,22 @@ test('one copy of the rules: src re-exports _shared, and the edge functions impo
   assert.match(read('./conversion.js'), /export \* from '\.\.\/\.\.\/\.\.\/supabase\/functions\/_shared\/stockConversion\.js';/);
   const approve = read('../../../supabase/functions/manager-approve/index.ts');
   assert.match(approve, /from '\.\.\/_shared\/purchasingRules\.js';/);
-  assert.match(approve, /import \{ convert \} from '\.\.\/_shared\/stockConversion\.js';/);
+  // v5.11.65: the receive line check is the shared one (it converts inside), the pack divisor in
+  // po.raise reads the item's base unit, and the moving average is the shared rule
+  assert.match(approve, /unreceivableLines\(lines, map\)/);
+  assert.match(approve, /receiveRefusalText\(bad\)/);
+  assert.match(approve, /packsForBase\(Number\(l\.qty\) \|\| 0, sp, \{ baseUnit: item\.base_unit/);
+  assert.doesNotMatch(approve, /fix these lines in Back Office first/);
+  assert.match(read('./purchasing.js'), /unreceivableLines\(lines, map\)/);
+  assert.match(read('./purchasing.js'), /export const checkReceivable = async/);
+  assert.match(read('../ops/data.js'), /await checkReceivable\(poId, locationId\)/);
+  // the shared rules file reaches the unit engine through the shared copy
+  assert.match(read('../../../supabase/functions/_shared/purchasingRules.js'), /import \{ convert \} from '\.\/stockConversion\.js';/);
   const snap = read('../../../supabase/functions/manager-snapshot/index.ts');
   assert.match(snap, /from '\.\.\/_shared\/purchasingRules\.js';/);
+  assert.match(snap, /perPackBase: packContentInBase\(sp, i\.base_unit/);
+  // the pad divides a need in base units by the pack content in base units
+  assert.match(read('../../backoffice/sections/OrderPad.jsx'), /packContentInBase\(sp, it\.baseUnit, it\.conversions/);
   // the shared conversion engine reads the shared unit table, not the browser copy
   assert.match(read('../../../supabase/functions/_shared/stockConversion.js'), /from '\.\/stockUnits\.js';/);
 });

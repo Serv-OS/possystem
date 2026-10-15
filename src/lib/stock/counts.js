@@ -11,6 +11,7 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supab
 import { postStockMovement } from './data.js';
 import { countApprovalPlan, approvalOutcomeText } from './countRules.js';
 import { countName } from '../venueDate.js';
+import { getLocationConfig } from '../locationTime';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -84,8 +85,11 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
   const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).is('archived_at', null);
   (items || []).forEach(i => { itemsById[i.id] = i; });
   if (!ids || !ids.length) ids = (items || []).map(i => i.id);
+  // v5.11.65: a count with no name is dated on the VENUE's clock (a US venue after 17:00 local was
+  // being named with London's tomorrow)
+  const tz = name ? null : ((await getLocationConfig(locationId).catch(() => null))?.timezone || null);
   const { data: c, error } = await supabase.from('stock_counts').insert({
-    location_id: locationId, name: name || countName(new Date(), 'Europe/London', countType, storageArea), count_type: countType, status: 'DRAFT', storage_area: storageArea || null,
+    location_id: locationId, name: name || countName(new Date(), tz, countType, storageArea), count_type: countType, status: 'DRAFT', storage_area: storageArea || null,
   }).select().maybeSingle();
   if (error || !c) return { data: null, error: error || new Error('Could not start count') };
   const lines = ids.map((id, i) => ({
@@ -176,7 +180,10 @@ export const approveCount = async (countId, locationId = null) => {
   // approval and the count stays open; a retry cannot post a line twice (one key per count+item).
   const plan = countApprovalPlan(lines, onHand, cost);
   if (!plan.adjustments.length) return { error: new Error('Nothing has been counted on this sheet yet') };
-  const total = plan.adjustments.length;
+  // v5.11.65: posted and total count MOVEMENTS, not counted lines. A sheet of 12 lines where 10
+  // matched the shelf reads "2 lines adjusted", and one where every line matched reads "no stock
+  // moved" (approvalOutcomeText), instead of "12 lines adjusted".
+  const total = plan.adjustments.filter(a => a.delta !== 0).length;
   let posted = 0;
   for (const a of plan.adjustments) {
     if (a.delta !== 0) {
@@ -186,10 +193,10 @@ export const approveCount = async (countId, locationId = null) => {
         notes: 'Stock count',
       }, locationId);
       if (mv?.error) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: mv.error })), data: { posted, total } };
+      posted++;
     }
     const { error: lineErr } = await supabase.from('stock_count_lines').update({ variance_qty: a.varQty }).eq('location_id', locationId).eq('id', a.lineId);
     if (lineErr) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: lineErr })), data: { posted, total } };
-    posted++;
   }
   const { data: head, error: headErr } = await supabase.from('stock_counts')
     .update({ status: 'APPROVED', approved_at: nowIso(), variance_value: plan.varianceValue, updated_at: nowIso() })

@@ -1,6 +1,7 @@
 /**
  * _shared/purchasingRules.js — the PURE rules behind the Order pad, the Orders screen and the
- * Manager app's Raise order / Receive. No I/O, no imports: Node's test runner loads this file
+ * Manager app's Raise order / Receive. No I/O (the only import is the pure unit engine next door):
+ * Node's test runner loads this file
  * directly (src/lib/stock/purchasingRules.test.js) and the edge functions import it under Deno
  * (manager-approve, manager-snapshot). src/lib/stock/purchasingRules.js re-exports it for the
  * browser, the same pattern as _shared/businessDay.js and _shared/boSectionRules.js.
@@ -14,6 +15,8 @@
  * 1 x 1 each at a price of 0 (its server never read supplier_products), so the pack rule, the
  * price rule and the order totals moved here too, where the server and the pad share one copy.
  */
+
+import { convert } from './stockConversion.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 export const DAY_LABEL = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
@@ -122,15 +125,73 @@ export function pickSupplierProduct(item) {
 }
 
 /**
- * How many packs cover a quantity in the pack's unit, rounded UP, never fewer than one.
+ * What one pack puts on the shelf in the ITEM's base unit: packContent converted from the pack's
+ * inner unit the way costing (packBaseUnitCost) and receiving do. A pack of 1 x 2.5 kg on an item
+ * counted in grams is 2500 g, not 2.5. Returns null when the pack has no content or the units
+ * cannot be joined (no conversion path), so the caller can say so rather than divide by the wrong
+ * number. v5.11.65: the pad and the Manager app divided a need in base units by the content in
+ * the pack unit, so a 3 kg need on that pack asked for 1200 packs.
+ * @param sp               the pack { packQty, innerQty, innerUnit }
+ * @param baseUnit         the item's base unit; missing = the pack's own unit (no conversion)
+ * @param itemConversions  the item's cross dimension bridges, as convert() reads them
+ */
+export function packContentInBase(sp, baseUnit = null, itemConversions = []) {
+  const per = packContent(sp);
+  if (!(per > 0)) return null;
+  const from = sp.innerUnit || baseUnit;
+  if (!baseUnit || !from || String(from).trim().toLowerCase() === String(baseUnit).trim().toLowerCase()) return per;
+  try {
+    const b = convert(per, from, baseUnit, { itemConversions: itemConversions || [] });
+    return b > 0 ? b : null;
+  } catch { return null; }
+}
+
+/**
+ * How many packs cover a quantity, rounded UP, never fewer than one.
  * 32 eggs with a pack of 1 x 180 is 1 pack; 27 avocados with a tray of 24 is 2 trays.
  * Returns 0 when the pack has no content (nothing can be ordered in it).
+ * With { baseUnit, itemConversions } the quantity is read in the item's base unit and the pack
+ * content is converted to match (3000 g on a 1 x 2.5 kg pack is 2 packs); without them both are
+ * taken to be in the same unit, as before.
  */
-export function packsForBase(baseQty, sp) {
-  const per = packContent(sp);
+export function packsForBase(baseQty, sp, { baseUnit = null, itemConversions = [] } = {}) {
+  const per = packContentInBase(sp, baseUnit, itemConversions);
   if (!(per > 0)) return 0;
   const q = Number(baseQty) || 0;
   return Math.max(1, Math.ceil(q / per - 1e-9));
+}
+
+/**
+ * Receiving: the order lines that cannot be booked into stock, named. A line whose stock item is
+ * missing (or belongs to another venue, so the fenced read did not return it) or whose pack unit
+ * will not convert to the item's base unit cannot be represented, and RECEIVED is final, so a
+ * receive that cannot book every line must refuse before anything is written. One copy for
+ * Back Office receiving, the Ops tablet's Accept to stock and the Manager app (v5.11.65).
+ * @param lines  po_lines rows (snake_case, as the database returns them)
+ * @param map    item id -> { name, baseUnit, conversions }
+ * @returns { bad: string[], perPackOf: { [lineId]: baseContentPerPack } }
+ */
+export function unreceivableLines(lines, map) {
+  const bad = [];
+  const perPackOf = {};
+  for (const l of lines || []) {
+    const item = map?.[l.inventory_item_id];
+    if (!item) { bad.push(l.description || 'unlinked line'); continue; }
+    try {
+      const b = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions || [] });
+      if (!(b > 0)) bad.push(l.description || item.name); else perPackOf[l.id] = b;
+    } catch { bad.push(l.description || item.name); }
+  }
+  return { bad, perPackOf };
+}
+
+/**
+ * The refusal, in words that point at where the fix lives. Order lines lock once an order is
+ * sent, so "fix the lines" sent a venue to the Orders screen to find nothing it could edit.
+ */
+export function receiveRefusalText(bad) {
+  const names = (bad || []).join(', ');
+  return `Cannot receive: ${names}. The stock item is missing or its pack unit cannot be converted to the item's unit. Add a unit conversion on the item's Units tab (Stock items), or cancel this order and reorder it. Order lines cannot be edited once sent.`;
 }
 
 /**

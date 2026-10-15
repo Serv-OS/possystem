@@ -197,7 +197,7 @@ export default function Batches() {
             <b style={{ color: 'var(--t1)', flex: 1 }}>{b.outputName || itemName(b.outputItemId)}</b>
             <span style={{ color: 'var(--t3)', fontSize: 12 }}>
               {b.status === 'PLANNED'
-                ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === todayYmd ? 'today' : b.plannedFor}` : ''}`
+                ? `plan ${b.plannedQty ?? '—'} ${b.outputUnit}${b.dueTime ? ` · by ${String(b.dueTime).slice(0, 5)}` : ''}${b.plannedFor ? ` · ${b.plannedFor === todayYmd ? 'today' : fmtYmd(b.plannedFor, { weekday: true, year: false })}` : ''}`
                 : `made ${b.actualQty ?? '—'} ${b.outputUnit} · ${fmtVenueDateTime(b.producedAt, venueTz, { year: false })}`}
             </span>
             {b.status === 'PLANNED'

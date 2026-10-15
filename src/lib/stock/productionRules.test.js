@@ -49,6 +49,11 @@ test('resolveBatchOutput refuses rather than guesses', () => {
   assert.throws(() => resolveBatchOutput({ outputUnit: 'l', actualQty: 'x', recipe: soupRecipe, item: soupItem }), /more than zero/);
   // a pack with no size is a setup fault, said as one
   assert.throws(() => resolveBatchOutput({ outputUnit: 'Tub', actualQty: 1, recipe: soupRecipe, item: { ...soupItem, formats: [{ id: 'f1', name: 'Tub', qtyInBase: 0 }] } }), /has no size/);
+  // v5.11.65: a KNOWN unit of another dimension is refused in words, not by the engine at Done
+  assert.throws(() => resolveBatchOutput({ outputUnit: 'kg', actualQty: 2, recipe: soupRecipe, item: soupItem }), /"kg" is not a unit Soup of the Day is measured in \(its unit is l\)/);
+  assert.throws(() => resolveBatchOutput({ outputUnit: 'L', actualQty: 20, recipe: { yieldQty: 20, yieldUnit: 'each' }, item: pattyItem }), /measured in/);
+  // the same dimension still passes as typed
+  assert.deepEqual(resolveBatchOutput({ outputUnit: 'ml', actualQty: 500, recipe: soupRecipe, item: soupItem }), { qty: 500, unit: 'ml' });
 });
 
 test('scheduleUnitOptions: the item\'s own units plus batch, a stale unit shown as stale', () => {
@@ -63,6 +68,10 @@ test('scheduleUnitOptions: the item\'s own units plus batch, a stale unit shown 
   const ml = scheduleUnitOptions(soupItem, 'ml');
   assert.equal(ml.at(-1).value, 'ml');
   assert.equal(ml.at(-1).stale, false);
+  // a known unit of the WRONG dimension (the editor's old default 'L' on an each item) is stale
+  assert.equal(scheduleUnitOptions(pattyItem, 'L').at(-1).stale, true);
+  assert.equal(scheduleUnitOptions(soupItem, 'kg').at(-1).stale, true);
+  assert.match(scheduleUnitOptions(pattyItem, 'L').at(-1).label, /not a unit this item understands/);
   // the editor's item shape (packaging) is read too
   assert.deepEqual(scheduleUnitOptions({ baseUnit: 'each', packaging: [{ name: 'Tray', qtyInBase: 12 }] }).map((o) => o.value), ['each', 'Tray', 'batch']);
   assert.deepEqual(scheduleUnitOptions(null), []);

@@ -9,6 +9,7 @@ import { fetchInventoryItems } from '../../../lib/stock/data';
 import { fetchRecipes } from '../../../lib/stock/recipes';
 import { Icon } from '../../../components/ServOSIcons';
 import { scheduleUnitOptions } from '../../../lib/stock/productionRules';
+import { unitDimension } from '../../../lib/stock/units';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -108,8 +109,12 @@ export default function OpsPrepSchedule() {
             <select value={editing.outputItemId || ''} onChange={(e) => {
               const it = madeItems.find(m => m.id === e.target.value);
               const rec = it ? recipesByOutput[it.id] : null;
+              // v5.11.65: a linked cook starts in a unit the item is measured in: the recipe's yield
+              // unit when it is in the item's dimension, else the item's base unit. Never the blank
+              // row's 'L' on an item counted in each.
+              const yieldOk = it && rec?.yieldUnit && unitDimension(rec.yieldUnit) === unitDimension(it.baseUnit);
               setEditing({ ...editing, outputItemId: it?.id || '', recipeId: rec?.id || '',
-                name: it ? it.name : editing.name, unit: rec?.yieldUnit || it?.baseUnit || editing.unit });
+                name: it ? it.name : editing.name, unit: it ? (yieldOk ? rec.yieldUnit : (it.baseUnit || editing.unit)) : editing.unit });
             }} style={{ ...field, marginBottom: 8 }}>
               <option value="">— not linked to stock (reminder only) —</option>
               {/* v5.5.938: EXACTLY the same label as the Batches dropdown — item name first,

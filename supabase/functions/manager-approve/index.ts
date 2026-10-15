@@ -27,8 +27,10 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.64: ONE copy of the purchasing rules with the Order pad (pack choice, pack content, net
 // price, order totals, next delivery day) and ONE unit conversion engine with Back Office receiving.
-import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals } from '../_shared/purchasingRules.js';
-import { convert } from '../_shared/stockConversion.js';
+import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText } from '../_shared/purchasingRules.js';
+// v5.11.65: ONE moving average rule with Back Office receiving (applyReceipt); the inline copy here
+// wrote 4.00 where Back Office wrote 1.20 when stock was below zero.
+import { costAfterReceipt } from '../_shared/stockCosting.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -230,15 +232,20 @@ Deno.serve(async (req) => {
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id))] as string[];
       // wf_audit's (location_id, org_id) must be a real pair from locations (INVARIANTS), so the org
       // comes from the venue, before anything is written; the timezone gives the venue's "today".
-      const [{ data: owned }, { data: packRows }, { data: rateRows }, { data: locRow }] = await Promise.all([
+      const [{ data: owned }, { data: packRows }, { data: rateRows }, { data: locRow }, { data: convRows }] = await Promise.all([
         sb.from('inventory_items').select('id, name, base_unit, default_supplier_id, purchase_tax_rate_id').eq('location_id', loc).in('id', itemIds),
         sb.from('supplier_products').select('id, inventory_item_id, supplier_id, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax')
           .eq('location_id', loc).eq('supplier_id', supplierId).in('inventory_item_id', itemIds).order('is_preferred', { ascending: false }).order('created_at').order('id'),
         sb.from('tax_rates').select('id, rate').eq('location_id', loc),
         sb.from('locations').select('org_id, timezone').eq('id', loc).maybeSingle(),
+        sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit').eq('location_id', loc).in('inventory_item_id', itemIds),
       ]);
       const itemBy: Record<string, any> = {};
       for (const it of owned ?? []) itemBy[it.id] = it;
+      // the item's cross dimension bridges, so an older app's qty in BASE units divides by the pack
+      // content in those units (a 3 kg need on a 1 x 2.5 kg pack is 2 packs, not 1200)
+      const convByItem: Record<string, any[]> = {};
+      for (const c of convRows ?? []) (convByItem[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit });
       if (itemIds.some((id) => !itemBy[id])) return json({ error: 'one or more items are not from this location' }, 400);
       const orgId = locRow?.org_id || null;
       if (!orgId) return json({ error: 'could not raise the order' }, 400);
@@ -266,7 +273,8 @@ Deno.serve(async (req) => {
         else { problems.push(`${item.name} has no pack from ${sup.name} in Back Office. Add one under Stock, Suppliers.`); continue; }
         if (!(packContent(sp) > 0)) { problems.push(`${item.name}: the pack from ${sup.name} has no size. Fix it under Stock, Suppliers.`); continue; }
         // qty_packs from a current app; an older app sends qty in BASE units, turned into whole packs
-        const qtyPacks = Number(l.qty_packs) > 0 ? Math.ceil(Number(l.qty_packs)) : packsForBase(Number(l.qty) || 0, sp);
+        const qtyPacks = Number(l.qty_packs) > 0 ? Math.ceil(Number(l.qty_packs)) : packsForBase(Number(l.qty) || 0, sp, { baseUnit: item.base_unit, itemConversions: convByItem[item.id] || [] });
+        if (Number(l.qty_packs) <= 0 && qtyPacks === 0 && Number(l.qty) > 0) { problems.push(`${item.name}: the pack from ${sup.name} is in ${sp.innerUnit} and the item is counted in ${item.base_unit}, with no conversion between them. Add one on the item's Units tab.`); continue; }
         if (!(qtyPacks > 0)) continue;
         const taxId = sp.purchaseTaxRateId || item.purchase_tax_rate_id || null;
         const rate = taxId ? (ratesById[taxId] || 0) : 0;
@@ -363,17 +371,8 @@ Deno.serve(async (req) => {
       // REFUSE rather than half-happen: a line whose item is missing (or another venue's: the items
       // read is fenced to this location) or whose unit path fails cannot be represented, and
       // RECEIVED is terminal (purchasing.js lines 221 to 237).
-      const perPackOf: Record<string, number> = {};
-      const bad: string[] = [];
-      for (const l of lines) {
-        const item = map[l.inventory_item_id];
-        if (!item) { bad.push(l.description || 'unlinked line'); continue; }
-        try {
-          const b = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions });
-          if (!(b > 0)) bad.push(l.description || item.name); else perPackOf[l.id] = b;
-        } catch { bad.push(l.description || item.name); }
-      }
-      if (accept && bad.length) return json({ error: `Cannot receive: fix these lines in Back Office first (missing stock item or unit conversion): ${bad.join(', ')}` }, 400);
+      const { bad, perPackOf } = unreceivableLines(lines, map);
+      if (accept && bad.length) return json({ error: receiveRefusalText(bad) }, 400);
       for (const l of lines) {
         const r = byLine[String(l.id)];
         if (r && r.qty_packs != null && r.qty_packs !== '' && !(Number(r.qty_packs) >= 0)) return json({ error: `${l.description || 'a line'}: the quantity received must be a number` }, 400);
@@ -421,9 +420,7 @@ Deno.serve(async (req) => {
           if (mvErr) { console.error('[po.receive] movement', mvErr.message); return json({ error: `could not book ${l.description || 'a line'} into stock: ${mvErr.message}`, done: false }, 500); }
           const duplicate = !!(mv as any)?.duplicate;
           if (!duplicate && priced) {
-            const newAvg = item.costMethod === 'LAST_COST'
-              ? unitCostPerBase
-              : (item.onHand * item.currentCost + recvBase * unitCostPerBase) / ((item.onHand + recvBase) || 1);
+            const newAvg = costAfterReceipt({ costMethod: item.costMethod, onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
             await sb.from('item_cost_history').update({ effective_to: nowIso() }).eq('location_id', loc).eq('inventory_item_id', l.inventory_item_id).is('effective_to', null);
             await sb.from('item_cost_history').insert({ location_id: loc, inventory_item_id: l.inventory_item_id, base_unit_cost: newAvg, source: 'PO_RECEIPT', effective_from: nowIso() });
             await sb.from('inventory_items').update({ current_cost: newAvg, updated_at: nowIso() }).eq('location_id', loc).eq('id', l.inventory_item_id);
