@@ -295,8 +295,14 @@ export function cardFeesOffGolden(planner, { mappingExtra = null, options = {} }
 export const psp = (n) => `TESTPSP${String(n).padStart(9, '0')}`;
 export const tillRef = (n) => `AB12cd345678${String(n).padStart(7, '0')}.${psp(n)}`;
 
-/** An adyen_payments row as xeroCardFees.ts reads it: authorised, captured, with the venue's fee. */
+/**
+ * An adyen_payments row as xeroCardFees.ts reads it: authorised, captured, with the venue's fee.
+ * fee_refund_policy 'ratio' (15 Oct 2026): these fixtures were written when the fee came back in
+ * proportion on a refund, and the figures pinned by the tests are that rule's. A row booked under
+ * today's rule passes { fee_refund_policy: 'none' } (or null, which reads as 'none').
+ */
 export const paymentRow = (n, amountMinor, commissionMinor, extra = {}) => ({
   psp_reference: psp(n), location_id: 'platform-leeds', amount_minor: amountMinor, amount_refunded_minor: 0, success: true, last_event_code: 'AUTHORISATION',
-  commission_minor: commissionMinor, authorised_at: at(1), capture_required: false, captured_at: null, applied_mods: null, captured_minor: null, last_mod_code: null, last_mod_ok: null, last_mod_amount: null, ...extra,
+  commission_minor: commissionMinor, authorised_at: at(1), capture_required: false, captured_at: null, applied_mods: null, captured_minor: null, last_mod_code: null, last_mod_ok: null, last_mod_amount: null,
+  fee_refund_policy: 'ratio', ...extra,
 });

@@ -53,6 +53,7 @@ import { supabase, platformSupabase } from '../../lib/supabase';
 import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import RateCardRows from '../components/RateCardRows';
+import AdyenRatesPanel from '../components/AdyenRatesPanel';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch, kycRecheckLine } from '../../lib/payments/adyenAdminRows';
 import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate, rowView, serverKnowsDebit } from '../../lib/payments/rateCard';
 import { rateCardProblems } from '../../lib/payments/adyenLink';
@@ -1160,12 +1161,21 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
               </div>
             )}
             <div style={{ ...QUIET, margin: '10px 0 12px' }}>
-              The venue sees these rates read only in Back Office, under Card payments. Saving does not change what Adyen takes. Step 5 of the flow sends the rates to Adyen.
+              The venue sees these rates read only in Back Office, under Card payments. Saving does not change what Adyen takes. Write these rates to Adyen below, or from step 5 of the flow.
             </div>
             <SaveRow busy={busy} dirty={dirty && rcCheck.errors.length === 0} savedAt={savedAt}
               label="Save the rates" busyLabel="Saving"
               onSave={savePricing}
               onReset={() => { setRc(savedCard); setRateOver(null); setRateProblem(null); }}
+            />
+            {/* 15 Oct 2026: what Adyen charges now, writing the rates to Adyen,
+                and card type data on the webhook. All actions on
+                adyen-terminal-admin; nothing here changes the card above. */}
+            <AdyenRatesPanel
+              callAdmin={callTerminalAdmin}
+              rates={acct.rates ?? null}
+              live={st && !st.error ? st.environment === 'live' : String(adyenRow?.environment || '') === 'live'}
+              onWritten={() => { setEnvRev((n) => n + 1); setFlowRev((n) => n + 1); }}
             />
           </>
         )}

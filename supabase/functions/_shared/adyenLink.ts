@@ -29,6 +29,9 @@
 // and matches account holders by reference. See FIND THE VENUE HOWEVER ADYEN
 // HOLDS IT further down for those endpoints and the merchant mismatch rule.
 
+// 15 Oct 2026: the variant rule engine shared with the ledger stamp.
+import { rulesFromRateCard, ruleDiff, DEBIT_VARIANT_RE, BUSINESS_VARIANT_RE } from './adyenRules.js';
+
 export const LINK_ID_FIELDS: readonly string[] = Object.freeze([
   'merchant_account', 'store_id', 'split_profile_id', 'balance_account_id',
   'account_holder_id', 'legal_entity_id', 'business_line_id', 'transfer_instrument_id',
@@ -1749,7 +1752,14 @@ export function profileTiers(profile: unknown): RateTiers | null {
     const pm = lower(r.paymentMethod);
     const si = lower(r.shopperInteraction);
     const fs = lower(r.fundingSource);
+    // 15 Oct 2026: a VARIANT rule (rulesFromRateCard). A consumer debit or
+    // prepaid variant with POS is the in person debit tier, with Ecommerce the
+    // online debit tier; a business variant rides the amex tier and is not
+    // read here (the amex rule carries that price); any other variant is
+    // not a tier of the card.
+    const variant = !any(pm) && pm !== 'amex' && any(fs);
     const tier = pm === 'amex' ? 'amex'
+      : variant ? (DEBIT_VARIANT_RE.test(pm) && !BUSINESS_VARIANT_RE.test(pm) ? (DEBIT_TIERS.find((d) => lower(DEBIT_RULE_INTERACTION[d]) === si) ?? null) : null)
       : !any(fs) ? (any(pm) && fs === 'debit' ? (DEBIT_TIERS.find((d) => lower(DEBIT_RULE_INTERACTION[d]) === si) ?? null) : null)
       : any(pm) && si === 'ecommerce' ? 'card_not_present'
       : any(pm) && si === 'moto' ? 'keyed'
@@ -1843,7 +1853,11 @@ export function ratesOnAdyen(profile: unknown, venueTiers: unknown, currency: un
   if (!tiers || !pc) return { tiers: null, matches: false, missing: true, remainder: null, rules: 0 };
   const missing = COMMISSION_TIERS.some((t) => !tiers[t]);
   const expected = tieredCommissionRules(str(currency) || 'GBP', venueTiers).rules;
-  const matches = !missing && tiersMatch(tiers, venueTiers) && profileMatchesRules(profile, expected);
+  // 15 Oct 2026: the profile matches when it is EITHER shape ServOS writes:
+  // the funding source profile of 17 Sep, or the variant profile of today
+  // (rulesFromRateCard, the one the Card rates box writes from now on).
+  const variantRules = rulesFromRateCard(venueTiers, { currency: str(currency) || 'GBP' }).rules;
+  const matches = !missing && tiersMatch(tiers, venueTiers) && (profileMatchesRules(profile, expected) || profileMatchesRules(profile, variantRules));
   return { tiers, matches, missing, remainder: pc.remainder, rules: pc.rules };
 }
 
@@ -1862,12 +1876,21 @@ export function ratesOnAdyen(profile: unknown, venueTiers: unknown, currency: un
 //   lines    short plain sentences for the screen, only the rows that change
 // KEEP IN SYNC with src/lib/payments/adyenLink.js (adyenLink.test.js).
 export interface RatesChangeRow { tier: string; label: string; now: string | null; next: string | null; changed: boolean }
-export interface RatesChangePreview { same: boolean; canSend: boolean; rulesNow: number; rulesNext: number; rows: RatesChangeRow[]; lines: string[] }
-export function ratesChangePreview(profileNow: unknown, venueTiers: unknown, currency: unknown = 'GBP'): RatesChangePreview {
+//   opts.rules  (15 Oct 2026) the rules that WOULD be written when they are
+//               not tieredCommissionRules' (the variant profile of
+//               rulesFromRateCard): rulesNext counts them, and ruleLines holds
+//               the before and after, rule by rule, in words (ruleDiff)
+export interface RatesChangePreview { same: boolean; canSend: boolean; rulesNow: number; rulesNext: number; rows: RatesChangeRow[]; lines: string[]; ruleLines: string[] }
+export function ratesChangePreview(profileNow: unknown, venueTiers: unknown, currency: unknown = 'GBP', opts: { rules?: unknown } = {}): RatesChangePreview {
   const cur = str(currency).toUpperCase() || 'GBP';
-  const next = tieredCommissionRules(cur, venueTiers);
+  const legacyNext = tieredCommissionRules(cur, venueTiers);
+  const nextRules: Dict[] | null = Array.isArray(opts?.rules) ? (opts.rules as Dict[]) : null;
+  const next = nextRules ? { rules: legacyNext.rules.length ? nextRules : [], lacking: legacyNext.lacking } : legacyNext;
   const nowTiers = profileTiers(profileNow);
   const on = ratesOnAdyen(profileNow, venueTiers, cur);
+  // With the variant rules given, "same" means the store holds THOSE rules, not
+  // merely a profile of the older shape with the same numbers.
+  const same = on.matches && (!nextRules || profileMatchesRules(profileNow, nextRules));
   const priceLine = (tiers: unknown, tier: string): string | null => {
     if (!isObj(tiers)) return null;
     const c = DEBIT_TIER_BASE[tier] ? debitEffective(tiers, tier) : tierOf(tiers, tier);
@@ -1881,7 +1904,7 @@ export function ratesChangePreview(profileNow: unknown, venueTiers: unknown, cur
   const lines: string[] = [];
   if (!next.rules.length) {
     lines.push(`No rate is set yet for: ${tierRowList(next.lacking)}. Nothing can be sent.`);
-  } else if (on.matches) {
+  } else if (same) {
     lines.push('Adyen already holds these rates. Sending changes nothing.');
   } else {
     if (!nowTiers) lines.push('Adyen holds no rates for this venue yet.');
@@ -1891,7 +1914,8 @@ export function ratesChangePreview(profileNow: unknown, venueTiers: unknown, cur
     }
     if (nowTiers && !rows.some((x) => x.changed)) lines.push('The rates are the same, but the rules on Adyen are not the ones ServOS writes. Sending puts that right.');
   }
-  return { same: on.matches, canSend: next.rules.length > 0, rulesNow: on.rules, rulesNext: next.rules.length, rows, lines };
+  const ruleLines: string[] = nextRules && next.rules.length && !same ? ruleDiff(profileNow, next.rules, { currency: cur }).lines : [];
+  return { same, canSend: next.rules.length > 0, rulesNow: on.rules, rulesNext: next.rules.length, rows, lines, ruleLines };
 }
 
 // WHAT WAS PREVIEWED IS WHAT IS SENT (17 Sep 2026). The dry run answers a

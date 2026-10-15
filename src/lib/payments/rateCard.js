@@ -26,7 +26,8 @@ export const RATE_CARD_TIERS = Object.freeze([
   Object.freeze({ id: 'card_present_debit', label: 'In person debit', note: 'debit cards at the till', base: 'card_present' }),
   Object.freeze({ id: 'card_not_present', label: 'Online credit', note: 'credit cards, online orders', base: null }),
   Object.freeze({ id: 'card_not_present_debit', label: 'Online debit', note: 'debit cards, online orders', base: 'card_not_present' }),
-  Object.freeze({ id: 'amex', label: 'Amex and business cards', note: null, base: null }),
+  // 15 Oct 2026: the note names what the Adyen rules put on this price.
+  Object.freeze({ id: 'amex', label: 'Amex and business cards', note: 'Visa and Mastercard business, corporate, purchasing and fleet cards pay this rate', base: null }),
   Object.freeze({ id: 'keyed', label: 'Keyed in', note: 'typed by hand', base: null }),
 ]);
 

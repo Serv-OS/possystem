@@ -220,7 +220,7 @@ export default function AdyenPayments() {
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflowX: 'auto' }}>
           <div style={{ minWidth: 900 }}>
             <div style={{ display: 'grid', gridTemplateColumns: GRID, fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>
-              <div>Date</div><div>Card</div><div>Type</div><div>Amount</div><div>Refunded</div><div>Fee</div><div>You receive</div><div>Status</div><div>Payment ID</div>
+              <div>Date</div><div>Card</div><div>Type</div><div>Amount</div><div>Refunded</div><div title="Fees are not given back on refunds">Fee</div><div>You receive</div><div>Status</div><div>Payment ID</div>
             </div>
             {payments.map((p) => {
               const st = statusOf(p);

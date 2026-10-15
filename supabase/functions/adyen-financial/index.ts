@@ -223,7 +223,17 @@ Deno.serve(async (req) => {
   // What isCountedPayment and venueFeeFor need from a payment row (the capture
   // rule of payments-admin, and a hold's captured amount) plus when it was
   // taken. NEVER fee_minor or fee_breakdown (Adyen's cost).
-  const CAPTURE_COLS = 'authorised_at, capture_required, captured_at, applied_mods:raw->applied_modifications, captured_minor:raw->captured_minor, last_mod_code:raw->last_modification->>eventCode, last_mod_ok:raw->last_modification->>success, last_mod_amount:raw->last_modification->amount->>value';
+  const CAPTURE_BASE_COLS = 'authorised_at, capture_required, captured_at, applied_mods:raw->applied_modifications, captured_minor:raw->captured_minor, last_mod_code:raw->last_modification->>eventCode, last_mod_ok:raw->last_modification->>success, last_mod_amount:raw->last_modification->amount->>value';
+  // 15 Oct 2026: the refund rule each fee was booked under (venueFees rowRefundPolicy) and the
+  // rule that stamped it. The two columns arrive with 20261015_PLATFORM_adyen_rates_cutover.sql;
+  // one cheap probe per request keeps every read below working before it runs.
+  let feeRuleCols = '';
+  try {
+    const probe = await platformAdmin.from('adyen_payments').select('fee_refund_policy, fee_rule').limit(1);
+    if (!probe.error) feeRuleCols = ', fee_refund_policy, fee_rule';
+    else if (!isMissingColumn(probe.error.message)) console.error('[adyen-financial] fee rule probe:', probe.error.message);
+  } catch (e) { console.error('[adyen-financial] fee rule probe:', (e as Error).message); }
+  const CAPTURE_COLS = `${CAPTURE_BASE_COLS}${feeRuleCols}`;
   // When a payment was taken: authorised_at (the payment's own time; a late
   // or replayed webhook mints created_at at arrival), else created_at.
   // deno-lint-ignore no-explicit-any

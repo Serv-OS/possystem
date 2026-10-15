@@ -13,7 +13,7 @@ import process from 'node:process';
 import * as jsModule from './venueFees.js';
 import {
   hasSuccessfulCapture, isUncapturedPayment, isCountedPayment, capturedMinorFor,
-  venueFeeFor, venueReceivesFor, isVisiblePayment, summarizeVenueFees,
+  venueFeeFor, venueReceivesFor, isVisiblePayment, summarizeVenueFees, rowRefundPolicy, feeAfterRefund,
   PAYOUT_SALE_LINE_TYPES, PAYOUT_VENUE_LINE_TYPES, venuePayoutLine, summarizeVenuePayout,
   isValidTimeZone, venueTimeZoneFor, venueCurrentMonth, venueMonthBoundsIso,
 } from './venueFees.js';
@@ -21,6 +21,10 @@ import {
 const paid = (amount, commission, extra = {}) => ({
   success: true, last_event_code: 'AUTHORISATION', amount_minor: amount, amount_refunded_minor: 0, commission_minor: commission, ...extra,
 });
+// A row booked under the 'ratio' refund rule (what Back Office showed until 15 Oct 2026). The
+// cases below that pin a fee coming back on a refund are that rule's; a row with no policy reads
+// as 'none' (the venue keeps paying the full fee), tested further down.
+const ratio = (amount, commission, extra = {}) => paid(amount, commission, { fee_refund_policy: 'ratio', ...extra });
 
 // ── The proven numbers: Adyen's balance platform bookings on two live payments ──
 test('£1.00 at 6p: fee 6, venue receives 94', () => {
@@ -36,19 +40,64 @@ test('£2.50 at 7p: fee 7, venue receives 243', () => {
 });
 
 test('a half refund of £2.50 at 7p: 3.5p rounds half up to 4, venue receives 121', () => {
-  const r = paid(250, 7, { amount_refunded_minor: 125, last_event_code: 'REFUND' });
+  const r = ratio(250, 7, { amount_refunded_minor: 125, last_event_code: 'REFUND' });
   assert.equal(venueFeeFor(r), 4);
   assert.equal(venueReceivesFor(r), 121);
 });
 
 test('the refund ratio rounds half up, and a full refund leaves no fee', () => {
-  assert.equal(venueFeeFor(paid(300, 7, { amount_refunded_minor: 100 })), 5);   // 4.67
-  assert.equal(venueFeeFor(paid(300, 7, { amount_refunded_minor: 200 })), 2);   // 2.33
-  assert.equal(venueFeeFor(paid(200, 5, { amount_refunded_minor: 100 })), 3);   // 2.5
-  assert.equal(venueFeeFor(paid(250, 7, { amount_refunded_minor: 250 })), 0);
-  assert.equal(venueReceivesFor(paid(250, 7, { amount_refunded_minor: 250 })), 0);
+  assert.equal(venueFeeFor(ratio(300, 7, { amount_refunded_minor: 100 })), 5);   // 4.67
+  assert.equal(venueFeeFor(ratio(300, 7, { amount_refunded_minor: 200 })), 2);   // 2.33
+  assert.equal(venueFeeFor(ratio(200, 5, { amount_refunded_minor: 100 })), 3);   // 2.5
+  assert.equal(venueFeeFor(ratio(250, 7, { amount_refunded_minor: 250 })), 0);
+  assert.equal(venueReceivesFor(ratio(250, 7, { amount_refunded_minor: 250 })), 0);
   // over refunded never drives the fee below 0
-  assert.equal(venueFeeFor(paid(250, 7, { amount_refunded_minor: 400 })), 0);
+  assert.equal(venueFeeFor(ratio(250, 7, { amount_refunded_minor: 400 })), 0);
+});
+
+// ── THE REFUND RULE (15 Oct 2026): the venue keeps paying the fee on a refund ──
+// Adyen's bank settlements since go live gave nothing back on a refund, so a
+// row with no policy, or policy 'none', keeps the FULL fee after a refund and
+// You receive is amount less refunds less that fee. 'ratio' is explicit only.
+test("refund rule 'none' (the default, and what null reads as): a half refund of £2.50 at 7p keeps the fee at 7, receives 118", () => {
+  for (const extra of [{}, { fee_refund_policy: null }, { fee_refund_policy: 'none' }, { fee_refund_policy: 'NONE' }, { fee_refund_policy: 'something else' }]) {
+    const r = paid(250, 7, { amount_refunded_minor: 125, last_event_code: 'REFUND', ...extra });
+    assert.equal(rowRefundPolicy(r), 'none', JSON.stringify(extra));
+    assert.equal(venueFeeFor(r), 7, JSON.stringify(extra));
+    assert.equal(venueReceivesFor(r), 118, JSON.stringify(extra));
+  }
+  assert.equal(rowRefundPolicy(ratio(250, 7)), 'ratio');
+  // a full refund under 'none': the fee is still owed, so the venue is 7p down on the payment
+  assert.equal(venueFeeFor(paid(250, 7, { amount_refunded_minor: 250 })), 7);
+  assert.equal(venueReceivesFor(paid(250, 7, { amount_refunded_minor: 250 })), -7);
+  // feeAfterRefund itself: 'none' keeps the fee, 'ratio' is the half up share, the default is 'none'
+  assert.equal(feeAfterRefund(7, 250, 125), 7);
+  assert.equal(feeAfterRefund(7, 250, 125, 'none'), 7);
+  assert.equal(feeAfterRefund(7, 250, 125, 'ratio'), 4);
+  assert.equal(feeAfterRefund(7, 250, 0, 'ratio'), 7);
+});
+
+test("refund rule 'none': the Refunded payout line carries fee 0 and receives its gross; the lines still add up to the payment", () => {
+  const pay = paid(250, 7, { amount_refunded_minor: 125 });
+  const sale = venuePayoutLine({ line_type: 'Settled', gross_minor: 250 }, pay);
+  const refund = venuePayoutLine({ line_type: 'Refunded', gross_minor: -125 }, pay);
+  assert.deepEqual(sale, { gross_minor: 250, fee_minor: 7, receives_minor: 243, unrated: false });
+  assert.deepEqual(refund, { gross_minor: -125, fee_minor: 0, receives_minor: -125, unrated: false });
+  assert.equal(sale.fee_minor + refund.fee_minor, venueFeeFor(pay));
+  assert.equal(sale.receives_minor + refund.receives_minor, venueReceivesFor(pay));
+  // a reversed refund under 'none' moves no fee either
+  assert.deepEqual(venuePayoutLine({ line_type: 'RefundedReversed', gross_minor: 125 }, pay), { gross_minor: 125, fee_minor: 0, receives_minor: 125, unrated: false });
+  // under 'ratio' the same payment's lines add up too (the existing rule, unchanged)
+  const rp = ratio(250, 7, { amount_refunded_minor: 125 });
+  const rs = venuePayoutLine({ line_type: 'Settled', gross_minor: 250 }, rp);
+  const rr = venuePayoutLine({ line_type: 'Refunded', gross_minor: -125 }, rp);
+  assert.equal(rs.fee_minor + rr.fee_minor, venueFeeFor(rp));
+  assert.equal(rs.receives_minor + rr.receives_minor, venueReceivesFor(rp));
+  // the summary under 'none': fees are the full fees, receives nets the refunds
+  assert.deepEqual(summarizeVenueFees([paid(100, 6), pay]), {
+    count: 2, gross_minor: 350, refunds_minor: 125, fees_minor: 13, receives_minor: 94 + 118,
+    fees_rated: 2, fees_unrated: 0, unrated_gross_minor: 0, not_captured: 0,
+  });
 });
 
 test('no fee on record gives null for the fee and for what the venue receives', () => {
@@ -74,7 +123,7 @@ test('declined and cancelled payments carry no fee', () => {
 });
 
 test('numbers that arrive as strings still add up', () => {
-  const r = paid('250', '7', { amount_refunded_minor: '125' });
+  const r = ratio('250', '7', { amount_refunded_minor: '125' });
   assert.equal(venueFeeFor(r), 4);
   assert.equal(venueReceivesFor(r), 121);
 });
@@ -123,7 +172,7 @@ test('a hold is rated only when its captured amount is known and matches the amo
   assert.equal(venueFeeFor(fixed), 31);
   assert.equal(venueReceivesFor(fixed), 3169);
   // captured_minor wins over a later refund being the last modification
-  const refundedLater = { ...fixed, amount_refunded_minor: 1600, last_mod_code: 'REFUND', last_mod_ok: 'true', last_mod_amount: '1600' };
+  const refundedLater = { ...fixed, fee_refund_policy: 'ratio', amount_refunded_minor: 1600, last_mod_code: 'REFUND', last_mod_ok: 'true', last_mod_amount: '1600' };
   assert.equal(capturedMinorFor(refundedLater), 3200);
   assert.equal(venueFeeFor(refundedLater), 16);   // 31 x 1600 / 3200 = 15.5, half up
   // a hold captured with no record of the amount is unrated
@@ -160,7 +209,7 @@ test('summary adds counted payments only; receives waits while any payment is un
   const rated = [
     paid(100, 6),
     paid(250, 7),
-    paid(250, 7, { amount_refunded_minor: 125 }),
+    ratio(250, 7, { amount_refunded_minor: 125 }),
     paid(900, 20, { success: false, amount_refunded_minor: 0 }),
     paid(900, 20, { last_event_code: 'CANCELLATION', amount_refunded_minor: 900 }),
     paid(700, 11, { last_event_code: 'CAPTURE_FAILED' }),
@@ -192,7 +241,7 @@ test('Adyen cost and account lines never reach a venue', () => {
 });
 
 test('a sale line carries the full fee; a refund line gives its share back, as the split booked it', () => {
-  const pay = paid(250, 7, { amount_refunded_minor: 125 });
+  const pay = ratio(250, 7, { amount_refunded_minor: 125 });
   const sale = venuePayoutLine({ line_type: 'Settled', gross_minor: 250 }, pay);
   const refund = venuePayoutLine({ line_type: 'Refunded', gross_minor: -125 }, pay);
   // batch 1 matches Adyen's booking on the sale: 7p fee, £2.43 to the venue
@@ -202,12 +251,12 @@ test('a sale line carries the full fee; a refund line gives its share back, as t
   assert.equal(sale.fee_minor + refund.fee_minor, venueFeeFor(pay));
   assert.equal(sale.receives_minor + refund.receives_minor, venueReceivesFor(pay));
   // a full refund gives the whole fee back
-  const full = paid(250, 7, { amount_refunded_minor: 250 });
+  const full = ratio(250, 7, { amount_refunded_minor: 250 });
   assert.deepEqual(venuePayoutLine({ line_type: 'RefundedExternally', gross_minor: -250 }, full), { gross_minor: -250, fee_minor: -7, receives_minor: -243, unrated: false });
   // a reversed refund takes the returned fee again
   assert.deepEqual(venuePayoutLine({ line_type: 'RefundedReversed', gross_minor: 125 }, pay), { gross_minor: 125, fee_minor: 3, receives_minor: 122, unrated: false });
   // a tiny refund that gives nothing back carries a plain 0
-  assert.deepEqual(venuePayoutLine({ line_type: 'Refunded', gross_minor: -1 }, paid(250, 7, { amount_refunded_minor: 1 })), { gross_minor: -1, fee_minor: 0, receives_minor: -1, unrated: false });
+  assert.deepEqual(venuePayoutLine({ line_type: 'Refunded', gross_minor: -1 }, ratio(250, 7, { amount_refunded_minor: 1 })), { gross_minor: -1, fee_minor: 0, receives_minor: -1, unrated: false });
   // dispute lines carry no fee
   assert.deepEqual(venuePayoutLine({ line_type: 'Chargeback', gross_minor: -250 }, null), { gross_minor: -250, fee_minor: null, receives_minor: -250, unrated: false });
 });
@@ -236,7 +285,7 @@ test('ONE rule: Payments, the statement and the payouts agree on the same row se
   // is built from venuePayoutLine. All settled in one batch.
   const rows = [
     { psp: 'A', ...paid(100, 6) },
-    { psp: 'B', ...paid(250, 7, { amount_refunded_minor: 125 }) },
+    { psp: 'B', ...ratio(250, 7, { amount_refunded_minor: 125 }) },
     { psp: 'C', ...paid(900, 20, { last_event_code: 'CANCELLATION', amount_refunded_minor: 900 }) },
     { psp: 'D', ...paid(700, 11, { last_event_code: 'CAPTURE_FAILED' }) },
   ];
@@ -332,7 +381,8 @@ test('TS mirror: every export answers exactly as the JS copy', async (t) => {
     for (const amount_refunded_minor of refunds) {
       for (const commission_minor of commissions) {
         for (const ev of events) {
-          const r = { amount_minor, amount_refunded_minor, commission_minor, ...ev };
+          for (const fee_refund_policy of [undefined, null, 'none', 'ratio']) {
+          const r = { amount_minor, amount_refunded_minor, commission_minor, ...(fee_refund_policy === undefined ? {} : { fee_refund_policy }), ...ev };
           rows.push(r);
           assert.equal(ts.hasSuccessfulCapture(r), hasSuccessfulCapture(r));
           assert.equal(ts.isUncapturedPayment(r), isUncapturedPayment(r));
@@ -345,6 +395,7 @@ test('TS mirror: every export answers exactly as the JS copy', async (t) => {
               const line = { line_type, gross_minor };
               assert.deepEqual(ts.venuePayoutLine(line, r), venuePayoutLine(line, r));
             }
+          }
           }
         }
       }
