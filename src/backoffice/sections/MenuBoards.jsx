@@ -8,6 +8,9 @@
 // layout.followMenus ("Follow timed menus", default false) narrows the board to
 // the menu live on the venue clock; the preview mirrors the TV through the same
 // shared helpers (src/lib/menuBoardMenus.js).
+// Mode 'playlist' (14 Oct 2026, src/lib/menuBoardPlaylist.js): layout.items lists
+// other boards of this venue that the TV plays in turn, with layout.seconds and
+// layout.transition. A TV is paired to a playlist exactly as to any board.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
@@ -21,6 +24,7 @@ import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus'
 import { boardItemsByCategory, boardAddOnsByCategory, boardCategoryChoices, boardSections, boardSectionsForMenu, boardColumns, boardKeepsWhole, headerBasePx, LINE_SPACING_OPTS, LINE_SPACING_DEFAULT, newTextBlock, isTextBlock, newPageBreak, isPageBreak, boardPages, pageSeconds, DEFAULT_PAGE_SECONDS, SIZE_OPTS } from '../../lib/menuBoardSections';
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from '../../surfaces/menuboard/BoardParts';
 import { marketingSlides, normaliseSlides, addSlides, moveSlide, removeSlide, setSlideSeconds, slideTypeOfFile, newImageBlock, isImageBlock, DEFAULT_SLIDE_SECONDS, MAX_SLIDES, IMAGE_RATIOS } from '../../lib/menuBoardSlides';
+import { normalisePlaylist, itemHoldMs, addPlaylistItem, movePlaylistItem, removePlaylistItem, setPlaylistItem, clampItemSeconds, DEFAULT_ITEM_SECONDS, MIN_ITEM_SECONDS, MAX_ITEM_SECONDS, MAX_ITEMS, TRANSITIONS } from '../../lib/menuBoardPlaylist';
 import { fetchScreenNotes } from '../../lib/menuBoardNotes';
 import { screenNoteView } from '../../lib/menuBoardPairing';
 
@@ -213,7 +217,7 @@ export default function MenuBoards() {
 
   if (editing) return (
     <Editor board={editing} setBoard={setEditing} cats={cats} catsErr={catsErr} itemsByCat={itemsByCat} addOnsByCat={addOnsByCat} six={six}
-      allCats={allCats} menus={menus} links={links} tz={tz} menusOk={menusOk}
+      allCats={allCats} menus={menus} links={links} tz={tz} menusOk={menusOk} boards={screens}
       onSave={() => save(false)} onPublish={() => save(true)} onCancel={() => setEditing(null)}
       onUpload={upload} busy={busy} err={err} />
   );
@@ -234,7 +238,9 @@ export default function MenuBoards() {
           <div key={b.id} style={S.card}>
             <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{b.name}</div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
-              {b.mode === 'marketing' ? 'Marketing screen' : `${(b.layout?.blocks?.length || 0)} categories · ${b.orientation}`}
+              {b.mode === 'marketing' ? 'Marketing screen'
+                : b.mode === 'playlist' ? `${normalisePlaylist(b.layout, { boards: screens, selfId: b.id }).items.length} boards in turn`
+                : `${(b.layout?.blocks?.length || 0)} categories · ${b.orientation}`}
             </div>
             <div style={{ fontSize: 11, color: b.published_at ? 'var(--grn)' : 'var(--t4)', marginTop: 6 }}>
               {b.published_at ? `Published ${new Date(b.published_at).toLocaleDateString('en-GB')}` : 'Not published'}
@@ -301,7 +307,7 @@ export default function MenuBoards() {
   );
 }
 
-function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat = {}, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
+function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat = {}, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, boards = [], onSave, onPublish, onCancel, onUpload, busy, err }) {
   const set = (patch) => setBoard(b => ({ ...b, ...patch }));
   const setLayout = (patch) => setBoard(b => ({ ...b, layout: { ...b.layout, ...patch } }));
   const setDisp = (patch) => setBoard(b => ({ ...b, display_options: { ...b.display_options, ...patch } }));
@@ -369,6 +375,12 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
     inp.click();
   };
   const mktSlides = marketingSlides(board.marketing);
+  // Playlist: the boards this screen may play (this venue's other boards, never a playlist) and the
+  // rows as the operator has them. The TV cleans them with the same rule (normalisePlaylist).
+  const isPl = board.mode === 'playlist';
+  const plBoards = boards.filter(b => b.id !== board.id && b.mode !== 'playlist');
+  const plItems = Array.isArray(board.layout?.items) ? board.layout.items : [];
+  const plBoardOf = (id) => plBoards.find(b => b.id === id);
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -382,15 +394,18 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
           <Section>
             <Field label="Screen name"><input style={S.inp} value={board.name} onChange={e => set({ name: e.target.value })} /></Field>
             <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-              <Field label="Orientation"><Pills opts={[['landscape', 'Landscape'], ['portrait', 'Portrait']]} val={board.orientation}
-                on={v => { set({ orientation: v }); if (v !== 'portrait') setLayout({ rotate: 0 }); }} /></Field>
-              <Field label="Mode"><Pills opts={[['menu', 'Menu'], ['marketing', 'Marketing']]} val={board.mode} on={v => set({ mode: v })} /></Field>
+              {/* A playlist has no orientation of its own: each board it plays brings its own. */}
+              {!isPl && (
+                <Field label="Orientation"><Pills opts={[['landscape', 'Landscape'], ['portrait', 'Portrait']]} val={board.orientation}
+                  on={v => { set({ orientation: v }); if (v !== 'portrait') setLayout({ rotate: 0 }); }} /></Field>
+              )}
+              <Field label="Mode"><Pills opts={[['menu', 'Menu'], ['marketing', 'Marketing'], ['playlist', 'Playlist']]} val={board.mode} on={v => set({ mode: v })} /></Field>
             </div>
             {/* A PORTRAIT TV (21 Sep 2026). Peter: the order screens turn properly
                 and the menu boards do not, with no setting to force it. Same
                 control, same words, same rule (lib/orderScreen/orderScreenLayout
                 stageSize), so two TVs side by side cannot behave differently. */}
-            {board.orientation === 'portrait' && (
+            {!isPl && board.orientation === 'portrait' && (
               <Field label="If the TV shows the picture sideways">
                 <Pills
                   opts={[['0', 'Do not turn'], ['90', 'Turn right'], ['270', 'Turn left']]}
@@ -601,6 +616,52 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
                 </div>
               </Section>
             </>
+          ) : isPl ? (
+            <Section title="Boards in turn" desc="The TV shows these boards one after another, in this order. Pick menu boards, marketing screens or both. Each board keeps its own look, orientation and pages.">
+              {plBoards.length === 0 && (
+                <div style={{ fontSize: 12, color: 'var(--t4)', lineHeight: 1.5 }}>This venue has no other boards yet. Build a menu board or a marketing screen first, then come back.</div>
+              )}
+              {plItems.length === 0 && plBoards.length > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--t4)', lineHeight: 1.5 }}>No boards in this playlist yet. Add some below.</div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {plItems.map((it, i) => {
+                  const child = plBoardOf(it.boardId);
+                  const isMkt = child?.mode === 'marketing';
+                  return (
+                    <div key={it.id || i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 6, border: '1px solid var(--bdr)', borderRadius: 8, background: 'var(--bg2)', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, color: 'var(--t4)', width: 18, textAlign: 'right' }}>{i + 1}.</span>
+                      <select style={{ ...S.inp, flex: 1, minWidth: 160 }} value={child ? it.boardId : ''} onChange={e => setLayout({ items: setPlaylistItem(plItems, it.id, { boardId: e.target.value }) })}>
+                        {!child && <option value="">Pick a board</option>}
+                        {plBoards.map(b => <option key={b.id} value={b.id}>{b.name}{b.mode === 'marketing' ? ' (marketing)' : ''}</option>)}
+                      </select>
+                      <label style={{ fontSize: 11, color: 'var(--t4)', display: 'flex', alignItems: 'center', gap: 4 }}>secs
+                        <input type="number" min={MIN_ITEM_SECONDS} max={MAX_ITEM_SECONDS} style={{ ...S.inp, width: isMkt ? 150 : 90, padding: '3px 6px', fontSize: 12 }}
+                          value={it.seconds ?? ''} placeholder={isMkt ? 'plays its slides once' : 'default'}
+                          onChange={e => setLayout({ items: setPlaylistItem(plItems, it.id, { seconds: e.target.value === '' ? null : Number(e.target.value) }) })}
+                          onBlur={e => setLayout({ items: setPlaylistItem(plItems, it.id, { seconds: clampItemSeconds(e.target.value) }) })} />
+                      </label>
+                      <button style={S.mini} disabled={i === 0} onClick={() => setLayout({ items: movePlaylistItem(plItems, i, -1) })} title="Move up">▲</button>
+                      <button style={S.mini} disabled={i === plItems.length - 1} onClick={() => setLayout({ items: movePlaylistItem(plItems, i, 1) })} title="Move down">▼</button>
+                      <button style={S.miniX} onClick={() => setLayout({ items: removePlaylistItem(plItems, it.id) })} title="Remove">✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <button style={S.btn} disabled={plBoards.length === 0 || plItems.length >= MAX_ITEMS} onClick={() => setLayout({ items: addPlaylistItem(plItems, plBoards[0]?.id) })}>+ Add board</button>
+                <span style={{ fontSize: 11, color: 'var(--t4)' }}>Up to {MAX_ITEMS}. The same board may appear more than once.</span>
+              </div>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <Field label="Each board stays for (seconds)">
+                  <input type="number" min={MIN_ITEM_SECONDS} max={MAX_ITEM_SECONDS} style={{ ...S.inp, width: 90 }} value={board.layout?.seconds ?? ''} placeholder={String(DEFAULT_ITEM_SECONDS)}
+                    onChange={e => setLayout({ seconds: e.target.value === '' ? null : Number(e.target.value) })}
+                    onBlur={e => setLayout({ seconds: clampItemSeconds(e.target.value) || DEFAULT_ITEM_SECONDS })} />
+                  <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 4, lineHeight: 1.5, maxWidth: 420 }}>Used by every board with no seconds of its own. A marketing screen with no seconds plays its slides through once.</div>
+                </Field>
+                <Field label="Change with"><Pills opts={TRANSITIONS} val={board.layout?.transition || 'fade'} on={v => setLayout({ transition: v })} /></Field>
+              </div>
+            </Section>
           ) : (
             <Section title="Marketing slides" desc="Shown full screen instead of the menu, one after another. An image stays for the seconds you set; a video plays through.">
               <SlideList slides={mktSlides} defaultSeconds={board.marketing.seconds || DEFAULT_SLIDE_SECONDS} busy={busy === 'upload-mkt'}
@@ -626,9 +687,13 @@ function Editor({ board, setBoard, cats, catsErr = '', itemsByCat, addOnsByCat =
 
         {/* ── live preview ── */}
         <div style={{ position: 'sticky', top: 12 }}>
-          <div style={S.lbl}>Live preview</div>
-          <Preview board={board} itemsByCat={itemsByCat} addOnsByCat={addOnsByCat} six={six} allCats={allCats} links={links} activeMenuId={activeMenuId} />
-          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>The real display auto-scales type to fill the screen. Publish to push to paired displays.</div>
+          <div style={S.lbl}>{isPl ? 'Play order' : 'Live preview'}</div>
+          {isPl
+            ? <PlaylistPreview board={board} boards={plBoards} />
+            : <Preview board={board} itemsByCat={itemsByCat} addOnsByCat={addOnsByCat} six={six} allCats={allCats} links={links} activeMenuId={activeMenuId} />}
+          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
+            {isPl ? 'Each board looks as it does on its own card. Publish to push to paired displays.' : 'The real display auto-scales type to fill the screen. Publish to push to paired displays.'}
+          </div>
         </div>
       </div>
     </div>
@@ -699,6 +764,40 @@ function Preview({ board, itemsByCat, addOnsByCat = {}, six, allCats = [], links
             </div>}
         <BoardFooter theme={t} pages={pages.length} page={page % pages.length} basePx={headerPx} />
       </div>
+    </div>
+  );
+}
+
+// ── PlaylistPreview (14 Oct 2026): the order a playlist plays and how long each board stays,
+// cleaned by the TV's own rule, so a row pointing at a missing board is not counted. ──
+function PlaylistPreview({ board, boards = [] }) {
+  const p = normalisePlaylist(board.layout, { boards, selfId: board.id });
+  const byId = Object.fromEntries(boards.map(b => [b.id, b]));
+  const secs = (it) => Math.round(itemHoldMs(it, byId[it.boardId], p.seconds) / 1000);
+  // A video with no seconds of its own plays to the slideshow's safety net (slideHoldMs), not its length.
+  const openVideo = (it) => !it.seconds && byId[it.boardId]?.mode === 'marketing' && marketingSlides(byId[it.boardId].marketing).some(s => s.type === 'video' && !(Number(s.seconds) > 0));
+  return (
+    <div style={{ ...S.section, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {p.items.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)' }}>Nothing to play yet. The TV shows "Playlist is empty" until a board is added.</div>}
+      {p.items.map((it, i) => {
+        const b = byId[it.boardId];
+        return (
+          <div key={it.id}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--t1)' }}>
+              <span style={{ color: 'var(--t4)', width: 18, textAlign: 'right' }}>{i + 1}.</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b?.name}</span>
+              <span style={{ fontSize: 11, color: 'var(--t4)' }}>{b?.mode === 'marketing' ? 'marketing' : 'menu'}</span>
+              <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{secs(it)} s</span>
+            </div>
+            {openVideo(it) && <div style={{ fontSize: 11, color: 'var(--t4)', lineHeight: 1.4, marginLeft: 28 }}>A video with no seconds counts as 120 s here. Set seconds on this row for an exact time.</div>}
+          </div>
+        );
+      })}
+      {p.items.length > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.5, marginTop: 4 }}>
+          One round takes about {p.items.reduce((n, it) => n + secs(it), 0)} s. Change: {(TRANSITIONS.find(([v]) => v === p.transition) || TRANSITIONS[0])[1]}.
+        </div>
+      )}
     </div>
   );
 }
