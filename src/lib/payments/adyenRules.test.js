@@ -42,6 +42,7 @@ import {
   LEGACY_FEE_RULE, RULES_FEE_RULE_PREFIX, mergedWebhookSettings, lostWebhookSettings,
 } from './adyenRules.js';
 import { profileTiers, tiersMatch, ratesOnAdyen, ratesChangePreview, rateCardProblems, tieredCommissionRules } from './adyenLink.js';
+import { ADYEN_PUBLISHED_VARIANTS } from './adyenPublishedVariants.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../../..');
@@ -118,9 +119,11 @@ test('shape: the UK card writes one rule per Amex name, one per business variant
     assert.deepEqual(Object.keys(r).sort(), ['currency', 'fundingSource', 'paymentMethod', 'servos_tier', 'shopperInteraction', 'splitLogic']);
   }
   assert.equal(RULES.length, AMEX_VARIANTS.length + BUSINESS_VARIANTS.length + DEBIT_VARIANTS.length + 4);
-  // the bare business names terminals have sent (visacorporate, mccorporate and so on) are named too
-  for (const v of ['visacorporate', 'visabusiness', 'mccorporate', 'mcbusiness', 'visacommercial', 'mccommercial', 'visapurchasing', 'mcpurchasing', 'visafleet', 'mcfleet']) assert.ok(BUSINESS_VARIANTS.includes(v), v);
-  for (const v of ['visadebit', 'visaelectron', 'electron', 'vpay', 'mcelectronic']) assert.ok(DEBIT_VARIANTS.includes(v), v);
+  // the bare business names terminals have sent (visacorporate, mccorporate and so on) are named too,
+  // but only the ones Adyen publishes (15 Oct 2026: mcbusiness, visacommercial, mccommercial, mcpurchasing,
+  // visafleet and mcfleet are not published and Adyen refused the whole write for them)
+  for (const v of ['visacorporate', 'visabusiness', 'mccorporate', 'visapurchasing']) assert.ok(BUSINESS_VARIANTS.includes(v), v);
+  for (const v of ['visadebit', 'electron', 'vpay']) assert.ok(DEBIT_VARIANTS.includes(v), v);
   // the bodies sent carry NO servos_tier
   for (const r of built.rules) assert.equal('servos_tier' in r, false);
   assert.equal(built.tiers.length, built.rules.length);
@@ -464,4 +467,16 @@ test('mirrors: the Deno copy is byte identical to this module below its first li
   assert.equal(typeof stampForPayment, 'function');
   assert.equal(typeof restampForAmount, 'function');
   assert.equal(typeof legacyCommission, 'function');
+});
+
+test('published: every variant name in the table is one Adyen publishes (15 Oct 2026: a rule naming any other is refused with 422)', () => {
+  const published = new Set(ADYEN_PUBLISHED_VARIANTS);
+  assert.ok(published.size > 300, 'the published list is the full table, not a sample');
+  for (const [tier, names] of Object.entries(VARIANT_TABLE)) {
+    for (const n of names) assert.ok(published.has(n), `${tier}: ${n} is not a name Adyen publishes`);
+  }
+  // The six names the first live write was refused for are gone.
+  for (const n of ['mcbusiness', 'amexbusiness', 'mcelectronic', 'visaelectron', 'mcprepaid', 'visacommercial']) {
+    assert.ok(!Object.values(VARIANT_TABLE).some((l) => l.includes(n)), `${n} must not be sent`);
+  }
 });

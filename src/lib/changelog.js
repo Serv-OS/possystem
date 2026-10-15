@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.64',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates: the first live write was refused by Adyen because the rule list named 17 card types Adyen does not publish (mcbusiness, visaprepaid, mcelectronic and the like). The list now holds only names on Adyen's published variant table, 50 rules instead of 67, and a test keeps it that way. Every card type seen at the venues in the last four months is still named; a card with a name Adyen does not publish pays the catch all price on both sides, so Adyen and Back Office still agree.",
+    ],
+  },
+  {
     v: '5.11.63',
     date: '15 Oct 2026',
     items: [
