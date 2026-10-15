@@ -38,7 +38,7 @@ test('a portrait board on a landscape TV swaps its sides and spins', () => {
 
 test('the board uses the order screens rule, not one of its own', () => {
   assert.match(SURFACE, /import \{ stageSize \} from '\.\.\/lib\/orderScreen\/orderScreenLayout'/);
-  assert.match(SURFACE, /const rotate = Number\(data\.board\?\.layout\?\.rotate\) \|\| 0;/,
+  assert.match(SURFACE, /const rotate = Number\(board\?\.layout\?\.rotate\) \|\| 0;/,
     'it rides in the layout jsonb: no schema change, and an old board is unaffected');
   assert.match(SURFACE, /stageSize\(\{ vw: viewport\.vw, vh: viewport\.vh, orientation, rotate \}\)/);
 });

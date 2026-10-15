@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.60',
+    date: '14 Oct 2026',
+    items: [
+      "Menu boards: a new Playlist screen. Pick any of your boards (menus or marketing slideshows) in order, set how many seconds each one stays, and choose Fade, Slide or Cut. Put the playlist on a TV exactly as you put a board on one today.",
+      "Menu boards: a marketing slideshow inside a playlist plays its slides through once, then the next board comes on. A price change or a sold out item updates the playlist without sending it back to the first board.",
+    ],
+  },
+  {
     v: '5.11.59',
     date: '14 Oct 2026',
     items: [
