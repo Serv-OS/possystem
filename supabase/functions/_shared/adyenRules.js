@@ -88,9 +88,14 @@ export const REFUND_COST_ALLOCATION = 'deductFromLiableAccount';
 // purchasing and fleet cards pay the Amex and business price on every channel.
 export const DEBIT_VARIANTS = Object.freeze([
   'mcstandarddebit', 'visastandarddebit', 'visapremiumdebit', 'visasuperpremiumdebit', 'mcsuperpremiumdebit', 'mcdebit', 'mcpremiumdebit',
-  'mcstandardprepaid', 'visastandardprepaid', 'mcprepaid', 'visaprepaid', 'maestro', 'maestrouk',
+  'maestro', 'maestrouk',
   // older debit names Adyen may still report
-  'visadebit', 'visaelectron', 'electron', 'vpay', 'mcelectronic',
+  'visadebit', 'electron', 'vpay',
+  // Only names on Adyen's published variant list (src/lib/payments/adyenPublishedVariants.js):
+  // a rule naming any other is refused outright, 422 "Incorrect value specified for
+  // paymentMethod" (first live write, Leeds, 15 Oct 2026). Dropped then: mcstandardprepaid,
+  // visastandardprepaid, mcprepaid, visaprepaid, visaelectron, mcelectronic. A card whose
+  // name is not listed pays the catch all price, at Adyen and in our stamp alike.
 ]);
 export const BUSINESS_VARIANTS = Object.freeze([
   // seen on live payments in the 30 days to 15 Oct 2026
@@ -98,16 +103,20 @@ export const BUSINESS_VARIANTS = Object.freeze([
   'visacommercialpremiumcredit', 'visacommercialpremiumdebit', 'visacommercialcredit', 'visacorporatedebit', 'visacommercialsuperpremiumdebit',
   // Adyen's UK names not yet seen
   'mccorporatecredit', 'mccorporatedebit', 'mcpurchasingcredit', 'mcpurchasingdebit', 'visapurchasingcredit', 'visapurchasingdebit',
-  'visabusinesscredit', 'visabusinessdebit', 'mcbusinesscredit', 'mcbusinessdebit', 'mcfleetdebit', 'visafleetcredit', 'visafleetdebit',
-  // the bare names with no credit or debit word, which terminals have sent (webhook field notes, 19 Aug 2026)
-  'visacorporate', 'visabusiness', 'visacommercial', 'visapurchasing', 'visafleet', 'mccorporate', 'mcbusiness', 'mccommercial', 'mcpurchasing', 'mcfleet',
+  'mcfleetdebit', 'visafleetcredit', 'visafleetdebit',
+  // the bare names with no credit or debit word (webhook field notes, 19 Aug 2026), published ones only
+  'visacorporate', 'visabusiness', 'visapurchasing', 'mccorporate',
+  // Dropped 15 Oct 2026 (not on Adyen's published list, refused with 422): visabusinesscredit,
+  // visabusinessdebit, mcbusinesscredit, mcbusinessdebit, visacommercial, visafleet, mcbusiness,
+  // mccommercial, mcpurchasing, mcfleet.
 ]);
 // Every Amex name Adyen reports. Whether a rule naming 'amex' also catches
 // 'amexcorporate' at Adyen is not documented, so each name gets its own rule
 // and the matcher compares the variant alone: equal whichever way Adyen reads it.
 export const AMEX_VARIANTS = Object.freeze([
-  'amex', 'amexcorporate', 'amexcommercial', 'amexconsumer', 'amexdebit', 'amexprepaid', 'amexprepaidreloadable', 'amexsmallbusiness', 'amexbusiness',
+  'amex', 'amexcorporate', 'amexcommercial', 'amexconsumer', 'amexdebit', 'amexprepaid', 'amexprepaidreloadable', 'amexsmallbusiness',
   'amex_applepay', 'amex_googlepay',
+  // amexbusiness dropped 15 Oct 2026: not on Adyen's published list, refused with 422.
 ]);
 export const VARIANT_TABLE = Object.freeze({ debit: DEBIT_VARIANTS, business: BUSINESS_VARIANTS, amex: AMEX_VARIANTS });
 export const DEBIT_VARIANT_RE = /(debit|prepaid|maestro|electron|vpay)/;
