@@ -10,7 +10,9 @@
  *                          'adyen_rules:<profile id>', the entry's policy
  *   no rates_live_at       today's answer, unchanged, fee_rule null: nothing
  *                          moves until the rates are written
- *   a CAPTURE that moves the amount restamps with the SAME rule
+ *   a CAPTURE that moves the amount restamps with the SAME rule; a legacy row
+ *                          captured at or after the cutover follows the new profile, as Adyen does
+ *   a replay never demotes a row already stamped under the new scheme (keepExistingStamp)
  * The pre cutover LABEL (rate_category) stays today's classifier's: the chip on
  * a business card charged 0.85% still says Amex and business cards, because that
  * is what happened. Run: `node --test src/lib/payments/webhookStamp.test.js`.
@@ -19,7 +21,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rulesFromRateCard, annotateRules, paymentFacts, stampForPayment, restampForAmount, LEGACY_FEE_RULE, RULES_FEE_RULE_PREFIX } from './adyenRules.js';
+import { rulesFromRateCard, annotateRules, paymentFacts, stampForPayment, restampForAmount, keepExistingStamp, LEGACY_FEE_RULE, RULES_FEE_RULE_PREFIX } from './adyenRules.js';
 
 const UK = {
   card_present: { percent: 0.9 }, card_present_debit: { percent: 0.85 }, card_not_present: { percent: 1.1, fixedPence: 10 },
@@ -97,10 +99,16 @@ test('a CAPTURE that moves the amount restamps at the SAME rule the row carries'
   // a row stamped from the rules: a tip landing takes the amount to 12.00
   const rulesRow = { fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none', channel: 'pos', raw: { authorisation: auth } };
   assert.deepEqual(restampForAmount(rulesRow, 1200, '2026-10-16T09:00:00Z', venue, 11), { commission_minor: 10, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none', rate_category: 'card_present_debit' });
-  // a legacy row: the legacy charge on the new amount
+  // a legacy row captured BEFORE the cutover: the legacy charge on the new amount
   const legacyRow = { fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none', channel: 'pos', raw: { authorisation: auth } };
-  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-16T09:00:00Z', venue, 11), { commission_minor: 10, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
-  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-16T09:00:00Z', { ...venue, legacy_charge: null }, 11).commission_minor, null, 'no legacy charge to apply: unrated, said');
+  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-15T09:00:00Z', venue, 11), { commission_minor: 10, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
+  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-15T09:00:00Z', { ...venue, legacy_charge: null }, 11).commission_minor, null, 'no legacy charge to apply: unrated, said');
+  // a legacy row (a hold restated, or stamped legacy by a replay) captured AT OR AFTER the cutover:
+  // Adyen charges the capture under the new profile, so the row moves to the rules (review 15 Oct 2026)
+  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-16T09:00:00Z', venue, 11), { commission_minor: 10, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none', rate_category: 'card_present_debit' });
+  assert.deepEqual(restampForAmount(legacyRow, 1200, LIVE_AT, venue, 11).fee_rule, 'adyen_rules:SC_NEW');
+  // ...but with no rules entry governing the capture instant it stays legacy
+  assert.deepEqual(restampForAmount(legacyRow, 1200, '2026-10-16T09:00:00Z', { ...venue, adyen_rules: [] }, 11), { commission_minor: 10, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
   // a row with no fee_rule on a venue never cut over: today's commission, nothing marked
   const plainRow = { fee_rule: null, channel: 'pos', raw: { authorisation: auth } };
   assert.deepEqual(restampForAmount(plainRow, 1200, '2026-10-16T09:00:00Z', { rates_live_at: null }, 11), { commission_minor: 11, fee_rule: null, fee_refund_policy: null });
@@ -113,4 +121,35 @@ test('a CAPTURE that moves the amount restamps at the SAME rule the row carries'
   // an unmatched capture is unrated and said
   assert.deepEqual(restampForAmount({ ...rulesRow, raw: { authorisation: { ...auth, amount: { value: 1000, currency: 'USD' } } } }, 1200, '2026-10-16T09:00:00Z', venue, 11), { commission_minor: null, fee_rule: 'adyen_rules:SC_NEW:unmatched', fee_refund_policy: 'none' });
   assert.deepEqual(restampForAmount(null, 1200, null, null, 11), { commission_minor: 11, fee_rule: null, fee_refund_policy: null });
+});
+
+test('a replay never demotes a row already stamped under the new scheme', () => {
+  const at = '2026-10-01T12:00:00Z';
+  const p = { amountMinor: 1000, authorisedAt: at, ok: true, facts: paymentFacts(item('mccommercialdebit'), 'pos') };
+  const todayAnswer = { rate_category: 'amex', commission_minor: 35 };
+  // the restated row, replayed while the venue row cannot be read (stamp answers today's figure, unmarked): KEPT
+  const restated = { fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none', commission_minor: 9, rate_category: 'amex', captured_at: null };
+  const unmarked = stampForPayment(p, null, todayAnswer);
+  assert.deepEqual(unmarked, { rate_category: 'amex', commission_minor: 35, fee_rule: null, fee_refund_policy: null });
+  assert.deepEqual(keepExistingStamp(restated, unmarked, null), { rate_category: 'amex', commission_minor: 9, fee_rule: LEGACY_FEE_RULE, fee_refund_policy: 'none' });
+  // the same row replayed with the venue row readable: the engine answers legacy_flat itself, and that stands
+  const marked = stampForPayment(p, venue, todayAnswer);
+  assert.deepEqual(keepExistingStamp(restated, marked, venue), marked);
+  assert.equal(marked.fee_rule, LEGACY_FEE_RULE);
+  // a row stamped from the rules, replayed with the venue row unreadable: KEPT
+  const ruled = { fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none', commission_minor: 35, rate_category: 'amex', captured_at: null };
+  assert.deepEqual(keepExistingStamp(ruled, unmarked, null), { rate_category: 'amex', commission_minor: 35, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
+  // a hold authorised before the cutover, CAPTURED after it, stamped from the rules by the CAPTURE path: the
+  // AUTHORISATION replay answers legacy_flat, and the row keeps the rules stamp Adyen charged
+  const hold = { ...ruled, captured_at: '2026-10-16T09:00:00Z' };
+  assert.deepEqual(keepExistingStamp(hold, marked, venue), { rate_category: 'amex', commission_minor: 35, fee_rule: 'adyen_rules:SC_NEW', fee_refund_policy: 'none' });
+  // the same hold captured BEFORE the cutover: the legacy answer stands (Adyen charged the old profile)
+  assert.deepEqual(keepExistingStamp({ ...ruled, captured_at: '2026-10-10T09:00:00Z' }, marked, venue), marked);
+  // a row never stamped under the new scheme takes whatever the engine says
+  assert.deepEqual(keepExistingStamp({ fee_rule: null, commission_minor: 35 }, unmarked, null), unmarked);
+  assert.deepEqual(keepExistingStamp(null, marked, venue), marked);
+  assert.deepEqual(keepExistingStamp({ fee_rule: null }, marked, venue), marked);
+  // a later rules entry replaces an earlier rules stamp as the engine says (a rate change is a real move)
+  const second = { rate_category: 'amex', commission_minor: 36, fee_rule: 'adyen_rules:SC_2', fee_refund_policy: 'none' };
+  assert.deepEqual(keepExistingStamp(ruled, second, venue), second);
 });

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.64',
+    date: '15 Oct 2026',
+    items: [
+      "Card rates (review fixes before the first write): the charge Adyen took before the cutover is never guessed from a tiered profile, it is set from the bank; every American Express card name has its own rule, so an Amex card in Apple Pay pays the Amex price on both sides; business cards with no credit or debit word in their name (visacorporate, mccorporate and the like) pay the Amex and business price; switching on card type data adds to the webhook settings and never replaces them; a replay of past payment notices never undoes the restatement; the Read panel counts payments that missed the cutover; the tie check shows the rounding residual per batch.",
+    ],
+  },
+  {
     v: '5.11.63',
     date: '15 Oct 2026',
     items: [

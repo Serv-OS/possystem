@@ -247,6 +247,7 @@ export default function AdyenRatesPanel({ callAdmin, rates, live, onWritten }) {
               <p style={{ ...T.quiet, marginTop: 8 }}>
                 Our records, last 30 days: {ledger.payments ?? 'unknown'} live payments, {ledger.withVariant ?? 'unknown'} with a card type name, {ledger.withFundingSource ?? 'unknown'} with a funding source, {ledger.withShopperInteraction ?? 'unknown'} with a channel mark.
                 {' '}Recorded from the Adyen rules: {ledger.stampedFromRules ?? 'unknown'}. From the old flat charge: {ledger.stampedLegacy ?? 'unknown'}. No rule matched: {ledger.unmatched ?? 'unknown'}.
+                {ledger.missedCutover != null && <> Missed the cutover (recorded the old way after the rates went live, a webhook backfill of that hour puts them right): {ledger.missedCutover}.</>}
               </p>
             )}
             {read.last && (

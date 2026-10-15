@@ -89,6 +89,8 @@ export const REFUND_COST_ALLOCATION = 'deductFromLiableAccount';
 export const DEBIT_VARIANTS = Object.freeze([
   'mcstandarddebit', 'visastandarddebit', 'visapremiumdebit', 'visasuperpremiumdebit', 'mcsuperpremiumdebit', 'mcdebit', 'mcpremiumdebit',
   'mcstandardprepaid', 'visastandardprepaid', 'mcprepaid', 'visaprepaid', 'maestro', 'maestrouk',
+  // older debit names Adyen may still report
+  'visadebit', 'visaelectron', 'electron', 'vpay', 'mcelectronic',
 ]);
 export const BUSINESS_VARIANTS = Object.freeze([
   // seen on live payments in the 30 days to 15 Oct 2026
@@ -97,9 +99,18 @@ export const BUSINESS_VARIANTS = Object.freeze([
   // Adyen's UK names not yet seen
   'mccorporatecredit', 'mccorporatedebit', 'mcpurchasingcredit', 'mcpurchasingdebit', 'visapurchasingcredit', 'visapurchasingdebit',
   'visabusinesscredit', 'visabusinessdebit', 'mcbusinesscredit', 'mcbusinessdebit', 'mcfleetdebit', 'visafleetcredit', 'visafleetdebit',
+  // the bare names with no credit or debit word, which terminals have sent (webhook field notes, 19 Aug 2026)
+  'visacorporate', 'visabusiness', 'visacommercial', 'visapurchasing', 'visafleet', 'mccorporate', 'mcbusiness', 'mccommercial', 'mcpurchasing', 'mcfleet',
 ]);
-export const VARIANT_TABLE = Object.freeze({ debit: DEBIT_VARIANTS, business: BUSINESS_VARIANTS });
-export const DEBIT_VARIANT_RE = /(debit|prepaid|maestro)/;
+// Every Amex name Adyen reports. Whether a rule naming 'amex' also catches
+// 'amexcorporate' at Adyen is not documented, so each name gets its own rule
+// and the matcher compares the variant alone: equal whichever way Adyen reads it.
+export const AMEX_VARIANTS = Object.freeze([
+  'amex', 'amexcorporate', 'amexcommercial', 'amexconsumer', 'amexdebit', 'amexprepaid', 'amexprepaidreloadable', 'amexsmallbusiness', 'amexbusiness',
+  'amex_applepay', 'amex_googlepay',
+]);
+export const VARIANT_TABLE = Object.freeze({ debit: DEBIT_VARIANTS, business: BUSINESS_VARIANTS, amex: AMEX_VARIANTS });
+export const DEBIT_VARIANT_RE = /(debit|prepaid|maestro|electron|vpay)/;
 export const BUSINESS_VARIANT_RE = /(business|corporate|commercial|purchasing|fleet)/;
 
 export const INTERACTIONS = Object.freeze(['Ecommerce', 'ContAuth', 'Moto', 'POS']);
@@ -165,10 +176,11 @@ export function preservedLogicFrom(profile) {
   for (const [k, v] of Object.entries(logic)) {
     if (DELIBERATE_LOGIC_KEYS.includes(k)) continue;
     if (/Id$/.test(k)) continue;   // splitLogicId and friends are Adyen's, never sent back
+    if (v === null || v === undefined || v === '' || (isObj(v) && !Object.keys(v).length)) continue;   // an empty key is not carried into every rule
     out[k] = v;
     if (k in DEFAULT_SPLIT_LOGIC) {
       if (lower(v) !== lower(DEFAULT_SPLIT_LOGIC[k])) warnings.push(`${k} on Adyen is ${str(v)}, ServOS has always written ${DEFAULT_SPLIT_LOGIC[k]}.`);
-    } else if (v !== null && v !== undefined && v !== '' && !(isObj(v) && !Object.keys(v).length)) {
+    } else {
       warnings.push(`${k} is set on Adyen (${typeof v === 'string' ? v : 'a block'}) and ServOS never set it.`);
     }
   }
@@ -205,8 +217,9 @@ export function rulesFromRateCard(tiers, { currency = 'GBP', variants = VARIANT_
   const rules = [];
   const names = [];
   const push = (tier, pm, si, price) => { rules.push(rule(cur, pm, si, logic(price))); names.push(tier); };
-  // A. Amex, every channel. Payment method outranks interaction and funding.
-  push('amex', 'amex', 'ANY', tierOf(t, 'amex'));
+  // A. Amex, every channel, one rule per Amex name (the bare 'amex' first).
+  // Payment method outranks interaction and funding.
+  for (const v of (isObj(variants) && Array.isArray(variants.amex) ? variants.amex : AMEX_VARIANTS)) push('amex', v, 'ANY', tierOf(t, 'amex'));
   // B. Business cards, every channel, at the Amex and business price.
   for (const v of (isObj(variants) && Array.isArray(variants.business) ? variants.business : BUSINESS_VARIANTS)) push('amex', v, 'ANY', tierOf(t, 'amex'));
   // C. In person debit, only where the debit price differs from credit.
@@ -288,7 +301,8 @@ export function paymentFacts(item, channel) {
 // ── WHICH RULE ADYEN PICKS ───────────────────────────────────────────────────
 // Keep the rules whose currency equals the fact and whose every other
 // condition is ANY or equals the fact (a null or unknown fact matches ANY
-// only; a payment method condition matches the variant or the bare method).
+// only; a payment method condition matches the VARIANT alone, which is the
+// bare method when Adyen sent no variant: paymentFacts sets it so).
 // Among them the most specific wins, compared in Adyen's order: payment
 // method, card usage type, card region, funding source, shopper interaction.
 // Null when nothing matches: an unrated row is visible, a guessed one is not.
@@ -297,7 +311,7 @@ export function matchAdyenRule(facts, rules) {
   const list = (Array.isArray(rules) ? rules : []).filter(isObj);
   const cur = str(f.currency).toUpperCase();
   const condOk = (cond, fact) => any(cond) || (!!str(fact) && lower(cond) === lower(fact));
-  const pmOk = (cond) => any(cond) || (!!str(f.variant) && lower(cond) === lower(f.variant)) || (!!str(f.method) && lower(cond) === lower(f.method));
+  const pmOk = (cond) => any(cond) || (!!str(f.variant) && lower(cond) === lower(f.variant));
   const candidates = list.filter((r) => str(r.currency).toUpperCase() === cur && cur
     && pmOk(r.paymentMethod) && condOk(r.cardUsageType, f.cardUsageType) && condOk(r.cardRegion, f.cardRegion)
     && condOk(r.fundingSource, f.fundingSource) && condOk(r.shopperInteraction, f.shopperInteraction));
@@ -380,23 +394,25 @@ export function stampForPayment(payment, venue, today) {
 // hold) restamps the fee at the SAME rule the row was stamped with: the legacy
 // charge, the rules entry the row names (else the one governing the capture
 // instant, since an updated profile applies to a later capture), or today's
-// answer for a venue never cut over.
+// answer for a venue never cut over. A row marked legacy whose capture lands
+// at or after the cutover follows the new profile too, as Adyen does.
 //   existing  { fee_rule, raw: { authorisation }, channel, fee_refund_policy }
+const capturedUnderRules = (v, atIso) => !!v && Number.isFinite(Date.parse(String(v.rates_live_at ?? ''))) && Date.parse(String(atIso ?? '')) >= Date.parse(String(v.rates_live_at));
 export function restampForAmount(existing, amountMinor, atIso, venue, todayCommission) {
   const e = isObj(existing) ? existing : {};
   const v = isObj(venue) ? venue : null;
   const base = { commission_minor: todayCommission ?? null, fee_rule: e.fee_rule ?? null, fee_refund_policy: e.fee_refund_policy ?? null };
   const feeRule = str(e.fee_rule);
-  if (feeRule === LEGACY_FEE_RULE) {
+  const list = Array.isArray(v?.adyen_rules) ? v.adyen_rules : [];
+  if (feeRule === LEGACY_FEE_RULE && !(capturedUnderRules(v, atIso) && rulesForInstant(list, atIso))) {
     const legacy = legacyCommission(v?.legacy_charge);
     return legacy ? { ...base, commission_minor: feeFor(amountMinor, legacy) } : { ...base, commission_minor: null };
   }
-  const list = Array.isArray(v?.adyen_rules) ? v.adyen_rules : [];
   let entry = null;
   if (feeRule.startsWith(RULES_FEE_RULE_PREFIX)) {
     const id = feeRule.slice(RULES_FEE_RULE_PREFIX.length).split(':')[0];
     entry = list.find((x) => isObj(x) && str(x.profile_id) === id) || rulesForInstant(list, atIso);
-  } else if (v && Number.isFinite(Date.parse(String(v.rates_live_at ?? ''))) && Date.parse(String(atIso ?? '')) >= Date.parse(String(v.rates_live_at))) {
+  } else if (capturedUnderRules(v, atIso)) {
     entry = rulesForInstant(list, atIso);
   }
   if (!entry) return base;
@@ -420,9 +436,10 @@ export function commissionWords(commission, currency) {
   if (fix > 0) parts.push(`${fix}${minor}`);
   return parts.length ? parts.join(' plus ') : 'nothing';
 }
-const SCHEME_WORDS = [['maestro', 'Maestro'], ['amex', 'American Express'], ['visa', 'Visa'], ['mc', 'Mastercard']];
+const SCHEME_WORDS = [['maestro', 'Maestro'], ['amex', 'American Express'], ['visa', 'Visa'], ['mc', 'Mastercard'], ['electron', 'Visa Electron'], ['vpay', 'V Pay']];
 const KIND_WORDS = [['superpremium', 'super premium'], ['premium', 'premium'], ['standard', 'standard'], ['commercial', 'commercial'], ['corporate', 'corporate'],
-  ['business', 'business'], ['purchasing', 'purchasing'], ['fleet', 'fleet'], ['prepaid', 'prepaid'], ['debit', 'debit'], ['credit', 'credit'], ['uk', 'UK']];
+  ['business', 'business'], ['purchasing', 'purchasing'], ['fleet', 'fleet'], ['prepaid', 'prepaid'], ['reloadable', 'reloadable'], ['smallbusiness', 'small business'], ['consumer', 'consumer'],
+  ['electronic', 'electronic'], ['electron', 'Electron'], ['debit', 'debit'], ['credit', 'credit'], ['uk', 'UK']];
 const WALLET_WORDS = [['applepay', 'Apple Pay'], ['googlepay', 'Google Pay']];
 export function variantWords(variant) {
   const v = lower(variant);
@@ -501,12 +518,69 @@ export function ruleDiff(profileNow, nextRules, { currency } = {}) {
   return { removed: words(removed), added: words(added), kept: words(kept), lines, counts: { now: now.length, next: next.length, removed: removed.length, added: added.length, kept: kept.length } };
 }
 
-// The flat charge the store's profile took before the cutover, read from its
-// catch all rule, as legacy_charge is stored. Null when it cannot be read.
+// The flat charge the store's profile took before the cutover, as
+// legacy_charge is stored. ONLY a truly flat profile answers: every rule must
+// carry the same commission and one of them must be the catch all. A tiered
+// profile answers null, because its catch all is NOT what the bank took (the
+// 8 rule profile of 22 Sep said 0.9% on its catch all and the bank took 0.85%
+// on every card), and a guessed legacy charge would restate the history wrong.
 export function legacyChargeFrom(profile) {
   const rules = (Array.isArray(profile?.rules) ? profile.rules : []).filter(isObj);
   const catchAll = rules.find((r) => any(r.paymentMethod) && any(r.shopperInteraction) && any(r.fundingSource)) || null;
   const c = catchAll?.splitLogic?.commission;
   if (!isObj(c)) return null;
+  if (!rules.every((r) => sameCommission(r.splitLogic?.commission, c))) return null;
   return { percent_bp: Math.round(Number(c.variablePercentage) || 0), fixed_minor: Math.round(Number(c.fixedAmount) || 0), refund: 'none' };
+}
+
+// ── WHAT AN AUTHORISATION REPLAY MAY OVERWRITE ───────────────────────────────
+// stampForPayment is recomputed on every AUTHORISATION apply (the ?backfill=1
+// replay). Two answers must never demote a row already stamped under the new
+// scheme: (1) an unmarked answer (fee_rule null: the venue row could not be
+// read, or has no cutover) on a row that carries a fee_rule, which would hand
+// a restated row back to the restatement's where clause; (2) the legacy answer
+// on a hold authorised before the cutover and CAPTURED at or after it, which
+// Adyen charged under the new profile and the CAPTURE path stamped from the
+// rules. In both cases the row keeps what it has.
+//   existing  { fee_rule, fee_refund_policy, commission_minor, rate_category, captured_at }
+export function keepExistingStamp(existing, stamped, venue) {
+  const e = isObj(existing) ? existing : null;
+  const s = isObj(stamped) ? stamped : { rate_category: null, commission_minor: null, fee_rule: null, fee_refund_policy: null };
+  const had = str(e?.fee_rule);
+  if (!had) return s;
+  const keep = { rate_category: e.rate_category ?? s.rate_category ?? null, commission_minor: e.commission_minor ?? null, fee_rule: had, fee_refund_policy: e.fee_refund_policy ?? null };
+  if (s.fee_rule === null || s.fee_rule === undefined) return keep;
+  if (s.fee_rule === LEGACY_FEE_RULE && had.startsWith(RULES_FEE_RULE_PREFIX) && capturedUnderRules(isObj(venue) ? venue : null, e.captured_at)) return keep;
+  return s;
+}
+
+// ── WEBHOOK SETTINGS, ADDED NEVER REPLACED ───────────────────────────────────
+// The Management API takes the additionalSettings object as sent, so a PATCH
+// that carries only the keys being switched on could drop the event code lists
+// and every property already true (Include Subvariant, which the whole variant
+// design rests on). The body sent is the object read seconds earlier with the
+// asked keys set true.
+export function mergedWebhookSettings(additionalSettings, keys) {
+  const before = isObj(additionalSettings) ? additionalSettings : {};
+  const props = isObj(before.properties) ? before.properties : {};
+  const next = { ...props };
+  for (const k of (Array.isArray(keys) ? keys : [])) if (str(k)) next[str(k)] = true;
+  const out = { ...before, properties: next };
+  if (Array.isArray(before.includeEventCodes)) out.includeEventCodes = [...before.includeEventCodes];
+  if (Array.isArray(before.excludeEventCodes)) out.excludeEventCodes = [...before.excludeEventCodes];
+  return out;
+}
+// The property keys that were true before and are false or missing after, and
+// the event code lists that changed: what Peter must restore by hand if any.
+export function lostWebhookSettings(before, after) {
+  const b = isObj(before) ? before : {};
+  const a = isObj(after) ? after : {};
+  const bp = isObj(b.properties) ? b.properties : {};
+  const ap = isObj(a.properties) ? a.properties : {};
+  const lost = Object.keys(bp).filter((k) => bp[k] === true && ap[k] !== true);
+  const sameList = (x, y) => JSON.stringify(Array.isArray(x) ? [...x].sort() : null) === JSON.stringify(Array.isArray(y) ? [...y].sort() : null);
+  const lists = [];
+  if (!sameList(b.includeEventCodes, a.includeEventCodes)) lists.push('includeEventCodes');
+  if (!sameList(b.excludeEventCodes, a.excludeEventCodes)) lists.push('excludeEventCodes');
+  return { lost, lists, ok: !lost.length && !lists.length };
 }

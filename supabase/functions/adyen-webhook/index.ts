@@ -83,7 +83,7 @@ import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.
 // read back from Adyen (merchant_adyen_accounts.adyen_rules) after a venue's
 // cutover, from the flat legacy charge before it, and from today's path for a
 // venue never cut over. src/lib/payments/webhookStamp.test.js is the contract.
-import { stampForPayment, restampForAmount, paymentFacts } from '../_shared/adyenRules.js';
+import { stampForPayment, restampForAmount, keepExistingStamp, paymentFacts } from '../_shared/adyenRules.js';
 // Booking payment gate (10 Sep 2026): the pure covers check and the one
 // promote door shared with booking-widget.
 import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
@@ -400,18 +400,28 @@ async function resolveVenueTiers(locationId: string): Promise<any | null> {
 
 // THE VENUE'S RULES (15 Oct 2026): adyen_rules, rates_live_at and legacy_charge
 // from the venue row, cached like the tiers. The three columns arrive with
-// 20261015_PLATFORM_adyen_rates_cutover.sql; until then (or on any read
-// failure) this answers null and the stamp is today's, unchanged.
+// 20261015_PLATFORM_adyen_rates_cutover.sql; until then this answers null and
+// the stamp is today's, unchanged. Review 15 Oct 2026: a FAILED read is never
+// cached (the next event tries again, so a transient outage cannot stamp a
+// minute of payments unmarked), and a venue NOT YET cut over is cached for a
+// few seconds only, so the moment Peter presses Write the next payment sees
+// rates_live_at instead of a stale null for up to a minute.
 const rulesCache = new Map<string, { at: number; venue: any }>();
+const RULES_PENDING_TTL_MS = 5_000;
 async function resolveVenueRules(locationId: string): Promise<any | null> {
   try {
     const hit = rulesCache.get(locationId);
-    if (hit && Date.now() - hit.at < TIER_TTL_MS) return hit.venue;
+    if (hit) {
+      const ttl = hit.venue?.rates_live_at ? TIER_TTL_MS : RULES_PENDING_TTL_MS;
+      if (Date.now() - hit.at < ttl) return hit.venue;
+    }
     const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
       .select('adyen_rules, rates_live_at, legacy_charge').eq('location_id', locationId).maybeSingle();
     if (error) {
-      if (!isMissingColumn(error.message)) console.error('[adyen-webhook] venue rules read failed:', error.message);
-      rulesCache.set(locationId, { at: Date.now(), venue: null });
+      // A missing column is a steady state until the DDL runs: cached briefly.
+      // Any other failure is not cached at all.
+      if (isMissingColumn(error.message)) rulesCache.set(locationId, { at: Date.now(), venue: null });
+      else console.error('[adyen-webhook] venue rules read failed:', error.message);
       return null;
     }
     const venue = data ?? null;
@@ -714,13 +724,15 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
     // capture_required (20260826) decides whether a smaller CAPTURE shrinks a
     // hold. Retried without it so the ledger read never breaks on its account.
     // fee_rule and fee_refund_policy (20261015) ride on the first try: the CAPTURE
-    // restamp needs to know which rule stamped the row.
+    // restamp needs to know which rule stamped the row, and the AUTHORISATION
+    // replay must not demote a stamp (keepExistingStamp reads commission_minor
+    // and captured_at too).
     let { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
-      .select(`${LEDGER_READ_COLS}, capture_required, fee_rule, fee_refund_policy`)
+      .select(`${LEDGER_READ_COLS}, capture_required, commission_minor, captured_at, fee_rule, fee_refund_policy`)
       .eq('psp_reference', rowKey).maybeSingle();
     if (readErr && isMissingColumn(readErr.message)) {
       ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
-        .select(`${LEDGER_READ_COLS}, capture_required`).eq('psp_reference', rowKey).maybeSingle());
+        .select(`${LEDGER_READ_COLS}, capture_required, commission_minor, captured_at`).eq('psp_reference', rowKey).maybeSingle());
     }
     if (readErr && isMissingColumn(readErr.message)) {
       ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
@@ -894,11 +906,15 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
       // never cut over, today's answer above, unchanged. fee_rule says which.
       if (location_id) {
         const venueRules = await resolveVenueRules(location_id);
-        const stamped = stampForPayment(
+        const engine = stampForPayment(
           { amountMinor: effAmount, authorisedAt: (row.authorised_at as string | undefined) ?? null, ok: okEvent, facts: paymentFacts(item, channel as string | null) },
           venueRules,
           { rate_category: rateCategory, commission_minor: row.commission_minor },
         );
+        // Review 15 Oct 2026: a replay never demotes a row already stamped under
+        // the new scheme (an unmarked answer when the venue row could not be
+        // read, or the legacy answer on a hold captured under the new profile).
+        const stamped = keepExistingStamp(existing as Record<string, unknown> | null, engine, venueRules);
         row.rate_category = stamped.rate_category;
         row.commission_minor = stamped.commission_minor;
         row.fee_rule = stamped.fee_rule;

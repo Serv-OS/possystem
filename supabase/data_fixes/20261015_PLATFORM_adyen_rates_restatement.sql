@@ -31,33 +31,50 @@ from public.merchant_adyen_accounts m
 where m.environment = 'live'
 order by m.rates_live_at nulls last, m.location_id;
 
--- ── PART 1, THE LEGACY CHARGE PER PROFILE ────────────────────────────────────────────────────
--- set_split fills legacy_charge itself from the previous profile's catch all rule when it writes
--- the new rates, so for most venues this is already set and the statement touches nothing.
--- Fill in the profile id shown by part 0 for the five UK stores (they share one). The figures are
--- what the Read what Adyen charges panel showed for that profile BEFORE the write: 85 basis
--- points, no fixed fee, nothing back on refunds.
+-- ── PART 1, THE LEGACY CHARGE PER PROFILE (Peter's figure, from the bank) ────────────────────
+-- set_split fills legacy_charge itself ONLY when the previous profile was truly flat (one price on
+-- every rule). The profile the five UK stores carried was tiered (its catch all said 0.9%) while
+-- the bank took 0.85% on every card, so set_split leaves legacy_charge EMPTY for them and the
+-- figure comes from here, from the bank. This statement is an explicit overwrite: it does not
+-- care what legacy_charge holds now, so a wrong fill is always corrected by running it again.
+-- Fill in the profile id shown by part 0 as split_profile_id BEFORE the write for the five UK
+-- stores (they share one; after the write the row names the NEW profile, so read it from the
+-- Read what Adyen charges panel or the set_split audit row, previousProfileId). The figures are
+-- what the bank took: 85 basis points, no fixed fee, nothing back on refunds.
 -- update public.merchant_adyen_accounts
 --    set legacy_charge = '{"percent_bp": 85, "fixed_minor": 0, "refund": "none"}'::jsonb,
 --        updated_at = now()
 --  where environment = 'live'
---    and legacy_charge is null
 --    and rates_live_at is not null
---    and split_profile_id = '<PROFILE ID FROM PART 0>';
+--    and location_id in (
+--      select location_id from public.merchant_adyen_accounts
+--       where environment = 'live' and (split_profile_id = '<PROFILE ID FROM PART 0>'
+--          or adyen_rules::text like '%<PROFILE ID FROM PART 0>%')
+--    );
+-- Or, by venue, when the profile id is not to hand (one statement per venue, location id from part 0):
+-- update public.merchant_adyen_accounts
+--    set legacy_charge = '{"percent_bp": 85, "fixed_minor": 0, "refund": "none"}'::jsonb,
+--        updated_at = now()
+--  where environment = 'live'
+--    and rates_live_at is not null
+--    and location_id = '<LOCATION ID FROM PART 0>';
 --
 -- The demo venue's old profile took 80 basis points plus 5 pence on its catch all. Set it the
--- same way with its own profile id, or leave it out (15 live payments).
+-- same way with its own location id, or leave it out (15 live payments).
 -- update public.merchant_adyen_accounts
 --    set legacy_charge = '{"percent_bp": 80, "fixed_minor": 5, "refund": "none"}'::jsonb,
 --        updated_at = now()
 --  where environment = 'live'
---    and legacy_charge is null
 --    and rates_live_at is not null
---    and split_profile_id = '<DEMO PROFILE ID FROM PART 0>';
+--    and location_id = '<DEMO LOCATION ID FROM PART 0>';
+--
+-- Run part 0 again afterwards: legacy_charge must read 85 / 0 on every UK venue before part 3.
 
 -- ── PART 2, PREVIEW (READ ONLY): what part 3 would do, per venue ─────────────────────────────
--- Rows, the fees as stamped now, the fees as Adyen took them, and the difference. Run it, read
--- it, and only then run part 3. A venue with no rates_live_at or no legacy_charge is not here.
+-- Rows, the charge about to be applied (percent_bp and fixed_minor, which MUST read 85 and 0 for
+-- the UK venues), the fees as stamped now, the fees as Adyen took them, and the difference. Run
+-- it, read it, and only then run part 3. A venue with no rates_live_at or no legacy_charge is
+-- not here.
 with venue as (
   select location_id, rates_live_at,
          (legacy_charge->>'percent_bp')::numeric as bp,
@@ -67,6 +84,8 @@ with venue as (
 )
 select
   v.location_id,
+  v.bp as percent_bp,
+  v.fixed as fixed_minor,
   count(*) as rows_to_restate,
   sum(coalesce(p.commission_minor, 0)) as fees_now_minor,
   sum(case when p.success then floor(p.amount_minor * v.bp / 10000 + 0.5) + v.fixed else 0 end) as fees_adyen_took_minor,
@@ -74,7 +93,7 @@ select
 from public.adyen_payments p
 join venue v on v.location_id = p.location_id
 where p.live = true and p.authorised_at < v.rates_live_at and p.fee_rule is null
-group by v.location_id
+group by v.location_id, v.bp, v.fixed
 order by v.location_id;
 
 -- ── PART 3, THE RESTATEMENT (WRITES; run once part 2 reads right) ────────────────────────────
@@ -110,26 +129,48 @@ update public.adyen_payments p
 -- less the restated fees on the matched payments, which is what the bank should have received.
 -- Expect a few pence of rounding per batch, never pounds: per payment half up at 85 basis points
 -- came to 12 pence under 0.85% of the batch gross on the batch checked on 15 Oct 2026, and only
--- the batch gross times 0.85% landed on the bank figure exactly. Adyen's own rounding is an open
--- question for Adyen support.
+-- the batch gross times 0.85% landed on the bank figure exactly. So two more columns say, per
+-- batch, what the fee comes to at the batch rate (settled gross times the venue's legacy basis
+-- points) and how far the per payment sum is from it (rounding_residual_minor). A residual of a
+-- few pence is rounding; pounds is a wrong row. Adyen's own rounding is an open question for
+-- Adyen support; the live balance platform webhook (adyen-bp-webhook) is the way to replace the
+-- formula with Adyen's own per payment figure.
 -- Fill in the venue's location id (part 0) and, if wanted, a batch reference.
--- with lines as (
+-- with venue as (
+--   select location_id,
+--          (legacy_charge->>'percent_bp')::numeric as bp,
+--          coalesce((legacy_charge->>'fixed_minor')::int, 0) as fixed
+--     from public.merchant_adyen_accounts
+--    where location_id = '<LOCATION ID>' and environment = 'live'
+-- ), lines as (
 --   select l.payout_id, l.line_type, l.gross_minor, l.psp_reference
 --     from public.adyen_payout_lines l
 --     join public.adyen_payouts po on po.id = l.payout_id
 --    where po.location_id = '<LOCATION ID>' or l.location_id = '<LOCATION ID>'
 -- ), fees as (
 --   select psp_reference, commission_minor, fee_rule from public.adyen_payments where location_id = '<LOCATION ID>'
+-- ), batch as (
+--   select
+--     li.payout_id,
+--     sum(case when li.line_type in ('Settled', 'SettledExternally') then li.gross_minor else 0 end) as settled_minor,
+--     sum(case when li.line_type in ('Refunded', 'RefundedExternally') then li.gross_minor else 0 end) as refunded_minor,
+--     sum(case when li.line_type in ('Settled', 'SettledExternally') then coalesce(f.commission_minor, 0) else 0 end) as fees_minor,
+--     sum(case when li.line_type in ('Settled', 'SettledExternally') then li.gross_minor - coalesce(f.commission_minor, 0)
+--              when li.line_type in ('Refunded', 'RefundedExternally') then li.gross_minor else 0 end) as venue_receives_minor,
+--     count(*) filter (where li.line_type in ('Settled', 'SettledExternally') and f.commission_minor is null) as settled_lines_with_no_fee,
+--     count(*) filter (where li.line_type in ('Settled', 'SettledExternally') and f.fee_rule is null) as settled_lines_not_marked,
+--     count(*) filter (where li.line_type in ('Settled', 'SettledExternally') and f.fee_rule like 'adyen_rules:%') as settled_lines_from_rules
+--   from lines li
+--   left join fees f on f.psp_reference = li.psp_reference
+--   group by li.payout_id
 -- )
 -- select
---   li.payout_id,
---   sum(case when li.line_type in ('Settled', 'SettledExternally') then li.gross_minor else 0 end) as settled_minor,
---   sum(case when li.line_type in ('Refunded', 'RefundedExternally') then li.gross_minor else 0 end) as refunded_minor,
---   sum(case when li.line_type in ('Settled', 'SettledExternally') then coalesce(f.commission_minor, 0) else 0 end) as fees_minor,
---   sum(case when li.line_type in ('Settled', 'SettledExternally') then li.gross_minor - coalesce(f.commission_minor, 0)
---            when li.line_type in ('Refunded', 'RefundedExternally') then li.gross_minor else 0 end) as venue_receives_minor,
---   count(*) filter (where li.line_type in ('Settled', 'SettledExternally') and f.commission_minor is null) as settled_lines_with_no_fee
--- from lines li
--- left join fees f on f.psp_reference = li.psp_reference
--- group by li.payout_id
--- order by li.payout_id desc;
+--   b.*,
+--   round(b.settled_minor * v.bp / 10000.0) as fees_at_batch_rate_minor,
+--   round(b.settled_minor * v.bp / 10000.0) - b.fees_minor as rounding_residual_minor
+-- from batch b
+-- cross join venue v
+-- order by b.payout_id desc;
+-- fees_at_batch_rate_minor applies the legacy basis points only (the UK legacy charge has no fixed fee);
+-- for a batch under the NEW rules (settled_lines_from_rules > 0) the batch rate column does not apply
+-- and venue_receives_minor is compared with the bank directly.
