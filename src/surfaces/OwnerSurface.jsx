@@ -39,7 +39,7 @@ import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
 import { createSecondStepClient } from '../lib/secondStep/client';
-import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError } from '../lib/secondStep/passkeyRules';
+import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError, noPasskeyNote } from '../lib/secondStep/passkeyRules';
 import { withTimeout, TimeoutError } from '../lib/withTimeout';
 import {
   PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod, shownPeriod,
@@ -194,8 +194,8 @@ function Login({ theme, onToggleTheme }) {
       try {
         const can = await stepClient.canUsePasskey();
         const plan = signInPlan({ hostname: window.location.hostname, supported: !!can.usable, allowLocalhost: !!import.meta.env?.DEV });
-        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary });
-      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password' }); }
+        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary, reason: can.reason || '' });
+      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password', reason: 'browser' }); }
     })();
     return () => { alive = false; };
   }, [stepClient]);
@@ -222,6 +222,9 @@ function Login({ theme, onToggleTheme }) {
       )}
       {pk.ready && pk.primary === 'wrong_host' && (
         <div style={{ color: 'var(--amber)', fontSize: 12.5, lineHeight: 1.5, marginTop: 10 }}>{wrongHostMessage(window.location.hostname)}</div>
+      )}
+      {pk.ready && pk.primary === 'password' && noPasskeyNote(pk.reason, navigator.userAgent) && (
+        <div style={{ color: 'var(--t3)', fontSize: 12.5, lineHeight: 1.5, marginTop: 10 }}>{noPasskeyNote(pk.reason, navigator.userAgent)}</div>
       )}
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 10 }}>
         <input style={inp} type="email" inputMode="email" autoComplete="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />

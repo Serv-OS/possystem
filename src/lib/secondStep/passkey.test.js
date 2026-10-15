@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   PASSKEY_ORIGINS, PASSKEY_RP_ID, passkeyHostAllowed, wrongHostMessage, signInPlan, secondStepPlan,
-  suggestPasskeyName, passkeyPrompt, canRemovePasskey, explainPasskeyError,
+  suggestPasskeyName, passkeyPrompt, canRemovePasskey, explainPasskeyError, noPasskeyNote,
 } from './passkeyRules.js';
 import {
   fromBase64Url, toBase64Url, creationOptionsFromJson, requestOptionsFromJson, credentialToJson,
@@ -464,4 +464,16 @@ test('the surfaces that re-close the gate know a passkey session is aal1 and fin
   // And after registering one, the session is upgraded so the DATABASE agrees with the screen.
   const gate = read('../../components/secondStep/SecondStepGate.jsx');
   assert.match(gate, /if \(!sessionProvesSecondStep\(await client\.getSession\(\)\)\) await client\.signInWithPasskey\(\);/);
+});
+
+test('a device with no passkey is told why, and what to do (Peter, 15 Oct 2026)', () => {
+  assert.match(noPasskeyNote('device', 'Mozilla/5.0 (iPad)'), /AutoFill Passwords and Passkeys/);
+  assert.match(noPasskeyNote('device', 'Mozilla/5.0 (Macintosh)'), /Settings, General, AutoFill/);
+  assert.match(noPasskeyNote('device', 'Mozilla/5.0 (Linux; Android 14)'), /screen lock, fingerprint or face/);
+  assert.match(noPasskeyNote('browser', 'Mozilla/5.0'), /cannot use passkeys/);
+  assert.match(noPasskeyNote('app', 'RposIOS/1.0.1'), /Update the app/);
+  assert.equal(noPasskeyNote('host', ''), '', 'the wrong host has its own note');
+  assert.equal(noPasskeyNote('ok', ''), '');
+  assert.equal(noPasskeyNote(undefined, ''), '');
+  for (const r of ['device', 'browser', 'app']) assert.doesNotMatch(noPasskeyNote(r, 'Mozilla/5.0 (iPad)'), /[–—]/, 'no long dashes');
 });

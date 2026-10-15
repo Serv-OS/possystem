@@ -122,6 +122,29 @@ export function canRemovePasskey({ passkeys = [], factors = [], id } = {}) {
   };
 }
 
+/**
+ * Why this device offers no passkey, in words that say what to do. (15 Oct 2026: Peter's iPad
+ * showed no passkey button at all because AutoFill Passwords and Passkeys was switched off, and
+ * nothing on the page said so.) `reason` is the one canUsePasskey() gives; 'host' and 'ok' have
+ * their own words elsewhere, so they return ''.
+ */
+export function noPasskeyNote(reason, userAgent) {
+  const ua = String(userAgent || '');
+  const apple = /iPhone|iPad|Macintosh|Mac OS X/i.test(ua);
+  switch (String(reason || '')) {
+    case 'device':
+      return apple
+        ? 'Passkeys are switched off on this device. In Settings, General, AutoFill & Passwords, turn on AutoFill Passwords and Passkeys, then reload this page.'
+        : 'This device has no screen lock, fingerprint or face set up for passkeys. Set one up in its settings, then reload this page.';
+    case 'browser':
+      return 'This browser cannot use passkeys. Open this page in Safari, Chrome or Edge.';
+    case 'app':
+      return 'This version of the app cannot use passkeys yet. Update the app, or sign in with your password and the code we email you.';
+    default:
+      return '';
+  }
+}
+
 /** Plain words for what went wrong in a passkey ceremony. Never the raw browser error. */
 export function explainPasskeyError(err) {
   const name = String(err?.name || '');
