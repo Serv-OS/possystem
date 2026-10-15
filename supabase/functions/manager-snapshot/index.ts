@@ -16,6 +16,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
+// v5.11.64: the pack rule, pack content and net pack price are the Order pad's own (one copy).
+import { pickSupplierProduct, packContent, netPackPrice } from '../_shared/purchasingRules.js';
 
 // A refund counts on the day it was MADE, so older checks that carry one are read too: the same
 // reach as Daily trading (trading-report REFUND_LOOKBACK_DAYS) and the Owner app (8 Oct 2026).
@@ -212,31 +214,55 @@ Deno.serve(async (req) => {
         // v5.11.64: the supplier is the one the Order pad names. default_supplier_id is an optional
         // preference the Back Office editor never writes; the real purchasing link is the supplier
         // pack (supplier_products), preferred first. Reading only the default put every normally
-        // added item under "Unassigned" here while the pad knew its supplier.
-        const [invs, sups, packs] = await Promise.all([
-          pagedRows('stock items', () => sb.from('inventory_items').select('id, name, on_hand, base_unit, default_supplier_id')
+        // added item under "Unassigned" here while the pad knew its supplier. The pack itself
+        // (size, net price, VAT) now travels too, so Raise order can count in packs and show the
+        // money before the PIN; a made-here item (kind MADE) is cooked, not ordered, so it is left
+        // out exactly as the Order pad leaves it out.
+        const [invs, sups, packs, rates] = await Promise.all([
+          pagedRows('stock items', () => sb.from('inventory_items').select('id, name, kind, on_hand, base_unit, default_supplier_id, purchase_tax_rate_id')
             .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
-          pagedRows('suppliers', () => sb.from('suppliers').select('id, name').eq('location_id', loc).order('id')),
-          pagedRows('supplier packs', () => sb.from('supplier_products').select('inventory_item_id, supplier_id, is_preferred, created_at, id')
+          pagedRows('suppliers', () => sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('id')),
+          pagedRows('supplier packs', () => sb.from('supplier_products')
+            .select('id, inventory_item_id, supplier_id, supplier_sku, pack_description, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax, created_at')
             .eq('location_id', loc).in('inventory_item_id', ids).order('is_preferred', { ascending: false }).order('created_at').order('id')),
+          pagedRows('tax rates', () => sb.from('tax_rates').select('id, rate').eq('location_id', loc).order('id')),
         ]);
-        const supName: Record<string, string> = {};
-        for (const s of sups) supName[s.id] = s.name;
-        const packSup: Record<string, string> = {};
-        for (const p of packs) if (p.inventory_item_id && p.supplier_id) packSup[p.inventory_item_id] ??= p.supplier_id;
+        const supBy: Record<string, any> = {};
+        for (const su of sups) supBy[su.id] = su;
+        const rateBy: Record<string, number> = {};
+        for (const r of rates) rateBy[r.id] = Number(r.rate) || 0;
+        // the camelCase pack shape src/lib/stock/data.js spFromRow gives the pad, so the shared rule reads it
+        const packsBy: Record<string, any[]> = {};
+        for (const p of packs) {
+          if (!p.inventory_item_id || !p.supplier_id) continue;
+          (packsBy[p.inventory_item_id] ??= []).push({
+            id: p.id, supplierId: p.supplier_id, supplierSku: p.supplier_sku || null, packDescription: p.pack_description || null,
+            packQty: Number(p.pack_qty) || 1, innerQty: Number(p.inner_qty) || 0, innerUnit: p.inner_unit || 'each',
+            packPrice: Number(p.pack_price) || 0, isPreferred: p.is_preferred === true,
+            purchaseTaxRateId: p.purchase_tax_rate_id || null, priceIncludesTax: p.price_includes_tax === true,
+          });
+        }
         const parBy: Record<string, any> = {};
         for (const p of pars) parBy[p.inventory_item_id] = p;
-        kitchenItems = invs.map((i: any) => {
+        kitchenItems = invs.filter((i: any) => i.kind !== 'MADE').map((i: any) => {
           const p = parBy[i.id] || {};
-          const sid = i.default_supplier_id || packSup[i.id] || null;
+          const sp = pickSupplierProduct({ defaultSupplierId: i.default_supplier_id, supplierProducts: packsBy[i.id] || [] });
+          // preferred pack, then the item's default supplier: the same order as pickSupplierProduct
+          const sid = sp?.supplierId || i.default_supplier_id || null;
+          const rate = sp ? (rateBy[sp.purchaseTaxRateId || i.purchase_tax_rate_id] || 0) : 0;
           return {
             itemId: i.id, name: i.name,
             onHand: Number(i.on_hand) || 0,
             unit: i.base_unit || 'each',
             par: p.par_level != null ? Number(p.par_level) : null,
             reorderPoint: p.reorder_point != null ? Number(p.reorder_point) : null,
-            supplier: sid ? (supName[sid] || null) : null,
+            supplier: sid ? (supBy[sid]?.name || null) : null,
             supplierId: sid,   // po.raise needs the id, not just the display name
+            deliveryDays: sid ? (supBy[sid]?.delivery_days ?? null) : null,
+            pack: sp ? {
+              id: sp.id, description: sp.packDescription, packQty: sp.packQty, innerQty: sp.innerQty, innerUnit: sp.innerUnit,
+              perPack: packContent(sp), packPrice: netPackPrice(sp, rate), vatRate: rate, purchaseTaxRateId: sp.purchaseTaxRateId || i.purchase_tax_rate_id || null,
+            } : null,
             eightySixed: false,
           };
         });
@@ -256,32 +282,74 @@ Deno.serve(async (req) => {
       };
     } catch { ops = { openMaintenance: 0, activeAlerts: 0 }; }
 
-    // ── Kitchen incoming: open POs (SENT/PARTIAL) awaiting goods-in, with any delivery status. Read-only
-    //    summary for the Kitchen tab; the actual goods-in check happens in Ops → Deliveries. Isolated. ──
+    // ── Kitchen incoming: open POs (SENT/PARTIAL) awaiting goods-in, with any delivery record.
+    //    v5.11.64: the WHOLE order travels (every line with pack, quantity, net price and value, the
+    //    goods-in record, the supplier id), so the Kitchen tab can open an order and receive it on the
+    //    phone through manager-approve po.receive. Before this the row carried a line count and a
+    //    date, nothing could be tapped, and the Ops Deliveries screen it pointed to reads
+    //    purchase_orders under RLS, which a paired (anonymous) device is refused. Isolated. ──
     let kitchenDeliveries: any[] = [];
     try {
       const { data: pos } = await sb.from('purchase_orders')
-        .select('id, reference, supplier_id, expected_date, status').eq('location_id', loc)
-        .in('status', ['SENT', 'PARTIAL']).order('expected_date', { ascending: true }).limit(500);
+        .select('id, reference, supplier_id, expected_date, status, ordered_at, subtotal, tax').eq('location_id', loc)
+        .in('status', ['SENT', 'PARTIAL']).order('expected_date', { ascending: true, nullsFirst: false }).limit(500);
       if ((pos ?? []).length) {
         const poIds = (pos ?? []).map((p: any) => p.id);
         const [dels, lines, sups] = await Promise.all([
-          pagedRows('deliveries', () => sb.from('deliveries').select('po_id, status').eq('location_id', loc).in('po_id', poIds).order('id')),
-          pagedRows('order lines', () => sb.from('po_lines').select('po_id').in('po_id', poIds).order('id')),
+          pagedRows('deliveries', () => sb.from('deliveries').select('po_id, status, temperature_c, in_range, checked_by_name, checked_at, created_at')
+            .eq('location_id', loc).in('po_id', poIds).order('created_at', { ascending: false }).order('id')),
+          pagedRows('order lines', () => sb.from('po_lines')
+            .select('id, po_id, inventory_item_id, supplier_product_id, description, qty_packs, pack_qty, inner_qty, inner_unit, unit_price, qty_received, sort_order')
+            .eq('location_id', loc).in('po_id', poIds).order('sort_order').order('id')),
           pagedRows('suppliers', () => sb.from('suppliers').select('id, name').eq('location_id', loc).order('id')),
         ]);
-        const delByPo: Record<string, string> = {};
-        for (const d of dels) if (d.po_id && !delByPo[d.po_id]) delByPo[d.po_id] = d.status;
-        const lineBy: Record<string, number> = {};
-        for (const l of lines) lineBy[l.po_id] = (lineBy[l.po_id] || 0) + 1;
+        // the newest goods-in record per order
+        const delBy: Record<string, any> = {};
+        for (const d of dels) if (d.po_id && !delBy[d.po_id]) delBy[d.po_id] = d;
+        const linesOf: Record<string, any[]> = {};
+        for (const l of lines) (linesOf[l.po_id] ??= []).push(l);
         const supName: Record<string, string> = {};
-        for (const s of sups) supName[s.id] = s.name;
-        kitchenDeliveries = (pos ?? []).map((p: any) => ({
-          id: p.id, reference: p.reference || null,
-          supplier: p.supplier_id ? (supName[p.supplier_id] || null) : null,
-          lines: lineBy[p.id] || 0, expectedDate: p.expected_date || null,
-          status: delByPo[p.id] || 'pending',   // pending | accepted | rejected
-        }));
+        for (const su of sups) supName[su.id] = su.name;
+        // codes for matching a scanned delivery note: the supplier's SKU for the item, and our own
+        const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id).filter(Boolean))] as string[];
+        const skuByItemSup: Record<string, string> = {};
+        const itemMeta: Record<string, { sku: string | null; baseUnit: string | null }> = {};
+        if (itemIds.length) {
+          const [skus, its] = await Promise.all([
+            pagedRows('pack codes', () => sb.from('supplier_products').select('id, inventory_item_id, supplier_id, supplier_sku')
+              .eq('location_id', loc).in('inventory_item_id', itemIds).order('id')),
+            pagedRows('line items', () => sb.from('inventory_items').select('id, sku, base_unit')
+              .eq('location_id', loc).in('id', itemIds).order('id')),
+          ]);
+          for (const k of skus) if (k.supplier_sku && k.supplier_id) skuByItemSup[k.inventory_item_id + ':' + k.supplier_id] ??= k.supplier_sku;
+          for (const it of its) itemMeta[it.id] = { sku: it.sku || null, baseUnit: it.base_unit || null };
+        }
+        kitchenDeliveries = (pos ?? []).map((p: any) => {
+          const d = delBy[p.id] || null;
+          const ls = linesOf[p.id] || [];
+          return {
+            id: p.id, reference: p.reference || null,
+            supplierId: p.supplier_id || null,
+            supplier: p.supplier_id ? (supName[p.supplier_id] || null) : null,
+            lines: ls.length, expectedDate: p.expected_date || null, orderedAt: p.ordered_at || null,
+            status: d?.status || 'pending',   // pending | accepted | rejected
+            value: r2(Number(p.subtotal) || 0), tax: r2(Number(p.tax) || 0),
+            delivery: d ? {
+              status: d.status, temperatureC: d.temperature_c == null ? null : Number(d.temperature_c), inRange: d.in_range ?? null,
+              checkedByName: d.checked_by_name || null, checkedAt: d.checked_at || null,
+            } : null,
+            orderLines: ls.map((l: any) => ({
+              id: l.id, inventoryItemId: l.inventory_item_id || null, supplierProductId: l.supplier_product_id || null,
+              description: l.description || null,
+              qtyPacks: Number(l.qty_packs) || 0, packQty: Number(l.pack_qty) || 1, innerQty: Number(l.inner_qty) || 1, innerUnit: l.inner_unit || 'each',
+              unitPrice: Number(l.unit_price) || 0, qtyReceived: Number(l.qty_received) || 0,
+              lineValue: r2((Number(l.qty_packs) || 0) * (Number(l.unit_price) || 0)),
+              supplierSku: l.inventory_item_id && p.supplier_id ? (skuByItemSup[l.inventory_item_id + ':' + p.supplier_id] || null) : null,
+              itemSku: itemMeta[l.inventory_item_id]?.sku || null,
+              baseUnit: itemMeta[l.inventory_item_id]?.baseUnit || null,
+            })),
+          };
+        });
       }
     } catch { kitchenDeliveries = []; }
 
@@ -329,7 +397,7 @@ Deno.serve(async (req) => {
     } catch { kitchenBatches = []; }
 
     return json({
-      ok: true, location_id: loc, venueName: locRow?.name || '', tz,
+      ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
       money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy },
       kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches },
       ops,

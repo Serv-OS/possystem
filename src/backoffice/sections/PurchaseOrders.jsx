@@ -113,12 +113,11 @@ export default function PurchaseOrders() {
     });
     setBusy(false);
     if (error || res?.error) {
-      if (res?.error === 'supplier_has_no_email') {
-        showToast?.('This supplier has no email on file. Add one in Suppliers, or use Mark sent.', 'error'); return;
-      }
       // v5.11.64: the order is real even when the email is not. Keep it on the books as SENT,
       // exactly as the Order pad does, so it counts as on order and the Resend button appears;
-      // and say what went wrong in plain words, not the SDK's "non-2xx status code".
+      // and say what went wrong in plain words, not the SDK's "non-2xx status code". A supplier
+      // with no email lands here too (po-send answers 422, so res is null and the old
+      // res?.error check could never match); cleanFnError names that case in plain words.
       const reason = await fnErrorText(res, error, 'the email could not be sent');
       await setPOStatus(saved.id, 'SENT', locId);
       await reload(saved.id);

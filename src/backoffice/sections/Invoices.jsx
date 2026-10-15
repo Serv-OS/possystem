@@ -13,26 +13,24 @@ import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
+import { pickSupplierProduct } from '../../lib/stock/costing';
+import { matchScannedLine } from '../../lib/stock/purchasingRules';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 
-const guessMatch = (desc, items) => {
-  const d = (desc || '').toLowerCase();
-  if (!d) return null;
-  let best = null, bestScore = 0;
-  for (const it of items) {
-    const n = it.name.toLowerCase();
-    let score = 0;
-    if (n === d) score = 100;
-    else if (d.includes(n) || n.includes(d)) score = 50 + Math.min(n.length, d.length);
-    else { const words = n.split(/\s+/); score = words.filter(w => w.length > 2 && d.includes(w)).length * 10; }
-    if (score > bestScore) { bestScore = score; best = it; }
-  }
-  return bestScore >= 10 ? best : null;
-};
+// v5.11.64: a read line is matched by the supplier's product code first, then our SKU, then the
+// name (the old scoring, unchanged). The rule lives in purchasingRules.matchScannedLine and is
+// shared with the Manager app's Receive. The supplier SKU comes from the pack of the supplier the
+// header matched (else the item's chosen pack), so a note from Bakehouse matches Bakehouse's codes.
+const candidatesFor = (items, supplierId) => items.filter(it => !it.archivedAt).map(it => {
+  const packs = it.supplierProducts || [];
+  const sp = (supplierId && packs.find(p => p.supplierId === supplierId)) || pickSupplierProduct(it);
+  return { key: it.id, name: it.name, itemSku: it.sku || null, supplierSku: sp?.supplierSku || null, item: it };
+});
+const guessMatch = (line, cands) => matchScannedLine(line, cands).match?.item || null;
 
 export default function Invoices() {
   const showToast = useStore(s => s.showToast);
@@ -89,10 +87,11 @@ export default function Invoices() {
       setScanning(false);
       if (error) { showToast?.(error.message, 'error'); return; }
       const sup = suppliers.find(s => (s.name || '').toLowerCase() === (data.supplier_name || '').toLowerCase());
+      const cands = candidatesFor(items, sup?.id || null);
       setReview({
         header: { supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
         lines: (data.lines || []).map(l => {
-          const m = guessMatch(l.description, items);
+          const m = guessMatch(l, cands);
           return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: m?.purchaseTaxRateId || '', priceIncludesTax: false };
         }),
       });

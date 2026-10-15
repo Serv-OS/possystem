@@ -4,8 +4,11 @@
 // Reads from the existing stock system (inventory_items + par_levels + eighty_six) and the new
 // prep_schedule table; this file only decides what's below par + each batch's status.
 //
-// stockItem: { itemId, name, onHand, par, reorderPoint?, supplier, eightySixed }
+// stockItem: { itemId, name, onHand, unit, par, reorderPoint?, supplier, supplierId, eightySixed, pack? }
+//   pack (v5.11.64, from manager-snapshot): { id, description, packQty, innerQty, innerUnit, perPack, packPrice, vatRate }
 // batch:     { id, name, dueAtMs, completedAtMs|null, plannedQty, actualQty?, assignee }
+
+import { packsForBase } from '../stock/purchasingRules.js';
 
 /** Items needing a reorder: 86'd, or on-hand below par. Enriched + sorted (86 first, then biggest gap). */
 export function belowPar(items) {
@@ -19,8 +22,10 @@ export function belowPar(items) {
     .sort((a, b) => ((b.eightySixed ? 1 : 0) - (a.eightySixed ? 1 : 0)) || (b.shortfall - a.shortfall));
 }
 
-// Units counted in wholes: a shortfall of 2.4 patties is 3 patties to order.
-const WHOLE_UNITS = new Set(['', 'each', 'ea', 'unit', 'units', 'pack', 'packs', 'portion', 'portions', 'bottle', 'bottles', 'can', 'cans', 'keg', 'kegs', 'case', 'cases', 'tray', 'trays', 'bag', 'bags', 'box', 'boxes']);
+// Units counted in wholes: a shortfall of 2.4 patties is 3 patties to order. An UNKNOWN unit is
+// not in this set on purpose: a phone talking to a snapshot that sends no unit (before the
+// manager-snapshot deploy) must print 70.45, not round 70.448 litres UP to 71.
+const WHOLE_UNITS = new Set(['each', 'ea', 'unit', 'units', 'pack', 'packs', 'portion', 'portions', 'bottle', 'bottles', 'can', 'cans', 'keg', 'kegs', 'case', 'cases', 'tray', 'trays', 'bag', 'bags', 'box', 'boxes']);
 const isWholeUnit = (unit) => WHOLE_UNITS.has(String(unit || '').trim().toLowerCase());
 
 /**
@@ -39,6 +44,26 @@ export function qtyText(n, unit) {
   const v = roundQty(n, unit);
   const u = String(unit || '').trim();
   return u ? `${v} ${u}` : String(v);
+}
+
+/**
+ * How many supplier packs the Raise order sheet starts with for a below par item: the shortfall
+ * in base units turned into whole packs (never fewer than one). v5.11.64: the sheet used to start
+ * at the shortfall itself, 32 eggs, and the server wrote that as 32 PACKS of 1 x 1 at a price of 0.
+ * An item with no pack answers 0: it cannot be ordered from the phone and the sheet says so.
+ */
+export function orderPacksFor(item) {
+  if (!item?.pack) return 0;
+  return packsForBase(Number(item.shortfall) || 0, item.pack);
+}
+
+/** The order value (ex VAT) of a set of sheet lines: packs x net pack price. */
+export function orderValue(lines, packsById) {
+  return (lines || []).reduce((s, i) => {
+    const n = Number(packsById?.[i.itemId]) || 0;
+    const price = Number(i.pack?.packPrice) || 0;
+    return s + n * price;
+  }, 0);
 }
 
 /** Group below-par items by supplier (for raising one PO per supplier). */

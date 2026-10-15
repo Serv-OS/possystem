@@ -205,10 +205,11 @@ export default function OrderPad() {
         // v5.5.939: keep the order on the books either way, but STOP claiming "no email
         // on file" for every failure — that wording hid a real send outage. Carry the
         // actual reason into the toast in plain words; Orders has a Resend button for the retry.
-        const reason = res?.error === 'supplier_has_no_email'
-          ? 'this supplier has no email on file'
-          : await fnErrorText(res, sendErr, 'the email could not be sent');
-        failed.push({ supplier: supName(supplierIds[i]), reason });
+        // v5.11.64: every non-2xx answer arrives with data null (the SDK throws before parsing),
+        // so the body is read in fnErrorText and cleanFnError puts the two known answers
+        // (no email on file, address refused by the mail service) into plain words.
+        const reason = await fnErrorText(res, sendErr, 'the email could not be sent');
+        failed.push({ supplier: supName(supplierIds[i]), reason, email: supById[supplierIds[i]]?.email || null });
         await setPOStatus(poId, 'SENT', locId);
       }
     }

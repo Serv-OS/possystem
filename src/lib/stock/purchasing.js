@@ -12,7 +12,7 @@ import { convert } from './conversion.js';
 import { movingAverageCost } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
 import { purchaseNet } from '../tax.js';
-import { cleanFnError } from './purchasingRules.js';
+import { cleanFnError, poTotals } from './purchasingRules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -116,13 +116,9 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
   // line_tax = net line × rate; header tax = Σ line_tax; total payable = subtotal + tax.
   const ratesById = await fetchTaxRateMap(locationId);
   const keepLines = (lines || []).filter(l => l.inventoryItemId || l.description);
-  const lineTaxes = keepLines.map((l) => {
-    const net = (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0);
-    const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
-    return Math.round(net * rate * 100) / 100;
-  });
-  const subtotal = keepLines.reduce((s, l) => s + (Number(l.qtyPacks) || 0) * (Number(l.unitPrice) || 0), 0);
-  const tax = Math.round(lineTaxes.reduce((s, t) => s + t, 0) * 100) / 100;
+  // v5.11.64: the maths lives in purchasingRules.poTotals so the Manager app's server (which
+  // writes the same two columns) and this file can never drift apart.
+  const { lineTaxes, subtotal, tax } = poTotals(keepLines, ratesById);
   const row = {
     ...(po.id ? { id: po.id } : {}),
     location_id: locationId, supplier_id: po.supplierId || null, reference: po.reference || null,
