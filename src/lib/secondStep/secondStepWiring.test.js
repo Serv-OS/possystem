@@ -176,6 +176,11 @@ test('the app: every password login surface waits for the second step before loa
   const owner = read('src/surfaces/OwnerSurface.jsx');
   assert.match(owner, /if \(!session \|\| !isRealLogin\(session\)\)/, 'an anonymous session is not an owner');
   assert.match(owner, /if \(!secondStepOk\) \{/);
+  // 15 Oct 2026, Peter on his iPad: "there is no button that mentions passkey". The Owner sign in
+  // offers the passkey the same way Back Office does, through the same plan and client.
+  assert.match(owner, /signInPlan\(\{ hostname: window\.location\.hostname, supported: !!can\.usable/, 'the Owner sign in asks the device what it can do');
+  assert.match(owner, /await stepClient\.signInWithPasskey\(\);/, 'and signs in with the passkey');
+  assert.match(owner, /Sign in with a passkey/, 'with the same words as Back Office');
   const importer = read('src/admin/sections/AdminCustomerImport.jsx');
   assert.doesNotMatch(importer, /localStorage\.getItem\('rpos-auth'\)/);
   const sm = read('src/backoffice/sections/StaffManager.jsx');

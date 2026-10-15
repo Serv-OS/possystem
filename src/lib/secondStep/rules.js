@@ -28,8 +28,9 @@ export const WEBAUTHN_RP_ID = 'serv-os.app';
 export const WEBAUTHN_HOSTS = ['app.serv-os.app', 'dev.serv-os.app', 'stage.serv-os.app'];
 
 /**
- * Our own apps wrap the web app in a WebView. Face ID there needs native changes that are not
- * built yet (iOS Associated Domains, Android androidx.webkit): until then they use the code.
+ * Our own apps wrap the web app in a WebView. Face ID there needs native changes (iOS Associated
+ * Domains, Android androidx.webkit): an app build without them uses the code. A build WITH them
+ * says so with a flag on the shell marker (shellSupportsPasskeys below).
  *   RposIOS/        the eight iOS apps (ios/ServOSPOS/WebView.swift)
  *   RposAndroid/    the eight Android webshell apps (android/webshell ShellActivity.java)
  *   RestaurantOS/   the Sunmi till app and the old iOS wrapper
@@ -40,6 +41,23 @@ const IN_APP_UA = /RposIOS\/|RposAndroid\/|RestaurantOS\/|RPOS-iOS\/|ServOS-MPOS
 
 export function isInAppShell(userAgent) {
   return IN_APP_UA.test(String(userAgent || ''));
+}
+
+/**
+ * Does the app shell around this page say it can do passkeys? (15 Oct 2026.) The iOS shell sets
+ * window.RposIOS.passkeys = true once the app carries the Associated Domains entitlement
+ * (webcredentials:serv-os.app) and serv-os.app serves its apple-app-site-association file; the
+ * Android shell will set window.RposAndroid.passkeys the same way. Only the literal true counts.
+ * No window, no marker, or an older app build that sets no flag = false, so every app build out
+ * there today keeps asking for the code exactly as before.
+ */
+export function shellSupportsPasskeys(win) {
+  try {
+    if (!win) return false;
+    return win.RposIOS?.passkeys === true || win.RposAndroid?.passkeys === true;
+  } catch {
+    return false;
+  }
 }
 
 /** The claims inside a JWT, without checking the signature (the server checks it). */
@@ -169,14 +187,19 @@ export function faceIdLabel(userAgent) {
 /**
  * Can this page offer Face ID or fingerprint?
  *   reason 'host'    this web address is not one Face ID is set up for (use the code)
- *   reason 'app'     inside our own app (native changes still to come; use the code)
+ *   reason 'app'     inside our own app, and the app build does not say it can do passkeys
+ *                    (shellPasskeys false; use the code)
  *   reason 'browser' this browser has no Face ID support
  *   reason 'device'  this device has no Face ID, Touch ID, Windows Hello or fingerprint set up
+ * shellPasskeys is shellSupportsPasskeys(window): when the app shell declares passkeys the shell
+ * no longer blocks and the browser and device checks decide, as in Safari.
  */
-export function faceIdSupport({ hostname, userAgent, hasWebAuthn, platformAuthenticator, allowLocalhost = false } = {}) {
+export function faceIdSupport({
+  hostname, userAgent, hasWebAuthn, platformAuthenticator, allowLocalhost = false, shellPasskeys = false,
+} = {}) {
   const label = faceIdLabel(userAgent);
   if (!rpIdFor(hostname, { allowLocalhost })) return { usable: false, reason: 'host', label };
-  if (isInAppShell(userAgent)) return { usable: false, reason: 'app', label };
+  if (isInAppShell(userAgent) && shellPasskeys !== true) return { usable: false, reason: 'app', label };
   if (!hasWebAuthn) return { usable: false, reason: 'browser', label };
   if (!platformAuthenticator) return { usable: false, reason: 'device', label };
   return { usable: true, reason: 'ok', label };

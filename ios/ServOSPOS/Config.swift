@@ -20,6 +20,12 @@ import Foundation
 ///                                          default false; a target setting true
 ///                                          must ALSO declare
 ///                                          NSLocalNetworkUsageDescription)
+///   RPOSAllowsPasskeys (Bool, optional)  - tell the web app Face ID passkeys
+///                                          work in this app
+///                                          (window.RposIOS.passkeys; default
+///                                          false; a target setting true must
+///                                          ALSO carry the Associated Domains
+///                                          entitlement webcredentials:serv-os.app)
 ///
 /// Shared, non-app-specific configuration stays as constants below.
 enum Config {
@@ -65,6 +71,17 @@ enum Config {
     /// NSLocalNetworkUsageDescription or iOS blocks the connection.
     static let allowsPrinting: Bool =
         (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsPrinting") as? Bool) ?? false
+
+    /// Whether this app tells the web app that passkeys (Face ID / Touch ID at
+    /// Back Office sign in) work inside it. POS and Owner: true (15 Oct 2026,
+    /// POS build 8 and Owner build 6). WKWebView offers a passkey for
+    /// serv-os.app only when the app carries the Associated Domains entitlement
+    /// (webcredentials:serv-os.app) and the site serves its
+    /// apple-app-site-association file, so a target setting true MUST also carry
+    /// that entitlement in project.yml. Every other target: false, and the web
+    /// app keeps the emailed code there. Missing key = false, the safe default.
+    static let allowsPasskeys: Bool =
+        (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsPasskeys") as? Bool) ?? false
 
     /// The app's user-facing name (used by native UI like ReconnectingView).
     static var displayName: String {

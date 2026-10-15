@@ -33,10 +33,19 @@ struct POSWebView: UIViewRepresentable {
     /// and a target with no NSCameraUsageDescription is killed by iOS on the
     /// spot. The web app reads this flag and leaves the attribute off when it is
     /// false, so the button opens the photo library instead of ending the app.
+    ///
+    /// passkeys (15 Oct 2026): the web app hides Face ID passkeys inside our
+    /// apps unless this says true (src/lib/secondStep/rules.js
+    /// shellSupportsPasskeys). What makes it true is the Associated Domains
+    /// entitlement (webcredentials:serv-os.app) on the target, declared in
+    /// project.yml next to RPOSAllowsPasskeys; a target without the entitlement
+    /// injects false and keeps the emailed code. Older builds set no flag at
+    /// all, which the web app reads as false.
     private static let shellMarkerScript = WKUserScript(
         source: "window.RposIOS = { platform: 'ios', version: '\(Config.marketingVersion)'"
               + ", hasLocation: \(Config.allowsLocation)"
-              + ", hasCamera: \(Config.allowsCamera) };",
+              + ", hasCamera: \(Config.allowsCamera)"
+              + ", passkeys: \(Config.allowsPasskeys) };",
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
     )

@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { VERSION } from '../lib/version';
 import { MIN_PASSWORD_LENGTH, passwordProblem } from '../lib/secondStep/rules';
 import { noteWeakPassword, clearWeakPasswordNote, createSecondStepClient } from '../lib/secondStep/client';
-import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError } from '../lib/secondStep/passkeyRules';
+import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError, noPasskeyNote } from '../lib/secondStep/passkeyRules';
 import {
   AuthFrame, Heading, Stack, PrimaryButton, LinkButton, Note, TextInput, MonoLabel,
 } from '../components/secondStep/AuthUi';
@@ -60,8 +60,9 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
           supported: !!can.usable,
           allowLocalhost: !!import.meta.env?.DEV,
         });
-        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary });
-      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password' }); }
+        // reason rides along so the page can say WHY there is no passkey button (15 Oct 2026).
+        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary, reason: can.reason || '' });
+      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password', reason: 'browser' }); }
     })();
     return () => { alive = false; };
     // once per mount: the device does not change under us
@@ -181,6 +182,9 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
           )}
           {pk.ready && pk.primary === 'wrong_host' && (
             <Note tone={tone} kind="warn" testId="bo-passkey-host">{wrongHostMessage(window.location.hostname)}</Note>
+          )}
+          {pk.ready && pk.primary === 'password' && noPasskeyNote(pk.reason, navigator.userAgent) && (
+            <Note tone={tone} kind="info" testId="bo-passkey-why">{noPasskeyNote(pk.reason, navigator.userAgent)}</Note>
           )}
           <TextInput tone={tone} label="Email address" type="email" value={email} onChange={setEmail}
             placeholder="you@restaurant.com" autoComplete="username" autoFocus testId="bo-email" />
