@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.61',
+    date: '15 Oct 2026',
+    items: [
+      "Back Office sign in: Face ID and Touch ID (passkeys) now work inside the ServOS iPad and iPhone apps, once the app is updated from TestFlight or the App Store. Older app builds keep the emailed code.",
+    ],
+  },
+  {
     v: '5.11.59',
     date: '14 Oct 2026',
     items: [

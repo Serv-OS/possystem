@@ -26,6 +26,8 @@
 	<true/>
 	<key>RPOSAllowsCamera</key>
 	<false/>
+	<key>RPOSAllowsPasskeys</key>
+	<true/>
 	<key>RPOSAppURL</key>
 	<string>https://app.serv-os.app/?mode=owner</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

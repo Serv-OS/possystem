@@ -117,6 +117,10 @@ test('the device is named the way the person would name it', () => {
   assert.equal(suggestPasskeyName('Mozilla/5.0 (Linux; Android 14; Pixel 8)'), 'Android phone');
   assert.equal(suggestPasskeyName('Mozilla/5.0 (X11; CrOS x86_64 14541.0.0)'), 'Chromebook');
   assert.equal(suggestPasskeyName(''), 'This device');
+  // Inside our iOS apps the iPad's WKWebView says Macintosh (desktop pages); it is still an iPad.
+  assert.equal(suggestPasskeyName('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 RposIOS/1.0.1'), 'iPad');
+  assert.equal(suggestPasskeyName('Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 RposIOS/1.0.1'), 'iPad');
+  assert.equal(suggestPasskeyName('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 RposIOS/1.0.0'), 'iPhone');
 });
 
 test('the person is asked for what their own device actually calls it', () => {
@@ -125,6 +129,7 @@ test('the person is asked for what their own device actually calls it', () => {
   assert.match(passkeyPrompt('Mozilla/5.0 (Windows NT 10.0)'), /Windows Hello/);
   assert.match(passkeyPrompt('Mozilla/5.0 (Linux; Android 14)'), /fingerprint/);
   assert.match(passkeyPrompt(''), /fingerprint, face or device PIN/);
+  assert.match(passkeyPrompt('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Mobile/15E148 RposIOS/1.0.1'), /Face ID or your passcode/, 'an iPad inside our app, not a Mac');
 });
 
 test('a failed ceremony is explained, never dumped raw, and never a dead end', () => {
