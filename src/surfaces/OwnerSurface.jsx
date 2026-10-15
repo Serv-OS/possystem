@@ -38,6 +38,8 @@ import { supabase, isMock } from '../lib/supabase';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
+import { createSecondStepClient } from '../lib/secondStep/client';
+import { signInPlan, wrongHostMessage, passkeyPrompt, explainPasskeyError } from '../lib/secondStep/passkeyRules';
 import { withTimeout, TimeoutError } from '../lib/withTimeout';
 import {
   PERIOD_CHIPS, PERIOD_COPY, NEEDS_UPDATE, readStoredPeriod, storePeriod, shownPeriod,
@@ -177,18 +179,55 @@ function Login({ theme, onToggleTheme }) {
       if (error) throw error;
     } catch (e2) { setErr(e2.message || 'Could not sign in'); } finally { setBusy(false); }
   };
+  // PASSKEY SIGN IN (15 Oct 2026). Peter on his iPad: "there is no button that mentions passkey".
+  // This form only ever asked for a password, so the Owner app, and ?mode=owner in Safari, never
+  // offered Face ID even where Back Office did. Same plan and client as BOLogin: the device says
+  // what it can do, the auth server decides who gets in, and the session listener in OwnerSurface
+  // takes the signed in session like any other.
+  const [stepClient] = useState(() => (isMock || !supabase ? null : createSecondStepClient(supabase, { allowLocalhost: !!import.meta.env?.DEV })));
+  const [pk, setPk] = useState({ ready: false, canUse: false, primary: 'password' });
+  const [pkBusy, setPkBusy] = useState(false);
+  useEffect(() => {
+    if (!stepClient) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const can = await stepClient.canUsePasskey();
+        const plan = signInPlan({ hostname: window.location.hostname, supported: !!can.usable, allowLocalhost: !!import.meta.env?.DEV });
+        if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary });
+      } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password' }); }
+    })();
+    return () => { alive = false; };
+  }, [stepClient]);
+  const passkey = async () => {
+    if (pkBusy || !stepClient) return;
+    setPkBusy(true); setErr('');
+    try { await stepClient.signInWithPasskey(); }   // onAuthStateChange above sees the new session
+    catch (e2) { setErr(explainPasskeyError(e2)); }
+    finally { setPkBusy(false); }
+  };
   const toggleRow = <div style={{ display: 'flex', justifyContent: 'flex-end' }}><ThemeBtn theme={theme} onClick={onToggleTheme} /></div>;
   if (isMock || !supabase) return <>{toggleRow}<Brand /><div style={{ textAlign: 'center', color: 'var(--t3)', fontSize: 13, lineHeight: 1.6 }}>The owner app needs a live backend connection.</div></>;
   const inp = { width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' };
+  const btn = (off) => ({ padding: '14px', borderRadius: 12, border: 'none', background: 'var(--acc)', color: '#0b0c10', fontWeight: 800, fontSize: 16, fontFamily: 'inherit', cursor: 'pointer', opacity: off ? .6 : 1, width: '100%' });
   return (
     <>
       {toggleRow}
-      <Brand sub="Sign in to your business" />
+      <Brand sub={pk.canUse ? `Sign in with ${passkeyPrompt(navigator.userAgent)}` : 'Sign in to your business'} />
+      {pk.canUse && (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" onClick={passkey} disabled={pkBusy} style={btn(pkBusy)}>{pkBusy ? 'Checking…' : 'Sign in with a passkey'}</button>
+          <div style={{ textAlign: 'center', color: 'var(--t3)', fontSize: 13, marginTop: 10 }}>or use your password</div>
+        </div>
+      )}
+      {pk.ready && pk.primary === 'wrong_host' && (
+        <div style={{ color: 'var(--amber)', fontSize: 12.5, lineHeight: 1.5, marginTop: 10 }}>{wrongHostMessage(window.location.hostname)}</div>
+      )}
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 10 }}>
         <input style={inp} type="email" inputMode="email" autoComplete="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />
         <input style={inp} type="password" autoComplete="current-password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} required />
         {err && <div style={{ color: 'var(--red)', fontSize: 13 }}>{err}</div>}
-        <button type="submit" disabled={busy} style={{ padding: '14px', borderRadius: 12, border: 'none', background: 'var(--acc)', color: '#0b0c10', fontWeight: 800, fontSize: 16, fontFamily: 'inherit', cursor: 'pointer', opacity: busy ? .6 : 1 }}>
+        <button type="submit" disabled={busy} style={btn(busy)}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
