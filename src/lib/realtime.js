@@ -17,14 +17,21 @@ import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
-import { bookedTaxRecord } from './taxShare';
-import { closedCheckRefundFields } from './closedCheckRefundFields';
+import { closedCheckRefundFields, closedCheckTaxFields, serverTipFields } from './closedCheckRefundFields';
+import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
 import { capClosedChecks, isMenuRowPending } from '../store';
 import { mapMenuItemRow as mapItemRow, mapTaxRateRow, srvNewer } from './rowMapping';
 import { getLocationConfig, clearLocationConfigCache } from './locationTime';
+// 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen): the channel auto route no
+// longer starts here on the word of a storage flag. ONE rule says whether this page is the
+// venue's master till (lib/masterTill.js), and a gate holds the route until the till holds the
+// venue's menu (sync/ChannelAutoRouter.js). Nothing in these reads the network per order.
+import { isMasterTillHere } from './masterTillDevice';
+import { queueRowToRouteOrder } from './channelRouteGate';
+import { startChannelAutoRouter, stopChannelAutoRouter, offerLiveOrder, requestCatchUp } from '../sync/ChannelAutoRouter';
 
 let channels = [];
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
@@ -174,6 +181,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
 
   // ── Config pushes ──────────────────────────────────────────────────────────
+  let lastConfigPushAt = NaN;
   const configChannel = supabase
     .channel(`config:${locationId}`)
     .on('postgres_changes', {
@@ -181,7 +189,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       schema: 'public',
       table: 'config_pushes',
       filter: `location_id=eq.${locationId}`,
-    }, ({ new: push }) => {
+    }, async ({ new: push }) => {
       // v5.7.7: Push to POS must ALSO deliver the current device profile. App's
       // paired-device layer listens for this and re-fetches its profile from the
       // DB (self-healing deviceConfig), same window-event pattern as
@@ -195,8 +203,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         clearLocationConfigCache();
         getLocationConfig(locationId).then((cfg) => { if (cfg) store.setState({ locationConfig: cfg }); }).catch(() => {});
       } catch { /* best effort */ }
-      if (push.snapshot) {
-        store.getState().setConfigUpdate(push.snapshot);
+      // 30 Sep 2026: a push over Supabase Realtime's 1 MB row limit arrives WITHOUT its snapshot
+      // (Barnsley, Huddersfield, Preston from 29 Sep: no "Sync POS" until the app was closed). Read
+      // it by id instead (lib/configPushReceive.js). isNewerPush stops a slow read of an older push
+      // replacing a newer one.
+      if (!isNewerPush(push, lastConfigPushAt)) return;
+      const snapshot = await resolvePushSnapshot(push, async (id) => {
+        const { data, error } = await supabase.from('config_pushes').select('snapshot').eq('id', id).maybeSingle();
+        if (error) throw error;
+        return data?.snapshot || null;
+      });
+      if (!isNewerPush(push, lastConfigPushAt)) return;
+      if (snapshot) {
+        const at = Date.parse(push?.created_at || '');
+        if (Number.isFinite(at)) lastConfigPushAt = at;
+        store.getState().setConfigUpdate(snapshot);
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
         // MPOS) — nobody is there to click the ConfigSyncBanner, so without
         // this they never pick up new menu items / production-centre changes
@@ -376,10 +397,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         items: check.items || [], discounts: check.discounts || [],
         subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
         // v5.9.12: tax as booked, so a refund or reprint on THIS till returns / shows
-        // the added-on (US) tax the check charged. Inclusive rows: no new keys at
-        // all, exactly as before. 27 Sep 2026: a scaled UK record (discounted bill, comp, QR closed
-        // short) loads too, so reports read its booked VAT (taxShare.bookedTaxRecord).
-        ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+        // the added-on (US) tax the check charged. 27 Sep 2026: a scaled UK record (discounted
+        // bill, comp, QR closed short) loads too (taxShare.bookedTaxRecord).
+        // 8 Oct 2026 (the VAT audit): EVERY copy carries the VAT the sale booked and its record,
+        // as db.js does on boot. Until now an ordinary UK sale that arrived by realtime (a kiosk
+        // sale, another till's sale) had no taxAmount here, so the till's X and Z print counted 0
+        // VAT for it and a refund made on this till saved no refund VAT (five live refunds).
+        ...closedCheckTaxFields(check),
         method: check.method,
         closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
         // Carry the occupation's seatedAt (epoch ms) so isSessionClosed can tombstone
@@ -452,17 +476,13 @@ export function startRealtime(store, locationId = LOCATION_ID) {
               // after close (tip_capture / webhook write tip, total and the
               // payment leg's capture flag). Merge them so History repaints
               // live as the window moves pending → capturing → captured.
-              // SCOPED to rows whose legs actually carry a `capture` key - a
-              // refund UPDATE (or any other writer) keeps the old merge
-              // behaviour exactly: refunds + status only, the local richer
-              // camelCase legs/tip/total untouched.
-              ...(Array.isArray(check.payment_intents)
-                && check.payment_intents.some(l => l && typeof l === 'object' && 'capture' in l)
-                ? {
-                  paymentIntents: check.payment_intents,
-                  ...(check.tip != null ? { tip: check.tip } : {}),
-                  ...(check.total != null ? { total: check.total } : {}),
-                } : {}),
+              // v5.11.16: the reader tip heal does the same and marks the card
+              // tender with tip_added_at; tip, total and tenders merge too.
+              // SCOPED to those two markers (serverTipFields) - a refund UPDATE
+              // (or any other writer) keeps the old merge behaviour exactly:
+              // refunds + status only, the local richer camelCase legs/tip/total
+              // untouched.
+              ...serverTipFields(check),
             } : c),
           };
         }
@@ -473,8 +493,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             orderType: check.order_type, customer: check.customer,
             items: check.items || [], discounts: check.discounts || [],
             subtotal: check.subtotal, service: check.service, tip: check.tip, total: check.total,
-            // v5.9.12: tax as booked, only for a check that charged added-on tax
-            ...(bookedTaxRecord({ taxBreakdown: check.tax_breakdown }) ? { taxAmount: check.tax_amount ?? null, taxBreakdown: check.tax_breakdown } : {}),
+            // 8 Oct 2026: the VAT booked and its record, on every copy (see the INSERT branch).
+            ...closedCheckTaxFields(check),
             method: check.method,
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],
@@ -553,24 +573,22 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         // kitchen_routed_at` is applied on this venue's DB, we could broaden
         // the gate again, but master-only is the minimum-surprise behaviour
         // (matches kiosk-source path that's worked correctly all along).
-        let isMaster = false;
-        try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
+        // 12 Oct 2026 (Preston; Peter: "you need to fix the master thing"). The storage flag
+        // alone used to decide this, so a Back Office tab, the rear customer display of a Sunmi
+        // or a removed till that still held the flag routed channel orders with no category
+        // tree, and sub category drinks fell to the first screen. One rule now: a till mode,
+        // this page's valid till session, the till's own config, its own venue (lib/masterTill.js).
+        const isMaster = isMasterTillHere(locationId);
         // HubRise/channel orders aren't auto-printed on receipt when manual-accept is on —
         // staff Accept them in the Orders Hub (which prints + confirms a prep time back to the
         // channel). When the venue AUTO-accepts, the row arrives already 'prep', so it prints.
         const hubriseAuto = src === 'hubrise' && row.status === 'prep';
         if (isMaster && !row.kitchen_routed_at && (src !== 'hubrise' || hubriseAuto)) {
-          store.getState().routeKioskOrderPrints?.({
-            ref,
-            source: src,                                     // 'kiosk' | 'online' | 'qr' | 'hubrise'
-            type: row.type || null,                          // v5.8.63: production centres by order type
-            tableLabel: row.customer?.tableLabel || null,    // QR only
-            items: row.items || [],
-            customer: row.customer || null,
-            collectionTime: row.collection_time || null,
-            isASAP: !!row.is_asap,
-            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
-          });
+          // 12 Oct 2026: offered to the gate, not routed blind. With the venue's menu held it
+          // goes in this same tick, as before. Without it nothing is claimed and nothing is
+          // dropped: the order waits in order_queue and the catch up scan sends it the moment
+          // the menu lands (or after the short wait runs out). The order is the same shape.
+          offerLiveOrder(queueRowToRouteOrder(row));
           // Auto-accepted HubRise order → also auto-print the dispatch receipt (if enabled).
           if (hubriseAuto && isHubriseAutoReceipt(locationId)) {
             store.getState().printHubriseReceipt?.({
@@ -598,7 +616,11 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         }
       }
     })
-    .subscribe();
+    // 12 Oct 2026: (re)subscribed. Events may have been missed while the socket was down, and
+    // the master till is the only router, so it looks again (rate limited, one read).
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') requestCatchUp('subscribed');
+    });
 
   // ── v4.6.5 Bug 4: Bar tabs — cross-device sync ──────────────────────────────
   const tabsChannel = supabase
@@ -633,45 +655,28 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 
   channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel, bookingsChannel];
 
-  // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr / hubrise)
-  // that arrived while it was offline OR that were scheduled and are now due. routeKioskOrderPrints
-  // internally defers if sent_at is still in the future and HOLDS anything >2h stale (boot backstop).
-  (async () => {
-    try {
-      let isMaster = false;
-      try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch {}
-      if (!isMaster) return;
-      const { data, error } = await supabase
-        .from('order_queue')
-        .select('ref, type, source, items, customer, sent_at, status, collection_time, is_asap')
-        .eq('location_id', locationId)
-        .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
-        .is('kitchen_routed_at', null)
-        .neq('status', 'collected')
-        .limit(100); // bounded backfill — a bigger backlog signals a kitchen issue, not a sync job
-      if (error) { console.warn('[Realtime] order backfill query failed', error); return; }
-      if (data?.length) {
-        console.log(`[Realtime] backfilling ${data.length} unrouted order(s)`);
-        for (const row of data) {
-          // HubRise on manual-accept arrives as 'received' and must wait for staff Accept in the
-          // Orders Hub (which prints + confirms a prep time back to the channel). Only auto-route
-          // hubrise rows the venue auto-accepted (already 'prep') — mirrors the live INSERT handler.
-          if (row.source === 'hubrise' && row.status !== 'prep') continue;
-          await store.getState().routeKioskOrderPrints?.({
-            ref: row.ref,
-            source: row.source,
-            type: row.type || null,                          // v5.8.63: production centres by order type
-            tableLabel: row.customer?.tableLabel || null,
-            items: row.items || [],
-            customer: row.customer || null,
-            collectionTime: row.collection_time || null,
-            isASAP: !!row.is_asap,
-            sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
-          });
-        }
-      }
-    } catch (e) { console.warn('[Realtime] order backfill failed', e?.message); }
-  })();
+  // Catch up scan (12 Oct 2026). This was a one shot boot backfill gated on the storage flag
+  // alone: any page that said "master" read the unrouted customer surface orders (kiosk, online,
+  // qr, hubrise) once at boot and routed them, menu or no menu, and never looked again.
+  // The read below is the same one. WHEN it runs, and whether this page may route at all, is
+  // the gate's decision (sync/ChannelAutoRouter.js): the venue's master till only, once it
+  // holds the venue's menu, and again on wake, on 'online' and when the order channel
+  // subscribes again. The route itself still defers an order due later and HOLDS anything
+  // over 2 hours stale, as before. A delivery app order waiting for Accept is still left for
+  // staff (lib/channelRouteGate.js autoRoutable).
+  const fetchUnroutedChannelOrders = async () => {
+    const { data, error } = await supabase
+      .from('order_queue')
+      .select('ref, type, source, items, customer, sent_at, status, collection_time, is_asap')
+      .eq('location_id', locationId)
+      .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
+      .is('kitchen_routed_at', null)
+      .neq('status', 'collected')
+      .limit(100); // bounded: a bigger backlog signals a kitchen issue, not a sync job
+    if (error) { console.warn('[Realtime] order backfill query failed', error); return null; }
+    return data || [];
+  };
+  startChannelAutoRouter({ store, venueId: locationId, fetchUnrouted: fetchUnroutedChannelOrders });
 
   // ── Menu items — live propagation of BO renames / price changes ────────────
   // Without this, a rename in Back Office only reaches other devices when they
@@ -768,4 +773,6 @@ export function stopRealtime() {
   channels = [];
   _rtLocation = null;
   kioskAlertsRealtimeStopped();
+  // 12 Oct 2026: the gate in front of the channel auto route stops with its channels.
+  stopChannelAutoRouter();
 }

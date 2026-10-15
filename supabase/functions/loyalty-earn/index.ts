@@ -30,6 +30,19 @@
 // closes that.
 //
 // Returns: { points_earned, balance, member_code, tier, is_new_member }
+//
+// ACTION adjust_stamps (30 Sep 2026, Peter, Coffee Boy: "need to be able to adjust stamps on the
+// back office for a customer that is registered"). Body:
+//   { action: 'adjust_stamps', customer_id, location_id, stamp_program_id,
+//     stamps_delta?, rewards_delta?, reason, request_id }
+// A hand change to one card, by an owner or a manager of the venue (the customer merge rule),
+// with a reason. The ledger row (ops stamp_transactions type='adjust', key stampadjust:<request_id>)
+// is written FIRST as the claim, then the Platform card moves behind two guards: the card's own
+// figures (an earn or another adjustment meanwhile) and a recount of the redeem rows (a till
+// redeeming meanwhile never touches the card). A retry of the same request_id is a no-op.
+// Rules in _shared/stampAdjust.js (shared with Back Office). Returns
+//   { status: 'ok' | 'already_processed', card: { program_id, stamps_collected, completed_count,
+//     stamps_required, redeemed, rewards_available } }
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
@@ -43,6 +56,175 @@ import {
 } from '../_shared/earnFromCheck.ts';
 
 import { countQualifyingStamps, loadStampNameIndex } from '../_shared/stampQualify.ts';
+import { secondStepRefusal } from '../_shared/second-step.ts';
+import { STAMP_ADJUST_ACTION, STAMP_ADJUST_TYPE, validateStampAdjust, applyStampAdjust, stampAdjustNote, stampAdjustKey, stampAdjustRole, rewardsAvailable } from '../_shared/stampAdjust.js';
+
+// ── adjust_stamps: a hand change to one customer's card, from Back Office ─────────────────────
+// The caller's roles, read with the service role (customer-merge's roleFacts, same rule). A failed
+// read is "no role", never a role.
+async function roleFacts(user: any, opsLocationId: string, companyId: string | null) {
+  try {
+    const [prof, link, ucr] = await Promise.all([
+      opsAdmin.from('user_profiles').select('role, org_id').eq('id', user.id).maybeSingle(),
+      opsAdmin.from('user_locations').select('role').eq('user_id', user.id).eq('location_id', opsLocationId).limit(5),
+      companyId
+        ? platformAdmin.from('user_company_roles').select('role').eq('user_id', user.id).eq('company_id', companyId).limit(5)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    const linkRoles = ((link as any)?.data || []).map((r: any) => String(r.role || ''));
+    const companyRoles = ((ucr as any)?.data || []).map((r: any) => String(r.role || ''));
+    return {
+      profileRole: (prof as any)?.data?.role ?? null,
+      profileOrgId: (prof as any)?.data?.org_id ?? null,
+      linkRole: linkRoles.find((r: string) => r === 'owner' || r === 'manager') ?? linkRoles[0] ?? null,
+      companyRole: companyRoles.find((r: string) => r === 'owner' || r === 'admin' || r === 'manager') ?? companyRoles[0] ?? null,
+    };
+  } catch (e) {
+    console.warn('[loyalty-earn] adjust role read failed:', (e as any)?.message || e);
+    return { profileRole: null, profileOrgId: null, linkRole: null, companyRole: null };
+  }
+}
+
+async function adjustStamps(req: Request, caller: any, body: Record<string, unknown>): Promise<Response> {
+  // Back Office callers: the second step (Face ID or authenticator) applies, as it does to every
+  // Back Office write (docs/SECOND_STEP.md).
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock;
+
+  const v: any = validateStampAdjust(body);
+  if (!v.ok) return json({ error: v.error, code: 'bad_request' }, 400);
+
+  // The venue the call is made from, its company (loyalty is per company) and its organisation.
+  const venue = await resolveVenue(v.locationId);
+  if (!venue.opsLocationId || !venue.companyId) return json({ error: 'That venue could not be found.', code: 'no_venue' }, 404);
+  const { data: vloc } = await opsAdmin.from('locations').select('org_id').eq('id', venue.opsLocationId).maybeSingle();
+  const venueOrgId: string | null = (vloc as any)?.org_id ?? null;
+
+  // Who is asking: an owner or a manager (never anonymous, never a till). Settled before any
+  // customer is read, so a refused caller learns nothing.
+  if (!caller || caller.is_anonymous) return json({ error: 'Sign in to Back Office first.', code: 'sign_in' }, 401);
+  const roles = await roleFacts(caller, venue.opsLocationId, venue.companyId);
+  const role = stampAdjustRole({ user: caller, ...roles, venueOrgId });
+  if (!role) {
+    console.warn('[loyalty-earn] adjust refused', JSON.stringify({ reason: 'not_allowed', caller_id: caller.id, location_id: venue.opsLocationId }));
+    return json({ error: 'Only an owner or a manager can adjust stamps.', code: 'not_allowed' }, 403);
+  }
+
+  // The customer must be one of this venue's organisation.
+  const { data: cust } = await opsAdmin.from('customers').select('id, org_id').eq('id', v.customerId).is('deleted_at', null).maybeSingle();
+  if (!cust || (venueOrgId && String((cust as any).org_id) !== String(venueOrgId))) {
+    return json({ error: 'That customer could not be found at this venue.', code: 'not_found' }, 404);
+  }
+
+  const { data: prog } = await platformAdmin
+    .from('stamp_card_programs')
+    .select('id, name, stamps_required, active')
+    .eq('id', v.programId)
+    .eq('company_id', venue.companyId)
+    .maybeSingle();
+  if (!prog) return json({ error: 'That stamp card programme could not be found.', code: 'not_found' }, 404);
+
+  const countRedeemed = async (): Promise<number> => {
+    const { count } = await opsAdmin
+      .from('stamp_transactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('customer_id', v.customerId)
+      .eq('program_id', prog.id)
+      .eq('type', 'redeem');
+    return count || 0;
+  };
+  const cardReply = (card: any, redeemed: number) => ({
+    id: card?.id ?? null, program_id: prog.id, program_name: prog.name,
+    stamps_collected: card?.stamps_collected || 0, completed_count: card?.completed_count || 0,
+    stamps_required: prog.stamps_required, redeemed,
+    rewards_available: rewardsAvailable(card, redeemed),
+    last_stamp_at: card?.last_stamp_at ?? null,
+  });
+  const readCard = async () => {
+    const { data } = await platformAdmin.from('customer_stamp_cards')
+      .select('id, stamps_collected, completed_count, last_stamp_at')
+      .eq('customer_id', v.customerId).eq('program_id', prog.id).eq('company_id', venue.companyId).maybeSingle();
+    return data;
+  };
+
+  // A retry of the same Save (same request_id) answers with the card as it is and moves nothing.
+  const idemKey = stampAdjustKey(v.requestId);
+  const { data: already } = await opsAdmin.from('stamp_transactions').select('id').eq('idempotency_key', idemKey).maybeSingle();
+  if (already) return json({ status: 'already_processed', card: cardReply(await readCard(), await countRedeemed()) });
+
+  // The card as it is now (made empty if the customer has none on this programme yet).
+  const { data: card } = await platformAdmin.rpc('upsert_customer_stamp_card', {
+    p_customer_id: v.customerId, p_program_id: prog.id, p_company_id: venue.companyId,
+  });
+  if (!card) return json({ error: 'The stamp card could not be read just now. Nothing was changed.', code: 'read_failed' }, 503);
+  const redeemed = await countRedeemed();
+  const plan: any = applyStampAdjust(card, redeemed, { stampsDelta: v.stampsDelta, rewardsDelta: v.rewardsDelta, stampsRequired: prog.stamps_required });
+  if (!plan.ok) return json({ error: plan.error, code: 'refused', card: cardReply(card, redeemed) }, 400);
+
+  // Ledger row FIRST as the claim (UNIQUE idempotency_key settles two racing Saves), then the card.
+  const actor = String(caller.email || caller.id || '');
+  const { data: ins, error: insErr } = await opsAdmin
+    .from('stamp_transactions')
+    .insert({
+      customer_id: v.customerId,
+      program_id: prog.id,
+      location_id: venue.opsLocationId,
+      stamps: v.stampsDelta,
+      type: STAMP_ADJUST_TYPE,
+      note: stampAdjustNote({ stampsDelta: v.stampsDelta, rewardsDelta: v.rewardsDelta, rolled: plan.rolled, reason: v.reason, actor }),
+      order_ref: null,
+      idempotency_key: idemKey,
+    })
+    .select('id')
+    .single();
+  if (insErr?.code === '23505') return json({ status: 'already_processed', card: cardReply(await readCard(), redeemed) });
+  if (insErr || !ins) {
+    console.error('[loyalty-earn] adjust ledger insert failed:', insErr?.message);
+    return json({ error: 'The adjustment could not be recorded. Nothing was changed.', code: 'write_failed' }, 500);
+  }
+
+  // Move the card, but only from the state we planned against: a stamp earned, or another
+  // adjustment, meanwhile would be overwritten otherwise. Zero rows means it moved; the claim is
+  // taken back and the screen is told to try again from the fresh figures.
+  const changedReply = async () => json({
+    error: 'This card changed a moment ago (a stamp or a reward). Check the new figures and try again.',
+    code: 'changed', card: cardReply(await readCard(), await countRedeemed()),
+  }, 409);
+  const { data: moved, error: updErr } = await platformAdmin
+    .from('customer_stamp_cards')
+    .update({ stamps_collected: plan.stamps_collected, completed_count: plan.completed_count })
+    .eq('id', card.id)
+    .eq('stamps_collected', card.stamps_collected)
+    .eq('completed_count', card.completed_count)
+    .select('id, stamps_collected, completed_count, last_stamp_at');
+  if (updErr || !moved || moved.length === 0) {
+    await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
+    if (!updErr) return await changedReply();
+    console.error('[loyalty-earn] adjust card update failed:', updErr.message);
+    return json({ error: 'The card could not be updated. Nothing was changed.', code: 'write_failed', card: cardReply(await readCard(), await countRedeemed()) }, 500);
+  }
+
+  // The card guard cannot see a REDEEM: loyalty-redeem never touches the card, it only inserts a
+  // ledger row. So a till redeeming this second (completed 1, redeemed 0 → its row lands, recount
+  // 1 <= 1, fine) while a manager takes the last reward off (plan: completed 0) would pass both
+  // guards and leave the ledger one row in debt: the customer had the drink AND lost the card,
+  // and the next card they complete reads "No reward yet". Same shape as loyalty-redeem's post
+  // insert race guard: recount AFTER the move, and if the rewards taken now exceed the cards,
+  // put the card back (only from the state we set), take the claim back, and say it changed.
+  if (v.rewardsDelta < 0 && plan.completed_count - (await countRedeemed()) < 0) {
+    await platformAdmin
+      .from('customer_stamp_cards')
+      .update({ stamps_collected: card.stamps_collected, completed_count: card.completed_count })
+      .eq('id', card.id)
+      .eq('stamps_collected', plan.stamps_collected)
+      .eq('completed_count', plan.completed_count);
+    await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
+    console.warn('[loyalty-earn] adjust raced a redeem, reverted', JSON.stringify({ customer_id: v.customerId, program_id: prog.id, request_id: v.requestId }));
+    return await changedReply();
+  }
+
+  console.info('[loyalty-earn] adjust', JSON.stringify({ customer_id: v.customerId, program_id: prog.id, stamps_delta: v.stampsDelta, rewards_delta: v.rewardsDelta, by: caller.id, role, request_id: v.requestId }));
+  return json({ status: 'ok', ledger_id: ins.id, card: cardReply(moved[0], redeemed) });
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -66,6 +248,9 @@ Deno.serve(async (req) => {
     subtotal,
     staff_id,
   } = body as any;
+
+  // 30 Sep 2026: a hand adjustment from Back Office has no check; it is decided above.
+  if ((body as any).action === STAMP_ADJUST_ACTION) return await adjustStamps(req, caller, body);
 
   if (!customer_id) return json({ error: 'customer_id required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);

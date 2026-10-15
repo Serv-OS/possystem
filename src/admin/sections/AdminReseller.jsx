@@ -314,6 +314,11 @@ export default function AdminReseller() {
 
       {/* ── the month's statement ── */}
       {loading && <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center' }}>Computing…</div>}
+      {!loading && statement?.test_excluded_count > 0 && (
+        <div style={S.note}>
+          {statement.test_excluded_count} test environment payment{statement.test_excluded_count === 1 ? '' : 's'} in {month} {statement.test_excluded_count === 1 ? 'is' : 'are'} not shown and never invoiced: that money never settled on FranPOS's live account.
+        </div>
+      )}
       {!loading && statement && statement.statements?.length === 0 && (
         <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center' }}>No card payments in {month}.</div>
       )}
@@ -328,18 +333,25 @@ export default function AdminReseller() {
         const curPercent = curRate ? curRate.percent : config?.buy_percent;
         const rateChanged = live && config
           && (Number(live.buy_percent) !== Number(curPercent) || Number(live.buy_fixed_minor) !== Number(curFixed));
+        // Only live money is billed. A card that holds nothing but unflagged
+        // payments is shown for its note and never offers an invoice.
+        const billable = s.totals.count > 0 || s.totals.refunds_minor > 0;
         return (
         <div key={s.currency} style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{month} · {s.currency}</div>
             {curRate?.line && <div style={{ fontSize: 15, color: 'var(--t3)' }}>FranPOS rate: {curRate.line}</div>}
             <div style={{ flex: 1 }} />
-            <div style={{ fontSize: 15, color: 'var(--t2)' }}>
-              FranPOS owes <b style={{ color: 'var(--grn)', fontSize: 16 }}>{money(s.totals.net_due_minor, s.currency)}</b>
-            </div>
+            {billable ? (
+              <div style={{ fontSize: 15, color: 'var(--t2)' }}>
+                FranPOS owes <b style={{ color: 'var(--grn)', fontSize: 16 }}>{money(s.totals.net_due_minor, s.currency)}</b>
+              </div>
+            ) : (
+              <div style={{ fontSize: 15, color: 'var(--t3)' }}>Nothing live to invoice</div>
+            )}
             {live ? (
               <span style={{ fontSize: 15, color: 'var(--t2)' }}>Invoiced: <b>{live.invoice_number}</b> ({live.status})</span>
-            ) : (
+            ) : !billable ? null : (
               <button onClick={createInvoice} disabled={busy || tableMissing || monthOpen}
                 title={monthOpen ? 'The month is still open. Invoice after it ends so nothing is missed.' : undefined}
                 style={{ ...S.btn, ...S.btnPrimary, opacity: monthOpen ? 0.5 : 1 }}>Create invoice</button>
@@ -365,6 +377,13 @@ export default function AdminReseller() {
             <div style={S.note}>
               {s.totals.unsettled_count} payment{s.totals.unsettled_count === 1 ? '' : 's'} worth {money(s.totals.unsettled_volume_minor, s.currency)} were
               approved but never taken, so no money moved. They are left out of the invoice.
+            </div>
+          )}
+          {s.totals.unflagged_count > 0 && (
+            <div style={S.note}>
+              {s.totals.unflagged_count} payment{s.totals.unflagged_count === 1 ? '' : 's'} worth {money(s.totals.unflagged_volume_minor, s.currency)} were
+              taken before ServOS recorded whether a payment was live or test (7 Sep 2026), so they are left out of the invoice.
+              Check them against the venue's live Adyen account before billing them by hand.
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>

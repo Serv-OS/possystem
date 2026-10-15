@@ -25,6 +25,9 @@ import { supabase, ensureAuthToken, getActiveLocationSync, isMock } from '../sup
 import { isTrainingMode } from '../trainingMode';
 import { scrubCheckApprovers } from '../discountApprover';
 import { withPaymentBusy } from '../paymentBusy';
+// 30 Sep 2026: a separate hold for a kick still running after the send returned (see kickRace.js).
+import { holdPaymentBusy } from '../paymentBusy';
+import { raceKick, settleKick } from './kickRace';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const LS_KEY = 'rpos-terminal-jobs';
@@ -139,6 +142,10 @@ async function callFn(name, body) {
     err.declined = j?.declined === true;
     err.refusalReason = j?.refusalReason ?? j?.decline_reason ?? null;
     err.errorCondition = j?.errorCondition ?? null;
+    // 30 Sep 2026: the fn's structured detail (the busy job's id, amount, time and items on a
+    // TERMINAL_BUSY, the repeat payload on a POSSIBLE_REPEAT) so the checkout can say which
+    // payment it means instead of a bare code.
+    err.detail = j?.detail ?? null;
     throw err;
   }
   return j;
@@ -262,7 +269,8 @@ export async function findPaxTerminal({ posDeviceId, locationId: explicitLocatio
  * @param {string} p.targetTerminalId
  * @param {number} p.tipBasisMinor   the BILL — tip % applies to this
  * @param {number} p.dueMinor        what the CARD must take, pre-tip
- * @param {boolean} p.suppressTip    this ONE sale takes no tip (bar tab / takeaway)
+ * @param {boolean} p.suppressTip    this ONE sale takes no tip (a bar tab; since 30 Sep 2026 every other
+ *                                   order type follows the reader's own tip settings, readerTipRule.js)
  * @param {string} p.closedCheckId   pre-minted, so the check can close without the POS
  * @param {object} p.checkDraft      everything recordClosedCheck needs EXCEPT the tip
  * @param {boolean} p.tableCheck     v5.7.6, main POS only: this check sits on a table/session
@@ -270,7 +278,18 @@ export async function findPaxTerminal({ posDeviceId, locationId: explicitLocatio
  *                                   scopes the tip-on-receipt window on mixed-service venues
  * @param {boolean} p.localBridge    THIS device will drive the reader itself — do not
  *                                   fire the cloud 'start' kick (see the block below)
- * @returns {{job: object, existing: boolean}}
+ * @param {string} p.repeatOkJobId   30 Sep 2026: the job named in a POSSIBLE_REPEAT refusal that staff
+ *                                   confirmed as a different customer; sent as repeat_ok_job_id.
+ * @param {number} p.kickWaitMs      30 Sep 2026, opt in (CheckoutModal and SplitModal): wait this
+ *                                   long for the Adyen 'start' kick to answer, then return with
+ *                                   kickPending:true and the kick still running (lib/payments/
+ *                                   kickRace.js). Absent = wait for the kick as before (kiosk, MPOS,
+ *                                   until they are reviewed).
+ * @returns {{job: object, existing: boolean, kickError: string|null, serverKick: boolean,
+ *            kickPending: boolean, kick: Promise|null,
+ *            repeatWarning: object|null}}   30 Sep 2026: terminal-job-create's same_basket
+ *                                   advisory ({ message, ref, ... }), shown on the card screen.
+ *                                   Never a refusal: the job was created and the reader asked.
  *
  * v5.11.1: the till is payment busy (lib/paymentBusy.js) for the whole send, so a release
  * cannot reload it between the job being written and the answer (Leeds POS 1, 27 Sep 2026).
@@ -446,6 +465,10 @@ async function sendTerminalJob(p) {
       // Same flag as the client-side suppression below, so the two can never
       // disagree.
       local_bridge: !!p.localBridge,
+      // 30 Sep 2026: staff saw the server's POSSIBLE_REPEAT warning naming this job and said
+      // "Different customer, take payment". The fn honours it for that one job only and records
+      // it on the draft (repeatAck). Never sent unless staff pressed that button.
+      ...(p.repeatOkJobId ? { repeat_ok_job_id: String(p.repeatOkJobId) } : {}),
     });
 
     rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });
@@ -491,24 +514,41 @@ async function sendTerminalJob(p) {
     // HTTP status at all: the till could not reach the fn) leaves the server's
     // kick as the one that can still succeed.
     let kickAnswered = false;
+    // 30 Sep 2026: the kick still running when this returns (opt in, see kickWaitMs above), as a
+    // promise of its outcome ({ kickError, kickAnswered }, never rejects) for the card screen.
+    let kickPending = false;
+    let kick = null;
     if (j.job?.processor === 'adyen' && needsKick && !p.localBridge) {
-      kickError = await callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
-        .then(() => null)
-        .catch((e) => {
-          // Lost the CAS to the server's kick (or another till's): the reader
-          // IS being asked, just not by us. Not an error - the poller watches
-          // the job exactly as it would had our kick won. Matched on the fn's
-          // code, with the raw message as the fallback for a fn not yet
-          // redeployed with the code.
-          if (e?.code === 'IN_FLIGHT' || e?.message === 'in_flight') {
-            console.log('[terminalJobs] adyen start already in flight (kicked elsewhere) - fine');
-            return null;
-          }
-          kickAnswered = !!e?.status;
-          const msg = e?.message || String(e);
-          console.warn('[terminalJobs] adyen start kick failed:', msg);
-          return msg;
+      // 30 Sep 2026: THIS AWAIT WAS THE WHOLE TENDER. 'start' is the reader's one long /sync
+      // call; it answers when the customer has finished paying (or given up), so the checkout
+      // sat on "Sending…" with × and Cash live for the entire payment, watching nothing.
+      // Huddersfield 30 Sep: closed at 17 s, approved at 40 s, booked in the background, rung
+      // again, customer charged twice (R5737/R5739). Now the send waits kickWaitMs for a
+      // refusal the fn answers at once, then hands the running kick to the card screen. The
+      // fetch is never aborted: the poll of terminal-job-status is the truth either way.
+      const outcome = settleKick(callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId }))
+        .then((o) => {
+          // Lost the CAS to the server's kick (or another till's): the reader IS being asked,
+          // just not by us. Not an error - the poller watches the job exactly as it would had
+          // our kick won. classifyKickOutcome matches the fn's code, with the raw message as the
+          // fallback for a fn not yet redeployed with the code.
+          if (o.kickError) console.warn('[terminalJobs] adyen start kick failed:', o.kickError);
+          else console.log('[terminalJobs] adyen start kick settled');
+          return o;
         });
+      const waitMs = Number(p.kickWaitMs) || 0;
+      const raced = waitMs > 0 ? await raceKick(outcome, waitMs) : { pending: false, ...(await outcome) };
+      if (raced.pending) {
+        kickPending = true;
+        kick = outcome;
+        // The customer is paying on the reader while this till's kick is still out: hold the
+        // update guard (lib/paymentBusy.js) until it answers, released however it ends.
+        const releaseBusy = holdPaymentBusy('card machine kick');
+        outcome.finally(releaseBusy);
+      } else {
+        kickError = raced.kickError ?? null;
+        kickAnswered = !!raced.kickAnswered;
+      }
     }
     // The server scheduled its own kick for this job (see local_bridge above)
     // AND this till's failure was transport-level, so that kick is the one
@@ -516,7 +556,7 @@ async function sendTerminalJob(p) {
     // fn's CAS makes the pair a harmless duplicate.
     const serverKick = j.kick_scheduled === true && !kickAnswered;
 
-    return { job: j.job, existing: !!j.existing, kickError, serverKick };
+    return { job: j.job, existing: !!j.existing, kickError, serverKick, kickPending, kick, repeatWarning: j.repeat_warning ?? null };
   }
 }
 

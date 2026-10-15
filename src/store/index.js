@@ -6,19 +6,37 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
-import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
+import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
+// 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
+// thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
+// lib/masterTillDevice.js), and every channel ticket records who routed it and with what
+// (lib/channelRouteGate.js). Nothing in these three reads the network.
+import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig } from '../lib/masterTillDevice';
+import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbackNotice } from '../lib/channelRouteGate';
+import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
-import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs } from '../lib/venueTaxRates';
+import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
+// 8 Oct 2026 (VAT audit, Fix 3): the till refuses a tender while it cannot book the VAT
+// (lib/tillVatGate.js), re reads its rates until it can, and every sale meets the save time guard
+// (lib/saleVatGuard.js) with this till's rates. The in memory record is rounded like the row.
+import { tillVatGate, afterTaxRatesRead, taxRatesRetryMs, noRatesAlertDue, NO_RATES_ALERT_KEY } from '../lib/tillVatGate';
+import { venueExpectsRates } from '../lib/customerRates';
+import { setVenueTaxSource, venueTaxFromStore, onSaleVatEvent, isSaleVatError } from '../lib/saleVatGuard';
+import { roundVat } from '../lib/taxRule';
 import { venueRowsOnly } from '../lib/boVenueBoot';
 import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
 import { creditDiscountsFromPayment, chargedTaxOf } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
-import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
-import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
+import { kitchenOverride, receiptOverride, kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
+// The till's own kitchen name chain (send, reprint, bar round, transfer notice), unchanged but
+// for one case (2 Oct 2026, lib/itemDisplay.js): a kitchen name that is only the size at the end
+// of "<product> — <size>" is skipped, so the kitchen always reads the product AND the size.
+const tillKitchenName = (i) => (!isSizeOnlyKitchenName(i) && i.kitchenName) || i.menu_name || i.menuName || i.name;
+import { buildTicketMeta, joinNotes, withRouteStamp } from '../lib/kds/kdsTicket';
 import { isMissingColumnError } from '../lib/kds/kdsSettings';
-import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles, mapMenuItemRow, venueTaxRates, mapTaxRateRow } from '../lib/rowMapping';
 import { createMenuWriters, categoryInsertRetry, runItemEditWrites, putBackFollowers } from '../lib/menuWriters';
 import { deleteRowChecked, writeWithin, MENU_WAIT_MS } from '../lib/menuRowWrite';
 import { menuItemRow, categoryRow, menuRow } from '../lib/menuItemWrite';
@@ -40,6 +58,8 @@ import { persistTransfer } from '../sync/SessionSync';
 // Database fence stage 1, fix round 2 (the zero row blocker): updates and deletes that must
 // change a row count the rows they changed and are kept while this device is not linked.
 import { mustChangeRow } from '../lib/rowWrites';
+import { mayRemoveQueueRow } from '../lib/queueDeleteRule';
+import { readQueueRole } from '../lib/queueDevice';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
@@ -64,12 +84,14 @@ import {
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { redemptionsOf, withSlots } from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
 import { searchPhonelessMembers, linkOrderCustomer, linkRefused } from '../lib/customerLinkRun.js';
 import { phonelessResults } from '../lib/customerLink.js';
-import { fetchCustomerByPhone } from '../lib/customerLookup';
+import { fetchCustomerByPhone, normalisePhone as phoneKeyOfVenue, activePhoneRegion } from '../lib/customerLookup';
+import { phoneVariants } from '../lib/customerAutoJoin.js';
 
 // Database fence stage 1 (money functions): loyalty-redeem, loyalty-earn and loyalty-refund accept
 // a till or kiosk only when its session is BOUND to its devices row at this venue (the device arm
@@ -173,8 +195,17 @@ import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
+// 30 Sep 2026 (Peter, Coffee Boy): the till's default order type and the dine in flag number.
+import { defaultOrderTypeFor, orderFlag, flagTableLabel, flagTicketLabel, cleanFlagNumber } from '../lib/tillOrderType';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
 import { voidOccupationKey } from '../lib/rowWriteFence';
+// 30 Sep 2026: the void rules (who can be voided, the records a void writes, how a kitchen
+// ticket learns about it) live in lib/voidRules.js so tables, walk ins and the order screens
+// all void the same way.
+import { voidableLines, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone, orderVoidLabel, voidLinesText } from '../lib/voidRules';
+// 30 Sep 2026: how long a voided queue row stays (status 'cancelled') before it is deleted,
+// so the customer's order tracker (5 s poll) can show the cancellation.
+const VOID_QUEUE_ROW_LINGER_MS = 30_000;
 import {
   NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, mayTakeOrRefundMoney,
   isEzcaterOrder, ezcaterOrderNumber,
@@ -687,6 +718,7 @@ const putBackIfRefused = (key, row, words) => (r) => {
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
 import { orderCollectionLabel } from '../lib/collectionLabel';
+import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -820,15 +852,27 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
 // implementation of the rule, and it lives in src/lib/productionRouting.js so node:test
 // can pin it. Production centres are filtered by ORDER TYPE as well as category there.
 
-// catId → parentId, for walking the category hierarchy.
+// catId → parentId, for walking the category hierarchy. The map itself is built by the
+// shared catParentMapOf (lib/productionRouting.js buildCatParentMap), the same one the
+// Back Office Production centres screen uses, so the tree the till routes by and the tree
+// the screen shows are one tree.
+// 12 Oct 2026 (Preston, D7): the till's OWN tree, merged, the live store first. This used to
+// read the 'rpos-config-snapshot' key whenever it held a menuCategories array, an empty one
+// too, and only then the store. That key is written by Back Office alone, at push time, so on
+// a browser that also runs Back Office it is whichever venue was pushed last. Now a parent
+// known by either copy is used, and a snapshot of another venue is ignored
+// (snapshotCategoriesFor). No network (Peter: local first, towards offline, not away from it).
+// The venue is tabVenue(): on a till that is its paired venue, exactly as before; in a Back
+// Office tab it is the venue THIS tab resolved, never the key every tab shares (27 Sep 2026).
 const buildCatParentMap = () => {
+  let fromStore = {};
+  try { fromStore = catParentMapOf(useStore.getState().menuCategories || []); } catch { fromStore = {}; }
+  let fromSnapshot = {};
   try {
-    const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
-    const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-    const map = {};
-    cats.forEach(c => { map[c.id] = c.parentId || null; });
-    return map;
-  } catch { return {}; }
+    const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || 'null');
+    fromSnapshot = catParentMapOf(snapshotCategoriesFor(snap, tabVenue()));
+  } catch { fromSnapshot = {}; }
+  return mergeCatParentMaps(fromStore, fromSnapshot);
 };
 
 // The word before ' · Name' on a walk in kitchen ticket and KDS card. Every key
@@ -1026,6 +1070,13 @@ export const useStore = create((set, get) => ({
   // after loading data. If a subsequent boot detects a mismatch, it purges
   // stale data BEFORE loading fresh — preventing cross-location bleed.
   _dataLocationId: null,
+  // 12 Oct 2026 (Preston): the venue whose category read SUCCEEDED at boot and found NONE.
+  // SyncBridge sets it from the read it already makes. lib/channelRouteGate.js venueHoldsMenu
+  // reads it, so a brand new venue with no categories is not made to wait for a menu that
+  // will never come, and a boot whose category read failed is not taken for "no categories".
+  // It is NOT set for a read that found rows (review, same day): those rows reach the store
+  // later in the boot, and until they do this till does not hold its menu.
+  _catsReadLocationId: null,
 
   // ── Auth ──────────────────────────────────
   staff: null,
@@ -1499,9 +1550,14 @@ export const useStore = create((set, get) => ({
         return cfg;
       }
       // Fall back to localStorage device config (set when device was paired/profiled)
-      const localConfig = localStorage.getItem('rpos-device-config');
-      if (localConfig) {
-        const cfg = JSON.parse(localConfig);
+      // 12 Oct 2026 (review): through hydratableDeviceConfig, not the key itself. The tenant
+      // fence now KEEPS this key when the browser moves to another venue (the paired till needs
+      // it, lib/supabase.js TENANT_FENCE_KEEP) and it used to wipe it. So a Back Office,
+      // Bookings, Waitlist or kiosk page for another venue would have started from a till's
+      // config for good. The paired till's own page reads it as before; any other page only
+      // for the venue this browser was last used for (lib/masterTill.js hydratableConfig).
+      const cfg = hydratableDeviceConfig();
+      if (cfg) {
         // Backfill serviceCharge from stored profiles if missing
         if (!cfg.serviceCharge && cfg.profileId) {
           const profiles = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
@@ -1516,10 +1572,14 @@ export const useStore = create((set, get) => ({
   // v5.5.645: per-device Training Mode. Initialised from the cached device config at
   // module load (so a training till is gated before App's profile fetch completes)
   // and kept authoritative by setDeviceConfig (boot + device_profiles realtime).
+  // 12 Oct 2026 (review): the shared copy is read through hydratableDeviceConfig (see the
+  // deviceConfig initialiser above). Training mode is the one that matters: a till's training
+  // flag carried into a Bookings or Back Office page for ANOTHER venue made that page answer
+  // "saved" while saving nothing. This tab's own session copy is read first, as before.
   trainingMode: (() => {
     try {
-      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
-      const cfg = raw ? JSON.parse(raw) : null;
+      const tab = sessionStorage.getItem('rpos-terminal-config');
+      const cfg = tab ? JSON.parse(tab) : hydratableDeviceConfig();
       const on = !!cfg?.trainingMode;
       applyTrainingFlag(on);   // seed the module singleton read by db.js / sync gates
       return on;
@@ -1547,6 +1607,15 @@ export const useStore = create((set, get) => ({
     // screen they are working on mid-shift.
     const prevDefaultSurface = get().deviceConfig?.defaultSurface;
     set({ deviceConfig: finalConfig, trainingMode: training });
+    // 30 Sep 2026 (Peter, Coffee Boy): the till starts on the profile's default order type
+    // (lib/tillOrderType.js defaultOrderTypeFor), so a drive thru only till no longer opens on
+    // Dine in. Boot, Apply to this terminal and Push to POS all land here. Only while nothing is
+    // being rung up: a floor table is always dine in, and a walk in order with items keeps the
+    // type staff picked for it. clearWalkIn applies the same default after every order.
+    if (!get().activeTableId && !get().walkInOrder?.items?.length) {
+      const startType = defaultOrderTypeFor(finalConfig);
+      if (startType !== get().orderType) set({ orderType: startType });
+    }
     // v5.7.35: an explicit URL surface pin (?mode=kds) beats the profile's
     // default surface — the operator asked for a specific screen by link.
     if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface && !URL_SURFACE_PIN) set({ surface: finalConfig.defaultSurface });
@@ -1923,6 +1992,67 @@ export const useStore = create((set, get) => ({
   // makeCascadeResolver + computeTax need, memoised on its input slices so a
   // future consumer can call it on every render for free. See _buildTaxContext.
   getTaxContext: () => _buildTaxContext(get()),
+  // ── 8 Oct 2026 (VAT audit, Fix 3): the till books VAT or it does not sell ──────────────
+  // vatGate(): null when a tender may start; { code, message } when this till holds no tax set
+  // up although its menu names rates (lib/tillVatGate.js). Every card start asks it first
+  // (CheckoutModal, BarSurface held card capture, Orders Hub captures, MPOS), so a sale is never
+  // charged that the till cannot book with VAT. A venue whose menu names no rate is never blocked.
+  vatGate: () => tillVatGate({ taxCtx: get().getTaxContext(), menuItems: get().menuItems || [] }),
+  // refreshTaxRates(): read this venue's tax_rates again, now (Try again on the gate, and the
+  // background retry below). The same rule as the boot read (SyncBridge): rows replace the slice
+  // tagged with this venue; an empty answer is believed only from a session the database answers
+  // truthfully (lib/venueTaxRates.js); a failed read keeps what the till holds. Never throws.
+  refreshTaxRates: async ({ attempt = 0 } = {}) => {
+    const locationId = getActiveLocationSync();
+    if (!supabase || !locationId) return { res: null, trusted: false };
+    const trusted = isBackOfficeMode() || await clientTrustsEmpty(supabase);
+    let res = null;
+    try {
+      res = await supabase.from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false });
+    } catch (e) { res = { data: null, error: e }; }
+    const rows = res && !res.error && Array.isArray(res.data) ? { data: res.data.map(mapTaxRateRow), error: null } : res;
+    set(s => ({ taxRates: ratesAfterRead(rows, locationId, s.taxRates, { trusted }) }));
+    get().afterTaxRatesRead({ res, trusted, attempt });
+    return { res, trusted };
+  },
+  // afterTaxRatesRead(): what a tax_rates read leaves the till with. While the gate is shut (the
+  // menu names rates the till does not hold) the read is repeated on its own, quick first then
+  // every five minutes (taxRatesRetryMs), and staff see one plain toast. A trusted EMPTY answer at
+  // such a venue means the venue really has no rates: the activity feed gets the owner's alert
+  // (venueTaxRates.noTaxRatesAlert) once a day. Back Office is never retried (it reads its own).
+  // On a cold boot the menu lands seconds after the rates read, so an empty menu is judged again
+  // shortly rather than read as "names no rate". `attempt` counts the retries of one gap.
+  _taxRatesRetry: null,
+  afterTaxRatesRead: ({ res = null, trusted = false, attempt = 0 } = {}) => {
+    if (isBackOfficeMode()) return;
+    const s = get();
+    if (s._taxRatesRetry) { clearTimeout(s._taxRatesRetry.timer); }
+    if (!(s.menuItems || []).length) {
+      const timer = setTimeout(() => { get().afterTaxRatesRead({ res, trusted, attempt }); }, 15000);
+      set({ _taxRatesRetry: { attempt, timer } });
+      return;
+    }
+    const next = afterTaxRatesRead({
+      res, trusted,
+      expectsRates: venueExpectsRates(s.menuItems || []),
+      hasTaxConfig: taxCtxHasConfig(s.getTaxContext()),
+    });
+    if (!next.retry) { set({ _taxRatesRetry: null }); return; }
+    if (attempt === 0) get().showToast?.('VAT rates have not loaded on this till. Loading them again. Payments wait until they load.', 'error', 9000);
+    const timer = setTimeout(() => { get().refreshTaxRates({ attempt: attempt + 1 }).catch(() => {}); }, taxRatesRetryMs(attempt));
+    set({ _taxRatesRetry: { attempt, timer } });
+    if (next.alert) {
+      const locationId = getActiveLocationSync();
+      const today = new Date().toISOString().slice(0, 10);
+      let lastDay = null;
+      try { lastDay = localStorage.getItem(NO_RATES_ALERT_KEY); } catch { lastDay = null; }
+      const alert = noTaxRatesAlert({ trusted: true, rateCount: 0, hasProfiles: (s.taxProfiles || []).length > 0, currency: s.locationConfig?.currency || 'GBP' });
+      if (alert && locationId && noRatesAlertDue(lastDay, today)) {
+        try { localStorage.setItem(NO_RATES_ALERT_KEY, today); } catch { /* latch only */ }
+        logActivity(locationId, { kind: 'ops', severity: 'urgent', title: alert.title, body: alert.body, refType: 'tax_rates', refId: locationId }).catch(() => {});
+      }
+    }
+  },
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
@@ -2511,7 +2641,10 @@ export const useStore = create((set, get) => ({
     // this carries the guest's phone/profile onto the table so checkout can trigger
     // the loyalty flow (or use their existing membership) automatically.
     const tbl = get().tables.find(t => t.id === tableId);
-    const seatCustomer = customer || tbl?.reservation?.customer || null;
+    // 30 Sep 2026 (Barnsley KDS #58 "6 expired"): the order takes the guest, never the customer
+    // RECORD's notes. A reservation saved the whole search row (customers.notes included), and
+    // the kitchen reads the order customer's notes (lib/orderCustomerNotes.js).
+    const seatCustomer = withoutRecordNotes(customer || tbl?.reservation?.customer || null);
     const session = {
       id: `ORD-${++_orderNum}`,
       items: [], firedCourses: [],
@@ -2902,7 +3035,7 @@ export const useStore = create((set, get) => ({
             tableLabel: to.label,
             items: items.map(i => ({
               qty: i.qty,
-              name: i.kitchenName || i.menu_name || i.menuName || i.name,
+              name: tillKitchenName(i),
               mods: i.mods,
               course: i.course,
             })),
@@ -2986,9 +3119,11 @@ export const useStore = create((set, get) => ({
         // venue's, or a deleted rate) resolved to NO rate and the line booked no VAT, silently.
         // It is dropped here, so the line takes this venue's default rate like any product with no
         // rate, on every till (lib/venueTaxRates.js lineTaxRefs), and the till says so in its log.
+        // 8 Oct 2026 (D4): the line also carries WHY (taxFallback), so the tax engine records it on
+        // the sale (tax_breakdown.fallbacks) and the owner sees it, not only the console.
         const refs = lineTaxRefs(txRate, txOv, useStore.getState().taxRates);
         if (refs.dropped.length) console.warn('[tax] product', item.id, 'names rate id(s)', refs.dropped.join(', '), 'that this venue does not have: charged at the venue default instead');
-        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides };
+        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, ...(refs.taxFallback ? { taxFallback: refs.taxFallback } : {}) };
       })(),
       seat: 'shared',
       course: (() => {
@@ -3329,7 +3464,7 @@ export const useStore = create((set, get) => ({
         reprint: true,
         type: 'kitchen',
         items: centreItems.map(i => ({
-          qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
+          qty: i.qty, name: tillKitchenName(i),
           mods: [
             ...(i.mods?.map(m => (m._instruction ? m.label : (m.name || m.label))).filter(Boolean) || []),
             ...(i.allergens?.length ? [`⚠ ${i.allergens.map(a=>a.toUpperCase()).join(' · ')}`] : []),
@@ -3439,7 +3574,7 @@ export const useStore = create((set, get) => ({
           allCourses,
           meta,
           items: centreItems.map(i => ({
-            qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
+            qty: i.qty, name: tillKitchenName(i),
             mods: [
               // v4.6.10: drop the `${groupLabel}: ` prefix on mods shown on KDS and
               // production dockets. Kitchens care about the modifier itself, not which
@@ -3597,14 +3732,20 @@ export const useStore = create((set, get) => ({
         }
       }
       const pendingItems = order.items.filter(isUnsentLine);
-      const label = customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
       // v5.8.66: the ref is taken HERE, before the tickets, so the KDS can show the receipt
       // number (#35). It was taken a few lines further down; the value and the single
       // getNextOrderRefLocal call are unchanged, only the moment moved.
       const ref = order.ref || getNextOrderRefLocal();
+      // 30 Sep 2026 (Peter, Coffee Boy): a dine in order with a flag number is a table ticket,
+      // "Table 30 · #09", exactly as a kiosk flag order (kioskTicketLabels rule 2): the KDS
+      // headline is the table, the paper header too, and no floor table is named like that so
+      // fireCourse never picks it up. A flag typed before the order became a takeaway is ignored.
+      const flag = orderFlag(order, orderType);
+      const label = flag ? flagTicketLabel(flag, ref)
+        : customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const walkInMeta = buildTicketMeta({
-        channel: 'till', orderType,
+        channel: 'till', orderType, isTable: !!flag,
         customerName: customer?.name, orderRef: ref,
         source: thisDeviceName(), staff: staff?.name,
         note: joinNotes(order.orderNote, customer?.notes),
@@ -3635,7 +3776,13 @@ export const useStore = create((set, get) => ({
       // (ref is taken above, before the KDS tickets, v5.8.66)
       const queueEntry = {
         ref, type: orderType,
-        customer: customer ? { ...customer } : { name: customer?.name || label },
+        // The flag rides in customer (the jsonb QueueSync persists, as the kiosk's kioskTable
+        // does) so Orders shows "Table 30" and a reopened order keeps its flag. With no customer
+        // the name was the ticket label; for a flag order that is "Table 30 · #09", which Orders
+        // would show as the customer's name and a reopen would attach as a real customer, so a
+        // flag order with no customer gets an empty name (Orders then shows the order ref, as an
+        // unnamed walk in does).
+        customer: { ...(customer ? { ...customer } : { name: flag ? '' : label }), ...(flag ? { tableFlag: flag } : {}) },
         // v4.6.5 follow-up: align with dine-in visual semantics. Table sessions persist
         // the fired+sent mutation on their items until payment, so reopening a table shows
         // them green. Walk-ins had the same mutation applied to walkInOrder but clearWalkIn()
@@ -3737,13 +3884,20 @@ export const useStore = create((set, get) => ({
   // Throttled to ~5 min; piggybacks the SyncBridge 60s tick.
   releaseDueCateringOrders: async () => {
     if (!supabase) return;
-    let isMaster = false;
-    try { isMaster = JSON.parse(localStorage.getItem('rpos-device-config') || '{}').isMaster === true; } catch { /* default false */ }
-    if (!isMaster) return;
+    // 12 Oct 2026 (Preston): the ONE master rule (lib/masterTill.js). This read the flag in
+    // 'rpos-device-config' straight from storage, so a Back Office tab or a bookings screen in
+    // a browser that had once been a master till ran this sweep too, for whatever venue it had open.
+    if (!isMasterTillHere()) return;
     if (useStore._cateringReleaseRunning) return;   // no overlapping runs
     useStore._cateringReleaseRunning = true;
     const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
     if (!locId || locId === 'loc-demo') { useStore._cateringReleaseRunning = false; return; }
+    // 12 Oct 2026: the rule again now the venue is known (a till only ever releases its own
+    // venue's orders), and the same menu gate as the live route. It is asked once per tick and
+    // the 60 s tick is the retry, so a tick that must wait for the menu reads no row and
+    // books no courier.
+    const sweepGate = autoRouteGate(useStore.getState(), locId);
+    if (sweepGate !== 'route' && sweepGate !== 'route-blind') { useStore._cateringReleaseRunning = false; return; }
     try {
       // Drain all due catering oldest-fire-first; loop while a full page returns so a big
       // same-time batch clears in one tick (not 50/5-min). routeKioskOrderPrints' atomic
@@ -3780,7 +3934,7 @@ export const useStore = create((set, get) => ({
             items: row.items || [], customer: row.customer || null,
             collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
-          });
+          }, { trigger: 'catering' });
           // v5.5.653: FIRE-TIME courier dispatch — a catering delivery order set to 'uber' mode
           // dispatches its courier now (event day), not at order time. Master-only (this fn is
           // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
@@ -3931,7 +4085,13 @@ export const useStore = create((set, get) => ({
 
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
-  clearWalkIn: () => set({ walkInOrder:null, customer:null, orderType:'dine-in', pendingLoyaltyReward:null }),
+  // 30 Sep 2026: the next order starts on the profile's default order type (lib/tillOrderType.js),
+  // not always dine in. Floor tables still open as dine in (openTable and friends).
+  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null })),
+  // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
+  // (FlagNumberModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
+  // and the prompt never shows twice. Digits only, or cleared.
+  setWalkInTableFlag: (flag) => set(s => ({ walkInOrder: { ...(s.walkInOrder || {}), tableFlag: cleanFlagNumber(flag) } })),
 
   // activeSessions — map of tableId → session for all tables that have a session
   // Used by Reports, AI assistant, and back office dashboard
@@ -4015,7 +4175,17 @@ export const useStore = create((set, get) => ({
   setAllergens: (arr) => set({ allergens: Array.isArray(arr) ? [...arr] : [] }),
 
   // ── Order type / customer ─────────────────
-  orderType: 'dine-in',
+  // 30 Sep 2026 (Peter, Coffee Boy): the till STARTS on the profile's default order type, read
+  // from the cached device config at module load the way trainingMode is. setDeviceConfig also
+  // applies it, but every boot path is change gated (App.jsx deviceConfigChanged), so on a plain
+  // reload prev equals next and it never runs: without this a drive thru only till came up on
+  // Dine in after every restart. With no cached config: dine in, as before.
+  orderType: (() => {
+    try {
+      const raw = sessionStorage.getItem('rpos-terminal-config') || localStorage.getItem('rpos-device-config');
+      return defaultOrderTypeFor(raw ? JSON.parse(raw) : null);
+    } catch { return 'dine-in'; }
+  })(),
   // v4.5.6: when order type changes (dine-in / takeaway / collection / delivery),
   // reprice the order the toggle belongs to against the new channel:
   //   - walkInOrder.items (walk-in / takeaway / collection / delivery flow), always
@@ -4113,16 +4283,10 @@ export const useStore = create((set, get) => ({
   // ── Customers (v4.6.62) ──────────────────────────────────────
   // Phone is the primary identifier (normalised to E.164). DB-backed via Supabase.
 
-  // Normalise UK-ish phone strings into E.164. Falls back to digits-only if format unknown.
-  _normalisePhone: (raw) => {
-    if (!raw) return null;
-    const digits = String(raw).replace(/[^\d+]/g, '');
-    if (!digits) return null;
-    if (digits.startsWith('+')) return digits;
-    if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-    if (digits.startsWith('44')) return '+' + digits;
-    return digits;
-  },
+  // The one phone match key (29 Sep 2026, supabase/functions/_shared/phoneKey.js) in this venue's
+  // region: E.164 when the number can be read ('07931 129015' is '+447931129015'), its digits
+  // otherwise, null under 7 digits. The database finds customers by the same key.
+  _normalisePhone: (raw) => phoneKeyOfVenue(raw),
 
   // Synchronous filter against the session cache. Used by CustomerModal alongside the live
   // Supabase search for instant feedback.
@@ -4167,7 +4331,7 @@ export const useStore = create((set, get) => ({
         // Primary path: search within the organisation
         const { data, error: searchErr } = await supabase
           .from('customers')
-          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, allergens')
           .eq('org_id', orgId)
           .is('deleted_at', null)
           .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,phone_raw.ilike.%${safe}%,email.ilike.%${safe}%`)
@@ -4194,6 +4358,10 @@ export const useStore = create((set, get) => ({
           }
         } catch (e) { console.warn('[searchCustomersLive] customer-search threw:', e?.message || e); }
       }
+      // 30 Sep 2026 (Barnsley KDS #58): the till never carries a customer RECORD's notes. The
+      // selects above leave them out; customer-search still returns them, so they are dropped
+      // here too, before the rows reach a form, a reservation or the search cache.
+      enriched = (enriched || []).map(withoutRecordNotes).filter(Boolean);
       // 27 Sep 2026: the link search stops here, phoneless rows only (customer-search returns any).
       if (phoneless) return phonelessResults(enriched);
       // v5.5.248: fallback — if org_id lookup failed or query returned nothing,
@@ -4205,16 +4373,17 @@ export const useStore = create((set, get) => ({
       if (enriched.length === 0 && safe.length >= 6 && orgId) {
         const phoneN = get()._normalisePhone(safe);
         const phoneFilters = [safe];
-        if (phoneN && phoneN !== safe) phoneFilters.push(phoneN);
+        // 29 Sep 2026: every shape the number may be stored in (the key, the national form, digits)
+        for (const v of phoneVariants(phoneN, safe, activePhoneRegion())) if (!phoneFilters.includes(v)) phoneFilters.push(v);
         const orFilter = phoneFilters.map(p => `phone.eq.${p},phone_raw.eq.${p}`).join(',');
         const { data: fallback } = await supabase
           .from('customers')
-          .select('id, name, phone, phone_raw, email, marketing_opt_in, notes, allergens')
+          .select('id, name, phone, phone_raw, email, marketing_opt_in, allergens')
           .eq('org_id', orgId)
           .is('deleted_at', null)
           .or(orFilter)
           .limit(8);
-        if (fallback?.length) enriched = fallback;
+        if (fallback?.length) enriched = fallback.map(withoutRecordNotes).filter(Boolean);
       }
       // Merge into customerHistory cache, deduped
       const merged = [...enriched, ...(get().customerHistory || [])];
@@ -4289,7 +4458,7 @@ export const useStore = create((set, get) => ({
       // left off and the rest saved, never the whole save lost (Ela Stettner's "DB error"). An email
       // never finds a profile here: order close, the Orders Hub and every background save stay
       // phone only. Only the two customer forms join by email (autoJoinCustomerByEmail below).
-      return await upsertCustomerRow({ db: supabase, orgId, c, phoneN });
+      return await upsertCustomerRow({ db: supabase, orgId, c, phoneN, region: activePhoneRegion() });
     } catch (err) {
       console.warn('[upsertCustomer] failed:', err?.message || err);
       return null;
@@ -4325,7 +4494,7 @@ export const useStore = create((set, get) => ({
       const phoneN = get()._normalisePhone(customer?.phone);
       if (!orgId || !phoneN) return none;
       return await autoJoinCustomer({
-        customer, openedWithEmail, phoneN, db: supabase, orgId, locId,
+        customer, openedWithEmail, phoneN, db: supabase, orgId, locId, region: activePhoneRegion(),
         postMerge: postCustomerMerge,
         sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
       });
@@ -4364,7 +4533,7 @@ export const useStore = create((set, get) => ({
       if (!orgId) return linkRefused('no_venue');
       const phoneN = get()._normalisePhone(customer?.phone);
       return await linkOrderCustomer({
-        customer, member, phoneN, db: supabase, orgId, locId,
+        customer, member, phoneN, db: supabase, orgId, locId, region: activePhoneRegion(),
         postMerge: postCustomerMerge,
         sendNotice: (body) => postJoinNotice({ ...body, location_id: locId }),
         lookup: (phone) => fetchCustomerByPhone(phone, locId),
@@ -4730,6 +4899,9 @@ export const useStore = create((set, get) => ({
     // that resets on reload), so a finished/collected order RESURRECTED on the next boot
     // (loadQueues re-pulls any row that isn't status 'collected'). Location-scoped because
     // refs (e.g. #1002) collide across locations.
+    // 12 Oct 2026: only a named staff action on a till or in Back Office removes the row from the
+    // database (lib/queueDeleteRule.js). A kitchen screen, a kiosk or a host stand never does.
+    if (!mayRemoveQueueRow(readQueueRole(get().deviceConfig))) return;
     try {
       const locId = getActiveLocationSync();
       if (supabase && locId && ref) {
@@ -5052,7 +5224,7 @@ export const useStore = create((set, get) => ({
         meta: buildTicketMeta({ channel: 'bar', customerName: tab.name || null, source: thisDeviceName(), staff: staffName }),
         items: centreItems.map(i => ({
           qty: i.qty,
-          name: i.kitchenName || i.menu_name || i.menuName || i.name,
+          name: tillKitchenName(i),
           mods: [
             // v4.6.10: no groupLabel prefix on bar-round tickets either.
             // v5.5.965: one pass in line order — instructions were forced last here too.
@@ -6294,7 +6466,11 @@ export const useStore = create((set, get) => ({
           taxCtx: get().getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
         }).tax;
-      } catch {}
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from its lines or refuses the save.
+        console.error('[tax] buildCloseRecord: the VAT could not be worked out:', e?.message || e);
+      }
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
 
@@ -6352,7 +6528,9 @@ export const useStore = create((set, get) => ({
       // 27 Sep 2026: `??`, not `||`. A 100% comp at a table charges £0, and `0 || session.total`
       // booked the undiscounted bill as taken (phantom cash in the drawer). No grand: as before.
       total:      paymentInfo.grand ?? session.total ?? 0,
-      taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,  // v4.6.19
+      // v4.6.19. 8 Oct 2026: rounded once with the one rule (taxRule.roundVat), so the in memory
+      // record equals the row closedCheckRow writes; null stays null (never 0).
+      taxAmount:  roundVat(taxBreakdown?.totalTax),
       method:     paymentInfo.method || 'card',
       // v5.9.11: what paid the check, per tender (lib/accounting/tenders.js). CheckoutModal
       // hands over the exact list; other callers (MPOS card, a table closed with no payment
@@ -6474,7 +6652,7 @@ export const useStore = create((set, get) => ({
       if (!isPendingCheck(job.closed_check_id) && Date.now() - (Number(localClose.closedAt) || 0) > 30000) {
         markJobReconciled(job.id).catch(() => {});
       }
-      return;
+      return { booked: false, alreadyLocal: true };
     }
     const table = tableId ? tables.find(t => t.id === tableId) : null;
     if (table?.session && isSessionClosed(tableId, table.session)) return;
@@ -6598,7 +6776,13 @@ export const useStore = create((set, get) => ({
           discountRules: get().discountRules,
           timezone: get().locationConfig?.timezone,
         });
-      } catch { headlessTax = null; }
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from the frozen lines or refuses
+        // the save by name (the pending copy is kept and sent once the rates load).
+        console.error('[tax] reconciler headless record: the VAT could not be worked out:', e?.message || e);
+        headlessTax = null;
+      }
       record = {
         id: job.closed_check_id,
         ref: frozenRef || getNextOrderRefLocal(),
@@ -6618,7 +6802,7 @@ export const useStore = create((set, get) => ({
         subtotal, service: headlessService(d, headlessTax),
         tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
         total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
-        taxAmount: headlessTax?.totalTax != null ? headlessTax.totalTax : null,
+        taxAmount: roundVat(headlessTax?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
         method: priorLegs.length ? 'split' : 'card',
         tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
@@ -6686,6 +6870,8 @@ export const useStore = create((set, get) => ({
     // NOTHING local, flag it once where a human can see it, and let the next tick retry.
     if (!ok) {
       console.warn('[closeApprovedTerminalJob] check write did not land for', job.closed_check_id, '— job left approved for retry');
+      // 30 Sep 2026: the caller (TerminalJobReconciler) reads what was booked; nothing was.
+      let bookedResult = { booked: false };
       if (!_closeFailFlagged.has(job.id)) {
         _closeFailFlagged.add(job.id);
         logActivity(record.locationId || d.locationId || null, {
@@ -6695,7 +6881,7 @@ export const useStore = create((set, get) => ({
           refType: 'terminal_job', refId: job.id,
         }).catch(() => {});
       }
-      return;
+      return bookedResult;
     }
 
     // Idempotent on every caller: prepend the tombstone.
@@ -6771,6 +6957,11 @@ export const useStore = create((set, get) => ({
     // reference handle for the check. A stale handle here is what produced
     // "payment reference has already been used" on the NEXT sale sharing the key.
     if (job.check_key) { try { forgetJob(job.check_key); } catch { /* best-effort */ } }
+    // 30 Sep 2026: tell the caller what was booked. TerminalJobReconciler uses it to adopt a sale
+    // this till booked after its own checkout closed (clear the matching walk in, sticky banner:
+    // lib/payments/terminalJobCloser.js adoptBookedSale). `created` is true for the one elected
+    // writer only; a repeat upsert of the same row books nothing new.
+    return { booked: true, created: !!created, ref: record.ref || null, closedCheckId: record.id, source: record.source || null };
   },
 
   /**
@@ -6834,26 +7025,41 @@ export const useStore = create((set, get) => ({
   // Both used to console.warn only, so a 401/500 left the reward unconsumed and re-redeemable.
   redeemLoyaltyAtCommit: async (loy, record, customer) => {
     if (!loy?.pending_commit || !supabase || !record?.id) return;
-    if (!loy.stampProgramId && !loy.reward_id) return;
+    // 30 Sep 2026 (Peter, Coffee Boy: "redeem multiple stamp cards on the same order"): the staged
+    // object may hold several rewards (lib/loyaltyMultiRedeem.js combineRedemptions). Each one is
+    // committed on its own, ONE AFTER THE OTHER, with its slot number: loyalty-redeem keys a stamp
+    // redemption on check + programme, so the second free drink needs slot 2, and two calls for
+    // the same programme in the air at once could both pass its availability check and then both
+    // roll back (its race guard), leaving a member with two drinks and no card used. In turn,
+    // each call sees the row the one before it wrote. One reward staged the old way is a list
+    // of one, so nothing changes for it.
+    const list = withSlots(redemptionsOf(loy));
+    if (!list.length) return;
     if (isTrainingMode()) return;   // TRAINING MODE: never consume real points/stamps
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
     const token = await ensureAuthToken().catch(() => null);
-    const r = await commitRedemption({
-      kind: 'loyalty',
-      customerId: loy.customer_id || customer?.customerId || customer?.id || null,
-      locationId: locId,
-      stampProgramId: loy.stampProgramId || null,
-      rewardId: loy.reward_id || null,
-      channel: 'pos',
-      closedCheckId: record.id,
-      staffId: staff?.id || null,
-    }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
-    // Queued failures retry themselves; a refusal never will, so say what didn't happen.
-    if (!r.ok && !r.queued) {
-      get().showToast?.(`Reward discount given but NOT deducted (${r.error}) — check the customer's balance in Back Office.`, 'error');
+    const results = [];
+    for (const one of list) {
+      const r = await commitRedemption({
+        kind: 'loyalty',
+        customerId: one.customer_id || loy.customer_id || customer?.customerId || customer?.id || null,
+        locationId: locId,
+        stampProgramId: one.stampProgramId || null,
+        rewardId: one.reward_id || null,
+        slot: one.slot,
+        channel: 'pos',
+        closedCheckId: record.id,
+        staffId: staff?.id || null,
+      }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
+      results.push(r);
+      // Queued failures retry themselves; a refusal never will, so say what didn't happen.
+      if (!r.ok && !r.queued) {
+        const which = list.length > 1 ? `${one.reward_name || 'Reward'}${one.item_name ? ` (${one.item_name})` : ''}: ` : '';
+        get().showToast?.(`${which}Reward discount given but NOT deducted (${r.error}). Check the customer's balance in Back Office.`, 'error');
+      }
     }
-    return r;
+    return results.length === 1 ? results[0] : { ok: results.every((r) => r.ok), queued: results.some((r) => r.queued), error: results.find((r) => r.error)?.error || null, results };
   },
 
   redeemPromoCode: async (promo, record, customer) => {
@@ -7048,7 +7254,11 @@ export const useStore = create((set, get) => ({
           taxCtx: get().getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
         }).tax;
-      } catch {}
+      } catch (e) {
+        // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+        // save time guard (lib/saleVatGuard.js), which repairs it from its lines or refuses the save.
+        console.error('[tax] recordWalkInClosed: the VAT could not be worked out:', e?.message || e);
+      }
     }
     taxBreakdown = taxForChargedGoods(taxBreakdown, paymentInfo);   // v5.9.97: a 100% comp books no VAT
     // If the walk-in was reopened from orderQueue (OrdersHub openOrder) it already
@@ -7061,7 +7271,9 @@ export const useStore = create((set, get) => ({
       id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
-      tableLabel: null,
+      // 30 Sep 2026: a dine in order with a flag number books "Table 30" (the receipt prints
+      // check.tableLabel, printDoc.js). tableId stays null: it is not a floor table.
+      tableLabel: flagTableLabel(orderFlag(walkInOrder, orderType)),
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       server: staff?.name || 'Staff',
       staffId: staff?.id || null,                                              // v4.6.19
@@ -7078,7 +7290,7 @@ export const useStore = create((set, get) => ({
       // 27 Sep 2026: `??`, not `||`. A 100% comp charges £0, and `0 || subtotal` booked the full
       // price as taken in cash (7 "Custom 100%" checks at Leeds showed £44.90 cash never taken).
       total: paymentInfo.grand ?? subtotal,
-      taxAmount: taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null, // v4.6.19
+      taxAmount: roundVat(taxBreakdown?.totalTax),   // v4.6.19. 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
       tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
@@ -7765,20 +7977,153 @@ export const useStore = create((set, get) => ({
   // ── Void log ──────────────────────────────
   voidLog: [],
 
+  // 30 Sep 2026 (Peter, Coffee Boy: "Can't void anything other than table orders"): the KDS now
+  // learns about a void. Before this a void only changed the till's own copy; the kitchen ticket
+  // stayed exactly as sent and the cook made the food. This flags the voided lines on every
+  // pending kitchen ticket that carries them (the ticket keeps the line's uid, createKdsTickets),
+  // in memory and on kds_tickets, and prints a "** VOID **" docket to each production centre
+  // that had them. Tables and walk ins both come through here.
+  //   label   the ticket's table_label (a table label, or the walk in label sendToKitchen used)
+  //   lines   the order lines being voided (their uids are matched)
+  voidKitchenLines: ({ label, lines, reason, manager }) => {
+    const uids = lineUids(lines);
+    if (!uids.size) return;
+    const centres = new Map();   // centreId -> voided ticket items (for the docket)
+    const noteCentre = (centreId, items) => {
+      if (!centreId) return;
+      const have = centres.get(centreId) || [];
+      centres.set(centreId, [...have, ...items.filter(i => uids.has(i.uid))]);
+    };
+    // The till's own copy first (also what a KDS in the same browser reads).
+    set(s => ({
+      kdsTickets: (s.kdsTickets || []).map(t => {
+        if (!ticketHasLines(t.items, uids)) return t;
+        const r = voidTicketItems(t.items, uids);
+        if (!r.changed) return t;
+        noteCentre(t.centreId, t.items);
+        return { ...t, items: r.items };
+      }),
+    }));
+    const printDockets = () => {
+      const printConfig = (() => {
+        try {
+          const stored = get().printRouting;
+          if (stored?.centres?.length) return stored;
+          return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
+        } catch { return { centres: [], routing: {} }; }
+      })();
+      centres.forEach((items, centreId) => {
+        if (!items.length) return;
+        const centre = printConfig.centres?.find(c => c.id === centreId);
+        get().routePrintJob({
+          centreId,
+          printerName: centre?.printer?.name || centre?.name || 'Kitchen',
+          tableLabel: label || '',
+          server: manager?.name || get().staff?.name || '',
+          covers: 0, course: 0,
+          items: items.map(i => ({ qty: i.qty, name: i.name, mods: [] })),
+          type: 'kitchen',
+          itemLabel: `** VOID ** ${reason || ''}`.trim(),
+        });
+      });
+    };
+    // TRAINING MODE: no real kds_tickets write and no docket.
+    if (isTrainingMode() || !supabase) return;
+    (async () => {
+      try {
+        const locId = getActiveLocationSync() || await getLocationId();
+        if (!locId) { printDockets(); return; }
+        // Matched by the lines' uids, not the label: a walk in label ("takeaway") is shared by
+        // every unnamed takeaway of the day. Pending tickets at a venue are a few dozen at most.
+        const { data: tickets } = await supabase
+          .from('kds_tickets')
+          .select('id, centre_id, items')
+          .eq('location_id', locId)
+          .in('status', ['pending', 'held'])
+          .order('sent_at', { ascending: false })
+          .limit(200);
+        for (const t of tickets || []) {
+          if (!ticketHasLines(t.items, uids)) continue;
+          const r = voidTicketItems(t.items, uids);
+          if (!r.changed) continue;
+          if (!centres.has(t.centre_id)) noteCentre(t.centre_id, t.items);
+          // Fix round 2 (the zero row blocker): counted, and kept while this till is not linked.
+          const w = await mustChangeRow({
+            table: 'kds_tickets', type: 'update', payload: { items: r.items },
+            match: { id: t.id }, kind: 'kds_void', label: `Void on kitchen ticket ${label || ''}`.trim(),
+          });
+          if (w.outcome === 'error') console.warn('[voidKitchenLines] kds_tickets update failed', w.error?.message || w.error);
+        }
+      } catch (e) { console.warn('[voidKitchenLines] failed:', e?.message || e); }
+      printDockets();
+    })();
+  },
+
+  // The activity feed row for a void (Back Office bell + panel). Fire and forget.
+  _logVoidActivity: ({ label, lines, reason, manager, ref }) => {
+    try {
+      const locId = getActiveLocationSync();
+      if (!locId) return;
+      logActivity(locId, {
+        kind: 'order', severity: 'info',
+        title: `Void: ${label}`,
+        body: [voidLinesText(lines), reason].filter(Boolean).join(' · '),
+        refType: 'order', refId: ref || null, actorName: manager?.name || null,
+      }).catch(() => {});
+    } catch { /* the feed is a log, never a blocker */ }
+  },
+
+  // v4.6.11 / v5.5.189: a voided line is not being consumed, so its daily count (and its
+  // modifier sub items) go back. One helper for every void path (till line, till check, Orders
+  // screen); decrementDailyCount itself ignores an item with no count set, so a kiosk or online
+  // line that was never counted is a no op here.
+  _restoreDailyCounts: (lines) => {
+    (Array.isArray(lines) ? lines : []).forEach(i => {
+      if (!i?.itemId || i.voided) return;
+      get().decrementDailyCount(i.itemId, -(i.qty || 1));
+      (i.mods || []).forEach(mod => {
+        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (i.qty || 1)));
+      });
+    });
+  },
+
+  // A void of one line. tableId null = the walk in order (takeaway, collection, delivery, drive
+  // thru, dine in without a table). Same modal, same log, same kitchen notice as a table.
   voidItem: (tableId, itemUid, { manager, reason }) => {
-    const { tables, voidLog, showToast } = get();
+    const { tables, showToast } = get();
+    if (!tableId) {
+      const order = get().walkInOrder;
+      const item = order?.items?.find(i => i.uid === itemUid);
+      if (!item || item.voided) return;
+      // A HubRise order opened for payment is a display copy of the channel's order (its lines
+      // carry hrpay uids the queue row does not have): a line void here would show one total and
+      // charge another. The channel is told from the Orders screen instead.
+      if (order?._channelRef) { showToast('This is a channel order. Reject it from the Orders screen.', 'error'); return; }
+      get()._restoreDailyCounts([item]);
+      const label = orderVoidLabel({ orderType: get().orderType, customer: get().customer, ref: order.ref });
+      const markVoided = (items) => (items || []).map(i => i.uid === itemUid ? { ...i, status: 'voided', voided: true } : i);
+      set(s => {
+        const items = markVoided(s.walkInOrder?.items);
+        const subtotal = items.filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0);
+        return {
+          walkInOrder: { ...s.walkInOrder, items, subtotal, total: subtotal },
+          // The queue copy (Orders screen, other tills) shows the line struck through too.
+          orderQueue: order.ref ? s.orderQueue.map(o => o.ref === order.ref
+            ? { ...o, items: markVoided(o.items), total: markVoided(o.items).filter(i => !i.voided).reduce((sum, i) => sum + i.price * i.qty, 0) }
+            : o) : s.orderQueue,
+          voidLog: [voidLogEntry({ type: 'item', label, items: [item], reason, manager, ref: order.ref }), ...s.voidLog],
+        };
+      });
+      get().voidKitchenLines({ label, lines: [item], reason, manager });
+      get()._logVoidActivity({ label, lines: [item], reason, manager, ref: order.ref });
+      showToast(`${item.name} voided. ${reason}`, 'warning');
+      return;
+    }
     const table = tables.find(t => t.id === tableId);
     const item  = table?.session?.items?.find(i => i.uid === itemUid);
     if (!item) return;
 
-    // v4.6.11: restore daily count — the voided item is not being consumed.
-    if (item.itemId && !item.voided) {
-      get().decrementDailyCount(item.itemId, -(item.qty || 1));
-      // v5.5.189: restore modifier sub-item counts too
-      (item.mods || []).forEach(mod => {
-        if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (item.qty || 1)));
-      });
-    }
+    get()._restoreDailyCounts([item]);
 
     // Mark item as voided (keep visible with strikethrough)
     set(s => ({
@@ -7788,47 +8133,59 @@ export const useStore = create((set, get) => ({
         const subtotal = items.filter(i=>!i.voided).reduce((s,i)=>s+i.price*i.qty,0);
         return { ...t, session:{ ...t.session, items, subtotal, total:subtotal*1.125 } };
       }),
-      voidLog: [{
-        id:`void-${Date.now()}`, timestamp:Date.now(), type:'item',
-        tableId, tableLabel:table.label,
-        items:[{ name:item.name, price:item.price, qty:item.qty }],
-        totalValue: item.price * item.qty,
-        reason, manager: manager.name, managerId: manager.id,
-      }, ...s.voidLog],
+      voidLog: [voidLogEntry({ type: 'item', tableId, label: table.label, items: [item], reason, manager }), ...s.voidLog],
     }));
-    showToast(`${item.name} voided — ${reason}`, 'warning');
+    // 30 Sep 2026: the kitchen learns about it (it never did before).
+    get().voidKitchenLines({ label: table.label, lines: [item], reason, manager });
+    get()._logVoidActivity({ label: table.label, lines: [item], reason, manager, ref: null });
+    showToast(`${item.name} voided. ${reason}`, 'warning');
   },
 
+  // A void of the whole order. tableId null = the walk in order: same records as a table void
+  // (void log, closed_checks tombstone flagged voided with no money on it, kitchen notice,
+  // activity feed) and the queue row goes, so no Orders screen keeps serving it.
   voidCheck: (tableId, { manager, reason }) => {
     const { tables, showToast } = get();
+    if (!tableId) {
+      const order = get().walkInOrder;
+      const lines = voidableLines(order?.items);
+      if (!lines.length) return;
+      // A HubRise order opened for payment is a channel's order: it is rejected from the
+      // Orders screen (the channel is told), never voided here.
+      if (order._channelRef) { showToast('This is a channel order. Reject it from the Orders screen.', 'error'); return; }
+      const { orderType, customer, staff } = get();
+      get()._restoreDailyCounts(lines);
+      const label = orderVoidLabel({ orderType, customer, ref: order.ref });
+      const tomb = buildVoidTombstone({
+        order, orderType, customer, staff, manager, reason,
+        locationId: getActiveLocationSync() || null, source: 'pos',
+      });
+      set(s => ({
+        voidLog: [voidLogEntry({ type: 'check', label, items: lines, reason, manager, ref: order.ref }), ...s.voidLog],
+        closedChecks: capClosedChecks([tomb, ...(s.closedChecks || [])]),
+        deliveryQuote: null,
+      }));
+      try { insertClosedCheck(tomb); } catch (e) { console.warn('[voidCheck] tombstone not written:', e?.message || e); }
+      // Only the lines the kitchen has: an unsent line was never on a ticket.
+      get().voidKitchenLines({ label, lines: lines.filter(i => i.status === 'sent'), reason, manager });
+      get()._logVoidActivity({ label, lines, reason, manager, ref: order.ref });
+      if (order.ref) get().removeFromQueue(order.ref);   // local + DB delete, like a HubRise reject
+      get().clearWalkIn();
+      showToast(`${label} voided by ${manager.name}. ${reason}`, 'error');
+      return;
+    }
     const table  = tables.find(t => t.id === tableId);
     const session = table?.session;
     if (!session) return;
 
-    // v4.6.11: restore daily count for every non-voided item before we void the check.
-    (session.items || []).forEach(i => {
-      if (i.itemId && !i.voided) {
-        get().decrementDailyCount(i.itemId, -(i.qty || 1));
-        // v5.5.189: restore modifier sub-item counts too
-        (i.mods || []).forEach(mod => {
-          if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (i.qty || 1)));
-        });
-      }
-    });
+    get()._restoreDailyCounts(session.items);
 
-    const totalValue = session.items.reduce((s,i) => s+i.price*i.qty, 0);
     set(s => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId || !t.session) return t;
-        const items = t.session.items.map(i => ({ ...i, status:'voided', voided:true }));
         return { ...t, status:'available', session:null };
       }),
-      voidLog: [{
-        id:`void-${Date.now()}`, timestamp:Date.now(), type:'check',
-        tableId, tableLabel:table.label,
-        items: session.items.map(i => ({ name:i.name, price:i.price, qty:i.qty })),
-        totalValue, reason, manager:manager.name, managerId:manager.id,
-      }, ...s.voidLog],
+      voidLog: [voidLogEntry({ type: 'check', tableId, label: table.label, items: session.items, reason, manager }), ...s.voidLog],
       activeTableId: s.activeTableId === tableId ? null : s.activeTableId,
     }));
     // v5.9.72 TOMBSTONE (Leeds, 26 Sep 2026: "this order is being voided but still coming back").
@@ -7837,12 +8194,15 @@ export const useStore = create((set, get) => ({
     // writes a closed check that every device treats as the occupation's tombstone
     // (sync/sessionClosure.js, matched on seatedAt); a void now writes the same, flagged voided
     // with nothing on it, so the table stays closed everywhere and no report counts money.
+    // 30 Sep 2026: status 'voided', not 'void'. Every report (Exceptions, Z, Shifts, Servers)
+    // looks for 'voided', so the 'void' tombstones never showed as voids anywhere. Old rows are
+    // read as 'voided' too (lib/voidRules.js normaliseCheckStatus, applied in db.js).
     try {
       const record = get().buildCloseRecord(session, table, { method: 'void' }) || {};
       const tomb = {
         ...record,
         id: `void-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        voided: true, status: 'void', method: 'void',
+        voided: true, status: 'voided', method: 'void',
         // v5.9.81: the occupation key; openedAt when there is no seatedAt (a QR floor session), so
         // the void closes it on every device (lib/rowWriteFence.js checkClosesOccupation).
         seatedAt: voidOccupationKey(session),
@@ -7853,7 +8213,62 @@ export const useStore = create((set, get) => ({
       set(s => ({ closedChecks: [tomb, ...(s.closedChecks || [])] }));
       insertClosedCheck(tomb);
     } catch (e) { console.warn('[voidCheck] tombstone not written:', e?.message || e); }
-    showToast(`Check voided by ${manager.name} — ${reason}`, 'error');
+    // 30 Sep 2026: the kitchen learns about it (it never did before).
+    const sentLines = (session.items || []).filter(i => !i.voided && i.status === 'sent');
+    get().voidKitchenLines({ label: table.label, lines: sentLines, reason, manager });
+    get()._logVoidActivity({ label: table.label, lines: session.items, reason, manager, ref: null });
+    showToast(`Check voided by ${manager.name}. ${reason}`, 'error');
+  },
+
+  // 30 Sep 2026: a void from the Orders screen (kiosk, online, QR, a till order in the queue).
+  // Same modal and reasons as the till, same records (void log, tombstone, kitchen notice,
+  // activity feed). The row is marked cancelled first (the customer's order tracker polls it
+  // and reads a missing row as "keep the last state", so a plain delete left "Being prepared"
+  // on their phone for good), then removed like a HubRise reject once the tracker has had time
+  // to see it, so every Orders screen stops serving it. Money already taken (a prepaid kiosk or
+  // online order) is NOT touched here: that sale stays booked and is refunded from Back Office,
+  // Transactions, the same as any other refund. The toast says so.
+  voidQueueOrder: (ref, { manager, reason }) => {
+    const o = (get().orderQueue || []).find(x => x.ref === ref);
+    if (!o) return null;
+    const lines = voidableLines(o.items);
+    get()._restoreDailyCounts(lines);
+    const label = orderVoidLabel({ orderType: o.type, customer: o.customer, ref: o.ref });
+    const tomb = buildVoidTombstone({
+      order: o, orderType: o.type, customer: o.customer, staff: get().staff, manager, reason,
+      locationId: getActiveLocationSync() || null, source: o.source || 'pos',
+    });
+    set(s => ({
+      voidLog: [voidLogEntry({ type: 'check', label, items: lines, reason, manager, ref: o.ref }), ...s.voidLog],
+      closedChecks: capClosedChecks([tomb, ...(s.closedChecks || [])]),
+    }));
+    try { insertClosedCheck(tomb); } catch (e) { console.warn('[voidQueueOrder] tombstone not written:', e?.message || e); }
+    get().voidKitchenLines({ label, lines, reason, manager });
+    get()._logVoidActivity({ label, lines, reason, manager, ref: o.ref });
+    if (o.source === 'hubrise') {
+      // 'reject' is a refusal before acceptance; an order the venue already accepted is
+      // cancelled (hubrise-map.ts maps both), or the channel treats it as a late refusal.
+      const action = o.status === 'received' ? 'reject' : 'cancel';
+      hubrisePushStatus(getActiveLocationSync(), o.ref, action, { reason: `Voided: ${reason}` }).catch(() => {});
+    }
+    get().updateQueueStatus(o.ref, 'cancelled');   // hidden on every Orders screen (DONE_STATUSES)
+    if (supabase && !isTrainingMode()) {
+      const locId = getActiveLocationSync();
+      if (locId) {
+        mustChangeRow({ table: 'order_queue', type: 'update', payload: { status: 'cancelled' }, match: { ref: o.ref, location_id: locId }, kind: 'queue_status', label: `Order ${o.ref} voided` })
+          .catch(e => console.warn('[voidQueueOrder] status write:', e?.message || e));
+      }
+    }
+    // The tracker polls every 5 s; the row goes once it has had time to read the cancel.
+    setTimeout(() => get().removeFromQueue(o.ref), VOID_QUEUE_ROW_LINGER_MS);
+    // The same order may be open on this till (Orders screen, Open): the walk in slot goes
+    // too, or Pay would book a sale for an order that is already voided.
+    if (get().walkInOrder?.ref === o.ref) get().clearWalkIn();
+    const paid = !!(o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source));
+    get().showToast(paid
+      ? `${label} voided. It was already paid: refund it in Back Office, Transactions.`
+      : `${label} voided by ${manager.name}. ${reason}`, 'error');
+    return tomb;
   },
 
   // ── Discounts ──────────────────────────────
@@ -7957,9 +8372,14 @@ export const useStore = create((set, get) => ({
     const printerId = centre?.printer?.id || null;
 
     // No printer mapped → still creates KDS ticket, warns staff
+    // v5.11.52 (the quiet till): not when the caller marks the centre as a kitchen screen with
+    // no printer by choice (job.kdsOnly, set only by routeKioskOrderPrints, from the saved
+    // routing). Until v5.11.52 the "routed" toast replaced this warning the moment it was
+    // raised; with that toast gone it would have shown on every QR, online and kiosk order at a
+    // venue that runs screens only. The 'no-printer' marker is kept; only the words are left off.
     if (!printerId) {
       set(s => ({ printJobs: [{ ...basePrintJob, status: 'no-printer' }, ...s.printJobs.slice(0, 49)] }));
-      get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
+      if (!job.kdsOnly) get().showToast(`No printer mapped for ${centre?.name || job.centreId} — ticket shown on KDS only`, 'warn');
       return;
     }
 
@@ -7996,7 +8416,9 @@ export const useStore = create((set, get) => ({
       // Coffee-shop "sticker" mode: when this centre is set to split each item onto its own
       // ticket, dispatch one kitchen ticket per item UNIT (qty-expanded), each labelled
       // "ITEM X OF Y" with a unique idempotency key. Skips the single combined ticket below.
-      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem) {
+      // 30 Sep 2026: a labelled notice (the "** VOID **" docket) never splits. Split stickers
+      // ignore itemLabel and read "ITEM 1 OF 2", so a sticker centre made the voided lattes again.
+      if (!isFireMarker && !isTransferNotice && centre?.splitPerItem && !job.itemLabel) {
         const units = [];
         printItems.forEach(it => { const q = Math.max(1, Math.round(it.qty || 1)); for (let n = 0; n < q; n++) units.push({ ...it, qty: 1 }); });
         const total = units.length || 1;
@@ -8041,6 +8463,7 @@ export const useStore = create((set, get) => ({
             sentAt: basePrintJob.sentAt,
             delivery: job.delivery || null,   // HubRise/delivery context block (null for all other tickets)
             reprint: !!job.reprint,           // v5.7.72: duplicate docket — banner, never a new order
+            itemLabel: job.itemLabel || undefined,   // 30 Sep 2026: "** VOID **" on a void docket
           }, printerId, { idempotencyKey });
 
       // Any outcome here is "first attempt done". PrintRetrier handles persistent retries.
@@ -8084,19 +8507,17 @@ export const useStore = create((set, get) => ({
   routeKioskOrderPrints: async (order, opts = {}) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
-    // v5.5.131: surface routing diagnostics as on-screen toasts on the master
+    // v5.5.131: surface routing PROBLEMS as on-screen toasts on the master
     // device — DevTools isn't accessible on Sunmi/Android-APK installs.
+    // v5.11.52 (the quiet till): problems only. An order that is routed with nothing wrong
+    // shows NOTHING on the till. Peter, 12 Oct 2026: "we dont want it to show on the POS a
+    // routing message, whats the point, it just needs to do it".
     const showToast = useStore.getState().showToast;
-    // NB: named srcUpper, NOT srcLabel. A second `const srcLabel` is declared later INSIDE the
-    // try block (SRC_LABEL[...]); reusing the name here put the "Routing …" toast below in that
-    // inner const's temporal dead zone → a silent ReferenceError AFTER the kitchen_routed_at
-    // claim but BEFORE the KDS/print writes, so channel orders claimed-but-never-printed (v5.5.861
-    // regression, fixed v5.5.867). Keep these two names distinct.
-    const srcUpper = order.source ? order.source.toUpperCase() : 'ORDER';
-    // v5.5.861: console entry log stays here, but the on-screen "Routing …" toast moved
-    // BELOW the dedup/staleness/claim guards — it used to fire on every backfill pass
-    // (every Back Office refresh re-toasted the same held/already-printed order, reading
-    // as a repeated new-order notification).
+    // NB: a `const srcLabel` is declared later INSIDE the try block (SRC_LABEL[...]). Nothing
+    // above that line may use the name. v5.5.861 did, in a toast, which threw a silent
+    // ReferenceError (temporal dead zone) AFTER the kitchen_routed_at claim but BEFORE the
+    // KDS/print writes, so channel orders were claimed and never printed (fixed v5.5.867 with a
+    // second const, srcUpper, which went with its "Routing" toast in v5.11.52).
     console.log('[routeKioskOrderPrints] ENTRY', order.ref, 'source:', order.source,
       'items:', order.items.map(i => ({
         id: i.id || i.itemId, name: i.name, cat: i.cat, cats: i.cats,
@@ -8124,7 +8545,8 @@ export const useStore = create((set, get) => ({
         console.log('[routeKioskOrderPrints] deferring', order.ref,
           'until', new Date(sentAtMs).toISOString(),
           `(in ${Math.round(cappedWait/60000)} min)`);
-        setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order), cappedWait);
+        // 12 Oct 2026: opts ride along, so the ticket still says what triggered it when the timer fires.
+        setTimeout(() => useStore.getState().routeKioskOrderPrints?.(order, opts), cappedWait);
         return;
       }
       // STALENESS BACKSTOP — universal guard for every routing path (catering release, master
@@ -8161,7 +8583,10 @@ export const useStore = create((set, get) => ({
       const ROUTED_LS = 'rpos-routed-refs';
       const routedBefore = (ref) => { try { return JSON.parse(localStorage.getItem(ROUTED_LS) || '[]').includes(ref); } catch { return false; } };
       const markRouted = (ref) => { try { const a = JSON.parse(localStorage.getItem(ROUTED_LS) || '[]'); if (!a.includes(ref)) { a.push(ref); while (a.length > 300) a.shift(); localStorage.setItem(ROUTED_LS, JSON.stringify(a)); } } catch {} };
-      if (!order.force && routedBefore(order.ref)) {
+      // 12 Oct 2026: force rides in opts (Orders, "Send to kitchen again"). This line read it off
+      // the order, where it never is, so the button did nothing on the till that had first
+      // routed the order, which at a one till venue is the only till.
+      if (!opts?.force && routedBefore(order.ref)) {
         console.log('[routeKioskOrderPrints] already printed on this device — skipping', order.ref);
         return;
       }
@@ -8209,10 +8634,9 @@ export const useStore = create((set, get) => ({
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
       const claimedRow = r.data?.[0] || null;
-      // v5.5.861: we are now COMMITTED to printing this order on this device — this is
-      // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
-      // passes above stay silent instead of re-notifying on every boot).
-      showToast?.(`Routing ${srcUpper} ${order.ref}…`, 'info');
+      // v5.11.52 (the quiet till): we are now COMMITTED to sending this order on this device,
+      // and from here on the till speaks only when something needs attention. The "Routing"
+      // message that was raised at this point for every order is gone.
 
       // Routing config + cat parent map (mirror getCentresForItem from sendToKitchen).
       // v5.5.868: load the routing config FRESH from the DB. The device that routes a channel
@@ -8257,18 +8681,47 @@ export const useStore = create((set, get) => ({
         });
       });
       // The fallback warning is raised at the END of this action (see below), because the
-      // routed / did-not-print toast further down would overwrite it: showToast is one slot.
+      // did-not-print toast further down would overwrite it: showToast is one slot.
 
       // v5.5.850 (supersedes v5.5.555's whole-order-only fallback): PER-ITEM fallback — any
       // item that matched no centre (e.g. a HubRise sku_ref that isn't in our catalog) still
       // prints at a default centre (first with a printer, else first centre) instead of
       // silently dropping off a MIXED order's tickets (HubRise rule: handle unknown items
       // gracefully). Identity check is safe — same object refs from order.items.
+      // 30 Sep 2026: which centre that is lives in channelFallbackCentre, so the Back Office
+      // Production centres screen can name it ("... send anything no center takes to KDS drinks").
       const unrouted = order.items.filter(it => !Object.values(byCentre).some(arr => arr.includes(it)));
       if (unrouted.length && routingConfig.centres?.length) {
-        const fb = routingConfig.centres.find(c => c.printer?.id) || routingConfig.centres[0];
+        const fb = channelFallbackCentre(routingConfig);
         if (fb) byCentre[fb.id] = [...(byCentre[fb.id] || []), ...unrouted];
       }
+
+      // 12 Oct 2026 (Preston, D5 + D6): who routed this and with what, and which lines had no screen.
+      // At Preston a Latte fell to the first centre (Food) in silence, and nothing on the ticket
+      // said which app had sent it or that it held no category tree. This sits AFTER the claim,
+      // so it has its own try and both values start as null: if anything here fails, the ticket
+      // goes exactly as before with the stamp and the notice left off. It never leaves this
+      // action early, and it never uses the channel label const declared just below it (see
+      // the note at the top of this action).
+      let routeStamp = null;
+      let routeWords = null;
+      try {
+        const st = useStore.getState();
+        const who = routerIdentity();
+        const menu = venueHoldsMenu({ venueId: locId, categories: st.menuCategories, bootLocationId: st.bootLocationId, catsReadLocationId: st._catsReadLocationId });
+        const fbCentre = unrouted.length ? channelFallbackCentre(routingConfig) : null;
+        routeStamp = buildRouteStamp({
+          deviceId: who.deviceId, deviceName: who.deviceName, mode: who.mode, version: VERSION,
+          trigger: opts?.trigger, categoryCount: (st.menuCategories || []).length,
+          parentLinks: countParentLinks(routingCtx.catParents), menuHeld: menu.ready,
+          fallbackNames: unrouted.map(i => i?.name), at: Date.now(),
+        });
+        routeWords = fallbackNotice({
+          ref: order.ref,
+          names: fbCentre ? noticeLines({ unrouted, source: order.source, menuItems: allMenuItems }).map(i => i?.name) : [],
+          centreName: fbCentre?.name || null, menuHeld: menu.ready,
+        });
+      } catch (e) { console.warn('[routeKioskOrderPrints] route stamp failed:', e?.message || e); }
 
       // v5.5.126: source-correct labels so the kitchen ticket / KDS card says
       // "Online OL-XXX" or "QR T5" instead of always "Kiosk". Falls back to
@@ -8408,13 +8861,16 @@ export const useStore = create((set, get) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
         location_id: ticketLocationId,
         centre_id: centreId,
-        meta: _kdsMeta,
+        // 12 Oct 2026 (D5): the same meta plus who routed it, under one key no reader takes.
+        meta: withRouteStamp(_kdsMeta, routeStamp),
         course: 1,
         all_courses: [1],
         fired_courses: [1],
         items: items.map(i => ({
           qty: i.qty,
-          name: i.kitchenName || i.name,
+          // 2 Oct 2026: kitchenLineName, so a size line stored with only the size as its kitchen
+          // name ("Big Boy") still reaches the kitchen as "Mont Blanc — Big Boy" (lib/itemDisplay.js).
+          name: kitchenLineName(i),
           mods: Array.isArray(i.mods) ? i.mods.map(m => m?.name || m?.label || m).filter(Boolean) : [],
           course: 1, fired: true, status: 'sent', centreId,
         })),
@@ -8425,8 +8881,20 @@ export const useStore = create((set, get) => ({
         server: serverName,
         covers: 1,
       }));
+      // v5.11.52: true when the kitchen screen refused the ticket. Read once, by the outcome this
+      // action hands back at its very end (see there). It changes nothing that is sent.
+      let kitchenScreenRefused = false;
       if (tickets.length) {
         let { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
+        // 12 Oct 2026 (D5): the stamp must never cost a ticket. A refused insert is tried once
+        // more with the meta exactly as it was before the stamp existed. The SAME rows and ids,
+        // so a retry after a lost reply cannot double a ticket: a duplicate key answer means the
+        // first try did land. The missing column retry below then runs as before.
+        if (kdsErr && routeStamp && !isMissingColumnError(kdsErr, 'meta')) {
+          console.warn('[routeKioskOrderPrints] kds insert refused, once more without the route stamp:', kdsErr?.message || kdsErr);
+          const again = await supabase.from('kds_tickets').insert(tickets.map(t => ({ ...t, meta: _kdsMeta })));
+          kdsErr = again.error && again.error.code !== '23505' ? again.error : null;   // 23505: the first try did land
+        }
         // v5.8.66: until the kds_tickets.meta migration is run the column is missing and
         // PostgREST rejects the whole insert. Retry without it so the kitchen never loses
         // the order; the KDS reads these rows from table_label exactly as before.
@@ -8436,6 +8904,7 @@ export const useStore = create((set, get) => ({
         // v5.5.971: a rejected ticket insert means the kitchen never sees the order.
         reportSave('kitchen ticket', kdsErr);
         if (kdsErr) {
+          kitchenScreenRefused = true;
           console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
           useStore.getState().showToast?.(`${order.ref} did NOT reach the kitchen screen — ${kdsErr.message}`, 'error');
         }
@@ -8470,12 +8939,16 @@ export const useStore = create((set, get) => ({
           course: 1,
           items: items.map(i => ({
             qty: i.qty,
-            kitchenName: i.kitchenName,
+            kitchenName: kitchenLineName(i),
             name: i.name,
             mods: i.mods,
           })),
           type: 'kitchen',
           delivery: deliveryBlock,
+          // v5.11.52 (the quiet till): the saved routing says this centre is a kitchen screen
+          // with no printer. That is a chosen setup, so routePrintJob keeps its "No printer
+          // mapped" warning to itself. Words only: the job is handed over exactly as before.
+          kdsOnly: !printerId,
         });
       });
 
@@ -8531,25 +9004,21 @@ export const useStore = create((set, get) => ({
         // types now, and the per-item fallback means the CATEGORY is what failed here.
         else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre that takes ${orderTypeLabelOf(typeKey) || 'this order type'}`;
         showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
-      } else {
-        const centreNames = Object.keys(byCentre).map(cid =>
-          routingConfig.centres?.find(c => c.id === cid)?.name || cid
-        );
-        // Also report which (if any) centres lack a printer mapping.
-        const noPrinter = centreNames.filter((_, idx) => {
-          const cid = Object.keys(byCentre)[idx];
-          const c = routingConfig.centres?.find(c => c.id === cid);
-          return !c?.printer?.id;
-        });
-        if (noPrinter.length) {
-          showToast?.(`⚠ ${srcLabel} ${order.ref} routed to ${centreNames.join(', ')} — but ${noPrinter.join(', ')} has no printer mapped (KDS only)`, 'warning');
-        } else {
-          showToast?.(`✓ ${srcLabel} ${order.ref} routed → ${centreNames.join(', ')}`, 'success');
-        }
       }
-      // v5.8.63: now that the routed / did-not-print toast has been raised, queue the
-      // order type fallback warning behind it so the operator actually reads it.
-      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning');
+      // v5.11.52 (the quiet till): an order that was routed with nothing wrong shows NOTHING on
+      // the till. The "routed" tick and the "no printer mapped (KDS only)" warning that were
+      // raised here are gone. A kitchen screen with no printer is a chosen setup, not a fault,
+      // and at a venue that runs screens only that warning showed on every single order.
+      // The console lines above stay as they are.
+      //
+      // The two warnings below used to queue behind the routed toast. Now they wait only when a
+      // message really is on the till at this moment (did not print, did NOT reach the kitchen
+      // screen, an item not in our menu): the toast is one slot and a new one replaces it. With
+      // nothing on the till they are shown at once.
+      const toastOnScreen = !!useStore.getState().toast;
+      // v5.8.63: the order type fallback warning, behind that message when there is one, so the
+      // operator actually reads both.
+      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning', toastOnScreen ? 3000 : 0);
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
       // durable so the row was at minimum queued), flip status from
@@ -8573,6 +9042,28 @@ export const useStore = create((set, get) => ({
           console.warn('[routeKioskOrderPrints] status→prep update failed:', e?.message);
         }
       }
+      // 12 Oct 2026 (Preston, D4 + D6): never silent. When a line had no kitchen screen, or this
+      // till sent the order before it held its menu, the till says so and one activity feed
+      // event records it. Raised LAST, after the status write, in its own try, and the event is
+      // not waited for, so it can never delay or stop the route. The toast is one slot, so this
+      // one waits behind a message that was on the till (3200 ms) and behind the order type
+      // warning (3000 ms more). v5.11.52: with neither it is shown at once, because the routed
+      // toast it used to wait for is gone.
+      // Severity info: action and urgent chime on every till of the venue.
+      try {
+        if (routeWords && Object.keys(byCentre).length > 0) {
+          setTimeout(() => useStore.getState().showToast?.(routeWords.toast, 'warning', 9000), (toastOnScreen ? 3200 : 0) + (typeFallback ? 3000 : 0));
+          logActivity(locId, { kind: 'ops', severity: 'info', title: routeWords.title, body: routeWords.body, refType: 'kitchen_route', refId: order.ref, actorName: routeStamp?.deviceName || null }).catch(() => {});
+        }
+      } catch (e) { console.warn('[routeKioskOrderPrints] route notice failed:', e?.message || e); }
+      // v5.11.52: what happened, for a person's press (Orders, "Send to kitchen again"). The
+      // action itself stays quiet. That button now says "Sent to the kitchen again" in its own
+      // words, because the "Routing" and "routed" messages were the only sign it had worked.
+      // sent is true only here, at the very end, when at least one centre took the order and
+      // the kitchen screen did not refuse the ticket. Every early return above, and the catch
+      // below, hand back nothing, which the button reads as not sent. The automatic callers
+      // (sync/ChannelAutoRouter.js, the catering sweep, Accept) do not read it.
+      return { sent: Object.keys(byCentre).length > 0 && !kitchenScreenRefused };
     } catch (e) {
       console.warn('[routeKioskOrderPrints] failed:', e?.message);
     }
@@ -8738,6 +9229,29 @@ export const useStore = create((set, get) => ({
 
   // ── Toast ─────────────────────────────────
   toast: null,
+  // 30 Sep 2026: STICKY banner for a card sale this till booked after its checkout was closed mid
+  // tender (TerminalJobReconciler + lib/payments/terminalJobCloser.js adoptBookedSale). Not a toast:
+  // it stays until staff dismiss it, because the next thing they were about to do was ring the same
+  // order again (Huddersfield R5737/R5739). { text, jobId, ref, at }.
+  cardAdoptedBanner: null,
+  showCardAdoptedBanner: (b) => set({ cardAdoptedBanner: b ? { ...b, at: b.at || Date.now() } : null }),
+  dismissCardAdoptedBanner: () => set({ cardAdoptedBanner: null }),
+  // 30 Sep 2026: "Open R5737" on the checkout's possible repeat warning. POSSurface switches its
+  // right pane to History and CheckHistory searches for the ref, then clears this. { ref, at }.
+  checkHistoryFocus: null,
+  openCheckHistoryFor: (ref) => set({ checkHistoryFocus: ref ? { ref: String(ref), at: Date.now() } : null }),
+  // 30 Sep 2026: the checkout froze an order ref into the card machine job (getOrderRef); give it to
+  // the walk in NOW, at the first send, not only at close (recordWalkInClosed does the same stamp
+  // there). The kitchen send reuses an existing ref (order.ref || getNextOrderRefLocal), so the
+  // ticket shows the same number, and a sale booked after the checkout closed can be matched to the
+  // cart on screen by this ref. Only ever fills an EMPTY ref; a walk in that already went to the
+  // kitchen keeps the number its ticket shows.
+  freezeWalkInRef: (ref) => {
+    const r = usableOrderRef(ref);
+    const w = get().walkInOrder;
+    if (!r || !w || w.ref) return;
+    set({ walkInOrder: { ...w, ref: r } });
+  },
   theme: localStorage.getItem('rpos-theme') || 'dark',
   setTheme: (t) => {
     localStorage.setItem('rpos-theme', t);
@@ -8819,7 +9333,7 @@ export const useStore = create((set, get) => ({
       collectionTime: o.collectionTime || null,
       isASAP: !!o.isASAP,
       sentAt: Date.now(),
-    });
+    }, { trigger: 'manual' });   // 12 Oct 2026: a person pressed Accept. It routes now, on any till, with no master question.
     if (o.source === 'hubrise') {
       // manual: staff pressed Accept. Accepting a channel order placed days ahead is a
       // deliberate act, so its receipt is not subject to the auto-print age gate.
@@ -8856,6 +9370,15 @@ export const useStore = create((set, get) => ({
   bookChannelSale: async (o) => {
     if (!o || o.source !== 'hubrise' || !supabase || isTrainingMode()) return;
     try {
+      // 8 Oct 2026 (review): Accept is not a tender, so no card gate stood in the way of booking a
+      // prepaid channel sale on a till that holds no tax rates yet (a failed or empty read the store
+      // keeps retrying). The same gate every tender asks: while it is shut the order is left in the
+      // queue, staff are told, and the 'collected' safety net books it once the rates have loaded.
+      const gate = get().vatGate();
+      if (gate) {
+        get().showToast?.(`Channel order ${o.ref} is not booked to sales yet. ${gate.message}`, 'error', 8000);
+        return;
+      }
       const locId = getActiveLocationSync();
       const { menuItems = [], taxRates = [] } = get();
       const f = buildChannelCloseFields(o, { menuItems, taxRates, taxCtx: get().getTaxContext() });
@@ -8882,7 +9405,9 @@ export const useStore = create((set, get) => ({
       // an unbooked channel sale is revenue missing from every report. Only 23505
       // (deterministic id already booked) is the expected, harmless outcome.
       if (error && error.code !== '23505') {
-        reportSave('channel sale', error);
+        // A refusal by the save time guard (no VAT the till could book) is not a database fault:
+        // the guard has told staff; the order stays in the queue for the next accept or 'collected'.
+        if (!isSaleVatError(error)) reportSave('channel sale', error);
         get().showToast?.(`Channel order ${o.ref} was NOT booked to sales — ${error.message}`, 'error');
       } else if (!error) {
         reportSave('channel sale', null);
@@ -8909,6 +9434,29 @@ export const useStore = create((set, get) => ({
   clearPendingItem: () => set({ pendingItem:null }),
 }));
 // NOTE: these are appended but the store is defined above — we patch via the create callback
+
+// 8 Oct 2026 (VAT audit, Fix 3): the save time guard (lib/saleVatGuard.js) runs inside
+// writeClosedCheckRow for EVERY closed_checks write. Writers with no venue context of their own
+// (DataSafe's replay of a pending sale, the offline queue's MPOS recovery row, db.js) are judged
+// with this till's rates through the source registered here. The kiosk hands its own.
+setVenueTaxSource(() => venueTaxFromStore(useStore.getState()));
+// Every repair and every refusal is told to staff (toast) and kept in the activity feed, so a sale
+// whose VAT had to be filled in, or that is waiting for the rates, is never silent.
+onSaleVatEvent((ev) => {
+  const st = useStore.getState();
+  const who = ev.ref || ev.checkId || 'a sale';
+  if (ev.kind === 'refused') st.showToast?.(`${who}: ${ev.message}`, 'error', 12000);
+  else st.showToast?.(`${who}: ${ev.message}`, 'info', 6000);
+  const locationId = getActiveLocationSync();
+  if (!locationId) return;
+  logActivity(locationId, {
+    kind: 'ops',
+    severity: ev.kind === 'refused' ? 'urgent' : 'action',
+    title: ev.kind === 'refused' ? `Sale ${who} not saved: no VAT` : `Sale ${who}: VAT filled in from the item rules`,
+    body: `${ev.message} (${ev.reason || ev.kind}, ${ev.tag || 'closed_checks'})`,
+    refType: 'closed_check', refId: ev.checkId || ev.ref || null,
+  }).catch(() => {});
+});
 
 // Mock-mode-only debug handle so local preview sessions can drive store state the
 // mock DB can't reach (e.g. bind a cash drawer to test the cash flow). Never set

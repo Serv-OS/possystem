@@ -45,6 +45,7 @@ import {
   appPhone,
 } from './customerImport.js';
 import { decideRows, indexExisting } from '../../supabase/functions/_shared/customerImportPlan.ts';
+import { phoneMatchKey } from '../../supabase/functions/_shared/phoneKey.js';
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 const read = (rel) => fs.readFileSync(here(rel), 'utf8');
@@ -331,7 +332,9 @@ test('the Coffee Boy file off 5Loyalty imports cleanly, end to end', () => {
   assert.equal(ann.phone, '+447954412326');
   assert.equal(dev.phone, '+447954412327', 'the zero Excel ate is back');
   assert.equal(dev.phoneAssumed, true, 'and we say so on the screen');
-  assert.equal(mo.phone, '01614960000', 'a landline is stored the way the till stores it, not as +44');
+  // 29 Sep 2026: a landline is stored as its phone match key, the way the till keys it
+  assert.equal(mo.phone, '+441614960000', 'a landline is stored as the till keys it');
+  assert.equal(mo.phoneOld, '01614960000', 'and the shape an earlier import wrote is still looked under');
 
   // Stamps and rewards are two different numbers and neither is a points balance.
   assert.equal(jane.stamps, 4);
@@ -401,21 +404,23 @@ test('the screen and its wiring have no em or en dashes', () => {
   }
 });
 
-test('A: only a GB company gets a 0 put back, and nobody gets a country code invented', () => {
-  // A GB file: a bare ten digit UK number gets its 0 and then the app rule.
+test('A: only a GB company gets a 0 put back, and nobody gets a UK number invented', () => {
+  // A GB file: a bare ten digit UK number gets its 0 and then the phone match key.
   for (const bare of ['7954412327', '1614960000']) {
     const r = normaliseRow({ rowNumber: 2, name: 'X', phone: bare }, OPTS);
     assert.deepEqual(r.problems, [], bare + ' is readable');
-    assert.equal(r.phone, appPhone('0' + bare), 'a zero on the front, then the app rule and only the app rule');
+    assert.equal(r.phone, phoneMatchKey('0' + bare, 'GB'), 'a zero on the front, then the key and only the key');
+    assert.equal(r.phoneOld, appPhone('0' + bare), 'what an earlier import wrote is a key to look under');
     assert.equal(r.phoneAssumed, true);
   }
-  // A US company, or one whose country we do not know: the cell goes through
-  // the app rule UNCHANGED. 7xx is a US area code, not a UK mobile.
+  // A US company, or one whose country we do not know: the cell goes to the
+  // key UNCHANGED (a US company's 10 digits are +1, as the till in that venue
+  // keys them). 7xx is a US area code, not a UK mobile.
   for (const country of ['US', '']) {
     for (const bare of ['4155551234', '7185550123', '4405551234']) {
       const r = normaliseRow({ rowNumber: 2, name: 'Hank', phone: bare }, { today: OPTS.today, country });
       assert.deepEqual(r.problems, [], bare + ' is readable');
-      assert.equal(r.phone, appPhone(bare), 'exactly what the till writes for that cell');
+      assert.equal(r.phone, phoneMatchKey(bare, country), 'exactly what the till keys that cell as');
       assert.equal(r.phoneAssumed, false);
       assert.equal(r.phoneE164, null, 'no +44 key invented');
       assert.ok(!String(r.phone).startsWith('+447'), bare + ' is nobody\'s UK mobile');

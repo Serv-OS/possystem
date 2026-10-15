@@ -15,6 +15,14 @@ import { useStore } from '../../../store';
 import { ExportBtn, EmptyState, StatTile } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { dayOfCheck, dayText, rangeDays, weekdayOf } from './_filters';
+import { isSplit } from '../../../lib/reportSplit.js';
+import { siteTrendRows, joinTrendRows, TREND_STANDALONE } from '../../../lib/reportSiteMenu.js';
+import { useParts, exportSites } from './_siteSplit';
+import { useSiteMenus, useOtherSiteMenu } from './_siteMenus';
+import { SplitHeader, Blocks, SiteRows } from './SiteSplit';
+
+// One empty list, so a view with nothing to show does not rebuild its tables every render.
+const NONE = Object.freeze([]);
 
 // Attribution constants for the sources breakdown
 const SRC_STANDALONE = '__standalone';
@@ -36,9 +44,22 @@ function fmtDayFull(ymd) {
   return dayText(ymd, { weekday:'short', day:'numeric', month:'short', year:'numeric' });
 }
 
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file, each site's lines read against ITS OWN menu and bucketed on its own business day
+// (src/lib/reportSiteMenu.js). One site is the report exactly as it was.
+export default function ItemTrend(props) {
+  return isSplit(props.sites) ? <ItemTrendSites {...props}/> : <ItemTrendOne {...props}/>;
+}
+
 // range = getPeriodRange's answer (fromDay/toDay + the venue clock, timeZone/dayStart).
-export default function ItemTrend({ checks, fmt, fmtN, range }) {
-  const { menuCategories = [], menuItems = [] } = useStore();
+function ItemTrendOne({ checks, fmt, fmtN, range, sites }) {
+  const store = useStore();
+  // 5 Oct 2026: one OTHER site ticked. Its products and categories are its own, read fresh
+  // (the store holds the signed in site's). The signed in site reads the store as it always has.
+  const other = useOtherSiteMenu(sites);
+  const menuCategories = other.other ? (other.menu?.categories || NONE) : (store.menuCategories || NONE);
+  const menuItems      = other.other ? (other.menu?.items || NONE) : (store.menuItems || NONE);
   const [metric, setMetric] = useState('qty');
   const [topN, setTopN] = useState(50);
   const [search, setSearch] = useState('');
@@ -321,6 +342,7 @@ export default function ItemTrend({ checks, fmt, fmtN, range }) {
     downloadCsv(`item-trend-${metric}-${range?.fromDay}-to-${range?.toDay}.csv`, toCsv(csvRows, headers));
   };
 
+  if (other.loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading this site's menu…</div>;
   if (!days.length || rows.length === 0) {
     return <EmptyState icon="📈" message="No item sales in this range. Try widening the period."/>;
   }
@@ -536,3 +558,206 @@ const tdStickySt = { ...tdSt, position:'sticky', left:0, zIndex:1, fontWeight:60
 const tdDaySt   = { ...tdSt, textAlign:'right', fontFamily:'var(--font-mono)', fontSize:11, color:'var(--t2)', padding:'8px 6px', borderRight:'1px solid var(--bdr)' };
 const dThSt = { padding:'6px 8px', textAlign:'left', fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.05em', borderBottom:'1px solid var(--bdr2)' };
 const dTdSt = { padding:'4px 8px', borderBottom:'1px solid var(--bdr)', whiteSpace:'nowrap', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis' };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: one matrix per currency, items down, business days across, every site's
+// sales added in. Each site's lines are read against ITS OWN menu (a product id is a per site
+// copy) and bucketed on ITS OWN business day; a shared product is one row across the sites,
+// with the split by site under its name. The day axis is the range's business days, the same
+// days at every site. Across several sites the shell caps this report at 7 days.
+// ─────────────────────────────────────────────────────────────────────────────
+function ItemTrendSites(props) {
+  const { fmtN, range } = props;
+  const { parts, blocks } = useParts(props);
+  const { menus, loading, failed } = useSiteMenus(parts);
+  const [metric, setMetric] = useState('qty');
+  const [topN, setTopN] = useState(50);
+  const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('all');
+  const [dowFilter, setDowFilter] = useState('all');
+  const [includeMods, setIncludeMods] = useState(true);
+
+  const days = useMemo(
+    () => rangeDays(range).filter(d => dowFilter === 'all' || Number(dowFilter) === weekdayOf(d)),
+    [range, dowFilter]
+  );
+
+  // Each site on its own clock, then the group.
+  const perSite = useMemo(() => new Map(parts.map(p => [p.id,
+    siteTrendRows(p.rows, menus[p.id] || null, { dayOf: ts => dayOfCheck(ts, p.site.range || p.clock), days, includeMods }),
+  ])), [parts, menus, days, includeMods]);
+
+  const joinedOf = (block) => {
+    let rows = joinTrendRows(block.parts.map(p => ({ siteId: p.id, rows: perSite.get(p.id).rows })));
+    if (catFilter !== 'all') rows = rows.filter(r => r.catKey === catFilter);
+    if (search.trim()) { const q = search.trim().toLowerCase(); rows = rows.filter(r => r.name.toLowerCase().includes(q)); }
+    rows.sort((a, b) => (metric === 'qty' ? b.total - a.total : b.totalRev - a.totalRev));
+    return rows;
+  };
+  const cats = useMemo(() => {
+    const seen = new Map();
+    for (const { rows } of perSite.values()) for (const r of rows) if (r.catKey && r.catLabel && !seen.has(r.catKey)) seen.set(r.catKey, r.catLabel);
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [perSite]);
+
+  const cellOf = (r, d) => (metric === 'qty' ? (r.byDay[d] || 0) : (r.byDayRev[d] || 0));
+  const rowTotal = (r) => (metric === 'qty' ? r.total : r.totalRev);
+  const show = (fmt, v) => (metric === 'qty' ? fmtN(v) : fmt(v));
+
+  const exportCsv = () => {
+    const headers = [
+      { key:'currency', label:'Currency' },
+      { key:'name', label:'Item' },
+      { key:'cat',  label:'Category' },
+      ...days.map(d => ({ key: d, label: fmtDayFull(d) })),
+      { key:'_total', label: metric === 'qty' ? 'Period qty' : 'Period revenue' },
+    ];
+    const line = (r, siteName, currency) => {
+      const out = { siteName, currency, name: r.name, cat: r.catLabel || '' };
+      days.forEach(d => { out[d] = cellOf(r, d) || ''; });
+      out._total = rowTotal(r).toFixed(metric === 'qty' ? 0 : 2);
+      return out;
+    };
+    const rows = [];
+    for (const p of parts) for (const r of perSite.get(p.id).rows) rows.push(line(r, p.name, p.currency || ''));
+    for (const b of blocks) if (b.parts.length > 1) for (const r of joinedOf(b)) rows.push(line(r, `All ${b.parts.length} sites`, b.currency || ''));
+    exportSites(`item-trend-${metric}-${range?.fromDay}-to-${range?.toDay}`, rows, headers);
+  };
+
+  if (loading) return <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading each site's menu…</div>;
+  if (!days.length || parts.every(p => perSite.get(p.id).rows.length === 0)) {
+    return <EmptyState icon="📈" message="No item sales at these sites in this range. Try widening the period."/>;
+  }
+
+  return (
+    <div>
+      <SplitHeader parts={parts} chips={false} onExport={exportCsv}>
+        {failed.map(id => <div key={id} style={{ color:'var(--amber)' }}>{parts.find(x => x.id === id)?.name || id}: the menu could not be read, so its products are matched by name.</div>)}
+      </SplitHeader>
+      <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:14, flexWrap:'wrap' }}>
+        <select value={metric} onChange={e => setMetric(e.target.value)} style={selectSt}>
+          {METRICS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+        <select value={catFilter} onChange={e => setCatFilter(e.target.value)} style={selectSt}>
+          <option value="all">All categories</option>
+          {cats.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <select value={dowFilter} onChange={e => setDowFilter(e.target.value)} style={selectSt}>
+          <option value="all">Every day of week</option>
+          <option value={1}>Mondays only</option>
+          <option value={2}>Tuesdays only</option>
+          <option value={3}>Wednesdays only</option>
+          <option value={4}>Thursdays only</option>
+          <option value={5}>Fridays only</option>
+          <option value={6}>Saturdays only</option>
+          <option value={0}>Sundays only</option>
+        </select>
+        <select value={topN} onChange={e => setTopN(e.target.value === 'all' ? 'all' : Number(e.target.value))} style={selectSt}>
+          {TOP_N_OPTIONS.map(n => <option key={n} value={n}>{n === 'all' ? 'Show all items' : `Top ${n}`}</option>)}
+        </select>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" style={{ ...selectSt, minWidth:160 }}/>
+        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--t3)', cursor:'pointer', userSelect:'none' }}>
+          <input type="checkbox" checked={includeMods} onChange={e => setIncludeMods(e.target.checked)}/>
+          Include modifier components
+        </label>
+      </div>
+
+      <Blocks blocks={blocks}>{b => {
+        const rows = joinedOf(b);
+        const visible = topN === 'all' ? rows : rows.slice(0, Number(topN));
+        const periodTotal = rows.reduce((s, r) => s + rowTotal(r), 0);
+        const totalsByDay = {};
+        for (const r of rows) for (const d of days) totalsByDay[d] = (totalsByDay[d] || 0) + cellOf(r, d);
+        const vals = [];
+        visible.forEach(r => days.forEach(d => { const v = cellOf(r, d); if (v > 0) vals.push(v); }));
+        vals.sort((a, c) => a - c);
+        const cellMax = vals.length ? (vals[Math.floor(vals.length * 0.95)] || vals[vals.length - 1] || 1) : 1;
+        const site = b.parts.map(p => {
+          const mine = perSite.get(p.id).rows;
+          return { part: p, cells: { items: mine.length, total: mine.reduce((s, r) => s + rowTotal(r), 0) } };
+        });
+        const all = { items: rows.length, total: periodTotal };
+        const top = rows[0];
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:14 }}>
+              <StatTile label={metric === 'qty' ? 'Total units' : 'Total revenue'} value={show(b.fmt, periodTotal)} sub={`across ${days.length} day${days.length === 1 ? '' : 's'} at ${b.parts.length} sites`}/>
+              <StatTile label="Items sold" value={fmtN(rows.length)} sub={`top ${visible.length} shown · shared products counted once`}/>
+              <StatTile label="Avg / day" value={show(b.fmt, days.length ? periodTotal / days.length : 0)} sub="period total ÷ days"/>
+              {top && <StatTile label="Top seller" value={top.name.length > 18 ? top.name.slice(0, 18) + '…' : top.name} sub={metric === 'qty' ? `${fmtN(top.total)} units` : b.fmt(top.totalRev)}/>}
+            </div>
+            <SiteRows block={b} rows={site} total={all} columns={[
+              { label:'Items', cell: c => fmtN(c.items) },
+              { label: metric === 'qty' ? 'Units' : 'Revenue', cell: (c, f) => show(f, c.total), color:'var(--acc)' },
+            ]}/>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'hidden', marginBottom:14 }}>
+              <div style={{ overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
+                <table style={{ borderCollapse:'collapse', width:'max-content', minWidth:'100%', fontSize:12, fontFamily:'inherit' }}>
+                  <thead>
+                    <tr>
+                      <th style={thStickySt}>Item</th>
+                      <th style={{ ...thSt, textAlign:'left', minWidth:120, position:'sticky', left:200, background:'var(--bg2)', zIndex:2, borderRight:'1px solid var(--bdr2)' }}>Category</th>
+                      {days.map(d => <th key={d} title={fmtDayFull(d)} style={thDaySt}>{fmtDayHeader(d)}</th>)}
+                      <th style={{ ...thSt, textAlign:'right', borderLeft:'2px solid var(--bdr2)', position:'sticky', right:0, background:'var(--bg2)' }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map((r, idx) => {
+                      const viaParents = Object.entries(r.sources || {}).filter(([s]) => s !== TREND_STANDALONE).sort((x, y) => y[1] - x[1]);
+                      const bySite = b.parts.map(p => ({ p, v: r.bySite[p.id] ? (metric === 'qty' ? r.bySite[p.id].total : r.bySite[p.id].totalRev) : 0 })).filter(x => x.v > 0);
+                      return (
+                        <tr key={r.key} style={{ background: idx % 2 ? 'var(--bg)' : 'transparent' }}>
+                          <td style={{ ...tdStickySt, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)' }}>
+                            <div>{r.name}</div>
+                            <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>
+                              {bySite.map(x => `${x.p.short} ${show(b.fmt, x.v)}`).join(' · ')}
+                            </div>
+                            {viaParents.length > 0 && (
+                              <div style={{ fontSize:10, color:'var(--t4)', marginTop:2, fontStyle:'italic' }}>
+                                {viaParents.slice(0, 3).map(([parent, q]) => `${fmtN(q)} in ${parent}`).join(' · ')}
+                                {r.sources[TREND_STANDALONE] > 0 ? ` · ${fmtN(r.sources[TREND_STANDALONE])} standalone` : ''}
+                                {viaParents.length > 3 ? ` · +${viaParents.length - 3} more sources` : ''}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ ...tdSt, color:'var(--t4)', fontSize:11, position:'sticky', left:200, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)', borderRight:'1px solid var(--bdr2)' }}>{r.catLabel || '—'}</td>
+                          {days.map(d => {
+                            const v = cellOf(r, d);
+                            const intensity = v > 0 ? Math.min(1, v / cellMax) : 0;
+                            return (
+                              <td key={d} title={`${r.name} · ${fmtDayFull(d)}: ${show(b.fmt, v)}`} style={{ ...tdDaySt, background: v === 0 ? 'transparent' : `rgba(232, 160, 32, ${0.08 + intensity * 0.55})` }}>
+                                {v > 0 ? show(b.fmt, v) : ''}
+                              </td>
+                            );
+                          })}
+                          <td style={{ ...tdSt, textAlign:'right', fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', borderLeft:'2px solid var(--bdr2)', position:'sticky', right:0, background: idx % 2 ? 'var(--bg)' : 'var(--bg1)' }}>{show(b.fmt, rowTotal(r))}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background:'var(--bg2)', borderTop:'2px solid var(--bdr2)' }}>
+                      <td style={{ ...tdStickySt, background:'var(--bg2)', fontWeight:800, color:'var(--t1)' }}>TOTAL</td>
+                      <td style={{ ...tdSt, position:'sticky', left:200, background:'var(--bg2)', borderRight:'1px solid var(--bdr2)' }}/>
+                      {days.map(d => <td key={d} style={{ ...tdDaySt, fontWeight:800, color:'var(--t1)' }}>{totalsByDay[d] > 0 ? show(b.fmt, totalsByDay[d]) : ''}</td>)}
+                      <td style={{ ...tdSt, textAlign:'right', fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', borderLeft:'2px solid var(--bdr2)', position:'sticky', right:0, background:'var(--bg2)' }}>{show(b.fmt, periodTotal)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+            {topN !== 'all' && rows.length > visible.length && (
+              <div style={{ marginTop:-6, marginBottom:14, fontSize:11, color:'var(--t4)' }}>
+                Showing top {visible.length} of {rows.length} items.
+                <button onClick={() => setTopN('all')} style={{ marginLeft:8, background:'transparent', border:'none', color:'var(--acc)', fontFamily:'inherit', fontSize:11, cursor:'pointer', textDecoration:'underline' }}>Show all</button>
+              </div>
+            )}
+          </>
+        );
+      }}</Blocks>
+      <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
+        ⓘ Each column is a business day; each site's sales fall on its own business day. A product shared across sites is one row, with the split by site under its name. The CSV has one row per item per site, then the group.
+      </div>
+    </div>
+  );
+}

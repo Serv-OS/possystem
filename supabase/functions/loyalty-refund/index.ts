@@ -22,6 +22,15 @@
 // ledger row to find.
 //
 // Idempotent via refund:{closed_check_id}
+//
+// STAMP REWARDS (30 Sep 2026, review of multi redeem): a stamp card reward is not points. It is
+// a stamp_transactions type='redeem' row (order_ref = the check id) that loyalty-balance,
+// loyalty-redeem, loyalty-earn adjust_stamps and Back Office all COUNT against the card's
+// completed_count. Nothing here ever gave one back, so a refunded order left the member's
+// completed card spent, and with two rewards on one order that showed. Now each redeem row of the
+// check is restored: an audit row (type='refund', key stamprefund:<redeem key>) is written FIRST
+// as the claim, then the redeem row is deleted, so every reader counts the reward available again
+// at once. Idempotent on its own (a retry finds no redeem row). Whole check, like the points path.
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
@@ -84,6 +93,46 @@ Deno.serve(async (req) => {
   });
   if (!gate.allow) return gate.response!;
 
+  // ── Stamp rewards redeemed on this check: give the completed cards back ────────────────
+  // Before the points idempotency check on purpose: a check with only stamp rewards has no
+  // loyalty_transactions row, and answered 'no_transactions' having restored nothing.
+  let stampRewardsRestored = 0;
+  {
+    const { data: stampRedeems, error: stampReadErr } = await opsAdmin
+      .from('stamp_transactions')
+      .select('id, program_id, location_id, note, idempotency_key')
+      .eq('customer_id', customer_id)
+      .eq('order_ref', String(closed_check_id))
+      .eq('type', 'redeem');
+    if (stampReadErr) {
+      return json({ error: `could not read the stamp ledger, refund not attempted: ${stampReadErr.message}` }, 500);
+    }
+    for (const row of stampRedeems || []) {
+      const { error: auditErr } = await opsAdmin.from('stamp_transactions').insert({
+        customer_id,
+        program_id: row.program_id,
+        location_id: row.location_id || location_id,
+        stamps: 0,
+        type: 'refund',
+        note: `Reward restored: order refunded${reason ? ` (${reason})` : ''}. Was: ${row.note || 'Redeemed'}`,
+        order_ref: String(closed_check_id),
+        idempotency_key: `stamprefund:${row.idempotency_key || row.id}`,
+      });
+      // 23505: a previous attempt wrote the audit row and fell over before the delete. Carry on.
+      if (auditErr && auditErr.code !== '23505') {
+        console.error('[loyalty-refund] stamp restore audit insert failed:', auditErr.message);
+        return json({ error: 'could not record the stamp reward restore, refund not attempted' }, 500);
+      }
+      const { error: delErr } = await opsAdmin.from('stamp_transactions').delete().eq('id', row.id).eq('type', 'redeem');
+      if (delErr) {
+        console.error('[loyalty-refund] stamp restore delete failed:', delErr.message);
+        return json({ error: 'could not restore the stamp reward, refund not attempted' }, 500);
+      }
+      stampRewardsRestored += 1;
+    }
+    if (stampRewardsRestored > 0) console.info(`[loyalty-refund] restored ${stampRewardsRestored} stamp reward(s) on check ${closed_check_id}`);
+  }
+
   // ── Idempotency check (scoped to company) ─────────────────────────────
   const idempotencyKey = `refund:${closed_check_id}`;
   const { data: existingRefund } = await opsAdmin
@@ -98,6 +147,7 @@ Deno.serve(async (req) => {
       status: 'already_processed',
       points_reversed: existingRefund.points,
       balance: existingRefund.balance_after,
+      stamp_rewards_restored: stampRewardsRestored,
     });
   }
 
@@ -168,7 +218,7 @@ Deno.serve(async (req) => {
   const sourceTxs = [...(originalTxs || []), ...claimTxs];
 
   if (sourceTxs.length === 0) {
-    return json({ status: 'no_transactions', points_reversed: 0 });
+    return json({ status: 'no_transactions', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored });
   }
 
   // Calculate net reversal: earned points get clawed back (negative),
@@ -185,7 +235,7 @@ Deno.serve(async (req) => {
   }
 
   if (netReversal === 0) {
-    return json({ status: 'nothing_to_reverse', points_reversed: 0 });
+    return json({ status: 'nothing_to_reverse', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored });
   }
 
   if (!membership) {
@@ -311,6 +361,7 @@ Deno.serve(async (req) => {
     points_reversed: effectiveReversal,
     balance: newBalance,
     original_transactions: sourceTxs.length,
+    stamp_rewards_restored: stampRewardsRestored,
     ...(claimTxs.length > 0 ? { claims_reversed: claimTxs.length } : {}),
   });
 });

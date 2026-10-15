@@ -15,6 +15,9 @@ import { supabase } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
+import { kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
+import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
+import { NEXT_STEP_LABEL, qrCardNextStep } from '../lib/orderNextStep';
 import { money, currencySymbol } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
 import { ryftTab } from '../lib/payments/ryft';
@@ -32,6 +35,7 @@ import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 import { adyenTab } from '../lib/payments/adyenTab';
 import { isPrepaidByChannel, ezcaterBadge, ezcaterFlagText, isAwaitingEzcaterAcceptance, cateringChannelLabel, AWAITING_LABEL } from '../lib/ezcaterCatering';
 import PaymentCheckModal from '../components/PaymentCheckModal';
+import VoidModal from '../components/VoidModal';
 import {
   orderPaymentState, PAYMENT_CHECKING_LABEL, paymentStatusLabel, paymentShortLine, PAYMENT_SHORT_HELP, PAYMENT_CHECKING_HELP,
   qrTabShortInfo, qrTabShortLine, shortTabClosedCheck,
@@ -131,6 +135,7 @@ export default function OrdersHub() {
     updateQueueStatus, removeFromQueue,
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
+    voidQueueOrder,
     reprintOrderReceipt,
     staff, menuItems, deviceConfig,
   } = useStore();
@@ -162,10 +167,14 @@ export default function OrdersHub() {
   }, []);
   useEffect(() => () => { closingBusyRef.current?.(); closingBusyRef.current = null; }, []);
   const [viewOrder, setViewOrder] = useState(null); // already-paid order shown read-only (no re-pay)
+  // 30 Sep 2026 (Peter, Coffee Boy): a void from the Orders screen. The queue order the Void
+  // button was pressed on; the same VoidModal (manager PIN, reason) as the till.
+  const [voidOrder, setVoidOrder] = useState(null);
   const [paymentCheckOrder, setPaymentCheckOrder] = useState(null); // fence S3: "Payment being checked"
   const [delDetail, setDelDetail] = useState(null);  // { delivery, ... } courier status for viewOrder
   const [delBusy, setDelBusy]     = useState(false);  // dispatching / printing in progress
   const [printBusy, setPrintBusy] = useState(false);
+  const [kitchenBusy, setKitchenBusy] = useState(false);  // "Send to kitchen again" is running
 
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 30000);
@@ -218,13 +227,46 @@ export default function OrdersHub() {
     setPrintBusy(false);
   };
 
+  // Orders, "Send to kitchen again": a person's press, so the button has its own words.
+  // v5.11.52 (the quiet till): the route says nothing when all is well (Peter, 12 Oct 2026),
+  // and its "Routing" and "routed" messages were the only sign this button had worked. With
+  // them gone a press that worked looked the same as a press that failed, and every extra
+  // press puts the order on the kitchen screen again. So: busy while it runs (it cannot be
+  // pressed twice), then one short line, sent or not sent, from the outcome the route hands
+  // back. When the route put a problem message of its own on the till (did not print, did NOT
+  // reach the kitchen screen, an item not in our menu) that message stays: the toast is one
+  // slot and ours would hide the reason.
+  // 12 Oct 2026: it is never refused for not being the master till and never waits for the
+  // menu. The ticket is stamped trigger manual.
+  const sendToKitchenAgain = async () => {
+    if (!viewOrder || kitchenBusy) return;
+    setKitchenBusy(true);
+    const toastBefore = useStore.getState().toast;
+    try {
+      const outcome = await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true, trigger: 'manual' });
+      const toastNow = useStore.getState().toast;
+      const routeSpoke = !!toastNow && toastNow !== toastBefore;
+      if (!routeSpoke) {
+        if (outcome?.sent) showToast('Sent to the kitchen again', 'success');
+        else showToast('Not sent. Check the connection and try again.', 'error');
+      }
+    } catch (e) { showToast(`Could not send: ${e?.message || e}`, 'error'); }
+    finally { setKitchenBusy(false); }
+  };
+
   // ── Build unified order pool ──────────────────────────────────────────────
   const hubTz = useStore(st => st.locationConfig?.timezone) || 'Europe/London';
   const allOrders = useMemo(() => {
     const out = [];
 
     // Table sessions
-    tables.filter(t => t.status !== 'available' && t.session).forEach(t => {
+    // 2 Oct 2026 (Peter, Leeds: "when you order to table you get 2 orders ... one on the actual
+    // table 6 and 6.1, that needs to not happen"): a QR floor session is only a copy of QR
+    // orders that have their own card in the QR section below, so it is not listed a second
+    // time as a table (its Open button loaded a paid order into the pay flow). It still shows
+    // when no QR row is left in the queue, or when staff rang a line onto it at the till
+    // (lib/qrTabStranded.js qrSessionShownInQrSection).
+    tables.filter(t => t.status !== 'available' && t.session && !qrSessionShownInQrSection(t, orderQueue)).forEach(t => {
       const items = t.session?.items?.filter(i => !i.voided) || [];
       out.push({
         _kind: 'table', id: `tbl-${t.id}`,
@@ -530,7 +572,10 @@ export default function OrdersHub() {
         if (mr.outcome === 'error') console.warn('[closeShortQrTab] mark-collected:', mr.error?.message || mr.error);
         refs.forEach(ref => updateQueueStatus(ref, 'collected'));
       }
-      const { error: ccErr } = await supabase.from('closed_checks').insert(check);
+      // 8 Oct 2026 (VAT audit, Fix 3): through writeClosedCheckRow, the ONE way a closed_checks
+      // row is written (a missing optional column is dropped, and the save time guard repairs the
+      // VAT from the lines or refuses the save by name, lib/saleVatGuard.js).
+      const { error: ccErr } = await writeClosedCheckRow(supabase, check, { tag: 'OrdersHub short close' });
       if (ccErr && String(ccErr.code || '') !== '23505') {
         showToast(`⚠ The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
       } else {
@@ -567,6 +612,10 @@ export default function OrdersHub() {
         : linkGate.message, 'error');
       return;
     }
+    // 8 Oct 2026 (VAT audit, Fix 3): a till that cannot book the VAT neither captures nor books
+    // (lib/tillVatGate.js through store.vatGate). The tab stays open; the hold stays; the reason is shown.
+    const vatGate = useStore.getState().vatGate?.();
+    if (vatGate) { showToast(vatGate.message, 'error', 9000); return; }
     if (shortTab) { await closeShortQrTab(tab, shortTab); return; }
     // Route by processor. Default missing processor → stripe (tabs opened
     // before dual-processor). Ryft holds are addressed by payment_session_id;
@@ -886,6 +935,10 @@ export default function OrdersHub() {
     {
       const linkGate = await confirmLinkBeforeCard();
       if (!linkGate.ok) { showToast(linkGate.message, 'error'); return; }
+      // 8 Oct 2026 (VAT audit, Fix 3): and no capture on a till that cannot book the VAT
+      // (lib/tillVatGate.js through store.vatGate). The hold stays; the reason is shown.
+      const vatGate = useStore.getState().vatGate?.();
+      if (vatGate) { showToast(vatGate.message, 'error', 9000); return; }
     }
 
     // v5.5.151: auto-surcharge for left-open tabs. Config snapshotted on
@@ -1079,7 +1132,8 @@ export default function OrdersHub() {
       // dedups against the scheduled release), so the kitchen ticket is guaranteed.
       if (o.source === 'catering') {
         // v5.8.63: `type` rides along so production centres by order type apply here too.
-        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
+        // 12 Oct 2026: a person opened it, so the ticket is stamped trigger manual. It goes now, on any till.
+        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }, { trigger: 'manual' }); } catch { /* best-effort */ }
       }
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
@@ -1094,6 +1148,9 @@ export default function OrdersHub() {
           total: o.total,
           isASAP: o.isASAP,
           collectionTime: o.collectionTime,
+          // 30 Sep 2026: a dine in order with a flag number keeps it, so paying it later still
+          // books "Table 30" and the till never asks for the flag twice (lib/tillOrderType.js).
+          tableFlag: o.customer?.tableFlag || null,
         },
         customer: o.customer || null,
         // v4.6.5 follow-up Bug 2 real root cause: the orderQueue-to-list transform at
@@ -1209,14 +1266,14 @@ export default function OrdersHub() {
             {tableOrders.length > 0 && (
               <Section title="Tables" icon="⬚" color="#3b82f6" count={tableOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {tableOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
             {barOrders.length > 0 && (
               <Section title="Bar tabs" icon="🍸" color="#a855f7" count={barOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {barOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1233,7 +1290,7 @@ export default function OrdersHub() {
                       onRelease={t.processor === 'adyen' && t.isOpenTab
                         ? () => releaseAdyenHold({ pspReference: t.payment_intent_id, locationId: t.firstRow?.location_id, rows: t.rows, label: `Table ${t.tableLabel}` })
                         : null}
-                      onAdvance={() => t.firstRow && advance(t.firstRow)}
+                      onAdvance={(row) => advance(row)}
                       paymentChecking={!t.isOpenTab && t.rows.some(isPaymentChecking)}
                       onCheckPayment={() => { const r = t.rows.find(isPaymentChecking); if (r) setPaymentCheckOrder(r); }}
                       closingTab={closingTabRef === (t.payment_intent_id || t.key)}/>
@@ -1244,7 +1301,7 @@ export default function OrdersHub() {
             {queueOrders.length > 0 && (
               <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+                  {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>
               </Section>
             )}
@@ -1252,12 +1309,21 @@ export default function OrdersHub() {
         ) : (
           // Flat filtered view
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
+            {filtered.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onVoid={()=>setVoidOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
           </div>
         )}
       </div>
 
       {/* Read-only view for already-paid orders (e.g. catering pre-orders) — no re-pay. */}
+      {voidOrder && (
+        <VoidModal
+          type="check"
+          items={(voidOrder.items || []).filter(i => !i.voided)}
+          totalValue={voidOrder.total || 0}
+          onConfirm={(opts) => { voidQueueOrder(voidOrder.ref, opts); setVoidOrder(null); }}
+          onCancel={() => setVoidOrder(null)}
+        />
+      )}
       {viewOrder && (
         <div onClick={(e) => { if (e.target === e.currentTarget) setViewOrder(null); }} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'grid', placeItems:'center', zIndex:9999, padding:16 }}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:16, width:'100%', maxWidth:440, maxHeight:'85vh', overflowY:'auto', padding:20 }}>
@@ -1398,15 +1464,10 @@ export default function OrdersHub() {
 
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
               {viewOrder._kind === 'queue' && (
-                <button onClick={async () => {
-                  // The route reports its own outcome (routing, printed, no printer mapped,
-                  // no matching centre). A blind "sent" toast here hid those reasons.
-                  try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true }); }
-                  catch (e) { useStore.getState().showToast?.(`Could not send: ${e?.message || e}`, 'error'); }
-                }}
+                <button onClick={sendToKitchenAgain} disabled={kitchenBusy}
                   title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"
-                  style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
-                  🍳 Send to kitchen again
+                  style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor: kitchenBusy?'wait':'pointer', fontFamily:'inherit', opacity: kitchenBusy?0.6:1 }}>
+                  {kitchenBusy ? 'Sending…' : '🍳 Send to kitchen again'}
                 </button>
               )}
               <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>
@@ -1446,6 +1507,10 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
   const shortLine = tab.isOpenTab ? qrTabShortLine(tab.rows, money) : '';
   // A pay now QR order being checked reads 'Payment short' when the server found it short (S5).
   const checkingRow = paymentChecking ? (tab.rows || []).find(r => orderPaymentState(r) === 'checking') : null;
+  // 2 Oct 2026 (Peter): "some orders are just saying advance rather than mark as ready, collected
+  // etc". The button now says what its press does, in the words every other card uses, and the
+  // press acts on the very row the words came from (lib/orderNextStep.js). No step, no button.
+  const step = qrCardNextStep(tab, { isPaid: isOrderPaid, isChecking: isPaymentChecking, formatMoney: money });
   return (
     <div style={{
       background:'var(--bg1)', borderRadius:13, overflow:'hidden',
@@ -1491,14 +1556,16 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
         {tab.allItems.slice(0, 6).map((item, i) => (
           <div key={i} style={{ display:'flex', gap:6, marginBottom:2, alignItems:'baseline', fontSize:12, color:'var(--t1)' }}>
             <span style={{ fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right' }}>{item.qty}×</span>
-            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.kitchenName || item.name}</span>
+            <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{kitchenLineName(item)}</span>
           </div>
         ))}
         {tab.allItems.length > 6 && (
           <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>+{tab.allItems.length - 6} more</div>
         )}
       </div>
-      <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8 }}>
+      {/* 2 Oct 2026: a pay now card's buttons keep their words on one line; on a narrow card the
+          button drops to a second row instead of breaking its words. Open tabs are as they were. */}
+      <div style={{ padding:'10px 14px', borderTop:'1px solid var(--bdr)', background:'var(--bg2)', display:'flex', alignItems:'center', gap:8, flexWrap: tab.isOpenTab ? 'nowrap' : 'wrap' }}>
         <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(tab.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : paymentChecking ? 'being checked' : 'paid'}</span>
         {tab.isOpenTab ? (
@@ -1529,19 +1596,22 @@ function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab, paymen
                 marginLeft:'auto', padding:'6px 12px', borderRadius:8,
                 cursor:'pointer', fontFamily:'inherit',
                 background:'#f59e0b', border:'none', color:'#0b0c10',
-                fontSize:12, fontWeight:800,
+                fontSize:12, fontWeight:800, whiteSpace:'nowrap',
               }}>
                 Check payment
               </button>
             )}
-            <button onClick={onAdvance} style={{
-              marginLeft: paymentChecking && onCheckPayment ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
-              cursor:'pointer', fontFamily:'inherit',
-              background:'var(--acc)', border:'none', color:'#0b0c10',
-              fontSize:12, fontWeight:800,
-            }}>
-              Advance →
-            </button>
+            {/* Ready with its payment being checked: the Check payment button beside it is the step. */}
+            {step && step.kind !== 'check' && (
+              <button onClick={() => onAdvance(step.row)} style={{
+                marginLeft: paymentChecking && onCheckPayment ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
+                cursor:'pointer', fontFamily:'inherit',
+                background: step.kind === 'charge' ? '#16a34a' : 'var(--acc)', border:'none', color: step.kind === 'charge' ? '#fff' : '#0b0c10',
+                fontSize:12, fontWeight:800, whiteSpace:'nowrap',
+              }}>
+                {step.label}
+              </button>
+            )}
           </>
         )}
       </div>
@@ -1581,7 +1651,7 @@ function OrderCard(props) {
   );
 }
 
-function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onForceClose, closingTab, knownIds }) {
+function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, onOpen, onVoid, onForceClose, closingTab, knownIds }) {
   // v5.5.849: "Accept with delay" — ⏱ Delay expands inline to +10/+15/+20/+30 min pills.
   // Choosing one accepts the order AND tells the channel the kitchen is running behind.
   const [delayOpen, setDelayOpen] = useState(false);
@@ -1593,7 +1663,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   const color  = SECTION_COLORS[order.channel] || 'var(--acc)';
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
   const el     = elapsed(order.sentAt || order.createdAt);
-  const items  = order.items || [];
+  const items  = (order.items || []).filter(i => !i?.voided);   // 30 Sep 2026: a voided line is off the card
   // The number staff call out. Suppressed when the title already is it (an un-named
   // queue order falls back to the same short number) so the card doesn't read "47 47".
   const shortRef = shortOrderRef(order.ref);
@@ -1617,11 +1687,16 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   if (order.held) { statusText = order.firesLabel ? `Fires ${order.firesLabel}` : 'Scheduled'; statusColor = '#a855f7'; }
   if (order.status === 'active' && order._kind === 'tab')   { statusText = 'Open tab';    statusColor = '#a855f7'; }
 
-  const NEXT = { received:'Mark in prep →', prep:'Mark ready →', ready:'Mark collected →' };
+  const NEXT = NEXT_STEP_LABEL;   // the same words the QR card uses (lib/orderNextStep.js)
   // HubRise channel orders start at 'received' and must be Accepted/Rejected first
   // (which sends a confirmed prep time back to the channel) before the prep flow.
   const isHubriseNew = order.source === 'hubrise' && order.status === 'received';
   const canAdvance = order._kind === 'queue' && !!NEXT[order.status] && !isHubriseNew;
+  // 30 Sep 2026 (Peter, Coffee Boy): every live queue order (kiosk, online, QR, a till order)
+  // can be voided here with the till's own VoidModal. Tables void on the till, bar tabs on the
+  // bar screen, open QR tabs release their hold, and a new HubRise order has Reject.
+  const canVoid = order._kind === 'queue' && !!onVoid && !isOpenTab && !isHubriseNew
+    && !DONE_STATUSES.includes(order.status) && order.status !== 'ordering' && items.length > 0;
 
   return (
     <div style={{
@@ -1654,6 +1729,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
             {/* Kiosk table and CHECK ID (alcohol, Challenge 21 categories), written onto the order by routeKioskOrderPrints */}
             {order.source === 'kiosk' && order.customer?.kioskTable && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>Table {order.customer.kioskTable}</span>}
+            {/* 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed on a till dine in order (lib/tillOrderType.js) */}
+            {order.customer?.tableFlag && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'var(--acc-d)', border:'1px solid var(--acc-b)', color:'var(--acc)' }}>Table {order.customer.tableFlag}</span>}
             {order.source === 'kiosk' && order.customer?.idCheck && <span style={{ fontSize:11, fontWeight:800, padding:'1px 7px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444466', color:'#ef4444', letterSpacing:'.03em' }}>CHECK ID</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {/* An ezCater order is a catering order: the channel and ezCater's own number, plus the hold */}
@@ -1688,7 +1765,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
                 <div style={{ display:'flex', gap:6, alignItems:'baseline' }}>
                   <span style={{ fontSize:11, fontWeight:800, color:'var(--t4)', fontFamily:'var(--font-mono)', minWidth:18, textAlign:'right', flexShrink:0 }}>{item.qty}×</span>
                   <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {item.kitchenName || item.receiptName || item.name}
+                    {(!isSizeOnlyKitchenName(item) && item.kitchenName) || item.receiptName || item.name}
                   </span>
                   {/* v5.5.850: channel line whose sku_ref isn't in our catalog — flag it (it still prints via the default-centre fallback) */}
                   {order.source === 'hubrise' && knownIds && !knownIds.has(item.itemId || item.id) && (
@@ -1740,6 +1817,11 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
           <button onClick={onOpen} style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>
             Open →
           </button>
+          {canVoid && (
+            <button onClick={onVoid} title="Void this order (manager PIN, reason)" style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:700 }}>
+              ⊘ Void
+            </button>
+          )}
           {/* v5.5.150: force-close-and-charge button for open QR tabs.
               Capture flows through /api/stripe-capture on the connected
               account; on success closed_checks is written and the row

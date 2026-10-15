@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { readAllPagesResult } from '../../lib/pagedRead';
 
 function isoDateInput(d) {
   return new Date(d).toISOString().slice(0, 10);
@@ -38,13 +39,16 @@ export default function Challenge21Report({ locationId }) {
     try {
       const fromTs = new Date(`${from}T00:00:00.000Z`).toISOString();
       const toTs   = new Date(`${to}T23:59:59.999Z`).toISOString();
-      const { data, error: qErr } = await supabase
+      // 5 Oct 2026: read in pages of 1,000 (lib/pagedRead.js); it had no limit and the API
+      // answers 1,000 rows at most, so a long range would have lost its oldest checks.
+      const { data, error: qErr } = await readAllPagesResult('Challenge 21 checks', (first) => supabase
         .from('challenge_21_checks')
-        .select('*')
+        .select('*', first ? { count: 'exact' } : undefined)
         .eq('location_id', opsLocationId)
         .gte('triggered_at', fromTs)
         .lte('triggered_at', toTs)
-        .order('triggered_at', { ascending: false });
+        .order('triggered_at', { ascending: false })
+        .order('id', { ascending: false }));
       if (qErr) {
         if (/relation .* does not exist/i.test(qErr.message)) {
           setError('DB migration missing — run the Challenge 21 SQL to create the challenge_21_checks table.');

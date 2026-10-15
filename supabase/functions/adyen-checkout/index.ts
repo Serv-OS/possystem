@@ -388,6 +388,83 @@ async function probeWallets(cfg: AdyenConfig, merchantAccount: string, storeRef:
   return out;
 }
 
+// ── WALLET ERRORS, LOG ONLY (29 Sep 2026, v5.11.17) ─────────────────────────
+// Apple Pay merchant validation goes from the shopper's browser straight to
+// Adyen, so when it fails nothing reaches our logs: Coffee Boy's sheet closed
+// at once for a week and no line anywhere said so. The checkout now reports
+// an Apple Pay or Google Pay failure AFTER the shopper tapped it (never a
+// cancel, never a script that did not load) with `wallet_error`, and this
+// writes ONE console line and nothing else: no database write, no Adyen
+// call. Each text is stripped of control characters and capped at
+// WALLET_ERROR_TEXT_MAX (KEEP IN SYNC with src/lib/payments/adyenWallets.js),
+// and one isolate writes at most WALLET_ERROR_LINES_PER_MINUTE lines.
+const WALLET_ERROR_TEXT_MAX = 200;
+const WALLET_ERROR_LINES_PER_MINUTE = 30;
+const WALLET_ERROR_TYPES = ['applepay', 'googlepay', 'paywithgoogle'];
+let walletErrorWindow = { at: 0, lines: 0 };
+function walletErrorBudget(now = Date.now()): boolean {
+  if (now - walletErrorWindow.at >= 60_000) walletErrorWindow = { at: now, lines: 0 };
+  walletErrorWindow.lines += 1;
+  return walletErrorWindow.lines <= WALLET_ERROR_LINES_PER_MINUTE;
+}
+// deno-lint-ignore no-control-regex
+const cleanWalletText = (v: unknown) => String(v ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, WALLET_ERROR_TEXT_MAX);
+
+// ── APPLE PAY REGISTERS ITSELF (29 Sep 2026, v5.11.17) ──────────────────────
+// When a checkout offers Apple Pay, adyen-terminal-admin
+// ensure_apple_pay_domains is asked to make sure the venue's shop address is
+// registered with Apple Pay at Adyen (OWNER: "can we not just set it so that
+// it just sets the domain with adyen automatically"). FIRE AND FORGET: it runs
+// after the answer under EdgeRuntime.waitUntil, is never awaited, never
+// changes the answer, and a failure is a log line, so a payment is never
+// blocked or slowed. The terminal-job-create pattern (service role bearer to
+// a sibling function). Throttled twice: once here per isolate
+// (APPLE_PAY_NUDGE_MS per venue and environment), and again in
+// adyen-terminal-admin against the kept row (6 hours after a refusal, 24 once
+// registered). The shopper cannot choose the host: the server derives it
+// from the venue's slug and environment.
+const APPLE_PAY_NUDGE_MS = 30 * 60_000;
+const APPLE_PAY_NUDGE_TIMEOUT_MS = 60_000;
+const applePayNudged = new Map<string, number>();
+function offersApplePay(methods: Record<string, unknown>[]): boolean {
+  return methods.some((pm) => {
+    if (String(pm?.type ?? '').toLowerCase() !== 'applepay') return false;
+    const conf = (pm?.configuration && typeof pm.configuration === 'object' ? pm.configuration : {}) as Record<string, unknown>;
+    return String(conf.merchantId ?? '').trim() !== '';
+  });
+}
+function nudgeApplePayDomains(platformLocationId: string, env: string) {
+  const key = `${env}:${platformLocationId}`;
+  const now = Date.now();
+  const last = applePayNudged.get(key);
+  if (last !== undefined && now - last < APPLE_PAY_NUDGE_MS) return;
+  applePayNudged.set(key, now);
+  if (applePayNudged.size > 500) {
+    for (const [k, at] of applePayNudged) if (now - at >= APPLE_PAY_NUDGE_MS) applePayNudged.delete(k);
+  }
+  const url = Deno.env.get('SUPABASE_URL');
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!url || !serviceKey) return;
+  const run = (async () => {
+    try {
+      const res = await fetch(`${url}/functions/v1/adyen-terminal-admin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${serviceKey}` },
+        body: JSON.stringify({ action: 'ensure_apple_pay_domains', ops_location_id: platformLocationId, trigger: 'checkout' }),
+        signal: AbortSignal.timeout(APPLE_PAY_NUDGE_TIMEOUT_MS),
+      });
+      const out = await res.text();
+      // A throttled answer is the normal case and says nothing new.
+      if (!res.ok || !/"throttled":true/.test(out)) console.log(`[adyen-checkout] apple pay registration for ${platformLocationId} (${env}): ${res.status} ${out.slice(0, 300)}`);
+    } catch (e) {
+      console.warn(`[adyen-checkout] apple pay registration for ${platformLocationId} (${env}) did not run: ${(e as Error)?.message || String(e)}`);
+    }
+  })();
+  // deno-lint-ignore no-explicit-any
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(run);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -445,6 +522,21 @@ Deno.serve(async (req) => {
         locationId: platformLocationId,
         ...(venue.known ? {} : { warning: 'location not found in platform DB; payments for it will be refused' }),
       });
+    }
+
+    // ── wallet_error: ONE log line, nothing else (29 Sep 2026) ────────────────
+    // See WALLET ERRORS above. Answers { ok: true } whatever it logged, so the
+    // checkout never waits on it or shows anything about it.
+    if (action === 'wallet_error') {
+      const wallet = String(body.wallet ?? '').trim().toLowerCase();
+      const name = String(body.name ?? '').trim();
+      if (!WALLET_ERROR_TYPES.includes(wallet) || !/^[A-Z_]{1,40}$/.test(name)) return json({ error: 'wallet and name required' }, 400);
+      if (!walletErrorBudget()) return json({ ok: true });
+      const host = cleanWalletText(body.host).toLowerCase() || '?';
+      const message = cleanWalletText(body.message) || '(no message)';
+      const cause = cleanWalletText(body.cause) || '(none)';
+      console.warn(`[adyen-checkout] wallet_error ${wallet} ${name} on ${host} for ${platformLocationId} (${cfg.region} ${cfg.env}): ${message} | cause: ${cause}`);
+      return json({ ok: true });
     }
 
     // ── payment_methods: what this venue can actually offer (8 Sep 2026) ──────
@@ -536,6 +628,9 @@ Deno.serve(async (req) => {
       const methods = Array.isArray(j.paymentMethods)
         ? (j.paymentMethods as Record<string, unknown>[]).filter((pm) => isCheckoutType(pm?.type))
         : [];
+      // Apple Pay is on offer: make sure the venue's shop address is
+      // registered for it (APPLE PAY REGISTERS ITSELF above). Never awaited.
+      if (platformLocationId && offersApplePay(methods)) nudgeApplePayDomains(platformLocationId, cfg.env);
       return json({ paymentMethods: methods, ...publishable, ok: true });
     }
 

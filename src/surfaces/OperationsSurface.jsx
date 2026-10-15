@@ -24,6 +24,8 @@ import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } f
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
+import { OpsDocuments, OpsForms } from './ops/OpsDocsForms';
+import { useLayout } from './manager/useLayout';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
@@ -31,7 +33,7 @@ const TYPE_META = {
   hot_hold:  { glyph: '🔥', h: 38 }, cooking: { glyph: '🔥', h: 32 }, chill_down: { glyph: '❄', h: 220 },
   delivery:  { glyph: '📦', h: 48 },
 };
-const AREA_HUE = { Temperature: 200, Deliveries: 48, Checklists: 150, Cleaning: 285, Maintenance: 28 };
+const AREA_HUE = { Temperature: 200, Deliveries: 48, Checklists: 150, Cleaning: 285, Maintenance: 28, Documents: 260, Forms: 330 };
 const CORRECTIVE_OPTIONS = [
   { key: 'moved_stock', label: 'Moved stock to spare unit' },
   { key: 'adjusted_thermostat', label: 'Adjusted thermostat' },
@@ -100,7 +102,7 @@ export default function OperationsSurface() {
 // alerts are reached via a bell on the Ops Home card instead. Same writes either way (the data layer
 // is location-fenced server-side); pass {loc, operator} from whichever surface hosts it.
 export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, jump = null }) {
-  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts
+  const [view, setView] = useState('home');        // home | temperature | delivery | checklists | maintenance | alerts | documents | forms
   const [unitView, setUnitView] = useState(null);  // a unit being logged
   const [maintPrefill, setMaintPrefill] = useState(null); // {unitName, temp} when raising off a breach
   const [clFilter, setClFilter] = useState(null);  // checklist tile → which kind to show
@@ -108,7 +110,7 @@ export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, 
   // Host-surface deep-link (Manager Home "needs you now" → straight to Alerts). jump.k changes per
   // request so the same view can be jumped to twice; unknown views are ignored.
   useEffect(() => {
-    if (jump?.view && ['home', 'temperature', 'delivery', 'checklists', 'maintenance', 'alerts'].includes(jump.view)) { setUnitView(null); setView(jump.view); }
+    if (jump?.view && ['home', 'temperature', 'delivery', 'checklists', 'maintenance', 'alerts', 'documents', 'forms'].includes(jump.view)) { setUnitView(null); setView(jump.view); }
   }, [jump?.k]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const body = unitView ? (
@@ -124,6 +126,11 @@ export function OpsContent({ loc, venueName, operator, onLogout, chrome = true, 
       onBack={() => { setMaintPrefill(null); setView('home'); }} />
   ) : view === 'alerts' ? (
     <Alerts loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : view === 'documents' ? (
+    // 28 Sep 2026 (v5.11.4): Documents and Forms, lib/ops/documents.js + forms.js
+    <OpsDocuments loc={loc} operator={operator} onBack={() => setView('home')} />
+  ) : view === 'forms' ? (
+    <OpsForms loc={loc} operator={operator} onBack={() => setView('home')} />
   ) : (
     <Home loc={loc} venueName={venueName} operator={operator} onOpen={openView}
       onBell={chrome ? null : () => setView('alerts')} />
@@ -259,6 +266,7 @@ function classifyChecklist(c) {
 
 // ── Home: compliance ring + area tiles ───────────────────────────────────────
 function Home({ loc, operator, onOpen, onBell }) {
+  const L = useLayout();
   const { summary } = useTodayStatus(loc);
   const [deliveryCount, setDeliveryCount] = useState(null);
   const [openMaint, setOpenMaint] = useState(0);
@@ -292,6 +300,8 @@ function Home({ loc, operator, onOpen, onBell }) {
     ...clTiles,
     { key: 'delivery', label: 'Deliveries', icon: 'inventory', sub: deliveryCount == null ? '—' : `${deliveryCount} to check`, state: deliveryCount ? 'due' : 'done', hue: AREA_HUE.Deliveries, onClick: () => onOpen('delivery') },
     { key: 'maintenance', label: 'Maintenance', icon: 'wrench', sub: openMaint ? `${openMaint} open` : 'All clear', state: openMaint ? 'over' : 'idle', hue: AREA_HUE.Maintenance, onClick: () => onOpen('maintenance') },
+    { key: 'documents', label: 'Documents', icon: 'note', sub: 'Open or upload', state: 'idle', hue: AREA_HUE.Documents, onClick: () => onOpen('documents') },
+    { key: 'forms', label: 'Forms', icon: 'edit', sub: 'Find one and fill it in', state: 'idle', hue: AREA_HUE.Forms, onClick: () => onOpen('forms') },
   ];
   // Overall today progress = temperature checks done + checklist tasks done, over everything due today.
   const tempReq = summary.done + summary.due + summary.missed;
@@ -306,15 +316,15 @@ function Home({ loc, operator, onOpen, onBell }) {
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()} · {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
         {onBell && (
-          <button onClick={onBell} aria-label="Alerts" className="sv-glass" style={{ position: 'relative', width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+          <button onClick={onBell} aria-label="Alerts" className="sv-glass" style={{ position: 'relative', width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0, ...L.s.hit }}>
             <Icon name="bell" size={18} />
             {openAlerts > 0 && <span style={{ position: 'absolute', top: 7, right: 8, width: 8, height: 8, borderRadius: 999, background: 'var(--coral, var(--red))', boxShadow: '0 0 6px var(--coral, var(--red))' }} />}
           </button>
         )}
         <Ring pct={ring} overdue={ringOverdue} />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        {tiles.map(t => <AreaTile key={t.key} {...t} />)}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, ...L.s.opsTiles }}>
+        {tiles.map(({ key, ...t }) => <AreaTile key={key} {...t} />)}
       </div>
     </div>
   );
@@ -349,6 +359,7 @@ function AreaTile({ label, icon, sub, state, hue, onClick }) {
 
 // ── Temperature list ─────────────────────────────────────────────────────────
 function Temperature({ loc, onBack, onPick }) {
+  const L = useLayout();
   const { units, byUnit, summary, loading, reload } = useTodayStatus(loc);
   const [unit, setUnit] = useState(localStorage.getItem('ops-temp-unit') || 'C');
   useEffect(() => { localStorage.setItem('ops-temp-unit', unit); }, [unit]);
@@ -358,11 +369,11 @@ function Temperature({ loc, onBack, onPick }) {
   return (
     <div>
       <Header title="Temperature checks" sub={`${roundName} · ${summary.total} units`} right={`${summary.due + summary.missed} due`} rightState={summary.missed ? 'over' : 'due'} onBack={onBack} />
-      <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, marginBottom: 12, gap: 4 }}>
-        {['C', 'F'].map(u => <button key={u} onClick={() => setUnit(u)} style={{ flex: 1, padding: '8px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', background: unit === u ? 'var(--acc)' : 'transparent', color: unit === u ? '#06130C' : 'var(--t2)' }}>°{u}</button>)}
+      <div className="sv-glass sv-pill" style={{ display: 'flex', padding: 4, marginBottom: 12, gap: 4, ...L.s.ctlNarrow }}>
+        {['C', 'F'].map(u => <button key={u} onClick={() => setUnit(u)} style={{ flex: 1, padding: '8px', borderRadius: 999, border: 'none', cursor: 'pointer', fontWeight: 700, fontFamily: 'inherit', background: unit === u ? 'var(--acc)' : 'transparent', color: unit === u ? '#06130C' : 'var(--t2)', ...L.s.segLabel }}>°{u}</button>)}
       </div>
       {loading && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>
         {units.map(u => {
           const m = TYPE_META[u.type] || TYPE_META.fridge;
           const st = byUnit[u.id] || {};
@@ -400,6 +411,7 @@ function Temperature({ loc, onBack, onPick }) {
 // recorded °C — lets a temp-linked checklist task complete off the real reading
 // while onDone stays the plain back/close signal for every existing caller.
 function LogUnit({ loc, unit, operator, onDone, onSaved }) {
+  const L = useLayout();
   const dUnit = unit._displayUnit || 'C';
   const [raw, setRaw] = useState('');
   const [phase, setPhase] = useState('enter');   // enter | corrective
@@ -427,7 +439,7 @@ function LogUnit({ loc, unit, operator, onDone, onSaved }) {
 
   if (phase === 'corrective') {
     return (
-      <div>
+      <div style={L.s.capKeypad}>
         <Header title={unit.name} sub="Reading flagged" right="Blocked" rightState="over" onBack={() => setPhase('enter')} />
         <div className="sv-glass" style={{ padding: 18, marginBottom: 14, textAlign: 'center', border: '1px solid var(--red-b)', background: 'var(--red-d)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 11, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}><Icon name="warn" size={14} /> Out of safe range</div>
@@ -458,7 +470,7 @@ function LogUnit({ loc, unit, operator, onDone, onSaved }) {
   }
 
   return (
-    <div>
+    <div style={L.s.capKeypad}>
       <Header title={unit.name} sub={typeDefault(unit.type).label} onBack={onDone} />
       <div className="sv-glass" style={{ padding: 20, marginBottom: 14, textAlign: 'center' }}>
         <div style={{ fontSize: 48, fontWeight: 800, minHeight: 58, color: b && !b.inRange ? 'var(--red)' : b ? 'var(--grn)' : 'var(--t2)', ...mono }}>{raw ? `${raw}°${dUnit}` : <span style={{ color: 'var(--t4)' }}>—</span>}</div>
@@ -482,6 +494,7 @@ function LogUnit({ loc, unit, operator, onDone, onSaved }) {
 
 // ── Deliveries: temp check gates the PO receive ──────────────────────────────
 function Deliveries({ loc, operator, onBack }) {
+  const L = useLayout();
   const [rows, setRows] = useState(null);
   const [active, setActive] = useState(null);
   const reload = useCallback(() => fetchExpectedDeliveries(loc).then(({ data }) => setRows(data || [])), [loc]);
@@ -492,7 +505,7 @@ function Deliveries({ loc, operator, onBack }) {
       <Header title="Deliveries" sub="Goods-in temperature check" onBack={onBack} />
       {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
       {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No deliveries due today.</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>
         {(rows || []).map(({ po, delivery }) => (
           <button key={po.id} onClick={() => setActive({ po, delivery })} className="sv-tile" style={{ '--h': 48, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'oklch(0.8 0.12 48 / 0.18)', color: 'oklch(0.85 0.14 48)' }}><Icon name="inventory" size={20} /></div>
@@ -508,6 +521,7 @@ function Deliveries({ loc, operator, onBack }) {
   );
 }
 function DeliveryCheck({ loc, operator, row, onDone }) {
+  const L = useLayout();
   const { po } = row;
   const [raw, setRaw] = useState('');
   const [busy, setBusy] = useState(false);
@@ -530,7 +544,7 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
     onDone();
   };
   return (
-    <div>
+    <div style={L.s.capKeypad}>
       <Header title={po.reference || 'Delivery'} sub="Goods-in check" onBack={onDone} />
       <div className="sv-glass" style={{ padding: 18, marginBottom: 14, textAlign: 'center' }}>
         <div style={{ fontSize: 44, fontWeight: 800, color: overTemp ? 'var(--red)' : tempC != null ? 'var(--grn)' : 'var(--t2)', ...mono }}>{raw ? `${raw}°C` : <span style={{ color: 'var(--t4)' }}>—</span>}</div>
@@ -556,6 +570,7 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
 // ── Checklists: today's lists → run-through with sign-off ─────────────────────
 const CL_KIND_LABEL = { opening: 'Opening checks', closing: 'Closing checks', cleaning: 'Cleaning', checks: 'Checklists' };
 function Checklists({ loc, operator, filter, onBack }) {
+  const L = useLayout();
   const [all, setAll] = useState(null);
   const [active, setActive] = useState(null);
   const reload = useCallback(() => fetchTodayChecklists(loc).then(({ data }) => setAll(data || [])), [loc]);
@@ -567,7 +582,7 @@ function Checklists({ loc, operator, filter, onBack }) {
       <Header title={filter ? (CL_KIND_LABEL[filter] || 'Checklists') : 'Checklists'} sub="Today" onBack={onBack} />
       {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
       {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No {filter ? (CL_KIND_LABEL[filter] || 'checklists').toLowerCase() : 'checklists'} due today.</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.rows }}>
         {(rows || []).map(c => (
           <button key={c.id} onClick={() => setActive(c)} className="sv-tile" style={{ '--h': AREA_HUE.Checklists, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, cursor: 'pointer', color: 'var(--t1)', textAlign: 'left', fontFamily: 'inherit' }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', background: `oklch(0.8 0.12 ${AREA_HUE.Checklists} / 0.18)`, color: `oklch(0.85 0.14 ${AREA_HUE.Checklists})` }}><Icon name="clipboard" size={19} /></div>
@@ -583,6 +598,7 @@ function Checklists({ loc, operator, filter, onBack }) {
   );
 }
 function ChecklistRun({ loc, operator, checklist, onDone }) {
+  const L = useLayout();
   const [run, setRun] = useState(checklist.run || null);
   const [done, setDone] = useState(() => { const m = {}; (checklist.completions || []).forEach(c => { if (c.done) m[c.taskId] = c; }); return m; });
   const [busy, setBusy] = useState(false);
@@ -709,7 +725,15 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     // v5.5.756: persist the PRIVATE-bucket PATH (signed URLs expire); use the returned
     // signed url only for the immediate on-screen thumbnail.
     const { url, path, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
-    if (error || !path) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
+    if (error || !path) {
+      setUploadingId(null);
+      // 11 Oct 2026: the photo store's refusal arrives as the raw "new row violates row-level
+      // security policy" (no table name: it is Storage, not a table). Staff cannot act on that;
+      // say what it means. The cause at Huddersfield was the bucket policy (20261011a).
+      const refused = /row-level security/i.test(String(error?.message || ''));
+      setErr(refused ? 'Photo not saved: this tablet is not allowed to upload photos for this venue. Tell ServOS.' : (error?.message || 'Photo upload failed — check signal and try again'));
+      return;
+    }
     const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: path, by: operator?.name, byId: operator?.id }, loc);
     reportSave('checklist photo task', saveErr);
     if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); showToast?.('Completion NOT recorded — try the photo again', 'error'); return; }
@@ -740,7 +764,7 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   }
 
   return (
-    <div>
+    <div style={L.s.capRun}>
       <Header title={checklist.name} sub={`${cadence} · ${completed} / ${total}`} right={checklist.timeOfDay || null} rightState="due" onBack={onDone} />
       <div className="sv-glass" style={{ padding: '12px 16px', marginBottom: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--t3)', marginBottom: 6, ...mono }}><span>{completed}/{total} done</span><span>{pct}%</span></div>
@@ -794,9 +818,10 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
 
 // ── shared ───────────────────────────────────────────────────────────────────
 function Header({ title, sub, right, rightState, onBack }) {
+  const L = useLayout();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-      {onBack && <button onClick={onBack} className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', fontSize: 18, border: '1px solid var(--bdr)' }}>‹</button>}
+      {onBack && <button onClick={onBack} className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', fontSize: 18, border: '1px solid var(--bdr)', ...L.s.hit }}>‹</button>}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 17, fontWeight: 800 }}>{title}</div>
         {sub && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>{sub}</div>}
@@ -814,6 +839,7 @@ function Pill({ state, children }) {
 // ── Maintenance: list ongoing requests + raise a new one ─────────────────────
 const MAINT_STATUS = { open: ['var(--red-d)', 'var(--red)'], assigned: ['var(--acc-d)', 'var(--orn)'], in_progress: ['var(--acc-d)', 'var(--acc)'], resolved: ['var(--grn-d)', 'var(--grn)'], cancelled: ['var(--inset)', 'var(--t3)'] };
 function Maintenance({ loc, operator, prefill, onBack }) {
+  const L = useLayout();
   const [rows, setRows] = useState(null);
   const [raising, setRaising] = useState(!!prefill);
   const reload = useCallback(() => fetchMaintenance(loc).then(({ data }) => setRows(data || [])), [loc]);
@@ -824,16 +850,16 @@ function Maintenance({ loc, operator, prefill, onBack }) {
   return (
     <div>
       <Header title="Maintenance" sub={rows == null ? '' : `${open.length} open`} onBack={onBack} />
-      <button onClick={() => setRaising(true)} className="btn btn-acc" style={{ width: '100%', padding: 13, marginBottom: 14, fontSize: 14, fontWeight: 800, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="plus" size={16} /> Raise a request</button>
+      <button onClick={() => setRaising(true)} className="btn btn-acc" style={{ width: '100%', padding: 13, marginBottom: 14, fontSize: 14, fontWeight: 800, borderRadius: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, ...L.s.ctl }}><Icon name="plus" size={16} /> Raise a request</button>
       {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
       {rows && open.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No open maintenance.</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.textRows }}>
         {open.map(m => <MaintRow key={m.id} m={m} />)}
       </div>
       {closed.length > 0 && (
         <>
           <div style={{ fontSize: 10.5, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.08em', margin: '18px 0 8px', ...mono }}>Recently closed</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{closed.slice(0, 5).map(m => <MaintRow key={m.id} m={m} muted />)}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.textRows }}>{closed.slice(0, 5).map(m => <MaintRow key={m.id} m={m} muted />)}</div>
         </>
       )}
     </div>
@@ -860,6 +886,7 @@ function MaintRow({ m, muted }) {
 
 // ── Notifications (the bell): ops alerts, acknowledge inline ──────────────────
 function Alerts({ loc, operator, onBack }) {
+  const L = useLayout();
   const [rows, setRows] = useState(null);
   const showToast = useStore(s => s.showToast);
   const reload = useCallback(() => fetchAlerts(loc, false).then(({ data }) => setRows(data || [])), [loc]);
@@ -876,7 +903,7 @@ function Alerts({ loc, operator, onBack }) {
       <Header title="Notifications" sub={rows == null ? '' : `${unreadN} unread`} onBack={onBack} />
       {rows == null && <div style={{ color: 'var(--t3)', padding: 12, ...mono }}>Loading…</div>}
       {rows && rows.length === 0 && <div className="sv-glass" style={{ padding: 18, color: 'var(--t3)', textAlign: 'center' }}>No notifications.</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.textRows }}>
         {(rows || []).map(a => {
           const unread = a.status === 'sent';
           const tone = (a.severity === 'critical' || a.type === 'temp_breach') ? 'var(--red)' : a.severity === 'major' ? 'var(--amber, var(--orn))' : 'var(--acc)';
@@ -904,6 +931,7 @@ const MAINT_PRIOS = [['low', 'Low'], ['normal', 'Med'], ['high', 'High'], ['urge
 const fieldStyle = { width: '100%', padding: '12px 14px', borderRadius: 12, color: 'var(--t1)', border: '1px solid var(--bdr)', fontFamily: 'inherit', fontSize: 14, background: 'var(--glass-bg)', outline: 'none' };
 const fieldLbl = { fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', margin: '16px 0 8px', ...mono };
 function RaiseMaintenance({ loc, operator, prefill, onBack }) {
+  const L = useLayout();
   const [units, setUnits] = useState([]);
   const [assetId, setAssetId] = useState('');
   const [issue, setIssue] = useState('Not holding temp');
@@ -927,7 +955,7 @@ function RaiseMaintenance({ loc, operator, prefill, onBack }) {
   };
 
   return (
-    <div>
+    <div style={L.s.capForm}>
       <Header title="Raise maintenance" sub="New request" onBack={onBack} />
       {prefill && (
         <div className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 4, border: '1px solid color-mix(in srgb, var(--uv) 45%, transparent)', background: 'color-mix(in srgb, var(--uv) 12%, transparent)' }}>

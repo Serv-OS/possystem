@@ -13,6 +13,8 @@
 
 // deno-lint-ignore-file no-explicit-any
 
+import { closedCheckTipPatch } from './closedCheckTip.js';
+
 /** Venue setting shape on ops locations.pos_settings.tip_on_receipt. */
 export interface TipOnReceiptSetting {
   enabled: boolean;
@@ -69,55 +71,64 @@ export function isOvercaptureRefusal(status: number, data: any): boolean {
  *   payment_intents leg (matched by captureId, else psp, else single leg):
  *     amountMinor += tipMinor, capture = legFlag, tipError set/cleared.
  *
+ * The maths is closedCheckTipPatch (_shared/closedCheckTip.js, unit tested);
+ * every tip-on-receipt caller passes legFlag and no tenderRef/expect, so its
+ * query and its write are exactly what they were before v5.11.16.
+ *
+ * v5.11.16 (reader tip heal) opt-ins, used by _shared/readerTipHeal.ts:
+ *   tenderRef   also bump the matched card tender's tip (+ tip_added_at = markAt)
+ *   expect      compare-and-set: the UPDATE only lands while tip and total are
+ *               still these values; 0 rows returns false (try again next pass)
+ *   locationId  fence the read and the write to the job's venue
+ *   legFlag     omitted = no capture flag / captureId stamped on the leg
+ *
  * Best-effort by contract: failures log and return false, they never throw.
  */
 export async function applyTipToClosedCheck(ops: any, o: {
   closedCheckId: string | null;
-  captureId: string;
+  captureId: string | null;
   psp: string | null;
   tipMinor: number;          // 0 allowed = flag-only update
-  legFlag: string;           // 'pending'|'adjusting'|'capturing'|'captured'|'failed'
+  legFlag?: string;          // 'pending'|'adjusting'|'capturing'|'captured'|'failed'; omitted by the heal
   tipError?: string | null;  // set on a failed tip attempt, cleared otherwise
+  tenderRef?: string | { transactionId?: string | null; psp?: string | null } | null;
+  expect?: { tip: unknown; total: unknown } | null;
+  locationId?: string | null;
+  markAt?: string;
 }): Promise<boolean> {
   if (!o.closedCheckId) return false;
   try {
-    const { data: check, error } = await ops.from('closed_checks')
-      .select('id, tip, total, payment_intents')
-      .eq('id', o.closedCheckId).maybeSingle();
+    let read = ops.from('closed_checks')
+      .select(o.tenderRef ? 'id, tip, total, payment_intents, tenders' : 'id, tip, total, payment_intents')
+      .eq('id', o.closedCheckId);
+    if (o.locationId) read = read.eq('location_id', o.locationId);
+    const { data: check, error } = await read.maybeSingle();
     if (error || !check) {
       console.error('[tip_capture] closed check read failed:', error?.message ?? 'not found', o.closedCheckId);
       return false;
     }
-    const tipPounds = o.tipMinor / 100;
-    const patch: Record<string, unknown> = {};
-    if (o.tipMinor !== 0) {
-      patch.tip = +((Number(check.tip) || 0) + tipPounds).toFixed(2);
-      patch.total = +((Number(check.total) || 0) + tipPounds).toFixed(2);
-    }
-    const legs: any[] = Array.isArray(check.payment_intents) ? check.payment_intents : [];
-    let matched = false;
-    const next = legs.map((leg) => {
-      if (matched || !leg || typeof leg !== 'object') return leg;
-      const hit = (leg.captureId && leg.captureId === o.captureId)
-        || (o.psp && leg.id && leg.id === o.psp)
-        || (legs.length === 1);
-      if (!hit) return leg;
-      matched = true;
-      const out: Record<string, unknown> = {
-        ...leg,
-        capture: o.legFlag,
-        captureId: leg.captureId ?? o.captureId,
-      };
-      if (o.tipMinor !== 0 && Number.isFinite(Number(leg.amountMinor))) {
-        out.amountMinor = Number(leg.amountMinor) + o.tipMinor;
-      }
-      if (o.tipError) out.tipError = o.tipError; else delete out.tipError;
-      return out;
+    const r = closedCheckTipPatch(check, {
+      tipMinor: o.tipMinor, captureId: o.captureId, psp: o.psp,
+      legFlag: o.legFlag, tipError: o.tipError, tenderRef: o.tenderRef ?? null,
+      markAt: o.markAt ?? new Date().toISOString(),
     });
-    if (matched) patch.payment_intents = next;
-    else if (o.tipMinor === 0) return false;     // nothing to write at all
-    else console.error('[tip_capture] no payment leg matched capture', o.captureId, 'on check', o.closedCheckId, '- tip/total updated without a leg patch');
-    const { error: upErr } = await ops.from('closed_checks').update(patch).eq('id', o.closedCheckId);
+    if (!r.patch) {
+      if (r.reason !== 'nothing_to_write') console.error('[tip_capture] tip not applied:', r.reason, 'on check', o.closedCheckId);
+      return false;                               // nothing to write at all
+    }
+    if (!r.legMatched && o.tipMinor !== 0 && (o.legFlag !== undefined || (Array.isArray(check.payment_intents) && check.payment_intents.length))) {
+      console.error('[tip_capture] no payment leg matched capture', o.captureId, 'on check', o.closedCheckId, '- tip/total updated without a leg patch');
+    }
+    let write = ops.from('closed_checks').update(r.patch).eq('id', o.closedCheckId);
+    if (o.locationId) write = write.eq('location_id', o.locationId);
+    if (o.expect) {
+      write = o.expect.tip == null ? write.is('tip', null) : write.eq('tip', o.expect.tip);
+      write = o.expect.total == null ? write.is('total', null) : write.eq('total', o.expect.total);
+      const { data: rows, error: casErr } = await write.select('id');
+      if (casErr) { console.error('[tip_capture] closed check update failed:', casErr.message, o.closedCheckId); return false; }
+      return Array.isArray(rows) && rows.length === 1;
+    }
+    const { error: upErr } = await write;
     if (upErr) { console.error('[tip_capture] closed check update failed:', upErr.message, o.closedCheckId); return false; }
     return true;
   } catch (e) {

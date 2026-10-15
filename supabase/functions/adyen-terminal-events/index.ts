@@ -27,6 +27,9 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint, adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, webhookAuthPairsFor } from '../_shared/adyen.ts';
+// v5.11.16 (R3618): the same tip write and settle hardening as adyen-terminal-charge.
+import { amountEvidence, tipEvidenceKey } from '../_shared/readerTip.js';
+import { recordTipWithRetry, settleRpcWithRetry, logDurable, reportParkedMismatch } from '../_shared/readerTipHeal.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -114,25 +117,55 @@ Deno.serve(async (req) => {
           // the final split check (and the leg could never be reconciled).
           const chargeMinor = Number(tj.charge_minor);
           const tip = parsed.tipMinor ?? 0;
+          // v5.11.16 (R3618): this write used to be fired once, its failure
+          // logged, and the job settled anyway, which parked it and lost the tip.
+          // Now it is retried and verified; if it still cannot be recorded the
+          // settle is SKIPPED and the job stays in flight for 'result' and the
+          // every minute sweep to settle WITH the tip.
+          let deferred = false;
           if (success && parsed.authorizedMinor != null && parsed.authorizedMinor !== chargeMinor
               && tip > 0 && chargeMinor + tip === parsed.authorizedMinor) {
-            const { error: tipErr } = await opsAdmin.from('terminal_jobs')
-              .update({ tip_minor: tip, charge_minor: parsed.authorizedMinor })
-              .eq('id', tj.id).is('tip_minor', null);
-            if (tipErr) console.error('[adyen-terminal-events] tip recompute', tipErr.message);
+            const rec = await recordTipWithRetry(opsAdmin, { jobId: tj.id, tipMinor: tip, authorizedMinor: parsed.authorizedMinor, chargeMinor });
+            if (rec === 'unrecorded') {
+              deferred = true;
+              console.error(`[adyen-terminal-events] tip ${tip} on job ${tj.id} could not be recorded; settle left to recovery`);
+              // Fixed key: recovery (adyen-terminal-charge settleFromLedger) reads the
+              // reader's exact TipAmount back and records it without the heal's cap.
+              await logDurable(platformAdmin, tipEvidenceKey(tj.id), {
+                source: 'event_notification', chargeMinor, tipMinor: tip, authorizedMinor: parsed.authorizedMinor, evidence: amountEvidence(parsed), at: new Date().toISOString(),
+              });
+            }
           }
-          const { data: settled, error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
-            p_job_id: tj.id,
-            p_outcome: success ? 'approved' : 'declined',
-            p_payment_session_id: parsed.pspReference,
-            p_transaction_id: parsed.poiTransactionId ?? parsed.pspReference,
-            p_auth_code: parsed.card.authCode,
-            p_card: settleCard(parsed),
-            p_decline_reason: success ? null : (parsed.errorCondition ?? 'declined'),
-            p_source: 'event_notification',
-            p_session_amount_minor: parsed.authorizedMinor ?? (success ? Number(tj.charge_minor) : null),
-          });
-          if (error) console.error('[adyen-terminal-events] settle rpc', error.message);
+          let settled: any = null;
+          let error: { message: string } | null = deferred ? { message: 'deferred: tip not recorded' } : null;
+          if (!deferred) {
+            try {
+              settled = await settleRpcWithRetry(opsAdmin, {
+                p_job_id: tj.id,
+                p_outcome: success ? 'approved' : 'declined',
+                p_payment_session_id: parsed.pspReference,
+                p_transaction_id: parsed.poiTransactionId ?? parsed.pspReference,
+                p_auth_code: parsed.card.authCode,
+                p_card: settleCard(parsed),
+                p_decline_reason: success ? null : (parsed.errorCondition ?? 'declined'),
+                p_source: 'event_notification',
+                p_session_amount_minor: parsed.authorizedMinor ?? (success ? Number(tj.charge_minor) : null),
+              });
+            } catch (e) {
+              error = { message: (e as Error)?.message ?? String(e) };
+              console.error('[adyen-terminal-events] settle rpc', error.message);
+            }
+          }
+          if (!error) {
+            // Parked with a different amount: both figures, the evidence, the heal.
+            // After the ack (waitUntil), never delaying it.
+            const report = reportParkedMismatch(opsAdmin, platformAdmin, tj.id, settled, {
+              success, authorizedMinor: parsed.authorizedMinor, chargeMinor, source: 'event_notification', evidence: amountEvidence(parsed),
+            });
+            // deno-lint-ignore no-explicit-any
+            const rt = (globalThis as any).EdgeRuntime;
+            if (rt?.waitUntil) rt.waitUntil(report); else await report;
+          }
           // Split-leg toast (kept in lockstep with adyen-terminal-charge): a
           // PARTIAL pay-at-table leg never books a check, so this activity event
           // is the only thing the floor sees. Gate on the RPC's non-idempotent

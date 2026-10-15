@@ -23,6 +23,9 @@ import { reportClock, workedTime, sumByVenueHour, venueHour } from './_filters';
 import { currencySymbol } from '../../../lib/currency';
 import { loadSettings, saveSettings } from '../../../staff/wfData';
 import { getLocationId } from '../../../lib/supabase';
+import { isSplit, sumFields, tagPartRows } from '../../../lib/reportSplit.js';
+import { useParts, exportSites, titleSt } from './_siteSplit';
+import { SplitHeader, Blocks, SiteRows, SiteCell } from './SiteSplit';
 
 // The LIVE tipping policy (Workforce settings) ↔ this calculator's modes.
 // One rule set, two vocabularies — keep them mapped so the report can never
@@ -92,8 +95,20 @@ const POOL_MODES = [
   { id:'shared', label:'Shared pool', blurb:'Pooled roles combine all their tips and split by hours worked.' },
 ];
 
-export default function Tips({ checks, fmt, fmtN, locationConfig }) {
+// 5 Oct 2026 (Peter: "make every report we have multi site when sites are connected
+// together"): with more than one site on screen this is the site split at the foot of the
+// file: the totals and the tips by server across sites, the pool calculator one site at a
+// time. One site is the report exactly as it was.
+export default function Tips(props) {
+  return isSplit(props.sites) ? <TipsSites {...props}/> : <TipsOne {...props}/>;
+}
+
+function TipsOne({ checks, fmt, fmtN, locationConfig, sites }) {
   const { staffMembers = [] } = useStore();
+  // 5 Oct 2026: one OTHER site ticked in the Sites control. The live tipping policy and the
+  // staff roles in this browser are the signed in site's, so the calculator is a what-if
+  // there: no LIVE badge, nothing written.
+  const otherSite = Array.isArray(sites) && sites.length === 1 && sites[0] && !sites[0].isHome ? sites[0] : null;
 
   const clock = useMemo(() => reportClock(locationConfig), [locationConfig]);
   const { servers, house } = useMemo(() => serverTips(checks, clock), [checks, clock]);
@@ -131,7 +146,9 @@ export default function Tips({ checks, fmt, fmtN, locationConfig }) {
   const [venue, setVenue] = useState(null);
   const [savingPolicy, setSavingPolicy] = useState(false);
   const seededFromLive = useRef(false);
+  const otherSiteId = otherSite?.id || null;
   useEffect(() => {
+    if (otherSiteId) { setVenue(null); return undefined; }
     let alive = true;
     (async () => {
       try {
@@ -149,7 +166,7 @@ export default function Tips({ checks, fmt, fmtN, locationConfig }) {
       } catch { /* report still works without settings */ }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [otherSiteId]);
 
   const livePolicy = useMemo(() => {
     const sj = venue?.settings || {};
@@ -295,6 +312,9 @@ export default function Tips({ checks, fmt, fmtN, locationConfig }) {
             <div style={{ fontSize:11, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em' }}>Tip pool calculator</div>
             {venue != null && matchesLive && (
               <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:999, background:'var(--grn-d)', border:'1px solid var(--grn-b)', color:'var(--grn)' }}>LIVE POLICY</span>
+            )}
+            {otherSite && (
+              <span style={{ fontSize:10, color:'var(--t4)' }}>What-if only: {otherSite.name}'s live policy and staff roles are set at that site.</span>
             )}
           </div>
           <div style={{ fontSize:11, color:'var(--t4)' }}>{POOL_MODES.find(m => m.id === mode).blurb}</div>
@@ -470,6 +490,133 @@ function RoleCheckboxes({ label, selected, roles, onToggle }) {
             {r}
           </label>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Several sites: the group's tips on top (per currency), a row per site, then everyone by
+// tips with a Site column (a person is keyed by SITE plus name, so two Sams never merge;
+// hours on each site's own business day). Tips by hour is each site's own wall clock added
+// up. The tip pool calculator pays out one site's staff from one site's pool, so it stays
+// one site at a time: pick one site to use it.
+// ─────────────────────────────────────────────────────────────────────────────
+function TipsSites(props) {
+  const { parts, blocks } = useParts(props);
+  const bySite = useMemo(() => new Map(parts.map(p => {
+    const { servers, house } = serverTips(p.rows, p.clock);
+    const rows = tagPartRows(p, servers).map(r => ({ ...r, part: p }));
+    const liveRows = p.rows.filter(c => c.status !== 'voided');
+    const byHour = sumByVenueHour(liveRows, c => c.closedAt, c => c.tip || 0, p.clock.timeZone);
+    const cashTips = servers.reduce((s, r) => s + r.tipsCash, 0) + house.tipsCash;
+    const cardTips = servers.reduce((s, r) => s + r.tipsCard, 0) + house.tipsCard;
+    const revenue  = servers.reduce((s, r) => s + r.revenue, 0) + house.revenue;
+    return [p.id, { rows, house, byHour, cashTips, cardTips, tips: cashTips + cardTips, revenue }];
+  })), [parts]);
+
+  const onExport = () => {
+    const rows = parts.flatMap(p => {
+      const s = bySite.get(p.id);
+      const out = [...s.rows].sort((a, b) => b.tips - a.tips).map(r => ({ ...r, currency: p.currency || '' }));
+      if (s.house.tips > 0) out.push({ siteName: p.name, currency: p.currency || '', server: 'Kiosk, online & QR', hoursMs: 0, tipsCard: s.house.tipsCard, tipsCash: s.house.tipsCash, tips: s.house.tips, revenue: s.house.revenue });
+      return out;
+    });
+    exportSites('tips-by-server', rows, [
+      { label:'Currency',   key:'currency' },
+      { label:'Server',     key:'server' },
+      { label:'Hours',      key: r => formatHours(r.hoursMs) },
+      { label:'Card tips',  key: r => r.tipsCard.toFixed(2) },
+      { label:'Cash tips',  key: r => r.tipsCash.toFixed(2) },
+      { label:'Total tips', key: r => r.tips.toFixed(2) },
+      { label:'Revenue',    key: r => r.revenue.toFixed(2) },
+      { label:'Tip %',      key: r => (r.revenue ? (r.tips / r.revenue) * 100 : 0).toFixed(2) },
+    ]);
+  };
+
+  if (parts.every(p => bySite.get(p.id).tips === 0 && bySite.get(p.id).rows.length === 0)) return <EmptyState icon="🙏" message="No tips captured at these sites in this period."/>;
+
+  return (
+    <div>
+      <SplitHeader parts={parts} chips={false} onExport={onExport}/>
+      <Blocks blocks={blocks}>{b => {
+        const site = b.parts.map(p => ({ part: p, cells: bySite.get(p.id) }));
+        const all = sumFields(site.map(x => x.cells), ['tips', 'cardTips', 'cashTips', 'revenue']);
+        const byHour = Array(24).fill(0);
+        for (const x of site) x.cells.byHour.forEach((v, h) => { byHour[h] += v; });
+        const peakHour = byHour.indexOf(Math.max(...byHour));
+        const people = b.parts.flatMap(p => bySite.get(p.id).rows).sort((x, y) => y.tips - x.tips);
+        const houses = b.parts.map(p => ({ p, h: bySite.get(p.id).house })).filter(x => x.h.tips > 0);
+        return (
+          <>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
+              <StatTile label="Total tips"    value={b.fmt(all.tips)}     sub={all.revenue ? `${((all.tips / all.revenue) * 100).toFixed(1)}% of revenue` : null} color="var(--grn)"/>
+              <StatTile label="Card tips"     value={b.fmt(all.cardTips)} sub={all.tips ? `${((all.cardTips / all.tips) * 100).toFixed(0)}% of tips` : null} color="#3b82f6"/>
+              <StatTile label="Cash tips"     value={b.fmt(all.cashTips)} sub={all.tips ? `${((all.cashTips / all.tips) * 100).toFixed(0)}% of tips` : null} color="var(--grn)"/>
+              <StatTile label="Peak tip hour" value={peakHour >= 0 && byHour[peakHour] > 0 ? `${peakHour}:00` : '—'} sub={`${b.fmt(Math.max(...byHour))} · each site's own clock`}/>
+            </div>
+            <SiteRows block={b} rows={site} total={all} columns={[
+              { label:'Card tips',  cell: (c, f) => f(c.cardTips), color:'#3b82f6' },
+              { label:'Cash tips',  cell: (c, f) => f(c.cashTips), color:'var(--grn)' },
+              { label:'Total tips', cell: (c, f) => f(c.tips), color:'var(--t1)' },
+              { label:'Tip %',      cell: c => `${(c.revenue ? (c.tips / c.revenue) * 100 : 0).toFixed(1)}%` },
+            ]}/>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px', marginBottom:14 }}>
+              <div style={{ ...titleSt, marginBottom:14 }}>Tips by hour, all {b.parts.length} sites (each on its own wall clock)</div>
+              <HourBar values={byHour} maxLabel={v => `${currencySymbol(b.currency || undefined)}${Math.round(v)}`}/>
+            </div>
+            <div style={titleSt}>Tips by server, everyone (before pooling)</div>
+            <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, overflow:'auto', marginBottom:14 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1.1fr 70px 90px 90px 90px 70px 1fr', padding:'8px 14px', borderBottom:'1px solid var(--bdr)', background:'var(--bg3)', fontSize:10, fontWeight:700, color:'var(--t4)', letterSpacing:'.05em', textTransform:'uppercase', gap:8, minWidth:820 }}>
+                <span>Server</span>
+                <span>Site</span>
+                <span style={{ textAlign:'right' }}>Hours</span>
+                <span style={{ textAlign:'right' }}>Card tips</span>
+                <span style={{ textAlign:'right' }}>Cash tips</span>
+                <span style={{ textAlign:'right' }}>Total tips</span>
+                <span style={{ textAlign:'right' }}>Tip %</span>
+                <span>Split</span>
+              </div>
+              {people.map((r, i) => {
+                const tipPct = r.revenue ? (r.tips / r.revenue) * 100 : 0;
+                const cashPct = r.tips ? (r.tipsCash / r.tips) * 100 : 0;
+                return (
+                  <div key={r.siteKey} style={{ display:'grid', gridTemplateColumns:'1.3fr 1.1fr 70px 90px 90px 90px 70px 1fr', padding:'10px 14px', borderBottom:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, minWidth:820, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
+                    <span style={{ color:'var(--t1)', fontWeight:600 }}>{r.server}</span>
+                    <SiteCell name={r.siteName}/>
+                    <span style={{ textAlign:'right', color:'var(--t3)', fontFamily:'var(--font-mono)' }}>{formatHours(r.hoursMs)}</span>
+                    <span style={{ textAlign:'right', color:'#3b82f6', fontFamily:'var(--font-mono)' }}>{b.fmt(r.tipsCard)}</span>
+                    <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{b.fmt(r.tipsCash)}</span>
+                    <span style={{ textAlign:'right', color:'var(--t1)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{b.fmt(r.tips)}</span>
+                    <span style={{ textAlign:'right', color:'var(--t2)', fontFamily:'var(--font-mono)' }}>{tipPct.toFixed(1)}%</span>
+                    <div style={{ display:'flex', height:8, borderRadius:4, overflow:'hidden', background:'var(--bg3)' }}>
+                      <div style={{ width:`${100 - cashPct}%`, background:'#3b82f6' }}/>
+                      <div style={{ width:`${cashPct}%`, background:'var(--grn)' }}/>
+                    </div>
+                  </div>
+                );
+              })}
+              {houses.map(({ p, h }) => (
+                <div key={p.id} style={{ display:'grid', gridTemplateColumns:'1.3fr 1.1fr 70px 90px 90px 90px 70px 1fr', padding:'10px 14px', borderTop:'1px solid var(--bdr)', fontSize:12, alignItems:'center', gap:8, minWidth:820, background:'var(--bg2)' }}>
+                  <span style={{ color:'var(--t2)', fontWeight:600 }}>Kiosk, online &amp; QR <span style={{ fontSize:10, color:'var(--t4)', fontWeight:600 }}>· auto-pooled</span></span>
+                  <SiteCell name={p.name}/>
+                  <span style={{ textAlign:'right', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>—</span>
+                  <span style={{ textAlign:'right', color:'#3b82f6', fontFamily:'var(--font-mono)' }}>{b.fmt(h.tipsCard)}</span>
+                  <span style={{ textAlign:'right', color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{b.fmt(h.tipsCash)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t1)', fontFamily:'var(--font-mono)', fontWeight:700 }}>{b.fmt(h.tips)}</span>
+                  <span style={{ textAlign:'right', color:'var(--t4)', fontFamily:'var(--font-mono)' }}>—</span>
+                  <span/>
+                </div>
+              ))}
+            </div>
+          </>
+        );
+      }}</Blocks>
+      <div style={{ padding:'12px 14px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, fontSize:12, color:'var(--t3)', marginBottom:14 }}>
+        <strong style={{ color:'var(--t1)' }}>Tip pool calculator:</strong> a pool pays out one site's staff from that site's tips, so the calculator works one site at a time. Pick one site in the Sites control to use it.
+      </div>
+      <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
+        ⓘ One row per person per site: the same name at two sites is two people here. Hours are first check to last check on each site's own business day. Tips are net of any tip refunded.
       </div>
     </div>
   );

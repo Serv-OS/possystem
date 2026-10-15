@@ -7,6 +7,8 @@
 
 import { getOrder, patchOrder, putInventory } from './hubrise.ts';
 import { orderToQueueRow, hrToQueueStatus } from './hubrise-map.ts';
+import { phoneMatchKey, phoneRegionFromCurrency } from './phoneKey.js';
+import { readCustomerByPhone } from './customerPhoneRead.js';
 
 const TERMINAL = new Set(['rejected', 'cancelled', 'delivery_failed']);
 
@@ -25,7 +27,13 @@ function queuePayload(row: any, isNew: boolean) {
 /** Ingest one HubRise order into order_queue. Idempotent + monotonic. */
 export async function ingestOrder(sb: any, opsLocationId: string, order: any, eventCreatedAt: string | null) {
   if (!order?.id) return;
-  const { row, link } = orderToQueueRow(order, { locationId: opsLocationId });
+  // The venue's phone region (its currency) reads a channel number sent without its country code.
+  let phoneRegion = '';
+  try {
+    const { data: locRow } = await sb.from('locations').select('currency').eq('id', opsLocationId).maybeSingle();
+    phoneRegion = phoneRegionFromCurrency(locRow?.currency);
+  } catch { /* no region: the old UK-primary reading */ }
+  const { row, link } = orderToQueueRow(order, { locationId: opsLocationId, phoneRegion });
 
   // Ref surfacing for the HubRise sign-off: log per-channel payment name/ref codes so they are
   // visible in the edge-fn logs (webhook + reconcile both funnel through here).
@@ -118,9 +126,10 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
 // writer (no reliance on a unique constraint).
 //
 // Channel specifics:
-//   - phone is already E.164-normalised by orderToQueueRow's toE164 (same key space as
-//     the POS/online normalisers); channel PROXY numbers are stored as-is — no extra
-//     validity rules invented here.
+//   - phone is keyed with the one phone match key (29 Sep 2026, _shared/phoneKey.js) in the
+//     venue's region, the key the POS, online orders and the database use, and found under
+//     every shape an older build stored it in; channel PROXY numbers are stored as their key,
+//     no extra validity rules invented here.
 //   - the 'HubRise customer' placeholder name is never written, so it can never mask or
 //     block a real name (insert stores null; patch only fills a blank with a real name).
 //   - marketing consent is one-way: a channel pref can GRANT opt-in, never withdraw one.
@@ -133,20 +142,24 @@ export async function upsertChannelCustomer(
   opts?: { countOrder?: boolean; firstName?: string | null; lastName?: string | null },
 ) {
   const c = row?.customer || {};
-  const phone = String(c.phone || '').trim();
+  const sentPhone = String(c.phone || '').trim();
   const email = String(c.email || '').trim().toLowerCase().slice(0, 200);
-  if (!phone && !email) return;                      // nothing to key on → skip (task rule)
+  if (!sentPhone && !email) return;                  // nothing to key on → skip (task rule)
 
   // org_id (ops locations) is the customers tenant key — same resolution as wifi-capture.
-  const { data: loc } = await sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();
+  const { data: loc } = await sb.from('locations').select('org_id, currency').eq('id', opsLocationId).maybeSingle();
   const orgId = loc?.org_id;
   if (!orgId) { console.warn('[hubrise] customer upsert skipped — no org_id for location', opsLocationId); return; }
+  const region = phoneRegionFromCurrency(loc?.currency);
+  // the key customers.phone holds (fewer than 7 digits is no phone)
+  const phone = sentPhone ? (phoneMatchKey(sentPhone, region) || '') : '';
+  if (!phone && !email) return;
 
   const rawName = String(c.name || '').trim();
   const name = rawName && rawName !== HR_PLACEHOLDER_NAME ? rawName.slice(0, 120) : null;
   const firstName = opts?.firstName ? String(opts.firstName).trim().slice(0, 80) : null;
   const lastName = opts?.lastName ? String(opts.lastName).trim().slice(0, 80) : null;
-  const phoneRaw = phone ? String(c.phoneRaw || phone).slice(0, 40) : null;
+  const phoneRaw = phone ? String(c.phoneRaw || sentPhone).slice(0, 40) : null;
   const source = `hubrise:${c.channel || 'HubRise'}`;  // e.g. hubrise:Deliveroo
   const optIn = c.marketingPrefs?.sms === true || c.marketingPrefs?.email === true;
   const nowIso = new Date().toISOString();
@@ -155,8 +168,7 @@ export async function upsertChannelCustomer(
   const COLS = 'id, name, first_name, last_name, email, phone, marketing_opt_in, source, sources';
   let existing: any = null;
   if (phone) {
-    const { data } = await sb.from('customers').select(COLS)
-      .eq('org_id', orgId).eq('phone', phone).is('deleted_at', null).maybeSingle();
+    const { data } = await readCustomerByPhone(sb, { orgId, phone, typed: String(c.phoneRaw || ''), region, cols: COLS });
     existing = data || null;
   }
   if (!existing && email) {

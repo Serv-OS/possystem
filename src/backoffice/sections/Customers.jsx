@@ -15,6 +15,10 @@ import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
 import { uniqueClashOf, canStaffMerge, mergeRequestBody, clashText, exactIlike, clashHolder, movesText, stampLine, CUSTOMER_MERGE_FN } from '../../lib/customerMerge';
+import {
+  stampAdjustBody, STAMP_ADJUST_FN, STAMP_ADJUST_MAX, newAdjustRequestId, mergeAdjustedCard, rewardsAvailable, redeemedByProgram,
+  rewardsAvailableText, canAdjustStamps, adjustErrorText,
+} from '../../lib/stampAdjust';   // 30 Sep 2026: adjust a registered customer's stamps by hand
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -49,6 +53,29 @@ async function callMerge({ action, targetId, sourceId, phoneChoice }) {
   const j = await res.json().catch(() => ({}));
   if (!j || typeof j !== 'object') return { ok: false, error: `The merge service answered ${res.status}.` };
   if (!res.ok && !j.error) j.error = `The merge service answered ${res.status}.`;
+  return j;
+}
+
+// 30 Sep 2026 (Peter, Coffee Boy: "adjust stamps on the back office for a customer that is
+// registered"): a hand change to one stamp card goes through loyalty-earn (action adjust_stamps),
+// never a direct write, so it lands in the same ledger as every earn and redeem. Answers the
+// function's JSON; a refusal (400/403/409) carries the card as it is so the screen can repaint.
+// A 400 with no `code` is a loyalty-earn that has not been redeployed yet (adjustErrorText).
+async function callStampAdjust(body) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('Sign in first.');
+  const res = await fetch(`${FUNCTIONS_URL}/${STAMP_ADJUST_FN}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j?.error) {
+    const err = new Error(adjustErrorText(res.status, j));
+    err.card = j?.card || null;
+    throw err;
+  }
   return j;
 }
 
@@ -96,6 +123,7 @@ export default function Customers() {
   const [searching, setSearching] = useState(false);     // v5.9.78: a server search is in flight
   const [orgId, setOrgId] = useState(null);               // 26 Sep 2026: for the merge search and the clash lookup
   const [canMerge, setCanMerge] = useState(false);        // 26 Sep 2026: owner, manager or super admin (customer-merge's own rule)
+  const [canAdjust, setCanAdjust] = useState(false);      // 30 Sep 2026: the same rule gates adjusting stamps (stampAdjust.js)
   const orgRef = useRef({ orgId: null, locMap: {}, companyId: null, hasStampPrograms: false });
 
   // v5.9.80: loyalty memberships, tiers and stamp cards for THESE customers, read in slices of
@@ -167,6 +195,15 @@ export default function Customers() {
             ]);
             const linkRoles = (links || []).map((r) => r.role);
             setCanMerge(canStaffMerge({
+              user: { id: me.id, is_anonymous: !!me.is_anonymous },
+              profileRole: prof?.role ?? null,
+              profileOrgId: prof?.org_id ?? null,
+              linkRole: linkRoles.find((r) => r === 'owner' || r === 'manager') ?? linkRoles[0] ?? null,
+              venueOrgId: orgId,
+            }));
+            // 30 Sep 2026: adjusting stamps is gated by the same facts (stampAdjust.js, the rule
+            // loyalty-earn applies), so the button never shows to someone the function refuses.
+            setCanAdjust(canAdjustStamps({
               user: { id: me.id, is_anonymous: !!me.is_anonymous },
               profileRole: prof?.role ?? null,
               profileOrgId: prof?.org_id ?? null,
@@ -505,7 +542,10 @@ export default function Customers() {
       </div>
 
       {/* Right: detail panel */}
-      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} orgId={orgId} canMerge={canMerge} onMerged={handleMerged} onClose={() => setSelectedId(null)} onChanged={(updated) => {
+      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} orgId={orgId} canMerge={canMerge} canAdjust={canAdjust} onMerged={handleMerged} onStampCardChanged={(custId, card) => {
+        // 30 Sep 2026: the balance the function answered with replaces the card on screen at once.
+        setStampDataMap((m) => ({ ...m, [custId]: mergeAdjustedCard(m[custId], custId, orgRef.current.companyId, card) }));
+      }} onClose={() => setSelectedId(null)} onChanged={(updated) => {
         setCustomers(cs => cs.map(c => c.id === updated.id ? { ...c, ...updated } : c));
       }} onDeleted={() => {
         setCustomers(cs => cs.filter(c => c.id !== selected.id));
@@ -539,8 +579,24 @@ function SortHeader({ col, sortBy, sortDir, onClick, align = 'left', children })
   );
 }
 
-function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], orgId = null, canMerge = false, onMerged, onClose, onChanged, onDeleted }) {
+function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], orgId = null, canMerge = false, canAdjust = false, onMerged, onStampCardChanged, onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
+  // 30 Sep 2026: rewards available = completed cards MINUS redeem rows (the same sum loyalty-balance
+  // and the till make), so the card here reads the same as the checkout. { program_id: count }.
+  const [redeemed, setRedeemed] = useState({});
+  const [adjusting, setAdjusting] = useState(null);   // the programme whose adjust form is open
+  useEffect(() => {
+    let alive = true;
+    setRedeemed({});
+    if (isMock || !supabase || !stampPrograms.length) return undefined;
+    supabase.from('stamp_transactions').select('program_id, type').eq('customer_id', customer.id).eq('type', 'redeem').limit(1000)
+      .then(({ data, error }) => {
+        if (!alive) return;
+        if (error) { console.warn('[DetailPanel] redeem rows:', error.message); return; }
+        setRedeemed(redeemedByProgram(data || []));
+      }, () => {});
+    return () => { alive = false; };
+  }, [customer.id, stampPrograms.length]);
   const [merge, setMerge] = useState(null);   // 26 Sep 2026: { other } while the merge panel is open
   const [clash, setClash] = useState(null);   // 26 Sep 2026: { field, holder } after a save hit a unique index
   const [reload, setReload] = useState(0);    // 26 Sep 2026: a merge into THIS customer brings in orders and gift cards
@@ -757,6 +813,7 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
               const card = stampCards.find(sc => sc.program_id === prog.id);
               const collected = card?.stamps_collected || 0;
               const completed = card?.completed_count || 0;
+              const available = rewardsAvailable(card, redeemed[prog.id] || 0);
               const pct = Math.min(100, Math.round((collected / prog.stamps_required) * 100));
               return (
                 <div key={prog.id} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:8, border:'1px solid var(--bdr)' }}>
@@ -768,6 +825,12 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
                         {completed}× completed
                       </span>
                     )}
+                    <span style={{ fontSize:10, fontWeight:700, color: available > 0 ? 'var(--acc)' : 'var(--t4)', padding:'1px 6px', borderRadius:4, background: available > 0 ? 'var(--acc-d, var(--bg3))' : 'var(--bg3)' }}>
+                      {rewardsAvailableText(available)}
+                    </span>
+                    {canAdjust && loyalty && adjusting !== prog.id && (
+                      <button onClick={() => setAdjusting(prog.id)} style={btnSmall}>Adjust</button>
+                    )}
                   </div>
                   <div style={{ height:6, borderRadius:3, background:'var(--bg3)', overflow:'hidden', marginBottom:4 }}>
                     <div style={{ width:`${pct}%`, height:'100%', borderRadius:3, background:'var(--acc)' }}/>
@@ -777,10 +840,18 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
                     {card?.last_stamp_at && <span>Last: {new Date(card.last_stamp_at).toLocaleDateString('en-GB', { day:'2-digit', month:'short' })}</span>}
                   </div>
                   {prog.reward_description && <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>Reward: {prog.reward_description}</div>}
+                  {adjusting === prog.id && (
+                    <StampAdjustForm customer={customer} program={prog} card={card} available={available}
+                      onClose={() => setAdjusting(null)}
+                      onDone={(next) => { setAdjusting(null); onStampCardChanged?.(customer.id, next); }}/>
+                  )}
                 </div>
               );
             })}
           </div>
+          {stampPrograms.length > 0 && !loyalty && canAdjust && (
+            <div style={{ fontSize:10, color:'var(--t4)', marginTop:8 }}>Stamps can be adjusted once the customer is a loyalty member (they join on their first order).</div>
+          )}
         </div>
       )}
 
@@ -958,6 +1029,91 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
 }
 
 
+
+// ── 30 Sep 2026: adjust a customer's stamps by hand ──────────────
+//
+// Peter, Coffee Boy: "need to be able to adjust stamps on the back office for a customer that is
+// registered". Owners and managers add or remove stamps, and whole completed cards (rewards
+// available), with a reason. The change goes through loyalty-earn (action adjust_stamps), which
+// writes the ledger row first and then moves the card; the figures it answers with replace the
+// card on screen at once. The rules (what a change does, who may ask) are lib/stampAdjust.js,
+// the same file the function runs.
+function StampAdjustForm({ customer, program, card, available, onClose, onDone }) {
+  const [stampsDelta, setStampsDelta] = useState(0);
+  const [rewardsDelta, setRewardsDelta] = useState(0);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const requestId = useRef(newAdjustRequestId());   // one id per open form: a retry never applies twice
+  const collected = card?.stamps_collected || 0;
+  const need = program.stamps_required || 0;
+  const step = (setter, cur, by, min, max) => setter(Math.max(min, Math.min(max, cur + by)));
+  const preview = [];
+  if (stampsDelta) preview.push(`${stampsDelta > 0 ? '+' : ''}${stampsDelta} stamp${Math.abs(stampsDelta) === 1 ? '' : 's'}`);
+  if (rewardsDelta) preview.push(`${rewardsDelta > 0 ? '+' : ''}${rewardsDelta} reward${Math.abs(rewardsDelta) === 1 ? '' : 's'}`);
+  const nothing = !stampsDelta && !rewardsDelta;
+
+  const save = async () => {
+    if (busy) return;
+    setError('');
+    if (nothing) { setError('Add or remove at least one stamp or reward.'); return; }
+    if (reason.trim().length < 3) { setError('Give a reason (at least 3 characters).'); return; }
+    setBusy(true);
+    try {
+      const j = await callStampAdjust(stampAdjustBody({
+        customerId: customer.id,
+        locationId: getActiveLocationSync() || await getLocationId(),
+        programId: program.id,
+        stampsDelta, rewardsDelta, reason, requestId: requestId.current,
+      }));
+      onDone?.(j.card || null);
+    } catch (e) {
+      setError(e?.message || 'The adjustment could not be saved.');
+      if (e?.card) onDone?.(e.card);   // a refusal still carries the live card: repaint, keep the form
+      requestId.current = newAdjustRequestId();   // the next Save is a new request
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stepBtn = { ...btnSmall, width:28, padding:'4px 0', textAlign:'center', fontSize:13 };
+  const numStyle = { minWidth:36, textAlign:'center', fontSize:13, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' };
+  return (
+    <div style={{ marginTop:8, padding:'10px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
+      <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Adjust {program.name}</div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:8, alignItems:'center', fontSize:12 }}>
+        <div>
+          <div style={{ color:'var(--t2)', fontWeight:600 }}>Stamps</div>
+          <div style={{ color:'var(--t4)', fontSize:10 }}>{collected} of {need} on the card now. {need} stamps complete a card.</div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+          <button onClick={() => step(setStampsDelta, stampsDelta, -1, -Math.max(collected, 0), STAMP_ADJUST_MAX)} style={stepBtn} disabled={busy}>−</button>
+          <span style={numStyle}>{stampsDelta > 0 ? `+${stampsDelta}` : stampsDelta}</span>
+          <button onClick={() => step(setStampsDelta, stampsDelta, 1, -Math.max(collected, 0), STAMP_ADJUST_MAX)} style={stepBtn} disabled={busy}>+</button>
+        </div>
+        <div>
+          <div style={{ color:'var(--t2)', fontWeight:600 }}>Rewards (completed cards)</div>
+          <div style={{ color:'var(--t4)', fontSize:10 }}>{rewardsAvailableText(available)} now.</div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+          <button onClick={() => step(setRewardsDelta, rewardsDelta, -1, -Math.max(available, 0), STAMP_ADJUST_MAX)} style={stepBtn} disabled={busy}>−</button>
+          <span style={numStyle}>{rewardsDelta > 0 ? `+${rewardsDelta}` : rewardsDelta}</span>
+          <button onClick={() => step(setRewardsDelta, rewardsDelta, 1, -Math.max(available, 0), STAMP_ADJUST_MAX)} style={stepBtn} disabled={busy}>+</button>
+        </div>
+      </div>
+      <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (required), for example: lost paper card" maxLength={200} disabled={busy}
+        style={{ marginTop:10, width:'100%', boxSizing:'border-box', padding:'7px 10px', fontSize:12, borderRadius:6, border:'1px solid var(--bdr)', background:'var(--bg2)', color:'var(--t1)', fontFamily:'inherit' }}/>
+      {error && <div style={{ marginTop:8, fontSize:12, color:'var(--red, #cc5959)' }}>{error}</div>}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginTop:10 }}>
+        <span style={{ fontSize:11, color: nothing ? 'var(--t4)' : 'var(--t2)' }}>{nothing ? 'No change yet' : preview.join(', ')}</span>
+        <div style={{ display:'flex', gap:6 }}>
+          <button onClick={onClose} style={btnSmall} disabled={busy}>Cancel</button>
+          <button onClick={save} disabled={busy || nothing} style={{ ...btnSmall, background:'var(--acc)', color:'#0b0c10', borderColor:'var(--acc)', opacity: (busy || nothing) ? 0.6 : 1 }}>{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── 26 Sep 2026: merge two profiles of one person ────────────────
 //

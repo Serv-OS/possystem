@@ -7,6 +7,482 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.60',
+    date: '14 Oct 2026',
+    items: [
+      "Menu boards: a new Playlist screen. Pick any of your boards (menus or marketing slideshows) in order, set how many seconds each one stays, and choose Fade, Slide or Cut. Put the playlist on a TV exactly as you put a board on one today.",
+      "Menu boards: a marketing slideshow inside a playlist plays its slides through once, then the next board comes on. A price change or a sold out item updates the playlist without sending it back to the first board.",
+    ],
+  },
+  {
+    v: '5.11.59',
+    date: '14 Oct 2026',
+    items: [
+      "Kitchen screens never put a table back, in every shape. On 26 Sep we stopped a kitchen screen sending tables to the tills, after one in Leeds kept putting a voided table back. That fix only knew the ServOS KDS app. A tablet set up as a Kitchen Display inside the normal till page was missed, and so was a POS device on a profile that opens straight on the kitchen screen. Both are covered now. A kitchen screen reads tables. It never sends one, deletes one or puts one back.",
+      "A till inside the ServOS KDS app sends its tables again. A device that runs the KDS app but is paired as a till, on a till profile, shows the PIN pad and the till. The old fix stopped that till sending tables too, so a table opened on it did not reach the other tills. It now sends them like any till.",
+      "If a device is moved between a kitchen profile and a till profile while the app is open, the new rule applies at once. No restart is needed.",
+      "The Bookings host stand is not changed. It seats tables, so it still sends them.",
+      "Kitchen screens no longer delete orders. Until now every device answered a finished order with its own delete of that order number, kitchen tablets included, and sent the same deletes again from its saved list after each restart (one drinks screen sent 32 in two minutes on 12 Oct; the records show none of them removed an order). A kitchen screen, a kiosk, a host stand and Back Office now only read the open orders list. They never add to it, change it or delete from it.",
+      "Kitchen screens no longer delete bar tabs. A kitchen tablet running the ServOS KDS app treated every open bar tab it could see as removed and deleted it. That is fixed by the same rule: only a till writes bar tabs.",
+      "Tills delete an order only for a reason. An order paid, rejected, voided or marked collected on that till is removed as before. An order another device finished is no longer deleted a second time. An order the kitchen marked collected is cleared only while it still says collected, so a newer order that has been given the same number can never be removed by mistake.",
+      "A catering order moved to a later day now stays in the system. A till that already had it on its Orders screen used to delete it when it dropped off the live list.",
+      "Orders that were already finished when an app starts are never deleted by number again at start up.",
+    ],
+  },
+  {
+    v: '5.11.58',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad, tidy up: the forecast badge on Home no longer crowds the edge of the takings card on a 13 inch iPad held upright, and the four Home tiles sit two by two on smaller iPads so their lines do not break in the middle.",
+      "Manager app on iPad, tidy up: the manager PIN box on Team fills its panel, the Kitchen order sheet lines up with the stock list, document names are no longer cut short on the iPad mini, and the C and F switch in Ops is a sensible size.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
+    v: '5.11.57',
+    date: '14 Oct 2026',
+    items: [
+      "Manager app on iPad: the app now uses the whole screen. The tabs sit in a rail down the left side, and in landscape Home, Reports, Team and Kitchen show two panels side by side. Before, an iPad showed a narrow phone sized column in the middle of the screen.",
+      "Manager app on iPad: the pairing screen and the PIN pad are larger, Ops tiles and lists use the width, and every button is at least finger sized. Turning the iPad or using Split View keeps whatever you were typing.",
+      "Manager app on phones: no change.",
+    ],
+  },
+  {
+    v: '5.11.56',
+    date: '13 Oct 2026',
+    items: [
+      'Manager app: a "No venue yet? Try the demo" button on the pairing screen. It links the phone to your demo venue with no Back Office step, so an App Store reviewer, or someone you are showing the app to, can get in on their own. The staff PIN still guards the venue, and only a venue marked as the demo can be reached.',
+    ],
+  },
+  {
+    v: '5.11.55',
+    date: '13 Oct 2026',
+    items: [
+      "Card readers: when a card machine never receives a payment, it now frees itself in under 3 minutes, and at once when the machine says it never got it. It used to stay busy for 5 minutes or more and refuse every new payment, and restarting the till did not help.",
+      "Card readers: staff are told with a sound when that happens. The message says Card machine is free and the amount that was not charged.",
+      "Card readers: a payment the card machine says is still in progress is never cancelled by the system. If a payment is ever approved after it was cancelled, the till raises an urgent note so it can be put right.",
+      "Back Office, Card readers: Release stuck payment now asks the card machine first, really frees it when that is safe, and says why when it is not.",
+    ],
+  },
+  {
+    v: '5.11.54',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: card fees can now go on each day's sales invoice as one minus line called Card fees, with no VAT. The card payment on the invoice is then the takings less refunds less fees, which is what the card processor pays the venue for that day.",
+      "Xero, VAT and accounts, Payments: a new Card fees section. Tick Put card fees on the daily invoice, then press Create a Card fees account in Xero or pick an expense account. It is off until a site switches it on, and a site that leaves it off posts exactly as before.",
+      "Xero: switching card fees on asks you to check a day's figures again, so you see the Card fees line and the smaller card payment before anything posts.",
+      "Xero: if the fee for a card payment has not arrived yet the day waits and tries again each hour, for up to 16 hours, and shows Waiting for card fees in Postings. After that it posts with the fees it has and says what is missing. A fee is never estimated.",
+      "Xero: a refunded card payment gives its fee back on the day of the refund, the same figure Back Office Payouts shows.",
+    ],
+  },
+  {
+    v: '5.11.53',
+    date: '13 Oct 2026',
+    items: [
+      "Xero: a refund now goes on the sales invoice of the day it was made, as a minus line that starts with Refund. It used to arrive as a separate credit note. The card and cash payments on the invoice are that day's takings less its refunds.",
+      "Xero: a day still posts as an invoice plus a credit note when Xero could not take it the new way, for example a day with refunds and no sales, or more refunded from an account than it took that day. The day says why in Postings.",
+      "Xero: days already posted are not changed, and a day that was part posted the old way finishes the old way.",
+      "Back Office, Card payments, Payouts: the list now shows every settlement and each one in full. It had stopped at a venue's first 1,000 card payments.",
+    ],
+  },
+  {
+    v: '5.11.52',
+    date: '13 Oct 2026',
+    items: [
+      "Menu board and order screen TVs: a TV no longer drops to its pairing code because of one bad live update. At 03:09 on 12 Oct the live update service sent every TV a blank update of its own screen, the TV believed it, and 24 TVs made themselves a new screen. A TV now ignores a live update that is blank, carries an error or is for another screen, and checks properly instead.",
+      "TVs: only Back Office can take a board down (Remove or Unpaired). A network drop, a failed read or a lost sign in keeps the board on screen, and a TV no longer goes blank after a network drop.",
+      "TVs: before a TV makes a new screen for itself it looks for the one it already owns and uses it. A TV left on a pairing code by the 12 Oct fault finds its old screen by itself when it loads this version, where that screen is still in the list.",
+      "Back Office, Menu boards: a small grey note under a screen says when a TV kept its pairing, or that it lost its sign in, with the code to pair it again.",
+      "Kitchen screens, the till's activity bell and the operations overview also ignore a live update that carries an error and no data.",
+      "Master till: when a QR, online, kiosk or delivery order is sent to the kitchen and all is well, the till no longer shows a message for it. The Routing and routed messages and the no printer warning are gone. The till now only speaks when something needs attention.",
+      "Orders: Send to kitchen again now tells you what happened. It says Sent to the kitchen again when it worked, and Not sent when it did not. The button waits while it is sending, so one press sends the order once.",
+      "Guest WiFi sign in page: it now scrolls, so on a small phone you can reach the Connect button. The review page and the waitlist join page had the same fault and are fixed too.",
+      "Till status page, Card readers: an Adyen card reader now reads Connected to Adyen. It used to say Not connected, cannot take card, in red, while the reader was taking payments. Back Office kiosk settings read the same rule.",
+    ],
+  },
+  {
+    v: '5.11.51',
+    date: '12 Oct 2026',
+    items: [
+      "Kitchen screens: QR, online, kiosk and delivery app orders are now sent to the kitchen only by the venue's real master till, with its menu loaded. On a two screen till the customer display could send them instead, with no menu, so an item in a sub category (a Latte under Coffee) landed on the first screen in the list. Preston saw lattes on the Food screen. Barnsley saw kiosk food and frozen drinks on the hot drinks screen.",
+      "Master till: it waits for its menu before sending (up to 20 seconds after it opens), and looks again for unsent orders when it wakes, when the connection returns and when the order feed reconnects. When an item has no kitchen screen the till says which item and where it went, and the activity feed keeps the same note.",
+      "Master till: the master setting now belongs to the till it was given to. It is cleared when that till is unpaired or removed. Back Office, the customer display, kitchen screens and kiosks can never act as the master. A till that is set as master but cannot send says so in red and raises an urgent alert.",
+      "Back Office, Devices: a line at the top says whether the venue's master till is on, when it was last seen, that none is set, or that more than one till is set as master.",
+      "Orders: Send to kitchen again now works on the till that first sent the order.",
+      "If the master till is disconnected or removed, the other tills at the venue show Master POS offline after about 30 seconds until it is back. Before, they carried on while QR, online and kiosk orders waited in silence.",
+      "Each QR, online, kiosk and delivery ticket keeps a hidden record of which till sent it and what it knew, so a ticket on the wrong screen can be traced.",
+    ],
+  },
+  {
+    v: '5.11.50',
+    date: '11 Oct 2026',
+    items: [
+      "ServOS admin, go live step 5, Payouts: the screen now says how fast the venue is paid out, fast (same day) or regular (1 to 2 working days), with a Faster payouts switch. Fast uses Faster Payments and costs more per transfer; ask FranPOS for the fee. Flipping the switch changes the payout that is already there; it never makes a second one.",
+      "Payouts on a UK venue (GBP) are set up fast from now on, as Adyen advises for the UK. Other currencies stay regular until the switch is flipped. Pay out daily can be told a speed as well, and the audit log keeps the speed asked for and what Adyen holds.",
+    ],
+  },
+  {
+    v: '5.11.49',
+    date: '11 Oct 2026',
+    items: [
+      "Reports, Sales mix (new): your sales split into groups such as Food, Drinks and Other, each with its share, the change against the period before, quantity and average price. Open a group to see its categories. A share chart by day, or by hour for one day, a table by service period or time of day, and across your sites a share by site. CSV exports of groups, categories and sites. The groups are the same ones the Xero invoice uses, so the two always agree.",
+      "Sales mix, Set up groups: a panel lists your top level categories with a dropdown (Food, Drinks, Alcohol, Retail, Other, or a name of your own). Sub categories follow their parent. It writes the Accounting group of each category, the same field as Menu Manager, Edit category, and it opens by itself when most sales have no group yet. A login without Menu access can read the report but not change the groups.",
+      "Business summary: a Sales mix strip under the headline tiles with each group's share and money, and a link to the full report. Z report: a Sales by group block with each group's item sales and share.",
+      "Owner app: a Food, Drinks, Other bar on every venue card and on the group card, for today, this week or this month, with the change in share in points. Tap a card for a Sales mix card second on the screen: each group's money, share, the share before, and the top categories inside. Shows once the ServOS team has updated the owner app function.",
+      "Gift cards sold show as their own group, Gift cards, never as Food or Drinks. Sales mix figures are item sales before check discounts and refunds, the same basis as Product mix, so the groups, categories and items always add up to the same total.",
+    ],
+  },
+  {
+    v: '5.11.48',
+    date: '11 Oct 2026',
+    items: [
+      "VAT: every sale books the VAT of each item's own Back Office tax rule, whatever the order type or channel. Till, kiosk, QR, online, phone orders, bar tabs and delivery apps now use one rule and one rounding (a half penny rounds up, once per sale). Collection and drive thru use the item's Takeaway rate, bar tabs its Bar rate, and the item editor says so.",
+      "VAT: a sale can no longer be saved without VAT. A till or kiosk that has not loaded its VAT rates refuses to take payment, says so (VAT rates have not loaded) and loads them again on its own. Customer QR and online pages wait for the rates before Pay. A sale whose VAT had to be filled in from the item rules at save time is flagged, and the activity feed names it.",
+      "VAT: the server books the VAT itself for QR and online orders, so an order placed from a page that had not loaded the rates still records the right VAT. A line whose rate cannot be matched takes the venue's default rate and is marked, never zero.",
+      "Reports: Tax summary, Business summary, Daily trading, Z report, End of day, the Owner app, the Manager app and Xero now agree on VAT and net sales to the penny. Refunds come off on the day they were made, including a refund on a sale from an earlier period. A sale with no VAT recorded is named in red on every one of them. Each VAT rate is shown by its name.",
+      "Xero: a day with a sale that has no VAT is held and never posted at VAT 0; Check figures and the Postings tab say which sale. A business day that was never posted shows as Not posted in red on the Postings tab, and the venue gets a notice once it is two days old. Nothing is posted for a missed day on its own; you choose.",
+      "VAT check: every morning ServOS re checks yesterday's sales at every venue against the item rules and names any sale whose VAT does not match. (The ServOS team switches it on.)",
+    ],
+  },
+  {
+    v: '5.11.47',
+    date: '11 Oct 2026',
+    items: [
+      "Ops tablet: adding a photo to a checklist task works again on a paired tablet. The photo store had only been letting Back Office logins upload, so a tablet saw a raw database message under the checklist. (The ServOS team runs one database file.)",
+      "Ops tablet: when a photo cannot be saved the message is now plain words instead of a database error.",
+    ],
+  },
+  {
+    v: '5.11.43',
+    date: '8 Oct 2026',
+    items: [
+      "ServOS admin, Messages and emails: Email an update. Write a what's new in plain text (headings, bold, bullets, links), pick the companies, see exactly who will get it (owners and managers with a Back Office login) and send. A test to yourself first, always. One email per person, from ServOS, with a record of who was sent what and whether it arrived. Sending the same update again never emails anyone twice.",
+    ],
+  },
+  {
+    v: '5.11.42',
+    date: '8 Oct 2026',
+    items: [
+      "Back Office, Team: choose what each login can open. When you give someone a Back Office login, or edit one they already have, tick the parts of Back Office they can use (Overview, Menu, Floor plan, Inventory, Produce, Purchasing, Operations, Team, Workforce, Customers, Channels, Hardware, Reports, Card payments, Settings). Two shortcuts: Everything, and Franchisee (Workforce, Reports, Team and Customers). A part that is not ticked is gone from that person's sidebar and cannot be opened another way; they land on the first part they can use.",
+      "Back Office access: only an owner of the company (or ServOS) can change what a login can open, nobody can change their own, and owners always see everything. A login made by someone with limited access can never open more than its maker. It limits what shows on screen; it is not a change to who can see which venues.",
+      "Back Office: if your access cannot be read when you sign in, the screen says so and offers Try again, instead of showing everything. Signing out, or a new sign in in the same tab, clears the previous person's access straight away.",
+    ],
+  },
+  {
+    v: '5.11.41',
+    date: '8 Oct 2026',
+    items: [
+      "Reports across your sites: a Sites control now sits next to the period buttons on every report. Tick All sites, or any mix of the sites in your company, and the report shows a group total then a row or column per site. Pick one site and the report is exactly what it was. It starts on the site you are signed in to and remembers your last choice. A login with one site does not see the control.",
+      "Multi site reports: Business summary, Daily trend, Order types, Order sources, Daypart, Server scorecard, Shifts, Exceptions, Payments and cash, Tables, Transactions, Product mix, Item sales trend, Menu engineering, Tax summary, Tips and Kitchen performance. Every CSV gains a Site column. Each site is counted on its own business day and clock; sites in different currencies are shown in separate blocks and never added together.",
+      "Multi site reports: Product mix, Item trend and Menu engineering use each site's own menu (a shared product is one row across sites). Tax summary uses each site's own VAT rates, so one site's sales are never taxed on another's rates. Kitchen performance uses each site's own station names. Transactions lists every site, but refunds, receipts and reversal retries can only be done from the site you are signed in to, and the row says so.",
+      "Reports: the percent chip is the same rule everywhere and says what it compares to. Today compares to the same weekday last week up to the same time of day (+4% vs last Monday by 2pm), This week to the same days of the week before, This month to the same days of the month before. Across several sites the group percent only counts sites that can be compared; when the sites' comparisons cut at different points the chip says each site against its own same days.",
+      "Location compare is now All sites overview: every site in your company, one block per currency, a Change column per site and a like for like group line (5 of 6 sites, 1 new).",
+      "Reports: item level reports (Product mix, Item trend, Menu engineering) across several sites cover up to 7 days; pick one site for longer. Business summary, Daily trend, Payments and Order types across several sites over a longer period use fast server totals once the day sums function is installed; until then they read every sale and say too long rather than show a part total.",
+      "Reports: a report never shows 0 checks and zero revenue while the site list is still loading; it shows Loading until the figures are in. A sale closing while a long report was reading could drop one check from the count; the read window is now pinned so the count is the same on every reload.",
+      "Kitchen performance: when the period is too long to load it now says so, instead of showing an empty kitchen.",
+    ],
+  },
+  {
+    v: '5.11.40',
+    date: '8 Oct 2026',
+    items: [
+      "Group ordering link: the venue picker now wears the look of the venue with the most complete Menu appearance (header image first, then logo, then colour). It was taking the first venue by name, so a venue without a header image gave the whole group the plain flame header while every other venue had the shop photo. The page background follows that venue's storefront background when it is a light colour.",
+      "Back Office, Online ordering: the Group ordering link card says which venue's look the page wears, and that adding a header image to any venue is enough.",
+    ],
+  },
+  {
+    v: '5.11.39',
+    date: '8 Oct 2026',
+    items: [
+      "Admin, FranPOS residuals: the screen loads again. Since 26 Aug every request was refused with location_id required (the reseller actions sat behind the one venue check), so the statement, the rate and the invoice list never appeared.",
+      "Admin, FranPOS residuals and Revenue: only live money counts. Test environment card payments are never read, and payments from before ServOS recorded live or test (7 Sep 2026) are shown as left out and never invoiced. Creating an invoice for a month that holds no live money says so instead of making an empty invoice.",
+      "Admin, FranPOS residuals: marking an invoice sent, paid or void reports a database error as itself instead of saying the invoice does not exist.",
+    ],
+  },
+  {
+    v: '5.11.38',
+    date: '8 Oct 2026',
+    items: [
+      "Orders screen: a QR order that was paid on the phone now says what its button does (Mark in prep, Mark ready, Mark collected), the same words as every other order. It said Advance at every stage. The press itself was always right; only the words were wrong.",
+      "Orders screen: a finished QR order no longer shows a button that did nothing. A ready QR order whose payment is still being checked shows only Check payment.",
+    ],
+  },
+  {
+    v: '5.11.37',
+    date: '8 Oct 2026',
+    items: [
+      "Xero: signing in to Xero with a different Xero login can no longer move a site. If the login you used cannot see the organisation the site posts to, nothing is changed and the screen says so, with the way to move a site to another login (Disconnect first, then Connect Xero).",
+      "Xero: a site that was disconnected and signs in again, when Xero does not ask which organisation, posts nothing by itself for half an hour, so there is time to pick the right organisation before anything is sent. Pushing a day yourself is never held.",
+      "Xero, Connection tab: the question about which organisation a site's books are in is now shown to ServOS staff as well, and it goes away once you have picked.",
+    ],
+  },
+  {
+    v: '5.11.36',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: when your Xero sign in already has every organisation connected, Xero only says how many are connected and never asks which one. ServOS no longer guesses (it connected sites to the wrong books). The site stays on the organisation it was set up for, and the Xero organisation box on the Connection tab asks which organisation the site's books are in.",
+      "Xero, Connection tab: for half an hour after you sign in to Xero from a site's screen you can pick any organisation that sign in covers, including one no other site of yours uses yet. The button is now Sign in to Xero, then pick it here.",
+    ],
+  },
+  {
+    v: '5.11.35',
+    date: '7 Oct 2026',
+    items: [
+      "Xero: connecting a site now stores the organisation chosen on Xero's screen. A Xero sign in that can see two organisations (two companies, each with its own books) always got the first one in Xero's list, so sites meant for the second organisation posted their daily sales invoices into the first.",
+      "Xero, Connection tab: a Xero organisation box shows which organisation this site posts to. Pick another from the list (organisations your company's sites already use), or Sign in to Xero and choose it when it is not listed. No disconnect is needed either way.",
+      "Xero: when a site moves to another organisation its Xero setup is cleared first (accounts, VAT rates, payment accounts, the purchases account, the Site tracking option and the figures check), because those choices belonged to the old organisation. A copy of the cleared setup is kept. A site on the daily sales invoice posts nothing until they are chosen again and a day of figures is checked; from then on each day posts by itself where auto posting was on (it is turned off for a site whose first invoice day is not yet two days back), and the days that passed in between are pushed one by one from Posting. A site on bank transactions has auto posting turned off. Days already posted stay in the old organisation, and pressing Push on one says so.",
+      "Xero: sites that share one Xero sign in keep sharing it across organisations, so one site refreshing its sign in can no longer sign out a site on the other organisation. A setup made for one organisation is never posted into another.",
+      "Xero: every posted day records which organisation it went to.",
+      "Xero screen: it stays on the venue it was opened for. With two Back Office tabs open on different venues it could reload as the other tab's venue.",
+    ],
+  },
+  {
+    v: '5.11.31',
+    date: '5 Oct 2026',
+    items: [
+      "Messages from ServOS: when ServOS needs a venue to do something (for example after an update), a message now pops up on the venue's tills and in Back Office and stays until someone taps Got it. One tap clears it on every till and Back Office tab at that venue and records who confirmed and when. It never appears over a payment, an open checkout or the change due screen, and never on kiosks, kitchen screens, customer displays or menu boards. Past messages are listed in Back Office, Settings, Messages from ServOS.",
+    ],
+  },
+  {
+    v: '5.11.30',
+    date: '5 Oct 2026',
+    items: [
+      "Owner app: tap a venue, or the group card, to open seven reports for it: sales by hour, week by day, payment mix, order types and channels, discounts voids and refunds, top items, and labour against sales (shown when the site has timesheets). The three period chips work there too.",
+      "Owner app: the percent is now the same rule everywhere and says what it compares to. Today compares to the same weekday last week up to the same time of day (+4% vs last Monday by 2pm). This week compares to the same days of the week before. This month compares to the same days of the month before. A site with nothing to compare says New this week, and a quiet morning says No sales yet today, never a red minus 100%. The group percent only counts sites that can be compared and says how many.",
+      "Owner app: days now follow each site's business day, the same as Back Office, Daily trading and Xero. A US site shows in dollars.",
+    ],
+  },
+  {
+    v: '5.11.29',
+    date: '5 Oct 2026',
+    items: [
+      "Reports now add up every sale in the period. Any report covering more than about 1,000 sales was only counting the newest 1,000, so the earliest days of a week or month were missing: at Huddersfield, Last 7 days showed about 8,250 pounds when the true figure was about 14,570. This affected the sales, payments, tax, tips, exceptions, kitchen, stock and location compare reports at busy sites. Daily figures, Z reports, Xero and the Owner app were always right. A long period now shows a loading count (Loading 3 of 9), and a period too long to load says so, never a part total.",
+      "KDS performance report: stations now show the names you gave them in Production printing (KDS drinks, kds food, Frozen Drinks KDS). They were showing as codes such as pc-1790752941614-i9vh.",
+      "Reports: the hour by hour bar charts (KDS performance, Daypart and Tips) now draw real bars. Every bar was showing as a flat line.",
+      "KDS performance report: P50 and P90 are now in plain words. Typical is the time half of tickets beat. 9 in 10 by is the time nine tickets in ten were done within; it shows red over 15 minutes.",
+    ],
+  },
+  {
+    v: '5.11.28',
+    date: '2 Oct 2026',
+    items: [
+      "Kiosk: card sales can be refunded to the card. The kiosk booked each sale without its card payment attached, so the till showed no card to refund and labelled it Stripe (Coffee Boy Barnsley, 30 Sep). The kiosk now books the sale under the same number as the card machine job, with the processor, the card reference and the payment recorded, and marks the job closed. The refund screen names the processor of the card it will actually refund.",
+      "Kiosk: if the pay screen reopens after a card payment was approved but the order had not been saved, the kiosk finishes the order with that payment and never charges the card a second time.",
+      "Kitchen tickets and orders: notes kept on a customer's record (for example an importer note such as 6 expired) no longer appear on orders or kitchen tickets. Notes typed for the order still do, and allergens still come from the customer's profile.",
+      "Customer display: a brand colour that cannot be read against the display's background is replaced with one that can (Barnsley's black on the dark display), the Collect points button label always reads, and the Back Office preview shows the colour the display will really use.",
+    ],
+  },
+  {
+    v: '5.11.27',
+    date: '2 Oct 2026',
+    items: [
+      "VAT on QR, online and catering orders: a sale paid on the customer's phone was being booked with VAT 0 (9 of the 10 such sales since 20 Sep). The VAT was worked out correctly on the phone, then lost on the way in because of how the figure was written. Sales now book the VAT their items are set to, to the penny, with the split by rate, the same as a till sale. A database update restores it for phones already holding the old page, and the 6 affected Coffee Boy sales are corrected.",
+      "QR and online orders with an automatic offer now book VAT on what the customer actually paid, the same rule as the till.",
+    ],
+  },
+  {
+    v: '5.11.26',
+    date: '2 Oct 2026',
+    items: [
+      "QR table ordering: an order paid on the phone is now ONE order on the till, on its real table (Table T6). Before, the phone also put the items on the floor table as an open, unpaid check, so the Orders screen showed two cards and the open one could have been charged a second time (Coffee Boy Leeds, 2 Oct). Only an open tab goes onto the floor plan now. A table left open by a paid QR order clears itself once a till on this version sees the sale is already booked.",
+      "Orders screen, kitchen screens and dockets: a drink ordered online, by QR or on catering now shows the product and the size (Mont Blanc, Big Boy), not just the size. Orders already in the queue are fixed too. On paper dockets a long name prints the product, then the size on a second line.",
+      "Online ordering and QR menus: items that live in a sub category now show under their parent section, the same as the till. At Coffee Boy Leeds the whole Hot/Iced Coffee and Tea sections had never shown online. Every venue gains the sub category items it already sells on the till; mark sold out (86) anything a venue does not stock.",
+    ],
+  },
+  {
+    v: '5.11.25',
+    date: '2 Oct 2026',
+    items: [
+      "Xero: a day that went to Xero the old way (bank transactions) can now be replaced with the daily sales invoice. Back Office, Xero, Posting or Postings: Replace with invoice shows the old entries it will remove and the invoice number it will create, then asks you to confirm. It refuses the whole day if any old entry is already reconciled in Xero, and it only opens once the site has posted its first sales invoice, because removing entries in Xero cannot be undone. If it stops part way it says exactly what was removed and what was not, and pressing again finishes it.",
+    ],
+  },
+  {
+    v: '5.11.24',
+    date: '2 Oct 2026',
+    items: [
+      "Owner app: quick filters at the top, Today, This week and This month. The group card and every venue card follow the choice: net sales, forecast for the same days, orders, average check, labour, tips and top items. Comparisons are like for like: this week against the same days last week, this month against the same number of days into last month. A venue with nothing to compare against is left out of the group percent, and the line says so (2 of 3 venues). Live orders always show now. The choice is remembered on that phone.",
+    ],
+  },
+  {
+    v: '5.11.23',
+    date: '1 Oct 2026',
+    items: [
+      "Xero: a new way to post sales, one paid sales invoice per site per day, the way Lightspeed did it. Each site gets its own contact, invoice numbers (SOS-LEEDS-20260929), Site tracking on every line, sales by group and VAT rate exactly as the till recorded them, tips and gift cards to their own accounts, and payments into that site's Card clearing and Cash in till. Refunds go on their own credit note. Off by default: switch it on per site in Back Office, Xero, with a start date.",
+      "Xero: Copy my Lightspeed setup reads the accounts and tracking already in your Xero and fills the mapping for you. Check figures shows exactly what one day would post before anything is sent.",
+      "Xero: every post names the site, and Postings shows every day, every site and what was sent, with a link to open it in Xero.",
+    ],
+  },
+  {
+    v: '5.11.22',
+    date: '1 Oct 2026',
+    items: [
+      "Card payments: the till no longer waits for the whole card payment before showing the card screen. Pressing Card now opens the card screen within 3 seconds (\"Customer is paying on the card machine. Keep this screen open, it finishes by itself.\"), the close button and Cash are hidden while the customer pays, and the till watches the payment from the first second. Before, staff saw Sending… for the whole payment with the close button live; closing it left the sale to book itself in the background with no kitchen ticket, so staff sent it again and the customer could pay twice (Huddersfield 30 Sep, Headingley 1 Oct).",
+      "Card payments: if a card payment is approved after the checkout was closed, the till books it, clears that order and shows a banner: Card approved after the checkout closed: R1234 £11.65 is booked. Do not take payment again.",
+      "Card payments: the server now refuses a second charge of the same order. If the card machine already took that order in the last 10 minutes and the sale was not finished on screen, the till says so in plain words with the sale number, and offers Open the sale, Clear this order, or Different customer, take payment. A same basket paid in the last 5 minutes shows an amber warning on the card screen instead.",
+      "Card payments: while the card machine is still taking a payment for an order sent from this till, the busy message names the amount and time and offers Watch that payment instead of a second send.",
+      "Card payments: a payment approved on the same card for the same amount on another sale within 15 minutes raises an urgent note in the activity feed. The card machine is never asked about a payment in its first 2 minutes, so a slow reader cannot be cancelled by the till's own check.",
+    ],
+  },
+  {
+    v: '5.11.21',
+    date: '30 Sep 2026',
+    items: [
+      "Tills: with Customer details on the till set to Not needed, a dine in order with no table now sends straight to the kitchen with no name asked (it shows its short ref on the order screen). Name only and Full details still ask. Reported on the Provo test till within minutes of 5.11.20.",
+      "Tills: the order type a till starts on is now applied every time the order screen shows with nothing rung up, not only on boot and after an order, so a till whose profile says Starts on Takeaway cannot sit on Dine in.",
+    ],
+  },
+  {
+    v: '5.11.20',
+    date: '30 Sep 2026',
+    items: [
+      "Kitchen screens: tap a ticket to add a note for the kitchen (up to 200 characters). It shows on every kitchen screen that holds that order and never reaches the till, receipts or reports.",
+      "Kitchen screens: two new venue switches in Back Office, Channels, Order screens, \"When the kitchen bumps an order\": mark the order Ready when the last screen bumps it, and optionally Collected too (paid orders only). Same effect as tapping Ready on the order screen, including the customer's ready message. Tills and kitchen screens must be on this version before turning it on.",
+      "Kitchen screens: tapping a count pill at the top (for example Dine-in name) used to quietly hide every other order type until the app was restarted; at Barnsley on 30 Sep that hid a kiosk order and two takeaways for 3 hours. The screen now shows a clear banner (Showing Dine-in name only. 3 hidden. Show all), goes back to All by itself after 3 minutes or as soon as a hidden order arrives, and the kitchen list read has a timeout, retries and a visible error.",
+      "Production centres: sizes now appear under their product name (Latte, Large) instead of a bare size, and sub categories can be ticked on their own so, for example, Smoothies can go to a different screen from the rest of Drinks. Existing routing is unchanged.",
+      "Tills: each device profile can set the order type a till starts on (Back Office, Device profiles, Starts on). A till with only one order type enabled starts on it automatically, so Huddersfield's drive thru till opens on Drive thru.",
+      "Tills: new device profile switch \"Ask for a flag number on dine in orders\" for coffee shops with numbered signs instead of tables. The till asks for the number before Send or Pay (it cannot be skipped); kitchen screens and dockets show Table 30 · #09, the receipt and Orders show Table 30. Works like the kiosk's Flag number mode.",
+      "Tills: the customer details setting (Back Office, Order types, now called Customer details on the till) covers dine in as well as takeaway and collection: Not needed, Name only, or Full details. The Add customer chip shows on every order type, including an open table.",
+      "Tills: any order can be voided, not only table orders: a sent line or the whole order on takeaway, collection, drive thru and dine in without a table, and every live order on the Orders screen. The kitchen now gets the void (red VOID block and a VOID docket). Voids recorded since 28 Sep were missing from the Exceptions, Z, Shifts and Servers reports; they show again.",
+      "Loyalty: Back Office, Customers now lets owners and managers adjust a member's stamps or completed cards with a reason. Every change is recorded in the loyalty ledger.",
+      "Loyalty: several stamp rewards can be redeemed on one order (up to the rewards available), each on a different eligible item. The till shows 2 of 3 rewards used. Refunding an order gives its stamp rewards back.",
+      "Customer display: its own name, colours and logo, set in Back Office, Device profiles, Customer display branding, separate from the kiosk. Nothing changes until it is set. Needs the 30 Sep database update; until then the display shows the kiosk branding as before.",
+    ],
+  },
+  {
+    v: '5.11.19',
+    date: '30 Sep 2026',
+    items: [
+      "Push to POS: the Sync POS banner shows again on running tills. A venue's menu push had grown past the 1 MB a live update can carry (Barnsley, Huddersfield and Preston since 29 Sep, Leeds close), so the till got the notice without the menu and quietly ignored it; only closing the app loaded the new menu. The till now fetches the menu itself when the notice arrives without it, so a push of any size shows the banner, and kitchen screens, kiosks and handhelds apply it automatically as before.",
+      "Sync POS banner: pressing Later now hides only that push. It used to hide every later push too until someone signed out.",
+      "Card reader tips follow the card reader's own settings (Back Office, Card readers, Tips) for every order type. The till used to stop the reader asking on every takeaway, collection and drive thru sale, so a coffee shop reader with tips switched on almost never asked (Barnsley). Each reader has its own switch, so tips can be on at the counter and off at the drive thru. Bar tabs, phone tills and kiosks are unchanged.",
+    ],
+  },
+  {
+    v: '5.11.18',
+    date: '29 Sep 2026',
+    items: [
+      "Card machine tips are never lost. On 29 Sep at Huddersfield (R3618) a customer added a 72p tip on the card machine, but a network blip stopped it being saved; the sale was booked at £7.25 with no tip. Now the tip is saved with retries and checked; if it still cannot be saved, the payment is not closed until it can be, with the tip.",
+      "Self correcting: a card payment parked because the machine took more than the bill is fixed automatically when the difference is a tip the machine asked for (up to half the bill, or £5 / $5 on small bills), but only after Adyen's own record confirms the amount. The sale is corrected too (tip, total and the card payment's tip), and an info note appears in the activity feed. This also fixes R3618 within a minute of going live.",
+      "Anything that cannot be fixed safely (a bigger difference, a refunded sale, Adyen not confirming) raises one alert in the activity feed with both amounts, and Back Office, Card readers, Payments that need checking now shows what the card machine took next to what we asked for.",
+      "Stuck card payments are recovered from Adyen's own record. The check that asks Adyen what happened had a fault that stopped it ever finishing an approved payment; it now works, and every minute a sweep closes any payment Adyen approved that is still inside its payment window. Only Adyen's signed (verified) record counts. A payment Adyen later refunded or cancelled is never booked as paid, two approvals for one sale are never closed automatically, and a payment Adyen confirms after the till gave up on it is not booked by itself (staff may have taken it another way): each of these alerts a manager with the amounts.",
+      "Till: the card amount message no longer says the sale is held for a manager (it never was). It now says the sale is recorded at the bill amount, not to take payment again, and that a tip is added by itself. If the card machine took LESS than the bill, it says how much is still owed instead. The till checks again for 20 seconds and finishes the sale with the tip as soon as it is fixed.",
+    ],
+  },
+  {
+    v: '5.11.17',
+    date: '29 Sep 2026',
+    items: [
+      "Online ordering and table bookings: when Apple Pay cannot start for a shop, the checkout now says \"Apple Pay could not start for this shop. Please pay by card below.\" above the card form. Before, the Apple Pay sheet flashed up and closed with no message (Coffee Boy). Each time it happens ServOS writes one line to its server logs, so we can see it too.",
+      "Apple Pay registers itself: whenever a venue's online checkout offers Apple Pay, ServOS makes sure that venue's shop address (for example coffee-boy-huddersfield.serv-os.app) is registered for Apple Pay at Adyen, and tries again by itself every 6 hours until Adyen accepts it. It never slows or blocks a payment. A live venue registers only its live address, so a test address Adyen refuses can no longer mark live as failed.",
+      "Admin, Get this venue taking cards: step 4 now shows the real Apple Pay state. It only says done and \"Apple Pay: on\" when the live shop address is registered at Adyen. Otherwise it shows Adyen's reason in plain words (for example: Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential), when ServOS last tried, and a Register for Apple Pay button.",
+    ],
+  },
+  {
+    v: '5.11.16',
+    date: '29 Sep 2026',
+    items: [
+      "Customers: one phone rule everywhere, so 07931 129015, 07931129015 and +44 7931 129015 are the same customer. An online or QR order from an imported loyalty member made them a second customer record (Huddersfield, 29 Sep), because the number was compared as written. The same rule now applies to the till's customer search and save, WiFi sign up, loyalty login and balance, gift card purchases, table bookings, delivery apps (HubRise) and the customer importer. US numbers are matched the same way with and without +1.",
+    ],
+  },
+  {
+    v: '5.11.15',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi setup guide: now matches the settings that got Huddersfield working. Untick Encrypted URL (it hid the phone's ID so guests could not be put online), leave Secure Portal unticked, and use the Add button directly under Pre-Authorization Allowances; the Add button further down fills Post-Authorization Restrictions, which blocks addresses.",
+    ],
+  },
+  {
+    v: '5.11.14',
+    date: '29 Sep 2026',
+    items: [
+      "Guest WiFi: a fixed front door for every venue. UniFi now points at one fixed address (37.16.1.154) and each venue gets its own secure address, <venue>.wifi.serv-os.app, which carries the sign up page and everything it needs. Before, the page came from our web host, whose address keeps changing, so UniFi blocked it at random: phones showed \"Cannot verify server identity\" or nothing popped up (Huddersfield, 29 Sep).",
+      "Back Office, Customers, WiFi: the setup guide follows UniFi's own screens step by step, with a Copy button on every value. External Portal Server 37.16.1.154, Domain <venue>.wifi.serv-os.app, and just three Pre-Authorization Allowances. It warns not to use Post-Authorization Restrictions and explains the \"user is not the owner of this host\" key error.",
+    ],
+  },
+  {
+    v: '5.11.13',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi: when the UniFi connection check fails, it now shows UniFi's own reply under the error (UniFi said: ...), so a refused key or wrong console can be told apart.",
+    ],
+  },
+  {
+    v: '5.11.12',
+    date: '29 Sep 2026',
+    items: [
+      "Back Office, Customers, WiFi setup guide: corrected. UniFi's External Portal Server box only accepts an IP address, so the guide now gives the IP to enter and says to turn on Redirect using hostname with the venue's own address (for example coffee-boy-huddersfield.serv-os.app). The allow-list step lists each address to add one by one, because UniFi does not accept *.serv-os.app.",
+    ],
+  },
+  {
+    v: '5.11.11',
+    date: '29 Sep 2026',
+    items: [
+      "Till and phone till discounts: each venue now shows only the discounts set up for it in Back Office, under Discounts. The six built in starter discounts (Staff meal, Staff drinks, Loyalty 10%, NHS / Blue Light, Happy hour 20%, Comp) no longer appear at a venue that has none of its own; Huddersfield showed a Happy hour nobody had set up. A venue with none shows \"No discounts set up for this venue\", and staff can still enter a custom % or £ amount on the till.",
+      "Phone till: a £ discount (for example Reusable cup £0.30) shows as £0.30 off, not \"0.3%\". It was always applied as £.",
+    ],
+  },
+  {
+    v: '5.11.10',
+    date: '28 Sep 2026',
+    items: [
+      "Xero: pushing sales no longer fails with \"The TaxType code 'INPUT2' cannot be used with account code '200'\". When a venue connected, ServOS picked the first 20% tax rate in Xero, which is VAT on Expenses. It now only ever picks sales rates (20% VAT on Income, 5% Reduced rate, Zero rated), and a venue that saved the wrong one is corrected on its next push. Leeds: press Push once for 26 Sep.",
+      "Xero: sales now post one line per VAT rate, for example Sales (card) 20% and Sales (card) zero rated, split exactly from the VAT the till recorded on each sale. Before, a whole day posted at one rate, so zero rated and 5% sales would have shown 20% VAT in Xero. Sales with no saved VAT breakdown (kiosk, online, QR) are estimated from the VAT they recorded and flagged.",
+      "Back Office, Xero, Account mapping: new VAT on sales section. Each of the venue's tax rates can be matched to a Xero sales rate (Auto matches by percentage), with a Not VAT registered tick, Items with no tax rate, and Service charge VAT. Only sales rates are listed, and VAT on purchases lists only purchase rates.",
+      "Xero: service charge now posts with No VAT by default, because the till records no VAT on it. Choose a rate under Service charge VAT for a compulsory service charge. US venues with added on sales tax post exactly as before.",
+    ],
+  },
+  {
+    v: '5.11.9',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. Fresh TestFlight builds of every iPad and iPhone app, built without the unused location code Apple was refusing: KDS 6, Time Clock 4, Waitlist 4, Bookings 4, Manager 5, Owner 4, Staff 4.',
+    ],
+  },
+  {
+    v: '5.11.8',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. Only the ServOS Staff app now carries the location code for geofenced clock in. Every other iPad and iPhone app was shipping it unused and with no permission wording, which Apple refuses on upload, so new builds of the kitchen screen and the rest could not reach testers.',
+    ],
+  },
+  {
+    v: '5.11.7',
+    date: '28 Sep 2026',
+    items: [
+      'No change for venues. The ServOS KDS iPad app has a fresh TestFlight build (build 5) so testers can install it.',
+    ],
+  },
+  {
+    v: '5.11.6',
+    date: '28 Sep 2026',
+    items: [
+      "Back Office Exceptions report: no longer crashes with an App Error (React error 31). A void, discount or refund on a collection order with no table showed the order's whole customer record (name, phone, collection time) where the table goes, and the page refused to draw it. It now shows the customer's name, or their phone number when there is no name.",
+      "Phone till (MPOS) Orders tab: opening Recently closed no longer crashes when one of the last 30 sales was a collection or takeaway order with a customer. It shows the customer's name.",
+      "Back Office Transactions: an item's modifiers show their names (for example Side: Chips, Oat milk) in the sale's item list and in the refund item picker, instead of \"[object Object]\".",
+    ],
+  },
+  {
+    v: '5.11.5',
+    date: '28 Sep 2026',
+    items: [
+      "Till: a customer found with the customer search and added to the order now shows on the customer display, with their stamps, and their stamps show on the till's customer chip. Only a number typed on the display itself, or Link to existing member, reached the display before.",
+      "Till checkout: the loyalty line shows for every loyalty member, with their stamp card (for example Free Drink 5/10) and \"Nothing to redeem yet\" when no reward is ready. It showed only when there were points or a reward to redeem, so at a stamps only venue a member with no free drink ready looked as if loyalty had not loaded. A reward the customer taps on the display now applies with the venue's categories too, like the Redeem button.",
+      "Till: the customer form opens on ASAP for a customer added from the customer display or by Link to existing member. It opened on Later, so adding a name and pressing Confirm saved the order as a pre-order for the next slot (Leeds R9001 and R8674, both 11:00).",
+    ],
+  },
+  {
+    v: '5.11.4',
+    date: '28 Sep 2026',
+    items: [
+      "Operations: new Documents. Upload a venue's documents (food safety records, certificates, policies, anything up to 20 MB) in Back Office, under Operations, Documents, or on the Operations tablet, and tap one to open it any time. Each has a title and a category (Food safety, Health and safety, Certificates, Policies, Other). Files are private to the venue and open through a link that lasts 5 minutes; in the iPhone and iPad apps they open inside the app with a Close button. Old documents are archived, never deleted, and can be brought back.",
+      "Operations: new Forms. The venue builds and names its own forms in Back Office, under Operations, Forms, Edit forms (for example one called Accident book), from short text, long text, number, date, time, yes or no, single choice, multiple choice, photo and signature questions, each with a required tick and a help line. There are no ready made forms.",
+      "Forms on the Operations tablet: staff find a form by its name, with a search box over the list, and fill it in, signed as the staff member logged in on it.",
+      "Forms: one Completed forms list in Back Office, under Operations, Forms, shows every form completed at the venue, newest first. Filter it by form to find each type of form completed, search the answers and who submitted, and pick a date range on the venue's clock. Open one to see every answer with its photos and signature, and print it. Export CSV downloads exactly the rows shown: one form gives that form's own columns, every form gives one sheet with each form's questions in their own columns.",
+      "Forms: completed forms can hold personal data, so only Back Office shows them. The tablet can add one but never read one back. Each keeps the questions it was made with, and is never changed or deleted.",
+      "Documents and Forms need the database update 20260928c. Until it has run, both say they are not set up yet and nothing else changes.",
+    ],
+  },
+  {
     v: '5.11.3',
     date: '28 Sep 2026',
     items: [

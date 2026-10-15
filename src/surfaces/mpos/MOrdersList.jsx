@@ -4,6 +4,8 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
+import { plainText, checkCustomerText } from '../../lib/reportText';
+import { qrSessionShownInQrSection } from '../../lib/qrTabStranded';
 
 const FILTERS = [
   { id:'all',       label:'All' },
@@ -43,8 +45,10 @@ export default function MOrdersList({ onOpenOrder }) {
   };
 
   // ── Section: open table sessions ─────────────────────────────────────────
+  // 2 Oct 2026: a QR floor session that only copies QR orders already in the queue below is not
+  // listed a second time as a table (Peter, Leeds: "you get 2 orders"; lib/qrTabStranded.js).
   const openTables = useMemo(() => tables
-    .filter(t => t.status !== 'available' && t.session)
+    .filter(t => t.status !== 'available' && t.session && !qrSessionShownInQrSection(t, orderQueue))
     .map(t => ({
       _kind:'table', id:`tbl-${t.id}`,
       tableId:t.id,   // v5.8.30: the tap handler opens by tableId; this was missing, so tapping a table did nothing
@@ -56,7 +60,7 @@ export default function MOrdersList({ onOpenOrder }) {
       createdAt:t.session?.seatedAt || t.session?.createdAt,
       _table:t,
     }))
-    .filter(matchesFilter).filter(matchesSearch), [tables, filter, search, myName]);
+    .filter(matchesFilter).filter(matchesSearch), [tables, orderQueue, filter, search, myName]);
 
   // ── Section: live queue (received → prep → ready) ─────────────────────────
   const queueOpen = useMemo(() => orderQueue
@@ -82,8 +86,9 @@ export default function MOrdersList({ onOpenOrder }) {
     .slice(0, 30)
     .map(c => ({
       _kind:'closed', id:`c-${c.id}`,
-      ref:c.ref || c.id?.slice(0, 6), displayName:c.customer || c.ref,
-      server:c.server, customer:{ name:c.customer, phone:c.customerPhone },
+      // 28 Sep 2026: a collection order's customer is an OBJECT; rendering it crashed this list (React #31).
+      ref:c.ref || c.id?.slice(0, 6), displayName:checkCustomerText(c.customer) || c.ref,
+      server:c.server, customer:{ name:checkCustomerText(c.customer), phone:c.customerPhone || plainText(c.customer?.phone) },
       status:c.status || 'paid', items:c.items || [], total:c.total || 0,
       createdAt:c.closedAt, _source:c.source,
     }))

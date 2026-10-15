@@ -43,6 +43,28 @@
  * <slug>.dev.serv-os.app. There is no custom storefront domain column yet
  * (org_sending_domains is email only); every builder already takes one so
  * nothing here changes when it arrives.
+ *
+ * ONE HOST ON LIVE (29 Sep 2026, v5.11.17): a live venue registers
+ * <slug>.serv-os.app (plus its custom domain) and nothing else. Registering
+ * both ServOS hosts on the live merchant let a refused dev host turn a live
+ * answer into ok false, and a live venue's .dev host runs on the same keys
+ * but is not its shop, so it is not registered on purpose.
+ * A TEST venue keeps every address it can be opened on: <slug>.dev.serv-os.app
+ * first, then <slug>.serv-os.app (production Back Office hands a venue that is
+ * still on Adyen test its production address, env.js CUSTOMER_ROOT) and the
+ * custom domain. The test merchant cannot touch live, so a refusal there
+ * never marks live as failed.
+ *
+ * AUTOMATIC, SELF RETRYING (29 Sep 2026, v5.11.17). Coffee Boy's Apple Pay
+ * sheet closed at once for a week because the six hosts were refused on 22
+ * Sep, only a yes/no was kept and nothing ever asked again. Now the server
+ * asks by itself (adyen-terminal-admin ensure_apple_pay_domains, nudged by
+ * the online checkout), at most every APPLE_PAY_RETRY_MS after a refusal and
+ * every APPLE_PAY_RECHECK_MS once registered, and keeps the outcome and
+ * Adyen's reason in ONE row per venue and environment (applePayStateFrom,
+ * platform adyen_webhook_events, event_key applePayStateKey). The helpers
+ * below decide when to ask again and what to tell the admin; the function
+ * does the calls.
  */
 
 export const SERVOS_APEX = 'serv-os.app';
@@ -124,16 +146,40 @@ export function buildWebOrigins({ customDomain } = {}) {
   return dedupeBy([...STATIC_WEB_ORIGINS, customDomainOrigin(customDomain)], originKey);
 }
 
-// The venue's storefront hosts for Apple Pay: <slug>.serv-os.app and
-// <slug>.dev.serv-os.app (plus the custom domain when there is one). A
-// missing or invalid slug gives no ServOS hosts; the caller says so.
-export function buildStorefrontDomains({ slug, customDomain, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT } = {}) {
+// 'live' | 'test' for an environment word, '' for anything else.
+function envWord(environment) {
+  const e = String(environment ?? '').trim().toLowerCase();
+  return e === 'live' || e === 'test' ? e : '';
+}
+
+// The venue's storefront hosts for Apple Pay, for ONE environment:
+//   live  <slug>.serv-os.app, plus the custom domain when there is one
+//   test  <slug>.dev.serv-os.app, then <slug>.serv-os.app and the custom
+//         domain (a venue on Adyen test is opened on both deploy tiers)
+// With no environment it is the legacy pair (both hosts, plus the custom
+// domain); no server caller uses that since v5.11.17. A missing or invalid
+// slug gives no ServOS hosts; the caller says so.
+export function buildStorefrontDomains({ slug, customDomain, environment, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT } = {}) {
   const s = String(slug ?? '').trim().toLowerCase();
+  const env = envWord(environment);
   const out = [];
-  if (SLUG_RE.test(s)) out.push(`${s}.${apex}`, `${s}.${devRoot}`);
+  if (SLUG_RE.test(s)) {
+    if (env === 'live') out.push(`${s}.${apex}`);
+    else if (env === 'test') out.push(`${s}.${devRoot}`, `${s}.${apex}`);
+    else out.push(`${s}.${apex}`, `${s}.${devRoot}`);
+  }
   const custom = normaliseHost(customDomain);
   if (custom) out.push(custom);
   return dedupeBy(out, domainKey);
+}
+
+// The venue's MAIN storefront host on an environment, the key the kept row
+// and the throttle use: <slug>.dev.serv-os.app on test, <slug>.serv-os.app
+// otherwise. '' for a missing or invalid slug.
+export function storefrontHostFor({ slug, environment, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT } = {}) {
+  const s = String(slug ?? '').trim().toLowerCase();
+  if (!SLUG_RE.test(s)) return '';
+  return envWord(environment) === 'test' ? `${s}.${devRoot}` : `${s}.${apex}`;
 }
 
 // Split `wanted` into what Adyen already lists and what must be posted,
@@ -168,7 +214,8 @@ export function applePayDomainList(response) {
 }
 
 // The plan for a merchant's Apple Pay method: the venue's storefront hosts
-// against what is registered already.
+// against what is registered already. storefront.environment picks the one
+// host of that environment (buildStorefrontDomains).
 export function applePayDomainsPlan(existingResponse, storefront = {}) {
   const wanted = buildStorefrontDomains(storefront);
   const { missing, existing } = splitAgainstExisting(wanted, applePayDomainList(existingResponse), domainKey);
@@ -263,6 +310,185 @@ export function registrationLines(result) {
     lines.push({ tone: 'err', text: `Failed: ${target}${why ? ` (${why})` : ''}` });
   }
   if (result.note && result.note !== result.error) lines.push({ tone: result.ok === false && !failed.length && !result.error ? 'warn' : 'info', text: String(result.note) });
+  // What to do about it, in one plain sentence (applePayGuidance), unless the
+  // error or the note already says it.
+  const guidance = String(result.guidance ?? '').trim();
+  if (guidance && !String(result.error ?? '').includes(guidance) && !String(result.note ?? '').includes(guidance)) {
+    lines.push({ tone: 'warn', text: guidance });
+  }
   if (!lines.length) lines.push({ tone: 'info', text: 'Nothing to register.' });
   return lines;
+}
+
+// ── AUTOMATIC APPLE PAY REGISTRATION (29 Sep 2026, v5.11.17) ────────────────
+// adyen-terminal-admin ensure_apple_pay_domains asks Adyen by itself, from the
+// online checkout (throttled), from the go live screen (throttled) and from
+// the go live flip, adyen_link and the Register for Apple Pay button (always).
+// Each attempt keeps ONE row per venue and environment in platform
+// adyen_webhook_events (event_key applePayStateKey, raw applePayStateFrom).
+
+// After a refusal or an error, ask again at most this often.
+export const APPLE_PAY_RETRY_MS = 6 * 60 * 60 * 1000;
+// Once registered, check again at most this often (a host removed by hand in
+// the Customer Area comes back by itself within a day).
+export const APPLE_PAY_RECHECK_MS = 24 * 60 * 60 * 1000;
+// A checkedAt this far ahead of the reader's clock still counts as now (two
+// isolates never share one clock exactly); further ahead reads as bad.
+export const APPLE_PAY_CLOCK_SKEW_MS = 60 * 1000;
+export const APPLE_PAY_STATE_PREFIX = 'applepay_state';
+// The triggers a person started: they always ask Adyen, whatever the throttle.
+export const APPLE_PAY_MANUAL_TRIGGERS = Object.freeze(['admin', 'go_live', 'adyen_link']);
+// The one fix ServOS cannot make in code: the Management API role on the
+// credential FranPOS owns (22 Sep 2026: every Coffee Boy host was refused).
+export const APPLE_PAY_PERMISSION_GUIDANCE = 'Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential.';
+// The longest guidance sentence, so it fits a go live step hint.
+export const APPLE_PAY_GUIDANCE_MAX = 120;
+const STATE_TEXT_MAX = 300;
+
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const text = (v) => (v === undefined || v === null ? '' : String(v).trim());
+const numOrNull = (v) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+const isScope = (v) => Number(v) === 401 || Number(v) === 403;
+
+// Cut a text to `max` characters, ending in '...' when it was cut.
+export function clipText(value, max) {
+  const s = text(value).replace(/\s+/g, ' ');
+  if (!s || s.length <= max) return s;
+  return `${s.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+// The row key: 'applepay_state:<live|test>:<platform location id>'. '' when
+// either part is missing, so nothing is written under a half key.
+export function applePayStateKey(env, platformLocationId) {
+  const e = envWord(env);
+  const id = text(platformLocationId);
+  return e && id ? `${APPLE_PAY_STATE_PREFIX}:${e}:${id}` : '';
+}
+
+// Should an automatic trigger ask Adyen now? A manual trigger always does.
+// Otherwise yes when there is no usable row (none, unreadable, a checkedAt
+// that is not a date or is ahead of the clock), when the host or the merchant
+// account changed since, when the caller read a DIFFERENT Apple Pay payment
+// method than the row was kept for (paymentMethodId, when both are known),
+// or when the row is older than APPLE_PAY_RECHECK_MS (registered) or
+// APPLE_PAY_RETRY_MS (anything else).
+export function applePayRetryDue(state, { now = Date.now(), host = '', merchant = '', trigger = '', paymentMethodId = '' } = {}) {
+  if (APPLE_PAY_MANUAL_TRIGGERS.includes(text(trigger))) return true;
+  if (!isObj(state)) return true;
+  const t = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const at = Date.parse(text(state.checkedAt));
+  if (!Number.isFinite(at) || at > t + APPLE_PAY_CLOCK_SKEW_MS) return true;
+  if (domainKey(host) !== domainKey(state.host)) return true;
+  if (text(merchant) !== text(state.merchant)) return true;
+  const pm = text(paymentMethodId);
+  if (pm && text(state.paymentMethodId) && pm !== text(state.paymentMethodId)) return true;
+  return t - at >= (state.registered === true ? APPLE_PAY_RECHECK_MS : APPLE_PAY_RETRY_MS);
+}
+
+// Adyen's errorCode from a Management API refusal body, or null.
+export function adyenErrorCode(data) {
+  const c = isObj(data) ? data.errorCode : null;
+  const s = text(c);
+  return s ? s.slice(0, 40) : null;
+}
+
+// The answer's code, with a timed out call named 'timeout' (the function
+// throws "Adyen did not answer ... within 15s" and the attempt keeps it as
+// the error line).
+export function applePayAnswerCode(answer) {
+  const a = isObj(answer) ? answer : {};
+  const code = text(a.code);
+  if (code) return code;
+  return /did not answer/i.test(text(a.error)) ? 'timeout' : '';
+}
+
+// Adyen refused ServOS's credential: 401 or 403 on the payment method list
+// read, or on any host it was asked to add.
+export function isPermissionRefusal(answer) {
+  const a = isObj(answer) ? answer : {};
+  if (text(a.code) === 'scope_missing') return true;
+  if (isScope(a.status)) return true;
+  return (Array.isArray(a.failed) ? a.failed : []).some((f) => isObj(f) && isScope(f.status));
+}
+
+// ONE plain sentence on what to do about an Apple Pay answer (a register
+// answer or a read only probe), null when there is nothing to do.
+export function applePayGuidance(answer) {
+  const a = isObj(answer) ? answer : {};
+  const failed = (Array.isArray(a.failed) ? a.failed : []).filter(isObj);
+  const code = applePayAnswerCode(a);
+  if ((a.ok === true || a.registered === true) && !failed.length && !code) {
+    const v = text(a.verificationStatus ?? a.verification).toLowerCase();
+    return v && v !== 'valid' ? applePayStatusNote({ verificationStatus: v }, text(a.merchant) || null) : null;
+  }
+  if (isPermissionRefusal(a)) return APPLE_PAY_PERMISSION_GUIDANCE;
+  if (code === 'apple_pay_not_requested') return "Apple Pay is not switched on for this Adyen account. Ask FranPOS to request it with Adyen's certificate.";
+  if (code === 'apple_pay_store_scoped') return "Apple Pay is set up store by store and this venue's store has none. Ask FranPOS to add it.";
+  if (code === 'no_storefront') return "This venue has no online address yet. Set it in Channels first.";
+  if (code === 'timeout') return 'Adyen did not answer. ServOS tries again by itself.';
+  const f = failed[0];
+  if (f) {
+    const host = text(f.domain) || text(a.host) || 'the shop address';
+    const head = `Adyen would not add ${host}`;
+    const why = clipText(f.message || (numOrNull(f.status) ? `HTTP ${f.status}` : ''), APPLE_PAY_GUIDANCE_MAX - head.length - 3);
+    return clipText(why ? `${head}: ${why}${why.endsWith('...') ? '' : '.'}` : `${head}.`, APPLE_PAY_GUIDANCE_MAX);
+  }
+  if (code === 'read_failed' || text(a.error)) {
+    const head = 'Adyen could not be asked about Apple Pay';
+    const tail = ' ServOS tries again by itself.';
+    const why = clipText(a.message || a.error, APPLE_PAY_GUIDANCE_MAX - head.length - tail.length - 3);
+    return why ? `${head}: ${why}${why.endsWith('...') ? '' : '.'}${tail}` : `${head}.${tail}`;
+  }
+  return null;
+}
+
+// The row kept for one attempt (platform adyen_webhook_events, raw). outcome:
+//   registered     the host was on Adyen's list already
+//   added          ServOS added it just now
+//   refused        Adyen said no (a missing role, or a host it would not take)
+//   not_requested  Apple Pay is not switched on for the merchant
+//   store_scoped   Apple Pay is set up per store and this store has none
+//   no_storefront  the venue has no online address to register
+//   error          no usable answer (a timeout, an Adyen 5xx, missing keys)
+// failures counts the attempts in a row that did not end registered.
+export function applePayStateFrom(answer, { trigger = null, host = '', now = Date.now(), previous = null } = {}) {
+  const a = isObj(answer) ? answer : {};
+  const code = applePayAnswerCode(a);
+  const failed = (Array.isArray(a.failed) ? a.failed : []).filter(isObj).slice(0, 10).map((f) => ({
+    domain: clipText(f.domain, 120) || null,
+    status: numOrNull(f.status),
+    errorCode: text(f.errorCode) || null,
+    message: clipText(f.message, STATE_TEXT_MAX) || null,
+  }));
+  const added = (Array.isArray(a.added) ? a.added : []).map(text).filter(Boolean).slice(0, 10);
+  const hostNow = domainKey(text(host) || text(a.host));
+  const registered = a.ok === true && !!hostNow && failed.length === 0 && !code;
+  let outcome = 'error';
+  if (code === 'no_storefront') outcome = 'no_storefront';
+  else if (code === 'apple_pay_not_requested') outcome = 'not_requested';
+  else if (code === 'apple_pay_store_scoped') outcome = 'store_scoped';
+  else if (registered) outcome = added.length ? 'added' : 'registered';
+  else if (isPermissionRefusal(a) || failed.length) outcome = 'refused';
+  const t = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const before = isObj(previous) ? Number(previous.failures) : 0;
+  return {
+    v: 1,
+    environment: envWord(a.environment) || null,
+    host: hostNow || null,
+    merchant: text(a.merchant) || null,
+    paymentMethodId: text(a.paymentMethodId) || null,
+    verification: text(a.verificationStatus ?? a.verification) || null,
+    registered,
+    outcome,
+    code: code || null,
+    status: numOrNull(a.status) ?? (failed[0] ? failed[0].status : null),
+    errorCode: text(a.errorCode) || (failed[0] ? failed[0].errorCode : null) || null,
+    error: registered ? null : (clipText(a.message || (failed[0] ? failed[0].message : '') || a.error, STATE_TEXT_MAX) || null),
+    failed,
+    added,
+    guidance: applePayGuidance(a),
+    checkedAt: new Date(t).toISOString(),
+    trigger: text(trigger) || null,
+    failures: registered ? 0 : (Number.isFinite(before) && before > 0 ? before : 0) + 1,
+  };
 }

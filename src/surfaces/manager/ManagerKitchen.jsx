@@ -8,6 +8,7 @@ import { recordPrep } from '../../lib/prep';
 import { managerRaisePO } from '../../lib/manager/data';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
+import { useLayout } from './useLayout';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const shortDate = (s) => { if (!s) return null; const d = new Date(s); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : null; };
@@ -16,6 +17,7 @@ const qtyLbl = (b) => [b.plannedQty != null ? b.plannedQty : null, b.unit].filte
 
 export default function ManagerKitchen({ ctx }) {
   const { snap, snapErr: err, loc, operator, refreshSnap } = ctx;
+  const L = useLayout();   // style values only (manager/layout.js)
   const [recording, setRecording] = useState(null);
   const [recErr, setRecErr] = useState('');
   // Raise PO (per supplier) — secure write path: manager-approve po.raise (device fence + PIN + audit).
@@ -90,18 +92,19 @@ export default function ManagerKitchen({ ctx }) {
   };
 
   return (
-    <div>
+    <div style={L.s.page2}>
       <Header title="Kitchen" sub="Stock · deliveries · prep" />
-      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono }}>Loading…</div>}
-      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13 }}>Couldn’t load stock ({err}).</div>}
+      {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
+      {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}
 
       {snap && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12, ...L.s.kitchenStats }}>
             <Stat label="To order" value={short.length} tone={short.length ? 'var(--red)' : 'var(--grn)'} />
             <Stat label="Incoming" value={incoming.length} tone={incoming.length ? 'var(--orn)' : 'var(--t1)'} />
           </div>
 
+          <div style={L.s.pane}>
           {short.length === 0 && (
             <div className="sv-glass" style={{ padding: 20, marginTop: 12, textAlign: 'center' }}>
               <Icon name="check" size={24} style={{ color: 'var(--grn)' }} />
@@ -134,7 +137,7 @@ export default function ManagerKitchen({ ctx }) {
                     <div style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>Order {poDone[sup]} raised — it’ll show under “On order · incoming”.</div>
                   </div>
                 ) : poFor === sup ? (
-                  <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))' }}>
+                  <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))', ...L.s.orderSheet }}>
                     <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Order from {sup}</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       {groups[sup].map((i) => {
@@ -142,9 +145,9 @@ export default function ManagerKitchen({ ctx }) {
                         return (
                           <div key={i.itemId} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, textDecoration: q === 0 ? 'line-through' : 'none', color: q === 0 ? 'var(--t4)' : 'var(--t1)' }}>{i.name}</div>
-                            <button onClick={() => stepQty(i.itemId, -1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit' }}>−</button>
+                            <button onClick={() => stepQty(i.itemId, -1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit', ...L.s.hit }}>−</button>
                             <span style={{ width: 28, textAlign: 'center', fontSize: 14, fontWeight: 800, ...mono }}>{q}</span>
-                            <button onClick={() => stepQty(i.itemId, 1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit' }}>+</button>
+                            <button onClick={() => stepQty(i.itemId, 1)} className="sv-glass" style={{ width: 32, height: 32, borderRadius: 10, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontSize: 16, fontWeight: 800, fontFamily: 'inherit', ...L.s.hit }}>+</button>
                           </div>
                         );
                       })}
@@ -170,18 +173,20 @@ export default function ManagerKitchen({ ctx }) {
                   </div>
                 ) : (
                   <button onClick={() => openPoSheet(sup, groups[sup])} className="sv-glass"
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '12px 0', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit' }}>
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '12px 0', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 13, fontFamily: 'inherit', ...L.s.cta }}>
                     <Icon name="delivery" size={14} /> Raise PO — {sup}
                   </button>
                 )}
               </div>
             </div>
           ))}
+          </div>
 
+          <div style={L.s.pane}>
           {incoming.length > 0 && (
             <>
               <SectionTitle right={`${incoming.length} ${incoming.length === 1 ? 'order' : 'orders'}`}>On order · incoming</SectionTitle>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...L.s.paneRows }}>
                 {incoming.map((d) => {
                   const [pillLabel, pillCol] = DEL_PILL[d.status] || DEL_PILL.pending;
                   const eta = shortDate(d.expectedDate);
@@ -223,6 +228,7 @@ export default function ManagerKitchen({ ctx }) {
               </div>
             </div>
           )}
+          </div>
         </>
       )}
     </div>

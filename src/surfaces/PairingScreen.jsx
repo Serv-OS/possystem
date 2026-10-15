@@ -4,6 +4,9 @@ import { normalizePairingCode, isMissingRpc, claimRefusalMessage, deviceEntryFro
 import { getPendingCount, reconcilePendingChecks } from '../sync/DataSafe';
 import { getQueueSize, replayQueue } from '../sync/OfflineQueue';
 import { VERSION } from '../lib/version';
+// 12 Oct 2026 (Preston): the device config has ONE writer, which stamps it with the device and
+// venue it was derived for (lib/masterTillDevice.js).
+import { saveDeviceConfig, forgetDeviceConfig } from '../lib/masterTillDevice';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function PairingScreen({ onPaired }) {
@@ -127,10 +130,15 @@ export default function PairingScreen({ onPaired }) {
     localStorage.setItem('rpos-device', JSON.stringify(deviceEntry));
     // Clear any previous session token so old sessions get kicked
     sessionStorage.removeItem(`rpos-session-${data.id}`);
+    // 12 Oct 2026 (D3): a NEW pairing never inherits the previous device's config. A device with
+    // no profile, or a profile missing from the local cache, used to keep the old one, master
+    // answer included, so a clock or a second till paired on a browser that was once the master
+    // till went on routing channel orders. This tab's own copy goes too.
+    forgetDeviceConfig();
 
     // KDS devices get a special config — boot straight to KDS surface, no PIN, no nav
     if (data.type === 'kds') {
-      localStorage.setItem('rpos-device-config', JSON.stringify({
+      saveDeviceConfig({
         profileId: 'kds', profileName: 'Kitchen Display',
         defaultSurface: 'kds',
         centreId: data.centre_id || null,
@@ -140,7 +148,7 @@ export default function PairingScreen({ onPaired }) {
         tableServiceEnabled: false,
         quickScreenEnabled: false,
         autoPrintReceiptOnClose: false,
-      }));
+      }, { force: true });
     }
 
     // Apply device profile settings to rpos-device-config
@@ -155,7 +163,7 @@ export default function PairingScreen({ onPaired }) {
         const allProfiles = storedProfiles || DEFAULT_PROFILES;
         const profile = allProfiles.find(p => p.id === data.profile_id);
         if (profile) {
-          localStorage.setItem('rpos-device-config', JSON.stringify({
+          saveDeviceConfig({
             profileId: profile.id,
             profileName: profile.name,
             defaultSurface: profile.defaultSurface || 'tables',
@@ -166,7 +174,9 @@ export default function PairingScreen({ onPaired }) {
             quickScreenEnabled: profile.quickScreenEnabled !== false,
             autoPrintReceiptOnClose: true,
             orderNotifications: profile.orderNotifications !== false,
-          }));
+            defaultOrderType: profile.defaultOrderType || null,        // 30 Sep 2026 (lib/tillOrderType.js)
+            dineInFlagPrompt: profile.dineInFlagPrompt === true,
+          }, { force: true });
         }
       } catch(e) { console.warn('Profile apply failed:', e); }
     }

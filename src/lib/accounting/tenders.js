@@ -50,6 +50,11 @@ export function tender(method, amount, tip = 0, extra = {}) {
   if (extra.giftCardId) out.gift_card_id = String(extra.giftCardId);
   if (extra.pspRef) out.psp_ref = String(extra.pspRef);
   if (extra.processor) out.processor = String(extra.processor);
+  // 30 Sep 2026: the rewards a loyalty credit is made of ([{ name, item, amount }], lib/
+  // loyaltyMultiRedeem.js rewardsRecord), so a receipt reprint and History read from the
+  // database show each free item. Money and method are unchanged; the accounting layer reads
+  // neither key.
+  if (Array.isArray(extra.rewards) && extra.rewards.length) out.rewards = extra.rewards;
   return out;
 }
 
@@ -93,15 +98,16 @@ export function bookingTenders(bookingPayment) {
  *   tip           the till leg's tip
  *   giftRecord    committed gift card record (applied = what was debited)
  *   loyaltyCredit, promoCredit   major units (discount credits)
+ *   loyaltyRewards               the rewards behind loyaltyCredit, one per reward (optional)
  *   bookingPayment               { legs:[{method, amountMinor}] }
  *   readerLegs    card reader split legs [{ chargeMinor (due + tip), tipMinor, transactionId }]
  *   pspRef, processor            the till leg's card reference
  */
-export function tillTenders({ method, tillMoney = 0, tip = 0, giftRecord = null, loyaltyCredit = 0, promoCredit = 0, bookingPayment = null, readerLegs = [], pspRef = null, processor = null, readerProcessor = 'adyen' }) {
+export function tillTenders({ method, tillMoney = 0, tip = 0, giftRecord = null, loyaltyCredit = 0, loyaltyRewards = null, promoCredit = 0, bookingPayment = null, readerLegs = [], pspRef = null, processor = null, readerProcessor = 'adyen' }) {
   const list = [
     ...bookingTenders(bookingPayment),
     ...giftTenders(giftRecord),
-    tender('loyalty', loyaltyCredit),
+    tender('loyalty', loyaltyCredit, 0, { rewards: loyaltyRewards }),
     tender('promo', promoCredit),
     ...(readerLegs || []).filter((l) => l && Number(l.chargeMinor) > 0).map((l) => {
       const tipM = Math.max(0, Number(l.tipMinor) || 0);

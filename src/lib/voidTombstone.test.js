@@ -1,6 +1,6 @@
 // v5.9.72: a void leaves the same tombstone a payment does (Leeds, 26 Sep 2026: "this order is
 // being voided but still coming back"), demo tabs stay in demo mode, a kitchen screen never
-// publishes tables or tabs.
+// publishes tables or tabs (12 Oct 2026: in every shape, not only the page whose mode word is kds).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,10 +8,12 @@ import { closedCheckRow } from './closedCheckRow.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-test('a voided tombstone reaches the row as voided, status void, nothing on it', () => {
-  const row = closedCheckRow({ id: 'void-1', tableId: 't1', items: [{ name: 'Latte', voided: true }], total: 0, subtotal: 0, method: 'void', status: 'void', voided: true, seatedAt: 1786124809674 }, 'loc-1');
+// 30 Sep 2026: the tombstone's status is 'voided', the spelling every report reads. The rows
+// written as 'void' before this load as 'voided' too (lib/voidRules.js normaliseCheckStatus).
+test('a voided tombstone reaches the row as voided, status voided, nothing on it', () => {
+  const row = closedCheckRow({ id: 'void-1', tableId: 't1', items: [{ name: 'Latte', voided: true }], total: 0, subtotal: 0, method: 'void', status: 'voided', voided: true, seatedAt: 1786124809674 }, 'loc-1');
   assert.equal(row.voided, true);
-  assert.equal(row.status, 'void');
+  assert.equal(row.status, 'voided');
   assert.equal(row.method, 'void');
   assert.equal(Number(row.total), 0);
   assert.equal(row.seated_at, new Date(1786124809674).toISOString(), 'the occupation key every device tombstones on');
@@ -21,13 +23,29 @@ test('a voided tombstone reaches the row as voided, status void, nothing on it',
 test('pins: voidCheck writes the tombstone; demo tabs only in mock; a KDS never publishes', () => {
   const store = read('../store/index.js');
   const v = store.slice(store.indexOf('  voidCheck: (tableId, { manager, reason }) => {'), store.indexOf('  // ── Discounts'));
-  assert.match(v, /voided: true, status: 'void', method: 'void',/);
+  assert.match(v, /voided: true, status: 'voided', method: 'void',/);
   assert.match(v, /set\(s => \(\{ closedChecks: \[tomb, \.\.\.\(s\.closedChecks \|\| \[\]\)\] \}\)\);/, 'the tombstone is in memory at once, so this device never republishes');
   assert.match(v, /insertClosedCheck\(tomb\);/);
   assert.match(store, /seedTabs: \(\) => \{ if \(!isMock\) return; set\(\{ tabs:\[/);
   assert.match(read('../surfaces/BarSurface.jsx'), /if \(tabs\.length===0 && isMock\) seedTabs\(\);/);
-  assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;/);
-  assert.match(read('../sync/SessionSync.js'), /if \(getDeviceMode\(\) === 'kds'\) return;   \/\/ v5\.9\.72: a kitchen screen never resurrects a table/);
-  assert.match(read('../sync/SyncBridge.jsx'), /if \(!isMock && getDeviceMode\(\) !== 'kds'\) startSessionReconciler\(\);/);
-  assert.match(read('../sync/QueueSync.js'), /const tabs = getDeviceMode\(\) === 'kds' \? \[\] : \(state\.tabs \|\| \[\]\);/);
+  // 12 Oct 2026: these three were tests of the page's mode word (kds), true only for the ServOS
+  // KDS app. A tablet paired as a Kitchen Display inside a till mode page was missed, and a till
+  // inside the kitchen app was stopped. All three now ask one rule that follows what the page
+  // shows (lib/queueDeleteRule.js showsKitchenScreen, pinned in kitchenScreenRule.test.js and run
+  // end to end in sync/sessionKitchenFence.test.js). The reconciler asks it on every pass, so
+  // SyncBridge starts it on every page.
+  const ss = read('../sync/SessionSync.js');
+  const flush = ss.slice(ss.indexOf('export async function flushSessions()'), ss.indexOf('export function scheduleFlush()'));
+  assert.match(flush, /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;/);
+  assert.match(ss, /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;   \/\/ v5\.9\.72: a kitchen screen never resurrects a table/);
+  assert.match(read('../sync/SessionReconciler.js'), /if \(readShowsKitchenScreen\(useStore\.getState\(\)\.deviceConfig\)\) return;/);
+  assert.match(read('../sync/SyncBridge.jsx'), /if \(!isMock\) startSessionReconciler\(\);/);
+  for (const file of ['../sync/SessionSync.js', '../sync/SyncBridge.jsx']) {
+    assert.doesNotMatch(read(file), /getDeviceMode\(\) (===|!==) 'kds'/, `${file}: the mode word alone no longer decides`);
+  }
+  // 12 Oct 2026: the QueueSync fence used to empty `tabs` on a kitchen screen, which stopped the
+  // publish but made its delete loop remove every tab the screen knew of. A page that is not a
+  // till now returns before any write (lib/queueDeleteRule.js, pinned in queueDeleteRule.test.js).
+  assert.match(read('../sync/QueueSync.js'), /if \(!maySyncQueue\(role\)\) return;/);
+  assert.doesNotMatch(read('../sync/QueueSync.js'), /getDeviceMode\(\) === 'kds' \? \[\]/);
 });

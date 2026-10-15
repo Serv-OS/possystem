@@ -45,6 +45,8 @@ import { getPaymentSession } from '../_shared/ryft.ts';
 import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
 import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 import { decideGiftFulfilAuthority } from '../_shared/gift-authority.ts';
+import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 import {
   stripeSessionProvesPurchase, ryftSessionProvesPurchase, purchaseProcessor, type ProofResult,
 } from '../_shared/giftPurchaseProof.ts';
@@ -547,8 +549,8 @@ Deno.serve(async (req) => {
   if (purchase.sender_phone) {
     (async () => {
       try {
-        const phoneN = normalisePhone(purchase.sender_phone);
-        if (!phoneN) return;
+        // Fewer than 7 digits is no number (29 Sep 2026: the one phone match key)
+        if (!phoneMatchKey(purchase.sender_phone, '')) return;
 
         // Resolve org_id from the venue's OPS row (Platform locations has no org_id column, so
         // the old read here always failed and no buyer was ever linked).
@@ -560,19 +562,18 @@ Deno.serve(async (req) => {
         if (!pl?.ops_location_id) return;
         const { data: locRow } = await opsAdmin
           .from('locations')
-          .select('id, org_id')
+          .select('id, org_id, currency')
           .eq('id', pl.ops_location_id)
           .maybeSingle();
         if (!locRow?.org_id) return;
+        // the buyer's number keyed in the venue's region, as the till and the database key it
+        const region = phoneRegionFromCurrency(locRow.currency);
+        const phoneN = phoneMatchKey(purchase.sender_phone, region) as string;
 
-        // Upsert customer by phone in ops DB
-        const { data: existing } = await opsAdmin
-          .from('customers')
-          .select('id')
-          .eq('org_id', locRow.org_id)
-          .eq('phone', phoneN)
-          .is('deleted_at', null)
-          .maybeSingle();
+        // Upsert customer by phone in ops DB (the key, and every shape an older build stored it in)
+        const { data: existing } = await readCustomerByPhone(opsAdmin, {
+          orgId: locRow.org_id, phone: purchase.sender_phone, region,
+        });
 
         let customerId: string;
         if (existing) {
@@ -593,6 +594,7 @@ Deno.serve(async (req) => {
               name: purchase.sender_name,
               email: purchase.sender_email || null,
               phone: phoneN,
+              phone_raw: phoneRawText(purchase.sender_phone),
             })
             .select('id')
             .single();
@@ -703,13 +705,3 @@ Deno.serve(async (req) => {
   });
 });
 
-// ── Phone normalisation ──────────────────────────────────────────────────
-function normalisePhone(raw: string): string | null {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits;
-}

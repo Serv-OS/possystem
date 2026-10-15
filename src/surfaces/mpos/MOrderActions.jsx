@@ -13,19 +13,9 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../../lib/venueDiscounts';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 import MBottomSheet from './MBottomSheet';
-
-// Same preset ladder as MItemActions / DiscountModal. Keeps line / order
-// discount UI consistent.
-const DISCOUNTS = [
-  { id:'staff50', label:'Staff meal',     type:'percent', value:50 },
-  { id:'staff_d', label:'Staff drinks',   type:'percent', value:50 },
-  { id:'loyalty', label:'Loyalty 10%',    type:'percent', value:10 },
-  { id:'nhs',     label:'NHS / Blue Light', type:'percent', value:10 },
-  { id:'happy',   label:'Happy hour 20%', type:'percent', value:20 },
-  { id:'comp',    label:'Comp (100%)',    type:'percent', value:100, requiresManager:true },
-];
 
 export default function MOrderActions({ onClose }) {
   const {
@@ -34,16 +24,11 @@ export default function MOrderActions({ onClose }) {
     fireCourse, transferTable, setOrderNote, showToast,
   } = useStore();
   const [view, setView] = useState('main'); // main | discount | fire | transfer | note
-  // v5.8.21: the venue's OWN discounts from Back Office (discounts table, loaded
-  // into store.discountPresets by SyncBridge), the same list the POS DiscountModal
-  // shows. The ladder above was a hard-coded demo set, so anything a venue set up
-  // in Back Office never appeared on the handset. Demo ladder stays as fallback.
+  // v5.8.21: the venue's OWN discounts from Back Office (store.discountPresets, loaded per
+  // venue by SyncBridge), the same list the POS DiscountModal shows. 29 Sep 2026: and ONLY
+  // those; the hard-coded demo ladder that showed when a venue had none is gone.
   const venuePresets = useStore(s => s.discountPresets);
-  const ladder = (venuePresets || []).filter(d => d && d.active !== false && Number(d.value) > 0).length
-    ? [...venuePresets].filter(d => d && d.active !== false && Number(d.value) > 0)
-        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-        .map(d => ({ id: d.id, label: d.label || d.name, type: d.type || 'percent', value: Number(d.value), requiresManager: !!d.requiresManager, scope: d.scope, categoryIds: d.categoryIds }))
-    : DISCOUNTS;
+  const ladder = venueDiscountList(venuePresets);
   const [pendingManagerDiscount, setPendingManagerDiscount] = useState(null);
 
   const isTable = !!activeTableId;
@@ -143,6 +128,9 @@ export default function MOrderActions({ onClose }) {
           <div>
             <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>Apply discount to the whole order</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {ladder.length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t3)', padding:'12px', borderRadius:10, border:'1px dashed var(--bdr)', lineHeight:1.4 }}>{NO_DISCOUNTS_TEXT}</div>
+              )}
               {ladder.map(d => (
                 <button key={d.id} onClick={() => applyDiscount(d)} style={{
                   padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
@@ -157,7 +145,7 @@ export default function MOrderActions({ onClose }) {
                       </div>
                     )}
                   </div>
-                  <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>−{d.value}%</div>
+                  <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>−{d.type === 'amount' ? money(d.value) : `${d.value}%`}</div>
                 </button>
               ))}
             </div>

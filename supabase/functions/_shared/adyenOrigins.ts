@@ -23,6 +23,13 @@
 // and checks GET /me's clientKey first. Wildcards (https://*.example.org)
 // are allowed by the API; the live Customer Area screen refuses them, which
 // is why this exists.
+//
+// ONE HOST ON LIVE and AUTOMATIC, SELF RETRYING Apple Pay registration (29
+// Sep 2026, v5.11.17): see the header of the JS mirror. A live venue
+// registers <slug>.serv-os.app (plus its custom domain) only; a test venue
+// every address it can be opened on (<slug>.dev.serv-os.app, then
+// <slug>.serv-os.app and the custom domain). The throttle, the guidance
+// sentence and the kept state row are the helpers at the bottom of this file.
 
 export const SERVOS_APEX = 'serv-os.app';
 export const SERVOS_DEV_ROOT = 'dev.serv-os.app';
@@ -81,19 +88,43 @@ export function dedupeBy<T>(list: T[] | null | undefined, key: (item: T) => stri
   return out;
 }
 
-export interface StorefrontInput { slug?: string | null; customDomain?: string | null; apex?: string; devRoot?: string }
+export interface StorefrontInput { slug?: string | null; customDomain?: string | null; environment?: string | null; apex?: string; devRoot?: string }
 
 export function buildWebOrigins({ customDomain }: { customDomain?: string | null } = {}): string[] {
   return dedupeBy([...STATIC_WEB_ORIGINS, customDomainOrigin(customDomain)], originKey);
 }
 
-export function buildStorefrontDomains({ slug, customDomain, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT }: StorefrontInput = {}): string[] {
+// 'live' | 'test' for an environment word, '' for anything else.
+function envWord(environment: unknown): '' | 'live' | 'test' {
+  const e = String(environment ?? '').trim().toLowerCase();
+  return e === 'live' || e === 'test' ? e : '';
+}
+
+// The venue's storefront hosts for Apple Pay, for ONE environment: live is
+// <slug>.serv-os.app plus the custom domain; test is <slug>.dev.serv-os.app,
+// then <slug>.serv-os.app and the custom domain. No environment is the legacy
+// pair (no server caller since v5.11.17).
+export function buildStorefrontDomains({ slug, customDomain, environment, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT }: StorefrontInput = {}): string[] {
   const s = String(slug ?? '').trim().toLowerCase();
+  const env = envWord(environment);
   const out: string[] = [];
-  if (SLUG_RE.test(s)) out.push(`${s}.${apex}`, `${s}.${devRoot}`);
+  if (SLUG_RE.test(s)) {
+    if (env === 'live') out.push(`${s}.${apex}`);
+    else if (env === 'test') out.push(`${s}.${devRoot}`, `${s}.${apex}`);
+    else out.push(`${s}.${apex}`, `${s}.${devRoot}`);
+  }
   const custom = normaliseHost(customDomain);
   if (custom) out.push(custom);
   return dedupeBy(out, domainKey);
+}
+
+// The venue's MAIN storefront host on an environment (the kept row's and the
+// throttle's key): <slug>.dev.serv-os.app on test, <slug>.serv-os.app
+// otherwise. '' for a missing or invalid slug.
+export function storefrontHostFor({ slug, environment, apex = SERVOS_APEX, devRoot = SERVOS_DEV_ROOT }: StorefrontInput = {}): string {
+  const s = String(slug ?? '').trim().toLowerCase();
+  if (!SLUG_RE.test(s)) return '';
+  return envWord(environment) === 'test' ? `${s}.${devRoot}` : `${s}.${apex}`;
 }
 
 export function splitAgainstExisting(wanted: string[], existing: string[] | null | undefined, key: (v: unknown) => string = originKey): { missing: string[]; existing: string[] } {
@@ -202,4 +233,161 @@ export function isDuplicateRefusal(status: number, data: unknown): boolean {
   const msg = adyenRefusalMessage(status, data);
   if (/not (?:exist|found)|does ?n[o']t exist|unknown/i.test(msg)) return false;
   return /already|duplicate|exists/i.test(msg);
+}
+
+// ── AUTOMATIC APPLE PAY REGISTRATION (29 Sep 2026, v5.11.17) ────────────────
+// MIRROR of the block at the bottom of src/lib/payments/adyenOrigins.js, which
+// carries the comments. adyen-terminal-admin ensureApplePayDomains uses these.
+export const APPLE_PAY_RETRY_MS = 6 * 60 * 60 * 1000;
+export const APPLE_PAY_RECHECK_MS = 24 * 60 * 60 * 1000;
+export const APPLE_PAY_CLOCK_SKEW_MS = 60 * 1000;
+export const APPLE_PAY_STATE_PREFIX = 'applepay_state';
+export const APPLE_PAY_MANUAL_TRIGGERS: readonly string[] = Object.freeze(['admin', 'go_live', 'adyen_link']);
+export const APPLE_PAY_PERMISSION_GUIDANCE = 'Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential.';
+export const APPLE_PAY_GUIDANCE_MAX = 120;
+const STATE_TEXT_MAX = 300;
+
+type Dict = Record<string, unknown>;
+const isObj = (v: unknown): v is Dict => !!v && typeof v === 'object' && !Array.isArray(v);
+const text = (v: unknown): string => (v === undefined || v === null ? '' : String(v).trim());
+const numOrNull = (v: unknown): number | null => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+const isScope = (v: unknown): boolean => Number(v) === 401 || Number(v) === 403;
+
+export function clipText(value: unknown, max: number): string {
+  const s = text(value).replace(/\s+/g, ' ');
+  if (!s || s.length <= max) return s;
+  return `${s.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+export function applePayStateKey(env: unknown, platformLocationId: unknown): string {
+  const e = envWord(env);
+  const id = text(platformLocationId);
+  return e && id ? `${APPLE_PAY_STATE_PREFIX}:${e}:${id}` : '';
+}
+
+export interface ApplePayRetryInput { now?: number; host?: string | null; merchant?: string | null; trigger?: string | null; paymentMethodId?: string | null }
+export function applePayRetryDue(state: unknown, { now = Date.now(), host = '', merchant = '', trigger = '', paymentMethodId = '' }: ApplePayRetryInput = {}): boolean {
+  if (APPLE_PAY_MANUAL_TRIGGERS.includes(text(trigger))) return true;
+  if (!isObj(state)) return true;
+  const t = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const at = Date.parse(text(state.checkedAt));
+  if (!Number.isFinite(at) || at > t + APPLE_PAY_CLOCK_SKEW_MS) return true;
+  if (domainKey(host) !== domainKey(state.host)) return true;
+  if (text(merchant) !== text(state.merchant)) return true;
+  const pm = text(paymentMethodId);
+  if (pm && text(state.paymentMethodId) && pm !== text(state.paymentMethodId)) return true;
+  return t - at >= (state.registered === true ? APPLE_PAY_RECHECK_MS : APPLE_PAY_RETRY_MS);
+}
+
+export function adyenErrorCode(data: unknown): string | null {
+  const c = isObj(data) ? data.errorCode : null;
+  const s = text(c);
+  return s ? s.slice(0, 40) : null;
+}
+
+export function applePayAnswerCode(answer: unknown): string {
+  const a: Dict = isObj(answer) ? answer : {};
+  const code = text(a.code);
+  if (code) return code;
+  return /did not answer/i.test(text(a.error)) ? 'timeout' : '';
+}
+
+export function isPermissionRefusal(answer: unknown): boolean {
+  const a: Dict = isObj(answer) ? answer : {};
+  if (text(a.code) === 'scope_missing') return true;
+  if (isScope(a.status)) return true;
+  return (Array.isArray(a.failed) ? a.failed as unknown[] : []).some((f) => isObj(f) && isScope(f.status));
+}
+
+export function applePayGuidance(answer: unknown): string | null {
+  const a: Dict = isObj(answer) ? answer : {};
+  const failed = (Array.isArray(a.failed) ? a.failed as unknown[] : []).filter(isObj);
+  const code = applePayAnswerCode(a);
+  if ((a.ok === true || a.registered === true) && !failed.length && !code) {
+    const v = text(a.verificationStatus ?? a.verification).toLowerCase();
+    return v && v !== 'valid' ? applePayStatusNote({ verificationStatus: v }, text(a.merchant) || null) : null;
+  }
+  if (isPermissionRefusal(a)) return APPLE_PAY_PERMISSION_GUIDANCE;
+  if (code === 'apple_pay_not_requested') return "Apple Pay is not switched on for this Adyen account. Ask FranPOS to request it with Adyen's certificate.";
+  if (code === 'apple_pay_store_scoped') return "Apple Pay is set up store by store and this venue's store has none. Ask FranPOS to add it.";
+  if (code === 'no_storefront') return "This venue has no online address yet. Set it in Channels first.";
+  if (code === 'timeout') return 'Adyen did not answer. ServOS tries again by itself.';
+  const f = failed[0];
+  if (f) {
+    const host = text(f.domain) || text(a.host) || 'the shop address';
+    const head = `Adyen would not add ${host}`;
+    const why = clipText(f.message || (numOrNull(f.status) ? `HTTP ${f.status}` : ''), APPLE_PAY_GUIDANCE_MAX - head.length - 3);
+    return clipText(why ? `${head}: ${why}${why.endsWith('...') ? '' : '.'}` : `${head}.`, APPLE_PAY_GUIDANCE_MAX);
+  }
+  if (code === 'read_failed' || text(a.error)) {
+    const head = 'Adyen could not be asked about Apple Pay';
+    const tail = ' ServOS tries again by itself.';
+    const why = clipText(a.message || a.error, APPLE_PAY_GUIDANCE_MAX - head.length - tail.length - 3);
+    return why ? `${head}: ${why}${why.endsWith('...') ? '' : '.'}${tail}` : `${head}.${tail}`;
+  }
+  return null;
+}
+
+export interface ApplePayFailedHost { domain: string | null; status: number | null; errorCode: string | null; message: string | null }
+export interface ApplePayState {
+  v: 1;
+  environment: 'live' | 'test' | null;
+  host: string | null;
+  merchant: string | null;
+  paymentMethodId: string | null;
+  verification: string | null;
+  registered: boolean;
+  outcome: 'registered' | 'added' | 'refused' | 'not_requested' | 'store_scoped' | 'no_storefront' | 'error';
+  code: string | null;
+  status: number | null;
+  errorCode: string | null;
+  error: string | null;
+  failed: ApplePayFailedHost[];
+  added: string[];
+  guidance: string | null;
+  checkedAt: string;
+  trigger: string | null;
+  failures: number;
+}
+export interface ApplePayStateInput { trigger?: string | null; host?: string | null; now?: number; previous?: unknown }
+export function applePayStateFrom(answer: unknown, { trigger = null, host = '', now = Date.now(), previous = null }: ApplePayStateInput = {}): ApplePayState {
+  const a: Dict = isObj(answer) ? answer : {};
+  const code = applePayAnswerCode(a);
+  const failed: ApplePayFailedHost[] = (Array.isArray(a.failed) ? a.failed as unknown[] : []).filter(isObj).slice(0, 10).map((f) => ({
+    domain: clipText(f.domain, 120) || null,
+    status: numOrNull(f.status),
+    errorCode: text(f.errorCode) || null,
+    message: clipText(f.message, STATE_TEXT_MAX) || null,
+  }));
+  const added = (Array.isArray(a.added) ? a.added as unknown[] : []).map(text).filter(Boolean).slice(0, 10);
+  const hostNow = domainKey(text(host) || text(a.host));
+  const registered = a.ok === true && !!hostNow && failed.length === 0 && !code;
+  let outcome: ApplePayState['outcome'] = 'error';
+  if (code === 'no_storefront') outcome = 'no_storefront';
+  else if (code === 'apple_pay_not_requested') outcome = 'not_requested';
+  else if (code === 'apple_pay_store_scoped') outcome = 'store_scoped';
+  else if (registered) outcome = added.length ? 'added' : 'registered';
+  else if (isPermissionRefusal(a) || failed.length) outcome = 'refused';
+  const t = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const before = isObj(previous) ? Number(previous.failures) : 0;
+  return {
+    v: 1,
+    environment: envWord(a.environment) || null,
+    host: hostNow || null,
+    merchant: text(a.merchant) || null,
+    paymentMethodId: text(a.paymentMethodId) || null,
+    verification: text(a.verificationStatus ?? a.verification) || null,
+    registered,
+    outcome,
+    code: code || null,
+    status: numOrNull(a.status) ?? (failed[0] ? failed[0].status : null),
+    errorCode: text(a.errorCode) || (failed[0] ? failed[0].errorCode : null) || null,
+    error: registered ? null : (clipText(a.message || (failed[0] ? failed[0].message : '') || a.error, STATE_TEXT_MAX) || null),
+    failed,
+    added,
+    guidance: applePayGuidance(a),
+    checkedAt: new Date(t).toISOString(),
+    trigger: text(trigger) || null,
+    failures: registered ? 0 : (Number.isFinite(before) && before > 0 ? before : 0) + 1,
+  };
 }

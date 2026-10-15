@@ -17,18 +17,46 @@
 //                   uses this same pair — the POS Mobile SDK consumes the exact
 //                   nexo PaymentRequest that prepare_local returns.)
 //   'result'        recovery: job settled → say so; else TransactionStatusRequest
-//                   over cloud using the PERSISTED nexo_service_id.
+//                   over cloud using the PERSISTED nexo_service_id. 13 Oct 2026:
+//                   a reader that says "not found" never puts the job back to
+//                   "not sent yet" any more. It is cancelled only on PROOF the
+//                   payment never reached the reader (_shared/readerLock.js),
+//                   else left as it is and asked again. Nothing re sends it.
+//                   Review 13 Oct: a status ask WE cut off (our 30 s limit) is
+//                   not an answer and waits for the send to be dead like a
+//                   timer; every "no answer" cancel reads Adyen's ledger a
+//                   second time 10 s later; and it names the attempt it asked
+//                   about (the service id) in its compare and set.
 //   'sweep_unsent'  (9 Sep 2026) re-kick 'start' for cloud jobs stranded in
 //                   charging_unsent. SERVICE ROLE ONLY (pg_cron, every minute,
 //                   every venue). See the action block for the exact rule.
+//                   13 Oct 2026: the same cron also asks the reader about every
+//                   sent job from 45 s after the send (runReaderAskSweep) and
+//                   watches for money on a job we cancelled (runLateMoneyWatch).
+//                   The cron is not the only trigger for those asks: a Pay
+//                   press refused as TERMINAL_BUSY books them too
+//                   (terminal-job-create, scheduleBusyAsks).
 //
 // MONEY-SAFETY (inherited verbatim from terminal-job-charge):
 //   • CAS write-ahead: UPDATE … SET status='charging' WHERE status='charging_unsent'
 //     BEFORE any network call — exactly one initiator ever reaches the terminal.
 //   • The amount is THE DB'S (terminal_jobs.charge_minor, tj_charge_identity-proven),
 //     never the caller's.
-//   • Timeout / unknown outcome → row STAYS 'charging'; recovery owns it ('result',
-//     the AUTHORISATION webhook backstop in adyen-webhook, the sweeper).
+//   • Timeout / unknown outcome → row STAYS 'charging'; recovery owns it: 'result'
+//     (Adyen's own ledger first, then the reader's TransactionStatus), and the
+//     every minute reader tip sweep inside 'sweep_unsent' (runReaderTipSweep),
+//     which settles a stranded job from Adyen's ledger. adyen-webhook does NOT
+//     settle jobs; since v5.11.16 it only triggers the tip heal on AUTHORISATION.
+//     13 Oct 2026: such an exit of 'start' also writes a "send ended" marker
+//     (how Adyen answered, or that it did not) and asks the reader 3 s later.
+//   • An APPROVED answer that meets a job already cancelled or expired can
+//     never change it (the settle function keeps settled rows as they are), so
+//     the settle tells the venue at once (lateMoneyAtSettle, one urgent note).
+//   • A tip added on the reader is NEVER settled away (v5.11.16, R3618): the tip
+//     write is retried and verified, and if it cannot be recorded the settle is
+//     deferred (SettleDeferred, 200 state 'processing') for recovery to settle
+//     WITH the tip. A job still parked with an amount mismatch is healed against
+//     Adyen's record (_shared/readerTipHeal.ts), or raised to a manager.
 //   • Settlement ONLY via terminal_job_settle_from_processor.
 //   • Simulated/training jobs refused.
 //
@@ -49,9 +77,30 @@ import {
 } from '../_shared/adyen.ts';
 import { insertCaptureRow } from '../_shared/tip_capture.ts';
 import {
+  pickLedgerRow, planLedgerSettle, amountEvidence, ledgerApproval, ledgerAuthAmount, tipEvidenceKey, ledgerShowsApproval,
+  readerTipFromEvidence, lateConfirmationFacts,
+  STRANDED_MIN_DISPATCH_AGE_MS, STRANDED_MAX_DISPATCH_AGE_MS, STRANDED_MIN_LEDGER_AGE_MS, STRANDED_PARK_AFTER_MS,
+  HEAL_MAX_AGE_MS, PENDING_CHECK_MAX_AGE_MS, AMOUNT_MISMATCH_LIKE, PENDING_NOTE_LIKE,
+} from '../_shared/readerTip.js';
+import {
+  SettleDeferred, isSettleDeferred, recordTipWithRetry, settleRpcWithRetry, logDurable,
+  ledgerRowsForJob, reportParkedMismatch, healReaderTip, correctHealedSale, alertOnce,
+  ledgerRowVerified, readTipEvidence, insertActivity,
+} from '../_shared/readerTipHeal.ts';
+import {
   selectUnsentSweepCandidates, UNSENT_SWEEP_MIN_AGE_MS, UNSENT_SWEEP_MAX_AGE_MS, UNSENT_SWEEP_LIMIT,
 } from '../_shared/terminalKick.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+// 30 Sep 2026: the alert of last resort after an approved settle (see afterSettle).
+import { findSameCardRepeat, sameCardAlert, cardKeyOf, SAME_CARD_WINDOW_MS } from '../_shared/repeatCharge.js';
+// 13 Oct 2026: a card machine is never left locked by a payment it never had.
+import {
+  STATUS_ASK_TIMEOUT_MS, TENDER_STALL_MS, SEND_ENDED_ASK_AFTER_MS, BUSY_CLEARS_AFTER_MS, LEDGER_RECHECK_MS,
+  READER_ASK_MAX_SINCE_SEND_MS, READER_ASK_LIMIT, LATE_MONEY_WINDOW_MS, LATE_MONEY_LIMIT,
+  NEVER_RECEIVED_REASON, NEVER_RECEIVED_ERROR,
+  sendEndedKey, sendEndedRecord, sendAnswered, neverReceivedVerdict, timerMustWait, selectReaderAskJobs,
+  noPaymentNote, noPaymentNoteKey, lateMoneyAlert, lateMoneyAlertKey,
+} from '../_shared/readerLock.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -91,16 +140,20 @@ const settledState = (s: string) => (s === 'reconciled' ? 'approved' : s === 'ex
 // is how you release a check that a customer really did pay for.
 const LEDGER_GRACE_MS = 90_000;
 
+// v5.11.16: every row for the job (pickLedgerRow: the one success, else the
+// newest refusal; two successes is a possible double charge and decides
+// nothing here, the sweep raises it, but it is flagged `ambiguous` so no
+// caller ever reads it as "never charged"). A FAILED READ decides nothing
+// either: it used to read as "no row", which after 90 s cancelled a job as
+// "nothing charged" during a Platform blip.
 async function askAdyenLedger(job: any): Promise<
-  { verdict: 'charged'; row: any } | { verdict: 'nothing' } | { verdict: 'too_soon' }
+  { verdict: 'charged'; row: any } | { verdict: 'nothing' } | { verdict: 'too_soon'; ambiguous?: boolean }
 > {
-  const ref = `tj-${job.id}`;
-  const { data: row } = await platformAdmin.from('adyen_payments')
-    .select('psp_reference, success, amount_minor, currency, card, raw, last_event_code')
-    .eq('merchant_reference', ref)
-    .order('created_at', { ascending: false })
-    .limit(1).maybeSingle();
-  if (row) return { verdict: 'charged', row };
+  const { rows, error } = await ledgerRowsForJob(platformAdmin, job.id);
+  if (error) return { verdict: 'too_soon' };
+  const pick = pickLedgerRow(rows);
+  if (pick.ambiguous) return { verdict: 'too_soon', ambiguous: true };
+  if (pick.row) return { verdict: 'charged', row: pick.row };
   const ageMs = Date.now() - new Date(job.created_at).getTime();
   return ageMs < LEDGER_GRACE_MS ? { verdict: 'too_soon' } : { verdict: 'nothing' };
 }
@@ -160,7 +213,7 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
   if (success && p.authorizedMinor == null && !TRUSTED_AMOUNT_SOURCES.has(source)) {
     throw new Error('device report has no AuthorizedAmount — refusing to settle approved');
   }
-  let effectiveAuthorized = p.authorizedMinor;
+  const effectiveAuthorized = p.authorizedMinor;
   if (success && p.authorizedMinor != null && p.authorizedMinor !== chargeMinor) {
     // Tip added ON the terminal (AskGratuity). Credit it ONLY when the
     // processor's own TipAmount explains the difference EXACTLY — then the
@@ -170,20 +223,28 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     // as 'amount mismatch: processor 5799 vs server 5699').
     const tip = p.tipMinor ?? 0;
     if (tip > 0 && chargeMinor + tip === p.authorizedMinor) {
-      const { data: fixed, error: tipErr } = await opsAdmin.from('terminal_jobs')
-        .update({ tip_minor: tip, charge_minor: p.authorizedMinor })
-        .eq('id', jobId).is('tip_minor', null)
-        .select('id').maybeSingle();
-      if (tipErr || !fixed) {
-        console.log(`adyen-terminal-charge: tip recompute skipped on job ${jobId}: ${tipErr?.message || 'tip already set'}`);
-      } else {
-        console.log(`adyen-terminal-charge: on-reader tip ${tip} credited on job ${jobId} (${chargeMinor} + tip = ${p.authorizedMinor})`);
+      // v5.11.16 (R3618): the ONE write that records the tip is retried and
+      // VERIFIED by reading the job back. A known tip is never settled away:
+      // if the database never confirms it, nothing is settled and recovery
+      // ('result', the sweep) settles later WITH the tip.
+      const rec = await recordTipWithRetry(opsAdmin, { jobId, tipMinor: tip, authorizedMinor: p.authorizedMinor, chargeMinor });
+      if (rec === 'unrecorded') {
+        // The reader's own figures, under a fixed key recovery reads back
+        // (settleFromLedger): an exact TipAmount is then recorded without the
+        // heal's cap, even when no till is watching.
+        await logDurable(platformAdmin, tipEvidenceKey(jobId), {
+          source, chargeMinor, tipMinor: tip, authorizedMinor: p.authorizedMinor, evidence: amountEvidence(p), at: new Date().toISOString(),
+        });
+        console.error(`adyen-terminal-charge: on-reader tip ${tip} on job ${jobId} could not be recorded, settle DEFERRED to recovery`);
+        throw new SettleDeferred(`tip ${tip} on job ${jobId} could not be recorded yet`);
       }
+      console.log(`adyen-terminal-charge: on-reader tip ${tip} on job ${jobId} (${chargeMinor} + tip = ${p.authorizedMinor}): ${rec}`);
     } else {
       console.log(`adyen-terminal-charge: authorised ${p.authorizedMinor} != charge ${chargeMinor} on job ${jobId} and TipAmount ${tip} does not explain it — parking via RPC guard`);
     }
   }
-  const { data: settled, error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
+  // Retried like the tip write; a database that never answers is SettleDeferred.
+  const settled = await settleRpcWithRetry(opsAdmin, {
     p_job_id: jobId,
     p_outcome: success ? 'approved' : 'declined',
     p_payment_session_id: p.pspReference,          // pspReference rides the session column
@@ -194,14 +255,35 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_source: source,
     p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
-  if (error) throw new Error(`settle rpc: ${error.message}`);
+  // Review 13 Oct: an APPROVED answer for a job we already cancelled is said at once (see
+  // lateMoneyAtSettle). Only for an answer that came from Adyen itself, never a device's claim.
+  if (success && TRUSTED_AMOUNT_SOURCES.has(source)) {
+    await lateMoneyAtSettle(jobId, settled, {
+      amountMinor: effectiveAuthorized ?? chargeMinor, card: settleCard(p), paidAt: Date.now(), psp: p.pspReference ?? null, by: source,
+    });
+  }
+  await afterSettle(jobId, settled, { success, psp: p.pspReference, merchantAccount, authorizedMinor: effectiveAuthorized, chargeMinor });
+  // v5.11.16 ALERT + SELF-CORRECT: a settle that PARKED the job with a
+  // different amount stores both figures (Back Office shows them) and the
+  // reader's evidence, then tries the heal (covers Adyen's webhook landing
+  // before this settle). Best effort, never blocks.
+  await reportParkedMismatch(opsAdmin, platformAdmin, jobId, settled, {
+    success, authorizedMinor: p.authorizedMinor, chargeMinor, source, evidence: amountEvidence(p),
+  });
+}
+
+// What every approved settle does next, shared by settleFromResponse and
+// settleFromLedger (moved verbatim from settleFromResponse in v5.11.16).
+async function afterSettle(jobId: string, settled: any, ctx: {
+  success: boolean; psp: string | null; merchantAccount?: string | null; authorizedMinor: number | null; chargeMinor: number;
+}) {
   // v5.7.5 TIP ON RECEIPT: an approved manual-capture auth opens its capture
   // window here. insertCaptureRow is idempotent on psp_reference, so replays
   // and the webhook AUTHORISATION backstop can never mint a second row. The
   // insert is best-effort (never blocks the settle); a lost row is re-ensured
   // by adyen-webhook when the AUTHORISATION notification lands.
   try {
-    if (success && p.pspReference) {
+    if (ctx.success && ctx.psp) {
       const { data: jrow } = await opsAdmin.from('terminal_jobs')
         .select('capture_mode, closed_check_id, location_id, currency, simulated, charge_minor')
         .eq('id', jobId).maybeSingle();
@@ -210,11 +292,11 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
           jobId,
           closedCheckId: jrow.closed_check_id ?? null,
           locationId: jrow.location_id,
-          psp: p.pspReference,
-          merchantAccount: merchantAccount ?? null,
+          psp: ctx.psp,
+          merchantAccount: ctx.merchantAccount ?? null,
           currency: jrow.currency ?? null,
-          authMinor: effectiveAuthorized
-            ?? (jrow.charge_minor != null ? Number(jrow.charge_minor) : chargeMinor),
+          authMinor: ctx.authorizedMinor
+            ?? (jrow.charge_minor != null ? Number(jrow.charge_minor) : ctx.chargeMinor),
           simulated: jrow.simulated === true,
         });
       }
@@ -245,6 +327,529 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
       }
     }
   } catch { /* toast is advisory — never block a settle */ }
+  // 30 Sep 2026 SAME CARD, SAME AMOUNT, ANOTHER CHECK (Huddersfield R5737/R5739). The
+  // till now watches every tender and terminal-job-create refuses a likely repeat
+  // before the insert; this is the net under both, written once the money HAS moved:
+  // if the card that just paid also paid the same amount for a different check at
+  // this venue inside 15 minutes, one activity feed row tells the floor to refund
+  // one of them. Gated on the RPC's non idempotent approved transition (exactly once
+  // across the sync/async settle race). Advisory: a failed read or insert is logged
+  // and never blocks the settle. The pure decision lives in _shared/repeatCharge.js.
+  try {
+    if (ctx.success && (settled as any)?.ok === true && (settled as any)?.idempotent !== true
+        && (settled as any)?.status === 'approved') {
+      const { data: me } = await opsAdmin.from('terminal_jobs')
+        .select('id, status, location_id, closed_check_id, due_minor, charge_minor, currency, card, check_draft, settled_at, charged_at, created_at, simulated, training')
+        .eq('id', jobId).maybeSingle();
+      if (me && me.simulated !== true && cardKeyOf(me.card) && Number(me.charge_minor) > 0) {
+        const since = new Date(Date.now() - SAME_CARD_WINDOW_MS - 60_000).toISOString();
+        const { data: others } = await opsAdmin.from('terminal_jobs')
+          .select('id, status, location_id, closed_check_id, due_minor, charge_minor, currency, card, check_draft, settled_at, charged_at, created_at, simulated, training')
+          .eq('location_id', me.location_id)
+          .neq('id', jobId)
+          .in('status', ['approved', 'reconciled'])
+          .eq('charge_minor', me.charge_minor)
+          .gte('settled_at', since)
+          .order('settled_at', { ascending: false })
+          .limit(20);
+        const rows = (others ?? []) as Array<Record<string, unknown>>;
+        const checkIds = rows.map((r) => r.closed_check_id).filter((v): v is string => typeof v === 'string' && v.length > 0);
+        if (checkIds.length) {
+          const { data: checks } = await opsAdmin.from('closed_checks').select('id, ref, source, refunded, status, voided').in('id', checkIds);
+          const byId = new Map((checks ?? []).map((c: Record<string, unknown>) => [c.id, c]));
+          for (const r of rows) r.booked = byId.get(r.closed_check_id as string) ?? null;
+        }
+        const prior = findSameCardRepeat(me, rows, Date.now());
+        if (prior) {
+          const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', me.location_id).maybeSingle();
+          const alert = sameCardAlert(me, prior, { tz: (loc?.timezone as string | undefined) || 'Europe/London' });
+          console.error(`adyen-terminal-charge: POSSIBLE DOUBLE CHARGE job ${jobId} after ${prior.job_id} (${prior.ref ?? 'no ref'}): ${alert.title}`);
+          const { error: aErr } = await opsAdmin.from('activity_events').insert({
+            location_id: me.location_id, kind: 'system', severity: 'urgent',
+            title: alert.title, body: alert.body,
+            ref_type: 'terminal_job', ref_id: jobId,
+          });
+          if (aErr) console.error('adyen-terminal-charge: double charge alert insert failed', aErr.message);
+        }
+      }
+    }
+  } catch (e) { console.error('adyen-terminal-charge: double charge check skipped', (e as Error)?.message || e); }
+}
+
+// ── Settle from ADYEN'S OWN RECORD (v5.11.16) ────────────────────────────────
+// The recovery path 'result' always meant to have: when the AUTHORISATION (or
+// refusal) is already in platform adyen_payments, settle from it. Until
+// v5.11.16 both call sites handed settleCard (the one argument card mapper)
+// three arguments, which threw before anything settled, so no approved job was
+// ever recovered this way. planLedgerSettle (_shared/readerTip.js) decides:
+//   decline       Adyen refused it
+//   approve       the amount is the charge; or the reader's own TipAmount (the
+//                 evidence a deferred settle stored) explains it exactly; or the
+//                 difference is a tip the reader was asked for within the heal
+//                 bound (recorded FIRST, verified; unrecorded = SettleDeferred,
+//                 never settled away)
+//   approve_park  (allowPark) settle at Adyen's amount; the RPC parks it and
+//                 the heal / alert path takes over
+//   skip          leave it for the reader's own TransactionStatus or a person:
+//                 includes a payment Adyen approved and then saw refunded,
+//                 cancelled or changed ('reversed', 'event_code'), which is
+//                 NEVER booked as a paid sale
+// Only a row whose AUTHORISATION arrived HMAC verified decides anything here
+// (ledgerRowVerified): the ledger is written by our webhook, and an unsigned
+// item must never settle a job by itself.
+// The psp rides both the session and the transaction column: refunds resolve
+// by either (adyen-modify).
+async function settleFromLedger(job: any, row: any, opts: { allowPark: boolean; source?: string }): Promise<{ result: 'settled' } | { result: 'skip'; reason: string }> {
+  let plan = planLedgerSettle(job, row, { allowPark: opts.allowPark });
+  if (plan.reason === 'unexplained_amount') {
+    // A settle that deferred on this job stored the reader's own TipAmount.
+    const ev = await readTipEvidence(platformAdmin, job.id);
+    const readerTipMinor = ev ? readerTipFromEvidence(ev, { amountMinor: ledgerAuthAmount(row), chargeMinor: job.charge_minor }) : null;
+    if (readerTipMinor != null) plan = planLedgerSettle(job, row, { allowPark: opts.allowPark, readerTipMinor });
+  }
+  if (plan.action === 'skip') {
+    console.log(`adyen-terminal-charge: ledger settle skipped for job ${job.id}: ${plan.reason}`);
+    return { result: 'skip', reason: plan.reason ?? 'skip' };
+  }
+  const verified = await ledgerRowVerified(opsAdmin, row, job.id);
+  if (verified !== true) {
+    console.error(`adyen-terminal-charge: ledger row ${row?.psp_reference} for job ${job.id} not settled: its AUTHORISATION is ${verified === null ? 'unreadable' : 'not HMAC verified'}`);
+    return { result: 'skip', reason: verified === null ? 'unverified_unreadable' : 'unverified' };
+  }
+  const chargeMinor = Number(job.charge_minor);
+  const psp = plan.psp ?? null;
+  if (plan.action === 'approve' && plan.tipMinor != null && plan.amountMinor != null) {
+    const rec = await recordTipWithRetry(opsAdmin, { jobId: job.id, tipMinor: plan.tipMinor, authorizedMinor: plan.amountMinor, chargeMinor });
+    if (rec === 'unrecorded') {
+      // Not the reader evidence key: this tip was derived from the ledger.
+      await logDurable(platformAdmin, `tip-unrecorded-ledger:${job.id}:${Date.now()}`, {
+        source: opts.source ?? 'adyen_ledger', chargeMinor, tipMinor: plan.tipMinor, authorizedMinor: plan.amountMinor, psp,
+      });
+      throw new SettleDeferred(`tip ${plan.tipMinor} on job ${job.id} could not be recorded yet`);
+    }
+    console.log(`adyen-terminal-charge: ledger tip ${plan.tipMinor} on job ${job.id} (${chargeMinor} to ${plan.amountMinor}): ${rec}`);
+  }
+  const approved = plan.action !== 'decline';
+  const c = (row?.card ?? {}) as Record<string, any>;
+  const card = (c.brand || c.last4 || c.authCode) ? {
+    brand: c.brand ?? null, last4: c.last4 ?? null, auth_code: c.authCode ?? null,
+    read_method: c.readMethod ?? null, aid: c.aid ?? null, application_name: c.applicationName ?? null,
+    cvm: c.cvm ?? null, account_type: null,
+  } : null;
+  const settled = await settleRpcWithRetry(opsAdmin, {
+    p_job_id: job.id,
+    p_outcome: approved ? 'approved' : 'declined',
+    p_payment_session_id: psp,
+    p_transaction_id: psp,
+    p_auth_code: c.authCode ?? null,
+    p_card: card,
+    p_decline_reason: approved ? null : (plan.declineReason ?? 'declined'),
+    p_source: opts.source ?? 'adyen_ledger',
+    p_session_amount_minor: approved ? (plan.amountMinor ?? null) : null,
+  });
+  // Review 13 Oct: the same for an approved ledger row (HMAC verified above) that meets a
+  // job another call cancelled a moment ago.
+  if (approved) {
+    await lateMoneyAtSettle(job.id, settled, {
+      amountMinor: plan.amountMinor ?? ledgerAuthAmount(row), currency: row?.currency ?? null, card: row?.card ?? null,
+      paidAt: row?.created_at ?? null, psp, event: row?.last_event_code ?? null, by: opts.source ?? 'adyen_ledger',
+    });
+  }
+  await afterSettle(job.id, settled, { success: approved, psp, merchantAccount: row?.merchant_account ?? null, authorizedMinor: approved ? (plan.amountMinor ?? null) : null, chargeMinor });
+  await reportParkedMismatch(opsAdmin, platformAdmin, job.id, settled, {
+    success: approved, authorizedMinor: approved ? (plan.amountMinor ?? null) : null, chargeMinor, source: opts.source ?? 'adyen_ledger',
+    evidence: { ledger: { psp, amount: plan.amountMinor ?? null, currency: row?.currency ?? null, event: row?.last_event_code ?? null } },
+  });
+  return { result: 'settled' };
+}
+
+// What staff read when a send ends with no payment answer (review 13 Oct). The
+// till shows it after "Could not reach the card machine: ". It used to be a
+// code word, a dash and three words of jargon, which is what Barnsley read at
+// 12:41:18 on 12 Oct. Nothing in the app matches on this text; the code beside
+// it (UNKNOWN_OUTCOME) is what it always was.
+const UNKNOWN_OUTCOME_WORDS = 'The card machine did not answer. Checking what happened.';
+
+// The answer to a settle the database could not record yet: the job stays in
+// flight, the till keeps watching it, recovery settles it. 200 on purpose, so
+// no till reads it as "could not reach the card machine".
+const deferredBody = (status: string) => json({ ok: true, state: 'processing', status, code: 'SETTLE_DEFERRED' });
+
+// ── The reader tip sweep (v5.11.16): every minute, no new cron ───────────────
+// Runs inside 'sweep_unsent' (pg_cron adyen-unsent-sweep-1min, service role),
+// under waitUntil so that action still answers in milliseconds. Three small
+// selects, at most 30 jobs a run, NEWEST first (a backlog of old refusals can
+// never starve fresh money), and every step below is compare-and-set, so an
+// overlap with the till, the webhook or a previous run is harmless.
+//   STRANDED  adyen charging/unknown jobs dispatched 60 s to 3 days ago, when
+//             Adyen's ledger holds exactly ONE approved row at least 30 s old.
+//             Never touches the reader, success rows only: declines stay with
+//             the reader ask. Two approved rows is a possible double charge and
+//             is raised, never settled. A row Adyen later saw refunded,
+//             cancelled or changed is raised, never settled.
+//               'charging' (the till's claim window, 5 minutes from dispatch):
+//                 settle from it (settleFromLedger; parking an unexplained
+//                 amount is allowed once dispatched 5 minutes ago).
+//               'unknown' (the till has given up and showed "We cannot confirm
+//                 this payment", so staff may have taken payment another way):
+//                 NEVER settled here, since the reconciler would then book a
+//                 second sale. The manager is told what Adyen took (and any
+//                 tip) and decides in Back Office, where the job already is.
+//   PARKED    approved + needs_human with the RPC's exact amount mismatch text,
+//             settled in the last 7 days: healReaderTip (heals, or raises a
+//             manager alert; "Adyen has not confirmed" after 5 minutes).
+//   PENDING   healed jobs whose sale was not booked yet: correctHealedSale;
+//             still no sale after 3 days is raised.
+// This is also what heals R3618 (job 53ae162a) on the first run after deploy.
+async function runReaderTipSweep(locationId: string | null): Promise<void> {
+  const now = Date.now();
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const summary: Record<string, unknown[]> = { stranded: [], parked: [], pending: [] };
+  const COLS = 'id, location_id, processor, simulated, training, status, needs_human, last_error, tip_minor, charge_minor, due_minor, '
+    + 'tip_basis_minor, reported_minor, currency, tip_config, capture_mode, payment_session_id, transaction_id, '
+    + 'closed_check_id, check_key, check_draft, nexo_service_id, created_at, dispatched_at, settled_at, updated_at';
+  const scoped = (q: any) => (locationId ? q.eq('location_id', locationId) : q);
+  try {
+    const [stranded, parked, pending] = await Promise.all([
+      scoped(opsAdmin.from('terminal_jobs').select(COLS)
+        .eq('processor', 'adyen').eq('simulated', false).eq('training', false)
+        .in('status', ['charging', 'unknown']).not('nexo_service_id', 'is', null)
+        .gte('dispatched_at', iso(now - STRANDED_MAX_DISPATCH_AGE_MS))
+        .lte('dispatched_at', iso(now - STRANDED_MIN_DISPATCH_AGE_MS))
+        .order('dispatched_at', { ascending: false }).limit(10)),
+      scoped(opsAdmin.from('terminal_jobs').select(COLS)
+        .eq('processor', 'adyen').eq('simulated', false).eq('training', false)
+        .eq('status', 'approved').eq('needs_human', true)
+        .like('last_error', AMOUNT_MISMATCH_LIKE)
+        .gte('settled_at', iso(now - HEAL_MAX_AGE_MS))
+        .order('settled_at', { ascending: false }).limit(10)),
+      scoped(opsAdmin.from('terminal_jobs').select(COLS)
+        .eq('processor', 'adyen')
+        .like('last_error', PENDING_NOTE_LIKE)
+        .gte('settled_at', iso(now - HEAL_MAX_AGE_MS))
+        .order('settled_at', { ascending: false }).limit(10)),
+    ]);
+    for (const [name, res] of [['stranded', stranded], ['parked', parked], ['pending', pending]] as const) {
+      if (res.error) console.error(`adyen-terminal-charge reader tip sweep: ${name} select failed: ${res.error.message}`);
+    }
+
+    for (const j of (stranded.data ?? []) as any[]) {
+      try {
+        const { rows, error } = await ledgerRowsForJob(platformAdmin, j.id);
+        if (error || !rows.length) continue;
+        const pick = pickLedgerRow(rows);
+        if (pick.ambiguous) {
+          if ((await alertOnce(opsAdmin, platformAdmin, j, 'ambiguous', { reason: 'ambiguous_ledger', chargeMinor: j.charge_minor ?? null })) === 'inserted') {
+            summary.stranded.push({ id: j.id, did: 'alert_ambiguous' });
+          }
+          continue;
+        }
+        const row = pick.row;
+        if (!row || row.success !== true) continue;
+        if (now - (Date.parse(row.created_at) || now) < STRANDED_MIN_LEDGER_AGE_MS) continue;
+        const approval = ledgerApproval(row);
+        if (approval !== 'approved') {
+          // Approved, then refunded, cancelled or otherwise changed: never a paid sale.
+          if ((await alertOnce(opsAdmin, platformAdmin, j, 'reversed', { reason: approval === 'reversed' ? 'reversed' : 'event_code', chargeMinor: j.charge_minor ?? null })) === 'inserted') {
+            summary.stranded.push({ id: j.id, did: 'alert_reversed' });
+          }
+          continue;
+        }
+        if (j.status === 'unknown') {
+          // The till gave up on it: tell the manager what Adyen took, never book it here.
+          if ((await ledgerRowVerified(opsAdmin, row, j.id)) !== true) continue;
+          const amount = ledgerAuthAmount(row);
+          const ev = amount != null && amount !== Number(j.charge_minor) ? await readTipEvidence(platformAdmin, j.id) : null;
+          const facts = lateConfirmationFacts(j, row, ev);
+          if ((await alertOnce(opsAdmin, platformAdmin, j, 'confirmed_late', facts)) === 'inserted') {
+            summary.stranded.push({ id: j.id, did: 'alert_confirmed_late' });
+          }
+          continue;
+        }
+        const allowPark = (Date.parse(j.dispatched_at) || now) < now - STRANDED_PARK_AFTER_MS;
+        const r = await settleFromLedger(j, row, { allowPark, source: 'adyen_ledger_sweep' });
+        if (r.result === 'settled') summary.stranded.push({ id: j.id, did: r.result, allowPark });
+      } catch (e) {
+        summary.stranded.push({ id: j.id, did: isSettleDeferred(e) ? 'deferred' : 'error', error: (e as Error)?.message });
+      }
+    }
+    for (const j of (parked.data ?? []) as any[]) {
+      // Refusals and waits are recorded once, by their alert row (its id is its key); only a heal
+      // or a failure goes in the run summary (no log row every minute for a week).
+      const r = await healReaderTip(opsAdmin, platformAdmin, j.id, { trigger: 'sweep', now });
+      if (r.outcome === 'healed' || r.outcome === 'error') summary.parked.push({ id: j.id, ...r });
+    }
+    for (const j of (pending.data ?? []) as any[]) {
+      const r = await correctHealedSale(opsAdmin, platformAdmin, j, { trigger: 'sweep' });
+      if (r.state === 'pending' && (r.reason === 'no_check' || r.reason === 'final_leg_not_booked')
+          && now - (Date.parse(j.settled_at) || now) > PENDING_CHECK_MAX_AGE_MS) {
+        const raised = await alertOnce(opsAdmin, platformAdmin, j, 'sale_never_recorded', {
+          reason: 'sale_never_recorded', tipMinor: j.tip_minor ?? null,
+          reportedMinor: j.charge_minor ?? null, chargeMinor: j.due_minor ?? null,
+        });
+        if (raised === 'inserted') summary.pending.push({ id: j.id, did: 'alert_never_recorded' });
+      } else if (r.state !== 'pending' && r.state !== 'lost_race') {
+        summary.pending.push({ id: j.id, ...r });
+      }
+    }
+  } catch (e) {
+    console.error(`adyen-terminal-charge reader tip sweep failed: ${(e as Error)?.message || e}`);
+  }
+  const acted = summary.stranded.length + summary.parked.length + summary.pending.length;
+  if (acted) {
+    console.log(`adyen-terminal-charge reader tip sweep: ${JSON.stringify(summary)}`);
+    await logDurable(platformAdmin, `reader-tip-sweep:${now}:${Math.random().toString(36).slice(2, 8)}`, {
+      location_id: locationId, ...summary,
+    });
+  }
+}
+
+// ── A CARD MACHINE IS NEVER LEFT LOCKED BY A PAYMENT IT NEVER HAD (13 Oct 2026) ──
+// Coffee Boy Huddersfield, Drive Thru, job df9c6528: a 6.00 payment the reader
+// never received held the reader for 310 s. The rule, the numbers and the words
+// are pure and tested in _shared/readerLock.js; the four functions below are
+// the I/O half.
+
+// Ask THIS function, later, what happened to a job. It ONLY ever sends the
+// status ask, and always marked conservative: such an ask never sends an abort
+// to the reader and never cancels a silent reader before the send is dead
+// (see the 'result' block). It never sends a payment. Never throws; the promise
+// it returns never rejects. Held open with waitUntil, like the kicks.
+function scheduleSelfAsk(jobId: string, delayMs: number, askedBy: string): Promise<void> {
+  const run = async () => {
+    try {
+      await new Promise((r) => setTimeout(r, Math.max(0, Number(delayMs) || 0)));
+      const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ action: 'result', job_id: jobId, asked_by: askedBy, conservative: true }),
+      });
+      const out = await res.text();
+      console.log(`adyen-terminal-charge: reader ask (${askedBy}) for job ${jobId}: ${res.status} ${out.slice(0, 200)}`);
+    } catch (e) {
+      console.error(`adyen-terminal-charge: reader ask (${askedBy}) for job ${jobId} failed to send: ${(e as Error)?.message || e}`);
+    }
+  };
+  const asked = run();
+  try {
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(asked);
+  } catch { /* the ask still runs; it is only not held open */ }
+  return asked;
+}
+
+// Tell the venue, ONCE per job, that the server cancelled a payment the card
+// machine never took (the activity row's id comes from its key, so a second
+// writer meets the primary key). Severity 'action' pops a toast with a chime
+// on every till at the venue, which is how staff learn the reader is free.
+// Called only by the call whose cancel update returned one row. Best effort:
+// never throws, and never changes or delays the cancel beyond its own retries.
+// `caller` is WHO the cancel is recorded against: the signed in user or device
+// id of the ask that won (a manager's Release, a till), or 'service_role' for
+// a timer. It comes from the verified sign in, never from the request body
+// (asked_by is a label any caller can send). Review 13 Oct: Back Office tells a
+// manager "This is recorded against your name", and since the server now
+// cancels the payment before release_terminal_jobs runs, this row is where.
+async function raiseNoPaymentNote(job: any, kind: 'never_received' | 'no_answer', askedBy: string, caller: string): Promise<void> {
+  try {
+    let tz = 'Europe/London';
+    let readerLabel: string | null = null;
+    try {
+      const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', job.location_id).maybeSingle();
+      if (loc?.timezone) tz = String(loc.timezone);
+    } catch { /* the default zone */ }
+    try {
+      const { data: term } = await opsAdmin.from('terminal_devices').select('label').eq('id', job.target_terminal_id).maybeSingle();
+      if (term?.label) readerLabel = String(term.label);
+    } catch { /* no label */ }
+    const d = (job.check_draft && typeof job.check_draft === 'object' ? job.check_draft : {}) as Record<string, unknown>;
+    const sentAt = job.dispatched_at ?? job.created_at ?? null;
+    const sentMs = Date.parse(String(sentAt ?? ''));
+    const heldMs = Number.isFinite(sentMs) ? Date.now() - sentMs : null;
+    const note = noPaymentNote({
+      kind,
+      amountMinor: job.charge_minor ?? job.due_minor,
+      currency: job.currency,
+      sentAt, tz,
+      ref: (d.orderRef as string | undefined) ?? null,
+      tableLabel: (d.tableLabel as string | undefined) ?? (d.tableId as string | undefined) ?? null,
+      readerLabel, heldMs,
+    });
+    const told = await insertActivity(opsAdmin, job, note, noPaymentNoteKey(job.id));
+    if (told === 'inserted') {
+      console.log(`adyen-terminal-charge: job ${job.id} cancelled as ${kind} (asked by ${askedBy}), venue told: ${note.title}`);
+      await logDurable(platformAdmin, noPaymentNoteKey(job.id), {
+        kind, job: job.id, service_id: job.nexo_service_id ?? null, asked_by: askedBy, caller,
+        held_ms: heldMs, charge: job.charge_minor ?? null, status_before: job.status,
+      });
+    } else if (told === 'failed') {
+      console.error(`adyen-terminal-charge: job ${job.id} cancelled as ${kind} but the venue note could not be written`);
+    }
+  } catch (e) {
+    console.error(`adyen-terminal-charge: note for cancelled job ${job?.id} failed: ${(e as Error)?.message || e}`);
+  }
+}
+
+// THE TIMER (rides 'sweep_unsent', every minute, no new cron). Nobody asked on
+// a timer before: one server ask at 25 s when a till won the kick race, then
+// only an open card screen or a till boot. Now every Adyen job that was really
+// sent is asked about from 45 s after the send, every 20 s, until the 5 minute
+// lease hands it to the database sweep. selectReaderAskJobs (pure, tested)
+// picks the jobs and the times; a job the device drives itself over the local
+// bridge is never asked about. Every ask is this function's own conservative
+// status ask (scheduleSelfAsk). Never throws.
+async function runReaderAskSweep(locationId: string | null): Promise<void> {
+  try {
+    const now = Date.now();
+    let q = opsAdmin.from('terminal_jobs')
+      .select('id, location_id, target_terminal_id, pos_device_id, processor, status, simulated, training, check_draft, nexo_service_id, dispatched_at, created_at')
+      .eq('processor', 'adyen').eq('status', 'charging')
+      .eq('simulated', false).eq('training', false)
+      .not('nexo_service_id', 'is', null)
+      .gte('dispatched_at', new Date(now - READER_ASK_MAX_SINCE_SEND_MS).toISOString())
+      .order('dispatched_at', { ascending: true })
+      .limit(50);
+    if (locationId) q = q.eq('location_id', locationId);
+    const { data: rows, error } = await q;
+    if (error) { console.error(`adyen-terminal-charge reader ask sweep: select failed: ${error.message}`); return; }
+    const jobs = (rows ?? []) as any[];
+    if (!jobs.length) return;
+    const termIds = [...new Set(jobs.map((j) => j.target_terminal_id).filter(Boolean))];
+    const devIds = [...new Set(jobs.map((j) => j.pos_device_id).filter(Boolean))];
+    const [{ data: terms }, { data: devs }] = await Promise.all([
+      termIds.length
+        ? opsAdmin.from('terminal_devices').select('id, device_uid').in('id', termIds)
+        : Promise.resolve({ data: [] as { id: string; device_uid: string | null }[] }),
+      devIds.length
+        ? opsAdmin.from('devices').select('id, device_uid').in('id', devIds)
+        : Promise.resolve({ data: [] as { id: string; device_uid: string | null }[] }),
+    ]);
+    const plan = selectReaderAskJobs(jobs, {
+      now,
+      terminalsById: new Map((terms ?? []).map((t: any) => [t.id, t])),
+      devicesById: new Map((devs ?? []).map((d: any) => [d.id, d])),
+      limit: READER_ASK_LIMIT,
+    });
+    if (!plan.length) return;
+    const asks: Promise<void>[] = [];
+    for (const one of plan) for (const delay of one.delays) asks.push(scheduleSelfAsk(one.id, delay, 'reader_ask_sweep'));
+    console.log(`adyen-terminal-charge reader ask sweep: ${asks.length} ask(s) planned for ${plan.length} job(s)${locationId ? ` (venue ${locationId})` : ''}: ${JSON.stringify(plan).slice(0, 600)}`);
+    await Promise.all(asks);
+  } catch (e) {
+    console.error(`adyen-terminal-charge reader ask sweep failed: ${(e as Error)?.message || e}`);
+  }
+}
+
+// MONEY ON A PAYMENT WE CANCELLED: tell the venue, ONCE per job (the note's id
+// comes from its key late-money:<job>, so the watch below and a settle that
+// meets the cancelled job can both call this and staff still get one note).
+// It NEVER changes a job and NEVER books a sale; a person decides. Never throws.
+async function tellLateMoney(job: any, f: {
+  amountMinor: number | null; currency?: string | null; card?: unknown; paidAt?: string | number | null;
+  psp?: string | null; event?: string | null; by: string;
+}, zones?: Map<string, string>): Promise<'inserted' | 'exists' | 'failed'> {
+  try {
+    let tz = zones?.get(job.location_id);
+    if (!tz) {
+      tz = 'Europe/London';
+      try {
+        const { data: loc } = await opsAdmin.from('locations').select('timezone').eq('id', job.location_id).maybeSingle();
+        if (loc?.timezone) tz = String(loc.timezone);
+      } catch { /* the default zone */ }
+      zones?.set(job.location_id, tz);
+    }
+    const d = (job.check_draft && typeof job.check_draft === 'object' ? job.check_draft : {}) as Record<string, unknown>;
+    const alert = lateMoneyAlert({
+      amountMinor: f.amountMinor ?? job.charge_minor ?? job.due_minor,
+      currency: f.currency ?? job.currency,
+      card: f.card ?? null,
+      paidAt: f.paidAt ?? null,
+      tz,
+      ref: (d.orderRef as string | undefined) ?? null,
+    });
+    const told = await insertActivity(opsAdmin, job, alert, lateMoneyAlertKey(job.id));
+    if (told === 'inserted') {
+      console.error(`adyen-terminal-charge: MONEY ON A CANCELLED JOB ${job.id} (psp ${f.psp ?? 'not known'}, seen by ${f.by}): ${alert.title}`);
+      await logDurable(platformAdmin, lateMoneyAlertKey(job.id), {
+        job: job.id, job_status: job.status, psp: f.psp ?? null,
+        amount: f.amountMinor ?? null, currency: f.currency ?? job.currency ?? null, event: f.event ?? null, by: f.by,
+      });
+    } else if (told === 'failed') {
+      console.error(`adyen-terminal-charge: late money note for job ${job.id} could not be written; the watch tries again`);
+    }
+    return told;
+  } catch (e) {
+    console.error(`adyen-terminal-charge: late money note for job ${job?.id} failed: ${(e as Error)?.message || e}`);
+    return 'failed';
+  }
+}
+
+// SAID AT ONCE (review 13 Oct). When a settle holds an APPROVED answer and the
+// database says the job is already cancelled or expired (the settle function
+// never changes a settled job: it answers idempotent with that status), this
+// function knows at that second that money was taken with no sale. The watch
+// would say so a minute or more later, and that minute is when staff ring the
+// order again. So the settle says it now, with the same key. Best effort,
+// never throws, never blocks or changes the settle.
+async function lateMoneyAtSettle(jobId: string, settled: any, f: {
+  amountMinor: number | null; currency?: string | null; card?: unknown; paidAt?: string | number | null;
+  psp?: string | null; event?: string | null; by: string;
+}): Promise<void> {
+  try {
+    if (!(settled?.ok === true && settled?.idempotent === true && (settled?.status === 'cancelled' || settled?.status === 'expired'))) return;
+    const { data: j } = await opsAdmin.from('terminal_jobs')
+      .select('id, location_id, processor, status, charge_minor, due_minor, currency, check_draft, simulated, training')
+      .eq('id', jobId).maybeSingle();
+    if (!j || j.processor !== 'adyen' || j.simulated === true || j.training === true) return;
+    if (j.status !== 'cancelled' && j.status !== 'expired') return;
+    await tellLateMoney(j, f);
+  } catch (e) {
+    console.error(`adyen-terminal-charge: late money check at settle for job ${jobId} failed: ${(e as Error)?.message || e}`);
+  }
+}
+
+// THE LATE MONEY WATCH (rides 'sweep_unsent' too). A job that ended cancelled
+// or expired says "nothing was charged". If Adyen's own ledger later holds an
+// approved payment for it (HMAC verified, not refunded or reversed), a person
+// must be told: ONE urgent note per job. It replaces the "confirmed late"
+// cover such a job had when it ended 'unknown', and looks back as far (3 days).
+// Two small reads a run. It NEVER changes a job and NEVER books a sale; a
+// person decides. Never throws.
+async function runLateMoneyWatch(locationId: string | null): Promise<void> {
+  try {
+    const now = Date.now();
+    let q = opsAdmin.from('terminal_jobs')
+      .select('id, location_id, status, charge_minor, due_minor, currency, check_draft, updated_at')
+      .eq('processor', 'adyen').in('status', ['cancelled', 'expired'])
+      .eq('simulated', false).eq('training', false)
+      .gte('updated_at', new Date(now - LATE_MONEY_WINDOW_MS).toISOString())
+      .order('updated_at', { ascending: false })
+      .limit(LATE_MONEY_LIMIT);
+    if (locationId) q = q.eq('location_id', locationId);
+    const { data: ended, error } = await q;
+    if (error) { console.error(`adyen-terminal-charge late money watch: select failed: ${error.message}`); return; }
+    const jobs = (ended ?? []) as any[];
+    if (!jobs.length) return;
+    const byRef = new Map(jobs.map((j) => [`tj-${j.id}`, j]));
+    const { data: paid, error: paidErr } = await platformAdmin.from('adyen_payments')
+      .select('psp_reference, merchant_reference, success, amount_minor, amount_refunded_minor, currency, last_event_code, card, raw, created_at, merchant_account, live')
+      .in('merchant_reference', [...byRef.keys()]).eq('success', true);
+    if (paidErr) { console.error(`adyen-terminal-charge late money watch: ledger read failed: ${paidErr.message}`); return; }
+    const zones = new Map<string, string>();
+    for (const row of (paid ?? []) as any[]) {
+      const job = byRef.get(String(row.merchant_reference));
+      if (!job) continue;
+      if (ledgerApproval(row) !== 'approved') continue;                       // refunded, reversed or changed: not this note
+      if ((await ledgerRowVerified(opsAdmin, row, job.id)) !== true) continue; // an unsigned row tells nobody anything
+      await tellLateMoney(job, {
+        amountMinor: ledgerAuthAmount(row), currency: row.currency ?? null, card: row.card ?? null,
+        paidAt: row.created_at ?? null, psp: row.psp_reference ?? null, event: row.last_event_code ?? null, by: 'late_money_watch',
+      }, zones);
+    }
+  } catch (e) {
+    console.error(`adyen-terminal-charge late money watch failed: ${(e as Error)?.message || e}`);
+  }
 }
 
 // v5.6.87 — DURABLE REFUSAL LOG. Peter has now hit "payments are still not going
@@ -334,6 +939,8 @@ Deno.serve(async (req) => {
     action?: string; job_id?: string; response?: unknown;
     location_id?: string;   // sweep_unsent: optional venue scope (the action itself is service role only)
     kicked_by?: string;     // start: who fired this kick (terminal-job-create | sweep_unsent), for the log only
+    asked_by?: string;      // result: who is asking (a till, manager_release, reader_ask_sweep, send_ended, busy_press), for the log and the note's trail
+    conservative?: boolean; // result: true = a timer is asking. ANY caller may pass it: it only ever makes this function more careful
     [k: string]: unknown;
   };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
@@ -849,7 +1456,10 @@ Deno.serve(async (req) => {
   // WHAT QUALIFIES (selectUnsentSweepCandidates, unit-tested): an adyen job in
   // charging_unsent with charge_minor stamped, not simulated/training, created
   // between 20s and 100s ago, not touched in the last 20s (backoff after a CAS
-  // revert), whose terminal row is a paired CLOUD reader (adyen_terminal_id
+  // revert: since 13 Oct 2026 only 'start' reverts, when Adyen refuses the send
+  // with a 4xx; a reader's "not found" never puts a job back here, so the sweep
+  // never re sends a payment because of one), whose terminal row is a paired
+  // CLOUD reader (adyen_terminal_id
   // set), and which is NOT driven by the device itself over the local nexo
   // bridge. Ten per run, oldest first. The 100s ceiling is set by 'result'
   // recovery below: it aborts an InProgress tender dispatched more than 120s
@@ -875,6 +1485,34 @@ Deno.serve(async (req) => {
       return json({ error: 'sweep_unsent: service role only' }, 403);
     }
     const locationId = body.location_id ? String(body.location_id) : null;
+
+    // v5.11.16: the reader tip sweep rides this every minute cron (see
+    // runReaderTipSweep). Started first so an empty or failed unsent select
+    // below never skips it; waitUntil keeps it alive past this answer.
+    {
+      const tipSweep = runReaderTipSweep(locationId);
+      // deno-lint-ignore no-explicit-any
+      const rt = (globalThis as any).EdgeRuntime;
+      if (rt?.waitUntil) rt.waitUntil(tipSweep);
+    }
+
+    // 13 Oct 2026: two more riders on the same cron, started here so the early
+    // return below never skips them, each under waitUntil and in its own try so
+    // neither can touch the other or this action's answer. The timer asks the
+    // reader about every job that was really sent (runReaderAskSweep); the watch
+    // tells a person about money on a job we cancelled (runLateMoneyWatch).
+    {
+      // deno-lint-ignore no-explicit-any
+      const rt = (globalThis as any).EdgeRuntime;
+      try {
+        const readerAsks = runReaderAskSweep(locationId);
+        if (rt?.waitUntil) rt.waitUntil(readerAsks);
+      } catch (e) { console.error(`adyen-terminal-charge sweep_unsent: reader ask sweep did not start: ${(e as Error)?.message || e}`); }
+      try {
+        const lateMoney = runLateMoneyWatch(locationId);
+        if (rt?.waitUntil) rt.waitUntil(lateMoney);
+      } catch (e) { console.error(`adyen-terminal-charge sweep_unsent: late money watch did not start: ${(e as Error)?.message || e}`); }
+    }
 
     const now = Date.now();
     let q = opsAdmin.from('terminal_jobs')
@@ -1051,7 +1689,8 @@ Deno.serve(async (req) => {
 
   // ── start (cloud sync — the till drives an AMS1-class terminal) ────────────
   if (action === 'start' || action === 'prepare_local') {
-    if (SETTLED.includes(job.status)) return json({ ok: false, error: `job already ${job.status}`, ...settledBody(job) }, 409);
+    // (settledBody's ok always won this spread; the literal ok:false was dead, v5.11.16.)
+    if (SETTLED.includes(job.status)) return json({ error: `job already ${job.status}`, ...settledBody(job) }, 409);
     if (job.charge_minor == null) {
       await logRefusal('job has no server-computed charge', { action, jobId: job.id, status: job.status });
       return json({ ok: false, error: 'job has no server-computed charge — the tip was never committed' }, 409);
@@ -1178,7 +1817,11 @@ Deno.serve(async (req) => {
     } catch (e) {
       // Outcome UNKNOWABLE (timeout/network) — row stays 'charging'; recovery owns it.
       console.error('adyen-terminal-charge: sync transport error', (e as Error).message);
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      // 13 Oct 2026: record HOW the send ended and ask the reader 3 s later. Our own
+      // call throwing is NOT proof of anything (answered false): see readerLock.js.
+      await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'no_answer', error: (e as Error)?.message ?? String(e), now: Date.now() }));
+      scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
     if (!res.ok && res.status >= 400 && res.status < 500) {
       // Definitive rejection before any card interaction — nothing charged.
@@ -1193,7 +1836,10 @@ Deno.serve(async (req) => {
       return json({ ok: false, safe: true, error: refusal }, 409);
     }
     if (!res.ok) {
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      // 13 Oct 2026: an Adyen error that is not a clean refusal. Not proof (answered false).
+      await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'adyen_error', httpStatus: res.status, body: res.data, now: Date.now() }));
+      scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
 
     const parsed = parsePaymentResponse(res.data);
@@ -1203,10 +1849,20 @@ Deno.serve(async (req) => {
     // tender may still be LIVE is the double-charge — leave the row 'charging'
     // and let 'result'/events/webhook recovery own the truth.
     if (parsed.result === 'Unknown') {
-      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+      // 13 Oct 2026: Adyen ANSWERED this attempt's send (2xx) with no payment answer, so
+      // Adyen has finished with it. This is the one marker that counts (answered true):
+      // a reader that then says "not found" for this service id never had the payment.
+      await logDurable(platformAdmin, sendEndedKey(job.id, serviceId), sendEndedRecord({ how: 'answered_no_payment', httpStatus: res.status, body: res.data, now: Date.now() }));
+      scheduleSelfAsk(job.id, SEND_ENDED_ASK_AFTER_MS, 'send_ended');
+      return json({ ok: false, error: UNKNOWN_OUTCOME_WORDS, code: 'UNKNOWN_OUTCOME' }, 502);
     }
     try { await settleFromResponse(job.id, parsed, 'charge_sync', chargeMinor, maa.merchant_account); }
-    catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
+    catch (e) {
+      // v5.11.16: the tip or the settle could not be recorded yet. The job stays
+      // 'charging'; the till's watch, 'result' and the sweep settle it with the tip.
+      if (isSettleDeferred(e)) return deferredBody('charging');
+      return json({ ok: false, error: (e as Error).message }, 500);
+    }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
     return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }
@@ -1254,34 +1910,78 @@ Deno.serve(async (req) => {
             return json(await withCapture(settledBody(settled ?? job), settled ?? job));
           }
         }
-      } catch { /* cloud unreachable — fall through to the gated device report */ }
+      } catch (e) {
+        // v5.11.16: Adyen DID answer but the tip or settle could not be recorded
+        // yet. Never fall through to the device's claim for the same payment.
+        if (isSettleDeferred(e)) return deferredBody(job.status);
+        /* cloud unreachable — fall through to the gated device report */
+      }
     }
     try { await settleFromResponse(job.id, parsed, 'device_report', Number(job.charge_minor), rMaa?.merchant_account); }
-    catch (e) { return json({ ok: false, error: (e as Error).message }, 409); }
+    catch (e) {
+      if (isSettleDeferred(e)) return deferredBody(job.status);
+      return json({ ok: false, error: (e as Error).message }, 409);
+    }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
     return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }
 
   // ── result (recovery via TransactionStatusRequest) ─────────────────────────
   if (action === 'result') {
+    // 13 Oct 2026: WHO IS ASKING, AND HOW CAREFULLY (_shared/readerLock.js). A till, a
+    // person and pay at table ask as before. A TIMER asks with conservative true (the
+    // every minute reader ask sweep, and the ask 3 s after a send ended with no payment
+    // answer): such an ask never sends an abort to the reader and never cancels a silent
+    // reader before the send is dead (155 s). It may settle a payment the reader or
+    // Adyen's ledger proves, or cancel one proven never received. Any caller may pass
+    // conservative: it only ever makes this action more careful.
+    const conservative = body.conservative === true;
+    const askedBy = typeof body.asked_by === 'string' && body.asked_by.trim()
+      ? body.asked_by.trim().slice(0, 40)
+      : (isServiceRole ? 'service_role' : 'till');
+    console.log(`adyen-terminal-charge: result asked for job ${job.id} by ${askedBy}${conservative ? ' (conservative)' : ''} (status ${job.status})`);
+    // Who a cancel made by this ask is recorded against: the verified sign in, never the body.
+    const callerId = isServiceRole ? 'service_role' : String(callerUid ?? '');
     if (SETTLED.includes(job.status)) return json(await withCapture(settledBody(job), job));
+    // "Still in flight", with the reason and the times a caller can show. An old till
+    // reads ok, state and status exactly as before and ignores the rest. `why` is one of
+    // not_in_flight, in_progress, no_answer_yet, not_found_waiting, ledger_unclear.
+    // retry_after is when a person's ask may cancel a silent reader (the send + 120 s);
+    // clears_by is when a payment the reader never had clears by itself.
+    const sentAtMs = Date.parse(String(job.dispatched_at ?? ''));
+    const sinceSend = (): number | null => (Number.isFinite(sentAtMs) ? Date.now() - sentAtMs : null);
+    const processing = (why: string, extra: Record<string, unknown> = {}) => json({
+      ok: true, state: 'processing', status: job.status, why,
+      since_send_ms: sinceSend(),
+      retry_after: Number.isFinite(sentAtMs) ? new Date(sentAtMs + TENDER_STALL_MS).toISOString() : null,
+      clears_by: Number.isFinite(sentAtMs) ? new Date(sentAtMs + BUSY_CLEARS_AFTER_MS).toISOString() : null,
+      ...extra,
+    });
     // v968: also recover jobs the sweeper flipped charging→'unknown' — that was
     // a dead end (review finding: no automated recovery path existed for them).
     if ((job.status !== 'charging' && job.status !== 'unknown') || !job.nexo_service_id) {
-      return json({ ok: true, state: 'processing', status: job.status });
+      return processing('not_in_flight');
     }
     // If Adyen's own ledger already knows the answer, take it: it is the same
     // truth the terminal would give, and it works when the terminal does not.
+    // v5.11.16: this now actually settles (settleFromLedger). Until then the
+    // call threw before settling, so it never recovered an approved job. An
+    // amount it cannot explain is NOT parked from here (allowPark false): it
+    // falls through to the reader's TransactionStatus, which carries TipAmount.
+    // Falling through must never lose what the ledger proved: see the
+    // not_found branch below, which never reverts a job Adyen approved.
     const early = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
     if (early.verdict === 'charged') {
-      const ad = (early.row as any)?.raw?.authorisation?.additionalData ?? {};
-      const ok = (early.row as any).success === true;
-      await settleCard(job.id, ok ? 'approved' : 'declined', {
-        transaction_id: (early.row as any).psp_reference ?? null,
-        decline_reason: ok ? null : (ad?.refusalReason ?? 'declined'),
-      }).catch(() => {});
-      const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
-      if (st && SETTLED.includes(st.status)) return json(await withCapture(settledBody(st), st));
+      try {
+        const r = await settleFromLedger(job, early.row, { allowPark: false });
+        if (r.result === 'settled') {
+          const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+          if (st && SETTLED.includes(st.status)) return json(await withCapture(settledBody(st), st));
+        }
+      } catch (e) {
+        if (isSettleDeferred(e)) return deferredBody(job.status);
+        console.error(`adyen-terminal-charge: ledger settle for job ${job.id} failed, asking the reader: ${(e as Error).message}`);
+      }
     }
 
     const { maa, poiid, cfg } = await resolveTarget();
@@ -1292,22 +1992,89 @@ Deno.serve(async (req) => {
       poiid: poiid as string, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
       serviceId: newServiceId(), origServiceId: job.nexo_service_id,
     });
-    const res = noTarget
-      ? { ok: false, data: null }
-      : await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: 30_000 });
+    // 13 Oct 2026: THE STATUS ASK SITS IN A TRY. Our own 30 s limit used to throw straight
+    // out of this action as an HTTP 500 that decided nothing (twice on job df9c6528, while
+    // the reader was silent and the till was locked). A status ask that times out or throws
+    // is "could not be reached", exactly like a refused one: the branch below decides, by
+    // the same rules. It never ends this call as a 500 and never decides anything by itself.
+    //
+    // Review 13 Oct: BUT AN ASK WE CUT OFF IS NOT AN ANSWER (askThrew). In the week to 13 Oct
+    // our 30 s limit ran out on 8 jobs: 6 were LIVE payments and 2 of those were approved
+    // seconds later (Headingley 22f54a98, Barnsley bfac9814). Only 2 were dead readers. So an
+    // ask that threw never feeds the 120 s rule, whoever asked: it waits for the send to be
+    // dead (155 s) exactly like a timer. A real answer from Adyen that is not a 2xx keeps the
+    // 120 s rule as it was.
+    // deno-lint-ignore no-explicit-any
+    let res: { ok: boolean; status?: number; data: any };
+    let askThrew = false;
+    if (noTarget) {
+      res = { ok: false, data: null };
+    } else {
+      try {
+        res = await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: STATUS_ASK_TIMEOUT_MS });
+      } catch (e) {
+        console.error(`adyen-terminal-charge: result for job ${job.id}: the status ask did not come back (${(e as Error)?.message || e}), treated as could not be reached`);
+        askThrew = true;
+        res = { ok: false, status: 0, data: null };
+      }
+    }
+    // 30 Sep 2026: NEVER CANCEL A YOUNG TENDER FROM AN EMPTY LEDGER. The till's card screen now
+    // mounts while the customer is still paying (lib/payments/kickRace.js), so this action can be
+    // asked about a job whose reader is mid PIN. An unreachable reader (its wifi is the usual
+    // reason a tender is slow) plus a ledger the authorisation has not reached yet is NOT proof
+    // that nothing was charged: it is the customer still paying. Inside Adyen's own 120 s
+    // cardholder window (measured from dispatch, server clock to server clock, the same line the
+    // in_progress branch below has used since v5.7.85) the unreachable and unknown branches answer
+    // "processing" and the till asks again. Peter's bar (9 Sep): never abort a live tender.
+    const tenderStalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;
+    // 13 Oct 2026: time since the send, read AFTER the status ask came back like the line
+    // above (the ask itself can take 30 s). From dispatched_at only: a job with no send
+    // time is never treated as old enough to be dead. Then why an ask that decides nothing
+    // is still waiting: under 120 s with nothing in the ledger yet the reader simply has not
+    // answered; otherwise Adyen's record is the open question.
+    const sinceSendMs = sinceSend();
+    const waitWhy = (v: { verdict: string; ambiguous?: boolean }) =>
+      (v.verdict === 'charged' || v.ambiguous === true || tenderStalled ? 'ledger_unclear' : 'no_answer_yet');
+    // Review 13 Oct: ONE MORE LOOK BEFORE A "NO ANSWER" CANCEL. The proof for a silent reader
+    // is "Adyen has no row for this job", and that row arrives a median 4.8 s after the
+    // reader's answer (7.6 s at the 99th centile). One read taken at once can miss a payment
+    // approved in the last few seconds, and the note that follows a cancel tells staff the
+    // card machine is free. So wait LEDGER_RECHECK_MS and read again: only a ledger that is
+    // STILL empty, read with no error, cancels. Nobody waits on a timer's ask, and a person's
+    // ask has usually spent 30 s on the reader already.
+    const ledgerStillEmpty = async (): Promise<boolean> => {
+      await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));
+      const again = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      return again.verdict === 'nothing';
+    };
     if (!res.ok) {
       // The terminal could not be reached. Adyen's ledger is the fallback, and
       // it is the branch that actually matters in service: a dead terminal used
       // to leave the check blocked with no way out.
       const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing' && !tenderStalled) {
+        console.log(`adyen-terminal-charge: result for job ${job.id}: reader unreachable, ledger empty, tender under 120 s, not cancelling`);
+        return processing('no_answer_yet');
+      }
+      // 13 Oct 2026: a TIMER never cancels a silent reader before the send is dead (155 s
+      // from the send; the slowest real approval was 132 s). Nor does an ask WE cut off
+      // (askThrew, see the status ask above). A till or a person whose ask Adyen really
+      // answered keeps the 120 s rule above.
+      if (v.verdict === 'nothing' && timerMustWait({ conservative: conservative || askThrew, sinceSendMs })) return processing('no_answer_yet');
       if (v.verdict === 'nothing') {
-        await opsAdmin.from('terminal_jobs')
+        if (!(await ledgerStillEmpty())) return processing('ledger_unclear');
+        // The service id is in the compare too: an old answer never cancels a job that was sent again.
+        const { data: won } = await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
-          .eq('id', job.id).in('status', ['charging', 'unknown']);
+          .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id).select('id');
+        // Only the call whose update won tells the venue (one note per job).
+        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy, callerId);
         const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        // Another path changed the job first and it is still open (it was sent again): say so.
+        if (st && !SETTLED.includes(st.status)) return processing('no_answer_yet', { status: st.status });
         return json(await withCapture(settledBody(st ?? job), st ?? job));
       }
-      return json({ ok: true, state: 'processing', status: job.status });
+      return processing(waitWhy(v));
     }
     const ts = res.data?.SaleToPOIResponse?.TransactionStatusResponse ?? {};
     const cond = ts?.Response?.Result === 'Success' ? 'found'
@@ -1331,6 +2098,11 @@ Deno.serve(async (req) => {
       // sweep legitimately re-kicked late gets its own two minutes at the
       // reader instead of being aborted because the row is old. created_at is
       // the fallback for a row that never carried dispatched_at.
+      //
+      // 13 Oct 2026: A TIMER NEVER TOUCHES A PAYMENT THE READER SAYS IS IN PROGRESS,
+      // whatever its age (two real approvals landed 132 s after the send, 6 and 12 Oct).
+      // Only an ask from a till or a person may end a tender, by the rule below.
+      if (conservative) return processing('in_progress');
       const stalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;
       const led = stalled ? await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const })) : { verdict: 'too_soon' as const };
       if (stalled && led.verdict === 'nothing') {
@@ -1340,50 +2112,136 @@ Deno.serve(async (req) => {
           reason: 'MerchantAbort',
         });
         await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
-        // Give a racing authorisation a moment to reach the ledger, then look again.
-        await new Promise((r) => setTimeout(r, 2_000));
+        // Give a racing authorisation time to reach the ledger, then look again. Review 13 Oct:
+        // this wait was 2 s, under the measured lag (the webhook lands a median 4.8 s after the
+        // reader's answer), and a manager's Release can now reach this abort.
+        await new Promise((r) => setTimeout(r, LEDGER_RECHECK_MS));
         const after = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
         if (after.verdict === 'charged') {
-          const ad = (after.row as any)?.raw?.authorisation?.additionalData ?? {};
-          const ok = (after.row as any).success === true;
-          await settleCard(job.id, ok ? 'approved' : 'declined', {
-            transaction_id: (after.row as any).psp_reference ?? null,
-            decline_reason: ok ? null : (ad?.refusalReason ?? 'declined'),
-          }).catch(() => {});
-        } else {
+          // The tender is being ended and the ledger is the truth: an amount it
+          // cannot explain is settled and parked (allowPark) for the heal or a manager.
+          try { await settleFromLedger(job, after.row, { allowPark: true }); }
+          catch (e) {
+            if (isSettleDeferred(e)) return deferredBody(job.status);
+            console.error(`adyen-terminal-charge: ledger settle after abort for job ${job.id} failed: ${(e as Error).message}`);
+          }
+        } else if (after.verdict === 'nothing') {
+          // (v5.11.16: only a PROVEN empty ledger cancels. 'too_soon' now also
+          // means the ledger could not be read, which decides nothing.)
           await opsAdmin.from('terminal_jobs')
             .update({ status: 'cancelled', decline_reason: 'The card machine was still waiting and Adyen has no record of this payment, so it was cancelled and nothing was charged', updated_at: new Date().toISOString() })
             .eq('id', job.id).in('status', ['charging', 'unknown']);
         }
         const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        if (st && !SETTLED.includes(st.status)) return processing(after.verdict === 'nothing' ? 'in_progress' : 'ledger_unclear', { status: st.status });
         return json(await withCapture(settledBody(st ?? job), st ?? job));
       }
-      return json({ ok: true, state: 'processing', status: job.status });
+      return processing('in_progress');
     }
     if (cond === 'unknown') {
       const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing' && !tenderStalled) {
+        console.log(`adyen-terminal-charge: result for job ${job.id}: reader gave no answer, ledger empty, tender under 120 s, not cancelling`);
+        return processing('no_answer_yet');
+      }
+      // 13 Oct 2026: the same wait for a TIMER as in the unreachable branch above.
+      if (v.verdict === 'nothing' && timerMustWait({ conservative, sinceSendMs })) return processing('no_answer_yet');
       if (v.verdict === 'nothing') {
-        await opsAdmin.from('terminal_jobs')
+        if (!(await ledgerStillEmpty())) return processing('ledger_unclear');
+        const { data: won } = await opsAdmin.from('terminal_jobs')
           .update({ status: 'cancelled', decline_reason: 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
-          .eq('id', job.id).in('status', ['charging', 'unknown']);
+          .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id).select('id');
+        if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'no_answer', askedBy, callerId);
         const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        // Another path changed the job first and it is still open (it was sent again): say so.
+        if (st && !SETTLED.includes(st.status)) return processing('no_answer_yet', { status: st.status });
         return json(await withCapture(settledBody(st ?? job), st ?? job));
       }
-      return json({ ok: true, state: 'processing', status: job.status });
+      return processing(waitWhy(v));
     }
     if (cond === 'not_found') {
-      // The terminal never saw the request — provably nothing charged. Revert so
-      // the till can retry (the one branch where reverting in-flight is safe).
-      await opsAdmin.from('terminal_jobs')
-        .update({ status: 'charging_unsent', nexo_service_id: null, last_error: 'terminal never received the payment (Adyen: not found)', updated_at: new Date().toISOString() })
-        .eq('id', job.id).in('status', ['charging', 'unknown']);
-      return json({ ok: false, safe: true, error: 'terminal never received the payment — retry' }, 409);
+      // v5.11.16 review: NotFound is NOT proof when Adyen's own ledger holds an
+      // approved payment for this job (the reader was restarted, or its
+      // transaction log rolled). Before v5.11.16 a job with a ledger row never
+      // got this far (the ledger branch threw); now a ledger settle can skip
+      // (an amount it cannot explain, a reversal, an unverified row), so look
+      // again and NEVER revert money Adyen approved: settle it and park it with
+      // both amounts, or leave it in flight for the sweep and a manager.
+      const lg = (early.verdict === 'charged' || (early as any).ambiguous === true)
+        ? early
+        : await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      const ledgerApproved = ledgerShowsApproval(lg as any);
+      if (ledgerApproved) {
+        if (lg.verdict === 'charged') {
+          try { await settleFromLedger(job, (lg as any).row, { allowPark: true }); }
+          catch (e) {
+            if (isSettleDeferred(e)) return deferredBody(job.status);
+            console.error(`adyen-terminal-charge: ledger settle after NotFound for job ${job.id} failed: ${(e as Error).message}`);
+          }
+        }
+        const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        if (st && SETTLED.includes(st.status)) return json(await withCapture(settledBody(st), st));
+        return json({ ok: true, state: 'processing', status: st?.status ?? job.status });
+      }
+      // 13 Oct 2026: "NOT FOUND" NO LONGER PUTS THE JOB BACK TO "NOT SENT YET". That revert
+      // kept the reader locked (a job waiting to be sent is still live), nothing could re
+      // send it after 100 s, and it sat until the 5 minute lease (Huddersfield, job df9c6528,
+      // 310 s). It was also unsafe while it did re send: on 15 Aug 2026 the reader said "not
+      // found" 25 s and 28 s after the send and Adyen APPROVED both payments 5 s later (jobs
+      // 7908d1ab, a742204b). So "not found" is PROOF only when all of this holds
+      // (neverReceivedVerdict, pure and tested in _shared/readerLock.js):
+      //   a) the answer is for THIS attempt (the status ask named job.nexo_service_id),
+      //   b) Adyen's ledger was read with no error and has no row for tj-<job>,
+      //   c) EITHER Adyen already answered this attempt's send with no payment answer (the
+      //      "send ended" marker 'start' wrote for this service id), OR 155 s have passed
+      //      since the send, after which no payment for it can start.
+      // Proven: cancel at once, in ONE compare and set on the status AND the service id that
+      // was asked about, and tell the venue. Not proven: the job stays exactly as it is, the
+      // caller is told why, and the reader is asked again. A marker or a ledger that cannot
+      // be read is "not proven". Nothing here ever sends the payment again.
+      const fresh = await ledgerRowsForJob(platformAdmin, job.id);
+      // deno-lint-ignore no-explicit-any
+      let marker: any = null;
+      try {
+        const { data: mk, error: mkErr } = await platformAdmin.from('adyen_webhook_events')
+          .select('raw').eq('event_key', sendEndedKey(job.id, job.nexo_service_id)).maybeSingle();
+        marker = mkErr ? null : (mk?.raw ?? null);
+      } catch { marker = null; }
+      const proof = neverReceivedVerdict({
+        ledgerReadOk: !fresh.error, ledgerRowCount: fresh.rows.length,
+        sendAnswered: sendAnswered(marker), sinceSendMs,
+      });
+      // The raw facts, durably (the reader's own answer is how every fault on this path was found).
+      await logDurable(platformAdmin, `not-found:${job.id}:${Date.now()}`, {
+        job: job.id, service_id: job.nexo_service_id, status: job.status, since_send_ms: sinceSendMs,
+        marker_how: marker?.how ?? null, marker_at: marker?.at ?? null,
+        ledger_rows: fresh.rows.length, ledger_error: fresh.error,
+        verdict: proof, asked_by: askedBy, conservative, caller: callerId,
+      });
+      if (!proof.proven) {
+        const why = String(proof.why ?? 'not_found_waiting');
+        console.log(`adyen-terminal-charge: result for job ${job.id}: reader says not found, not proven yet (${why}), job left as it is`);
+        return processing(why);
+      }
+      console.log(`adyen-terminal-charge: result for job ${job.id}: reader says not found and it is proven (${String(proof.by ?? '')}), cancelling as never received`);
+      const { data: won } = await opsAdmin.from('terminal_jobs')
+        .update({ status: 'cancelled', decline_reason: NEVER_RECEIVED_REASON, last_error: NEVER_RECEIVED_ERROR, updated_at: new Date().toISOString() })
+        .eq('id', job.id).in('status', ['charging', 'unknown']).eq('nexo_service_id', job.nexo_service_id)
+        .select('id');
+      if (Array.isArray(won) && won.length === 1) await raiseNoPaymentNote(job, 'never_received', askedBy, callerId);
+      const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+      // Another path changed the job first (settled, or sent again): say what it is now.
+      if (st && !SETTLED.includes(st.status)) return processing('not_found_waiting', { status: st.status });
+      return json(await withCapture(settledBody(st ?? job), st ?? job));
     }
     const inner = ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {};
     const parsed = parsePaymentResponse(inner);
-    if (parsed.result === 'Unknown') return json({ ok: true, state: 'processing', status: job.status });
+    if (parsed.result === 'Unknown') return processing('no_answer_yet');
     try { await settleFromResponse(job.id, parsed, 'status_recovery', Number(job.charge_minor), maa?.merchant_account); }
-    catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
+    catch (e) {
+      if (isSettleDeferred(e)) return deferredBody(job.status);
+      return json({ ok: false, error: (e as Error).message }, 500);
+    }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
     return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }

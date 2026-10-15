@@ -11,6 +11,22 @@
 // no card leg and told staff to refund 3.80 by hand. The boot loaders had these fields all
 // along; realtime and MasterSync never did. One map, so no copy can drop them again.
 // Pure: no supabase import, testable in Node.
+/**
+ * 8 Oct 2026 (the VAT audit): the VAT a closed check booked and the record behind it, on EVERY
+ * copy the app holds (boot, realtime, force sync). Until now an ordinary UK row carried
+ * taxBreakdown only when it was a US added-on record or a scaled one, and a realtime copy
+ * carried no taxAmount at all, so the till's X and Z print counted 0 VAT for a kiosk sale and a
+ * refund made on another till saved no refund VAT. taxBreakdown is mapped when it is a usable
+ * record (an object with a total); the server's empty list ([]) is left off, as before.
+ * recordedCheckTax still takes a stored record as BOOKED only when taxShare.bookedTaxRecord says
+ * so (added-on, or scaled), so the figures it recomputes are unchanged by this.
+ */
+export function closedCheckTaxFields(row) {
+  const tb = row?.tax_breakdown;
+  const usable = !!tb && typeof tb === 'object' && !Array.isArray(tb) && tb.totalTax != null && Number.isFinite(Number(tb.totalTax));
+  return { taxAmount: row?.tax_amount ?? null, ...(usable ? { taxBreakdown: tb } : {}) };
+}
+
 export function closedCheckRefundFields(row) {
   return {
     giftCard: row?.gift_card || null,                        // v5.5.217: gift card reversal on refund
@@ -23,4 +39,40 @@ export function closedCheckRefundFields(row) {
     // is the last record of the card leg when nothing else is (refundMath.cardLegsOf).
     tenders: Array.isArray(row?.tenders) ? row.tenders : null,
   };
+}
+
+// ── Money the SERVER moved on a closed check after it closed ────────────────────
+// The realtime UPDATE handler merges only refunds and status from another device, because the
+// till's own camelCase copy is richer than the snake_case row. Two server writers change the
+// money on a closed check, and each marks the row so the handler can tell:
+//   v5.7.5 tip on the printed receipt: a payment_intents leg carries a `capture` key
+//   v5.11.16 reader tip heal: a card tender carries `tip_added_at`
+// For those rows the handler also takes tip and total (and the legs / tenders the server wrote),
+// so History and the Z report repaint without a reload. A plain refund UPDATE keeps the old
+// merge exactly.
+function hasCaptureLegs(row) {
+  return Array.isArray(row?.payment_intents)
+    && row.payment_intents.some((l) => l && typeof l === 'object' && 'capture' in l);
+}
+function hasServerAddedTip(row) {
+  return Array.isArray(row?.tenders)
+    && row.tenders.some((t) => t && typeof t === 'object' && t.tip_added_at != null);
+}
+
+/** Did the server move money on this closed check after it closed? */
+export function serverTipChanged(row) {
+  return hasCaptureLegs(row) || hasServerAddedTip(row);
+}
+
+/** The fields a realtime UPDATE of a closed check may take from the server row ({} for a plain refund). */
+export function serverTipFields(row) {
+  if (!serverTipChanged(row)) return {};
+  const out = {};
+  if (hasCaptureLegs(row) || (hasServerAddedTip(row) && Array.isArray(row.payment_intents))) {
+    out.paymentIntents = row.payment_intents;
+  }
+  if (hasServerAddedTip(row)) out.tenders = row.tenders;
+  if (row.tip != null) out.tip = row.tip;
+  if (row.total != null) out.total = row.total;
+  return out;
 }

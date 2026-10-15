@@ -842,3 +842,134 @@ test('PLATFORM_SETTINGS_WAITING_LINE: one short plain line, no table names, no d
   assert.ok(PLATFORM_SETTINGS_WAITING_LINE.length < 120);
   assert.doesNotMatch(PLATFORM_SETTINGS_WAITING_LINE, /adyen_platform_settings|\.sql|[\u2013\u2014]|paste/i);
 });
+
+// ── APPLE PAY AND GOOGLE PAY UNDER STEP 4 (29 Sep 2026, v5.11.17) ────────────
+// "Apple Pay: on" used to mean only that Adyen offered it, while Coffee Boy's
+// shop address was not registered and the sheet closed at once.
+import { walletLinesView, applePayAttemptLine, applePayAttemptView, APPLE_PAY_OFF_LINE, GOOGLE_PAY_OFF_LINE, APPLE_PAY_LOOK_AT_LIVE_LINE } from './adyenAdminRows.js';
+
+const CB = 'coffee-boy-huddersfield.serv-os.app';
+const FRANPOS = 'Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential.';
+
+test('walletLinesView: "on" only when Adyen offers Apple Pay AND the live host is registered', () => {
+  const [apple, google] = walletLinesView({ applepay: true, googlepay: true }, { registered: true, read: true, host: CB });
+  assert.deepEqual(apple, { label: 'Apple Pay', on: true, tone: 'on', text: `Apple Pay: on. Registered for ${CB}.` });
+  assert.deepEqual(google, { label: 'Google Pay', on: true, tone: 'on', text: 'Google Pay: on. Adyen offers it on this venue.' });
+});
+
+test('walletLinesView: offered but not registered says the sheet closes, with the reason', () => {
+  const [apple] = walletLinesView({ applepay: true }, { registered: false, read: true, host: CB, missing: [CB], lastAttempt: { registered: false, guidance: FRANPOS } });
+  assert.equal(apple.on, false);
+  assert.equal(apple.tone, 'warn');
+  assert.equal(apple.text, `Apple Pay: offered by Adyen, but ${CB} is not registered, so the sheet closes at once.`);
+  assert.equal(apple.guidance, FRANPOS);
+  // no attempt yet: the read's guidance, or none
+  assert.equal(walletLinesView({ applepay: true }, { registered: false, read: true, missing: [CB], guidance: 'G' })[0].guidance, 'G');
+  assert.equal(walletLinesView({ applepay: true }, { registered: false, read: true, missing: [CB] })[0].guidance, null);
+  assert.match(walletLinesView({ applepay: true }, { registered: false, read: true, missing: [CB] })[0].text, /coffee-boy-huddersfield\.serv-os\.app is not registered/);
+});
+
+test('walletLinesView: offered but unreadable, or not read at all, says ServOS cannot check', () => {
+  const [unread] = walletLinesView({ applepay: true }, { registered: false, read: false, host: CB, guidance: FRANPOS });
+  assert.equal(unread.on, false);
+  assert.equal(unread.text, `Apple Pay: offered by Adyen, but ServOS cannot check whether ${CB} is registered.`);
+  assert.equal(unread.guidance, FRANPOS);
+  const [none] = walletLinesView({ applepay: true }, null);
+  assert.equal(none.on, false);
+  assert.equal(none.text, 'Apple Pay: offered by Adyen, but ServOS cannot check whether the shop address is registered.');
+});
+
+test('walletLinesView: not offered is the old off line; no probe is no lines', () => {
+  const [apple, google] = walletLinesView({ applepay: false, googlepay: false }, { registered: true, host: CB });
+  assert.deepEqual(apple, { label: 'Apple Pay', on: false, tone: 'off', text: APPLE_PAY_OFF_LINE });
+  assert.deepEqual(google, { label: 'Google Pay', on: false, tone: 'off', text: GOOGLE_PAY_OFF_LINE });
+  assert.deepEqual(walletLinesView(null, { registered: true }), []);
+  assert.deepEqual(walletLinesView(undefined), []);
+  for (const l of [...walletLinesView({ applepay: true }, { registered: false, read: true, host: CB }), apple, google]) assert.doesNotMatch(l.text, /[–—]/);
+});
+
+test('applePayAttemptLine: when, from where, what Adyen said', () => {
+  assert.equal(
+    applePayAttemptLine({ checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'checkout', outcome: 'refused', status: 403, error: 'Forbidden' }),
+    'Last tried 2026-09-29 14:05 UTC from the online checkout: refused (403 Forbidden)',
+  );
+  assert.equal(applePayAttemptLine({ checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'admin', outcome: 'added', status: null, error: null }),
+    'Last tried 2026-09-29 14:05 UTC from the Register button: added');
+  assert.equal(applePayAttemptLine({ checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'golive_state', outcome: 'error', error: 'Apple Pay domains: Adyen did not answer' }),
+    'Last tried 2026-09-29 14:05 UTC from this screen: no answer from Adyen (Apple Pay domains: Adyen did not answer)');
+  assert.equal(applePayAttemptLine({ checkedAt: 'bad', trigger: 'go_live', outcome: 'not_requested' }),
+    'Last tried at an unknown time from going live: Apple Pay is not switched on');
+  assert.equal(applePayAttemptLine({ trigger: 'something_new', outcome: 'odd' }), 'Last tried at an unknown time from something_new: odd');
+  assert.match(applePayAttemptLine({ checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'adyen_link', outcome: 'store_scoped', error: 'e'.repeat(400) }), /^Last tried .* from the Adyen link: no Apple Pay on this store \(e{160}\)$/);
+  assert.equal(applePayAttemptLine(null), null);
+  assert.equal(applePayAttemptLine('x'), null);
+});
+
+// ── ONE ENVIRONMENT ON THE WALLET LINE (29 Sep 2026 review) ──────────────────
+// `wallets` is the venue's own environment; the applePay block is the one the
+// flow looks at. Mixing them warned about a host that did not matter.
+const LEEDS_LIVE = 'coffee-boy-leeds.serv-os.app';
+const LEEDS_DEV = 'coffee-boy-leeds.dev.serv-os.app';
+
+test('walletLinesView: a test venue looking at live is told ServOS registers the live address on go live', () => {
+  const block = { environment: 'live', registered: false, read: true, host: LEEDS_LIVE, missing: [LEEDS_LIVE] };
+  const [apple] = walletLinesView({ applepay: true }, block, { venueEnvironment: 'test', target: 'live' });
+  assert.deepEqual(apple, { label: 'Apple Pay', on: false, tone: 'off', text: `Apple Pay: offered by Adyen. ServOS registers ${LEEDS_LIVE} when the venue goes live.` });
+  // the live probe did not run (no environment on the block): the target decides
+  const [noProbe] = walletLinesView({ applepay: true }, { domains: [], verification: null }, { venueEnvironment: 'test', target: 'live' });
+  assert.equal(noProbe.text, 'Apple Pay: offered by Adyen. ServOS registers the shop address when the venue goes live.');
+  assert.equal(noProbe.tone, 'off');
+});
+
+test('walletLinesView: a live venue looking at test never judges live by the test host', () => {
+  const block = { environment: 'test', registered: false, read: true, host: LEEDS_DEV, missing: [LEEDS_DEV] };
+  const [apple] = walletLinesView({ applepay: true }, block, { venueEnvironment: 'live', target: 'test' });
+  assert.deepEqual(apple, { label: 'Apple Pay', on: false, tone: 'off', text: APPLE_PAY_LOOK_AT_LIVE_LINE });
+  assert.doesNotMatch(apple.text, /dev\.serv-os\.app|closes at once/);
+  // and a registered test host never turns a live venue "on"
+  assert.equal(walletLinesView({ applepay: true }, { ...block, registered: true, missing: [] }, { venueEnvironment: 'live', target: 'test' })[0].on, false);
+});
+
+test('walletLinesView: the same environment keeps the honest lines, several hosts are named', () => {
+  const live = { environment: 'live', registered: false, read: true, host: LEEDS_LIVE, missing: [LEEDS_LIVE] };
+  assert.match(walletLinesView({ applepay: true }, live, { venueEnvironment: 'live', target: 'live' })[0].text, /coffee-boy-leeds\.serv-os\.app is not registered/);
+  assert.equal(walletLinesView({ applepay: true }, { ...live, registered: true, missing: [], wanted: [LEEDS_LIVE] }, { venueEnvironment: 'live', target: 'live' })[0].text,
+    `Apple Pay: on. Registered for ${LEEDS_LIVE}.`);
+  // a test venue keeps both ServOS addresses on the test merchant
+  const test = { environment: 'test', registered: false, read: true, host: LEEDS_DEV, wanted: [LEEDS_DEV, LEEDS_LIVE], missing: [LEEDS_DEV, LEEDS_LIVE] };
+  assert.equal(walletLinesView({ applepay: true }, test, { venueEnvironment: 'test', target: 'test' })[0].text,
+    `Apple Pay: offered by Adyen, but ${LEEDS_DEV} and ${LEEDS_LIVE} are not registered, so the sheet closes at once.`);
+  assert.equal(walletLinesView({ applepay: true }, { ...test, registered: true, missing: [] }, { venueEnvironment: 'test', target: 'test' })[0].text,
+    `Apple Pay: on. Registered for ${LEEDS_DEV} and ${LEEDS_LIVE}.`);
+  // Google Pay is the venue's own answer whatever the flow looks at
+  assert.equal(walletLinesView({ applepay: true, googlepay: true }, test, { venueEnvironment: 'live', target: 'test' })[1].on, true);
+  for (const l of walletLinesView({ applepay: true }, test, { venueEnvironment: 'live', target: 'test' })) assert.doesNotMatch(l.text, /[–—]/);
+});
+
+test('applePayAttemptView: amber only when the attempt AND the read say no; quiet once the read finds the host', () => {
+  const refused = { checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'checkout', outcome: 'refused', registered: false, status: 403, error: 'Forbidden' };
+  const opts = { venueEnvironment: 'live', target: 'live' };
+  assert.deepEqual(applePayAttemptView({ environment: 'live', registered: false, read: true, lastAttempt: refused }, opts),
+    { text: 'Last tried 2026-09-29 14:05 UTC from the online checkout: refused (403 Forbidden)', tone: 'warn', detail: 'Forbidden' });
+  // FranPOS added the host by hand: the read says registered, the old refusal is history
+  assert.deepEqual(applePayAttemptView({ environment: 'live', registered: true, read: true, lastAttempt: refused }, opts),
+    { text: 'Last tried 2026-09-29 14:05 UTC from the online checkout: refused (403 Forbidden)', tone: 'quiet', detail: null });
+  // a registered attempt is quiet even when the read could not check
+  assert.equal(applePayAttemptView({ environment: 'live', registered: false, read: false, lastAttempt: { ...refused, outcome: 'added', registered: true } }, opts).tone, 'quiet');
+  // unreadable read and a refused attempt: amber
+  assert.equal(applePayAttemptView({ environment: 'live', registered: false, read: false, lastAttempt: refused }, opts).tone, 'warn');
+  // nothing tried yet, or no block
+  assert.equal(applePayAttemptView({ environment: 'live', registered: false }, opts), null);
+  assert.equal(applePayAttemptView(null, opts), null);
+});
+
+test('applePayAttemptView: the other environment\'s kept row is not shown', () => {
+  const refused = { checkedAt: '2026-09-29T14:05:31.000Z', trigger: 'checkout', outcome: 'refused', registered: false };
+  assert.equal(applePayAttemptView({ environment: 'test', registered: false, lastAttempt: refused }, { venueEnvironment: 'live', target: 'test' }), null);
+  assert.equal(applePayAttemptView({ environment: 'live', registered: false, lastAttempt: refused }, { venueEnvironment: 'test', target: 'live' }), null);
+  // no environment on the block: the target decides
+  assert.equal(applePayAttemptView({ registered: false, lastAttempt: refused }, { venueEnvironment: 'test', target: 'live' }), null);
+  assert.equal(applePayAttemptView({ registered: false, lastAttempt: refused }, { venueEnvironment: 'live', target: 'live' }).tone, 'warn');
+  // no environment known at all: shown, as before
+  assert.equal(applePayAttemptView({ registered: false, lastAttempt: refused }).tone, 'warn');
+});

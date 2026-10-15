@@ -138,11 +138,13 @@ struct POSWebView: UIViewRepresentable {
         // Native location for the geofenced clock-in (Staff target only).
         // Registered after the WKWebView exists because the bridge replies by
         // evaluating JS on it.
+        #if RPOS_LOCATION
         if Config.allowsLocation {
             let bridge = LocationBridge(webView: webView)
             context.coordinator.locationBridge = bridge
             userContent.add(bridge, name: LocationBridge.handlerName)
         }
+        #endif
 
         // Direct printing over the venue Wi-Fi (POS target). Retained by the
         // coordinator for the same reason as the location bridge.
@@ -172,7 +174,9 @@ struct POSWebView: UIViewRepresentable {
         /// Retained for the app's lifetime: WKUserContentController holds the
         /// handler weakly, so without this the bridge deallocates and every
         /// location request silently never answers.
+        #if RPOS_LOCATION
         var locationBridge: LocationBridge?
+        #endif
         var printerBridge: PrinterBridge?
         private var retryTimer: Timer?
 

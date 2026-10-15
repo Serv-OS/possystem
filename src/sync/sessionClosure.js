@@ -29,6 +29,7 @@
 
 import { useStore } from '../store';
 import { checkClosesOccupation } from '../lib/rowWriteFence';
+import { qrSessionPaidOff } from '../lib/qrTabStranded';
 
 // closedChecks entries arrive in three shapes (local recordClosedCheck camelCase, realtime, the
 // MasterSync boot load); lib/rowWriteFence.js checkClosesOccupation reads both shapes.
@@ -50,5 +51,10 @@ export function isSessionClosed(tableId, session) {
   for (const c of checks) {
     if (checkClosesOccupation(tableId, session, c)) return true;
   }
-  return false;
+  // 2 Oct 2026 (Peter, Leeds: "when you order to table you get 2 orders"): the floor copy of a
+  // QR order that is already paid and booked. Every line carries the payment that covers it, and
+  // a closed check carries the same payment, so the copy is a ghost: every till lets go of it
+  // and nobody puts it back (lib/qrTabStranded.js qrSessionPaidOff). An open tab is not booked
+  // until it closes, and a line staff rang in carries no payment, so neither is ever dropped.
+  return qrSessionPaidOff(session, checks);
 }

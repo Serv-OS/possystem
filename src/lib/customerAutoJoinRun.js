@@ -24,6 +24,8 @@ import {
 } from './customerAutoJoin.js';
 import { isBlankName } from '../../supabase/functions/_shared/customerMergePlan.js';
 import { emailJoinTags } from '../../supabase/functions/_shared/emailJoinNotice.js';
+import { phoneRawText } from '../../supabase/functions/_shared/phoneKey.js';
+import { readCustomerByPhone as readByPhoneKey } from '../../supabase/functions/_shared/customerPhoneRead.js';
 
 /** How long Confirm waits for the check (two reads). A slow check is no join, never a held order. */
 export const CHECK_TIMEOUT_MS = 6000;
@@ -36,10 +38,20 @@ const isTimeout = (e) => e?.code === 'TIMEOUT' || e?.name === 'TimeoutError';
 
 // ── every save: phone only ──────────────────────────────────────────────────
 
+/**
+ * The live profile for this number (29 Sep 2026, the one phone match key): ONE read under every
+ * shape the number may be stored in (the key's and the typed number's, in the venue's region),
+ * then the row stored as the key, else the oldest (_shared/customerPhoneRead.js). Never
+ * .maybeSingle(): two rows for one number exist where an older build made a second one, and that
+ * read errors on two. Returns { data: row | null, error }.
+ */
+function readProfileByPhone({ db, orgId, phoneN, typed = '', region = '', cols = 'id' }) {
+  return readByPhoneKey(db, { orgId, phone: phoneN, typed, region, cols });
+}
+
 /** The live profile holding this phone, or null. */
-async function phoneOwnerId(db, orgId, phoneN) {
-  const { data } = await db.from('customers').select('id')
-    .eq('org_id', orgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle();
+async function phoneOwnerId(db, orgId, phoneN, typed = '', region = '') {
+  const { data } = await readProfileByPhone({ db, orgId, phoneN, typed, region });
   return data?.id || null;
 }
 
@@ -55,12 +67,12 @@ async function phoneOwnerId(db, orgId, phoneN) {
  * A new profile that lost a race for its phone (another till made it a moment ago) is that
  * profile, so its id comes back instead of null.
  */
-export async function upsertCustomerRow({ db, orgId, c, phoneN, now = null }) {
+export async function upsertCustomerRow({ db, orgId, c, phoneN, region = '', now = null }) {
   const at = stamp(now);
   const row = {
     org_id: orgId,
     phone: phoneN,
-    phone_raw: c.phone || phoneN,
+    phone_raw: phoneRawText(c.phone) || phoneN,
     email: c.email || null,
     name: c.name || 'Customer',
     notes: c.notes || null,
@@ -70,9 +82,9 @@ export async function upsertCustomerRow({ db, orgId, c, phoneN, now = null }) {
     allergens: Array.isArray(c.allergens) ? c.allergens : undefined,
     updated_at: at,
   };
-  const { data: existing, error: lookupErr } = await db.from('customers')
-    .select('id, name, email, marketing_opt_in, allergens')
-    .eq('org_id', orgId).eq('phone', phoneN).is('deleted_at', null).maybeSingle();
+  const { data: existing, error: lookupErr } = await readProfileByPhone({
+    db, orgId, phoneN, typed: c.phone, region, cols: 'id, name, email, marketing_opt_in, allergens',
+  });
   if (lookupErr) {
     console.warn('[upsertCustomer] lookup failed:', lookupErr.message, '(may be RLS: check customers SELECT policy)');
   }
@@ -110,11 +122,11 @@ export async function upsertCustomerRow({ db, orgId, c, phoneN, now = null }) {
     console.info('[upsertCustomer] that email is on another profile: saved without it');
     const { data: alone, error: again } = await db.from('customers').insert({ ...row, email: null }).select('id').single();
     if (!again) return alone?.id || null;
-    if (uniqueClashOf(again) === 'phone') return phoneOwnerId(db, orgId, phoneN);
+    if (uniqueClashOf(again) === 'phone') return phoneOwnerId(db, orgId, phoneN, c.phone, region);
     console.warn('[upsertCustomer] insert without the email failed:', again.message);
     return null;
   }
-  if (field === 'phone') return phoneOwnerId(db, orgId, phoneN);
+  if (field === 'phone') return phoneOwnerId(db, orgId, phoneN, c.phone, region);
   console.warn('[upsertCustomer] insert failed:', error.message, '(may be RLS: check customers INSERT policy)');
   return null;
 }
@@ -126,10 +138,10 @@ export async function upsertCustomerRow({ db, orgId, c, phoneN, now = null }) {
  * holding exactly this email. { ok: false } when either read fails: the form then saves phone
  * only, which leaves a clashing email off by itself.
  */
-export async function readAutoJoinFacts({ db, orgId, phoneN, typedPhone = '', email }) {
+export async function readAutoJoinFacts({ db, orgId, phoneN, typedPhone = '', email, region = '' }) {
   const e = str(email).trim();
   if (!orgId || !phoneN || !looksLikeEmail(e)) return { ok: false, code: 'nothing_to_check' };
-  const variants = phoneVariants(phoneN, typedPhone);
+  const variants = phoneVariants(phoneN, typedPhone, region);
   if (!variants.length) return { ok: false, code: 'nothing_to_check' };
   const orPhone = variants.flatMap((v) => [`phone.eq.${v}`, `phone_raw.eq.${v}`]).join(',');
   const [p, m] = await Promise.all([
@@ -265,7 +277,7 @@ const apart = (c, reason) => ({ kind: 'apart', reason, customer: c, toast: apart
  * A check that fails or is slow is 'none': a slow network never holds an order.
  */
 export async function autoJoinCustomer({
-  customer, openedWithEmail = '', phoneN, db, orgId, locId = null, postMerge = null, sendNotice = null,
+  customer, openedWithEmail = '', phoneN, db, orgId, locId = null, postMerge = null, sendNotice = null, region = '',
   now = null, timeout = withTimeout, checkMs = CHECK_TIMEOUT_MS, writeMs = WRITE_TIMEOUT_MS,
 }) {
   const c = customer || {};
@@ -277,7 +289,7 @@ export async function autoJoinCustomer({
 
   let facts = null;
   try {
-    facts = await timeout(readAutoJoinFacts({ db, orgId, phoneN, typedPhone: c.phone, email: c.email }), checkMs, 'Customer check');
+    facts = await timeout(readAutoJoinFacts({ db, orgId, phoneN, typedPhone: c.phone, email: c.email, region }), checkMs, 'Customer check');
   } catch (e) {
     console.warn('[customer join] check:', e?.message || e);
     return none;

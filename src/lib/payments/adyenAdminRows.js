@@ -949,3 +949,106 @@ export function kycRecheckLine(answer) {
   const head = 'Adyen says ' + status.toUpperCase() + ', ' + (problems.length === 1 ? '1 thing outstanding:' : problems.length + ' things outstanding:');
   return head + ' ' + problems.map((p) => p.message + (p.action ? ' (' + p.action + ')' : '')).join(' ');
 }
+
+// ── APPLE PAY AND GOOGLE PAY UNDER STEP 4 (29 Sep 2026, v5.11.17) ───────────
+// The line used to say "Apple Pay: on" whenever Adyen's /paymentMethods
+// offered it, while the shop address was not registered and the sheet closed
+// at once (Coffee Boy, 22 to 29 Sep). "On" now needs BOTH: Adyen offers it
+// (wallets, from adyen-checkout status) AND golive_state read the host on
+// Adyen's Apple Pay list (applePay.registered true). One row per wallet:
+// { label, on, tone: 'on' | 'warn' | 'off', text, guidance? }.
+// ONE ENVIRONMENT (29 Sep 2026 review): `wallets` is always the venue's own
+// environment, the applePay block is the environment the flow looks at
+// (applePay.environment, else opts.target). When the two differ the block
+// says nothing about the wallets shown, so the line is a neutral one: a test
+// venue looking at live is told ServOS registers the live address when it
+// goes live, a live venue looking at test to look at live.
+export const APPLE_PAY_OFF_LINE = 'Apple Pay: off. Turn it on in the Adyen Customer Area, then add the web addresses below so the venue’s shop is registered with Apple.';
+export const GOOGLE_PAY_OFF_LINE = 'Google Pay: off. Turn it on in the Adyen Customer Area. It also needs a Google merchant ID on the account before a live shopper can use it.';
+export const APPLE_PAY_LOOK_AT_LIVE_LINE = 'Apple Pay: offered by Adyen. Untick Look on the test system to check the live shop address.';
+const hostList = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
+const joinHosts = (hs) => (hs.length <= 1 ? (hs[0] || '') : `${hs.slice(0, -1).join(', ')} and ${hs[hs.length - 1]}`);
+// The environment the applePay block was read on: its own word, else the
+// flow's target. '' when neither says.
+function applePayBlockEnv(ap, target) {
+  const e = lower(ap.environment) || lower(target);
+  return e === 'live' || e === 'test' ? e : '';
+}
+export function walletLinesView(wallets, applePay, { venueEnvironment = null, target = null } = {}) {
+  if (!isObj(wallets)) return [];
+  const ap = isObj(applePay) ? applePay : {};
+  const missing = hostList(ap.missing);
+  const host = str(ap.host) || missing[0] || 'the shop address';
+  const last = isObj(ap.lastAttempt) && ap.lastAttempt.registered !== true ? ap.lastAttempt : null;
+  const guidance = str(last?.guidance) || str(ap.guidance) || null;
+  const blockEnv = applePayBlockEnv(ap, target);
+  const venueEnv = lower(venueEnvironment);
+  const otherEnv = !!blockEnv && (venueEnv === 'live' || venueEnv === 'test') && blockEnv !== venueEnv;
+  let apple;
+  if (!wallets.applepay) {
+    apple = { label: 'Apple Pay', on: false, tone: 'off', text: APPLE_PAY_OFF_LINE };
+  } else if (otherEnv) {
+    apple = venueEnv === 'test'
+      ? { label: 'Apple Pay', on: false, tone: 'off', text: `Apple Pay: offered by Adyen. ServOS registers ${host} when the venue goes live.` }
+      : { label: 'Apple Pay', on: false, tone: 'off', text: APPLE_PAY_LOOK_AT_LIVE_LINE };
+  } else if (ap.registered === true) {
+    apple = { label: 'Apple Pay', on: true, tone: 'on', text: `Apple Pay: on. Registered for ${joinHosts(hostList(ap.wanted)) || host}.` };
+  } else if (ap.registered === false && ap.read !== false) {
+    const which = joinHosts(missing) || host;
+    apple = { label: 'Apple Pay', on: false, tone: 'warn', text: `Apple Pay: offered by Adyen, but ${which} ${missing.length > 1 ? 'are' : 'is'} not registered, so the sheet closes at once.`, guidance };
+  } else {
+    apple = { label: 'Apple Pay', on: false, tone: 'warn', text: `Apple Pay: offered by Adyen, but ServOS cannot check whether ${host} is registered.`, guidance };
+  }
+  const google = wallets.googlepay
+    ? { label: 'Google Pay', on: true, tone: 'on', text: 'Google Pay: on. Adyen offers it on this venue.' }
+    : { label: 'Google Pay', on: false, tone: 'off', text: GOOGLE_PAY_OFF_LINE };
+  return [apple, google];
+}
+
+const APPLE_PAY_TRIGGER_WORDS = Object.freeze({
+  checkout: 'the online checkout',
+  golive_state: 'this screen',
+  go_live: 'going live',
+  adyen_link: 'the Adyen link',
+  admin: 'the Register button',
+});
+const APPLE_PAY_OUTCOME_WORDS = Object.freeze({
+  registered: 'registered',
+  added: 'added',
+  refused: 'refused',
+  not_requested: 'Apple Pay is not switched on',
+  store_scoped: 'no Apple Pay on this store',
+  no_storefront: 'no online address',
+  error: 'no answer from Adyen',
+});
+
+// The kept attempt (golive_state applePay.lastAttempt) as one line:
+// "Last tried 2026-09-29 14:05 UTC from the online checkout: refused (403
+// Forbidden)". Null when ServOS has not tried yet.
+export function applePayAttemptLine(lastAttempt) {
+  if (!isObj(lastAttempt)) return null;
+  const at = Date.parse(str(lastAttempt.checkedAt));
+  const when = Number.isFinite(at) ? `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'at an unknown time';
+  const from = APPLE_PAY_TRIGGER_WORDS[str(lastAttempt.trigger)] || str(lastAttempt.trigger) || 'ServOS';
+  const outcome = APPLE_PAY_OUTCOME_WORDS[str(lastAttempt.outcome)] || str(lastAttempt.outcome) || 'unknown';
+  const why = [lastAttempt.status, str(lastAttempt.error).slice(0, 160)].filter((x) => x !== undefined && x !== null && x !== '').join(' ');
+  return `Last tried ${when} from ${from}: ${outcome}${why ? ` (${why})` : ''}`;
+}
+
+// The last attempt under step 4, or null: { text, tone: 'quiet' | 'warn',
+// detail }. Only for the venue's own environment (the kept row of the other
+// one says nothing about this venue's shop), and QUIET whenever the read on
+// this screen found the host registered, even if the kept row is an older
+// refusal (29 Sep 2026 review: FranPOS added the host by hand and the amber
+// box stayed). Amber only when both the attempt and the read say no.
+export function applePayAttemptView(applePay, { venueEnvironment = null, target = null } = {}) {
+  const ap = isObj(applePay) ? applePay : {};
+  const last = isObj(ap.lastAttempt) ? ap.lastAttempt : null;
+  const text = applePayAttemptLine(last);
+  if (!text) return null;
+  const blockEnv = applePayBlockEnv(ap, target);
+  const venueEnv = lower(venueEnvironment);
+  if (blockEnv && (venueEnv === 'live' || venueEnv === 'test') && blockEnv !== venueEnv) return null;
+  if (last.registered === true || ap.registered === true) return { text, tone: 'quiet', detail: null };
+  return { text, tone: 'warn', detail: str(last.error) || null };
+}

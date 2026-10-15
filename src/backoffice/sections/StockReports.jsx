@@ -15,7 +15,7 @@
  * "By supplier" mixes both, so its period applies to the sales half only and says so.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
@@ -25,6 +25,7 @@ import { fetchBatches } from '../../lib/stock/production';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem, resolveItemSupplierId } from '../../lib/stock/costing';
 import { fetchClosedChecksRange } from '../../lib/db';
+import { loadingText, faultText } from '../../lib/pagedRead';
 import { displayInUnits } from '../../lib/stock/uom';
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import {
@@ -67,6 +68,21 @@ export default function StockReports() {
   const [moves, setMoves] = useState([]);
   const [checks, setChecks] = useState([]);
   const [loading, setLoading] = useState(true);
+  // 5 Oct 2026: movements and sales are read in full, in pages of 1,000. The load is the
+  // "Loading 3 of 9" while they arrive; the fault blanks the tab ('too_long' or 'failed')
+  // so a cut or failed read never shows as part totals.
+  // Movements and sales each keep their OWN load and fault, and each read carries a run
+  // number: a read takes seconds now, so changing From then To (or the tab) starts a second
+  // read while the first is still out. Only the newest run of each may paint, and one
+  // finishing can never un-hide the other's tab. Without this a slow 30 day read landed
+  // after the 7 day one and showed a month of sales under a week's label.
+  const [movesLoad, setMovesLoad] = useState(null);
+  const [movesFault, setMovesFault] = useState(null);
+  const [checksLoad, setChecksLoad] = useState(null);
+  const [checksFault, setChecksFault] = useState(null);
+  const movesRun = useRef(0);
+  const checksRun = useRef(0);
+  useEffect(() => () => { movesRun.current += 1; checksRun.current += 1; }, []);   // closing the screen stops both
 
   const loadBase = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -80,8 +96,20 @@ export default function StockReports() {
 
   const loadMoves = useCallback(async () => {
     const loc = locId || getActiveLocationSync();
-    const { data } = await fetchMovementsRange(`${from}T00:00:00`, `${to}T23:59:59`, loc, 5000);
-    setMoves(data || []);
+    const run = movesRun.current += 1;
+    const live = () => run === movesRun.current;
+    setMovesFault(null); setMovesLoad({ done: 0, total: 1 });
+    let res;
+    try {
+      res = await fetchMovementsRange(`${from}T00:00:00`, `${to}T23:59:59`, loc, {
+        onProgress: (p) => { if (live()) setMovesLoad(p); },
+        stop: () => !live(),
+      });
+    } catch (error) { res = { data: [], error }; }
+    if (!live()) return;
+    setMovesLoad(null);
+    if (res.error) setMovesFault(res.tooMany ? 'too_long' : 'failed');
+    setMoves(res.data || []);
   }, [from, to, locId]);
   useEffect(() => { if (tab === 'Movements' || tab === 'The Gap') loadMoves(); }, [tab, loadMoves]);
 
@@ -89,8 +117,20 @@ export default function StockReports() {
   const loadChecks = useCallback(async () => {
     const loc = locId || getActiveLocationSync();
     if (!loc) return;
-    const { data } = await fetchClosedChecksRange(loc, new Date(`${from}T00:00:00`), new Date(`${to}T23:59:59`), 5000);
-    setChecks(data || []);
+    const run = checksRun.current += 1;
+    const live = () => run === checksRun.current;
+    setChecksFault(null); setChecksLoad({ done: 0, total: 1 });
+    let res;
+    try {
+      res = await fetchClosedChecksRange(loc, new Date(`${from}T00:00:00`), new Date(`${to}T23:59:59`), {
+        onProgress: (p) => { if (live()) setChecksLoad(p); },
+        stop: () => !live(),
+      });
+    } catch (error) { res = { data: [], error }; }
+    if (!live()) return;
+    setChecksLoad(null);
+    if (res.error) setChecksFault(res.tooMany ? 'too_long' : 'failed');
+    setChecks(res.data || []);
   }, [from, to, locId]);
   useEffect(() => { if (tab === 'By supplier') loadChecks(); }, [tab, loadChecks]);
 
@@ -99,6 +139,11 @@ export default function StockReports() {
   const supplierName = useCallback((id) => suppliers.find(s => s.id === id)?.name || null, [suppliers]);
 
   const periodLabel = `${from} → ${to}`;
+  // The tab on screen follows its own read: By supplier the sales, the other two the movements.
+  const rangeLoad  = tab === 'By supplier' ? checksLoad  : movesLoad;
+  const rangeFault = tab === 'By supplier' ? checksFault : movesFault;
+  const rangeBusy = RANGED.has(tab) && !!rangeLoad;
+  const rangeBad  = RANGED.has(tab) && !rangeLoad && !!rangeFault;
 
   return (
     <div style={{ height:'100%', overflowY:'auto', padding:'22px 26px' }}>
@@ -120,9 +165,15 @@ export default function StockReports() {
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
       {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
       {!loading && tab === 'Production'  && <ProductionReport itemName={itemName}/>}
-      {!loading && tab === 'Movements'   && <Movements moves={moves} itemName={itemName}/>}
-      {!loading && tab === 'The Gap'     && <TheGap moves={moves} itemName={itemName} itemUnit={itemUnit}/>}
-      {!loading && tab === 'By supplier' && (
+      {!loading && rangeBusy && <div style={{ color:'var(--t3)', fontSize:13 }}>{loadingText(rangeLoad)}</div>}
+      {!loading && rangeBad && (
+        <div style={{ color:'var(--t2)', fontSize:14, padding:'24px 0' }}>
+          {faultText(rangeFault)}
+        </div>
+      )}
+      {!loading && !rangeBusy && !rangeBad && tab === 'Movements'   && <Movements moves={moves} itemName={itemName}/>}
+      {!loading && !rangeBusy && !rangeBad && tab === 'The Gap'     && <TheGap moves={moves} itemName={itemName} itemUnit={itemUnit}/>}
+      {!loading && !rangeBusy && !rangeBad && tab === 'By supplier' && (
         <BySupplier items={items} suppliers={suppliers} recipes={recipes} ctx={ctx}
           menuItems={menuItems} taxRates={taxRates} checks={checks} periodLabel={periodLabel}/>
       )}

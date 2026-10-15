@@ -102,6 +102,8 @@ Deno.serve(async (req) => {
       orderType: ['takeaway', 'collection', 'delivery'].includes(row.type) ? row.type : 'collection',
       customerName: row.customer?.name || null,
       orderNo: ezNo || row.ref, source: ez ? 'ezCater' : 'Catering', staff: null,
+      // 30 Sep 2026: the full ref, so the KDS can note the order and mark it ready when bumped.
+      ref: row.ref,
       note: (typeof row.customer?.notes === 'string' && row.customer.notes.trim()) || null,
     };
     let { error: kErr } = await sb.from('kds_tickets').insert({ ...ticket, meta });

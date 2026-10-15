@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
+import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../../lib/venueDiscounts';
 import MManagerPin, { getCachedManagerAuth } from './MManagerPin';
 import MBottomSheet from './MBottomSheet';
 
@@ -16,30 +17,15 @@ const COURSES = [
   { id:3, label:'Course 3' },
 ];
 
-// Same preset ladder used by the desktop POS DiscountModal (compatible).
-const DISCOUNTS = [
-  { id:'staff50', label:'Staff meal',     type:'percent', value:50 },
-  { id:'staff_d', label:'Staff drinks',   type:'percent', value:50 },
-  { id:'loyalty', label:'Loyalty 10%',    type:'percent', value:10 },
-  { id:'nhs',     label:'NHS / Blue Light', type:'percent', value:10 },
-  { id:'happy',   label:'Happy hour 20%', type:'percent', value:20 },
-  { id:'comp',    label:'Comp (100%)',    type:'percent', value:100, requiresManager:true },
-];
-
 export default function MItemActions({ item, onClose }) {
   const { activeTableId, staff, updateItemCourse, updateItemNote, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
   // v5.5.961: profile can hide course management on this device
   const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
-  // v5.8.21: the venue's OWN discounts from Back Office (discounts table, loaded
-  // into store.discountPresets by SyncBridge), the same list the POS DiscountModal
-  // shows. The ladder above was a hard-coded demo set, so anything a venue set up
-  // in Back Office never appeared on the handset. Demo ladder stays as fallback.
+  // v5.8.21: the venue's OWN discounts from Back Office (store.discountPresets, loaded per
+  // venue by SyncBridge), the same list the POS DiscountModal shows. 29 Sep 2026: and ONLY
+  // those; the hard-coded demo ladder that showed when a venue had none is gone.
   const venuePresets = useStore(s => s.discountPresets);
-  const ladder = (venuePresets || []).filter(d => d && d.active !== false && Number(d.value) > 0).length
-    ? [...venuePresets].filter(d => d && d.active !== false && Number(d.value) > 0)
-        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-        .map(d => ({ id: d.id, label: d.label || d.name, type: d.type || 'percent', value: Number(d.value), requiresManager: !!d.requiresManager, scope: d.scope, categoryIds: d.categoryIds }))
-    : DISCOUNTS;
+  const ladder = venueDiscountList(venuePresets);
   const sent = item?.status === 'sent';
   const [view, setView] = useState('main'); // main | course | discount | note
   // Pending discount waiting on a manager PIN
@@ -90,15 +76,9 @@ export default function MItemActions({ item, onClose }) {
     // KDS / printer pick up the void. The desktop POS gates this behind a
     // manager-PIN modal; until 1D ships, we use the current staff as the
     // approving party so the void doesn't crash on null.manager.
-    if (!activeTableId) {
-      // Walk-in items don't truly hit voidItem — the desktop POS only voids
-      // table sessions. For walk-ins we fall back to remove (which still
-      // restores the daily count via the existing branch in removeItem).
-      removeItem?.(item.uid);
-      close();
-      return;
-    }
-    voidItem?.(activeTableId, item.uid, {
+    // 30 Sep 2026: a walk in's sent line voids for real now (store voidItem takes tableId
+    // null): void log, kitchen notice, queue copy. It used to fall back to a plain remove.
+    voidItem?.(activeTableId || null, item.uid, {
       manager: staff || { id:'mpos-system', name:'MPOS' },
       reason: 'voided from MPOS',
     });
@@ -184,6 +164,9 @@ export default function MItemActions({ item, onClose }) {
           <div>
             <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>Apply discount to this item</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {ladder.length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t3)', padding:'12px', borderRadius:10, border:'1px dashed var(--bdr)', lineHeight:1.4 }}>{NO_DISCOUNTS_TEXT}</div>
+              )}
               {ladder.map(d => (
                 <button key={d.id} onClick={() => applyDiscount(d)} style={{
                   padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
@@ -198,7 +181,7 @@ export default function MItemActions({ item, onClose }) {
                       </div>
                     )}
                   </div>
-                  <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>−{d.value}%</div>
+                  <div style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>−{d.type === 'amount' ? money(d.value) : `${d.value}%`}</div>
                 </button>
               ))}
             </div>

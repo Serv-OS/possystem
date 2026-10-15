@@ -414,3 +414,98 @@ export function storeForPaymentMethods({ store, venueCode } = {}) {
  * hint and keeps its wallets, instead of losing both.
  */
 export const STORE_REJECTED_ERROR_CODE = '910';
+
+/* ── When a wallet cannot start (29 Sep 2026, v5.11.17) ──────────────────────
+ *
+ * Coffee Boy, live: the Apple Pay sheet opened and closed at once and the
+ * shopper saw nothing at all. Apple Pay merchant validation runs from the
+ * browser straight to Adyen (adyen-web 6.42 ApplePay validateMerchant), and
+ * when Adyen refuses the shop's address the library aborts the sheet and
+ * raises AdyenCheckoutError('ERROR', 'ApplePay - Something went wrong on
+ * ApplePayService', { cause }), then 'CANCEL' for the dismissed sheet. The
+ * form's wallet onError swallowed everything before onSubmit, so the only
+ * trace was a console warning on a phone nobody could see.
+ *
+ * Now the wallet's onClick stamps WHEN the shopper tapped it, and an error
+ * that is not a quiet one, arriving within WALLET_START_WINDOW_MS of that tap
+ * and before any payment was submitted, is 'start_failed': the form says
+ * walletStartFailedNote above the card form and sends walletErrorReport to
+ * adyen-checkout `wallet_error`, a log only action. Everything else keeps its
+ * old path: after a submit an error is the checkout's 'payment_error', and a
+ * cancel, a script that did not load (SCRIPT_ERROR) or a component that could
+ * not be built (IMPLEMENTATION_ERROR), or any error with no recent tap, stays
+ * 'silent' (a console warning only).
+ *
+ * A SUBMIT COUNTS FOR ITS OWN TAP (29 Sep 2026 review). The forms pass
+ * submittedAt, the time of the last submit on this mount, and it only makes
+ * an error a payment error when it came at or after the tap. A card refused
+ * earlier on the same form no longer hides a later Apple Pay tap that could
+ * not start. The old boolean `submitted` is still read when submittedAt is
+ * not given.
+ */
+export const WALLET_START_WINDOW_MS = 60000;
+// KEEP IN SYNC with WALLET_ERROR_TEXT_MAX in supabase/functions/adyen-checkout/index.ts.
+export const WALLET_ERROR_TEXT_MAX = 200;
+export const QUIET_WALLET_ERRORS = Object.freeze(['CANCEL', 'SCRIPT_ERROR', 'IMPLEMENTATION_ERROR']);
+
+/**
+ * What a wallet component's onError means: 'payment_error' (a payment was in
+ * flight, the checkout's own error path), 'start_failed' (the shopper tapped
+ * the wallet within the last minute and it could not start) or 'silent'.
+ */
+export function walletErrorOutcome({ name, tappedAt, now = Date.now(), submitted = false, submittedAt } = {}) {
+  const n = String(name ?? '').trim().toUpperCase();
+  const quiet = QUIET_WALLET_ERRORS.includes(n);
+  const tap = Number(tappedAt);
+  const tapped = Number.isFinite(tap) && tap > 0;
+  // In flight: a submit at or after this tap (any submit when nothing was
+  // tapped), else the legacy boolean.
+  let inFlight = submitted === true;
+  if (submittedAt !== undefined && submittedAt !== null) {
+    const sub = Number(submittedAt);
+    inFlight = Number.isFinite(sub) && sub > 0 && (!tapped || sub >= tap);
+  }
+  if (inFlight) return quiet ? 'silent' : 'payment_error';
+  if (quiet) return 'silent';
+  const at = Number(now);
+  if (!tapped || !Number.isFinite(at)) return 'silent';
+  const since = at - tap;
+  return since >= 0 && since <= WALLET_START_WINDOW_MS ? 'start_failed' : 'silent';
+}
+
+/** The one line above the card form when a wallet could not start. */
+export function walletStartFailedNote(type) {
+  return `${walletLabel(type) || 'This wallet'} could not start for this shop. Please pay by card below.`;
+}
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]+/g;
+const clipReport = (v) => String(v ?? '').replace(CONTROL_CHARS, ' ').trim().slice(0, WALLET_ERROR_TEXT_MAX);
+
+// An error's cause as one short text: 'Error: Could not get Apple Pay session'.
+function causeText(cause) {
+  if (cause === undefined || cause === null) return '';
+  if (typeof cause === 'string') return cause;
+  if (cause instanceof Error || (typeof cause === 'object' && ('message' in cause || 'name' in cause))) {
+    return [cause.name, cause.message].filter((x) => x !== undefined && x !== null && String(x) !== '').join(': ');
+  }
+  try { return JSON.stringify(cause); } catch { return String(cause); }
+}
+
+/**
+ * The adyen-checkout `wallet_error` body for a wallet that could not start.
+ * Only what says why: the venue, the wallet, the error's name, message and
+ * cause, and the page's host (the thing Apple checks). No shopper data. Every
+ * text is capped at WALLET_ERROR_TEXT_MAX; the function caps and cleans again.
+ */
+export function walletErrorReport({ locationId, type, error, host } = {}) {
+  return {
+    action: 'wallet_error',
+    location_id: String(locationId ?? '').trim(),
+    wallet: String(type ?? '').trim().toLowerCase(),
+    name: clipReport(error?.name).toUpperCase(),
+    message: clipReport(error?.message),
+    cause: clipReport(causeText(error?.cause)),
+    host: clipReport(String(host ?? '').toLowerCase().replace(/:\d+$/, '').replace(/[^a-z0-9.-]/g, '')),
+  };
+}

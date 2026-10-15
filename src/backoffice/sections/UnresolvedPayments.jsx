@@ -374,13 +374,13 @@ function JobRow({ job, terminalLabel, open, onToggle, onResolved }) {
                     off a specific difference and should be able to see it. */}
                 <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginBottom:12 }}>
                   <div style={{ ...S.box, flex:'1 1 180px', marginBottom:0 }}>
-                    <div style={S.label}>The terminal reported</div>
+                    <div style={S.label}>The card machine reported</div>
                     <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)' }}>
                       {reported == null ? '—' : moneyMinor(reported, job.currency)}
                     </div>
                   </div>
                   <div style={{ ...S.box, flex:'1 1 180px', marginBottom:0 }}>
-                    <div style={S.label}>We charged</div>
+                    <div style={S.label}>We asked for</div>
                     <div style={{ fontSize:20, fontWeight:800, color:'var(--t1)' }}>
                       {charged == null ? '—' : moneyMinor(charged, job.currency)}
                     </div>

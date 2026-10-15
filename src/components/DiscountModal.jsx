@@ -2,15 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { money, currencySymbol } from '../lib/currency';
 import { approverStamp } from '../lib/discountApprover';
-
-const FALLBACK_PRESETS = [
-  { id:'staff50',  label:'Staff meal',       type:'percent', value:50,  requiresManager:false },
-  { id:'staff_d',  label:'Staff drinks',      type:'percent', value:50,  requiresManager:false },
-  { id:'loyalty',  label:'Loyalty 10%',       type:'percent', value:10,  requiresManager:false },
-  { id:'nhs',      label:'NHS / Blue Light',  type:'percent', value:10,  requiresManager:false },
-  { id:'happy',    label:'Happy hour 20%',    type:'percent', value:20,  requiresManager:false },
-  { id:'comp',     label:'Comp (100%)',        type:'percent', value:100, requiresManager:true  },
-];
+import { venueDiscountList, NO_DISCOUNTS_TEXT } from '../lib/venueDiscounts';
 
 const managersFrom = (staffMembers) =>
   (staffMembers || [])
@@ -19,17 +11,10 @@ const managersFrom = (staffMembers) =>
 
 export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) {
   const { staffMembers, staff: currentUser, discountPresets } = useStore();
-  // Use DB-driven presets if available, otherwise fall back to hardcoded defaults
-  const PRESETS = discountPresets?.length
-    ? discountPresets.map(d => ({
-        id: d.id, label: d.label || d.name, type: d.type, value: d.value,
-        requiresManager: d.requiresManager ?? false,
-        // v5.5.641: carry scope + categoryIds so a category-scoped preset auto-targets
-        // the matching items instead of asking the operator to pick them by hand.
-        scope: d.scope || 'global',
-        categoryIds: d.categoryIds || d.category_ids || [],
-      }))
-    : FALLBACK_PRESETS;
+  // 29 Sep 2026: ONLY this venue's own discounts from Back Office. The hard-coded starter set
+  // (Staff meal, Happy hour 20%, Comp...) showed at venues that had set none up. v5.5.641's
+  // scope + categoryIds still ride along so a category preset auto-targets its items.
+  const PRESETS = venueDiscountList(discountPresets);
   const mgrs = managersFrom(staffMembers);
   const managerLoggedIn = currentUser?.role === 'Manager';
 
@@ -138,7 +123,10 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
           {step==='amount'&&(
             <>
               <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Quick discounts</div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:16}}>
+              {PRESETS.length===0&&(
+                <div style={{fontSize:12,color:'var(--t3)',padding:'10px 12px',borderRadius:10,border:'1px dashed var(--bdr)',marginBottom:16,lineHeight:1.4}}>{NO_DISCOUNTS_TEXT}</div>
+              )}
+              {PRESETS.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:16}}>
                 {PRESETS.map(p=>(
                   <button key={p.id} onClick={()=>setSelected(p.id)} style={{padding:'10px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',fontFamily:'inherit',border:`1.5px solid ${selected===p.id?'var(--acc)':'var(--bdr)'}`,background:selected===p.id?'var(--acc-d)':'var(--bg3)',position:'relative'}}>
                     {p.requiresManager&&<div style={{position:'absolute',top:4,right:4,width:6,height:6,borderRadius:'50%',background:'var(--acc)'}}/>}
@@ -146,7 +134,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                     <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.type==='amount'?`${currencySymbol()}${p.value}`:`${p.value}%`}</div>
                   </button>
                 ))}
-              </div>
+              </div>}
 
               <div style={{fontSize:11,fontWeight:700,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Custom</div>
               <div style={{display:'flex',gap:6,marginBottom:8}}>

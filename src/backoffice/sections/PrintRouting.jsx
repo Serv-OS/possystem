@@ -9,7 +9,12 @@ import { ORDER_TYPES } from '../../lib/orderScreen/orderScreenStatus';
 import {
   normaliseCentreOrderTypes, describeCentreOrderTypes, orderTypeLabelOf,
   nextCentreOrderTypes, fallbackOrderTypesForCentre, joinList,
+  buildCatParentMap, nextCentreCategories,
 } from '../../lib/productionRouting';
+import {
+  buildRoutingScreen, categoryLabel, categoryRowNote, clickCategory, clickItem,
+  countOf, flattenNodes, liveTickCount, noticeHolds, nowhereNotice,
+} from '../../lib/routingScreenModel';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
@@ -254,119 +259,220 @@ function OrderTypeRouter({ centreId, centreName, routing, setRouting, centres, c
 }
 
 // ─── Category/Item routing picker ─────────────────────────────────────────────
-function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuItems }) {
-  const [expanded, setExpanded] = useState({});
-  const r = routing[centreId] || emptyRouting();
+// 30 Sep 2026 (Peter at Coffee Boy): the whole category tree with a box on every sub
+// category, and sizes grouped under their product ("Matcha, Small Boy"). Every box is
+// built by lib/routingScreenModel.js on the SAME rule the tills and channel orders route
+// with (lib/productionRouting.js), so a ticked box means it really reaches this centre.
+// Every write goes through setRouting(prev => ...), never a copy from this render, so two
+// quick clicks can never undo each other.
+const CR = {
+  help: { fontSize:15, color:'var(--t3)', lineHeight:1.5, margin:'0 0 14px', paddingLeft:20, maxWidth:760 },
+  row: (on) => ({
+    display:'flex', alignItems:'center', gap:10, padding:'8px 12px', minHeight:44, boxSizing:'border-box',
+    background: on ? 'var(--acc-d)' : 'var(--bg3)',
+    border:`1.5px solid ${on ? 'var(--acc-b)' : 'var(--bdr)'}`, borderRadius:10,
+  }),
+  name: (on) => ({ fontSize:15, fontWeight:700, color: on ? 'var(--acc)' : 'var(--t1)', cursor:'pointer', overflowWrap:'anywhere' }),
+  note: { fontSize:15, color:'var(--t3)' },
+  pill: { fontSize:13, padding:'2px 8px', borderRadius:20, background:'var(--red)', color:'#fff', fontWeight:700, whiteSpace:'nowrap' },
+  chevron: { background:'none', border:'none', cursor:'pointer', color:'var(--acc)', fontSize:15, padding:'4px 8px', fontFamily:'inherit', flexShrink:0 },
+  body: { margin:'6px 0 0 22px', display:'flex', flexDirection:'column', gap:6 },
+  items: { border:'1px solid var(--bdr)', borderRadius:10, overflow:'hidden', background:'var(--bg)' },
+  itemRow: (dim) => ({
+    display:'flex', alignItems:'center', gap:10, padding:'8px 12px', minHeight:40, boxSizing:'border-box',
+    borderBottom:'1px solid var(--bdr)', opacity: dim ? 0.6 : 1,
+  }),
+  itemName: (off) => ({ flex:1, fontSize:15, color: off ? 'var(--t4)' : 'var(--t1)', textDecoration: off ? 'line-through' : 'none', overflowWrap:'anywhere' }),
+  price: { fontSize:14, color:'var(--t3)', fontFamily:'monospace', whiteSpace:'nowrap' },
+  sub: { fontSize:15, fontWeight:700, color:'var(--t2)', margin:'4px 0 2px' },
+  muted: { fontSize:15, color:'var(--t3)', lineHeight:1.5 },
+  notice: { fontSize:15, color:'var(--t1)', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'8px 12px', lineHeight:1.5, margin:'6px 0 0' },
+};
 
-  const toggleCategory = (catId) => {
-    const assigned = r.assignedCategories.includes(catId)
-      ? r.assignedCategories.filter(c => c !== catId)
-      : [...r.assignedCategories, catId];
-    // When unchecking a category, remove its items from excludedItems too
-    const excluded = r.assignedCategories.includes(catId)
-      ? r.excludedItems.filter(id => !menuItems.filter(i => i.cat===catId||i.cats?.includes(catId)).map(i=>i.id).includes(id))
-      : r.excludedItems;
-    // The spread matters: without it, ticking a category wiped this centre's orderTypes.
-    setRouting(prev => ({ ...prev, [centreId]: { ...(prev[centreId] || emptyRouting()), assignedCategories:assigned, excludedItems:excluded } }));
+// A 20px box. 'on' ticked here, 'light' comes here with a ticked parent, 'some' only some
+// sizes, 'off' does not come here. A real button, so it works from the keyboard.
+function RouteBox({ state, disabled, onClick, label }) {
+  const on = state === 'on' || state === 'some';
+  const light = state === 'light';
+  return (
+    <button type="button" role="checkbox" aria-label={label} disabled={!!disabled}
+      aria-checked={state === 'some' ? 'mixed' : (on || light) ? 'true' : 'false'}
+      onClick={onClick}
+      style={{
+        width:20, height:20, borderRadius:5, flexShrink:0, padding:0, boxSizing:'border-box',
+        border:`2px solid ${on || light ? 'var(--acc)' : 'var(--bdr2)'}`,
+        background: on ? 'var(--acc)' : light ? 'var(--acc-d)' : 'transparent',
+        color: on ? '#fff' : 'var(--acc)', fontSize:12, lineHeight:1, fontWeight:800,
+        display:'flex', alignItems:'center', justifyContent:'center',
+        cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1, fontFamily:'inherit',
+      }}>
+      {state === 'some' ? '−' : (on || light) ? '✓' : ''}
+    </button>
+  );
+}
+
+function CategoryRouter({ centreId, centres, routing, setRouting, menuCategories, menuItems }) {
+  // What the person opened or closed by hand. Anything not in here is open exactly when
+  // something inside it differs from the row itself (node.differs).
+  // Both reset when another centre is picked: the parent renders this keyed by centre id.
+  const [open, setOpen] = useState({});
+  const [notice, setNotice] = useState(null);   // { catId, text, expect }
+
+  const screen = useMemo(
+    () => buildRoutingScreen({ centreId, centres, routing, categories: menuCategories, menuItems }),
+    [centreId, centres, routing, menuCategories, menuItems],
+  );
+  const catById = useMemo(() => new Map((menuCategories || []).map(c => [c.id, c])), [menuCategories]);
+  const nameOfCentre = (id) => (centres || []).find(c => c.id === id)?.name || null;
+  const nameOfCategory = (id) => (catById.has(id) ? categoryLabel(catById.get(id)) : null);
+
+  // Review 30 Sep 2026: a category that opened by itself (node.differs) snapped shut the
+  // moment a click inside it fixed the difference, taking the clicked row and its notice with
+  // it. On the first click every row keeps the open or closed state it has on screen now, so
+  // nothing moves under the cursor; after that only the arrows open and close rows.
+  const pinOpen = () => setOpen(o => {
+    let next = o;
+    flattenNodes(screen.roots).forEach(n => {
+      if (next[n.id] !== undefined) return;
+      if (next === o) next = { ...o };
+      next[n.id] = n.differs;
+    });
+    return next;
+  });
+
+  const clickCat = (node) => {
+    const want = !node.state.comesHere;
+    const { notice: text, expect } = clickCategory({
+      centreId, catId: node.id, want, centres, routing, parentMap: screen.parentMap, menuItems,
+      nameOfCentre, nameOfCategory,
+    });
+    pinOpen();
+    setRouting(prev => nextCentreCategories({ centres, routing: prev }, centreId, node.id, want, screen.parentMap, { menuItems }));
+    setNotice(text ? { catId: node.id, text, expect } : null);
   };
 
-  const toggleItem = (itemId) => {
-    const excluded = r.excludedItems.includes(itemId)
-      ? r.excludedItems.filter(id => id !== itemId)
-      : [...r.excludedItems, itemId];
-    setRouting(prev => ({ ...prev, [centreId]: { ...r, excludedItems:excluded } }));
+  const clickEntry = (row, want) => {
+    pinOpen();
+    setRouting(prev => clickItem({
+      centreId, routing: prev, productId: row.productId, sizeIds: row.sizeIds, targetId: row.id, want,
+    }));
   };
 
-  const topLevelCats = menuCategories.filter(c => !c.parentId && !c.parent_id);
-
-  if (!topLevelCats.length) return (
-    <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t3)', fontSize:13 }}>
-      No menu categories — add some in Menu Builder first
+  if (!screen.roots.length) return (
+    <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t3)', fontSize:15 }}>
+      No menu categories yet. Add some in Menu first.
     </div>
   );
 
-  return (
-    <div>
-      {topLevelCats.map(cat => {
-        const catId = cat.id;
-        const isAssigned = r.assignedCategories.includes(catId);
-        const isExpanded = expanded[catId];
-        const catItems = menuItems.filter(i => !i.archived && (i.cat===catId || i.cats?.includes(catId)));
-        const excludedCount = catItems.filter(i => r.excludedItems.includes(i.id)).length;
+  const itemRow = (row, catOn, indent, last) => (
+    <div key={row.id} style={{ ...CR.itemRow(!catOn), paddingLeft: 12 + indent, borderBottom: last ? 'none' : CR.itemRow(false).borderBottom }}>
+      <RouteBox state={row.comesHere ? 'on' : 'off'} disabled={!catOn} label={row.label}
+        onClick={() => clickEntry(row, !row.comesHere)} />
+      <span style={CR.itemName(catOn && !row.comesHere)}>{row.label}</span>
+      <span style={CR.price}>{money(row.price)}</span>
+    </div>
+  );
 
-        return (
-          <div key={catId} style={{ marginBottom:6 }}>
-            {/* Category row */}
-            <div style={{
-              display:'flex', alignItems:'center', gap:10, padding:'10px 12px',
-              background: isAssigned ? 'var(--acc-d)' : 'var(--bg3)',
-              border: `1.5px solid ${isAssigned ? 'var(--acc-b)' : 'var(--bdr)'}`,
-              borderRadius: isExpanded ? '10px 10px 0 0' : 10,
-              cursor:'pointer', transition:'all .12s',
-            }}>
-              {/* Checkbox */}
-              <div onClick={() => toggleCategory(catId)} style={{
-                width:18, height:18, borderRadius:5, flexShrink:0,
-                border:`2px solid ${isAssigned ? 'var(--acc)' : 'var(--bdr2)'}`,
-                background: isAssigned ? 'var(--acc)' : 'transparent',
-                display:'flex', alignItems:'center', justifyContent:'center',
-              }}>
-                {isAssigned && <span style={{ color:'#fff', fontSize:11, lineHeight:1 }}>✓</span>}
-              </div>
-
-              <span style={{ fontSize:18, lineHeight:1 }}>{cat.icon || '🍽'}</span>
-              <span onClick={() => toggleCategory(catId)} style={{ flex:1, fontSize:14, fontWeight:600, color: isAssigned ? 'var(--acc)' : 'var(--t1)' }}>
-                {cat.label || cat.name}
-              </span>
-
-              {isAssigned && excludedCount > 0 && (
-                <span style={{ fontSize:11, padding:'2px 7px', borderRadius:20, background:'var(--red)', color:'#fff', fontWeight:700 }}>
-                  {excludedCount} excluded
-                </span>
-              )}
-
-              {isAssigned && catItems.length > 0 && (
-                <button onClick={() => setExpanded(e => ({ ...e, [catId]: !isExpanded }))}
-                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--acc)', fontSize:14, padding:'0 4px' }}>
-                  {isExpanded ? '▲' : '▼'}
-                </button>
-              )}
+  const entryRows = (node) => {
+    const catOn = node.state.comesHere;
+    const flat = [];
+    node.entries.forEach(e => {
+      if (e.kind !== 'product') { flat.push({ type:'item', row:e }); return; }
+      flat.push({ type:'product', row:e });
+      e.sizes.forEach(s => flat.push({ type:'size', row:s }));
+    });
+    return (
+      <div style={CR.items}>
+        {flat.map((f, i) => {
+          const last = i === flat.length - 1;
+          if (f.type === 'item') return itemRow(f.row, catOn, 0, last);
+          if (f.type === 'size') return itemRow(f.row, catOn, 30, last);
+          const p = f.row;
+          const state = p.box === 'all' ? 'on' : p.box === 'some' ? 'some' : 'off';
+          return (
+            <div key={p.id} style={{ ...CR.itemRow(!catOn), borderBottom: last ? 'none' : CR.itemRow(false).borderBottom, background:'var(--bg2)' }}>
+              <RouteBox state={state} disabled={!catOn} label={`${p.label}, every size`}
+                onClick={() => clickEntry(p, p.box !== 'all')} />
+              <span style={{ ...CR.itemName(catOn && p.box === 'none'), fontWeight:700 }}>{p.label}</span>
+              <span style={CR.note}>{countOf(p.sizeCount, 'size', 'sizes')}</span>
             </div>
+          );
+        })}
+      </div>
+    );
+  };
 
-            {/* Expanded items */}
-            {isAssigned && isExpanded && catItems.length > 0 && (
-              <div style={{ border:'1.5px solid var(--acc-b)', borderTop:'none', borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
-                {catItems.map((item, idx) => {
-                  const isExcluded = r.excludedItems.includes(item.id);
-                  const name = item.menuName || item.menu_name || item.name || 'Item';
-                  const price = item.pricing?.base ?? item.price ?? 0;
-                  return (
-                    <div key={item.id} onClick={() => toggleItem(item.id)} style={{
-                      display:'flex', alignItems:'center', gap:10, padding:'8px 14px',
-                      background: isExcluded ? 'rgba(220,38,38,0.04)' : 'var(--bg)',
-                      borderBottom: idx < catItems.length-1 ? '1px solid var(--bdr)' : 'none',
-                      cursor:'pointer', transition:'background .1s',
-                    }}>
-                      <div style={{
-                        width:16, height:16, borderRadius:4, flexShrink:0,
-                        border:`2px solid ${!isExcluded ? 'var(--acc)' : 'var(--bdr2)'}`,
-                        background: !isExcluded ? 'var(--acc)' : 'transparent',
-                        display:'flex', alignItems:'center', justifyContent:'center',
-                      }}>
-                        {!isExcluded && <span style={{ color:'#fff', fontSize:9, lineHeight:1 }}>✓</span>}
-                      </div>
-                      <span style={{ flex:1, fontSize:13, color: isExcluded ? 'var(--t4)' : 'var(--t1)', textDecoration: isExcluded ? 'line-through' : 'none' }}>
-                        {name}
-                      </span>
-                      <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>{money(price)}</span>
-                    </div>
-                  );
-                })}
+  const renderNode = (node) => {
+    const st = node.state;
+    const isOpen = open[node.id] ?? node.differs;
+    const hasBody = node.children.length > 0 || node.entries.length > 0 || node.alsoIn.length > 0;
+    const boxState = !st.comesHere ? 'off' : st.how === 'ticked' ? 'on' : 'light';
+    const note = categoryRowNote(st, nameOfCentre, nameOfCategory);
+    return (
+      <div key={node.id}>
+        <div style={CR.row(st.comesHere)}>
+          <RouteBox state={boxState} label={node.label} onClick={() => clickCat(node)} />
+          {node.icon && <span style={{ fontSize:18, lineHeight:1 }}>{node.icon}</span>}
+          <div style={{ flex:1, minWidth:0, display:'flex', alignItems:'baseline', gap:'2px 10px', flexWrap:'wrap' }}>
+            <span onClick={() => clickCat(node)} style={CR.name(st.comesHere)}>{node.label}</span>
+            {note && <span style={CR.note}>{note}</span>}
+          </div>
+          {node.offCount > 0 && <span style={CR.pill}>{countOf(node.offCount, 'item', 'items')} off</span>}
+          {hasBody && (
+            <button type="button" aria-expanded={!!isOpen} aria-label={`${isOpen ? 'Hide' : 'Show'} what is in ${node.label}`}
+              onClick={() => setOpen(o => ({ ...o, [node.id]: !isOpen }))} style={CR.chevron}>
+              {isOpen ? '▲' : '▼'}
+            </button>
+          )}
+        </div>
+        {/* Only while it is still true: a failed save puts the old routing back, and a save
+            can bring back another window's change. */}
+        {noticeHolds(notice, node, centreId) && <div style={CR.notice}>{notice.text}</div>}
+        {isOpen && hasBody && (
+          <div style={CR.body}>
+            {node.children.map(renderNode)}
+            {node.entries.length > 0 && node.children.length > 0 && (
+              <div style={CR.sub}>In {node.label} itself</div>
+            )}
+            {node.entries.length > 0 && !st.comesHere && (
+              <div style={CR.muted}>Tick {node.label} to choose which of its items come here.</div>
+            )}
+            {node.entries.length > 0 && entryRows(node)}
+            {node.alsoIn.length > 0 && (
+              <div style={CR.muted}>
+                Also on the menu here, but they go with another category:{' '}
+                {node.alsoIn.map(a => (a.catLabel ? `${a.label} (${a.catLabel})` : a.label)).join(', ')}.
               </div>
             )}
           </div>
-        );
-      })}
+        )}
+      </div>
+    );
+  };
+
+  const nowhere = nowhereNotice(screen, nameOfCentre);
+  const loose = screen.uncategorised;
+  return (
+    <div>
+      <ul style={CR.help}>
+        <li>Tick a category to send its items here. Its sub categories come too.</li>
+        <li>Tick a sub category at another center to send it there instead.</li>
+        <li>Untick a sub category here to stop it coming here.</li>
+        <li>Items follow their Primary category in Menu, or an Also in category inside it. Sizes follow their product.</li>
+      </ul>
+      <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+        {screen.roots.map(renderNode)}
+      </div>
+      {loose.length > 0 && (
+        <p style={{ ...CR.muted, marginTop:12 }}>
+          Not in a category on the menu, so no tick here reaches {loose.length === 1 ? 'it' : 'them'}:{' '}
+          {joinList([...loose.slice(0, 5).map(r => r.label), ...(loose.length > 5 ? [`${loose.length - 5} more`] : [])])}.
+        </p>
+      )}
+      {screen.optionOnlyCount > 0 && (
+        <p style={{ ...CR.muted, marginTop:12 }}>Options print with the item they are added to.</p>
+      )}
+      {nowhere && <div style={{ ...CR.notice, marginTop:12 }}>{nowhere}</div>}
     </div>
   );
 }
@@ -518,13 +624,9 @@ export default function PrintRouting() {
 
   const activeCentre = data.centres.find(c => c.id === selected);
 
-  // catId -> parentId, so the order type warning knows a centre assigned a PARENT
-  // category also serves that category's children, exactly as the routing rule does.
-  const catParents = useMemo(() => {
-    const m = {};
-    (menuCategories || []).forEach(c => { m[c.id] = c.parentId || c.parent_id || null; });
-    return m;
-  }, [menuCategories]);
+  // catId -> parentId, built by the same helper the tills use (lib/productionRouting.js),
+  // so the order type warning and the rail count read the tree the rule routes by.
+  const catParents = useMemo(() => buildCatParentMap(menuCategories || []), [menuCategories]);
 
   // Merge Supabase KDS data into centre display
   const kdsForCentre = (centreId) => kdsDevices.find(k => k.centre_id === centreId);
@@ -686,7 +788,9 @@ export default function PrintRouting() {
           {data.centres.map(c => {
             const kds = kdsForCentre(c.id);
             const r = routing[c.id] || emptyRouting();
-            const catCount = r.assignedCategories.length;
+            // Only ticks that still point at a category on the menu: a deleted category
+            // routes nothing, so Provo's Kitchen read 9 with 7 real ones.
+            const catCount = liveTickCount(r, catParents);
             return (
               <div key={c.id} onClick={()=>{ setSelected(c.id); setShowAdd(false); setEditCentre(null); }}
                 style={S.centreRow(selected===c.id)}>
@@ -790,7 +894,9 @@ export default function PrintRouting() {
                 </span>
               </div>
               <CategoryRouter
+                key={activeCentre.id}
                 centreId={activeCentre.id}
+                centres={data.centres}
                 routing={routing}
                 setRouting={setRouting}
                 menuCategories={menuCategories || []}

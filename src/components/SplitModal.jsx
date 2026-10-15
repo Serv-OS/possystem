@@ -11,6 +11,7 @@ import {
 import { getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 // v5.5.904: split legs dispatch a REAL terminal job, exactly like a full payment.
+import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDeviceId,
          pollTerminalJob, cancelTerminalJob } from '../lib/payments/terminalJobs';
 import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/customerDisplay';
@@ -127,6 +128,10 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         // 'pos_split_leg' is deliberately NOT 'pax_table_pay': TerminalJobReconciler filters
         // on that source to auto-close a WHOLE check, which must never happen for one leg.
         checkDraft: { source: 'pos_split_leg', portionLabel, totalMinor: dueMinor },
+        // 30 Sep 2026: do not wait for the whole tender on the Adyen 'start' kick (it answers when
+        // the customer has finished paying). Wait 3 s for an outright refusal, then let the poll
+        // below be the truth (lib/payments/kickRace.js).
+        kickWaitMs: KICK_WAIT_MS,
       });
       paxJobRef.current = job?.id || job?.jobId || null;
       setState('collecting');

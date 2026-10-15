@@ -41,7 +41,9 @@ test('a UK tab books its VAT: modifiers folded in, each product at its own rate'
   assert.equal(f.tip, 1);
   assert.equal(f.subtotal, 18, '£19 charged less the £1 tip, exactly as the check booked before');
   assert.equal(f.taxAmount, 2, '£12 burger (with its modifiers) at 20% = £2.00; the zero rated cake adds nothing');
-  assert.equal(f.taxBreakdown, null, 'a UK whole tab writes no tax_breakdown, as every surface');
+  // 8 Oct 2026: the record goes with it for a UK whole tab too (the split by rate for Xero).
+  assert.equal(f.taxBreakdown.totalTax, 2);
+  assert.equal(f.taxBreakdown.breakdown[0].rate.id, 'std');
   assert.equal(f.exclusiveTax, 0);
 });
 

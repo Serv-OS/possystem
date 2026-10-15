@@ -166,7 +166,9 @@ test('the app: every password login surface waits for the second step before loa
   assert.match(gate, /pass\(\{ upgraded: true \}\)/, 'a new Face ID or factor counts as an upgrade');
   assert.match(bo, /if \(!authUser \|\| isMock \|\| !secondStepOk\) return;/, 'profile load waits for the gate');
   assert.match(bo, /mode="recovery"/, 'a reset link passes the second step first');
-  assert.match(bo, /\['security','Sign in security'\]/, 'Settings, Sign in security');
+  // 8 Oct 2026: the sidebar list moved to lib/boSections.js; the screen still renders the page.
+  assert.match(read('src/lib/boSections.js'), /\['security','Sign in security'\]/, 'Settings, Sign in security');
+  assert.match(bo, /\{section === 'security'\s+&& <SignInSecurity orgCtx=\{orgCtx\} \/>\}/, 'and the page is rendered');
   const admin = read('src/admin/CompanyAdminApp.jsx');
   assert.match(admin, /if \(!secondStepOk\) \{\s*return <SecondStepGate/);
   assert.doesNotMatch(admin, /localStorage\.getItem\('rpos-auth'\)/, 'no raw, never refreshed token reads left');

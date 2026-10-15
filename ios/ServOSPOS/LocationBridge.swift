@@ -1,3 +1,7 @@
+// Compiled ONLY into the Staff target (SWIFT_ACTIVE_COMPILATION_CONDITIONS =
+// RPOS_LOCATION). Every other app would otherwise ship CoreLocation with no
+// NSLocationWhenInUseUsageDescription, and Apple rejects that upload (ITMS-90683).
+#if RPOS_LOCATION
 import CoreLocation
 import Foundation
 import WebKit
@@ -138,3 +142,4 @@ final class LocationBridge: NSObject, CLLocationManagerDelegate, WKScriptMessage
         }
     }
 }
+#endif

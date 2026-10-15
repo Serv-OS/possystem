@@ -14,6 +14,8 @@
 // IDEMPOTENCY — read before changing the payload. Both edge functions key on the CHECK ID:
 //   loyalty-redeem  points → `redeem:<closed_check_id>:<reward_id>`
 //                   stamps → `stampredeem:<closed_check_id>:<stamp_program_id>`
+//                            (+ `:<redeem_slot>` for the 2nd, 3rd... reward of one programme on a
+//                            check, 30 Sep 2026; slot 1 is the old key byte for byte)
 //   promo-redeem    `<order_id>:<CODE>` (we send it explicitly; the server derives the same)
 // Without a closed_check_id, loyalty-redeem falls back to a 30-SECOND TIME WINDOW key — so a
 // retry a minute later would deduct a SECOND time. That is why `closedCheckId` is mandatory
@@ -24,6 +26,7 @@
 import { queueWrite, getFailedItems, dismissItem } from '../sync/OfflineQueue';
 import { reportSave } from './saveHealth';
 import { memberTokenFor } from './memberSession.js';
+import { slotHonoured, SLOT_NOT_HONOURED } from './loyaltyMultiRedeem.js';
 
 const KIND = 'redemption';
 const MAX_RETRIES = 5;
@@ -104,9 +107,14 @@ function buildCall(spec) {
     : (spec.rewardId ? { reward_id: spec.rewardId } : null);
   if (!target) return null;
   const name = spec.stampProgramId ? 'Stamp card reward' : 'Loyalty reward';
+  // 30 Sep 2026: the n-th reward of the SAME programme on one check (more than one stamp card
+  // redeemed on an order, lib/loyaltyMultiRedeem.js withSlots). Its own queue id and its own
+  // server key; slot 1 sends nothing new, so an older function and a parked replay match exactly.
+  const slot = Math.max(1, Math.trunc(Number(spec.slot) || 1));
+  const slotSuffix = slot > 1 ? `:${slot}` : '';
   return {
     fn: 'loyalty-redeem',
-    id: `redeem:loyalty:${checkId}:${spec.stampProgramId || spec.rewardId}`,
+    id: `redeem:loyalty:${checkId}:${spec.stampProgramId || spec.rewardId}${slotSuffix}`,
     entity: 'loyalty redemption',
     name,
     label: `${name} — discount given, not yet deducted`,
@@ -114,6 +122,7 @@ function buildCall(spec) {
       customer_id: spec.customerId || null,
       location_id: spec.locationId || null,
       ...target,
+      ...(slot > 1 ? { redeem_slot: slot } : {}),
       channel: spec.channel || 'pos',
       closed_check_id: checkId,
       staff_id: spec.staffId || null,
@@ -165,12 +174,22 @@ async function post(fn, body, { functionsUrl, token }) {
 // `retryable` is deliberately narrow — a business refusal ('already_used', 'Insufficient
 // points', 'Reward already redeemed') will never succeed on a retry, and re-firing it forever
 // would be noise. loyalty-redeem's 'already_processed' carries no error, so it reads as success.
-function outcome(res, j, bodyRead) {
+//
+// 30 Sep 2026: EXCEPT for the n-th reward of one programme on a check (redeem_slot > 1). An
+// older loyalty-redeem ignores the slot, so its 'already_processed' means "slot 1's row is
+// already there", not "this reward is deducted". The reply's idempotency_key says which key the
+// server used (lib/loyaltyMultiRedeem.js slotHonoured); a key without the slot is a refusal, not
+// retryable (the same function answers the same way until it is redeployed), so the caller says
+// so and the park is the durable record. `body` is what was sent.
+function outcome(res, j, bodyRead, body = null) {
   // A 200 we never read is NOT a success — we have no idea whether the deduction was applied.
   // It is a transport failure, and a retryable one: the idempotency key means replaying a call
   // that did land comes back already-redeemed rather than deducting twice.
   if (res.ok && !bodyRead) return { ok: false, error: 'reply was cut off before it could be read', retryable: true };
-  if (res.ok && !j?.error && j?.ok !== false) return { ok: true, error: null, retryable: false };
+  if (res.ok && !j?.error && j?.ok !== false) {
+    if (!slotHonoured(body, j)) return { ok: false, error: SLOT_NOT_HONOURED, retryable: false };
+    return { ok: true, error: null, retryable: false };
+  }
   return {
     ok: false,
     error: j?.error || j?.reason || `HTTP ${res.status}`,
@@ -234,6 +253,7 @@ async function park(entry, lastError, attempts) {
  * @param {string} [spec.channel='pos']      'pos' | 'kiosk' | 'online' | 'qr' | 'catering'
  * @param {string} [spec.rewardId]           loyalty: points reward
  * @param {string} [spec.stampProgramId]     loyalty: stamp card (wins over rewardId)
+ * @param {number} [spec.slot]               loyalty: the n-th reward of the same target on this check (1 = as before)
  * @param {string} [spec.memberToken]        loyalty: the member's loyalty-otp session token. Required
  *                                           when the caller is the customer's own browser (online).
  * @param {string} [spec.code]               promo: the code
@@ -297,14 +317,14 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
     }
   }
 
-  let o = outcome(result.res, result.j, result.bodyRead);
+  let o = outcome(result.res, result.j, result.bodyRead, call.body);
   // Refused as "not this venue's device" (403): re-claim the device and try ONCE more before the
   // refusal becomes final. Same idempotency key, so a call that did land cannot deduct twice.
   if (!o.ok && loyaltyCall && result.res?.status === 403 && _deviceHooks.reclaim) {
     try {
       await _deviceHooks.reclaim();
       result = await post(call.fn, call.body, { functionsUrl, token });
-      o = outcome(result.res, result.j, result.bodyRead);
+      o = outcome(result.res, result.j, result.bodyRead, call.body);
     } catch (e) {
       return fail(e?.name === 'AbortError' ? `timed out after ${POST_TIMEOUT_MS / 1000}s` : (e?.message || 'network error'), true);
     }
@@ -380,7 +400,7 @@ export async function retryPendingRedemptions({ functionsUrl, token } = {}) {
           if (attempts >= MAX_RETRIES) reportTerminal(it, error);
           continue;
         }
-        const o = outcome(res, j, bodyRead);
+        const o = outcome(res, j, bodyRead, it.body);
         if (o.ok) {
           await dismissItem(it.id).catch(() => {});
           reportSave(it.entity || 'redemption', null);

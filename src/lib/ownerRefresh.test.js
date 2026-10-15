@@ -16,10 +16,12 @@ const read = (p) => fs.readFileSync(fileURLToPath(new URL(p, import.meta.url)), 
 test('the owner refresh is raced against a timer, and says so when it loses', async () => {
   const src = read('../surfaces/OwnerSurface.jsx');
 
-  // The snapshot call cannot hang for ever.
-  assert.ok(src.includes("await withTimeout(\n        supabase.functions.invoke('owner-snapshot', { body: {} }), LOAD_TIMEOUT_MS, 'Owner snapshot')"),
+  // The snapshot call cannot hang for ever. (2 Oct 2026: it now sends the quick filter's
+  // period, and This month, the heavier read, is given longer before it is called lost.)
+  assert.ok(src.includes("await withTimeout(\n        supabase.functions.invoke('owner-snapshot', { body: { period: want } }),\n        want === 'month' ? MONTH_LOAD_TIMEOUT_MS : LOAD_TIMEOUT_MS, 'Owner snapshot')"),
     'the snapshot call is wrapped in withTimeout');
   assert.match(src, /const LOAD_TIMEOUT_MS = \d+;/);
+  assert.match(src, /const MONTH_LOAD_TIMEOUT_MS = \d+;/);
 
   // A call that never answers reads as a connection problem, not silence.
   assert.ok(src.includes('e instanceof TimeoutError'), 'a timeout is told apart from a server error');
@@ -27,7 +29,10 @@ test('the owner refresh is raced against a timer, and says so when it loses', as
 
   // The arrow shows it is working, and cannot be tapped twice into two calls.
   assert.ok(src.includes('disabled={busy}') && src.includes("{busy ? '⋯' : '↻'}"), 'the arrow shows the refresh running');
-  assert.ok(src.includes('finally { setBusy(false); setLoading(false); }'), 'the button always comes back');
+  // Only the latest request owns the arrow (chips can be tapped while one is in flight), and
+  // the latest one always gives it back.
+  assert.ok(src.includes('finally { if (mine === seq.current) { setBusy(false); setLoading(false); } }'), 'the button always comes back');
+  assert.ok(src.includes('const mine = ++seq.current;'), 'every request takes the next number');
 });
 
 test('withTimeout rejects a call that never answers, and passes one that does', async () => {

@@ -26,6 +26,8 @@ import { ServOSIcon } from '../components/ServOSBrand';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 import { displayHoldMs, loyaltyResultHoldMs } from '../lib/customerDisplayIdle';
 import { stampDots, showPoints } from '../lib/stampSummary';
+import { displayAccent, inkOnAccent } from '../lib/customerDisplayAccent';
+import { resolveDisplayBrand, DISPLAY_BRAND_COLUMN } from '../lib/customerDisplayBrand';
 
 // v5.9.79: how long a state holds with no word from the till (lib/customerDisplayIdle.js). An open
 // order never times out on its own; the 45 s timer sent customers back to the ads mid order.
@@ -87,12 +89,14 @@ export default function CustomerDisplaySurface() {
       try {
         const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
         if (dev?.profileId && supabase) {
-          const { data } = await supabase
-            .from('device_profiles')
-            .select('kiosk_brand_name,kiosk_brand_color,kiosk_brand_bg_color,kiosk_brand_logo_url,kiosk_banners,customer_display_images')
-            .eq('id', dev.profileId)
-            .maybeSingle();
-          if (data) setProfile(data);
+          // 30 Sep 2026: the display's own branding is its own column (lib/customerDisplayBrand.js);
+          // the kiosk_brand_* columns are its fallback while that is empty. Before the 20260930b
+          // migration adds the column the first read fails, and the second reads what it always did.
+          const cols = 'kiosk_brand_name,kiosk_brand_color,kiosk_brand_bg_color,kiosk_brand_logo_url,kiosk_banners,customer_display_images';
+          const read = (select) => supabase.from('device_profiles').select(select).eq('id', dev.profileId).maybeSingle();
+          let res = await read(`${cols},${DISPLAY_BRAND_COLUMN}`);
+          if (res.error) res = await read(cols);
+          if (res.data) setProfile(res.data);
         }
       } catch { /* branding optional */ }
 
@@ -150,12 +154,24 @@ export default function CustomerDisplaySurface() {
     return () => clearInterval(t);
   }, [slideImages.length]);
 
-  const C = palette(theme);
-  const brand = profile?.kiosk_brand_color || (C.dark ? '#46E08C' : '#0E9E55');
-  const logo = profile?.kiosk_brand_logo_url || '';
-  const venueName = profile?.kiosk_brand_name
-    || (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.locationName; } catch { return null; } })()
-    || 'Serv OS';
+  // 30 Sep 2026 (Peter): the display has its own branding, set in Back Office on the device
+  // profile. Once any of it is set the display uses only its own (empty fields are the standard
+  // look), and a kiosk change no longer reaches it; while none is set it shows the kiosk branding,
+  // as before. An own background picks the text palette by its lightness; without one the display
+  // follows the till's light or dark look as before (lib/customerDisplayBrand.js).
+  const look = resolveDisplayBrand(profile, {
+    theme,
+    placeName: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.locationName || ''; } catch { return ''; } })(),
+  });
+  const basePalette = palette(look.dark ? 'dark' : 'light');
+  const C = look.bgColor ? { ...basePalette, bg: look.bgColor } : basePalette;
+  // 30 Sep 2026 (Barnsley: the kiosk's black brand colour made every total vanish on this dark
+  // display): the resolver says WHICH colour is the brand (the display's own, else the kiosk's);
+  // it is used only when it reads on the background the display really has (its own background
+  // when one is set), else the ServOS green, else the text colour (lib/customerDisplayAccent.js).
+  const brand = displayAccent(look.color, { dark: look.dark, bg: C.bg, text: C.text });
+  const logo = look.logoUrl;
+  const venueName = look.name;
 
   const state = payload?.state || 'idle';
   const items = Array.isArray(payload?.items) ? payload.items : [];
@@ -349,9 +365,11 @@ function PhoneKeypad({ value, brand, C, error, ukNumber, onKey, onBackspace, onS
           }}>{k}</button>
         ))}
       </div>
+      {/* 2 Oct 2026: the accent is this button's background, so its label is picked to read on
+          it (near black as before on the greens and bright accents, white on a dark accent). */}
       <button onClick={onSubmit} disabled={!ready} style={{
         marginTop: 18, width: 260, height: 60, borderRadius: 14, border: 'none',
-        background: ready ? brand : C.surface, color: ready ? '#0b0c10' : C.faint,
+        background: ready ? brand : C.surface, color: ready ? inkOnAccent(brand) : C.faint,
         fontSize: 21, fontWeight: 800, cursor: ready ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
       }}>Collect points</button>
       <div style={{ marginTop: 12, fontSize: 12, color: C.faint, textAlign: 'center', maxWidth: 280 }}>New? We'll text you a link to finish joining.</div>

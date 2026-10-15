@@ -9,6 +9,8 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync, getResolvedLocationIdSync, isBackOfficeMode, sendDeviceHeartbeat } from './supabase';
+import { normaliseCheckStatus } from './voidRules.js';
+import { readAllPagesResult, progressSum, isTooManyRows, rowBudget, pinnedEnd, CHECK_MAX_PAGES, CHECK_ROWS_ON_SCREEN, TICKET_MAX_PAGES } from './pagedRead.js';
 import { carryVerbatim, carryResendOnly, nameColumnsFor, remapPricingMenus, remapForPeer, propagatedFields, resendFields, isMasterRow, peerSuffixOf, RESEND_ONLY_FIELDS, fieldOf } from './shareCopy';
 import { missingMasters, runBulkScope } from './bulkScope';
 import { copiesNeedingMasterRate } from './venueTaxRates';
@@ -22,9 +24,8 @@ import { getTodayStartFallback } from './locationTime';
 import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { closedCheckRow } from './closedCheckRow';
-import { closedCheckRefundFields } from './closedCheckRefundFields';
+import { closedCheckRefundFields, closedCheckTaxFields } from './closedCheckRefundFields';
 import { withTimeout } from './withTimeout';
-import { bookedTaxRecord } from './taxShare';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
@@ -616,17 +617,25 @@ export const bumpKDSTicket = async (id) => {
 
 // v4.6.20 — historical fetch for the KDS performance report. Returns both
 // pending and bumped tickets so we can compute bump time (bumped_at - sent_at).
-export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, limit = 2000) => {
+// 5 Oct 2026: read in pages (lib/pagedRead.js). It asked for 2,000 in one request and got the
+// newest 1,000: Huddersfield sent 2,057 tickets in 7 days. opts = { onProgress, stop }.
+export const fetchKDSTicketsRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
-  let query = supabase
-    .from('kds_tickets')
-    .select('*')
-    .eq('location_id', locationId)
-    .order('sent_at', { ascending: false })
-    .limit(limit);
-  if (fromDate) query = query.gte('sent_at', fromDate.toISOString());
-  if (toDate)   query = query.lte('sent_at', toDate.toISOString());
-  const result = await query;
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  // 6 Oct 2026: a window still trading ends at the moment the read starts, so a ticket sent
+  // while the pages are in flight cannot shift the offsets (pinnedEnd in lib/pagedRead.js).
+  const to = pinnedEnd(toDate);
+  const result = await readAllPagesResult('kitchen tickets', (first) => {
+    let query = supabase
+      .from('kds_tickets')
+      .select('*', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId)
+      .order('sent_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (fromDate) query = query.gte('sent_at', fromDate.toISOString());
+    if (to)       query = query.lte('sent_at', to.toISOString());
+    return query;
+  }, { onProgress: o.onProgress, stop: o.stop, maxPages: TICKET_MAX_PAGES });
   if (result.data) {
     result.data = result.data.map(t => ({
       id: t.id,
@@ -767,6 +776,44 @@ export const fetchClosedCheckCardRow = async (checkId) => {
   return data;
 };
 
+/**
+ * One closed_checks row as the store holds it: the map the boot loader, every range read and the
+ * refund lookback share (8 Oct 2026 review: three hand copies had already drifted once, v5.9.11).
+ */
+export function mapClosedCheckRow(c) {
+  return {
+      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
+      staffId: c.staff_id,
+      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
+      orderType: c.order_type, customer: c.customer,
+      items: c.items || [], discounts: c.discounts || [],
+      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
+      // v5.9.12: the stored tax lines (refunds give back each line's own tax, reprints show what
+      // was charged). 27 Sep 2026: a SCALED UK record too (taxShare.bookedTaxRecord).
+      // 8 Oct 2026 (the VAT audit): the VAT booked and its record on EVERY copy, so the Tax
+      // report reads the split by rate each sale stored and names a sale with no VAT
+      // (lib/closedCheckRefundFields.js closedCheckTaxFields).
+      ...closedCheckTaxFields(c),
+      method: c.method,
+      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
+      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
+      // device before this one booted/refreshed/woke has no seatedAt key, so
+      // isSessionClosed can't tombstone it and the paid table climbs back onto the
+      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
+      // Epoch ms, matching the live session's seatedAt.
+      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
+      // 30 Sep 2026: a v5.9.72 void tombstone was written as status 'void'; every report reads
+      // 'voided' (lib/voidRules.js normaliseCheckStatus), so both spellings load as 'voided'.
+      status: normaliseCheckStatus(c.status, c.voided), refunds: c.refunds || [],
+      tableId: c.table_id, tableLabel: c.table_label,
+      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
+      // the fields a refund reads, through the one row map realtime and MasterSync use too
+      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
+      ...closedCheckRefundFields(c),
+  };
+}
+
 // How far back a till loads sales history at boot. The POS history panel offers
 // Today / Week / 30 days, so the boot load has to cover the widest of those or the
 // filter silently shows nothing.
@@ -797,87 +844,78 @@ export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDat
     .gte('closed_at', since.toISOString())
     .order('closed_at', { ascending: false })
     .limit(limit);
-  if (result.data) {
-    result.data = result.data.map(c => ({
-      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
-      staffId: c.staff_id,
-      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
-      orderType: c.order_type, customer: c.customer,
-      items: c.items || [], discounts: c.discounts || [],
-      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      taxAmount: c.tax_amount,
-      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
-      // (US) tax: refunds give back each line's own tax and reprints show what was
-      // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
-      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
-      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
-      method: c.method,
-      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
-      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
-      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
-      // device before this one booted/refreshed/woke has no seatedAt key, so
-      // isSessionClosed can't tombstone it and the paid table climbs back onto the
-      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
-      // Epoch ms, matching the live session's seatedAt.
-      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      status: c.status, refunds: c.refunds || [],
-      tableId: c.table_id, tableLabel: c.table_label,
-      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
-      // the fields a refund reads, through the one row map realtime and MasterSync use too
-      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
-      ...closedCheckRefundFields(c),
-    }));
-  }
+  // 8 Oct 2026 (review): the one row map every closed_checks read shares (mapClosedCheckRow).
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
   return result;
 };
 
 // For reports — fetch checks across any date range
-export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate, limit = 1000) => {
+// 5 Oct 2026 (Peter: "improve our reports"): EVERY check of the window, read in pages of
+// 1,000 (lib/pagedRead.js). Until now this was one request with .limit(5000), and the API
+// answers at most 1,000 rows a request: newest first, so the oldest days of a week or a
+// month silently dropped and the totals were short (Huddersfield: 1,861 checks in 7 days,
+// 1,000 on screen). Ordered closed_at then id, because several checks can share one
+// closed_at and the pages must not overlap. The row map below is unchanged.
+// opts = { onProgress({ done, total }), stop(), budget }. On the ceiling: { data: null, error, tooMany: true }.
+// The ceiling is 20 pages, not the reader's 60: a check is read whole and is heavy (see
+// CHECK_MAX_PAGES in lib/pagedRead.js). `budget` (rowBudget) is shared by the reads one screen
+// holds together, so two periods cannot each come in under the ceiling and sink the tab.
+export const fetchClosedChecksRange = async (locationId = null, fromDate, toDate, opts = {}) => {
   if (isMock) return { data: null, error: null };
-  let query = supabase
-    .from('closed_checks')
-    .select('*')
-    .eq('location_id', locationId)
-    .order('closed_at', { ascending: false })
-    .limit(limit);
-  if (fromDate) query = query.gte('closed_at', fromDate.toISOString());
-  if (toDate)   query = query.lte('closed_at', toDate.toISOString());
-  const result = await query;
-  if (result.data) {
-    result.data = result.data.map(c => ({
-      id: c.id, ref: c.ref, server: c.server, covers: c.covers,
-      staffId: c.staff_id,
-      locationId: c.location_id,  // v5.5.279: MUST map for cross-location merge filter
-      orderType: c.order_type, customer: c.customer,
-      items: c.items || [], discounts: c.discounts || [],
-      subtotal: c.subtotal, service: c.service, tip: c.tip, total: c.total,
-      taxAmount: c.tax_amount,
-      // v5.9.12: the stored tax lines, but ONLY for a check that charged added-on
-      // (US) tax: refunds give back each line's own tax and reprints show what was
-      // charged. Inclusive-VAT rows load exactly as before (no key at all).
-      // 27 Sep 2026: and a SCALED UK record (discounted bill, comp, QR closed short): the
-      // Z report, Tax report and reprint read its booked VAT (taxShare.bookedTaxRecord).
-      ...(bookedTaxRecord({ taxBreakdown: c.tax_breakdown }) ? { taxBreakdown: c.tax_breakdown } : {}),
-      method: c.method,
-      closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
-      // v5.5.845: MUST map seated_at → seatedAt. fetchClosedChecks is the BOOT loader
-      // (SyncBridge + useSupabaseInit); without this, a table cashed off on another
-      // device before this one booted/refreshed/woke has no seatedAt key, so
-      // isSessionClosed can't tombstone it and the paid table climbs back onto the
-      // floor — the exact bug the tombstone fixes, on the exact paths it exists for.
-      // Epoch ms, matching the live session's seatedAt.
-      seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : null,
-      status: c.status, refunds: c.refunds || [],
-      tableId: c.table_id, tableLabel: c.table_label,
-      // giftCard, stripePaymentIntentId, paymentIntents, processor, loyalty, source, tenders:
-      // the fields a refund reads, through the one row map realtime and MasterSync use too
-      // (28 Sep 2026). tenders also feed the refund's VAT pro rata (refundMath.refundTaxBasis).
-      ...closedCheckRefundFields(c),
-    }));
-  }
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  // 6 Oct 2026 (multi site review): a window still trading ends at the moment the read
+  // starts. The pages go out together by offset, so a sale closing between them pushed every
+  // older row down a place, and when a later page was answered before an earlier one, one
+  // check fell between them and was lost (pinnedEnd in lib/pagedRead.js has the story). The
+  // signed in site's live sales are merged in by the shell, so Today still fills in.
+  const to = pinnedEnd(toDate);
+  const result = await readAllPagesResult('closed checks', (first) => {
+    let query = supabase
+      .from('closed_checks')
+      .select('*', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId)
+      .order('closed_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (fromDate) query = query.gte('closed_at', fromDate.toISOString());
+    if (to)       query = query.lte('closed_at', to.toISOString());
+    return query;
+  }, { onProgress: o.onProgress, stop: o.stop, maxPages: CHECK_MAX_PAGES, budget: o.budget || null });
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
   return result;
 };
+
+// 8 Oct 2026 (review): a refund is taken off on the day it was MADE, and that day can be weeks after
+// the sale closed. The Tax report reads the checks closed in its range, so a refund made inside the
+// range on an older sale was in none of its rows (and outside the range when the earlier period was
+// viewed): a cross day refund was never taken off anywhere in the Tax summary, while Daily trading,
+// the Owner app and Xero took it off. The same 400 day reach those use (trading-report
+// REFUND_LOOKBACK_DAYS). Only checks that carry a refund are read: a handful a day at most.
+export const REFUND_LOOKBACK_DAYS = 400;
+
+/**
+ * The checks of a venue closed BEFORE `fromDate` (back REFUND_LOOKBACK_DAYS) that carry a refund,
+ * in the store's camelCase shape. Their refunds are what a report places on the refund's day; their
+ * sales are not the range's. Empty in mock mode or with nothing to read.
+ */
+export const fetchRefundChecksBefore = async (locationId, fromDate, opts = {}) => {
+  if (isMock || !locationId || !fromDate) return { data: [], error: null };
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const from = fromDate instanceof Date ? fromDate : new Date(fromDate);
+  if (!Number.isFinite(from.getTime())) return { data: [], error: null };
+  const since = new Date(from.getTime() - (o.lookbackDays || REFUND_LOOKBACK_DAYS) * 86400000);
+  const result = await readAllPagesResult('refund checks', (first) => supabase
+    .from('closed_checks')
+    .select('*', first ? { count: 'exact' } : undefined)
+    .eq('location_id', locationId)
+    .gte('closed_at', since.toISOString())
+    .lt('closed_at', from.toISOString())
+    .neq('refunds', '[]')
+    .order('closed_at', { ascending: false })
+    .order('id', { ascending: false }), { stop: o.stop, maxPages: CHECK_MAX_PAGES });
+  if (result.data) result.data = result.data.map(mapClosedCheckRow);
+  return result;
+};
+
 
 // ── Config pushes ─────────────────────────────────────────────────────────────
 export const insertConfigPush = async (push, locationId = null) => {
@@ -1175,19 +1213,37 @@ export const fetchAccessibleLocations = async () => {
 // v5.10.3: each location is read over ITS OWN window, [{ locationId, from, to }]
 // (reports/_filters venueRange: the same business days on that venue's clock).
 // Until then one window, built on the active venue's clock, was used for every venue.
-export const fetchClosedChecksMultiRange = async (windows = [], limit = 2000) => {
+// 5 Oct 2026: every venue is read in full (fetchClosedChecksRange pages; it was 2,000 asked,
+// 1,000 answered, so the busy sites compared short against the quiet ones). The venues still
+// start together but share the one report gate, so 3 requests are in flight at most. A venue
+// that fails or is too long now fails the compare: a missing site read as a quiet one before.
+// When one venue fails, the others stop asking for pages (their answer is thrown away anyway
+// and their pages would sit in front of whatever is loaded next). All the venues share one
+// row budget (CHECK_ROWS_ON_SCREEN): six sites each under the ceiling is still too much.
+export const fetchClosedChecksMultiRange = async (windows = [], opts = {}) => {
   if (!windows?.length) return { data: [], error: null };
   if (isMock) return { data: [], error: null };
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const slot = o.onProgress ? progressSum(o.onProgress) : null;
+  let failed = false;
+  const stop = () => failed || !!o.stop?.();
+  // opts.budget: a caller that reads twice for one screen (this period, then the one it is
+  // compared to) hands the SAME budget to both, so the two together stay under the ceiling.
+  const budget = o.budget || rowBudget(CHECK_ROWS_ON_SCREEN);
   try {
     const results = await Promise.all(windows.map(({ locationId: id, from, to }) =>
-      fetchClosedChecksRange(id, from, to, limit).then(r => ({
-        id,
-        checks: (r.data || []).map(c => ({ ...c, locationId: id })),
-      }))
+      fetchClosedChecksRange(id, from, to, { onProgress: slot ? slot(id) : null, stop, budget }).then(r => {
+        if (r.error) { failed = true; throw r.error; }
+        return {
+          id,
+          checks: (r.data || []).map(c => ({ ...c, locationId: id })),
+        };
+      })
     ));
     return { data: results.flatMap(r => r.checks), error: null };
   } catch (err) {
-    return { data: [], error: err };
+    failed = true;
+    return { data: [], error: err, tooMany: isTooManyRows(err) };
   }
 };
 

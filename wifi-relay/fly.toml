@@ -1,6 +1,8 @@
-# Fly.io config for the ServOS WiFi relay. One app, one dedicated IPv4, serves all venues.
-# Deploy:  fly launch --no-deploy --copy-config   (accept name)  →  fly ips allocate-v4
-#          fly secrets set RELAY_TOKEN=<long-random>  →  fly deploy
+# Fly.io config for the ServOS WiFi relay. One app, one dedicated IPv4 (37.16.1.154), serves all
+# venues: the *.ui.com forwarder AND the WiFi front door (*.wifi.serv-os.app). See README.md.
+# First time only: fly launch --no-deploy --copy-config (accept name) → fly ips allocate-v4
+#                  → fly secrets set RELAY_TOKEN=<long-random>
+# Every change:    fly deploy   (from this folder)
 app = "servos-wifi-relay"
 primary_region = "lhr"   # London — change to your nearest region
 
@@ -13,6 +15,14 @@ primary_region = "lhr"   # London — change to your nearest region
   auto_stop_machines = false   # keep it always-on so the IP stays warm + reachable
   auto_start_machines = true
   min_machines_running = 1
+
+  # Since 29 Sep 2026 this box is also the WiFi front door: every guest page load (the page, its
+  # scripts, and the Supabase calls) comes through it. Fly's default limit is 25 CONNECTIONS per
+  # machine; count requests instead so a busy evening across venues is not queued at the edge.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
 
 [[vm]]
   size = "shared-cpu-1x"

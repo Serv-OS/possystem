@@ -99,6 +99,11 @@ export const opsRegisterDevice = async (name) => {
 export const opsHeartbeat = async () => rpc('ops_device_heartbeat', {});
 export const opsClaimDevice = async (code, locationId) => rpc('claim_ops_device', { p_code: code, p_location_id: locationId });
 export const opsPinLogin = async (locationId, pin) => rpc('ops_pin_login', { p_location_id: locationId, p_pin: String(pin) });
+/** Self-pair to the demo venue, with no Back Office step (migration 20261013a).
+ *  Used by the "Try the demo" button so an App Store reviewer, or a prospect, can
+ *  get in on their own. Only a venue flagged is_demo is reachable, and the staff
+ *  PIN still guards the data behind it. Safe to call again: it re-links the row. */
+export const opsClaimDemo = async () => rpc('claim_demo_ops_device', {});
 async function rpc(fn, args) {
   if (isMock || !supabase) return { data: null, error: null };
   const { data, error } = await supabase.rpc(fn, args);

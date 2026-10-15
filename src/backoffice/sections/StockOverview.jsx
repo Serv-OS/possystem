@@ -16,7 +16,10 @@ import { fetchPurchaseOrders } from '../../lib/stock/purchasing';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 18 };
 
-export default function StockOverview({ setSection }) {
+// 8 Oct 2026: canOpen is the Back Office section access rule (lib/boSections.js). A button that
+// opens Produce or Purchasing is left out for a login that is not shown that part: never a dead
+// button. The setter it is handed refuses a blocked route anyway (belt and braces).
+export default function StockOverview({ setSection, canOpen = () => true }) {
   const menuItems = useStore(s => s.menuItems) || [];
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [d, setD] = useState(null);
@@ -32,6 +35,7 @@ export default function StockOverview({ setSection }) {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const go = (s) => setSection?.(s);
+  const can = (s) => !!setSection && canOpen(s);
 
   if (!d) return <div style={{ padding: 26, color: 'var(--t3)' }}>Loading…</div>;
 
@@ -73,8 +77,8 @@ export default function StockOverview({ setSection }) {
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 22 }}>
         {stat('Stock on hand', money(stockValue), `${items.length} item${items.length === 1 ? '' : 's'} tracked`)}
         {stat('Need a price', String(noPrice.length), noPrice.length ? 'tap to fix' : 'all priced ✓', noPrice.length ? () => go('stock-items') : null, noPrice.length ? 'var(--red, #ef4444)' : 'var(--grn, #16a34a)')}
-        {stat('Recipes', String(dishes.length), `${unlinked.length} menu items unlinked`, () => go('recipes'))}
-        {stat('Suppliers', String(d.suppliers.length), `${d.pos.length} purchase order${d.pos.length === 1 ? '' : 's'}`, () => go('suppliers'))}
+        {stat('Recipes', String(dishes.length), `${unlinked.length} menu items unlinked`, can('recipes') ? () => go('recipes') : null)}
+        {stat('Suppliers', String(d.suppliers.length), `${d.pos.length} purchase order${d.pos.length === 1 ? '' : 's'}`, can('suppliers') ? () => go('suppliers') : null)}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)', gap: 18, alignItems: 'start' }}>
@@ -95,7 +99,7 @@ export default function StockOverview({ setSection }) {
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{s.label}</div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>{s.detail}</div>
                 </div>
-                <button onClick={() => go(s.to)} style={{ padding: '6px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', background: s.done ? 'var(--bg3)' : 'var(--acc)', color: s.done ? 'var(--t2)' : '#fff', border: s.done ? '1px solid var(--bdr)' : 0, flexShrink: 0 }}>{s.cta}</button>
+                {can(s.to) && <button onClick={() => go(s.to)} style={{ padding: '6px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', background: s.done ? 'var(--bg3)' : 'var(--acc)', color: s.done ? 'var(--t2)' : '#fff', border: s.done ? '1px solid var(--bdr)' : 0, flexShrink: 0 }}>{s.cta}</button>}
               </div>
             ))}
           </div>
@@ -110,7 +114,7 @@ export default function StockOverview({ setSection }) {
                 <Attn color="var(--red, #ef4444)" title={`${noPrice.length} item${noPrice.length === 1 ? '' : 's'} with no price`} sub="costs & GP can’t be worked out until these have a supplier price" items={noPrice.slice(0, 4).map(i => i.name)} cta="Fix prices" onClick={() => go('stock-items')} />
               )}
               {unlinked.length > 0 && (
-                <Attn color="#e8a020" title={`${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without a recipe`} sub="these won’t deplete stock or show a cost when sold" items={unlinked.slice(0, 4).map(i => i.name)} cta="Build recipes" onClick={() => go('recipes')} />
+                <Attn color="#e8a020" title={`${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without a recipe`} sub="these won’t deplete stock or show a cost when sold" items={unlinked.slice(0, 4).map(i => i.name)} cta="Build recipes" onClick={can('recipes') ? () => go('recipes') : null} />
               )}
             </div>
           )}
@@ -145,7 +149,7 @@ function Attn({ color, title, sub, items, cta, onClick }) {
     <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderLeft: `3px solid ${color}`, marginBottom: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{title}</div>
-        <button onClick={onClick} style={{ padding: '5px 10px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'var(--bg3)', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>{cta}</button>
+        {onClick && <button onClick={onClick} style={{ padding: '5px 10px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'var(--bg3)', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>{cta}</button>}
       </div>
       <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{sub}</div>
       {items.length > 0 && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>{items.join(' · ')}{items.length >= 4 ? ' …' : ''}</div>}

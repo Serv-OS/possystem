@@ -17,6 +17,11 @@ import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } 
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
+import {
+  planRedemptions, combineRedemptions, pickNext, toggleUnit, removeLastPick, pickBlock, pickBlockText,
+  rewardUnits, rewardUses, usesOf, takenUnits, rewardCapacity, rewardsUsedLabel, receiptRewardLines, rewardsRecord,
+} from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
+import { checkoutLoyaltyView } from '../lib/orderCustomerLoyalty';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
 import { tillTenders, splitTenders } from '../lib/accounting/tenders';
 import { declineLine } from '../lib/declineMessage';
@@ -28,8 +33,11 @@ import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
   fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
-import { checkoutOrderRef } from '../lib/payments/terminalJobCloser';
+import { checkoutOrderRef, watchCheckout } from '../lib/payments/terminalJobCloser';
+import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
+import { suppressReaderTip } from '../lib/payments/readerTipRule';
+import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1003,39 +1011,43 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onRemove, on
 }
 
 // ─── Loyalty rewards entry (v5.5.218) ─────────────────────────────────────────
-// Staff selects a reward to redeem, we call loyalty-redeem, and apply the
-// resulting discount to the checkout total. Follows the same pattern as
-// GiftCardEntry above.
-const FUNCTIONS_URL_LOYALTY = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+// Staff pick the rewards to redeem (one or several since 30 Sep 2026) and the discount is staged
+// on the checkout total; the real redemption fires when the check commits. Follows the same
+// pattern as GiftCardEntry above.
 
 function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onApplied, onBack }) {
   const compact = useCompact();
-  const [redeeming, setRedeeming] = useState(null); // reward id being redeemed
+  // 30 Sep 2026 (Peter, Coffee Boy: "be able to redeem multiple stamp cards on the same order").
+  // Staff PICK rewards instead of tapping one: each tap on a reward adds one use of it to the
+  // cheapest eligible item nobody else has, the ticks under it move that use to another item,
+  // and Apply stages them all at once (lib/loyaltyMultiRedeem.js, pure and tested). A stamp
+  // reward can be used once per completed card; a points reward once, while the points last.
+  // Nothing is consumed server side until the check commits (store.redeemLoyaltyAtCommit, one
+  // loyalty-redeem call per reward), exactly as before.
+  const [picks, setPicks] = useState([]);
   const [error, setError] = useState('');
 
   const rewards = loyaltyData?.rewards || [];
+  const credit = Number(loyaltyData?.credit) || 0;
+  // This site's menu, so a reward saved at another site matches by name (18 Sep 2026), and its
+  // categories, so a reward that names a CATEGORY matches too (v5.9.66).
+  const ctx = {
+    items, total, credit,
+    menuItems: useStore.getState().menuItems || [],
+    categories: useStore.getState().menuCategories || [],
+    customerId: loyaltyData?.customerId || customer?.customerId || null,
+  };
+  const plan = planRedemptions(picks, rewards, ctx);
+  const capacity = rewardCapacity(rewards, { credit });
 
-  const redeem = async (reward) => {
-    setError('');
-    setRedeeming(reward.id);
-    try {
-      // v5.5.896: APPLY-ONLY — nothing is consumed server-side until the check commits
-      // (store.redeemLoyaltyAtCommit, promo-code pattern). Free-item rewards refuse to
-      // apply until an eligible item is in the basket, with a clear message.
-      const applied = await redeemLoyaltyReward(reward, {
-        customerId: loyaltyData.customerId || customer?.customerId,
-        items, total,
-        // This site's menu, so a reward saved at another site matches by name (18 Sep 2026),
-        // and its categories, so a reward that names a CATEGORY matches too (v5.9.66).
-        menuItems: useStore.getState().menuItems || [],
-        categories: useStore.getState().menuCategories || [],
-      });
-      onApplied(applied);
-    } catch (e) {
-      setError(e?.message || 'Could not apply reward');
-    } finally {
-      setRedeeming(null);
-    }
+  const add = (r) => { const res = pickNext(picks, r, rewards, ctx); setError(res.error || ''); setPicks(res.picks); };
+  const less = (r) => { setError(''); setPicks(removeLastPick(picks, r)); };
+  const tick = (r, key) => { const res = toggleUnit(picks, r, key, rewards, ctx); setError(res.error || ''); setPicks(res.picks); };
+  const apply = () => {
+    if (plan.error) { setError(plan.error); return; }
+    const combined = combineRedemptions(plan.redemptions, { customerId: ctx.customerId });
+    if (!combined) return;
+    onApplied(combined);
   };
 
   return (
@@ -1056,7 +1068,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{customer?.name || 'Customer'}</div>
           <div style={{ fontSize: 12, color: 'var(--acc)' }}>
-            {loyaltyData.credit} points available
+            {checkoutLoyaltyView(loyaltyData)?.line || ''}
             {loyaltyData.tier && <span style={{ marginLeft: 6, color: loyaltyData.tier.color || 'var(--t3)' }}>· {loyaltyData.tier.name}</span>}
           </div>
         </div>
@@ -1069,8 +1081,15 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
       )}
 
       {/* Rewards list */}
-      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
-        Choose a reward to redeem
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          Tap a reward to use it
+        </div>
+        {capacity > 0 && (
+          <div style={{ fontSize: 12, fontWeight: 700, color: picks.length ? 'var(--grn)' : 'var(--t4)' }}>
+            {rewardsUsedLabel(picks.length, capacity)}
+          </div>
+        )}
       </div>
 
       {rewards.length === 0 && (
@@ -1079,65 +1098,119 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
         </div>
       )}
 
-      {rewards.map(r => (
-        <button
-          key={r.id}
-          onClick={() => redeem(r)}
-          disabled={!!redeeming}
-          style={{
-            width: '100%', padding: compact ? '12px 14px' : '14px 18px',
-            borderRadius: 12, border: '1.5px solid var(--bdr2)', background: 'var(--bg2)',
-            cursor: redeeming ? 'wait' : 'pointer', fontFamily: 'inherit',
-            display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8,
-            opacity: redeeming && redeeming !== r.id ? 0.5 : 1,
-            transition: 'border-color .14s, transform .14s',
-          }}
-          onMouseEnter={e => { if (!redeeming) { e.currentTarget.style.borderColor = 'var(--acc)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--bdr2)'; e.currentTarget.style.transform = ''; }}
-        >
-          <div style={{
-            width: 36, height: 36, borderRadius: 8, background: 'var(--acc-d, var(--bg3))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 14, flexShrink: 0, border: '1px solid var(--bdr)',
-          }}>
-            {r.icon || 'gift'}
-          </div>
-          <div style={{ flex: 1, textAlign: 'left' }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.label}</div>
-            {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
-            {r.type === 'discount_fixed' && r.value?.amount_minor && (
-              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
-                {money(r.value.amount_minor / 100)} off
+      {rewards.map(r => {
+        const uses = usesOf(picks, r);
+        const maxUses = rewardUses(r);
+        const block = pickBlock(picks, r, rewards, ctx);
+        const units = r.type === 'free_item' ? rewardUnits(r, ctx) : [];
+        const taken = takenUnits(picks);
+        const mine = new Set(picks.filter(p => String(p.rewardId) === String(r.id)).map(p => p.unitKey));
+        return (
+          <div key={r.id} style={{ marginBottom: 8 }}>
+            <button
+              onClick={() => add(r)}
+              disabled={!!block && !uses}
+              style={{
+                width: '100%', padding: compact ? '12px 14px' : '14px 18px',
+                borderRadius: units.length && uses ? '12px 12px 0 0' : 12,
+                border: `1.5px solid ${uses ? 'var(--grn)' : 'var(--bdr2)'}`, background: 'var(--bg2)',
+                cursor: block && !uses ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                display: 'flex', alignItems: 'center', gap: 12,
+                opacity: block && !uses ? 0.55 : 1,
+                transition: 'border-color .14s, transform .14s',
+              }}
+            >
+              <div style={{
+                width: 36, height: 36, borderRadius: 8, background: 'var(--acc-d, var(--bg3))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 14, flexShrink: 0, border: '1px solid var(--bdr)',
+              }}>
+                {r.icon || 'gift'}
               </div>
-            )}
-            {r.type === 'discount_percent' && r.value?.percent && (
-              <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
-                {r.value.percent}% off
+              <div style={{ flex: 1, textAlign: 'left' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{r.label}</div>
+                {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
+                {r.type === 'discount_fixed' && r.value?.amount_minor && (
+                  <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                    {money(r.value.amount_minor / 100)} off
+                  </div>
+                )}
+                {r.type === 'discount_percent' && r.value?.percent && (
+                  <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
+                    {r.value.percent}% off
+                  </div>
+                )}
+                {block === 'no_item' && !uses && (
+                  <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>{pickBlockText(block, r)}</div>
+                )}
               </div>
-            )}
-          </div>
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            {r.stamp ? (
-              <>
-                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--grn)' }}>FREE</div>
-                <div style={{ fontSize: 10, color: 'var(--t4)' }}>stamp card{r.available > 1 ? ` ×${r.available}` : ''}</div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
-                  {r.pointsCost}
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                {r.stamp ? (
+                  <>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--grn)' }}>FREE</div>
+                    <div style={{ fontSize: 10, color: 'var(--t4)' }}>stamp card{maxUses > 1 ? ` ×${maxUses}` : ''}</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--acc)', fontFamily: 'var(--font-mono)' }}>
+                      {r.pointsCost}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
+                  </>
+                )}
+                {/* v5.5.896: explicit affordance — staff didn't realise rows were tappable */}
+                <div style={{ marginTop: 5, fontSize: 9, fontWeight: 800, letterSpacing: '.05em', color: uses ? '#0b0c10' : 'var(--grn)', background: uses ? 'var(--grn)' : 'transparent', border: '1px solid rgba(34,197,94,.4)', borderRadius: 6, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                  {uses ? `${uses} OF ${maxUses} USED` : 'TAP TO USE'}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--t4)' }}>pts</div>
-              </>
+              </div>
+            </button>
+            {units.length > 0 && uses > 0 && (
+              <div style={{ border: '1.5px solid var(--grn)', borderTop: 'none', borderRadius: '0 0 12px 12px', background: 'var(--bg3)', padding: '8px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Free item{uses > 1 ? 's' : ''}</div>
+                  <button onClick={() => less(r)} style={{ padding: '2px 10px', fontSize: 11, fontWeight: 700, borderRadius: 6, border: '1px solid var(--bdr2)', background: 'transparent', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                    Use one fewer
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {units.map(u => {
+                    const ticked = mine.has(u.key);
+                    const other = !ticked && taken.has(u.key);
+                    return (
+                      <button key={u.key} onClick={() => tick(r, u.key)} disabled={other}
+                        style={{
+                          padding: '6px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+                          border: `1px solid ${ticked ? 'var(--grn)' : 'var(--bdr2)'}`,
+                          background: ticked ? 'rgba(34,197,94,.15)' : 'var(--bg2)', color: ticked ? 'var(--grn)' : 'var(--t2)',
+                          cursor: other ? 'not-allowed' : 'pointer', opacity: other ? 0.45 : 1,
+                        }}>
+                        {ticked ? '☑' : '☐'} {u.name} · {money(u.priceMinor / 100)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
-            {/* v5.5.896: explicit affordance — staff didn't realise rows were tappable */}
-            <div style={{ marginTop: 5, fontSize: 9, fontWeight: 800, letterSpacing: '.05em', color: 'var(--grn)', border: '1px solid rgba(34,197,94,.4)', borderRadius: 6, padding: '2px 7px', whiteSpace: 'nowrap' }}>
-              TAP TO REDEEM
-            </div>
+            {units.length === 0 && uses > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <button onClick={() => less(r)} style={{ padding: '2px 10px', fontSize: 11, fontWeight: 700, borderRadius: 6, border: '1px solid var(--bdr2)', background: 'transparent', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Remove
+                </button>
+              </div>
+            )}
           </div>
-          {redeeming === r.id && <div style={{ fontSize: 11, color: 'var(--t3)', marginLeft: 6 }}>...</div>}
+        );
+      })}
+
+      {picks.length > 0 && (
+        <button onClick={apply} style={{
+          marginTop: 12, width: '100%', padding: '12px', borderRadius: 10,
+          border: 'none', background: 'var(--grn)', color: '#0b0c10',
+          fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+        }}>
+          Apply {picks.length} reward{picks.length === 1 ? '' : 's'} · {String.fromCodePoint(0x2212)}{money(plan.discountMinor / 100)}
         </button>
-      ))}
+      )}
 
       <button onClick={onBack} style={{
         marginTop: 12, width: '100%', padding: '10px', borderRadius: 10,
@@ -1304,23 +1377,30 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     redeemLoyaltyReward(pendingLoyaltyReward, {
       customerId: loyaltyData.customerId || customer?.customerId, items, total,
       menuItems: useStore.getState().menuItems || [],
+      // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
+      // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
+      categories: useStore.getState().menuCategories || [],
     })
       .then(r => { if (alive) { setLoyaltyApplied(r); setPendingLoyaltyReward?.(null); } })
       .catch(() => { /* leave for manual apply */ });
     return () => { alive = false; };
   }, [pendingLoyaltyReward, loyaltyData, loyaltyApplied]);
 
-  // Loyalty now supports points and stamp cards independently. The lookup
-  // returns points_enabled / stamps_enabled; treat a missing flag as enabled
-  // (older data / unaffected venues still render points). Only hide when the
-  // flag is EXPLICITLY false. This surface has no stamp-card UI, so we only
-  // need the points gate here (hides the points banner + rewards redeem screen
-  // for a stamps-only venue).
-  const pointsEnabled = loyaltyData?.points_enabled !== false;
+  // The member's loyalty line (lib/orderCustomerLoyalty.js checkoutLoyaltyView). 28 Sep 2026, Peter at
+  // Coffee Boy Leeds: "where the loyalty loads so you can redeem, it's not loading". It loaded, but
+  // this line only showed with points above 0 or a reward, so a stamps only member with no free drink
+  // ready got nothing at all; and it read points_enabled, which the lookup never returns (it says
+  // pointsEnabled). Now every loyalty member the lookup found shows: points where the venue runs
+  // points, each stamp card where it runs stamps, then the rewards to redeem or "Nothing to redeem yet".
+  const loyaltyView = checkoutLoyaltyView(loyaltyData);
 
   const isBarTab = orderType==='bar-tab';
   // Drive thru (16 Sep 2026) skips the tip prompt like takeaway.
+  // 30 Sep 2026: skipTip now only drives the Ryft customer display ask (Ryft readers have no tip
+  // settings of their own). An Adyen reader follows its OWN tip settings for every order type except
+  // a bar tab: Peter, "the tip should follow the rules we set on the card reader side".
   const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection' || orderType==='drive-thru';
+  const skipReaderTip = suppressReaderTip(orderType);
 
   // v5.5.808: resolve the venue's card processor at modal level too — the card
   // press, split card legs and the terminal flow all dispatch by this. Defaults
@@ -1351,6 +1431,35 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [paxJob, setPaxJob] = useState(null);
   const [paxError, setPaxError] = useState('');
   const [paxBusy, setPaxBusy] = useState(false);
+  // 30 Sep 2026: the till's own Adyen 'start' kick still running when the send returned (a promise
+  // of its outcome, lib/payments/kickRace.js), handed to PaxTerminal so it can show a late refusal
+  // and hold its reader auto check until the kick settles. null = the kick answered in time.
+  const [paxKick, setPaxKick] = useState(null);
+  // 30 Sep 2026: the card screen was mounted on a live job THIS checkout did not send ("Watch that
+  // payment"). Nobody here hears that tender end, so PaxTerminal treats it like an open kick.
+  const [paxAdopted, setPaxAdopted] = useState(false);
+  // 30 Sep 2026: terminal-job-create's same_basket advisory (repeat_warning) for the job on screen.
+  const [paxAdvisory, setPaxAdvisory] = useState(null);
+  // 30 Sep 2026: THE SERVER'S DOUBLE CHARGE NET (terminal-job-create § 3e, _shared/repeatCharge.js).
+  //   repeatWarn  a 409 POSSIBLE_REPEAT: this till or reader took a payment for these items minutes
+  //               ago (R5737 booked in the background, then rung again). Shown as a dialog with
+  //               Open <ref>, Clear this order and Different customer, take payment.
+  //   busyOffer   a 409 TERMINAL_BUSY whose detail says THIS till sent the live job: offer to watch
+  //               that payment instead of sending another (mounts the card screen on that job, so
+  //               its approval is booked under the job's own check id and order ref).
+  //   repeatOkRef the job staff confirmed as a different customer, sent once as repeat_ok_job_id.
+  const [repeatWarn, setRepeatWarn] = useState(null);
+  const [busyOffer, setBusyOffer] = useState(null);
+  const repeatOkRef = useRef(null);
+  const takeRepeatOk = () => { const id = repeatOkRef.current; repeatOkRef.current = null; return id; };
+  // 30 Sep 2026: THIS CHECKOUT WATCHES ITS CHECK FROM THE MOMENT CARD IS PRESSED. The mark (by
+  // closed_check_id, lib/payments/terminalJobCloser.js watchCheckout) tells this till's
+  // TerminalJobReconciler to leave the booking to this screen, which books the full record.
+  // PaxTerminal's own mark (by job id) only goes on when the card screen mounts, and the reconciler
+  // booked 48 sales in the gap, 0.1 s after approval. Released on unmount, so closing the checkout
+  // still lets the reconciler book an approved sale at once (and adopt it, see the banner).
+  const checkWatchRef = useRef(null);
+  useEffect(() => () => { checkWatchRef.current?.off?.(); checkWatchRef.current = null; }, []);
   // v5.5.862: ONE check id per checkout, minted on the first send and held for the
   // life of this modal. It does two jobs: (a) it is the pre-minted closed_check_id
   // (was re-minted `chk-${Date.now()}` on EVERY press, breaking idempotent retry),
@@ -1547,6 +1656,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // delivery and any promo / loyalty credit in the basis), so the screen shows the
   // tax actually charged. Without it, the old items-only computation.
   const taxCtx = useStore(s => s.getTaxContext());
+  // 8 Oct 2026 (VAT audit, Fix 3): may this checkout take a tender at all? Shut when the till holds
+  // no tax set up although its menu names rates (lib/tillVatGate.js through store.vatGate): no
+  // card, cash, gift or split starts, and the panel below says why with a Try again that reads the
+  // rates again. Judged once when the checkout opens (and on Try again), never mid tender, so a
+  // card screen that is up is never swapped away under a customer's tap.
+  const [vatGate, setVatGate] = useState(() => useStore.getState().vatGate?.() || null);
+  const [vatRetrying, setVatRetrying] = useState(false);
+  const retryVatRates = async () => {
+    setVatRetrying(true);
+    try { await useStore.getState().refreshTaxRates?.(); } catch { /* the gate below says */ }
+    setVatGate(useStore.getState().vatGate?.() || null);
+    setVatRetrying(false);
+  };
   const itemsTaxBreakdown = useMemo(() => {
     if (typeof taxFor === 'function' || !taxCtxHasConfig(taxCtx)) return null;
     try { return computeOrderTaxUnified(items?.filter(i=>!i.voided)||[], taxCtx, orderType); } catch { return null; }
@@ -1762,6 +1884,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       tip,
       giftRecord,
       loyaltyCredit,
+      // 30 Sep 2026: each reward on the loyalty tender, so a reprint or History read from the
+      // database still shows every free item (the staged object itself is not persisted).
+      loyaltyRewards: rewardsRecord(loyaltyApplied),
       promoCredit,
       bookingPayment: bookingRecord,
       readerLegs: legs,
@@ -1903,13 +2028,40 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   //               gift card already paid — the customer pays twice, then charges back.
   //   charge    = server-computed as due + tip, inside terminal_commit_tip. The POS
   //               never sends a charge figure at all.
+  // 30 Sep 2026: watch this checkout's check (lib/payments/terminalJobCloser.js watchCheckout) so no
+  // reconciler tick on this till books the sale behind this screen. Called FIRST in startTerminalJob,
+  // before the link gate, the gift commit and the create call. Re-keyed if the check id was re-minted
+  // (a gift reversal retires it); the previous mark is released. One live mark per checkout.
+  const watchThisCheck = () => {
+    const watchId = getCheckId();
+    if (checkWatchRef.current?.id === watchId) return;
+    checkWatchRef.current?.off?.();
+    checkWatchRef.current = { id: watchId, off: watchCheckout(watchId) };
+  };
+
+  // 30 Sep 2026: may this checkout mount its card screen on the live job the server named?
+  // Only a counter sale this till sent for the same amount (the money the reader is taking is
+  // this bill), with no gift card staged here (that gift was not debited for that job).
+  const canWatchBusyJob = (detail) => !!detail?.adoptable && !!detail?.job_id && !!detail?.closed_check_id
+    && !tableId && !isBarTab && !paxGiftRef.current
+    && Number(detail.due_minor) === toMinor(grand);
+
+  // Clears the last answer (error, repeat dialog, busy offer) and marks the send as out.
+  const resetCardStart = () => { setPaxError(''); setPaxBusy(true); setRepeatWarn(null); setBusyOffer(null); setPaxAdopted(false); setPaxAdvisory(null); };
+
   const startTerminalJob = async () => {
-    setPaxError(''); setPaxBusy(true);
+    resetCardStart();
     try {
+      watchThisCheck();   // 30 Sep 2026: watched before the gate, the gift commit and the create
       // Database fence stage 1, fix round 2: a till that is not linked never sends a card job
       // (and never debits a staged gift card for one). Nothing is charged; the reason is shown.
       const linkGate = await confirmLinkBeforeCard();
       if (!linkGate.ok) throw new Error(linkGate.message);
+      // 8 Oct 2026 (VAT audit, Fix 3): and never a card job this till cannot book with VAT
+      // (lib/tillVatGate.js). The review screen is already replaced while the gate is shut; this is
+      // the belt for a gate that shut after the checkout opened. Nothing is charged.
+      const vatGateNow = useStore.getState().vatGate?.();
+      if (vatGateNow) throw new Error(vatGateNow.message);
       const locationId = getActiveLocationSync();
       const session = tableId ? useStore.getState().tables.find(t => t.id === tableId)?.session : null;
       // Mint once per checkout (see checkIdRef). Table checks keep the shared
@@ -1917,6 +2069,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // a per-sale leg so they never share a key with a previous customer.
       const checkId = getCheckId();
       const orderRef = getOrderRef();   // 28 Sep 2026: frozen into the draft below
+      // 30 Sep 2026: and onto the walk in on screen, so a sale booked after this checkout closed
+      // can be matched to the cart (TerminalJobReconciler adopts it and clears the cart). Fills an
+      // EMPTY ref only; a cart already sent to the kitchen keeps its ticket's number.
+      if (!tableId && !isBarTab) useStore.getState().freezeWalkInRef?.(orderRef);
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
         leg: tableId ? undefined : checkId,
@@ -1956,10 +2112,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         paxGiftRef.current = paxGiftRecord;
       }
 
-      const { job, kickError, serverKick } = await dispatchTerminalJob({
+      const { job, kickError, serverKick, kickPending, kick, repeatWarning } = await dispatchTerminalJob({
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
+        // 30 Sep 2026: wait 3 s for the Adyen 'start' kick to answer, not the whole tender. The
+        // send used to return only when the customer had finished paying, so this screen showed
+        // "Sending…" with × and Cash live for the entire payment and watched nothing (Huddersfield
+        // R5737/R5739, charged twice). Past 3 s the card screen mounts with the kick still running.
+        kickWaitMs: KICK_WAIT_MS,
+        // 30 Sep 2026: the job staff confirmed as a different customer (see repeatOkRef), or null.
+        // Read and forgotten here, so the ack rides on THIS send only.
+        repeatOkJobId: takeRepeatOk(),
         // v5.8.19: tip % on the food and drink after discounts. billDue carried
         // the service charge, delivery and tax, so "15%" on a 12.5% service table
         // was 15% of subtotal + service + VAT.
@@ -1978,8 +2142,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // it fell closed to "no bands" and showed the customer no tip prompt at
         // all. The venue read that as "tipping is off".
         //
-        // skipTip is still ours to decide — a bar tab, takeaway or collection
-        // takes no tip whatever the terminal is configured for — but it travels
+        // skipReaderTip is still ours to decide (30 Sep 2026: only a bar tab; the
+        // reader's own tip settings decide every other order type), and it travels
         // as a suppression flag, which can only ever make the job LESS tippable.
         //
         // v5.6.90 — location_reader_settings.tipping_enabled no longer feeds this
@@ -1991,7 +2155,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // turn them back on. Venue-level tipping on/off already lives in
         // terminal_devices.tip_config, set per terminal in the Adyen / ServOS
         // panels and resolved server-side by terminal-job-create.
-        suppressTip: skipTip,
+        suppressTip: skipReaderTip,
         // v5.7.5 - the MAIN POS checkout is the one surface allowed to open a
         // tip-on-receipt window. NOT for a bar tab: this same modal is also
         // mounted by BarSurface, and the bar flow stays exactly as it was (a
@@ -2010,7 +2174,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
-          tableLabel: tableId || null,
+          // 30 Sep 2026: a dine in flag order books "Table 30" when the job is closed from this
+          // draft (till gone before the reader answered), as the till's own close does.
+          tableLabel: tableId || flagTableLabel(orderFlag(useStore.getState().walkInOrder, orderType)) || null,
           sessionId: session?.id || null,
           locationId,
           orderType,
@@ -2070,6 +2236,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         },
       });
       setPaxJob(job);
+      setPaxKick(kickPending && kick ? kick : null);
+      setPaxAdvisory(repeatWarning || null);
       // v5.6.86 — if the charge never reached the reader, SAY SO. This used to be
       // a swallowed console.warn, so the till happily showed "present the card"
       // over a terminal that had been told nothing (live 19 Aug: two jobs stuck
@@ -2084,11 +2252,74 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         : `Could not reach the card machine: ${kickError}`);
       setScreen('pax_terminal');
     } catch (e) {
-      setPaxError(e?.message || 'Could not send the payment to the card machine.');
+      // 30 Sep 2026: the server's double charge net (terminal-job-create § 3e). A POSSIBLE_REPEAT
+      // becomes the dialog below; a TERMINAL_BUSY whose live job THIS till sent (adoptable, same
+      // counter sale, same amount, no gift staged on this checkout) offers "Watch that payment".
+      const detail = e?.detail && typeof e.detail === 'object' ? e.detail : null;
+      if (e?.code === 'POSSIBLE_REPEAT' && detail?.job_id) {
+        setRepeatWarn({ ...detail, message: e.message || 'This payment may already have been taken. Do not charge again.' });
+      } else if (e?.code === 'TERMINAL_BUSY') {
+        setPaxError(e?.message || 'The card machine is still taking a payment.');
+        if (canWatchBusyJob(detail)) setBusyOffer(detail);
+      } else {
+        setPaxError(e?.message || 'Could not send the payment to the card machine.');
+      }
     } finally {
       setPaxBusy(false);
     }
   };
+
+  // 30 Sep 2026: WATCH THAT PAYMENT. Take over the job's check id and WATCH IT FIRST, then re-read
+  // the live job, take its order ref (so complete() books under the job's own id, the same id the
+  // reconciler would use) and show the card screen on it. Nothing is sent to the reader.
+  // Review 30 Sep: the watch used to come after the read. The reader can approve between the
+  // TERMINAL_BUSY refusal and the tap; with the job unwatched on this till the reconciler booked
+  // it on its next tick while this screen mounted on an approved row and complete() booked the
+  // same check id from a cart the reconciler had just cleared. Now the reconciler waits 30 s from
+  // the moment this is pressed, and a job already approved is NOT mounted: one writer, the
+  // reconciler, with its banner. On any failure the checkout's own check id comes back.
+  const watchBusyPayment = async (detail) => {
+    setPaxBusy(true); setPaxError('');
+    const ownCheckId = checkIdRef.current;
+    const ownOrderRef = orderRefRef.current;
+    const giveBack = () => { checkIdRef.current = ownCheckId; orderRefRef.current = ownOrderRef; watchThisCheck(); };
+    checkIdRef.current = detail.closed_check_id;
+    watchThisCheck();
+    try {
+      const job = (await fetchJobs([detail.job_id]))?.[0] || null;
+      if (!job?.id || !job.closed_check_id) throw new Error('Could not read that payment. Check the card machine.');
+      if (['declined', 'cancelled', 'expired'].includes(job.status)) {
+        setBusyOffer(null);
+        throw new Error(`That payment ended (${job.status}). No card was charged, take payment again.`);
+      }
+      if (job.status === 'unknown') throw new Error('That payment needs a manager to check it in Back Office before anything else is taken.');
+      if (job.status === 'approved' || job.status === 'reconciled') {
+        // Approved before the tap. The reconciler books it (it is this till's own job) and shows
+        // the sticky banner; this checkout closes so there is exactly one writer.
+        const ref = job.check_draft?.orderRef || detail.order_ref || detail.ref || null;
+        useStore.getState().showToast?.(`That payment was approved and is being booked${ref ? ` as ${ref}` : ''}. Do not take payment again.`, 'info', 8000);
+        setBusyOffer(null);
+        onClose?.();
+        return;
+      }
+      checkIdRef.current = job.closed_check_id;
+      const jobRef = job.check_draft?.orderRef;
+      if (jobRef) orderRefRef.current = jobRef;
+      watchThisCheck();
+      setBusyOffer(null); setPaxJob(job); setPaxKick(null); setPaxAdopted(true); setPaxAdvisory(null); setScreen('pax_terminal');
+    } catch (e) {
+      giveBack();
+      setPaxError(e?.message || 'Could not read that payment.');
+    } finally {
+      setPaxBusy(false);
+    }
+  };
+  // The three answers to the possible repeat dialog. Nothing was sent to the reader, so a gift
+  // card debited at dispatch for this send goes back on the card before the checkout closes
+  // (the same reversal the card screen's Back uses).
+  const openPriorCheck = (ref) => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().openCheckHistoryFor?.(ref); onClose?.(); };
+  const clearRepeatedOrder = () => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().clearWalkIn?.(); onClose?.(); };
+  const takePaymentAnyway = (jobId) => { repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob(); };
 
   const handleCardPress = () => {
     // TRAINING MODE — first, before anything else. A job row would dispatch a
@@ -2163,6 +2394,28 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     gift_card:'Gift card', loyalty_rewards:'Loyalty rewards',
   };
 
+  // 8 Oct 2026 (VAT audit, Fix 3): the till cannot book the VAT of this sale, so no tender starts.
+  // Shown in place of the whole checkout: card, cash, gift and split are all behind it. Nothing has
+  // been charged. Try again reads the rates; Close returns to the order, which stays open.
+  if (vatGate) {
+    return (
+      <div className="modal-back">
+        <div role="alert" data-till-vat-gate={vatGate.code} style={{
+          background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:24,
+          width:'100%', maxWidth:compact?380:500, padding:compact?'18px 16px':'26px 24px',
+          display:'flex', flexDirection:'column', gap:14, boxShadow:'var(--sh3)',
+        }}>
+          <div style={{ fontSize:compact?16:19, fontWeight:800, color:'var(--t1)' }}>Payment cannot start yet</div>
+          <div style={{ fontSize:14, lineHeight:1.5, color:'var(--t2)' }}>{vatGate.message}</div>
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+            <button className="btn btn-ghost" onClick={onClose}>Close</button>
+            <button className="btn btn-primary" disabled={vatRetrying} onClick={retryVatRates}>{vatRetrying ? 'Loading VAT rates…' : 'Try again'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-back">
       <div style={{
@@ -2216,10 +2469,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 had already walked away from — the job stays live, the customer can still
                 tap, and nothing on the POS is listening for the result. Both screens are
                 now treated identically: the in-screen Cancel is the only way out. */}
-            {screen!=='review' && screen!=='card_terminal' && screen!=='pax_terminal' && (
+            {/* 30 Sep 2026: and not while the send itself is out (paxBusy). Between the press and
+                the card screen the job may already be on the reader; × here left the tender live
+                with nothing watching it (Huddersfield R5737). */}
+            {screen!=='review' && screen!=='card_terminal' && screen!=='pax_terminal' && !paxBusy && (
               <button className="btn btn-ghost btn-sm" onClick={()=>setScreen('review')}>← Back</button>
             )}
-            {screen!=='card_terminal' && screen!=='pax_terminal' && (
+            {screen!=='card_terminal' && screen!=='pax_terminal' && !paxBusy && (
               <button onClick={onClose} style={{ width:32, height:32, borderRadius:9, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit', fontSize:18, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
             )}
           </div>
@@ -2236,8 +2492,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           {/* ══ REVIEW ══════════════════════════════════════════════ */}
           {screen==='review' && (
             <>
-              {/* Scrolling region: bill items (+ loyalty banner) */}
-              <div style={{ flex:'1 1 auto', minHeight:0, overflowY:'auto' }}>
+              {/* Scrolling region: bill items (+ loyalty banner).
+                  30 Sep 2026: locked while the send is out (paxBusy): no gift, promo, reward or
+                  discount change can alter a bill the reader may already be charging. */}
+              <div style={{ flex:'1 1 auto', minHeight:0, overflowY:'auto', pointerEvents: paxBusy ? 'none' : undefined, opacity: paxBusy ? .6 : 1 }}>
               {/* Bill items — grouped by course */}
               <div style={{ marginBottom:16, borderRadius:14, border:'1px solid var(--bdr)', overflow:'hidden' }}>
                 {courseNums.map(cNum => (
@@ -2288,8 +2546,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               {/* v5.5.218: Loyalty banner. v5.5.895: ALSO shows when the member has redeemable
                   rewards with zero points — a completed STAMP card was invisible here (the panel
                   required credit > 0 and the rewards screen was points-gated), so stamp rewards
-                  could never be redeemed at the POS. Same gate bug fixed on the kiosk in v5.5.886. */}
-              {loyaltyData && ((pointsEnabled && loyaltyData.credit > 0) || loyaltyData.rewards?.length > 0) && (
+                  could never be redeemed at the POS. Same gate bug fixed on the kiosk in v5.5.886.
+                  28 Sep 2026: shows for every loyalty member, with nothing to redeem too (the stamps). */}
+              {loyaltyView && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
                   padding: '10px 14px', borderRadius: 10,
@@ -2302,8 +2561,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                       {loyaltyData.tier && <span style={{ marginLeft: 8, fontSize: 11, color: loyaltyData.tier.color || 'var(--t3)' }}>({loyaltyData.tier.name})</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
-                      {pointsEnabled && loyaltyData.credit > 0 ? `${loyaltyData.credit} points` : ''}
-                      {loyaltyData.rewards?.length > 0 && `${pointsEnabled && loyaltyData.credit > 0 ? ' · ' : ''}${loyaltyData.rewards.length} reward${loyaltyData.rewards.length !== 1 ? 's' : ''} available`}
+                      {loyaltyView.line}
                     </div>
                   </div>
                   {loyaltyData.rewards?.length > 0 && !loyaltyApplied && (
@@ -2406,23 +2664,34 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(bookingApplied)}</span>
                   </div>
                 )}
-                {loyaltyApplied && (
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(loyaltyCredit)}</span>
+                {/* 30 Sep 2026: one line per reward (several stamp cards on one order), and Change
+                    reopens the picker. Nothing is consumed until the check commits, so changing
+                    costs the customer nothing. */}
+                {loyaltyApplied && receiptRewardLines(loyaltyApplied).map((l, i) => (
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
+                      {'⭐'} {l.label.replace(/^Reward: /, '')}{l.points > 0 ? ` (${l.points} pts)` : ''}
+                      {i === 0 && (
+                        <button onClick={() => { setLoyaltyApplied(null); setScreen('loyalty_rewards'); }}
+                          style={{ marginLeft:8, padding:'1px 8px', fontSize:10, fontWeight:700, borderRadius:6, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t3)', cursor:'pointer', fontFamily:'inherit' }}>
+                          Change
+                        </button>
+                      )}
+                    </span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(l.amount)}</span>
                   </div>
-                )}
+                ))}
                 {giftApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     {/* v5.5.902: removable — the card has not been debited yet, so taking it
                         off costs the customer nothing (before, the money had already gone). */}
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button disabled={paxBusy} onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(giftCredit)}</span>
                   </div>
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${money(promoCredit)}` : '✓'}</span>
                   </div>
                 )}
@@ -2466,11 +2735,43 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               {/* ── Primary payment buttons ── */}
               {/* v5.5.837: a failed dispatch to the card machine must be LOUD. Silently
                   falling back to another path is how the same bill gets taken twice. */}
+              {/* 30 Sep 2026: POSSIBLE REPEAT. The server (terminal-job-create § 3e) found a payment this
+                  till or reader took for these items minutes ago. Nothing was sent to the reader. Three
+                  ways out, all explicit; the send only goes again with the job named in repeat_ok_job_id. */}
+              {repeatWarn && (
+                <div style={{
+                  marginBottom:10, padding:'12px 14px', borderRadius:12, fontSize:13, lineHeight:1.5,
+                  background:'var(--red-d)', color:'var(--t1)', border:'1.5px solid var(--red-b)',
+                }}>
+                  <div style={{ fontWeight:800, color:'var(--red)', marginBottom:4 }}>Already paid?</div>
+                  <div style={{ marginBottom:10 }}>{repeatWarn.message}</div>
+                  {repeatWarn.items && <div style={{ fontSize:12, color:'var(--t3)', marginBottom:10 }}>{repeatWarn.items}</div>}
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    {repeatWarn.ref && (
+                      <button className="btn btn-sm" onClick={()=>openPriorCheck(repeatWarn.ref)} style={{ fontWeight:700 }}>Open {repeatWarn.ref}</button>
+                    )}
+                    {!tableId && !isBarTab && (
+                      <button className="btn btn-sm" onClick={clearRepeatedOrder}>Clear this order</button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" onClick={()=>takePaymentAnyway(repeatWarn.job_id)}>Different customer, take payment</button>
+                  </div>
+                </div>
+              )}
               {paxError && (
                 <div style={{
                   marginBottom:10, padding:'10px 12px', borderRadius:10, fontSize:12, lineHeight:1.5,
                   background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)',
-                }}>{paxError}</div>
+                }}>
+                  {paxError}
+                  {/* 30 Sep 2026: the live job is THIS till's own (adoptable): watch it instead of
+                      sending another. The alternative is to cancel it on the card machine first. */}
+                  {busyOffer && (
+                    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginTop:8 }}>
+                      <button className="btn btn-sm" disabled={paxBusy} onClick={()=>watchBusyPayment(busyOffer)} style={{ fontWeight:700 }}>Watch that payment</button>
+                      <span style={{ color:'var(--t3)' }}>Or cancel it on the card machine first.</span>
+                    </div>
+                  )}
+                </div>
               )}
               {/* v5.7.21 — the booking credit covers the whole bill: nothing left for
                   cash or card, so offer the one honest close. The tender legs and the
@@ -2497,7 +2798,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
                     <span style={{ fontSize:compact?17:20 }}>💳</span>
                     <span style={{ fontSize:compact?13:16, fontWeight:800, color:'var(--card-text)' }}>
-                      {paxBusy ? 'Sending…' : 'Card'}
+                      {paxBusy ? 'Sending to the card machine…' : 'Card'}
                     </span>
                   </div>
                   {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first.
@@ -2510,7 +2811,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   }</div>
                 </button>
 
-                {_canTakeCash && <button onClick={()=>setScreen('cash')} style={{
+                {/* 30 Sep 2026: no Cash while the card send is out; a second tender on a bill the reader
+                    may be taking is how a customer pays twice. */}
+                {_canTakeCash && !paxBusy && <button onClick={()=>setScreen('cash')} style={{
                   flex:1, padding:compact?'9px 8px':'11px 12px', borderRadius:compact?12:14, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--cash-bg)', border:`1.5px solid var(--cash-border)`,
                   display:'flex', flexDirection:'column', alignItems:'center', gap:3,
@@ -2528,7 +2831,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
 
               {/* v5.5.793: Gift card (v5.5.505: also accepts promo codes) + Split — side by side to save vertical space */}
               <div style={{ display:'flex', gap:10 }}>
-                <button onClick={()=>setScreen('gift_card')} style={{
+                <button disabled={paxBusy} onClick={()=>setScreen('gift_card')} style={{
                   flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
                   background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
@@ -2554,7 +2857,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     splitting a part-paid table would re-charge money already taken. The
                     till takes the remainder in one tender instead (any method), or the
                     party finishes on the reader. Disabled rather than silently wrong. */}
-                <button disabled={splitWithReader || splitWithBookingCredit} onClick={()=>{
+                <button disabled={paxBusy || splitWithReader || splitWithBookingCredit} onClick={()=>{
                   if (giftRef.current) {
                     applyGift(null);
                     try { useStore.getState().showToast?.('Gift card removed — apply it to a split portion instead.', 'info'); } catch {}
@@ -2648,6 +2951,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             <PaxTerminal
               job={paxJob}
               terminalLabel={paxTarget?.label || null}
+              // 30 Sep 2026: this till's own kick, still out (lib/payments/kickRace.js), or null.
+              kickPending={!!paxKick || paxAdopted}
+              kick={paxKick}
+              advisory={paxAdvisory}
               onComplete={async (pi)=>{
                 // Derive BOTH legs from the job's integers — tip_minor and
                 // charge_minor — so the recorded tip and the refundable leg are
@@ -2691,7 +2998,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               // one retry staff get if the reversal above failed on a network blip.
               onBack={()=>{
                 reverseDispatchedGift('Card machine payment abandoned');
-                setPaxJob(null); setScreen('review');
+                setPaxJob(null); setPaxKick(null); setScreen('review');
               }}
             />
           )}

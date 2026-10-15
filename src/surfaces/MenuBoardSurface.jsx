@@ -18,8 +18,14 @@
 // ride the same cache so an offline boot still evaluates. Never blank: if the
 // narrowing would leave nothing, or the menus read fails, the full arranged
 // board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
+//
+// Playlist boards (14 Oct 2026, src/lib/menuBoardPlaylist.js): a board of mode 'playlist' lists
+// other boards of the venue and the TV plays them in turn (PlaylistPlayer below), each drawn by
+// the same BoardView that draws a board on its own. The child boards ride in data.children, read
+// by load() and cached with everything else, so a playlist pairs, publishes and refreshes exactly
+// as any board does.
 
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { memo, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
@@ -27,6 +33,7 @@ import { boardItemsByCategory, boardAddOnsByCategory, boardSections, boardSectio
 import { BoardHeader, BoardBody, BoardFooter, Slideshow } from './menuboard/BoardParts';
 import { marketingSlides } from '../lib/menuBoardSlides';
 import { boardFollowsMenus, resolveBoardMenu } from '../lib/menuBoardMenus';
+import { isPlaylist, playlistSequence, itemHoldMs, nextIndex, TRANSITION_MS, PRELOAD_MS } from '../lib/menuBoardPlaylist';
 import { generatePairingCode } from '../lib/pairingCode';
 // The SAME rule the order screens use for a portrait TV. One implementation, so a
 // menu board and an order screen on two identical TVs cannot disagree (21 Sep 2026).
@@ -34,9 +41,10 @@ import { stageSize } from '../lib/orderScreen/orderScreenLayout';
 import { fetchVenueTimezone } from '../lib/venueTimezone';
 import { withTimeout } from '../lib/withTimeout';
 import OrderStatusScreen from './orderScreen/OrderStatusScreen';
+import { readSavedScreen, sameScreen, newPairingMemory, runPairingTick, applyLiveUpdate, decideView, shouldReadEarly, failedBoardRead, EARLY_READ_DELAY_MS, TICK_MS } from '../lib/menuBoardPairing';
+import { stampScreenNote } from '../lib/menuBoardNotes';
 
 const TICK_TIMEOUT_MS = 10000;
-const MISS_SPACING_MS = 10000;   // a missing row counts as a miss at most once per 10s
 
 const DEFAULT_THEME = {
   bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null,
@@ -48,7 +56,7 @@ const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands s
 // Text size → columns: lib/menuBoardSections.js boardColumns. Measure, pack and fit: BoardParts
 // BoardBody (v5.9.76), the SAME body the Back Office preview draws, so the preview is the TV in miniature.
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
-const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id}, kept across tenant-fence wipes
+const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id,location_id,device_uid}, kept across tenant-fence wipes
 // Human pairing code shown on an unassigned screen: generatePairingCode() in
 // src/lib/pairingCode.js (8 chars, 30 symbol alphabet, about 39 bits, crypto random).
 
@@ -65,6 +73,18 @@ const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_
 // src/lib/venueTimezone.js (shared with the order screen). Never the device clock.
 let warnedNoTz = false;
 
+// Follow timed menus is asked for by the board itself, or by any board a playlist plays.
+const dataFollowsMenus = (d) => boardFollowsMenus(d?.board) || (Array.isArray(d?.children) && d.children.some(boardFollowsMenus));
+// The boards a playlist asks for, in its order, each id once, never itself.
+const playlistChildIds = (board) => {
+  const out = [];
+  for (const it of Array.isArray(board?.layout?.items) ? board.layout.items : []) {
+    const id = it && typeof it.boardId === 'string' ? it.boardId.trim() : '';
+    if (id && id !== board.id && !out.includes(id)) out.push(id);
+  }
+  return out;
+};
+
 export default function MenuBoardSurface() {
   // Two ways to drive a screen:
   //   • ?board=<id>  — a direct link to one board (manual fallback / preview).
@@ -76,15 +96,21 @@ export default function MenuBoardSurface() {
 
   const [screen, setScreen] = useState(() => {       // this device's screen row (pairing mode only)
     if (!pairing) return null;
-    try { return JSON.parse(localStorage.getItem(LS_SCREEN) || 'null'); } catch { return null; }
+    try { return readSavedScreen(localStorage.getItem(LS_SCREEN)).screen; } catch { return null; }
   });
-  const screenIdRef = useRef(screen?.id || null);
   const tickRef = useRef(null);                        // re-read our own row now (order screen unassigned, wake, online)
   const effectiveBoardId = urlBoardId || screen?.board_id || null;
 
-  const [locId, setLocId] = useState(null);
+  // 12 Oct 2026, WHY TWO SOURCES FOR THE VENUE. The board cache is kept under the venue id, and
+  // the venue used to come only from a network read. So a TV that restarted with no network sat
+  // on "Loading menu" with a good board saved underneath. The screen row carries its venue (the
+  // same venue as its board: the server refuses any other), so it is saved with the screen and
+  // used until the network read answers. The network answer wins as soon as there is one.
+  const [netLocId, setLocId] = useState(null);
+  const savedLocId = pairing && screen?.board_id && screen.board_id === effectiveBoardId ? (screen.location_id || null) : null;
+  const locId = netLocId || savedLocId;
   const [resolving, setResolving] = useState(true);
-  const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set, menus:[], links:[], tz }
+  const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set, menus:[], links:[], tz, children:[] }
   const dataRef = useRef(null);             // last data set, so a failed timezone read keeps the last good tz
   const reloadTimer = useRef(null);
   const menusSubSeq = useRef(0);            // unique topic per menus subscription, see the Follow-timed-menus effect
@@ -101,92 +127,118 @@ export default function MenuBoardSurface() {
     return () => { if (prev != null) meta.setAttribute('content', prev); };
   }, []);
 
-  // ── device pairing: register/find this screen's row, then watch it for an
+  // ── device pairing: find or register this screen's row, then watch it for an
   // assignment. The device only ever reads/heartbeats its OWN row (RLS scopes it
-  // by device_uid = auth.uid()); it never writes location_id/board_id. ──
+  // by device_uid = auth.uid()); it never writes location_id/board_id.
+  //
+  // 12 Oct 2026, WHY THE RULES MOVED OUT (src/lib/menuBoardPairing.js). On the night of
+  // 11 to 12 Oct one bad realtime message (an error and an empty record) made every Coffee
+  // Boy TV but one save a screen with no id, and one tick later each made itself a new
+  // unpaired row. Now: a live update is only a hint, a TV never gives up its pairing on an
+  // answer it cannot check, and it looks for rows it already owns before it makes one.
+  // This effect only wires the network and the page to those rules. ──
   useEffect(() => {
     if (!pairing || isMock || !supabase) return;
-    let alive = true, ch = null, chId = null;
-    const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch { /* storage blocked */ } };
-    const apply = (r) => {
-      if (!alive || !r) return;
-      screenIdRef.current = r.id;
-      // order_display_id: set when Back Office paired this TV to an ORDER SCREEN (then
-      // board_id is null). Undefined before the 20260911 migration, so it stays null.
-      const s = { id: r.id, code: r.code, board_id: r.board_id || null, order_display_id: r.order_display_id || null };
-      setScreen((prev) => (prev && prev.id === s.id && prev.code === s.code && prev.board_id === s.board_id && prev.order_display_id === s.order_display_id ? prev : s));
-      persist(s);
+    let alive = true, ch = null, chId = null, chSeq = 0;
+    let busy = false, again = false, earlyTimer = null, lastEarlyAt = 0;
+    let saved = { screen: null, broken: false };
+    try { saved = readSavedScreen(localStorage.getItem(LS_SCREEN)); } catch { /* storage blocked */ }
+    if (saved.broken) console.warn('[menuboard] the saved screen had no id. Looking for my own rows first.');
+    let mem = newPairingMemory(saved.screen);
+    let shown = saved.screen;
+    // The one place a screen is put on the page and saved. menuBoardPairing never hands
+    // over a screen with no id, so a screen with no id can never be written again.
+    const show = (s) => {
+      if (!alive || !s) return;
+      shown = s;
+      setScreen((prev) => (sameScreen(prev, s) ? prev : s));
+      try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch { /* storage blocked */ }
+    };
+    // Every pairing request carries THIS device's own token, so it runs as this device or it
+    // fails. Left to itself the client sends the public key when the sign in cannot be
+    // refreshed, and the database then answers "no rows" with no error, which reads exactly
+    // like a removed screen.
+    const asMe = (q, token) => q.setHeader('Authorization', `Bearer ${token}`);
+    const timed = (q, label) => withTimeout(q, TICK_TIMEOUT_MS, label);
+    const tick = async () => {
+      if (!alive) return;
+      if (busy) { again = true; return; }     // one tick at a time; a trigger that lands mid tick runs once after it
+      busy = true;
+      try {
+        // 12 Oct 2026 (review), WHY THE SCREEN IS MERGED AND NOT JUST TAKEN. The tick works on the
+        // memory it was given when it started. A good live update can land while its read is in
+        // flight. If that read then fails (or times out) the tick hands back the screen from
+        // BEFORE the live update, and taking it as it is put the old board back on the TV and in
+        // storage until a read worked: a TV that had just been paired dropped back to its code.
+        // So: when the tick did not change the screen itself, what a live update set stays.
+        const started = mem.screen;
+        const next = await runPairingTick(mem, io);
+        if (alive) {
+          mem = sameScreen(next.screen, started) ? { ...next, screen: mem.screen } : next;
+          if (mem.screen && !sameScreen(mem.screen, shown)) show(mem.screen);
+        }
+      } finally {
+        busy = false;
+        if (again && alive) { again = false; tick(); }
+      }
+    };
+    // One early read, at most once per 10 s, when a live update asks to take the board down.
+    const early = () => {
+      const now = Date.now();
+      if (!alive || !shouldReadEarly({ now, lastAt: lastEarlyAt, pending: !!earlyTimer })) return;
+      lastEarlyAt = now;
+      earlyTimer = setTimeout(() => { earlyTimer = null; tick(); }, EARLY_READ_DELAY_MS);
+    };
+    // A live update is a hint. A bad one is ignored and nothing is read because of it: the
+    // ordinary 12 s tick re-reads anyway. (One bad change reaches EVERY TV at once; a read
+    // and heartbeat from each in reply would be a storm.)
+    const onLive = (p) => {
+      if (!alive) return;
+      const r = applyLiveUpdate(mem, p);
+      mem = r.mem;
+      if (r.action === 'apply') { if (r.changed) show(mem.screen); return; }
+      if (r.action === 'confirm') { console.warn('[menuboard] a live update would clear this screen. Checking with a read first.'); early(); return; }
+      console.warn(`[menuboard] ignored a live update (${r.reason}${r.detail ? `: ${r.detail}` : ''}). Pairing kept.`);
+      if (r.reason !== 'no_screen_held') stampScreenNote({ screen: mem.screen, kind: 'live_ignored', detail: r.detail || r.reason });
     };
     // Realtime for our own row: a best effort instant push on top of the tick, wrapped so it
-    // can never break the tick. Re-subscribes only when the row id changes.
+    // can never break the tick. Re-subscribes only when the row id changes. The topic carries
+    // a sequence number so going back to an earlier row can never pick up a channel that is
+    // still leaving (see the Follow timed menus effect below).
     const subscribe = (sid) => {
       if (!alive || !sid || chId === sid) return;
       if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } ch = null; }
       chId = sid;
       try {
-        ch = supabase.channel(`mbscreen-${sid}`)
-          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, (p) => apply(p.new))
+        ch = supabase.channel(`mbscreen-${sid}-${++chSeq}`)
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, onLive)
           .subscribe();
       } catch { /* realtime is best effort, the 12s tick carries correctness */ }
     };
-    // A fresh unclaimed row with a new code. Retries a code collision only.
-    const createRow = async () => {
-      for (let i = 0; i < 3; i++) {
-        const { data, error } = await withTimeout(
-          supabase.from('menu_board_screens').insert({ code: generatePairingCode() }).select().maybeSingle(),
-          TICK_TIMEOUT_MS, 'New screen row');
-        if (!error) return data || null;
-        if (error.code !== '23505') return null;     // not a code collision → the next tick tries again
-      }
-      return null;
-    };
-    // Reliable loop: re-auth, re-read our row, and stamp last_seen, every 12s. It is also the
-    // boot: the first tick loads the cached row, or makes a row when there is none. It works
-    // even when the realtime socket cannot open on an older TV browser.
-    // Boot rules (a flaky network must never wipe a pairing):
-    //   a failed or timed out read or auth is UNKNOWN: keep the cached screen, retry next tick
-    //   a new row is made only with no cached id, or when a read that SUCCEEDED found no row
-    //     before any read ever found it (the row was removed while the TV was off)
-    // After a read has found the row, a missing row counts as a miss. Three misses at least
-    // 10s apart mean Back Office removed it, so a burst of wake, online and interval triggers
-    // during one short hidden window can never count three times.
-    let found = false, creating = false, misses = 0, lastMissAt = 0;
-    const tick = async () => {
-      try {
-        // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
-        await withTimeout(ensureAuthToken(), TICK_TIMEOUT_MS, 'Auth session');
-        if (!alive) return;
-        const sid = screenIdRef.current;
-        if (sid) {
-          const { data, error } = await withTimeout(
-            supabase.from('menu_board_screens').select('*').eq('id', sid).maybeSingle(),
-            TICK_TIMEOUT_MS, 'Screen row');
-          if (!alive || error) return;
-          if (data) {
-            found = true; misses = 0;
-            apply(data); subscribe(data.id);
-            supabase.rpc('mb_screen_heartbeat', { p_id: data.id }).then(() => {}, () => {});
-            return;
-          }
-          if (found) {
-            const now = Date.now();
-            if (now - lastMissAt < MISS_SPACING_MS) return;
-            lastMissAt = now;
-            if (++misses >= 3) { try { localStorage.removeItem(LS_SCREEN); } catch { /* storage blocked */ } window.location.reload(); }  // genuinely retired in BO
-            return;
-          }
-          screenIdRef.current = null;   // removed while this TV was off: make a fresh row below
-        }
-        if (creating) return;
-        creating = true;
-        try {
-          const row = await createRow();
-          if (alive && row) { found = true; misses = 0; apply(row); subscribe(row.id); }
-        } finally { creating = false; }
-      } catch { /* unknown: keep the cached pairing, the next tick retries */ }
+    // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
+    const io = {
+      // 12 Oct 2026 (review): once this effect is cleaned up, a tick still in flight stops at its
+      // next answer and sends nothing more. Before, it could go on to insert a row while the new
+      // effect did the same (two rows for one new TV on mount, clean up, mount).
+      alive: () => alive,
+      now: () => Date.now(),
+      getToken: () => timed(ensureAuthToken(), 'Auth session'),
+      readRow: (id, token) => timed(asMe(supabase.from('menu_board_screens').select('*').eq('id', id).maybeSingle(), token), 'Screen row'),
+      // Second opinion after an empty read. order_status_feed runs as the database owner, so
+      // row level security cannot hide our row from it. It is only called on that rare path.
+      checkGone: (id, token) => timed(asMe(supabase.rpc('order_status_feed', { p_screen_id: id }), token), 'Screen check'),
+      // Rare path only (no id, three confirmed misses, or once at boot on a row never claimed).
+      // The device_uid filter is needed: a Back Office login can see every screen at its venues.
+      readOwned: (uid, token) => timed(asMe(supabase.from('menu_board_screens').select('*').eq('device_uid', uid).order('created_at', { ascending: false }).limit(50), token), 'Own screens'),
+      insertRow: (token) => timed(asMe(supabase.from('menu_board_screens').insert({ code: generatePairingCode() }).select().maybeSingle(), token), 'New screen row'),
+      heartbeat: (id, token) => { asMe(supabase.rpc('mb_screen_heartbeat', { p_id: id }), token).then(() => {}, () => {}); },
+      subscribe,
+      setScreen: show,
+      say: (line) => console.warn(line),
+      note: (kind, detail, s) => stampScreenNote({ screen: s, kind, detail }),
     };
     tickRef.current = tick;
-    const poll = setInterval(tick, 12000);
+    const poll = setInterval(tick, TICK_MS);
     // iPads and Android WebViews suspend the page and kill the socket: re-read on wake
     // and when the network returns, instead of waiting for the next 12s tick.
     const onVisible = () => { if (document.visibilityState === 'visible') tick(); };
@@ -198,6 +250,7 @@ export default function MenuBoardSurface() {
       alive = false;
       tickRef.current = null;
       clearInterval(poll);
+      clearTimeout(earlyTimer);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('online', onOnline);
       if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } }
@@ -243,20 +296,46 @@ export default function MenuBoardSurface() {
         supabase.from('menu_boards').select('*').eq('id', effectiveBoardId).maybeSingle(),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
       ]);
+      // 12 Oct 2026, WHY A FAILED READ CHANGES NOTHING. These reads do not throw when the network
+      // is down, they answer with an error and no data. That used to be drawn as a board with no
+      // design and no products, and saved over the good copy: a running TV went blank at its next
+      // refresh after the network dropped, and had nothing saved to show after a restart. A read
+      // that failed says nothing about the menu, so the board on screen and its saved copy stay.
+      // An empty answer with NO error is still an answer and is drawn as before.
+      const failed = failedBoardRead({ board: boardRes, categories: catsRes, items: itemsRes });
+      if (failed) { console.warn(`[menuboard] the ${failed} read failed. Keeping the board on screen.`); return; }
       const board = boardRes?.data || null;
       const next = {
         board,
         cats: catsRes?.data || [],
         items: itemsRes?.data || [],
-        six: new Set((sixRes?.data || []).map((r) => r.item_id)),
-        menus: [], links: [], tz: null,
+        // A failed sold out read keeps the last sold out list, not "nothing is sold out".
+        six: sixRes?.error ? new Set(dataRef.current?.six || []) : new Set((sixRes?.data || []).map((r) => r.item_id)),
+        menus: [], links: [], tz: null, children: [],
       };
-      // Follow timed menus: only when the published board asks for it, so a
-      // board with the flag off makes exactly the reads it always has. Each
-      // extra read degrades on its own: no menus = no active menu = the full
-      // arranged board and no tier (never blank); a failed timezone read keeps
+      // A playlist: read the boards it plays in one go (the read policy is public), kept in the
+      // playlist's order with missing ones skipped. A failed read keeps the children on screen,
+      // in the same spirit as failedBoardRead above; with none saved yet (a first boot) it
+      // changes nothing, so a network blip is never drawn as "Playlist is empty" or saved as
+      // one. A board that is not a playlist makes exactly the reads it always has.
+      if (isPlaylist(board)) {
+        const ids = playlistChildIds(board);
+        const cRes = ids.length ? await supabase.from('menu_boards').select('*').in('id', ids) : { data: [] };
+        if (!cRes || cRes.error || !Array.isArray(cRes.data)) {
+          const kept = dataRef.current?.children || [];
+          if (!kept.length) { console.warn('[menuboard] the playlist boards read failed and none are saved. Keeping the screen as it is.'); return; }
+          console.warn('[menuboard] the playlist boards read failed. Keeping the boards on screen.');
+          next.children = kept;
+        } else {
+          next.children = ids.map((cid) => cRes.data.find((b) => b && b.id === cid)).filter(Boolean);
+        }
+      }
+      // Follow timed menus: only when the published board (or a board its playlist
+      // plays) asks for it, so a board with the flag off makes exactly the reads it
+      // always has. Each extra read degrades on its own: no menus = no active menu =
+      // the full arranged board and no tier (never blank); a failed timezone read keeps
       // the last good value rather than silently jumping to London.
-      if (boardFollowsMenus(board)) {
+      if (dataFollowsMenus(next)) {
         const [mRes, lRes, tzRes, psRes] = await Promise.allSettled([fetchMenus(id), fetchMenuCategoryLinks(id), fetchVenueTimezone(id),
           supabase.from('locations').select('pos_settings').eq('id', id).maybeSingle()]);
         next.menus = (mRes.status === 'fulfilled' && Array.isArray(mRes.value?.data)) ? mRes.value.data : [];
@@ -281,8 +360,8 @@ export default function MenuBoardSurface() {
     try {
       const c = JSON.parse(localStorage.getItem(cacheKey(locId, effectiveBoardId)) || 'null');
       if (c) {
-        // A cache written before "Follow timed menus" simply lacks the fields.
-        const d = { ...c, six: new Set(c.six || []), menus: Array.isArray(c.menus) ? c.menus : [], links: Array.isArray(c.links) ? c.links : [], tz: c.tz || null, defaultImage: c.defaultImage || null };
+        // A cache written before "Follow timed menus" (or before playlists) simply lacks the fields.
+        const d = { ...c, six: new Set(c.six || []), menus: Array.isArray(c.menus) ? c.menus : [], links: Array.isArray(c.links) ? c.links : [], tz: c.tz || null, defaultImage: c.defaultImage || null, children: Array.isArray(c.children) ? c.children : [] };
         dataRef.current = d;
         setData(d);
       }
@@ -314,7 +393,7 @@ export default function MenuBoardSurface() {
   // tore the bindings down. No throw, no warning, and no menus or links events
   // ever reached the TV again until a reload. A fresh topic per subscription
   // can never collide with the one that is leaving.
-  const followMenus = boardFollowsMenus(data?.board);
+  const followMenus = dataFollowsMenus(data);
   const menuIdsKey = followMenus
     ? (data?.menus || []).map((m) => m?.id).filter((x) => typeof x === 'string' && /^[A-Za-z0-9_-]+$/.test(x)).sort().join(',')
     : '';
@@ -333,14 +412,20 @@ export default function MenuBoardSurface() {
   // Paired to an ORDER SCREEN (Back Office, Channels, Order screens): the order status
   // board replaces the menu board. It reads only order_status_feed. When the feed says
   // this screen is no longer assigned, re-read our own row now so the code shows again.
-  if (pairing && screen?.order_display_id) {
+  // 12 Oct 2026, the same order of checks as before, now in decideView (lib/menuBoardPairing.js)
+  // so the test of "the board is still shown" runs the rule the TV runs.
+  const view = decideView({ pairing, screen, urlBoardId, hasData: !!data, resolving });
+  if (view === 'order_screen') {
     return <OrderStatusScreen key={screen.id} screenId={screen.id} onUnassigned={() => tickRef.current && tickRef.current()} />;
   }
   // No board yet → device-pairing screen (shows the code to type into Back Office).
-  if (pairing && !effectiveBoardId) return <PairScreen code={screen?.code} />;
-  if (resolving && !data) return <Splash text="Starting menu board…" />;
-  if (!data) return <Splash text="Loading menu…" />;
-  return <Board data={data} />;
+  if (view === 'pair') return <PairScreen code={screen?.code} />;
+  if (view === 'starting') return <Splash text="Starting menu board…" />;
+  if (view === 'loading') return <Splash text="Loading menu…" />;
+  // A playlist plays its boards in turn; any other board is drawn as it is. The player is keyed
+  // on the playlist id, not on data, so a refresh never restarts its clock or a change half way.
+  if (isPlaylist(data.board)) return <PlaylistPlayer key={data.board.id} data={data} children={data.children || []} playlist={data.board} />;
+  return <BoardView data={data} board={data.board} />;
 }
 
 // Full-screen pairing prompt for an unassigned screen.
@@ -356,11 +441,85 @@ function PairScreen({ code }) {
   );
 }
 
-function Board({ data }) {
-  const theme = { ...DEFAULT_THEME, ...(data.board?.theme || {}) };
-  const disp = { ...DEFAULT_DISPLAY, ...(data.board?.display_options || {}) };
-  const mode = data.board?.mode || 'menu';
-  const orientation = data.board?.orientation || 'landscape';
+// ── PlaylistPlayer (14 Oct 2026): one TV, several boards in turn ──────────────
+// Owns the index and the clock; each board is drawn by BoardView with its own orientation, theme,
+// pages and rotation, exactly as it is on its own. PRELOAD_MS before a change the next board is
+// mounted underneath at opacity 0, so its fit loop has settled before it is seen; the change then
+// runs over TRANSITION_MS (fade: cross fade; slide: the next comes in from the right as the
+// current leaves to the left; cut: at once) and the old board is unmounted. One board does not
+// rotate. The caller keys this on the playlist id, so a data refresh keeps the clock; the clock
+// itself is keyed on the list of boards, so a refresh that changes the list starts again cleanly
+// from the first board and one that changes nothing else (a price, a sold out) is not felt.
+export function PlaylistPlayer({ data, children, playlist }) {
+  const seq = useMemo(() => playlistSequence(playlist?.layout, children, { selfId: playlist?.id, locationId: playlist?.location_id }),
+    [playlist, children]);
+  const seqKey = seq.entries.map((e) => `${e.item.id}:${e.board.id}`).join('|');
+  if (!seq.entries.length) return <Splash text="Playlist is empty" sub="Add boards to it in Back Office, Menu boards." />;
+  return <PlaylistClock key={seqKey} data={data} seq={seq} />;
+}
+
+function PlaylistClock({ data, seq }) {
+  const n = seq.entries.length;
+  const [i, setI] = useState(0);              // the board on screen
+  const [next, setNext] = useState(null);     // the board drawn underneath, waiting (null = none)
+  const [moving, setMoving] = useState(false);   // the change is running
+  const [preloaded, setPreloaded] = useState(false);   // was the board on screen drawn underneath first?
+
+  // The hold: draw the next board underneath PRELOAD_MS before the end, then start the change.
+  // seq is read when the hold starts; a refresh half way through a hold does not restart it.
+  // A marketing board's slideshow started when it was drawn underneath, so its hold is shorter
+  // by that lead plus the change in (it was already running while it faded in) and the change
+  // out (so the fade out ends with its last slide, never after the first has come back).
+  useEffect(() => {
+    if (n < 2) return undefined;
+    const e = seq.entries[i % n];
+    const changeMs = seq.transition === 'cut' ? 0 : TRANSITION_MS;
+    const leadMs = preloaded ? PRELOAD_MS + 2 * changeMs : changeMs;
+    const hold = itemHoldMs(e.item, e.board, seq.seconds, { leadMs });
+    const t1 = setTimeout(() => setNext(nextIndex(i, n)), Math.max(0, hold - PRELOAD_MS));
+    const t2 = setTimeout(() => setMoving(true), hold);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [i, n, preloaded]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // The change: once it has run, the next board is the one on screen and the old one goes.
+  useEffect(() => {
+    if (!moving) return undefined;
+    const t = setTimeout(() => { setI((x) => (next == null ? x : next)); setNext(null); setMoving(false); setPreloaded(true); },
+      seq.transition === 'cut' ? 0 : TRANSITION_MS);
+    return () => clearTimeout(t);
+  }, [moving]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cur = seq.entries[i % n];
+  const nxt = next != null && next !== i % n ? seq.entries[next % n] : null;
+  const tr = seq.transition;
+  const ease = `${TRANSITION_MS}ms ease`;
+  // Every layer is a box over the whole TV. A board draws itself position fixed, and a layer with a
+  // transform (slide) or a z-index (all of them) contains that, so the board moves with its layer.
+  const layer = { position: 'absolute', inset: 0, overflow: 'hidden', background: '#14110d' };
+  const curStyle = { ...layer, zIndex: 2,
+    ...(tr === 'fade' && moving ? { opacity: 0, transition: `opacity ${ease}` } : {}),
+    ...(tr === 'slide' ? { transform: moving ? 'translateX(-100%)' : 'translateX(0)', transition: moving ? `transform ${ease}` : 'none' } : {}) };
+  // Fade: the next board sits whole underneath (the current one covers it) and only the current
+  // one fades out, so the picture never dips through half transparent layers.
+  const nxtStyle = { ...layer, zIndex: 1, pointerEvents: 'none', opacity: tr === 'fade' || moving ? 1 : 0,
+    ...(tr === 'slide' ? { transform: moving ? 'translateX(0)' : 'translateX(100%)', transition: moving ? `transform ${ease}` : 'none', zIndex: moving ? 3 : 1 } : {}) };
+  return (
+    <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#14110d' }}>
+      <div key={cur.item.id} style={curStyle}><BoardView data={data} board={cur.board} /></div>
+      {nxt && <div key={nxt.item.id} style={nxtStyle}><BoardView data={data} board={nxt.board} /></div>}
+    </div>
+  );
+}
+
+// One board, drawn as it is on its own: a menu (packed, fitted, its pages in turn) or a marketing
+// slideshow. `board` is the board to draw; `data` carries the venue's categories, items, sold out
+// list, menus, links and clock, shared by every board a playlist plays. memo: the playlist clock
+// re-renders as a change starts, and a render here rebuilds theme and disp, which refits the
+// board; with the same data and board nothing has changed, so neither mounted board refits.
+export const BoardView = memo(function BoardView({ data, board }) {
+  const theme = { ...DEFAULT_THEME, ...(board?.theme || {}) };
+  const disp = { ...DEFAULT_DISPLAY, ...(board?.display_options || {}) };
+  const mode = board?.mode || 'menu';
+  const orientation = board?.orientation || 'landscape';
   const textScale = Math.max(0.6, Math.min(1.6, Number(disp.textScale) || 1));
 
   // ── A PORTRAIT TV (21 Sep 2026) ───────────────────────────────────────────
@@ -370,7 +529,7 @@ function Board({ data }) {
   // sideways. layout.rotate is 0, 90 (turn right) or 270 (turn left), and it
   // rides in the layout jsonb the board already has, so there is no schema
   // change and an old board (no rotate) behaves exactly as it does today.
-  const rotate = Number(data.board?.layout?.rotate) || 0;
+  const rotate = Number(board?.layout?.rotate) || 0;
   const [viewport, setViewport] = useState(() => ({
     vw: typeof window !== 'undefined' ? window.innerWidth || 0 : 0,
     vh: typeof window !== 'undefined' ? window.innerHeight || 0 : 0,
@@ -384,31 +543,31 @@ function Board({ data }) {
   // applyMenuToSections) and picks the price tier. Null = flag off, no menus
   // known, or nothing resolved = the board is exactly its arranged blocks with
   // no tier, which is byte-for-byte the pre-flag behaviour.
-  const followMenus = boardFollowsMenus(data.board);
+  const followMenus = boardFollowsMenus(board);
   const [, setClockTick] = useState(0);
   useEffect(() => {
     if (!followMenus) return;
     const t = setInterval(() => setClockTick((x) => x + 1), 60_000);
     return () => clearInterval(t);
   }, [followMenus]);
-  const activeMenuId = resolveBoardMenu({ board: data.board, menus: data.menus, categories: data.cats, links: data.links, timezone: data.tz });
+  const activeMenuId = resolveBoardMenu({ board, menus: data.menus, categories: data.cats, links: data.links, timezone: data.tz });
 
   const boardRef = useRef(null);
   const [fitTick, setFitTick] = useState(0);
 
   // ordered sections; the body packs them into columns and fills the screen (v5.9.76)
-  const allSections = useMemo(() => (mode === 'menu' ? buildSections(data, activeMenuId) : []), [data, mode, activeMenuId]);
+  const allSections = useMemo(() => (mode === 'menu' ? buildSections(data, board, activeMenuId) : []), [data, board, mode, activeMenuId]);
   // v5.9.71: page breaks split the board into screens that rotate; each fits on its own.
   const pages = useMemo(() => boardPages(allSections), [allSections]);
   const [page, setPage] = useState(0);
-  const pageMs = pageSeconds(data.board?.layout) * 1000;
+  const pageMs = pageSeconds(board?.layout) * 1000;
   useEffect(() => {
     if (mode !== 'menu' || pages.length < 2) { setPage(0); return undefined; }
     const t = setInterval(() => setPage((x) => (x + 1) % pages.length), pageMs);
     return () => clearInterval(t);
   }, [mode, pages.length, pageMs]);
   const sections = pages[page % pages.length] || [];
-  const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
+  const fixedCols = Number(board?.layout?.columns) || 0;   // operator override; 0 = Auto
   const totalItems = sections.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
   // How many columns (lib/menuBoardSections.js boardColumns). The body measures every row, packs
@@ -471,7 +630,7 @@ function Board({ data }) {
   // ── marketing mode: fullscreen slides, no menu (v5.9.71: one after another; a board saved
   // before this plays its single media as one slide) ──
   if (mode === 'marketing') {
-    const m = data.board?.marketing || {};
+    const m = board?.marketing || {};
     const slides = marketingSlides(m);
     return (
       <div ref={boardRef} style={rootStyle}>
@@ -495,7 +654,7 @@ function Board({ data }) {
       {scrim && <div style={scrim} />}
       <div style={stageStyle}>
       <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', padding: pad, boxSizing: 'border-box' }}>
-        <BoardHeader theme={theme} name={data.board?.name} basePx={headerPx} />
+        <BoardHeader theme={theme} name={board?.name} basePx={headerPx} />
 
         <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <BoardBody rootRef={boardRef} sections={sections} cols={cols} textScale={textScale} fontRange={FIT} gapEm={1.7} whole={boardKeepsWhole(disp)} fitKey={fitKey}
@@ -507,7 +666,7 @@ function Board({ data }) {
       </div>
     </div>
   );
-}
+});
 
 // Ordered, non-empty category sections. Variant children (items with a parent_id
 // pointing at a visible item — e.g. Regular/Large under "Pepsi Max") are nested
@@ -515,12 +674,12 @@ function Board({ data }) {
 // activeMenuId (Follow timed menus) narrows the result to the categories on that
 // menu, in the arranged order, falling back to the full board when nothing
 // with items would survive. Null = no narrowing.
-function buildSections(data, activeMenuId = null) {
+function buildSections(data, board, activeMenuId = null) {
   // v5.9.67: one shared rule (lib/menuBoardSections.js). A block may be a subcategory on its
   // own, a block may carry its own heading, and an option only sub item is never a line.
   const itemsByCat = boardItemsByCategory(data.items);
   const addOnsByCat = boardAddOnsByCategory(data.items);
-  const sections = boardSections({ blocks: data.board?.layout?.blocks, cats: data.cats, itemsByCat, addOnsByCat });
+  const sections = boardSections({ blocks: board?.layout?.blocks, cats: data.cats, itemsByCat, addOnsByCat });
   return boardSectionsForMenu(sections, { categories: data.cats, links: data.links, activeMenuId });
 }
 

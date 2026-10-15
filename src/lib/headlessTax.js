@@ -16,13 +16,15 @@
 //      from older till code, or one written by the Table Pay RPC);
 //   3. null only when the venue has no tax set up at all.
 // A product with no rate takes the venue's default rate (lib/tax.js
-// resolveTaxRate), the same on every path.
+// resolveLineTaxRate), the same on every path. 8 Oct 2026: a line naming a rate
+// this till does not hold takes the venue default there too, and the record says
+// so (tax_breakdown.fallbacks), so this file no longer cleans rate ids itself.
 
 import { computeCheckTotals } from './payments/checkTotals.js';
-import { lineTaxRefs } from './venueTaxRates.js';
 import { computeOrderTaxUnified } from './taxCompute.js';
 import { modsTotal } from './channelMoney.js';
 import { isUsableBreakdown, scaleTaxRecord } from './taxShare.js';
+import { roundVat, TAX_FALLBACK_REASONS } from './taxRule.js';
 
 // Moved to taxShare.js (27 Sep 2026) so the check totals seam can use them; re-exported here.
 export { isUsableBreakdown, scaleTaxRecord };
@@ -37,12 +39,7 @@ export function headlessTaxBreakdown(draft, ctx = {}) {
   if (isUsableBreakdown(d.taxBreakdown)) return d.taxBreakdown;
   const hasConfig = (Array.isArray(ctx.taxRates) && ctx.taxRates.length > 0) || !!ctx.hasTaxConfig;
   if (!hasConfig) return null;
-  // A line naming a rate this till does not hold takes the venue default, as at the till
-  // (lineTaxRefs, 27 Sep 2026): never no VAT because of another venue's rate id.
-  const items = (Array.isArray(d.items) ? d.items.filter((i) => i && !i.voided) : []).map((i) => {
-    const refs = lineTaxRefs(i.taxRateId ?? i.tax_rate_id ?? null, i.taxOverrides ?? i.tax_overrides ?? {}, ctx.taxRates);
-    return refs.dropped.length ? { ...i, taxRateId: refs.taxRateId, tax_rate_id: refs.taxRateId, taxOverrides: refs.taxOverrides, tax_overrides: refs.taxOverrides } : i;
-  });
+  const items = Array.isArray(d.items) ? d.items.filter((i) => i && !i.voided) : [];
   if (!items.length) return null;
   try {
     const t = computeCheckTotals({
@@ -59,35 +56,40 @@ export function headlessTaxBreakdown(draft, ctx = {}) {
       creditDiscounts: Array.isArray(d.taxCredits) ? d.taxCredits : [],
     });
     return isUsableBreakdown(t?.tax) ? t.tax : null;
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): never caught into null quietly. The record then meets the
+    // save time guard (lib/saleVatGuard.js), which repairs it from the frozen lines or refuses the
+    // save by name; it is never saved as null at a venue with rates.
+    console.error("[tax] headless close: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }
 
-const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// 8 Oct 2026: the one rounding rule (taxRule.roundVat), half up to the penny; a number in, a number out.
+const round2 = (n) => roundVat(n) ?? 0;
 
 /**
  * The VAT of a list of lines at this till's rates, for a check the till writes
  * without a checkout screen (a QR tab force closed, or closed short, in Orders;
  * 27 Sep 2026, review: these booked tax_amount null). Items only, as the QR
  * checkout computes them: the price the guest was shown already includes any
- * offer. A line naming a rate this till does not hold takes the venue default.
+ * offer. A line naming a rate this till does not hold takes the venue default,
+ * and the record says so (the seam's fallbacks, 8 Oct 2026).
  * Null only when the venue has no tax set up at all, or nothing to tax.
  */
 export function itemsTaxRecord(items, ctx = {}, { orderType = 'dine-in', share = 1 } = {}) {
   const hasConfig = (Array.isArray(ctx.taxRates) && ctx.taxRates.length > 0) || !!ctx.hasTaxConfig;
   if (!hasConfig) return null;
-  const live = (Array.isArray(items) ? items.filter((i) => i && !i.voided) : []).map((i) => {
-    const refs = lineTaxRefs(i.taxRateId ?? i.tax_rate_id ?? null, i.taxOverrides ?? i.tax_overrides ?? {}, ctx.taxRates);
-    return { ...i, taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides };
-  });
+  const live = Array.isArray(items) ? items.filter((i) => i && !i.voided) : [];
   if (!live.length) return null;
   try {
     const t = computeOrderTaxUnified(live, ctx.taxCtx || { taxRates: ctx.taxRates || [] }, orderType);
     if (!isUsableBreakdown(t)) return null;
     return share === 1 ? t : scaleTaxRecord(t, share);
-  } catch {
-    return null;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): logged, never silent; the save time guard repairs or refuses.
+    console.error("[tax] items tax record: the VAT could not be worked out:", e?.message || e);
+    return null;
   }
 }
 
@@ -107,7 +109,13 @@ export function paidShare(paidGoods, items) {
  * Each line's unit price takes its modifiers (modsTotal, as QrCheckout taxed them), and its rate,
  * per order type overrides and tax profile come back from this till's menu by itemId (else the
  * variant's parent), as channelMoney.buildChannelCloseFields does. A line not on this till's menu
- * keeps whatever it carries (none: the venue default, the rule for our own products).
+ * keeps whatever it carries; one that carries no rate of its own takes the venue default and is
+ * flagged 'item-not-on-menu' (8 Oct 2026, D4), never quietly.
+ * 8 Oct 2026 (review): a SIZE row that is on the menu inherits exactly as the till's addItem and
+ * the kiosk's kioskLineTaxRefs do: with no overrides of its own it reads its parent's overrides,
+ * and with no rate of its own its parent's rate. Before this a Babyccino size saved with "Use
+ * default" under a 5% parent booked 20% when its tab was force closed in Orders, and 5% on the
+ * phone or the till. One sale, one rate, whichever screen closes it.
  */
 export function qrTaxLines(items, menuItems = []) {
   const byId = new Map();
@@ -122,10 +130,19 @@ export function qrTaxLines(items, menuItems = []) {
       itemId: i.itemId ?? i.id ?? null,
     };
     if (mi) {
-      out.taxRateId = mi.taxRateId ?? mi.tax_rate_id ?? null;
-      out.taxOverrides = mi.taxOverrides ?? mi.tax_overrides ?? {};
+      let rate = mi.taxRateId ?? mi.tax_rate_id ?? null;
+      let ov = mi.taxOverrides ?? mi.tax_overrides ?? {};
+      const parent = find(mi.parentId ?? mi.parent_id);
+      if (parent && (!ov || typeof ov !== 'object' || Object.keys(ov).length === 0)) {
+        ov = parent.taxOverrides ?? parent.tax_overrides ?? ov;
+        if (!rate) rate = parent.taxRateId ?? parent.tax_rate_id ?? null;
+      }
+      out.taxRateId = rate;
+      out.taxOverrides = ov && typeof ov === 'object' ? ov : {};
       out.taxProfileId = mi.taxProfileId ?? mi.tax_profile_id ?? null;
       if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
+    } else if (!(i.taxRateId ?? i.tax_rate_id) && !i.taxFallback) {
+      out.taxFallback = { reason: TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU, rateId: null };
     }
     return out;
   });
@@ -136,10 +153,12 @@ export function qrTaxLines(items, menuItems = []) {
  * tab the guest closed short. `paidGoods` is the goods money the check books (captured less tip
  * and surcharge); a short capture books only its share of the VAT (paidShare), the rest is taken
  * on the till as its own sale. Returns the closed_checks fields:
- *   taxAmount     the VAT booked (null only when the venue has no tax set up, or nothing to tax)
- *   taxBreakdown  the record, only when added-on tax was charged or it is a share (as every
- *                 customer surface writes tax_breakdown; a share is what reports must read as
- *                 booked, taxShare.bookedTaxRecord)
+ *   taxAmount     the VAT booked (null only when the venue has no tax set up, or nothing to tax),
+ *                 rounded once with the one rule (taxRule.roundVat)
+ *   taxBreakdown  the record, always (8 Oct 2026; it was written only for added-on tax or a
+ *                 share): the split by rate the Xero daily invoice reads, and any fallback note
+ *                 (a line that took the venue default), which must never be dropped. A share is
+ *                 what reports must read as booked (taxShare.bookedTaxRecord).
  *   exclusiveTax  the added-on (US) tax in it, which QR round totals include, so the caller
  *                 takes it out of the subtotal it books (0 for UK VAT)
  * Never throws.
@@ -154,11 +173,13 @@ export function qrCloseTax(items, ctx = {}, { paidGoods = null } = {}) {
     const exclusiveTax = rec.hasExclusiveTax ? round2(Math.max(0, Number(rec.exclusiveTax) || 0)) : 0;
     return {
       taxAmount: round2(rec.totalTax),
-      taxBreakdown: exclusiveTax > 0 || rec.share != null ? rec : null,
+      taxBreakdown: rec,
       exclusiveTax,
     };
-  } catch {
-    return none;   // fail toward the old record (no tax figure), never toward a guessed one
+  } catch (e) {
+    // 8 Oct 2026 (VAT audit, Fix 3): logged, never silent; the save time guard repairs or refuses.
+    console.error("[tax] QR close: the VAT could not be worked out:", e?.message || e);
+    return none;
   }
 }
 

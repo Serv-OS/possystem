@@ -9,6 +9,13 @@
 -- #  place orders through the new server functions. Outside service.         #
 -- #  The file checks this itself and stops (changing nothing) if it is not:  #
 -- #  it refuses to run until 24 hours after a1 FIRST ran.                     #
+-- #                                                                          #
+-- #  2 Oct 2026: RUN 20261002a_OPS_qr_floor_tabs_only.sql BEFORE THIS FILE.   #
+-- #  The trigger this file attaches (order_queue_qr_floor) puts QR orders on  #
+-- #  the floor plan. Until 20261002a it also puts every PAID pay now order    #
+-- #  on its table as an open, unpaid check (Peter, Leeds, 2 Oct: "you get 2   #
+-- #  orders"). 20261002a limits it to open tabs. This file checks it and      #
+-- #  stops (changing nothing) if 20261002a has not run.                       #
 -- ############################################################################
 --
 -- WHAT THIS FILE CLOSES
@@ -71,6 +78,15 @@ begin
      or to_regclass('public.fence_state') is null
      or not exists (select 1 from pg_trigger where tgname = 'order_queue_placed_via' and not tgisinternal) then
     raise exception 'Run 20260919a1_OPS_fence_identity_devices.sql and 20260919a2_OPS_fence_public_orders.sql (this version of both) first. Nothing was changed.';
+  end if;
+  -- 2 Oct 2026 (review): the note at the top of this file is not enough. The trigger attached
+  -- below (order_queue_qr_floor) calls _qr_sync_table_session, and until 20261002a has run that
+  -- function still puts every PAID pay now QR order on its table as an open, unpaid check
+  -- (Peter, Leeds, 2 Oct: "you get 2 orders"). With the trigger on, the server itself would
+  -- write it and no app release could stop it. So this file refuses to run before 20261002a.
+  if to_regprocedure('public._qr_sync_table_session(uuid, text)') is null
+     or position('q.paid or' in pg_get_functiondef('public._qr_sync_table_session(uuid, text)'::regprocedure)) > 0 then
+    raise exception 'Run 20261002a_OPS_qr_floor_tabs_only.sql first: a paid QR order must never be put on its table as an open check. Nothing was changed.';
   end if;
   if to_regprocedure('public.online_kitchen_load(text)') is null then
     raise exception 'online_kitchen_load(text) is missing (20260902_online_kitchen_load.sql). The storefront busy time needs it once order_queue is closed. Nothing was changed.';
@@ -195,6 +211,8 @@ drop policy if exists order_queue_public_insert on public.order_queue;
 -- only on a status, items or paid change, never failing the order write. A paid pay
 -- now order (for example one whose payment was just verified) and every round of an
 -- open tab count; an order whose payment is still being checked does not.
+-- 2 Oct 2026: once 20261002a has run (run it first, see the top of this file) only the
+-- rounds of an open tab count. A paid pay now order is never a check on the table.
 drop trigger if exists order_queue_qr_floor on public.order_queue;
 create trigger order_queue_qr_floor
   after insert or delete or update of status, items, paid on public.order_queue

@@ -8,6 +8,7 @@ import { supabase, isMock, getLocationId } from '../../../lib/supabase';
 import { StatTile, EmptyState, ExportBtn } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { money } from '../../../lib/currency';  // v5.5.326: multi-currency
+import { readAllPagesResult, isTooManyRows, faultText } from '../../../lib/pagedRead';
 
 const TYPE_META = {
   float_in:           { label: 'Opening float',    sign: +1, color: 'var(--acc)' },
@@ -40,40 +41,61 @@ export default function CashDrawer({ fromMs, toMs }) {
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedDrawer, setSelectedDrawer] = useState('all');
+  // 5 Oct 2026: 'too_long' or 'failed' when either read did not come back whole. The report
+  // then shows a plain line and NO rows: sessions without their movements read as cash
+  // sales 0.00 and an expected cash of the float alone, which looks like a real answer.
+  const [fault, setFault] = useState(null);
 
   useEffect(() => {
+    let stale = false;
+    const stop = () => stale;
     (async () => {
       if (isMock || !supabase) { setLoading(false); return; }
       try {
         setLoading(true);
+        setFault(null);
         const locId = await getLocationId();
-        if (!locId) return;
+        if (stale || !locId) return;
         const fromISO = new Date(fromMs).toISOString();
         const toISO = new Date(toMs).toISOString();
         // Sessions that either opened OR closed within the window
-        const { data: s } = await supabase
+        // 5 Oct 2026: both read in pages of 1,000 (lib/pagedRead.js). Neither had a limit, and
+        // the API answers 1,000 rows at most: Barnsley wrote 508 cash movements in its first
+        // 10 days, so a 30 day read was about to lose the newest ones without a word.
+        const sRes = await readAllPagesResult('drawer sessions', (first) => supabase
           .from('drawer_sessions')
-          .select('*')
+          .select('*', first ? { count: 'exact' } : undefined)
           .eq('location_id', locId)
           .gte('cash_in_at', fromISO)
           .lte('cash_in_at', toISO)
-          .order('cash_in_at', { ascending: false });
-        setSessions(s || []);
+          .order('cash_in_at', { ascending: false })
+          .order('id', { ascending: false }), { stop });
+        if (stale) return;
+        if (sRes.error) throw sRes.error;
         // All movements in the same window, we'll attach by session_id
-        const { data: m } = await supabase
+        const mRes = await readAllPagesResult('cash movements', (first) => supabase
           .from('cash_movements')
-          .select('*')
+          .select('*', first ? { count: 'exact' } : undefined)
           .eq('location_id', locId)
           .gte('timestamp', fromISO)
           .lte('timestamp', toISO)
-          .order('timestamp', { ascending: true });
-        setMovements(m || []);
+          .order('timestamp', { ascending: true })
+          .order('id', { ascending: true }), { stop });
+        if (stale) return;
+        if (mRes.error) throw mRes.error;
+        // Both or neither: sessions are only shown with their movements.
+        setSessions(sRes.data || []);
+        setMovements(mRes.data || []);
       } catch (err) {
+        if (stale) return;
         console.warn('[CashDrawer report] failed:', err?.message || err);
+        setSessions([]); setMovements([]);
+        setFault(isTooManyRows(err) ? 'too_long' : 'failed');
       } finally {
-        setLoading(false);
+        if (!stale) setLoading(false);
       }
     })();
+    return () => { stale = true; };
   }, [fromMs, toMs]);
 
   // Attach movements to sessions, compute per-session totals
@@ -158,6 +180,9 @@ export default function CashDrawer({ fromMs, toMs }) {
 
   if (loading) {
     return <div style={{ padding:'40px 20px', textAlign:'center', color:'var(--t4)' }}>Loading drawer sessions…</div>;
+  }
+  if (fault) {
+    return <EmptyState icon="⚠" message={faultText(fault)}/>;
   }
   if (filtered.length === 0) {
     return <EmptyState icon="💰" message="No drawer sessions in this period. Cash in a drawer from Back Office > Cash drawers to start recording."/>;

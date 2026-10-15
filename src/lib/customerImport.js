@@ -1,7 +1,8 @@
 // src/lib/customerImport.js
 //
 // PURE rules for importing a customer list out of another system's CSV. No
-// imports, no supabase client, no fetch, no DOM, no clock read that the caller
+// imports but the phone match key (supabase/functions/_shared/phoneKey.js, pure
+// itself), no supabase client, no fetch, no DOM, no clock read that the caller
 // cannot override. Everything is a function of its arguments, so the admin
 // portal screen (ServOS staff only) and the edge function that writes the rows
 // can both run it and always agree about what the file said.
@@ -26,18 +27,24 @@
 //
 // THE PHONE IS THE KEY, and it is the whole risk in this job.
 //
-//  * Every customer writer in the app looks a person up with an EXACT match on
-//    `customers.phone` (customerLookup.js, store/index.js, loyalty-otp). A phone
-//    stored in a different shape is invisible at the till.
+//  * Every customer writer in the app looks a person up on `customers.phone`
+//    (customerLookup.js, store/index.js, loyalty-otp). Since 29 Sep 2026 that is
+//    the one phone match key, read under the older shapes too, but a phone we
+//    cannot read is still matched on its exact digits only.
 //  * Customers sign in to loyalty with their phone and a one time code, so the
 //    phone we store IS their login. A wrong number is a stranger's login.
 //  * `customers` has a UNIQUE index on (org_id, phone) and another on
 //    (org_id, lower(email)), both where not deleted.
 //
 // THE INVARIANT IS SHAPE PARITY WITH THE TILL. For any cell, the phone we write
-// is exactly what the app's own rule (`appPhone` below, a copy of the three live
-// copies) produces for that cell. The ONLY edits made to a cell before the rule
-// runs are ones that undo damage and invent nothing:
+// is exactly the ONE phone match key (29 Sep 2026: phoneMatchKey in
+// supabase/functions/_shared/phoneKey.js, in the company's country) for that
+// cell, which is what the till, the online and QR orders, the loyalty login and
+// the database (public.phone_match_key) key the same number with. What we wrote
+// before 29 Sep (`appPhone` below, the rule every writer used then) is still a
+// key we look under, so a person an earlier import wrote is never imported
+// twice. The ONLY edits made to a cell before the key is taken are ones that
+// undo damage and invent nothing:
 //
 //  1. A spreadsheet number shape is turned back into its digits: 7.954412324E9
 //     is 7954412324. If the spreadsheet ROUNDED it (7.95441E+09) the digits are
@@ -52,8 +59,9 @@
 //     how many rows it did that to.
 //
 // For any other country, or when we do not know the country, the cell goes
-// through the app's rule UNCHANGED: no zero, no country code, and a leading 44
-// is not read as the UK code (a US area code 440 to 449 is not Britain). The
+// to the key UNCHANGED: no zero, and a leading 44 is not read as the UK code (a
+// US area code 440 to 449 is not Britain). A US company's own 10 digit numbers
+// are read as +1 by the key, as the till in that venue reads them. The
 // first two versions of this file put a zero on every bare ten digit number and
 // then let the app's rule turn 07 into +44, which wrote a US number with a 7xx
 // area code as a real UK mobile belonging to somebody else.
@@ -110,6 +118,8 @@
 // ============================================================================
 
 // ── the template ────────────────────────────────────────────────────────────
+
+import { phoneMatchKey } from '../../supabase/functions/_shared/phoneKey.js';
 
 /** The columns of the file we hand out, in this order. */
 export const TEMPLATE_COLUMNS = [
@@ -603,21 +613,14 @@ export function countryFromVenue(venue) {
 // ── phones ──────────────────────────────────────────────────────────────────
 
 /**
- * The app's OWN phone rule, character for character.
- *
- * There are three identical copies of it live already, and every one of them
- * is a place a customer is looked up or written:
- *   src/store/index.js          _normalisePhone   (the till)
- *   src/lib/customerLookup.js   normalisePhone    (kiosk and online)
- *   supabase/functions/loyalty-otp/index.ts       (the loyalty login)
- *
- * It keeps a leading +, turns 07 plus eleven digits into +44..., turns 44...
- * into +44..., and hands EVERYTHING ELSE back as the bare digits exactly as
- * typed. customerImportParity.test.js holds this copy against customerLookup.js
- * on a table of cells, so it cannot drift.
- *
- * Do NOT change the shape here without changing the three above, which is a
- * different job.
+ * The rule every till, kiosk and loyalty login wrote customers.phone with until
+ * 29 Sep 2026, character for character (phoneKey.js legacyAppPhone), and the
+ * shape this importer wrote until then. It keeps a leading +, turns 07 plus
+ * eleven digits into +44..., turns 44... into +44..., and hands EVERYTHING ELSE
+ * back as the bare digits exactly as typed. NO LONGER WHAT WE WRITE (that is the
+ * phone match key, see readPhone): only a key to look under, so a row written
+ * the old way is found. customerImportParity.test.js holds it against
+ * legacyAppPhone on a table of cells, so it cannot drift.
  */
 export function appPhone(raw) {
   if (!raw) return null;
@@ -647,24 +650,29 @@ function ukProblem(n) {
  * opts.country is the COMPANY's country ('GB', 'US', or '' for not known). See
  * countryFromVenue. It is the only thing that lets us put a 0 back.
  *
- * Returns { phone, e164, app, ok, empty, assumed, reason }.
- *  - phone   what we WRITE. Always what appPhone gives for the cell, after the
- *            four repairs listed at the top of this file and nothing else.
+ * Returns { phone, e164, app, old, ok, empty, assumed, reason }.
+ *  - phone   what we WRITE. Always the phone match key (phoneKey.js) of the
+ *            cell in the company's country, after the four repairs listed at the
+ *            top of this file and nothing else: what the till keys it as.
  *  - e164    the full international form, ONLY when the cell carried a + (or
  *            00) or the company is GB and this is a real UK shape. It is a
  *            second key to look under, because an earlier version of this
  *            importer wrote that shape for a landline. Never invented for a
  *            number from anywhere else.
  *  - app     appPhone on the cell exactly as typed, which is how the till would
- *            have stored it if somebody keyed it in the same way. A third key.
+ *            have stored it before 29 Sep 2026 if somebody keyed it in the same
+ *            way. A third key.
+ *  - old     what this importer wrote for the cell before 29 Sep 2026 (appPhone
+ *            after the repairs). A fourth key, so nobody is imported twice.
  *  - empty   true when the cell was blank (not an error on its own)
  *  - assumed true when we put back a leading zero a spreadsheet ate (GB only)
  *  - reason  short plain words for the operator when ok is false
  */
 export function readPhone(raw, opts) {
-  const gb = normaliseCountry(opts && opts.country) === 'GB';
-  const none = { phone: null, e164: null, app: null, ok: true, empty: true, assumed: false, reason: '' };
-  const no = (reason) => ({ phone: null, e164: null, app: null, ok: false, empty: false, assumed: false, reason });
+  const country = normaliseCountry(opts && opts.country);
+  const gb = country === 'GB';
+  const none = { phone: null, e164: null, app: null, old: null, ok: true, empty: true, assumed: false, reason: '' };
+  const no = (reason) => ({ phone: null, e164: null, app: null, old: null, ok: false, empty: false, assumed: false, reason });
   let text = cleanText(raw);
   if (!text || isBlankWord(text)) return none;
   // A leading apostrophe is how a spreadsheet marks "this is text", and it is
@@ -694,7 +702,9 @@ export function readPhone(raw, opts) {
   const plus = s.startsWith('+');
   const digits = plus ? s.slice(1) : s;
   if (!digits || !/^\d+$/.test(digits)) return no('We cannot read that phone number.');
-  const ok = (phone, e164, assumed) => ({ phone, e164, app: typed, ok: true, empty: false, assumed, reason: '' });
+  // `cell` is the number once repaired, `old` what we wrote for it before 29 Sep 2026.
+  const ok = (cell, old, e164, assumed) =>
+    ({ phone: phoneMatchKey(cell, country) || old, e164, app: typed, old, ok: true, empty: false, assumed, reason: '' });
 
   if (plus) {
     if (digits.startsWith('44')) {
@@ -702,11 +712,11 @@ export function readPhone(raw, opts) {
       let national = digits.slice(2);
       if (national.charAt(0) === '0') national = national.slice(1);
       if (!ukNational(national)) return no(ukProblem(national));
-      return ok('+44' + national, '+44' + national, false);
+      return ok('+44' + national, '+44' + national, '+44' + national, false);
     }
     if (digits.length < 8) return no('That phone number is too short.');
     if (digits.length > 15) return no('That phone number is too long.');
-    return ok('+' + digits, '+' + digits, false);
+    return ok('+' + digits, '+' + digits, '+' + digits, false);
   }
 
   if (gb) {
@@ -715,25 +725,25 @@ export function readPhone(raw, opts) {
       const national = digits.slice(2);
       if (national.charAt(0) === '0') return no('That number has 44 and a 0 on the front. Write it as 07... or +44 7...');
       if (!ukNational(national)) return no(ukProblem(national));
-      return ok(appPhone(digits), '+44' + national, false);
+      return ok(digits, appPhone(digits), '+44' + national, false);
     }
     if (digits.charAt(0) === '0') {
       const national = digits.slice(1);
       if (!ukNational(national)) return no(ukProblem(national));
-      return ok(appPhone(digits), '+44' + national, false);
+      return ok(digits, appPhone(digits), '+44' + national, false);
     }
     // Repair 4: Excel ate the leading zero. Put it back and let the app's rule
     // decide. Only a real UK shape: a US 415 number in a UK file is refused.
-    if (digits.length === 10 && ukNational(digits)) return ok(appPhone('0' + digits), '+44' + digits, true);
+    if (digits.length === 10 && ukNational(digits)) return ok('0' + digits, appPhone('0' + digits), '+44' + digits, true);
     if (digits.length < 10) return no('That phone number is too short. If it lost its 0, put the 0 back.');
     return no('We cannot read that phone number. Put + and the country code on the front.');
   }
 
-  // Not GB, or we do not know the country: the app's own rule on the cell as it
-  // stands. No zero, no country code, and a leading 44 is just digits.
+  // Not GB, or we do not know the country: the key of the cell as it stands. No
+  // zero, and a leading 44 is just digits (a US company's 10 digits are +1).
   if (digits.length < 7) return no('That phone number is too short.');
   if (digits.length > 15) return no('That phone number is too long.');
-  return ok(appPhone(digits), null, false);
+  return ok(digits, appPhone(digits), null, false);
 }
 
 /** The phone we would write for this cell, or null. */
@@ -743,16 +753,16 @@ export function writtenPhone(raw, opts) {
 }
 
 /**
- * Every value customers.phone could already hold for this cell: the shape we
+ * Every value customers.phone could already hold for this cell: the key we
  * write, the E.164 form an earlier importer wrote (only where readPhone would
- * build one, never invented), and the app's rule on the cell as typed. Empty
- * for a cell we cannot read.
+ * build one, never invented), the app's old rule on the cell as typed, and what
+ * this importer wrote before 29 Sep 2026. Empty for a cell we cannot read.
  */
 export function phoneKeys(raw, opts) {
   const out = [];
   const add = (v) => { if (v && out.indexOf(v) < 0) out.push(v); };
   const r = readPhone(raw, opts);
-  if (r.ok) { add(r.phone); add(r.e164); add(r.app); }
+  if (r.ok) { add(r.phone); add(r.e164); add(r.app); add(r.old); }
   return out;
 }
 
@@ -1127,6 +1137,7 @@ export function normaliseRow(row, opts) {
     phone: p.phone,
     phoneE164: p.e164,
     phoneApp: p.app,
+    phoneOld: p.old,
     phoneRaw: phoneRaw || null,
     phoneAssumed: !!p.assumed,
     email: e.email,
@@ -1280,6 +1291,7 @@ export function validateRows(rows, opts) {
           phone: null,
           phoneE164: null,
           phoneApp: null,
+          phoneOld: null,
           phoneRaw: null,
           phoneAssumed: false,
           sharedWith: { field: 'phone', rowNumber: phoneFirst, value: r.phone || r.phoneRaw || '' },

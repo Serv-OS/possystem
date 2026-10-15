@@ -324,8 +324,11 @@ test('Daypart, Shifts, Daily trend and Item trend read no browser clock', () => 
 
 test('Daily trend and Item trend build their days from the range and bucket on the venue clock', () => {
   const bo = read('../BOReports.jsx');
-  assert.match(bo, /<ItemTrend {4}checks=\{filtered\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{range\}\/>/);
-  assert.match(bo, /<DailyTrend {3}checks=\{filtered\} prevChecks=\{filteredPrev\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{range\}\/>/);
+  // 5 Oct 2026: every report also gets the optional multi site props ({...siteProps}).
+  assert.match(bo, /<ItemTrend {4}checks=\{filtered\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{range\} \{\.\.\.siteProps\}\/>/);
+  assert.match(bo, /<DailyTrend {3}checks=\{filtered\} prevChecks=\{filteredPrev\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{trendRange\} \{\.\.\.siteProps\}\/>/);
+  // trendRange (v5.11.29) is the same range with the comparison as it stands now (it moves with the clock).
+  assert.match(bo, /const trendRange\s+= useMemo\(\(\) => \(\{ \.\.\.range, compare: shownCompare \}\), \[range, shownCompare\]\);/);
   const dt = read('./DailyTrend.jsx');
   assert.match(dt, /rangeDays\(range\)/);
   assert.match(dt, /prevRangeDays\(range\)/);
@@ -349,7 +352,8 @@ test('Location compare reads each venue on its own clock, without touching the a
   assert.match(read('../BOReports.jsx'), /<LocationCompare range=\{range\}/);
   const lc = read('./LocationCompare.jsx');
   assert.match(lc, /venueRange\(range, await getVenueClock\(l\.id\)\)/);
-  assert.match(lc, /fetchClosedChecksMultiRange\(windows, 2000\)/);
+  // 5 Oct 2026: no row cap any more, each venue's window is read in full (lib/pagedRead.js).
+  assert.match(lc, /fetchClosedChecksMultiRange\(windows, \{/);
   assert.doesNotMatch(lc, /getLocationConfig|rangeFrom|rangeTo/);
   // getLocationConfig sets the Back Office currency from the row it reads: reading every
   // venue through it would switch £ to $ when a US venue came last.
@@ -358,5 +362,5 @@ test('Location compare reads each venue on its own clock, without touching the a
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.ok(body.length > 100, 'getVenueClock found');
   assert.doesNotMatch(body, /setActiveCurrency|_locationConfigCache\.set/);
-  assert.match(read('../../../lib/db.js'), /export const fetchClosedChecksMultiRange = async \(windows = \[\], limit = 2000\)/);
+  assert.match(read('../../../lib/db.js'), /export const fetchClosedChecksMultiRange = async \(windows = \[\], opts = \{\}\)/);
 });

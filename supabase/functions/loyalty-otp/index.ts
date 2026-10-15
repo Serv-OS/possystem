@@ -25,6 +25,8 @@ import { createSessionToken as mintSessionToken, verifySessionToken as readSessi
 import { giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS } from '../_shared/giftCardMatch.ts';
 import { resolveSenderForOrg } from '../_shared/sending-domain.ts';
 import { maskEmail } from '../_shared/customerMergePlan.js';
+import { orgPhoneRegion, smsPhoneKey, phoneKeyReadable } from '../_shared/phoneKey.js';
+import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 import {
   JOIN_MESSAGES, joinMessage, saveMemberProfile, joinNotice, providerEmailRequest, pickPortalVenue, portalVenueName,
 } from '../_shared/portalEmailJoin.js';
@@ -458,15 +460,50 @@ async function sendJoinNotice(p: {
   } catch { /* the log is best effort */ }
 }
 
-// ── Phone normalisation ──────────────────────────────────────────────────
-function normalisePhone(raw: string): string | null {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  if (digits.startsWith('+')) return digits;
-  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
-  if (digits.startsWith('44')) return '+' + digits;
-  return digits;
+// ── Phone normalisation: the one phone match key (29 Sep 2026, _shared/phoneKey.js) ──
+// The login's organisation and its phone region. The org is the one the login searches (the
+// company's first venue's Ops org, as verify always resolved it). The region is the one EVERY
+// venue of that org shares (their currency), '' when they differ or cannot be read (a number
+// without its country code is then read only by the old UK mobile rule, and anything else is
+// asked for its country code). NEVER from a request field (29 Sep 2026 review): a location_id
+// in the body could be any venue of any company (a US venue made a UK company's bare
+// '7723456789' row answer to a US number), and clients send it on send but not on verify, so
+// the two could text and check different numbers. Send and verify resolve it the same way.
+type LoginOrg = { orgId: string | null; region: string; linked: boolean };
+async function loginOrg(companyId: string): Promise<LoginOrg> {
+  try {
+    const { data: platLoc } = await platformAdmin
+      .from('locations')
+      .select('ops_location_id')
+      .eq('company_id', companyId)
+      .limit(1)
+      .maybeSingle();
+    if (!platLoc?.ops_location_id) return { orgId: null, region: '', linked: false };
+    const { data: opsLoc } = await opsAdmin
+      .from('locations')
+      .select('org_id')
+      .eq('id', platLoc.ops_location_id)
+      .maybeSingle();
+    const orgId = opsLoc?.org_id || null;
+    if (!orgId) return { orgId: null, region: '', linked: true };
+    const { data: venues, error } = await opsAdmin.from('locations').select('currency').eq('org_id', orgId);
+    if (error) return { orgId, region: '', linked: true };
+    return { orgId, region: orgPhoneRegion((venues || []).map((l: { currency: string | null }) => l.currency)), linked: true };
+  } catch {
+    return { orgId: null, region: '', linked: false };
+  }
+}
+
+/**
+ * The loyalty login's number: the phone match key, which must be a whole international number
+ * (E.164) because it is texted (_shared/phoneKey.js smsPhoneKey). A number the org's region
+ * cannot read gets one more reading by the rule every login used before 29 Sep 2026
+ * ('07931129015' is +44 wherever it is typed), so nothing that signed in before is refused now;
+ * the code texted to it proves the reading. null: fewer than 7 digits. A key phoneKeyReadable
+ * refuses: we cannot tell the whole number (ask for it).
+ */
+function loginPhone(raw: string, region: string): string | null {
+  return smsPhoneKey(raw, region);
 }
 
 Deno.serve(async (req) => {
@@ -490,8 +527,17 @@ Deno.serve(async (req) => {
   if (!tokenOnlyAction && !companyId) return json({ error: 'company_id required' }, 400);
   if (!tokenOnlyAction && !rawPhone) return json({ error: 'phone required' }, 400);
 
-  const phone = tokenOnlyAction ? null : normalisePhone(rawPhone);
+  const org = tokenOnlyAction ? null : await loginOrg(companyId);
+  const phoneRegion = org?.region || '';
+  const phone = tokenOnlyAction ? null : loginPhone(rawPhone, phoneRegion);
   if (!tokenOnlyAction && !phone) return json({ error: 'Invalid phone number' }, 400);
+  // Twilio texts only a whole international number: say what is missing instead of a failed send.
+  // Typed with a country code (+ or 00) and still not whole: the number itself is wrong.
+  if (!tokenOnlyAction && !phoneKeyReadable(phone)) {
+    return /^[^0-9+]*(\+|00)/.test(String(rawPhone))
+      ? json({ error: 'That phone number does not look right. Please check it and try again.', code: 'phone_invalid' }, 400)
+      : json({ error: 'Please add your country code to your mobile number (for example +44 or +1).', code: 'phone_country_code' }, 400);
+  }
 
   // ── ACTION: SEND OTP ────────────────────────────────────────────────
   if (action === 'send') {
@@ -609,40 +655,27 @@ Deno.serve(async (req) => {
     // Approved — fall through to resolve org / customer / loyalty and mint the session token.
 
     // ── Resolve org + find/create customer ────────────────────────────
-    // org_id lives on the OPS locations table, not platform. Resolve via
-    // platform → ops_location_id → ops locations.org_id.
-    const { data: platLoc } = await platformAdmin
-      .from('locations')
-      .select('ops_location_id')
-      .eq('company_id', companyId)
-      .limit(1)
-      .maybeSingle();
-
-    if (!platLoc?.ops_location_id) {
+    // org_id lives on the OPS locations table, not platform. Resolved (loginOrg, before the send
+    // and the verify alike) via platform → ops_location_id → ops locations.org_id.
+    if (!org?.linked) {
       return json({ error: 'Company configuration error: no linked location' }, 500);
     }
-
-    const { data: opsLoc } = await opsAdmin
-      .from('locations')
-      .select('org_id')
-      .eq('id', platLoc.ops_location_id)
-      .maybeSingle();
-
-    const orgId = opsLoc?.org_id;
+    const orgId = org.orgId;
     if (!orgId) {
       return json({ error: 'Company configuration error: org not found' }, 500);
     }
 
     // Find customer by phone in ops DB — customers table is the single
     // source of truth for ALL profile data (name, email, phone, birthday, etc.)
+    // 29 Sep 2026: by the key the code was texted to, and the shapes an older build stored THAT
+    // number in (an import kept a landline national in a UK org); the row stored as the key wins,
+    // then the oldest. Only the texted number: never the digits as typed, which the code did not
+    // prove. Never .maybeSingle(): two rows for one number (an older build's duplicate) errored.
+    const readByPhone = async () => (await readCustomerByPhone(opsAdmin, {
+      orgId, phone, region: phoneRegion, cols: 'id, name, email, phone, birthday, marketing_opt_in',
+    })).data;
     let customer: any = null;
-    const { data: existing } = await opsAdmin
-      .from('customers')
-      .select('id, name, email, phone, birthday, marketing_opt_in')
-      .eq('org_id', orgId)
-      .eq('phone', phone)
-      .is('deleted_at', null)
-      .maybeSingle();
+    const existing = await readByPhone();
 
     if (existing) {
       customer = existing;
@@ -662,13 +695,7 @@ Deno.serve(async (req) => {
         .single();
       if (insErr) {
         // Lost a race with a second tab or device creating the same phone: read the winner.
-        const { data: again } = await opsAdmin
-          .from('customers')
-          .select('id, name, email, phone, birthday, marketing_opt_in')
-          .eq('org_id', orgId)
-          .eq('phone', phone)
-          .is('deleted_at', null)
-          .maybeSingle();
+        const again = await readByPhone();
         if (!again) console.error('[loyalty-otp] create customer failed:', insErr.code, insErr.message);
         customer = again;
       } else {

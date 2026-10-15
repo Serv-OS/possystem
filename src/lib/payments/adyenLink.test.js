@@ -721,7 +721,7 @@ const LIVE_CAPS = {
 };
 
 // The daily push to the venue's bank, as sweepSummary answers it.
-const SWEEP = { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: 'daily', status: 'active', transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1', currency: 'GBP' };
+const SWEEP = { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: 'daily', status: 'active', transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1', currency: 'GBP', priorities: ['regular', 'fast'], speed: 'regular' };
 
 // The venue row of a venue that is live and fully linked (its own
 // environment, so step 5 computes; a null row means the flow looks at the
@@ -1425,6 +1425,7 @@ import {
   commissionFromRates, splitLogicFor, splitRule, buildCommissionProfile, profileCommission, commissionLine,
   tieredCommissionRules, buildTieredProfile, flatRateCard, rateCardPriced, pickPayoutInstrument,
   sweepRows, sweepSummary, findPushSweep, sweepPayload, payoutCapabilityState,
+  sweepSpeedOf, sweepPriorities, defaultSweepSpeed, resolveSweepSpeed, SWEEP_SPEEDS, SWEEP_SPEED_LABELS,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
 } from './adyenLink.js';
 
@@ -1445,7 +1446,7 @@ const SWEEPS = { sweeps: [
   { id: 'SWPC_PULL', type: 'pull', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
   { id: 'SWPC_OFF', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'inactive', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
   { id: 'SWPC_OTHER_BANK', type: 'push', category: 'bank', schedule: { type: 'weekly' }, status: 'active', counterparty: { transferInstrumentId: 'SI_SOMEONE_ELSE' }, currency: 'GBP' },
-  { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' }, currency: 'GBP' },
+  { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' }, currency: 'GBP', priorities: ['regular', 'fast'] },
 ] };
 // The live row, 9 Sep 2026 22:20 UTC: the store saved, nothing on the money side.
 const PROVO_ROW = { store_id: PROVO.id, merchant_account: 'FranPOS_QSR_UK', account_holder_id: null, balance_account_id: null, legal_entity_id: null, split_profile_id: null, transfer_instrument_id: null, payouts_ok: false, markup_percent: 0.8, markup_fixed_pence: 5 };
@@ -1942,13 +1943,81 @@ test('sweeps: rows, summary, the push to THIS bank, and the payload that pays it
   assert.equal(findPushSweep(SWEEPS).id, 'SWPC_OTHER_BANK');
   assert.equal(findPushSweep({ sweeps: [] }, 'SI1'), null);
   assert.equal(findPushSweep(null), null);
+  // a GBP payout goes fast by default (10 Oct 2026, Adyen's UK guidance)
   assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), {
-    counterparty: { transferInstrumentId: 'SI1' }, currency: 'GBP', category: 'bank', priorities: ['regular', 'fast'],
+    counterparty: { transferInstrumentId: 'SI1' }, currency: 'GBP', category: 'bank', priorities: ['fast', 'regular'],
     schedule: { type: 'daily' }, status: 'active', type: 'push', description: 'ServOS daily payout, Provo',
   });
   assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', schedule: 'cron', cronExpression: '0 7 * * 1' }).schedule, { type: 'cron', cronExpression: '0 7 * * 1' });
   assert.equal(sweepPayload({ transferInstrumentId: 'SI1', schedule: 'hourly' }).schedule.type, 'daily');
   assert.equal(sweepPayload({ transferInstrumentId: 'SI1' }).description, 'ServOS daily payout');
+});
+
+// ── PAYOUT SPEED (10 Oct 2026) ───────────────────────────────────────────────
+// Adyen support told Peter to put the venue sweeps on priority fast (Faster
+// Payments, same day, a higher fee per transfer). The list's ORDER is the
+// setting; one speed word stands for it on the screen and in the actions.
+test('payout speed: the priorities list and the one speed word, both ways', () => {
+  assert.deepEqual(SWEEP_SPEEDS, ['fast', 'regular']);
+  assert.equal(SWEEP_SPEED_LABELS.fast, 'fast (same day)');
+  assert.equal(SWEEP_SPEED_LABELS.regular, 'regular (1 to 2 working days)');
+  // the word from the list: what comes FIRST decides
+  assert.equal(sweepSpeedOf(['fast', 'regular']), 'fast');
+  assert.equal(sweepSpeedOf(['Fast']), 'fast');
+  assert.equal(sweepSpeedOf(['instant', 'regular']), 'fast');
+  assert.equal(sweepSpeedOf(['regular', 'fast']), 'regular');
+  assert.equal(sweepSpeedOf(['wire']), 'regular');
+  assert.equal(sweepSpeedOf([]), 'regular');
+  assert.equal(sweepSpeedOf(undefined), 'regular');
+  assert.equal(sweepSpeedOf('fast'), 'regular');   // not a list
+  // the list from the word
+  assert.deepEqual(sweepPriorities('fast'), ['fast', 'regular']);
+  assert.deepEqual(sweepPriorities('FAST'), ['fast', 'regular']);
+  assert.deepEqual(sweepPriorities('regular'), ['regular', 'fast']);
+  assert.deepEqual(sweepPriorities(undefined), ['regular', 'fast']);
+  assert.deepEqual(sweepPriorities('quick'), ['regular', 'fast']);
+  // GBP goes fast by default (Adyen's UK guidance), the rest regular
+  assert.equal(defaultSweepSpeed('GBP'), 'fast');
+  assert.equal(defaultSweepSpeed('gbp'), 'fast');
+  assert.equal(defaultSweepSpeed('USD'), 'regular');
+  assert.equal(defaultSweepSpeed('EUR'), 'regular');
+  assert.equal(defaultSweepSpeed(null), 'regular');
+  assert.equal(resolveSweepSpeed('regular', 'GBP'), 'regular');
+  assert.equal(resolveSweepSpeed('FAST', 'USD'), 'fast');
+  assert.equal(resolveSweepSpeed('quick', 'USD'), 'regular');
+  assert.equal(resolveSweepSpeed(undefined, 'GBP'), 'fast');
+  assert.equal(resolveSweepSpeed('', 'GBP'), 'fast');
+});
+
+test('payout speed: the summary carries the list, lower case, and the word; a missing list is regular', () => {
+  const raw = SWEEPS.sweeps[3];
+  assert.deepEqual(sweepSummary(raw).priorities, ['regular', 'fast']);
+  assert.equal(sweepSummary(raw).speed, 'regular');
+  const fastFirst = sweepSummary({ ...raw, priorities: ['Fast', 'Regular'] });
+  assert.deepEqual(fastFirst.priorities, ['fast', 'regular']);
+  assert.equal(fastFirst.speed, 'fast');
+  const noList = sweepSummary({ ...raw, priorities: undefined });
+  assert.deepEqual(noList.priorities, []);
+  assert.equal(noList.speed, 'regular');
+  assert.deepEqual(sweepSummary({ ...raw, priorities: 'fast' }).priorities, []);
+  assert.deepEqual(sweepSummary({ ...raw, priorities: ['', null, 'fast'] }).priorities, ['fast']);
+  // findPushSweep hands the same shape to the screen (golive_state payouts.sweep)
+  assert.equal(findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1').speed, 'regular');
+  assert.deepEqual(findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1').priorities, ['regular', 'fast']);
+});
+
+test('payout speed: the payload takes the speed asked for, else the currency default', () => {
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP', speed: 'regular' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' }).priorities, ['fast', 'regular']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'EUR' }).priorities, ['regular', 'fast']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP' }).priorities, ['fast', 'regular']);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'GBP', speed: 'quick' }).priorities, ['fast', 'regular']);
+  // no currency is GBP, so fast
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1' }).priorities, ['fast', 'regular']);
+  // the speed never touches the rest of the payload
+  const fast = sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' });
+  assert.deepEqual({ ...fast, priorities: undefined }, { ...sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD' }), priorities: undefined });
 });
 
 test('payoutCapabilityState: one word for the payout capability', () => {
@@ -2308,6 +2377,118 @@ test('buildGoliveSteps: a business account search that did not run or split neve
   }
 });
 
+// ── APPLE PAY ON THE GO LIVE STEP (29 Sep 2026, v5.11.17) ────────────────────
+// Coffee Boy: step 4 said done while Adyen had refused every shop address for
+// Apple Pay and the sheet closed at once. Done now needs the live host on
+// Adyen's Apple Pay list (or nothing to register); anything else is
+// attention with the Register for Apple Pay button.
+import { applePayReadiness, APPLE_PAY_NOT_READY_DETAIL, APPLE_PAY_UNKNOWN_DETAIL } from './adyenLink.js';
+
+const CB_HOST = 'coffee-boy-huddersfield.serv-os.app';
+const FRANPOS_LINE = 'Ask FranPOS to tick Management API: Payment methods read and write on the ServOS API credential.';
+const AP_MISSING = { environment: 'live', host: CB_HOST, domains: ['location1.serv-os.app'], missing: [CB_HOST], verification: 'valid', registered: false, read: true, guidance: null };
+const AP_UNREADABLE = { environment: 'live', host: CB_HOST, domains: [], missing: [CB_HOST], verification: null, registered: false, read: false, status: 403, code: 'scope_missing', guidance: FRANPOS_LINE };
+const AP_REGISTERED = { environment: 'live', host: CB_HOST, domains: [CB_HOST], missing: [], verification: 'valid', registered: true, read: true, guidance: null };
+const ATTEMPT_403 = { v: 1, environment: 'live', host: CB_HOST, registered: false, outcome: 'refused', status: 403, error: 'Forbidden', guidance: FRANPOS_LINE, checkedAt: '2026-09-29T12:00:00.000Z', trigger: 'checkout', failures: 3 };
+
+test('buildGoliveSteps: live, the live host read and missing is attention with Register for Apple Pay', () => {
+  const steps = buildGoliveSteps({ ...READY, applePay: AP_MISSING });
+  const s = byId(steps, 'go_live');
+  assert.equal(s.state, 'attention');
+  assert.equal(s.detail, APPLE_PAY_NOT_READY_DETAIL);
+  assert.equal(s.detail, 'Cards work. Apple Pay will not open on the online shop yet.');
+  assert.equal(s.action, 'register_apple_pay_domains');
+  assert.equal(s.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  // the last attempt's reason wins (a POST 403 only shows there)
+  const withAttempt = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, lastAttempt: ATTEMPT_403 } }), 'go_live');
+  assert.equal(withAttempt.hint, FRANPOS_LINE);
+  // then the read's own guidance
+  const withGuidance = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, guidance: "Adyen would not add x: nope." } }), 'go_live');
+  assert.equal(withGuidance.hint, 'Adyen would not add x: nope.');
+  // an attempt for ANOTHER host (the slug changed since) is not this host's reason
+  const otherHost = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, lastAttempt: { ...ATTEMPT_403, host: 'old-slug.serv-os.app' } } }), 'go_live');
+  assert.equal(otherHost.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  // a registered attempt with the host missing now (removed by hand) is not the reason either
+  const stale = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, lastAttempt: { ...ATTEMPT_403, registered: true, guidance: null } } }), 'go_live');
+  assert.equal(stale.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  every120(steps);
+});
+
+// The block golive_state answers when the Apple Pay probe THREW (29 Sep 2026
+// review): a timed out Management API call used to answer { domains: [],
+// verification: null, error } and step 4 turned green.
+const AP_TIMED_OUT = { domains: [], verification: null, registered: false, read: false, environment: 'live', region: 'UK', merchant: 'FranPOS_QSR_UK', host: CB_HOST, code: 'timeout', message: 'Adyen did not answer GET /merchants/FranPOS_QSR_UK/paymentMethodSettings within 15s', error: 'Apple Pay: Adyen did not answer GET /merchants/FranPOS_QSR_UK/paymentMethodSettings within 15s', guidance: 'Adyen did not answer. ServOS tries again by itself.' };
+
+test('buildGoliveSteps: live, the Apple Pay read timed out is attention with the button, never done', () => {
+  const s = byId(buildGoliveSteps({ ...READY, applePay: AP_TIMED_OUT }), 'go_live');
+  assert.equal(s.state, 'attention');
+  assert.equal(s.detail, APPLE_PAY_UNKNOWN_DETAIL);
+  assert.equal(s.action, 'register_apple_pay_domains');
+  assert.equal(s.hint, 'Adyen did not answer. ServOS tries again by itself.');
+  assert.deepEqual(applePayReadiness(AP_TIMED_OUT), { ready: false, detail: APPLE_PAY_UNKNOWN_DETAIL, action: 'register_apple_pay_domains', hint: 'Adyen did not answer. ServOS tries again by itself.' });
+  // the old catch shape (no registered, no read) was the bug: it read as ready
+  assert.equal(applePayReadiness({ domains: [], verification: null, error: 'Apple Pay: Adyen did not answer' }).ready, true);
+});
+
+test('buildGoliveSteps: live, Apple Pay unreadable (403 on the list) is attention that says ServOS cannot check', () => {
+  const s = byId(buildGoliveSteps({ ...READY, applePay: AP_UNREADABLE }), 'go_live');
+  assert.equal(s.state, 'attention');
+  assert.equal(s.detail, APPLE_PAY_UNKNOWN_DETAIL);
+  assert.equal(s.detail, 'Cards work. ServOS cannot check Apple Pay on this venue.');
+  assert.equal(s.action, 'register_apple_pay_domains');
+  assert.equal(s.hint, FRANPOS_LINE);
+  // store scoped is a read that found no entry for this store: not ready, not "cannot check"
+  const scoped = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_UNREADABLE, status: undefined, code: 'apple_pay_store_scoped', guidance: "Apple Pay is set up store by store and this venue's store has none. Ask FranPOS to add it." } }), 'go_live');
+  assert.equal(scoped.state, 'attention');
+  assert.equal(scoped.detail, APPLE_PAY_NOT_READY_DETAIL);
+  assert.match(scoped.hint, /store by store/);
+});
+
+test('buildGoliveSteps: live and done when the host is registered, not read, or there is nothing to register', () => {
+  const reg = byId(buildGoliveSteps({ ...READY, applePay: AP_REGISTERED }), 'go_live');
+  assert.equal(reg.state, 'done');
+  assert.equal(reg.action, null);
+  assert.equal(reg.hint, null);
+  // registered with Apple Pay still pending keeps the verification hint
+  const pending = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_REGISTERED, verification: 'pending' } }), 'go_live');
+  assert.equal(pending.state, 'done');
+  assert.equal(pending.hint, 'Apple Pay is pending at Adyen.');
+  // not read (an older caller, READY itself): done as before
+  assert.equal(byId(buildGoliveSteps(READY), 'go_live').state, 'done');
+  assert.equal(byId(buildGoliveSteps({ ...READY, applePay: null }), 'go_live').state, 'done');
+  assert.equal(byId(buildGoliveSteps({ ...READY, applePay: { domains: [], verification: null } }), 'go_live').state, 'done');
+  // no online address: nothing to register
+  const noShop = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, host: null, missing: [], read: false, code: 'no_storefront' } }), 'go_live');
+  assert.equal(noShop.state, 'done');
+  assert.match(noShop.hint, /nothing to register/);
+  // Apple Pay not switched on: the checkout offers cards only, the sheet never breaks
+  const notOn = byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, read: false, code: 'apple_pay_not_requested' } }), 'go_live');
+  assert.equal(notOn.state, 'done');
+  assert.match(notOn.hint, /cards only/);
+  // a read of the TEST account for a live venue says nothing about the live shop
+  assert.equal(byId(buildGoliveSteps({ ...READY, applePay: { ...AP_MISSING, environment: 'test' } }), 'go_live').state, 'done');
+});
+
+test('buildGoliveSteps: the web addresses still come first', () => {
+  const s = byId(buildGoliveSteps({ ...READY, origins: { registered: false }, applePay: AP_MISSING }), 'go_live');
+  assert.equal(s.state, 'attention');
+  assert.equal(s.action, 'register_origins');
+  // and a venue not live yet is not held up by Apple Pay
+  const onTest = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, applePay: AP_MISSING }, { target: 'live' });
+  assert.notEqual(byId(onTest, 'go_live').action, 'register_apple_pay_domains');
+});
+
+test('applePayReadiness: a hint the step cannot carry falls back to the host', () => {
+  const long = applePayReadiness({ ...AP_MISSING, guidance: 'x'.repeat(130) });
+  assert.equal(long.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  const withId = applePayReadiness({ ...AP_MISSING, guidance: 'Payment method PM3224R223224K5KFSH7X5G8B refused it.' });
+  assert.equal(withId.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  const dash = applePayReadiness({ ...AP_MISSING, guidance: 'Refused — try again.' });
+  assert.equal(dash.hint, `Not registered at Adyen: ${CB_HOST}.`);
+  assert.equal(applePayReadiness({ registered: false }).hint, 'Not registered at Adyen yet.');
+  assert.deepEqual(applePayReadiness(undefined), { ready: true, hint: null });
+});
+
 // ── THE TWO COPIES AGREE (9 Sep 2026) ────────────────────────────────────────
 // The function (Deno) runs _shared/adyenLink.ts and the screen reads its
 // answer, so the step builder and the plain problem lines are checked on THAT
@@ -2369,7 +2550,26 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
     [{ ...READY, rates: { ...READY.rates, readFailed: true } }, { target: 'live' }],
     [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), rates: { currency: 'GBP', tiers: { card_present: READY.rates.tiers.card_present } } }, { target: 'live' }],
   );
+  // 29 Sep 2026: Apple Pay on the go live step (applePayReadiness)
+  shapes.push(
+    [{ ...READY, applePay: AP_MISSING }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_MISSING, lastAttempt: ATTEMPT_403 } }, { target: 'live' }],
+    [{ ...READY, applePay: AP_UNREADABLE }, { target: 'live' }],
+    [{ ...READY, applePay: AP_REGISTERED }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_REGISTERED, verification: 'pending' } }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_MISSING, read: false, code: 'no_storefront' } }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_MISSING, read: false, code: 'apple_pay_not_requested' } }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_UNREADABLE, code: 'apple_pay_store_scoped' } }, { target: 'live' }],
+    [{ ...READY, applePay: { ...AP_MISSING, environment: 'test' } }, { target: 'live' }],
+    [{ ...READY, origins: { registered: false }, applePay: AP_MISSING }, { target: 'live' }],
+    [{ ...READY, applePay: AP_TIMED_OUT }, { target: 'live' }],
+  );
   for (const [state, opts] of shapes) assert.deepEqual(ts.buildGoliveSteps(state, opts), buildGoliveSteps(state, opts));
+  for (const ap of [AP_MISSING, AP_UNREADABLE, AP_REGISTERED, AP_TIMED_OUT, { ...AP_MISSING, guidance: 'x'.repeat(130) }, { registered: false }, null, undefined]) {
+    assert.deepEqual(ts.applePayReadiness(ap), applePayReadiness(ap));
+  }
+  assert.equal(ts.APPLE_PAY_NOT_READY_DETAIL, APPLE_PAY_NOT_READY_DETAIL);
+  assert.equal(ts.APPLE_PAY_UNKNOWN_DETAIL, APPLE_PAY_UNKNOWN_DETAIL);
   // the review helpers answer the same on both sides
   for (const raw of PROBLEM_RAWS) assert.deepEqual(ts.plainAdyenProblem(raw), plainAdyenProblem(raw));
   const slipCard = { card_present: { percent: 140, fixed_pence: 5 }, card_not_present: { percent: 14, fixed_pence: 60 }, amex: { percent: 1.255, fixed_pence: 4.6 }, keyed: { percent: 'x', fixed_pence: -1 } };
@@ -2431,6 +2631,23 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
   assert.deepEqual(ts.RATE_TIER_LABELS, RATE_TIER_LABELS);
   assert.deepEqual(ts.findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'), findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'));
   assert.deepEqual(ts.sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }));
+  // the payout speed (10 Oct 2026) reads the same on both sides of the wire
+  for (const p of [
+    { transferInstrumentId: 'SI1', currency: 'GBP' }, { transferInstrumentId: 'SI1', currency: 'USD' }, { transferInstrumentId: 'SI1' },
+    { transferInstrumentId: 'SI1', currency: 'GBP', speed: 'regular' }, { transferInstrumentId: 'SI1', currency: 'USD', speed: 'fast' }, { transferInstrumentId: 'SI1', currency: 'USD', speed: 'quick' },
+  ]) assert.deepEqual(ts.sweepPayload(p), sweepPayload(p));
+  for (const s of [SWEEPS.sweeps[3], { ...SWEEPS.sweeps[3], priorities: ['Fast', 'Regular'] }, { ...SWEEPS.sweeps[3], priorities: undefined }, { id: 'S', schedule: 'weekly' }]) {
+    assert.deepEqual(ts.sweepSummary(s), sweepSummary(s));
+  }
+  assert.deepEqual(ts.findPushSweep(SWEEPS, null), findPushSweep(SWEEPS, null));
+  assert.deepEqual(ts.SWEEP_SPEEDS, SWEEP_SPEEDS);
+  assert.deepEqual(ts.SWEEP_SPEED_LABELS, SWEEP_SPEED_LABELS);
+  for (const l of [['fast', 'regular'], ['regular', 'fast'], ['instant'], ['wire'], [], undefined, 'fast']) assert.equal(ts.sweepSpeedOf(l), sweepSpeedOf(l));
+  for (const w of ['fast', 'FAST', 'regular', 'quick', undefined]) assert.deepEqual(ts.sweepPriorities(w), sweepPriorities(w));
+  for (const c of ['GBP', 'gbp', 'USD', 'EUR', null]) {
+    assert.equal(ts.defaultSweepSpeed(c), defaultSweepSpeed(c));
+    for (const w of ['fast', 'regular', 'quick', undefined]) assert.equal(ts.resolveSweepSpeed(w, c), resolveSweepSpeed(w, c));
+  }
   assert.equal(ts.payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))), payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))));
   assert.equal(ts.HOLDER_NOT_SAVED_DETAIL, HOLDER_NOT_SAVED_DETAIL);
   assert.equal(ts.liableBalanceAccountSecretName('live', 'UK'), liableBalanceAccountSecretName('live', 'UK'));

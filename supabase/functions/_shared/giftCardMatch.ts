@@ -23,9 +23,10 @@
 // PURE. No imports, no Deno globals, so node tests can import this file directly.
 
 // ── The app's own phone rule ─────────────────────────────────────────────
-// Byte for byte the rule in src/lib/customerLookup.js normalisePhone (and store._normalisePhone,
-// loyalty-otp, loyalty-balance): keep digits and '+', UK mobile 07xxxxxxxxx becomes +447xxxxxxxxx,
-// 44... becomes +44... . A node test pins that the two copies agree.
+// Byte for byte the rule customers.phone was written with until 29 Sep 2026 (phoneKey.js
+// legacyAppPhone; the till now keys with phoneMatchKey, the same +44 for every UK mobile): keep
+// digits and '+', UK mobile 07xxxxxxxxx becomes +447xxxxxxxxx, 44... becomes +44... . A node test
+// pins that the two copies agree.
 export function normaliseMemberPhone(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
   const digits = String(raw).replace(/[^\d+]/g, '');

@@ -13,6 +13,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useStore } from '../../../store';
 import { getLocationId } from '../../../lib/supabase';
 import { loadBookingsRange } from '../../../lib/bookings/bookingsData';
+import { faultText } from '../../../lib/pagedRead';
 import { StatTile, ExportBtn, EmptyState, BarRow } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { reportClock, dayOfCheck, rangeDays, weekdayOf } from './_filters';
@@ -52,6 +53,9 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = 
   const floorTables = useStore(s => s.tables) || [];
   const [bookings, setBookings] = useState(null);   // null = loading
   const [loading, setLoading]   = useState(true);
+  // 5 Oct 2026: 'too_long' or 'failed' when the read did not come back whole; the report
+  // then says so and shows no figures (a failed read used to show as no bookings).
+  const [fault, setFault]       = useState(null);
 
   const fromISO = fromDay || null;
   const toISO   = toDay || null;
@@ -60,15 +64,18 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = 
     if (!fromISO || !toISO) { setBookings([]); setLoading(false); return; }
     let alive = true;
     setLoading(true);
+    setFault(null);
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
         if (!locId) { if (alive) setBookings([]); return; }
-        const { data } = await loadBookingsRange(locId, fromISO, toISO);
-        if (alive) setBookings(data || []);
+        const { data, error, tooMany } = await loadBookingsRange(locId, fromISO, toISO);
+        if (!alive) return;
+        if (error) setFault(tooMany ? 'too_long' : 'failed');
+        setBookings(error ? [] : (data || []));
       } catch (err) {
         console.warn('[BookingsReport] load failed:', err?.message || err);
-        if (alive) setBookings([]);
+        if (alive) { setBookings([]); setFault('failed'); }
       } finally {
         if (alive) setLoading(false);
       }
@@ -179,6 +186,9 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, fmtN = 
 
   if (loading) {
     return <div style={{ padding:'40px 20px', textAlign:'center', color:'var(--t4)' }}>Loading bookings…</div>;
+  }
+  if (fault) {
+    return <EmptyState icon="⚠" message={faultText(fault)}/>;
   }
   if (rows.length === 0) {
     return <EmptyState icon="📅" message="No bookings in this range. Bookings taken at the host stand, by phone or through the web widget will appear here."/>;

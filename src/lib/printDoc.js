@@ -17,6 +17,21 @@ import { money } from './currency.js';
 import { v2ReceiptLines, taxLineLabel, breakdownLabel } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
+import { receiptRewardLines } from './loyaltyMultiRedeem.js';
+
+/**
+ * The reward lines for a check: what the till staged (check.loyaltyRewards, [{ label, amount }]),
+ * else the rewards kept on the loyalty tender ([{ name, item, amount }], tenders.js), else the
+ * staged loyalty object itself (an in-memory History record). [] when the check used none.
+ */
+export function receiptRewardsOf(check) {
+  if (Array.isArray(check?.loyaltyRewards)) return check.loyaltyRewards.filter(l => l && Number(l.amount) > 0);
+  const tender = (Array.isArray(check?.tenders) ? check.tenders : []).find(t => t && t.method === 'loyalty' && Array.isArray(t.rewards));
+  if (tender) {
+    return tender.rewards.map(r => ({ label: `Reward: ${r?.name || 'Loyalty reward'}${r?.item ? ` (${r.item})` : ''}`, amount: Number(r?.amount) || 0 }));
+  }
+  return receiptRewardLines(check?.loyaltyRedemption).filter(l => l.amount > 0);
+}
 
 /** db.js shortOrderRef, mirrored so this file stays import free of Supabase: 'R1247' gives '47'. */
 export function shortOrderRef(ref) {
@@ -157,6 +172,13 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
   (Array.isArray(check?.discounts) ? check.discounts : []).forEach(d => {
     const amt = Number(d.amount ?? d.value) || 0;
     if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-${mny(amt)}`);
+  });
+  // 30 Sep 2026: each loyalty reward on its own line ("Reward: Free Drink (Latte)"), so a member
+  // who used two stamp cards on one order sees both. The till passes them on check.loyaltyRewards
+  // (lib/loyaltyMultiRedeem.js receiptRewardLines); a reprint reads them off the loyalty tender.
+  // A check with no reward prints exactly as before (the goldens pin that).
+  receiptRewardsOf(check).forEach(l => {
+    if (l.amount > 0) b.twoCol(String(l.label).substring(0, 34), `-${mny(l.amount)}`);
   });
   if(totals.service>0) b.twoCol('Service',mny(totals.service));
   if(totals.tip>0) b.twoCol('Tip',mny(totals.tip));
@@ -305,6 +327,28 @@ export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42
 }
 
 // ─── Kitchen ticket ───────────────────────────────────────────────────────────
+
+// The name of one line on a kitchen docket, big print, 22 characters a line (2 Oct 2026).
+// Peter, Coffee Boy Leeds: "it's not showing the product, just the size". The docket cut every
+// name at 22 characters, and on a size line the size is the END of the name: "Blueberry Iced
+// Matcha — Big Boy" printed "BLUEBERRY ICED MATCHA " and the barista could not tell a Big Boy
+// from a Small Boy (59 of the 118 size lines at Leeds are longer than 22). A name that is too
+// long AND ends in " — <size>" now prints the product on the first line and the size on a
+// second, indented like the mods. Every name that fits, and a long name with no size, prints
+// exactly as before.
+const DOCKET_NAME_MAX = 22;
+const DOCKET_SIZE_JOIN = ' — ';   // the long dash every channel writes between product and size
+
+export function docketNameLines(name) {
+  const full = String(name || '').toUpperCase();
+  if (full.length <= DOCKET_NAME_MAX) return [full];
+  const at = full.lastIndexOf(DOCKET_SIZE_JOIN);
+  const product = at > 0 ? full.slice(0, at).trim() : '';
+  const size = at > 0 ? full.slice(at + DOCKET_SIZE_JOIN.length).trim() : '';
+  if (!product || !size) return [full.substring(0, DOCKET_NAME_MAX)];
+  return [product.substring(0, DOCKET_NAME_MAX), size.substring(0, DOCKET_NAME_MAX - 2)];
+}
+
 export function buildKitchenTicketDoc({ table, server, covers, centreName, items, sentAt, delivery, itemLabel, reprint }, { cols = 42 } = {}) {
   const b = new DocBuilder(cols);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -402,7 +446,10 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
       const qty=item.qty>1?`${item.qty}x `:'';
       // Triple-naming: kitchen tickets print the item's explicit kitchen name when the line
       // carries one.
-      b.text(qty+(item.kitchenName||item.name||'').toUpperCase().substring(0,22)).lf();
+      // 2 Oct 2026: a long "<product> — <size>" name keeps its size, on a second line.
+      const [nameLine, sizeLine] = docketNameLines(item.kitchenName||item.name);
+      b.text(qty+nameLine).lf();
+      if (sizeLine) b.text('  '+sizeLine).lf();
       b.normal();
       if(item.seat) b.fontB().line(`  Seat ${item.seat}`).fontA();
       // Each mod/instruction on its own red line

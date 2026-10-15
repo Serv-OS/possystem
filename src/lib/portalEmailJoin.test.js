@@ -489,7 +489,10 @@ test('gift cards still come only from the phone proven with the code (safeguard 
 test('verify stays phone only: no email lookup, no join', () => {
   const src = read('../../supabase/functions/loyalty-otp/index.ts');
   const verify = src.slice(src.indexOf("if (action === 'verify') {"), src.indexOf("if (action === 'refresh') {"));
-  assert.ok(verify.includes(".eq('phone', phone)"));
+  // found by the phone the code proved (29 Sep 2026: by the one phone match key), nothing else:
+  // never the digits as typed, which the code did not prove (29 Sep 2026 review)
+  assert.ok(verify.includes('await readCustomerByPhone(opsAdmin, {') && verify.includes('orgId, phone, region: phoneRegion,'));
+  assert.ok(!verify.includes('typed: rawPhone'));
   assert.ok(!verify.includes("'email'") && !verify.includes('ilike') && !verify.includes('saveMemberProfile') && !verify.includes('runPortalJoin'));
   assert.ok(!/link_?email/i.test(src), 'no link email flow');
 });

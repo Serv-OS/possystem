@@ -1599,6 +1599,49 @@ export function planFingerprint(plan) {
 // does not name yet (link_all, 10 Sep 2026): one click saves every id.
 export const DETAILS_NOT_SAVED_DETAIL = 'Adyen holds the venue’s details, they are not saved on the venue yet.';
 
+// ── APPLE PAY ON THE GO LIVE STEP (29 Sep 2026, v5.11.17) ───────────────────
+// Step 4 used to read done on the web origins alone, so Coffee Boy's screen
+// said done while Adyen had refused every shop address for Apple Pay and the
+// sheet closed at once. It now asks applePayReadiness, which reads
+// golive_state's applePay block ({ registered, read, missing, code, guidance,
+// host, verification, lastAttempt, environment }):
+//   registered true            done, the verification hint kept
+//   registered not given       done (not read, or an older caller)
+//   no_storefront              done, nothing to register yet
+//   apple_pay_not_requested    done, the checkout offers cards only
+//   read false                 attention: ServOS cannot check it
+//   registered false           attention: Apple Pay will not open yet
+// Both attention cases carry register_apple_pay_domains, and the hint is the
+// last attempt's guidance for this host, else the read's, else the host. A
+// block read on another environment than live changes nothing here.
+export const APPLE_PAY_NOT_READY_DETAIL = 'Cards work. Apple Pay will not open on the online shop yet.';
+export const APPLE_PAY_UNKNOWN_DETAIL = 'Cards work. ServOS cannot check Apple Pay on this venue.';
+// A hint the step can carry: 120 characters at most, no dash, no Adyen id.
+const plainApplePayHint = (v) => {
+  const t = str(v);
+  if (!t || t.length > 120 || /[\u2013\u2014]/.test(t) || /\b(AH|ST|BA|LE|SI|SC|SWPC|PM)[0-9A-Z]{10,}\b/.test(t)) return '';
+  return t;
+};
+export function applePayReadiness(applePay) {
+  const a = isObj(applePay) ? applePay : {};
+  const v = lower(a.verification);
+  const verificationHint = v && v !== 'valid' ? `Apple Pay is ${v} at Adyen.` : null;
+  const code = lower(a.code);
+  if (str(a.environment) && lower(a.environment) !== 'live') return { ready: true, hint: verificationHint };
+  if (code === 'no_storefront') return { ready: true, hint: 'Apple Pay has nothing to register until the venue has an online address.' };
+  if (code === 'apple_pay_not_requested') return { ready: true, hint: 'Apple Pay is not switched on at Adyen, so the online shop offers cards only.' };
+  if (a.registered !== false) return { ready: true, hint: verificationHint };
+  const host = str(a.host) || (Array.isArray(a.missing) ? str(a.missing[0]) : '');
+  const last = isObj(a.lastAttempt) ? a.lastAttempt : null;
+  const lastForHost = last && last.registered !== true && (!host || !str(last.host) || lower(last.host) === lower(host)) ? last : null;
+  const hint = plainApplePayHint(lastForHost ? lastForHost.guidance : '')
+    || plainApplePayHint(a.guidance)
+    || plainApplePayHint(host ? `Not registered at Adyen: ${host}.` : '')
+    || 'Not registered at Adyen yet.';
+  const unknown = a.read === false && code !== 'apple_pay_store_scoped';
+  return { ready: false, detail: unknown ? APPLE_PAY_UNKNOWN_DETAIL : APPLE_PAY_NOT_READY_DETAIL, action: 'register_apple_pay_domains', hint };
+}
+
 // The business accounts could not be searched because the Adyen platform
 // name for this environment and region is not known yet (10 Sep 2026). Never
 // "no business account": nothing was searched. The step carries
@@ -1607,6 +1650,44 @@ export const PLATFORM_STEP_DETAIL = 'ServOS cannot search Adyen for this venue u
 // Two business accounts carry the venue code: the step carries pick_holder
 // and the screen draws the picker on it.
 export const HOLDER_AMBIGUOUS_DETAIL = 'More than one business account carries the code.';
+
+// ── PAYOUT SPEED (10 Oct 2026) ───────────────────────────────────────────────
+// Adyen pays a sweep by the first priority in its list that the bank can
+// take, so the ORDER is the setting. regular is the ordinary transfer (1 to
+// 2 working days). fast is Faster Payments in the UK (same day, a higher fee
+// per transfer); instant is the same idea where a bank offers it. One speed
+// word stands for the list, on the screen and in the admin actions:
+//   fast      priorities ['fast', 'regular']    (regular is the fallback)
+//   regular   priorities ['regular', 'fast']
+// WHY a GBP payout defaults to fast (10 Oct 2026): Adyen support told Peter to
+// change the venue sweeps to priority fast, and Adyen's platforms payouts
+// guide says "For the UK, set the transfer priority to Fast". Every other
+// currency stays regular until the Faster payouts switch is flipped.
+export const SWEEP_SPEEDS = ['fast', 'regular'];
+// The words the screen shows after "Payouts:".
+export const SWEEP_SPEED_LABELS = {
+  fast: 'fast (same day)',
+  regular: 'regular (1 to 2 working days)',
+};
+// The speed word of a priorities list: fast when fast or instant comes
+// first, else regular (a missing list reads as regular, Adyen's own default).
+export function sweepSpeedOf(priorities) {
+  const first = Array.isArray(priorities) ? lower(priorities[0]) : '';
+  return first === 'fast' || first === 'instant' ? 'fast' : 'regular';
+}
+// The priorities list for a speed word (anything but fast is regular).
+export function sweepPriorities(speed) {
+  return lower(speed) === 'fast' ? ['fast', 'regular'] : ['regular', 'fast'];
+}
+// The speed a currency gets when nobody chose one: GBP fast, the rest regular.
+export function defaultSweepSpeed(currency) {
+  return str(currency).toUpperCase() === 'GBP' ? 'fast' : 'regular';
+}
+// The speed asked for when it is a known word, else the currency's default.
+export function resolveSweepSpeed(speed, currency) {
+  const s = lower(speed);
+  return s === 'fast' || s === 'regular' ? s : defaultSweepSpeed(currency);
+}
 
 // Rows of GET /balanceAccounts/{id}/sweeps ({ sweeps: [...] }) or a bare array.
 export function sweepRows(response) {
@@ -1619,6 +1700,7 @@ export function sweepRows(response) {
 export function sweepSummary(sweep) {
   if (!isObj(sweep)) return null;
   const cp = isObj(sweep.counterparty) ? sweep.counterparty : {};
+  const priorities = Array.isArray(sweep.priorities) ? sweep.priorities.map((p) => lower(p)).filter(Boolean) : [];
   return {
     id: orNull(sweep.id),
     type: lower(sweep.type) || null,
@@ -1627,6 +1709,8 @@ export function sweepSummary(sweep) {
     status: lower(sweep.status) || null,
     transferInstrumentId: orNull(cp.transferInstrumentId),
     currency: str(sweep.currency).toUpperCase() || null,
+    priorities,
+    speed: sweepSpeedOf(priorities),
   };
 }
 
@@ -1643,16 +1727,19 @@ export function findPushSweep(list, transferInstrumentId) {
 
 // POST /balanceAccounts/{id}/sweeps: the full available balance to the bank
 // on the schedule (daily by default). No sweepAmount, targetAmount or
-// triggerAmount, so everything goes.
-export function sweepPayload({ transferInstrumentId, currency, schedule = 'daily', cronExpression, description } = {}) {
+// triggerAmount, so everything goes. `speed` (10 Oct 2026) picks the
+// priorities: fast or regular, else the currency's default (a GBP payout
+// goes fast, and so does a payload with no currency, which is GBP).
+export function sweepPayload({ transferInstrumentId, currency, schedule = 'daily', cronExpression, description, speed } = {}) {
   const type = ['daily', 'weekly', 'monthly', 'balance', 'cron'].includes(lower(schedule)) ? lower(schedule) : 'daily';
   const sched = { type };
   if (type === 'cron' && str(cronExpression)) sched.cronExpression = str(cronExpression);
+  const ccy = str(currency).toUpperCase() || 'GBP';
   return {
     counterparty: { transferInstrumentId: str(transferInstrumentId) },
-    currency: str(currency).toUpperCase() || 'GBP',
+    currency: ccy,
     category: 'bank',
-    priorities: ['regular', 'fast'],
+    priorities: sweepPriorities(resolveSweepSpeed(speed, ccy)),
     schedule: sched,
     status: 'active',
     type: 'push',
@@ -2013,7 +2100,11 @@ export function buildGoliveSteps(state = {}, opts = {}) {
   else if (env === 'live' && storeReady && !originsOk) {
     out.push(step('go_live', { state: 'attention', detail: 'Real cards are on. Online checkout still needs its web addresses.', action: 'register_origins', hint: 'One click adds them.' }));
   } else if (env === 'live' && storeReady) {
-    out.push(step('go_live', { state: 'done', detail: `${str(venue.name) || 'This venue'} takes real cards.`, hint: str(applePay.verification) && lower(applePay.verification) !== 'valid' ? `Apple Pay is ${lower(applePay.verification)} at Adyen.` : null }));
+    // Done only when Apple Pay is ready too (applePayReadiness, 29 Sep 2026).
+    const ap = applePayReadiness(applePay);
+    out.push(ap.ready
+      ? step('go_live', { state: 'done', detail: `${str(venue.name) || 'This venue'} takes real cards.`, hint: ap.hint })
+      : step('go_live', { state: 'attention', detail: ap.detail || APPLE_PAY_NOT_READY_DETAIL, action: ap.action || 'register_apple_pay_domains', hint: ap.hint }));
   } else if (env === 'live' && storeActive && !mismatch && !storeSaved) {
     // Live, the store is fine at Adyen, and the venue row does not name it:
     // a card names a store the venue has not been told about. Step 3 saves it.

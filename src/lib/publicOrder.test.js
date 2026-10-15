@@ -18,7 +18,7 @@ import {
   openTabsFromResult, qrSessionWriteAction, UNVERIFIED_MESSAGE,
   onlineChargedTotalMinor, buildDeclaredDiscounts, loyaltyProofKey, withinMs, publicOrderRefusalMessage,
   tabRoundJoinCode, mergeResumeTab, verifyPaymentInBackground, VERIFY_DELAYS_MS, trackerPaymentChecking,
-  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage, mergeTrackerRow, afterPlaced,
+  qrRowOnFloor, tabHoldFor, tabCloseRefusalMessage, mergeTrackerRow, afterPlaced, qrTableLabel,
 } from './publicOrder.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -434,15 +434,17 @@ test('C17: the customer is told the venue is confirming the payment, never to pa
 
 // ── Fix round 2 (19 Sep 2026) ───────────────────────────────────────────────────
 
-test('LOW: the phone\'s floor sync never puts an order whose payment is being checked on the floor plan', () => {
-  // Same rule as the order_queue_qr_floor trigger of 20260919b: paid, or a round of an open tab.
-  assert.equal(qrRowOnFloor({ paid: true, customer: {} }), true);
+test('the phone\'s floor sync puts only the rounds of an open tab on the floor plan', () => {
+  // 2 Oct 2026 (Peter, Leeds: "it's opening 2 tables ... that needs to not happen"): a pay now
+  // order is paid and finished, so it is never an open check on the table. The live row:
+  assert.equal(qrRowOnFloor({ ref: 'QR-FAUOB', paid: true, customer: { tableId: 'T6', tableLabel: 'T6.1', paid: true } }), false, 'QR-FAUOB, paid on the phone');
+  assert.equal(qrRowOnFloor({ paid: true, customer: {} }), false);
+  assert.equal(qrRowOnFloor({ customer: { paid: true } }), false, 'an order the old direct insert wrote (before 20260919a2)');
   assert.equal(qrRowOnFloor({ paid: false, customer: { tab_open: true } }), true, 'a round of an open tab');
   assert.equal(qrRowOnFloor({ paid: false, customer: { tab_open: 'true' } }), true, 'the server\'s own boolean reading');
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_state: 'checking', payment_unverified: true } }), false);
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_state: 'short', payment_unverified: true } }), false);
   assert.equal(qrRowOnFloor({ paid: false, customer: { payment_unverified: true } }), false);
-  assert.equal(qrRowOnFloor({ customer: { paid: true } }), true, 'an order the old direct insert wrote (before 20260919a2)');
   assert.equal(qrRowOnFloor(null), false);
   const src = read('./qrTableSession.js');
   assert.ok(src.includes(".select('ref, items, customer, total, sent_at, paid')"), 'the paid column is read');
@@ -538,4 +540,30 @@ test('the SQL only says collected for an order that was ready to collect', () =>
   assert.match(sql, /revoke all on function public\._order_track_ok\(text, text, text\) from public, anon, authenticated;/);
   assert.match(sql, /grant execute on function public\.order_track_row\(text, text, text\) to anon, authenticated, service_role;/);
   assert.match(sql, /Self test: the wrong key was accepted/);
+});
+
+// ── 2 Oct 2026: one QR order is one table ───────────────────────────────────────
+
+test('a pay now order carries the table itself; only open tabs are numbered', () => {
+  // Peter, Coffee Boy Leeds: "one on the actual table 6 and 6.1, that needs to not happen".
+  assert.equal(qrTableLabel('T6', 0), 'T6', 'a lone tab is Table T6, never T6.1');
+  assert.equal(qrTableLabel('T6', 1), 'T6.2', 'a second tab while the first is still open');
+  assert.equal(qrTableLabel('T6', 2), 'T6.3');
+  assert.equal(qrTableLabel('T6', '1'), 'T6.2', 'the count arrives as text from the server');
+  assert.equal(qrTableLabel('T6', null), 'T6');
+  assert.equal(qrTableLabel('T6', NaN), 'T6', 'a failed count never invents a number');
+  assert.equal(qrTableLabel(' 12 ', 0), '12');
+  assert.equal(qrTableLabel('', 3), '');
+  const qr = read('../surfaces/qr/QrCheckout.jsx');
+  assert.ok(qr.includes('effectiveTableLabel = qrTableLabel(tableLabel || tableId, count);'), 'the checkout uses the one rule');
+  assert.ok(!qr.includes('const subNum = count + 1;'), 'the always numbered label is gone');
+  // Review, 2 Oct: QR-FAUOB was still 'prep' in the queue 40 minutes after it was paid (only
+  // Advance on the Orders screen collects it), so a count of "orders still open" would have
+  // made the next pay now order on T6 read "T6.2". Pay now never asks for the count at all.
+  assert.ok(qr.includes('let effectiveTableLabel = tableLabel || tableId;\n      if (tableId && tabMode) {'), 'only an open tab is numbered');
+  assert.ok(!qr.includes('let effectiveTableLabel = tableLabel || tableId;\n      if (tableId) {'));
+  // and the old direct read (no server function) counts open tabs only, the same rule
+  assert.ok(qr.includes('(cnt.data || []).filter(qrRowOnFloor).forEach('), 'a paid order in the queue takes no number');
+  assert.equal([{ ref: 'QR-FAUOB', paid: true, customer: { tableId: 'T6', payment_intent_id: 'HZRBXVNKS23PB4H6' } },
+    { ref: 'QR-TAB1', customer: { tableId: 'T6', tab_open: true, payment_intent_id: 'pi_tab' } }].filter(qrRowOnFloor).length, 1);
 });

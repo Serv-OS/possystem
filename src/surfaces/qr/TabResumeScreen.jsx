@@ -27,14 +27,20 @@ import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 import { tabCloseRefusalMessage } from '../../lib/publicOrder';
 import { qrTabCloseFields, qrTabSettleVat } from '../../lib/headlessTax';
 import { taxCtxHasConfig } from '../../lib/taxCompute';
+import VatGateNotice from '../online/VatGateNotice';
 
 // taxCtx / menuItems / taxRates: the venue's tax context (buildLocalTaxCtx), menu and rates the
 // page already loaded, for the tab's VAT. Without them the check books no VAT, as before.
+// vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the rates
+// are in) and the way to load them again. The tab is never closed (the card never captured)
+// while it is shut: the server books the VAT itself since 20261009a, but the page must not
+// charge a card for a bill it cannot describe.
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
   tab, rounds, runningTotal, theme,
   onAddMore, onClosed, onAbandon,
   taxCtx = null, menuItems = [], taxRates = [],
+  vatGate = null, onRetryRates = null,
 }) {
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState('');
@@ -44,6 +50,8 @@ export default function TabResumeScreen({
 
   const handleClose = async () => {
     if (closing) return;
+    // 8 Oct 2026: before the capture, before the question: no close while the rates are not loaded.
+    if (vatGate) { setError(vatGate.message); return; }
     if (!confirm(`Close your tab and charge ${money(runningTotal)} to your card?`)) return;
     // Route by processor (the stash carries it). Ryft holds are addressed by
     // payment_session_id; ryft-tab resolves the merchant account from
@@ -294,6 +302,7 @@ export default function TabResumeScreen({
           )}
         </div>
 
+        <div style={{ marginTop: 14, textAlign: 'left' }}><VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={theme}/></div>
         {error && <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 10, background: '#ef444415', border: '1px solid #ef444455', color: '#b91c1c', fontSize: 13 }}>{error}</div>}
 
         {/* Actions */}

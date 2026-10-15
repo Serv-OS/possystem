@@ -34,6 +34,7 @@
 //     matched on the card's own recipient phone (18 Sep 2026), never through a profile.
 
 import { isBlankName, samePhone, exactIlike } from '../../supabase/functions/_shared/customerMergePlan.js';
+import { phoneLookupValues } from '../../supabase/functions/_shared/phoneKey.js';
 
 /** The customers columns the till's check reads (enough for the shell rule it can see, and the trail). */
 export const AUTO_JOIN_COLS = 'id, name, first_name, last_name, phone, phone_raw, email, allergens, tags';
@@ -85,16 +86,18 @@ export function emailIsNew(openedWithEmail, typedEmail) {
 const tidyPhone = (v) => str(v).replace(/\(\s*0\s*\)/g, '');
 
 /**
- * The same number written the ways the till and the imports store it, for one read:
- * the normalised form ('+447415748167'), the UK national form ('07415748167') and the digits as
- * typed. Only + and digits, so the values are safe inside a PostgREST or() filter.
+ * The same number written the ways the till, the imports and older builds store it, for one read:
+ * the key first ('+447415748167'), then every stored shape that is provably the same number
+ * (phoneLookupValues of the one phone match key, 29 Sep 2026: in a UK venue the national form
+ * '07415748167' and '447415748167', and 00 for the + anywhere), for the key and for the number as
+ * typed. `region` is the venue's ('GB', 'US' or ''). Only + and digits, so the values are safe
+ * inside a PostgREST or() or in() filter.
  */
-export function phoneVariants(phoneN, typed = '') {
+export function phoneVariants(phoneN, typed = '', region = '') {
   const out = [];
-  const add = (v) => { const s = str(v).trim(); if (/^\+?\d{6,16}$/.test(s) && !out.includes(s)) out.push(s); };
-  add(phoneN);
-  if (/^\+44\d{9,10}$/.test(str(phoneN))) add('0' + str(phoneN).slice(3));
-  add(str(typed).replace(/[^\d+]/g, ''));
+  for (const v of [...phoneLookupValues(phoneN, region), ...phoneLookupValues(typed, region)]) {
+    if (!out.includes(v)) out.push(v);
+  }
   return out;
 }
 

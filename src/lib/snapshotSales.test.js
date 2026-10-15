@@ -129,28 +129,52 @@ test('pagedRows: a failed page is an error, never fewer rows', async () => {
 });
 
 // Source pins: each function reads checks through the shared reading, paged, with no capped reads.
+// 2 Oct 2026: owner-snapshot's reads moved to _shared/ownerSnapshot.js (the quick filters:
+// Today, This week, This month), where the check reads page through pagedEach, which adds each
+// page up as it arrives. The same pins hold there; src/lib/ownerSnapshot.test.js runs the build
+// itself against a database stand in that caps every request at 1000 rows.
 const read = (fn) => fs.readFileSync(path.join(here, `../../supabase/functions/${fn}/index.ts`), 'utf8');
+const SOURCES = {
+  'owner-snapshot': { file: '../../supabase/functions/_shared/ownerSnapshot.js', dir: '\\.' },
+  'manager-snapshot': { file: '../../supabase/functions/manager-snapshot/index.ts', dir: '\\.\\.\\/_shared' },
+};
 for (const fn of ['owner-snapshot', 'manager-snapshot']) {
   test(`${fn} reads every check through addCheckSales, paged, never the shelf subtotal`, () => {
-    const src = read(fn);
-    assert.match(src, /import \{ pagedRows \} from '\.\.\/_shared\/pagedRows\.js';/);
-    assert.match(src, /import \{ SALES_CHECK_COLS, emptySales, addCheckSales \} from '\.\.\/_shared\/snapshotSales\.js';/);
+    const src = fs.readFileSync(path.join(here, SOURCES[fn].file), 'utf8');
+    const dir = SOURCES[fn].dir;
+    assert.match(src, new RegExp(`import \\{ pagedRows(, pagedEach, limiter)? \\} from '${dir}\\/pagedRows\\.js';`));
+    // 8 Oct 2026: both also read addRefundSales and refundMadeAt (refunds come off on their day).
+    assert.match(src, new RegExp(`import \\{ SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt \\} from '${dir}\\/snapshotSales\\.js';`));
+    assert.match(src, /addRefundSales\(/);
     assert.match(src, /addCheckSales\(/);
     // Sales never come from the subtotal or the total.
     assert.doesNotMatch(src, /Number\(c\.subtotal\)/);
     assert.doesNotMatch(src, /Number\(c\.total\)/);
-    // Every paged read, from `pagedRows(` to the end of its query.
-    const paged = [...src.matchAll(/pagedRows\('([^']+)', \(\) => /g)].map((m) => {
+    // Every paged read, from `pagedRows(` or `pagedEach(` to the end of its query: `))` for
+    // pagedRows (`)))` when it waits its turn in the limiter), `), (rows) =>` where pagedEach
+    // is handed the page.
+    const paged = [...src.matchAll(/paged(?:Rows|Each)\('([^']+)', \(\) => /g)].map((m) => {
       const q = src.slice(m.index + m[0].length);
-      return { what: m[1], q: q.slice(0, q.search(/\)\)[,;]/) + 1) };
+      return { what: m[1], q: q.slice(0, q.search(/\)(?:\)+[,;]|, \(rows\) =>)/) + 1) };
     });
+    assert.ok(paged.length >= 5, `${fn}: expected its paged reads, found ${paged.length}`);
     // Every closed_checks read pages, in closed_at then id order, and the sales read uses the tender columns.
     const checkReads = paged.filter((p) => p.q.includes(".from('closed_checks')"));
-    assert.equal(checkReads.length, (src.match(/\.from\('closed_checks'\)/g) ?? []).length, 'a closed_checks read outside pagedRows');
+    // 5 Oct 2026: owner-snapshot has ONE closed_checks read outside pagedRows, on purpose: a
+    // venue's opening day, from its oldest checks that are not voided, sixty at a time in
+    // closed_at then id order, and at most FIRST_SALE_PAGES times, for the "New" word.
+    const firstSale = fn === 'owner-snapshot' ? (src.match(/\.from\('closed_checks'\)\.select\('id, closed_at, status, voided'\)\s*\.eq\('location_id', id\)\.not\('voided', 'is', true\)\.order\('closed_at'\)\.order\('id'\)\s*\.range\(page \* FIRST_SALE_ROWS, \(page \+ 1\) \* FIRST_SALE_ROWS - 1\)/g) ?? []).length : 0;
+    if (fn === 'owner-snapshot') { assert.equal(firstSale, 1, 'the first sale read'); assert.match(src, /const FIRST_SALE_ROWS = 60;/); assert.match(src, /const FIRST_SALE_PAGES = 5;/); }
+    assert.equal(checkReads.length + firstSale, (src.match(/\.from\('closed_checks'\)/g) ?? []).length, 'a closed_checks read outside pagedRows');
     assert.ok(checkReads.some((p) => p.q.includes('.select(SALES_CHECK_COLS)')), 'no closed_checks read with SALES_CHECK_COLS');
+    // 8 Oct 2026 (review): both read the OLDER checks that carry a refund (refunds <> '[]'), 400
+    // days back, so a refund made today on an old sale comes off today as Daily trading takes it off.
+    assert.match(src, /const REFUND_LOOKBACK_DAYS = 400;/);
+    assert.ok(checkReads.some((p) => p.what === 'older refunds' && p.q.includes(".neq('refunds', '[]')") && p.q.includes('.select(SALES_CHECK_COLS)')), `${fn}: no older refunds read`);
     for (const p of checkReads) assert.match(p.q, /\.order\('closed_at'\)\.order\('id'\)$/);
     // Every read that pages is ordered on a unique key (order_queue's is location_id + ref).
-    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$/, `${fn}: '${p.what}' pages without a unique order`);
+    // (wf_venue_settings and xero_config have one row a venue: their key is location_id.)
+    for (const p of paged) assert.match(p.q, /\.order\('(id|ref)'\)$|\.from\('(wf_venue_settings|xero_config)'\)[^;]*\.order\('location_id'\)$/, `${fn}: '${p.what}' pages without a unique order`);
     // PostgREST returns at most 1000 rows a request: a .limit() of 1000 or more is a lie.
     for (const m of src.replace(/\/\/[^\n]*/g, '').matchAll(/\.limit\((\d+)\)/g)) assert.ok(Number(m[1]) < 1000, `${fn} still has .limit(${m[1]})`);
   });
@@ -158,10 +182,26 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
 
 test('owner-snapshot answers VAT with net, and a failed read is a 500, not £0', () => {
   const src = read('owner-snapshot');
-  assert.match(src, /net_sales: r2\(t\.net\), vat: r2\(t\.vat\), gross_sales: r2\(t\.gross\)/);
+  const core = fs.readFileSync(path.join(here, SOURCES['owner-snapshot'].file), 'utf8');
+  assert.match(core, /net_sales: r2\(t\.net\), vat: r2\(t\.vat\), gross_sales: r2\(t\.gross\)/);
+  // The function hands the whole build to the shared file, and a throw from it is a 500.
+  assert.match(src, /import \{ buildOwnerSnapshot \} from '\.\.\/_shared\/ownerSnapshot\.js';/);
+  assert.match(src, /const snap = await buildOwnerSnapshot\(\{ ops: opsAdmin, opsIds, meta, now: new Date\(\), period \}\);/);
+  assert.doesNotMatch(src, /\.from\('closed_checks'\)/, 'a closed_checks read outside the shared build');
   assert.match(src, /return json\(\{ error: \(e as Error\)\?\.message \|\| 'Could not build the snapshot' \}, 500\);/);
-  // Items (the heavy column) are read for today only, never the whole sales window.
-  assert.match(src, /select\('id, closed_at, status, voided, items'\)\s*\n?\s*\.eq\('location_id', id\)\.gte\('closed_at', todayIso\)/);
+  // Items (the heavy column) are read for the period's own days (today's, under Today) and, since
+  // 8 Oct 2026 (the Sales mix points), for the comparison span in its own read (cmpItemsOf), never
+  // the whole sales window. ownerSnapshot.test.js checks the dates asked for.
+  assert.match(core, /const itemsOf = \(id\) => Promise\.all\(windowsOf\(plan\[id\], \[\{ from: plan\[id\]\.range\.from, to: plan\[id\]\.today \}\], SLICE_DAYS\[period\]\)/);
+  // 5 Oct 2026: the detail call goes through the shared build too, and every answer says what
+  // the function can do, so an app can tell it from one that cannot.
+  assert.match(src, /const out = await buildOwnerDetail\(\{ ops: opsAdmin, opsIds, meta, target, currency: body\?\.currency, now: new Date\(\), period \}\);/);
+  assert.equal((src.match(/api: OWNER_API, features: OWNER_FEATURES/g) ?? []).length, 3, 'every answer carries api and features');
+  // The currency and the day start come from the Platform locations row (The Cabin, a dollar
+  // venue, was labelled GBP), never from a 'GBP' written into the function.
+  assert.match(src, /\.select\('id, ops_location_id, name, timezone, currency, business_day_start'\)/);
+  assert.match(src, /const meta = venueMeta\(opsIds, plocs \?\? \[\], vsRows \?\? \[\]\);/);
+  assert.doesNotMatch(src, /currency: 'GBP'/);
 });
 
 test('manager-snapshot answers VAT with net', () => {

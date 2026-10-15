@@ -13,7 +13,7 @@ test('loyalty sign up creates the customer with an empty name, never null', () =
   assert.ok(!/name:\s*null/.test(src), 'no customer insert writes name: null');
   assert.ok(src.includes("name: '',"), 'new sign up stores an empty name');
   assert.ok(src.includes('updates.name = body.name.trim();') && !src.includes('updates.name = body.name.trim() || null'), 'a cleared name is saved empty, not null');
-  assert.ok(src.includes("if (insErr) {") && src.includes(".eq('phone', phone)"), 'a lost race re reads the customer instead of failing');
+  assert.ok(src.includes("if (insErr) {") && src.includes('const again = await readByPhone();'), 'a lost race re reads the customer instead of failing');
 });
 
 test('delivery app customers are created with an empty name when the order has none', () => {

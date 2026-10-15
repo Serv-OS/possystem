@@ -108,6 +108,9 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
   }, [isCourier, orderRef, locationId]);
 
   const status = order?.status || 'received';
+  // 30 Sep 2026: a void from the till marks the row cancelled before it goes (store.voidQueueOrder).
+  // Without this the page kept the last step lit and the customer turned up for food that was voided.
+  const cancelled = status === 'cancelled';
   const currentIdx = Math.max(0, STEPS.findIndex(s => s.key === status));
   const isDelivery = orderType === 'delivery' || deliveryMode != null;
   const fmtEta = (iso) => { if (!iso) return null; const d = new Date(iso); return isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
@@ -145,8 +148,8 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           </div>
         </div>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
-          <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.025em', color: theme.fg }}>Order confirmed</div>
+          <div style={{ fontSize: 40, marginBottom: 6 }}>{cancelled ? '⚠️' : '✅'}</div>
+          <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.025em', color: theme.fg }}>{cancelled ? 'Order cancelled' : 'Order confirmed'}</div>
           <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
             ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
           </div>
@@ -155,8 +158,14 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
         {loading && <div style={{ padding: 40, textAlign: 'center', color: muted }}>Loading order…</div>}
         {err && <div style={{ padding: 16, background: '#ef444415', border: '1px solid #ef444455', borderRadius: 10, color: '#b91c1c', fontSize: 13 }}>{err}</div>}
 
+        {cancelled && (
+          <div role="status" style={{ padding: 16, marginBottom: 16, background: '#ef444415', border: '1px solid #ef444455', borderRadius: 12, color: '#b91c1c', fontSize: 14, fontWeight: 700, lineHeight: 1.5 }}>
+            The venue has cancelled this order. If you have already paid, the venue will refund you. Please contact them if you have any questions.
+          </div>
+        )}
+
         {/* Step indicator */}
-        <div style={{
+        {!cancelled && <div style={{
           background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16,
           padding: 20, marginBottom: 16,
         }}>
@@ -199,7 +208,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
               </div>
             );
           })}
-        </div>
+        </div>}
 
         {/* Live courier card (Stuart) — status + ETA + live tracking map. Only for courier
             delivery orders, once the order exists. */}

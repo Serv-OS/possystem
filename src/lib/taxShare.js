@@ -2,7 +2,7 @@
 //
 // Moved here from headlessTax.js (27 Sep 2026) so the check totals seam (payments/checkTotals.js)
 // can scale inclusive VAT by the bill's discounts without importing headlessTax, which imports
-// checkTotals. PURE: no imports, runs under node --test.
+// checkTotals. PURE apart from taxRule.js (itself import free), runs under node --test.
 //
 // A record is scaled when the VAT booked is only part of the tax on the goods listed:
 //   - a discounted UK bill (inclusive VAT on what was charged, computeCheckTotals);
@@ -11,7 +11,10 @@
 // Scaled records carry `share`. A report that recomputes UK VAT from the items (recordedCheckTax,
 // the History reprint) would book the whole undiscounted VAT again, so it takes these as booked.
 
-const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+import { roundVat } from './taxRule.js';
+
+// 8 Oct 2026: the one rounding rule (half up to the penny on the true value), as every channel.
+const round2 = (n) => roundVat(n) ?? 0;
 
 /** A frozen breakdown is usable when it carries a real number for the total tax. */
 export function isUsableBreakdown(b) {

@@ -11,10 +11,11 @@
  * the same honesty rule as the v5.5.919 par fix. base_unit_cost × qtyInBase, display only.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getActiveLocationSync, getLocationId, supabase, isMock } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
+import { readAllPagesResult, faultText } from '../../lib/pagedRead';
 import { PageHeader, Tag } from './reports/reportKit';
 
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -26,19 +27,36 @@ export default function PriceChanges() {
   const [q, setQ] = useState('');
   const [days, setDays] = useState(90);
   const [onlyRises, setOnlyRises] = useState(false);
+  // 5 Oct 2026: 'too_long' or 'failed' when the history did not come back whole. A failed
+  // read used to show as "No price movements in this window", which reads as a real answer.
+  const [fault, setFault] = useState(null);
+  const runRef = useRef(0);
 
   useEffect(() => { if (!locId) getLocationId().then(id => id && setLocId(id)); }, [locId]);
   const load = useCallback(async () => {
     if (!locId || isMock || !supabase) { setRows([]); return; }
+    // The newest window chosen is the only one that may paint (a year can land after 30 days).
+    const run = runRef.current += 1;
+    const live = () => run === runRef.current;
+    setFault(null); setRows(null);
     const since = new Date(Date.now() - days * 86400000).toISOString();
-    const [{ data: hist }, { data: its }] = await Promise.all([
-      supabase.from('item_cost_history')
-        .select('inventory_item_id, base_unit_cost, source, effective_from')
+    const [{ data: hist, error: histErr, tooMany }, { data: its }] = await Promise.all([
+      // 5 Oct 2026: read in pages of 1,000 (lib/pagedRead.js). It asked for 4,000 in one
+      // request and the API answers 1,000 at most; oldest first, so the NEWEST price would
+      // have been the one cut and "last" would have been wrong.
+      readAllPagesResult('price history', (first) => supabase.from('item_cost_history')
+        .select('id, inventory_item_id, base_unit_cost, source, effective_from', first ? { count: 'exact' } : undefined)
         .eq('location_id', locId).gte('effective_from', since)
-        .order('effective_from', { ascending: true }).limit(4000),
+        .order('effective_from', { ascending: true }).order('id', { ascending: true }), { stop: () => !live() }),
       fetchInventoryItems(locId).then(r => ({ data: r.data || [] })),
     ]);
+    if (!live()) return;
     setItems(its);
+    if (histErr) {
+      console.warn('[PriceChanges] history failed:', histErr?.message || histErr);
+      setFault(tooMany ? 'too_long' : 'failed'); setRows([]);
+      return;
+    }
     // Collapse each item's history in the window into first→last, counting steps.
     const byItem = new Map();
     for (const h of (hist || [])) {
@@ -91,7 +109,10 @@ export default function PriceChanges() {
       </div>
 
       {rows == null && <div style={{ color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
-      {rows != null && view.length === 0 && (
+      {rows != null && fault && (
+        <div style={{ color: 'var(--t2)', fontSize: 14, padding: '30px 0' }}>{faultText(fault)}</div>
+      )}
+      {rows != null && !fault && view.length === 0 && (
         <div style={{ color: 'var(--t3)', fontSize: 13, padding: '30px 0' }}>
           No price movements in this window. Costs update when deliveries are accepted with a price, or invoices are posted.
         </div>
