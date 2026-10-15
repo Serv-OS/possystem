@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.63',
+    date: '15 Oct 2026',
+    items: [
+      "Loyalty: adjust stamps in Back Office. On a loyalty member, Customers, add or remove stamps and completed cards with a reason. Owners and managers only. Every change is recorded.",
+      "Loyalty: several stamp rewards on one order. The till lets staff pick more than one eligible item, up to the rewards the customer has, and shows how many are used. Kiosk and online stay at one reward.",
+      "Loyalty: a refund gives the stamp reward back to the customer.",
+    ],
+  },
+  {
     v: '5.11.61',
     date: '15 Oct 2026',
     items: [
