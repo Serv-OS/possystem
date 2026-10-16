@@ -55,7 +55,9 @@ export const REPORT_SITE_MODE = {
   servers: 'multi', shifts: 'multi', exceptions: 'multi', payments: 'multi', tables: 'multi',
   transactions: 'multi',
   items: 'multi', item_trend: 'multi', menu_eng: 'multi', sales_mix: 'multi', tax: 'multi', tips: 'multi', kds_perf: 'multi',
-  payroll: 'home', daily_trading: 'home', bookings: 'home', cash_drawer: 'home',
+  // 16 Oct 2026: the two booking reports read each ticked site over its own range themselves.
+  bookings: 'multi', booking_payments: 'multi',
+  payroll: 'home', daily_trading: 'home', cash_drawer: 'home',
   zreport: 'home', open: 'home',
   location_compare: 'all',
 };

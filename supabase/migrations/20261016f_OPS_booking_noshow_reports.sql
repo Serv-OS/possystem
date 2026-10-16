@@ -1,0 +1,91 @@
+-- 20261016f_OPS_booking_noshow_reports.sql
+--
+-- ############################################################################
+-- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
+-- #  Peter runs this by hand (Claude cannot run DDL on production).           #
+-- #  Additive and safe to run twice. One transaction. Two indexes and one     #
+-- #  comment on booking_payments. No table is rewritten, no function is       #
+-- #  replaced, no grant changes, nothing a till sends changes.                #
+-- #  The app works before this runs: booking-charge refuses a second charge   #
+-- #  by itself; this adds the database's own guard and speeds up the Back     #
+-- #  Office Booking payments tab.                                             #
+-- ############################################################################
+--
+-- WHY (bookings audit, 16 Oct 2026, section 3 items 3 and 10)
+--   3  No show and late cancel charge. The booking-charge edge function charges the card a guest
+--      saved with a hold booking, once per booking, written as booking_payments kind
+--      no_show_charge (the kind has been allowed since 20260811b). The function already refuses a
+--      second charge while one is taken or waiting for the bank, and Adyen replays the first
+--      answer for the same attempt. This index makes the database refuse it too: at most ONE
+--      no_show_charge row per booking that is waiting (pending), authorised or captured. A failed,
+--      cancelled or refunded attempt does not count, so the host can try again after a decline.
+--   10 Booking payments in Back Office. The tab reads booking_payments for a venue by the time the
+--      payment was made, in pages of 1,000. An index on (location_id, created_at) keeps that read
+--      off a scan of every venue's rows.
+--
+-- CHECKED LIVE (read only, 16 Oct 2026): booking_payments holds 19 rows and no no_show_charge row,
+-- so the unique index cannot meet a duplicate. The guard below says so in words and skips the
+-- unique index (instead of failing the whole file) if a duplicate ever appears before it runs.
+--
+-- AFTER RUNNING
+--   Read the check select at the bottom: one_charge_index 1, payments_by_time_index 1,
+--   duplicate_charges 0.
+
+begin;
+
+-- Wrong database guard (same test as 20260824): Ops has user_locations and no billing_state;
+-- Platform is the other way round.
+do $guard$
+begin
+  if to_regclass('public.user_locations') is null
+     or to_regclass('public.billing_state') is not null then
+    raise exception 'This migration must be run against the OPS DB (tbetcegmszzotrwdtqhi). This is not it, aborting.';
+  end if;
+  if to_regclass('public.booking_payments') is null then
+    raise exception 'public.booking_payments is missing. Apply 20260811b_table_bookings.sql first.';
+  end if;
+end
+$guard$;
+
+-- Fail fast rather than queue booking reads behind the index builds: if a long transaction holds
+-- booking_payments, this stops after 5 seconds and nothing is changed. Just run it again.
+set local lock_timeout = '5s';
+
+-- ── 1. one live no show charge per booking ─────────────────────────────────
+do $one$
+declare
+  v_dupes integer;
+begin
+  select count(*) into v_dupes from (
+    select booking_id from public.booking_payments
+     where kind = 'no_show_charge' and status in ('pending', 'authorised', 'captured')
+     group by booking_id having count(*) > 1
+  ) d;
+  if v_dupes > 0 then
+    raise notice 'NOT created: % booking(s) already hold more than one live no show charge. Refund the extra charge in Adyen, mark that row refunded, then run this file again.', v_dupes;
+  else
+    execute 'create unique index if not exists booking_payments_one_noshow_charge
+               on public.booking_payments (booking_id)
+               where kind = ''no_show_charge'' and status in (''pending'', ''authorised'', ''captured'')';
+  end if;
+end
+$one$;
+
+-- ── 2. the Back Office Booking payments tab: a venue's payments by time ────
+create index if not exists booking_payments_location_created
+  on public.booking_payments (location_id, created_at);
+
+comment on column public.booking_payments.kind is
+  'hold = card saved, nothing taken (amount is the hold figure, never money); deposit, prepay = money taken online, credit on the bill; no_show_charge = the saved card charged for a no show or a late cancellation by booking-charge (16 Oct 2026; merchant_reference bkpay-<booking>-noshow-a<N> or -latecancel-a<N>; posted to closed check bkns-<booking>-a<N>, applied_check_id); refund = money given back.';
+
+commit;
+
+-- ── check (read the row) ───────────────────────────────────────────────────
+select
+  (select count(*) from pg_indexes where schemaname = 'public' and indexname = 'booking_payments_one_noshow_charge') as one_charge_index,
+  (select count(*) from pg_indexes where schemaname = 'public' and indexname = 'booking_payments_location_created') as payments_by_time_index,
+  (select count(*) from (
+     select booking_id from public.booking_payments
+      where kind = 'no_show_charge' and status in ('pending', 'authorised', 'captured')
+      group by booking_id having count(*) > 1) d) as duplicate_charges,
+  (select count(*) from public.booking_payments where kind = 'no_show_charge') as no_show_charges_so_far;
