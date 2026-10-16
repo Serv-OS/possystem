@@ -27,8 +27,11 @@ import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
 import { dropTarget, editedLine, hasGuest, fmtClock, EDIT_REFUSALS, MOVE_NON_BLOCKING } from '../../lib/bookings/editRules.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
-  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
+  money, initialsOf, bookingName, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
+import { shiftYmd, ymdLabel, epochToVenueMin } from '../../lib/bookings/venueClock.js';
+import { seatRefusal, moneyOnFileLine, undoCancelStatus, offPlanBookings, UNDO_CANCEL_MS, CANCEL_REASONS, NO_SHOW_REASONS } from '../../lib/bookings/standRules.js';
 import EditBookingSheet from './EditBookingSheet.jsx';
 
 // A block that may be dragged on the Timeline: live and not yet seated. A
@@ -67,9 +70,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   const setBookingsDate = useStore((s) => s.setBookingsDate);
 
   const rules = rulesOf(bookingRules);
-  const isToday = !bookingsDate || bookingsDate === todayISO();
-  const tick = useNowMin();
-  const nowMin = isToday ? tick : null;
+  // 16 Oct 2026: the venue clock, never the iPad's (audit item 8).
+  const clock = useVenueClock();
+  const isToday = !bookingsDate || bookingsDate === clock.ymd;
+  const nowMin = isToday ? clock.nowMin : null;
+  const toVenueMin = useMemo(() => epochToVenueMin(clock.tz), [clock.tz]);
 
   const rows = useMemo(() => sortTables(tables), [tables]);
   const rowIndex = useMemo(() => new Map(rows.map((t, i) => [t.id, i])), [rows]);
@@ -110,8 +115,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     const base = visible.map(toOptimiserBooking).filter(Boolean);
     // Open POS tabs block their tables like dining bookings — today only.
     if (!isToday) return base;
-    return [...base, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
-  }, [visible, tables, isToday, nowMin, rules.turnBands]);
+    return [...base, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0, toVenueMin)];
+  }, [visible, tables, isToday, nowMin, rules.turnBands, toVenueMin]);
 
   // ── KPI strip (all computed, never static) ──────────────────────────────────
   const kpi = useMemo(() => {
@@ -179,8 +184,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   const [drop, setDrop] = useState(null);  // the confirm card after a drop
   const othersForDrag = useMemo(() => {
     if (!isToday) return visible;
-    return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
-  }, [visible, tables, isToday, nowMin, rules.turnBands]);
+    return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0, toVenueMin)];
+  }, [visible, tables, isToday, nowMin, rules.turnBands, toVenueMin]);
   const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
   const dropTargetFor = useCallback((b, dx, dy) => dropTarget({
     booking: b, dx, dy, slotW, rowH: ROW_H, rows, startMin, endMin, others: othersForDrag, nonBlocking: MOVE_NON_BLOCKING,
@@ -304,19 +309,20 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     setDrop((d) => (d ? { ...d, busy: false, error: res?.error || 'Booking NOT moved. Try again.' } : d));
   };
 
-  const shiftDay = (delta) => {
-    const base = bookingsDate || todayISO();
-    const d = new Date(`${base}T12:00:00`);
-    d.setDate(d.getDate() + delta);
-    setBookingsDate?.(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-  };
+  const shiftDay = (delta) => setBookingsDate?.(shiftYmd(bookingsDate || clock.ymd, delta));
+
+  // 16 Oct 2026 (audit item 21): a live booking on a table that is not on the
+  // floor plan used to vanish from the Timeline. It gets an Off plan row with
+  // Move instead (the inspector opens on the move panel).
+  const offPlan = useMemo(() => offPlanBookings(visible, rows.map((t) => t.id)), [visible, rows]);
+  const [moveFor, setMoveFor] = useState(null);
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* KPI strip */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', background: 'var(--bg1)', borderBottom: '1px solid var(--bdr)', flexShrink: 0 }}>
-          <Kpi label="Covers booked" value={kpi.coversBooked} sub="today" />
+          <Kpi label="Covers booked" value={kpi.coversBooked} sub={isToday ? 'today' : ymdLabel(bookingsDate, { long: true })} />
           <Kpi label="Seated now" value={`${kpi.seated} / ${kpi.capacity}`} sub="covers / capacity" />
           <Kpi label="Free tables" value={kpi.freeNextHour} sub="next hour" />
           <Kpi label="At risk" value={kpi.atRisk} sub="late + due" col={kpi.atRisk > 0 ? 'var(--red)' : undefined} />
@@ -334,10 +340,10 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           {/* v5.9.62: the date is a real picker (tap it), and Today brings you back. Peter,
               24 Sep, on the iPad: "you need to be able to click on the date and set a date in
               the future then have a button that says today and it skips back". */}
-          <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+          <input type="date" value={bookingsDate || clock.ymd} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
             aria-label="Diary date"
             style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '3px 8px', fontFamily: 'inherit', ...mono }} />
-          {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
+          {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(clock.ymd)} style={{ fontWeight: 700 }}>Today</button>}
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ ...mono }}>›</button>
           <div style={{ display: 'flex', gap: 6, marginLeft: 8 }}>
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
@@ -349,7 +355,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
         <div ref={wrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
           {visible.length === 0 && (
             <div style={{ marginBottom: 14 }}>
-              <EmptyNote title="No bookings yet today" sub="Take the first one from the Book tab." />
+              <EmptyNote title={isToday ? 'No bookings yet today' : `No bookings on ${ymdLabel(bookingsDate, { long: true })}`} sub="Take the first one from the Book tab." />
             </div>
           )}
           {view === 'list' ? (
@@ -442,10 +448,16 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     <div style={{ fontSize: 10, color: 'var(--t4)', ...mono }}>{t.maxCovers || 0} covers</div>
                   </div>
                 ))}
+                {offPlan.length > 0 && (
+                  <div style={{ height: ROW_H, padding: '6px 10px', boxSizing: 'border-box', background: tintBg('var(--orn)', 10) }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--orn)' }}>Off plan</div>
+                    <div style={{ fontSize: 10, color: 'var(--t3)' }}>table not on the floor</div>
+                  </div>
+                )}
               </div>
               {/* grid */}
               <div style={{
-                position: 'relative', width: gridW, height: gridH, flexShrink: 0,
+                position: 'relative', width: gridW, height: gridH + (offPlan.length ? ROW_H : 0), flexShrink: 0,
                 background: [
                   `repeating-linear-gradient(to right, var(--bdr2) 0 1px, transparent 1px ${slotW * 4}px)`,
                   `repeating-linear-gradient(to right, ${tintBg('var(--t1)', 3)} 0 1px, transparent 1px ${slotW}px)`,
@@ -455,7 +467,9 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                 {visible.map((b) => {
                   const st = displayStatus(b, nowMin, packages);
                   const meta = statusMeta(st);
-                  const idxs = (b.tables || []).map((id) => rowIndex.get(id)).filter((i) => i != null);
+                  const isOff = offPlan.some((x) => x.id === b.id);
+                  let idxs = (b.tables || []).map((id) => rowIndex.get(id)).filter((i) => i != null);
+                  if (!idxs.length && isOff) idxs = [rows.length]; // the Off plan row
                   if (!idxs.length) return null;
                   const first = Math.min(...idxs), last = Math.max(...idxs);
                   const bs = toMin(b.startTime);
@@ -464,13 +478,14 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   if (left + width < 0 || left > gridW) return null;
                   const isSel = b.id === sel;
                   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-                  const draggable = canDragBooking(b);
+                  const draggable = canDragBooking(b) && !isOff;
                   const dragging = drag?.id === b.id;
                   return (
                     <button
                       key={b.id}
                       onClick={() => {
                         if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                        if (isOff) { setMoveFor(b.id); onSelect(b.id); return; }
                         onSelect(isSel ? null : b.id);
                       }}
                       onPointerDown={draggable ? onBlockPointerDown(b) : undefined}
@@ -479,7 +494,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                       onPointerCancel={draggable ? onBlockPointerCancel : undefined}
                       onLostPointerCapture={draggable ? onBlockPointerCancel : undefined}
                       onContextMenu={draggable ? (e) => e.preventDefault() : undefined}
-                      title={draggable ? 'Press and hold, then drag to another table or time' : b.status === 'dining' ? 'Seated. Change the table on the till.' : undefined}
+                      title={isOff ? 'This table is not on the floor plan. Tap to move it to a table.' : draggable ? 'Press and hold, then drag to another table or time' : b.status === 'dining' ? 'Seated. Change the table on the till.' : undefined}
                       style={{
                         position: 'absolute', left: Math.max(0, left), width: Math.min(width, gridW - Math.max(0, left)),
                         top: first * ROW_H + 3, height: (last - first + 1) * ROW_H - 6,
@@ -553,7 +568,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
       {/* inspector */}
       <div style={{ width: 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto' }}>
         {selected
-          ? <Inspector b={selected} nowMin={nowMin} packages={packages} tables={rows} onClose={() => onSelect(null)} />
+          ? <Inspector b={selected} nowMin={nowMin} packages={packages} tables={rows} onClose={() => onSelect(null)} startMoving={moveFor === selected.id} />
           : (
             <div style={{ padding: 18, color: 'var(--t3)', fontSize: 12, lineHeight: 1.5 }}>
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t2)', marginBottom: 8 }}>Nothing selected</div>
@@ -623,6 +638,41 @@ function DropConfirm({ drop, labelOf, onKeep, onMove }) {
   );
 }
 
+// 16 Oct 2026 (audit item 17): Cancel and No-show ask first, take a reason,
+// and say plainly when money is on file, because nothing refunds it by itself.
+function ConfirmSheet({ kind, name, reason, onReason, moneyLine, busy, onBack, onConfirm }) {
+  const isCancel = kind === 'cancel';
+  const reasons = isCancel ? CANCEL_REASONS : NO_SHOW_REASONS;
+  return (
+    <div onClick={busy ? undefined : onBack} style={{ position: 'fixed', inset: 0, zIndex: 100002, background: 'rgba(8,9,12,0.55)', display: 'grid', placeItems: 'center', padding: 16 }}>
+      <div role="dialog" aria-label={isCancel ? 'Cancel booking' : 'Mark no-show'} onClick={(e) => e.stopPropagation()}
+        style={{ width: '100%', maxWidth: 380, padding: '16px 18px', borderRadius: 14, background: 'var(--bg1)', color: 'var(--t1)', border: `1.5px solid ${isCancel ? 'var(--bdr2)' : 'var(--red)'}`, boxShadow: '0 14px 40px rgba(0,0,0,.45)' }}>
+        <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1.35 }}>
+          {isCancel ? `Cancel ${name}?` : `Mark ${name} as a no-show?`}
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 4, lineHeight: 1.45 }}>
+          {isCancel ? 'The table is freed straight away. You can undo for 30 seconds.' : 'The table is freed and the guest\'s no-show count goes up by one.'}
+        </div>
+        {moneyLine && (
+          <div role="status" style={{ marginTop: 10, padding: '9px 11px', borderRadius: 9, background: tintBg('var(--orn)', 10), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', fontSize: 13.5, fontWeight: 700, lineHeight: 1.4 }}>
+            {moneyLine}
+          </div>
+        )}
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', margin: '12px 0 6px' }}>Reason</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {reasons.map((r) => <Chip key={r} active={reason === r} onClick={() => onReason(r)} style={{ height: 34, fontSize: 12, fontFamily: 'inherit' }}>{r}</Chip>)}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <button className="btn btn-ghost" onClick={onBack} disabled={busy} style={{ flex: 1, height: 44 }}>Keep booking</button>
+          <button className={isCancel ? 'btn btn-acc' : 'btn btn-red'} onClick={onConfirm} disabled={busy} style={{ flex: 1, height: 44, fontWeight: 800 }}>
+            {busy ? 'Saving…' : isCancel ? 'Cancel booking' : 'Mark no-show'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const viewChip = { height: 30, minWidth: 0, padding: '0 12px', fontSize: 11, borderRadius: 9 };
 
 function Kpi({ label, value, sub, col, last }) {
@@ -672,12 +722,15 @@ function PaymentState({ b, prepaid, rows }) {
     else if (captured) {
       const kind = captured.kind === 'prepay' ? 'prepaid' : captured.kind === 'deposit' ? 'deposit paid' : 'paid';
       const applied = captured.applied_to_check
-        ? ' · applied to the check' : ' · comes off the bill at close';
+        ? ' · applied to the check' : ' · shows as paid on the till';
       // 2dp: money() defaults to whole pounds, which would print a real £48.50
       // capture as £49. Never round a figure that was actually charged.
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
     }
     else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
+    // 16 Oct 2026 (audit item 22): an expired booking with a stale pending row read
+    // "payment pending, confirms by itself" about a booking the sweep had released.
+    else if (b.status === 'expired') line = { txt: 'Payment not taken, booking released', col: 'var(--t4)' };
     else if (failed) {
       line = b.status === 'pending_payment'
         ? { txt: 'Card payment failed. The guest can still try again.', col: 'var(--red)' }
@@ -687,7 +740,7 @@ function PaymentState({ b, prepaid, rows }) {
   } else if (b.status === 'pending_payment') {
     line = { txt: 'Awaiting card payment. The guest has 20 minutes to pay before the booking expires and the table frees itself.', col: 'var(--orn)' };
   } else if (b.status === 'expired') {
-    line = { txt: 'Expired unpaid. The table was freed automatically, the guest must rebook.', col: 'var(--t4)' };
+    line = { txt: 'Payment not taken, booking released. The table is free again; the guest must book again.', col: 'var(--t4)' };
   } else if (prepaid) {
     line = { txt: 'No captured payment visible for this prepay booking yet. Check Back Office before treating it as paid.', col: 'var(--orn)' };
   } else if (CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
@@ -784,20 +837,39 @@ function PreorderLinkActions({ b }) {
 
 // `rules` was dropped from the props in v5.7.48: the only thing it fed was the
 // invented card hold, and money now comes from the booking_payments ledger.
-export function Inspector({ b, nowMin, packages, tables, onClose }) {
+export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = false }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
   const markBookingNoShow = useStore((s) => s.markBookingNoShow);
-  const [moving, setMoving] = useState(false);
+  const undoCancelBooking = useStore((s) => s.undoCancelBooking);
+  const clock = useVenueClock();
+  const [moving, setMoving] = useState(!!startMoving);
   // 16 Oct 2026: the Edit sheet (EditBookingSheet.jsx), shared with Back Office.
   const [editing, setEditing] = useState(false);
+  // 16 Oct 2026 (audit item 17): Cancel and No-show ask first. 'cancel' | 'no_show' | null.
+  const [confirmKind, setConfirmKind] = useState(null);
+  const [confirmReason, setConfirmReason] = useState('');
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  // Undo cancel for 30 seconds: { id, before, until } and a 1 second clock for the countdown.
+  const [undo, setUndo] = useState(null);
+  const [undoNow, setUndoNow] = useState(0);
+  const [undoMsg, setUndoMsg] = useState('');
+  useEffect(() => {
+    if (!undo) return undefined;
+    const t = setInterval(() => {
+      const n = Date.now();
+      setUndoNow(n);
+      if (n >= undo.until) setUndo(null);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [undo]);
   const operatorName = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
   const venueTz = useStore((s) => s.locationConfig?.timezone);
   const edited = editedLine(b, fmtClock(venueTz));
   // Render-adjustment (not an effect — the repo lint forbids sync setState in
   // effects): selecting a different booking closes the move panel.
   const [movingFor, setMovingFor] = useState(b.id);
-  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); setEditing(false); }
+  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(!!startMoving); setEditing(false); setConfirmKind(null); }
   const st = displayStatus(b, nowMin, packages);
   const start = toMin(b.startTime);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
@@ -826,6 +898,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   // toast is fixed separately; this shows the reason at the button as well, because
   // a refusal the operator cannot see is the same as no refusal at all.
   const [seatErr, setSeatErr] = useState('');
+  // 16 Oct 2026 (audit item 16): only the venue's today can be seated.
+  const otherDayWhy = seatRefusal({ booking: b, today: clock.ymd });
+  // A table missing from the floor plan (audit item 21) and whether the party's
+  // table really has a tab open (audit item 22: "tab open" only when true).
+  const offPlanHere = (b.tables || []).length > 0 && !(b.tables || []).some((id) => tables.some((t) => t.id === id));
+  const primaryHasTab = !!tables.find((t) => t.id === b.primaryTableId)?.session;
   const seatNow = async () => {
     const seat = useStore.getState().seatBooking;
     if (typeof seat !== 'function') {
@@ -835,7 +913,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
     setSeatErr('');
     const res = await seat(b.id);
     if (res && res.ok === false) {
-      setSeatErr(res.error === 'table_open'
+      setSeatErr(res.text ? res.text : res.error === 'table_open'
         ? 'Still has an open tab. Cash it off on the POS, or move this booking to a free table.'
         : res.error === 'table_seated_empty'
         ? 'Seated with no order yet. Cash it off on the POS or move the booking.'
@@ -852,14 +930,14 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
     { t: 'Booked', d: `${sourceLabel} · ${b.covers} covers · table held ${b.turnMinutes || 90} min${b.pacingOverrideBy ? ` · pacing override by ${b.pacingOverrideBy}` : ''}` },
     ...(prepaid || onFile ? [{
       t: 'Payment',
-      d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking, posts to the check as tender when the tab closes`
-        : capturedRow ? `${money(capturedRow.amount, 2)} already paid, comes off the bill at close`
-        : 'Card saved at booking. Nothing was taken, and no-show charges are not available yet.',
+      d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking, shows on the till as paid from seating`
+        : capturedRow ? `${money(capturedRow.amount, 2)} already paid, shows on the till as paid from seating`
+        : 'Card saved at booking. Nothing was taken.',
     }] : []),
     ...(pkg ? [{ t: 'Package', d: `${pkg.name}, lines queue to the POS carrying their courses` }] : []),
     {
       t: 'On the POS',
-      d: b.status === 'dining' ? `Seated, tab open on ${labels.join(' + ')}`
+      d: b.status === 'dining' ? (primaryHasTab ? `Seated, tab open on ${labels[0] || 'the table'}` : 'Seated')
         : `On seat, a tab opens on ${labels[0] || 'the table'}${b.customer?.name ? ' with the guest attached' : ''}`,
     },
   ];
@@ -989,7 +1067,16 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
                 Not paid online, take payment on the till
               </div>
             )}
-            <button className="btn btn-acc" onClick={seatNow} style={{ height: 44, fontWeight: 800 }}>Seat now, open POS tab</button>
+            {offPlanHere && (
+              <div role="status" style={{ padding: '9px 11px', borderRadius: 9, background: tintBg('var(--orn)', 10), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>
+                This booking is on a table that is not on the floor plan. Move it to a table before seating.
+              </div>
+            )}
+            <button className="btn btn-acc" onClick={seatNow} disabled={!!otherDayWhy || offPlanHere}
+              style={{ height: 44, fontWeight: 800, opacity: otherDayWhy || offPlanHere ? 0.5 : 1 }}>Seat now, open POS tab</button>
+            {otherDayWhy && (
+              <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.45, marginTop: -2 }}>{otherDayWhy}</div>
+            )}
             {seatErr && (
               <div style={{ fontSize: 11.5, color: 'var(--red)', lineHeight: 1.45, marginTop: -2 }}>{seatErr}</div>
             )}
@@ -1038,7 +1125,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             {/* 16 Oct 2026: Edit opens the full sheet (date, time, covers, guest,
                 note, tables). Move stays as the quick table swap. */}
             <button className="btn btn-ghost" onClick={() => setEditing(true)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>Edit</button>
-            <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
+            <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : offPlanHere ? 'Move to a table' : 'Move'}</button>
           </div>
         )}
         {/* 16 Oct 2026 review: a seated party shows Edit greyed with the reason
@@ -1056,12 +1143,60 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
                 card-hold prompt on their next booking. Not offered while the
                 guest is still paying: an unpaid booking is not a no-show. */}
             {b.status !== 'pending_payment' && (
-              <button className="btn btn-red" onClick={() => (markBookingNoShow || updateBooking)?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
+              <button className="btn btn-red" onClick={() => { setConfirmKind('no_show'); setConfirmReason(NO_SHOW_REASONS[0]); }} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
             )}
-            <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>Cancel</button>
+            <button className="btn btn-ghost" onClick={() => { setConfirmKind('cancel'); setConfirmReason(CANCEL_REASONS[0]); }} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>Cancel</button>
           </div>
         )}
+        {/* 16 Oct 2026 (audit item 17): Undo cancel, for 30 seconds after a cancel here. */}
+        {b.status === 'cancelled' && undo?.id === b.id && (
+          <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 9, background: 'var(--bg3)', border: '1px solid var(--bdr2)' }}>
+            <span style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>Booking cancelled</span>
+            <button className="btn btn-ghost" disabled={confirmBusy}
+              onClick={async () => {
+                setConfirmBusy(true); setUndoMsg('');
+                const res = await undoCancelBooking?.(b.id, { before: undo.before, payments: payRows });
+                setConfirmBusy(false);
+                setUndo(null);
+                if (res && res.ok === false) setUndoMsg(res.error);
+              }}
+              style={{ height: 36, fontWeight: 800 }}>
+              {confirmBusy ? 'Putting back…' : `Undo (${Math.max(0, Math.ceil(((undo.until) - (undoNow || undo.at)) / 1000))}s)`}
+            </button>
+          </div>
+        )}
+        {undoMsg && b.status === 'cancelled' && (
+          <div role="alert" style={{ fontSize: 13, color: 'var(--red)', lineHeight: 1.45 }}>{undoMsg}</div>
+        )}
       </div>
+      {confirmKind && (
+        <ConfirmSheet
+          kind={confirmKind}
+          name={bookingName(b)}
+          reason={confirmReason}
+          onReason={setConfirmReason}
+          moneyLine={moneyOnFileLine(payRows, (v) => money(v, 2)).line}
+          busy={confirmBusy}
+          onBack={() => setConfirmKind(null)}
+          onConfirm={async () => {
+            setConfirmBusy(true);
+            const before = b.status;
+            let res;
+            if (confirmKind === 'cancel') {
+              res = await cancelBooking?.(b.id, { reason: confirmReason });
+              if (res?.ok !== false && undoCancelStatus({ before, booking: b, payments: payRows })) {
+                const at = Date.now();
+                setUndoNow(at);
+                setUndo({ id: b.id, before, at, until: at + UNDO_CANCEL_MS });
+              }
+            } else {
+              res = await (markBookingNoShow ? markBookingNoShow(b.id, { reason: confirmReason }) : updateBooking?.(b.id, { status: 'no_show' }));
+            }
+            setConfirmBusy(false);
+            setConfirmKind(null);
+          }}
+        />
+      )}
       {editing && (
         <EditBookingSheet b={b} editedBy={operatorName} onClose={() => setEditing(false)} />
       )}
@@ -1194,12 +1329,13 @@ function MovePanel({ b, onDone }) {
   // store's suggest() already does, so the two can never disagree.
   const bookingRules = useStore((s) => s.bookingRules);
   const bookingsDate = useStore((s) => s.bookingsDate);
+  // 16 Oct 2026: the venue clock (audit item 8), so open tabs block the right window.
+  const clock = useVenueClock();
   const opt = useMemo(() => {
     const base = dayBookings.map(toOptimiserBooking).filter(Boolean);
-    if (bookingsDate && bookingsDate !== todayISO()) return base;
-    const now = new Date();
-    return [...base, ...sessionsToBlocks(storeTables, dayBookings, rulesOf(bookingRules).turnBands, now.getHours() * 60 + now.getMinutes())];
-  }, [dayBookings, storeTables, bookingRules, bookingsDate]);
+    if (bookingsDate && bookingsDate !== clock.ymd) return base;
+    return [...base, ...sessionsToBlocks(storeTables, dayBookings, rulesOf(bookingRules).turnBands, clock.nowMin, epochToVenueMin(clock.tz))];
+  }, [dayBookings, storeTables, bookingRules, bookingsDate, clock.ymd, clock.nowMin, clock.tz]);
   const grid = useMemo(
     () => storeTables.filter((t) => !t.parentId).map((t) => ({
       id: t.id, label: t.label || t.id, covers: t.maxCovers || 2,

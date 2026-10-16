@@ -11,7 +11,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM, turnFor } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle, todayISO } from './bits.jsx';
+  mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
 
 const COVERS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
 
@@ -22,6 +23,8 @@ export default function BookScreen({ onBooked }) {
   const tables = useStore((s) => s.tables) || [];
   const bookingRules = useStore((s) => s.bookingRules);
   const rules = rulesOf(bookingRules);
+  // 16 Oct 2026: the venue's today, never the iPad's (audit item 8).
+  const { ymd: venueYmd } = useVenueClock();
 
   const [party, setParty] = useState(2);
   const [time, setTime] = useState(null);
@@ -86,7 +89,7 @@ export default function BookScreen({ onBooked }) {
     const createBooking = useStore.getState().createBooking;
     const res = createBooking ? await createBooking({
       covers: party,
-      date: bookingsDate || todayISO(),
+      date: bookingsDate || venueYmd,
       time,
       tables: cand.set,
       primaryTableId: cand.set[0],
@@ -125,10 +128,10 @@ export default function BookScreen({ onBooked }) {
             changing it here moves the diary too and the tables offered are that day's. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Date</span>
-          <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+          <input type="date" value={bookingsDate || venueYmd} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
             aria-label="Booking date"
             style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 9, padding: '6px 10px', fontFamily: 'inherit' }} />
-          {bookingsDate && bookingsDate !== todayISO() && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())}>Today</button>}
+          {bookingsDate && bookingsDate !== venueYmd && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(venueYmd)}>Today</button>}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
           {COVERS.map((c) => <Chip key={c} active={party === c} onClick={() => setParty(c)}>{c}</Chip>)}

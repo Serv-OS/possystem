@@ -117,12 +117,16 @@ test('the Items list shows each product\'s sharing in its own column, before Typ
 test('the bookings iPad can pick a date, get back to today, and fix the date on a new booking', () => {
   for (const f of ['../surfaces/bookings/DiaryScreen.jsx', '../surfaces/bookings/ServiceScreen.jsx']) {
     const src = read(f);
-    assert.match(src, /<input type="date" value=\{bookingsDate \|\| todayISO\(\)\}/, f + ' has a real date picker');
+    // 16 Oct 2026: the default date is the VENUE's today (useVenueClock), not the iPad's.
+    assert.match(src, /<input type="date" value=\{bookingsDate \|\| clock\.ymd\}/, f + ' has a real date picker');
+    assert.match(src, /import \{ useVenueClock \} from '\.\/useVenueClock\.js'/, f + ' imports the venue clock');
     assert.match(src, /\{!isToday && <button[\s\S]*?>Today<\/button>\}/, f + ' offers Today when away from it');
   }
   const book = read('../surfaces/bookings/BookScreen.jsx');
   assert.match(book, /aria-label="Booking date"/);
-  assert.match(book, /import \{[^}]*\btodayISO\b[^}]*\} from '\.\/bits/, 'todayISO is IMPORTED (24 Sep: it shipped undefined once)');
+  // 24 Sep: todayISO once shipped undefined; 16 Oct 2026 the venue clock is IMPORTED and used.
+  assert.match(book, /import \{ useVenueClock \} from '\.\/useVenueClock\.js'/, 'useVenueClock is IMPORTED');
+  assert.match(book, /value=\{bookingsDate \|\| venueYmd\}/);
   const store = read('../store/index.js');
   assert.match(store, /functions\/v1\/customer-search/);
   const fn = read('../../supabase/functions/customer-search/index.ts');

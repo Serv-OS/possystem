@@ -1,11 +1,15 @@
 // src/surfaces/bookings/bits.jsx
 //
-// Table Bookings — tiny shared bits for the host-stand screens. Pure
-// presentation helpers only: status derivation, token tints, steppers,
-// toggles and chips. No store access, no DB.
+// Table Bookings: tiny shared bits for the host-stand screens. Presentation
+// helpers: status derivation, token tints, steppers, toggles and chips. No DB.
+// The one store read is the venue clock (16 Oct 2026, below).
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { toMin, DEFAULT_TURN_BANDS, DEFAULT_RULES } from '../../lib/bookings/optimiser.js';
+import { venueToday, VENUE_CLOCK_TICK_MS } from '../../lib/bookings/venueClock.js';
+import { useVenueClock } from './useVenueClock.js';
+import { currencySymbol } from '../../lib/currency.js';
+import { useStore } from '../../store';
 
 export const mono = { fontFamily: 'var(--font-mono)' };
 
@@ -32,20 +36,15 @@ export const rulesOf = (r) => ({
   turnBands: { ...DEFAULT_TURN_BANDS, ...(r?.turnBands || {}) },
 });
 
-export const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+// ── the venue clock (16 Oct 2026, audit item 8) ──────────────────────────────
+// useVenueClock lives in ./useVenueClock.js (a hook file, so fast refresh keeps
+// working); these two keep the old names on the venue clock.
+// For event handlers (not render): the venue's today right now.
+export const todayISO = () => venueToday(useStore.getState().locationConfig?.timezone);
 
-// live minute-of-day ticker (30s granularity is plenty for a diary)
-export function useNowMin(intervalMs = 30000) {
-  const calc = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
-  const [now, setNow] = useState(calc);
-  useEffect(() => {
-    const t = setInterval(() => setNow(calc()), intervalMs);
-    return () => clearInterval(t);
-  }, [intervalMs]);
-  return now;
+// live minute-of-day on the venue clock (30s granularity is plenty for a diary)
+export function useNowMin(intervalMs = VENUE_CLOCK_TICK_MS) {
+  return useVenueClock(intervalMs).nowMin;
 }
 
 // ── status derivation ─────────────────────────────────────────────────────────
@@ -131,7 +130,8 @@ export const isLive = (b) => !isDead(b) && b.status !== 'departed';
 export const bookingName = (b) => b?.customer?.name || (b?.source === 'walk_in' ? 'Walk-in' : `Party of ${b?.covers || '?'}`);
 
 // ── formatting ────────────────────────────────────────────────────────────────
-export const money = (n, dp = 0) => `£${Number(n || 0).toFixed(dp)}`;
+// The venue's currency symbol (GBP prints exactly as before).
+export const money = (n, dp = 0) => `${currencySymbol()}${Number(n || 0).toFixed(dp)}`;
 export const initialsOf = (name) =>
   String(name || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || '?';
 

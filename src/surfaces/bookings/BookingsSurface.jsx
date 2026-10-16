@@ -37,7 +37,12 @@ import { startSessionReconciler } from '../../sync/SessionReconciler';
 import { isSessionClosed } from '../../sync/sessionClosure';
 import { startRealtime } from '../../lib/realtime.js';
 import { startStandSessionSync } from '../../lib/bookings/standSessionSync.js';
+import { startBookingsCatchUp } from '../../lib/bookings/bookingsCatchUp.js';
+import { getLocationConfig } from '../../lib/locationTime';
+import { venueClockText, ymdLabel } from '../../lib/bookings/venueClock.js';
+import { channelPill, pinPadState, venuePinLength, pinLengthKey, PIN_MAX } from '../../lib/bookings/standRules.js';
 import { mono, tintBg, tintBd } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
 import DiaryScreen from './DiaryScreen.jsx';
 import ServiceScreen from './ServiceScreen.jsx';
 import BookScreen from './BookScreen.jsx';
@@ -120,7 +125,17 @@ export default function BookingsSurface() {
     // Seed the resolver + current location from the claimed device location BEFORE loading data.
     setResolvedLocationId(loc);
     useStore.getState().setCurrentLocation?.(loc);
-    useStore.getState().loadBookingsFromDB?.(loc);
+    // 16 Oct 2026 (audit item 8): the stand's clock is the VENUE's. A stand that
+    // booted before pairing read the London fallback and never the venue's own
+    // timezone, so load it for the paired venue, then the diary on its today.
+    let live = true;
+    (async () => {
+      try {
+        const cfg = await getLocationConfig(loc);
+        if (live && cfg) useStore.setState({ locationConfig: cfg });
+      } catch { /* London fallback stays */ }
+      if (live) useStore.getState().loadBookingsFromDB?.(loc);
+    })();
     // A FRESH stand boots with no resolvable location: SyncBridge's one-shot boot
     // and App's realtime retry window both ran and gave up BEFORE pairing finished,
     // so the floor never hydrated and the session machinery that makes it LIVE
@@ -131,8 +146,10 @@ export default function BookingsSurface() {
     // active_sessions every 30 seconds (lib/bookings/standSessionSync.js). A stand never owns a
     // session, so a copy the server no longer holds (the till cashed the table off) heals here
     // whatever realtime delivered. Started after the async hydration; stopped with the effect.
-    let live = true;
     let stopStandSync = null;
+    // 16 Oct 2026 (audit item 9): catch up the viewed day on wake, network back,
+    // a 60 second timer and the venue's midnight (lib/bookings/bookingsCatchUp.js).
+    const stopCatchUp = startBookingsCatchUp({ store: useStore });
     (async () => {
       try {
         if (!(useStore.getState().tables || []).length && supabase) {
@@ -172,13 +189,14 @@ export default function BookingsSurface() {
     const remind = () => { if (supabase) supabase.functions.invoke('booking-reminders', { body: { action: 'send_due' } }).catch(() => {}); };
     remind();
     const rem = setInterval(remind, 60 * 60 * 1000);
-    return () => { live = false; stopStandSync?.(); clearInterval(hb); clearInterval(rem); };
+    return () => { live = false; stopStandSync?.(); stopCatchUp(); clearInterval(hb); clearInterval(rem); };
   }, [stage, loc]);
 
   const locations = useStore((s) => s.locations) || [];
   const currentLocationId = useStore((s) => s.currentLocationId);
   const bookingsDate = useStore((s) => s.bookingsDate);
   const venue = locations.find((l) => l.id === currentLocationId) || locations[0];
+  const { ymd: venueYmd } = useVenueClock();
 
   const goBook = () => setScreen('book');
   const onBooked = (id) => { setSel(id); setScreen('service'); };
@@ -242,17 +260,10 @@ export default function BookingsSurface() {
               {venueName || venue?.name || 'Table bookings'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--t3)' }}>
-              {operator?.name ? `${operator.name} · ` : ''}Table bookings · {bookingsDate || 'today'}
+              {operator?.name ? `${operator.name} · ` : ''}Table bookings · {!bookingsDate || bookingsDate === venueYmd ? `Today, ${ymdLabel(venueYmd, { long: true })}` : ymdLabel(bookingsDate, { long: true })}
             </div>
           </button>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 7, padding: '5px 11px', borderRadius: 20,
-            background: 'var(--grn-d)', border: '1px solid var(--grn-b)',
-          }}>
-            <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--grn)' }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--grn)' }}>POS linked</span>
-            <span style={{ fontSize: 11, color: 'var(--t3)' }}>floor + menu live</span>
-          </div>
+          <LinkPill />
           <div style={{ flex: 1 }} />
           <LiveClock />
           <button className="btn btn-acc" onClick={goBook} style={{ height: 40, borderRadius: 11, padding: '0 18px', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -309,7 +320,10 @@ function Pane({ show, children }) {
   );
 }
 
+// 16 Oct 2026 (audit item 8): the VENUE's wall clock, so a stand in California
+// for a UK venue shows UK time like everything else on it.
 function LiveClock() {
+  const tz = useStore((s) => s.locationConfig?.timezone);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -318,9 +332,40 @@ function LiveClock() {
   return (
     <div style={{ textAlign: 'right' }}>
       <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--acc)', ...mono }}>
-        {now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        {venueClockText(tz, now)}
       </div>
       <div style={{ fontSize: 10, color: 'var(--t3)' }}>live service</div>
+    </div>
+  );
+}
+
+// 16 Oct 2026 (audit item 9): the pill shows the real link, not a fixed green:
+// Connecting, POS linked, or Offline with when the diary last loaded.
+function LinkPill() {
+  const status = useStore((s) => s.bookingsChannelStatus);
+  const refreshedAt = useStore((s) => s.bookingsRefreshedAt);
+  const tz = useStore((s) => s.locationConfig?.timezone);
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false));
+  useEffect(() => {
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down); };
+  }, []);
+  const pill = channelPill(status, { online });
+  const col = pill.tone === 'green' ? 'grn' : pill.tone === 'red' ? 'red' : 'orn';
+  const sub = pill.tone === 'red' && refreshedAt
+    ? `last updated ${venueClockText(tz, new Date(refreshedAt), { seconds: false })}`
+    : pill.sub;
+  return (
+    <div role="status" style={{
+      display: 'flex', alignItems: 'center', gap: 7, padding: '5px 11px', borderRadius: 20,
+      background: `var(--${col}-d, ${tintBg(`var(--${col})`)})`, border: `1px solid var(--${col}-b, ${tintBd(`var(--${col})`)})`,
+    }}>
+      <span style={{ width: 7, height: 7, borderRadius: 999, background: `var(--${col})` }} />
+      <span style={{ fontSize: 11, fontWeight: 700, color: `var(--${col})` }}>{pill.label}</span>
+      <span style={{ fontSize: 11, color: 'var(--t3)' }}>{sub}</span>
     </div>
   );
 }
@@ -339,7 +384,7 @@ function PairScreen({ code }) {
     <GateScreen>
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 360 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this host stand</div>
-        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
+        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '········'}</div>
         <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>
           In Back Office → Channels → Table bookings, enter this code under &ldquo;Pair a host stand&rdquo;. One pairing covers Bookings and Tables Ready on this tablet. This screen links automatically once it&rsquo;s attached to a venue.
         </div>
@@ -355,33 +400,54 @@ function PairScreen({ code }) {
   );
 }
 
+// 16 Oct 2026 (audit item 19): the pad submits at the venue's PIN length (learnt
+// from the last good login on this stand, 4 until then) and the OK key submits
+// any PIN of 4 to 8 digits, so a venue with 6 digit PINs can log in.
+function readPinLength(loc) {
+  try { return venuePinLength(window.localStorage.getItem(pinLengthKey(loc))); } catch { return venuePinLength(null); }
+}
 function PinScreen({ loc, venueName, onOk }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pinLen, setPinLen] = useState(() => readPinLength(loc));
   const submit = async (p) => {
+    if (busy) return;
+    setBusy(true);
     const data = await waitlistPinLogin(loc, p);
+    setBusy(false);
     if (!data?.ok) { setErr('PIN not recognised'); setPin(''); return; }
+    try { window.localStorage.setItem(pinLengthKey(loc), String(p.length)); } catch { /* private mode */ }
+    setPinLen(venuePinLength(p.length));
     onOk({ id: data.id, name: data.name, role: data.role });
   };
-  const tap = (d) => { setErr(''); const next = (pin + d).slice(0, 6); setPin(next); if (next.length === 4) submit(next); };
+  const tap = (d) => {
+    if (busy) return;
+    setErr('');
+    const next = (pin + d).slice(0, PIN_MAX);
+    setPin(next);
+    if (pinPadState(next, pinLen).auto) submit(next);
+  };
+  const canOk = pinPadState(pin, pinLen).ok && !busy;
   return (
     <GateScreen>
       <div style={{ textAlign: 'center', width: 280 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{venueName || 'Table bookings'}</div>
         <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px' }}>Enter your PIN</div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18 }}>
-          {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
+          {Array.from({ length: Math.max(pinLen, pin.length) }, (_, i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
         </div>
         {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => <PinKey key={n} onClick={() => tap(String(n))}>{n}</PinKey>)}
-          <div /><PinKey onClick={() => tap('0')}>0</PinKey>
           <PinKey onClick={() => setPin(pin.slice(0, -1))}>⌫</PinKey>
+          <PinKey onClick={() => tap('0')}>0</PinKey>
+          <PinKey onClick={() => { if (canOk) submit(pin); }} disabled={!canOk}>OK</PinKey>
         </div>
       </div>
     </GateScreen>
   );
 }
-const PinKey = ({ children, onClick }) => (
-  <button onClick={onClick} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
+const PinKey = ({ children, onClick, disabled = false }) => (
+  <button onClick={onClick} disabled={disabled} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: disabled ? 'var(--t4)' : 'var(--t1)', cursor: disabled ? 'default' : 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
 );
