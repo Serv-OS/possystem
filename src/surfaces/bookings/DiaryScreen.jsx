@@ -581,6 +581,14 @@ function PaymentState({ b, prepaid, rows }) {
       // 2dp: money() defaults to whole pounds, which would print a real £48.50
       // capture as £49. Never round a figure that was actually charged.
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
+      // 16 Oct 2026 (bookings audit item 3): the bill used less than was paid. The ledger keeps
+      // the rest as money owed back (apply_booking_payment, migration 20261016b).
+      const surplus = rows.find((r) => Number(r.refund_due_minor) > 0);
+      if (surplus) {
+        const words = surplus.refund_reason
+          || `${money(Number(surplus.refund_due_minor) / 100, 2)} was not used on the bill. Give it back to the guest.`;
+        line = { txt: `${line.txt}. ${words}`, col: 'var(--orn)' };
+      }
     }
     else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
     else if (failed) {

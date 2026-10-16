@@ -60,6 +60,8 @@ import { persistTransfer } from '../sync/SessionSync';
 import { mustChangeRow } from '../lib/rowWrites';
 import { mayRemoveQueueRow } from '../lib/queueDeleteRule';
 import { readQueueRole } from '../lib/queueDevice';
+import { newSessionOrderId } from '../lib/sessionOrderId';
+import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
@@ -733,7 +735,8 @@ const URL_SURFACE_PIN = (() => {
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 let _itemUid = 1;
 const uid = () => `i${_itemUid++}`;
-let _orderNum = 1000;
+// 16 Oct 2026 (bookings audit item 6): order ids are minted by lib/sessionOrderId.js
+// (device + time + random). The old per page counter gave every device ORD-1001 after a reload.
 let _tabNum   = 1;
 let _autoSignoutTimer = null;   // v5.5.734: pending auto-sign-out timeout, cancelled on any login/logout
 
@@ -2646,7 +2649,7 @@ export const useStore = create((set, get) => ({
     // the kitchen reads the order customer's notes (lib/orderCustomerNotes.js).
     const seatCustomer = withoutRecordNotes(customer || tbl?.reservation?.customer || null);
     const session = {
-      id: `ORD-${++_orderNum}`,
+      id: newSessionOrderId(),
       items: [], firedCourses: [],
       sentAt: null, covers, server,
       seatedAt: Date.now(), _loc: venueTag(), note: '', orderNote: '',
@@ -2670,7 +2673,7 @@ export const useStore = create((set, get) => ({
   seatTableWithItems: (tableId, items, { covers, server, customer = null, booking = null }) => {
     const now = Date.now();
     const session = {
-      id: `ORD-${++_orderNum}`,
+      id: newSessionOrderId(),
       items: items.map(i => ({ ...i, status:'pending' })),
       firedCourses: [], sentAt: null, covers, server,
       seatedAt: now, _loc: venueTag(), note: '', orderNote: '',
@@ -2715,7 +2718,7 @@ export const useStore = create((set, get) => ({
     const childId = `${parentTableId}-${checkNum}`;
 
     const childSession = {
-      id: `ORD-${++_orderNum}`,
+      id: newSessionOrderId(),
       items: splitItems.map(i => ({...i, status:'pending'})),
       firedCourses: [], sentAt: null,
       covers: parent.session?.covers || 2,
@@ -2778,7 +2781,7 @@ export const useStore = create((set, get) => ({
       tables: s.tables.map(t => {
         if (t.id !== tableId) return t;
         const session = t.session || {
-          id: `ORD-${++_orderNum}`,
+          id: newSessionOrderId(),
           items: [], firedCourses: [], sentAt: null,
           covers: covers || 2,
           server: s.staff?.name || 'Staff',
@@ -3159,7 +3162,7 @@ export const useStore = create((set, get) => ({
       set(s => ({
         tables: s.tables.map(t => {
           if (t.id !== activeTableId) return t;
-          const session = t.session || { id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+          const session = t.session || { id:newSessionOrderId(), items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
           const items = [...session.items, newItem];
           const subtotal = items.reduce((s,i)=>s+i.price*i.qty, 0);
           return { ...t, status:t.status==='available'?'open':t.status, session:{ ...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now() } };
@@ -3170,7 +3173,7 @@ export const useStore = create((set, get) => ({
       set(s => {
         const items = [...(s.walkInOrder?.items||[]), newItem];
         const subtotal = items.reduce((a,i)=>a+i.price*i.qty, 0);
-        return { walkInOrder:{ ...(s.walkInOrder||{id:`ORD-${++_orderNum}`}), items, subtotal, total:subtotal } };
+        return { walkInOrder:{ ...(s.walkInOrder||{id:newSessionOrderId()}), items, subtotal, total:subtotal } };
       });
     }
   },
@@ -3181,13 +3184,13 @@ export const useStore = create((set, get) => ({
     if (activeTableId) {
       set(s=>({ tables:s.tables.map(t=>{
         if (t.id!==activeTableId) return t;
-        const session = t.session||{ id:`ORD-${++_orderNum}`, items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+        const session = t.session||{ id:newSessionOrderId(), items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
         const items=[...session.items, newItem];
         const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
         return {...t, session:{...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now()}};
       }) }));
     } else {
-      set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...(s.walkInOrder||{id:`ORD-${++_orderNum}`}),items}};});
+      set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...(s.walkInOrder||{id:newSessionOrderId()}),items}};});
     }
   },
 
@@ -6693,8 +6696,13 @@ export const useStore = create((set, get) => ({
     // v5.6.68 — drift compares the live bill against due + the split legs
     // already taken (a final split leg's due is only the REMAINDER).
     const paidBeforeMinor = Number(d.paidBeforeMinor) || 0;
+    // 16 Oct 2026: booking money the draft took off the due is not drift either (a prepaid
+    // party's job is due only the balance). 0 on every draft without a booking.
+    const bookingCreditMinor = Array.isArray(d.bookingPayment?.legs)
+      ? d.bookingPayment.legs.reduce((n, l) => n + (Number(l?.amountMinor) || 0), 0)
+      : (Number(d.bookingCreditMinor) || 0);
     const driftMinor = (!acknowledged && job.live_total_minor != null)
-      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor)) : 0;
+      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor)) : 0;
     const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
 
     // ── card block from the job (brand/last4/auth for the receipt) ─────────────
@@ -6898,12 +6906,17 @@ export const useStore = create((set, get) => ({
       // v5.7.21 — stamp the booking's captured rows applied_to_check (server-side
       // idempotent: only un-applied captured rows update, so a retry is a 0-count
       // no-op). Best-effort, never blocks the close.
+      // 16 Oct 2026 (bookings audit items 1 and 3): with the amount the check used. The draft's
+      // bookingPayment comes from the till's checkout or, for a reader or PAX Table Pay job, from
+      // terminal_start_table_payment(_for) itself (migration 20261016b).
       if (record.bookingPayment?.bookingId && supabase && !isMock) {
-        supabase.rpc('apply_booking_payment', {
-          p_booking_id: record.bookingPayment.bookingId,
-          p_closed_check_id: record.id,
-        }).then(({ error }) => {
-          if (error) console.warn('[closeApprovedTerminalJob] apply_booking_payment:', error.message);
+        applyBookingPayment(supabase.rpc.bind(supabase), {
+          bookingId: record.bookingPayment.bookingId,
+          checkId: record.id,
+          appliedMinor: record.bookingPayment.appliedMinor,
+        }).then((r) => {
+          if (!r.ok) console.warn('[closeApprovedTerminalJob] apply_booking_payment:', r.error);
+          else if (r.fallback) console.warn('[closeApprovedTerminalJob] apply_booking_payment: amount used not stored (migration 20261016b not run yet).');
         }).catch(() => {});
       }
       // Attribute loyalty only to the occupation that actually paid — never a re-seated party.

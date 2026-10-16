@@ -111,9 +111,14 @@ const isMoneyKind = (k) => k === 'prepay' || k === 'deposit';
 //   recomputed  what the booking's own package, the package in the widget's
 //               booking_requests audit row, and the venue rules say now
 // A stored card hold where any recomputed figure is money (prepay or deposit)
-// is refused: that is a booking rewritten to dodge its payment. Otherwise money
-// beats a saved card and the LARGEST amount wins, so a smaller figure written
-// anywhere can never shrink the charge.
+// is refused: that is a booking rewritten to dodge its payment.
+// 16 Oct 2026 (bookings audit item 20): a STORED money due (prepay or deposit)
+// is charged EXACTLY, because it is the figure the guest was shown. When any
+// recomputed money figure is LARGER (the package price raised while the guest
+// was on the pay screen, or a smaller figure written into the row) the charge is
+// refused with due_mismatch: never more than was shown, never less than owed.
+// With no stored due (older bookings) or a stored hold, money beats a saved card
+// and the LARGEST amount wins, as before.
 //   { ok:true, due }  due is null when nothing is owed
 //   { ok:false, reason:'due_mismatch' }
 export function dueForCharge({ stored = null, recomputed = [] } = {}) {
@@ -123,6 +128,13 @@ export function dueForCharge({ stored = null, recomputed = [] } = {}) {
   if (!all.length) return { ok: true, due: null };
   if (valid(stored) && stored.kind === 'hold' && others.some((d) => isMoneyKind(d.kind))) {
     return { ok: false, due: null, reason: 'due_mismatch' };
+  }
+  if (valid(stored) && isMoneyKind(stored.kind)) {
+    const shown = Math.max(0, Math.round(num(stored.amountMinor)));
+    if (others.some((d) => isMoneyKind(d.kind) && Math.round(num(d.amountMinor)) > shown)) {
+      return { ok: false, due: null, reason: 'due_mismatch' };
+    }
+    return { ok: true, due: { kind: stored.kind, amountMinor: shown, currency: stored.currency ? upper(stored.currency) : null } };
   }
   const money = all.filter((d) => isMoneyKind(d.kind));
   const pool = money.length ? money : all;
