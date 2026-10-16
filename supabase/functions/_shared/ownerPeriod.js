@@ -197,18 +197,31 @@ export const COMPARE_REASONS = ['ok', 'new', 'no_sales_now', 'no_sales_then'];
  * @param {object} a
  * @param {number} a.net        this period's net sales
  * @param {number} a.cmpNet     the comparison span's net sales (cut at the same time of day)
+ * @param {number|null} [a.gross]     this period's gross sales (including VAT), 16 Oct 2026
+ * @param {number|null} [a.cmpGross]  the comparison span's gross sales, cut the same way
  * @param {string|null} a.firstSaleDay  the venue's first ever trading day, null when it never sold
  * @param {string} a.cmpFrom    the first day of the comparison span
  * @returns {{ reason: string, pct: number|null, net_sales: number, cmp_net_sales: number, first_sale_date: string|null }}
  */
-export function compareOf({ net, cmpNet, firstSaleDay = null, cmpFrom }) {
+export function compareOf({ net, cmpNet, gross = null, cmpGross = null, firstSaleDay = null, cmpFrom }) {
   const now = r2(Number(net) || 0), then = r2(Number(cmpNet) || 0);
   let reason = 'ok';
   // New: it had not started trading when the span began, so the span is not a full one.
   if (!firstSaleDay || firstSaleDay > cmpFrom) reason = 'new';
   else if (now <= 0) reason = 'no_sales_now';
   else if (then <= 0) reason = 'no_sales_then';
-  return { reason, pct: reason === 'ok' ? vsPct(now, then) : null, net_sales: now, cmp_net_sales: then, first_sale_date: firstSaleDay || null };
+  const out = { reason, pct: reason === 'ok' ? vsPct(now, then) : null, net_sales: now, cmp_net_sales: then, first_sale_date: firstSaleDay || null };
+  // 16 Oct 2026, the Net / Gross switch: the same comparison including VAT, beside the net one.
+  // The reason word stays the net one (a sale has gross only when it has net), so the two
+  // percents are always drawn or hidden together. Sent only when the caller has gross figures.
+  if (gross != null) Object.assign(out, grossCompare(reason, gross, cmpGross));
+  return out;
+}
+
+/** The gross half of a comparison: gross_sales, cmp_gross_sales and pct_gross (null unless the reason is ok). */
+export function grossCompare(reason, gross, cmpGross) {
+  const now = r2(Number(gross) || 0), then = r2(Number(cmpGross) || 0);
+  return { gross_sales: now, cmp_gross_sales: then, pct_gross: reason === 'ok' ? vsPct(now, then) : null };
 }
 
 /** True when a venue's comparison goes into the group percent: it was trading and it sold then. */
@@ -225,9 +238,13 @@ const compared = (c) => c.reason !== 'new' && c.cmp_net_sales > 0;
  */
 export function groupCompare(list) {
   const g = { reason: 'ok', pct: null, net_sales: 0, like_net_sales: 0, cmp_net_sales: 0, venues: 0, venues_compared: 0, venues_new: 0, venues_no_sales_then: 0, venues_no_sales_now: 0 };
+  // 16 Oct 2026: the same sums including VAT, when every venue's comparison carries them.
+  const withGross = (list || []).length > 0 && list.every((c) => c?.gross_sales != null);
+  let gross = 0, likeGross = 0, cmpGross = 0;
   for (const c of list || []) {
     g.venues += 1;
     g.net_sales = r2(g.net_sales + c.net_sales);
+    if (withGross) gross = r2(gross + c.gross_sales);
     if (c.reason === 'new') g.venues_new += 1;
     else if (c.reason === 'no_sales_now') g.venues_no_sales_now += 1;
     else if (c.reason === 'no_sales_then') g.venues_no_sales_then += 1;
@@ -235,10 +252,12 @@ export function groupCompare(list) {
     g.venues_compared += 1;
     g.like_net_sales = r2(g.like_net_sales + c.net_sales);
     g.cmp_net_sales = r2(g.cmp_net_sales + c.cmp_net_sales);
+    if (withGross) { likeGross = r2(likeGross + c.gross_sales); cmpGross = r2(cmpGross + (Number(c.cmp_gross_sales) || 0)); }
   }
   if (!g.venues_compared) g.reason = g.venues > 0 && g.venues_new === g.venues ? 'new' : g.net_sales <= 0 ? 'no_sales_now' : 'no_sales_then';
   else if (g.like_net_sales <= 0) g.reason = 'no_sales_now';
   if (g.reason === 'ok') g.pct = vsPct(g.like_net_sales, g.cmp_net_sales);
+  if (withGross) Object.assign(g, { gross_sales: gross, like_gross_sales: likeGross, cmp_gross_sales: cmpGross, pct_gross: g.reason === 'ok' ? vsPct(likeGross, cmpGross) : null });
   return g;
 }
 
@@ -249,15 +268,26 @@ export function groupCompare(list) {
  * for a new venue and for "no sales yet" (it was a red -100%).
  * @param {{ net: number, vat: number, gross: number, orders: number, tips: number }} sales
  */
-export function periodTotals({ sales, cmpNet = 0, forecast = 0, labour = 0, reason = null }) {
+export function periodTotals({ sales, cmpNet = 0, cmpGross = null, forecast = 0, labour = 0, reason = null }) {
   const net = r2(sales.net), cmp = r2(cmpNet);
-  return {
+  const out = {
     net_sales: net, vat: r2(sales.vat), gross_sales: r2(sales.gross), orders: sales.orders, tips: r2(sales.tips),
     avg_check: sales.orders ? r2(sales.net / sales.orders) : 0,
     forecast: r2(forecast), forecast_pct: forecast > 0 ? Math.round(sales.net / forecast * 100) : null,
     labour: r2(labour), labour_pct: sales.net > 0 ? r2(labour / sales.net * 100) : null,
     cmp_net_sales: cmp, vs_cmp_pct: reason && reason !== 'ok' ? null : vsPct(net, cmp),
   };
+  // 16 Oct 2026, the Net / Gross switch: the average check and the comparison including VAT.
+  // The forecast and labour percents stay on net sales (a forecast is typed net, and labour is
+  // a share of net sales, as Daily trading).
+  if (cmpGross != null) {
+    const gross = r2(sales.gross), cmpG = r2(cmpGross);
+    Object.assign(out, {
+      avg_check_gross: sales.orders ? r2(sales.gross / sales.orders) : 0,
+      cmp_gross_sales: cmpG, vs_cmp_pct_gross: reason && reason !== 'ok' ? null : vsPct(gross, cmpG),
+    });
+  }
+  return out;
 }
 
 /**
@@ -281,25 +311,38 @@ export function periodTotals({ sales, cmpNet = 0, forecast = 0, labour = 0, reas
 export function rollupTotals(list, compares = null) {
   const t = { net_sales: 0, forecast: 0, orders: 0, tips: 0, labour: 0, cmp_net_sales: 0 };
   let like = 0, cmpLocations = 0;
+  // 16 Oct 2026: gross (including VAT) beside net, when every venue's totals carry it.
+  const withGross = (list || []).length > 0 && list.every((p) => p?.cmp_gross_sales != null);
+  const gt = { gross_sales: 0, vat: 0, cmp_gross_sales: 0, like_gross_sales: 0 };
   (list || []).forEach((p, i) => {
     t.net_sales = r2(t.net_sales + p.net_sales);
     t.forecast = r2(t.forecast + p.forecast);
     t.orders += p.orders;
     t.tips = r2(t.tips + p.tips);
     t.labour = r2(t.labour + p.labour);
+    if (withGross) { gt.gross_sales = r2(gt.gross_sales + (Number(p.gross_sales) || 0)); gt.vat = r2(gt.vat + (Number(p.vat) || 0)); }
     const counts = compares ? compared(compares[i]) : p.cmp_net_sales > 0;
     if (!counts) return;
     t.cmp_net_sales = r2(t.cmp_net_sales + p.cmp_net_sales);
     like = r2(like + p.net_sales); cmpLocations += 1;
+    if (withGross) { gt.cmp_gross_sales = r2(gt.cmp_gross_sales + p.cmp_gross_sales); gt.like_gross_sales = r2(gt.like_gross_sales + (Number(p.gross_sales) || 0)); }
   });
   const g = compares ? groupCompare(compares) : null;
-  return {
+  const out = {
     ...t,
     forecast_pct: t.forecast > 0 ? Math.round(t.net_sales / t.forecast * 100) : null,
     labour_pct: t.net_sales > 0 ? r2(t.labour / t.net_sales * 100) : null,
     like_net_sales: like, cmp_locations: cmpLocations,
     vs_cmp_pct: g ? g.pct : vsPct(like, t.cmp_net_sales),
   };
+  if (withGross) {
+    Object.assign(out, gt, {
+      avg_check: t.orders ? r2(t.net_sales / t.orders) : 0,
+      avg_check_gross: t.orders ? r2(gt.gross_sales / t.orders) : 0,
+      vs_cmp_pct_gross: g ? (g.pct_gross ?? null) : vsPct(gt.like_gross_sales, gt.cmp_gross_sales),
+    });
+  }
+  return out;
 }
 
 /**

@@ -182,7 +182,7 @@ test('the venue screen: tap to open, a clear back, and never another venue\'s or
   assert.ok(surface.includes('ownerDetail: true'));
   assert.ok(screen.includes('<button onClick={onBack} style={backBtn} aria-label={backLabel}>'));
   // The same three chips drive it, and the arrow refreshes it.
-  assert.ok(surface.includes('<OwnerDetail target={open} period={period} supported={canDetail(data)} tick={tick}'));
+  assert.ok(surface.includes('<OwnerDetail target={open} period={period} basis={basis} supported={canDetail(data)} tick={tick}'));
   assert.ok(surface.includes('const refresh = useCallback(() => { load(period); setTick((n) => n + 1); }, [load, period]);'));
 
   // The call is raced against a timer and a late answer is dropped.
@@ -210,9 +210,10 @@ test('the venue screen: tap to open, a clear back, and never another venue\'s or
   assert.ok(reports.includes('if (!v) return null;'));
   // 8 Oct 2026: the Sales mix card sits second, right after Sales by hour, and a function from
   // before the mix (no detail.mix) gets no card at all.
-  const hoursAt = reports.indexOf('<HoursCard hours={detail.hours} period={period} range={range} m={m} />');
+  // 16 Oct 2026: hours and week go through the Net / Gross switch (src/lib/ownerBasis.js).
+  const hoursAt = reports.indexOf('<HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={notes.sales} />');
   const mixAt = reports.indexOf('<SalesMixCard mix={detail.mix} period={period} m={m} />');
-  const weekAt = reports.indexOf('<WeekCard week={detail.week} m={m} />');
+  const weekAt = reports.indexOf('<WeekCard week={basisWeek(detail.week, basis)} m={m} label={notes.sales} />');
   assert.ok(hoursAt > 0 && hoursAt < mixAt && mixAt < weekAt, 'Sales mix is the second card');
   assert.ok(reports.includes('title="Sales mix"'));
   assert.ok(reports.includes('if (!mix) return null;'));

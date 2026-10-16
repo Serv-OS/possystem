@@ -15,6 +15,9 @@
 //     no `detail` in it. Either way the screen says "More reports need a ServOS update".
 //     Never a blank, never a wrong label.
 //   * A call that hangs says so (a woken phone), as the main screen does.
+//   * 16 Oct 2026, THE NET / GROSS SWITCH: the headline and every report follow the switch on
+//     the main screen. Gross is drawn only when THIS answer carries the gross figures
+//     (ownerBasis.detailBasis); otherwise net, under net words.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
@@ -22,6 +25,7 @@ import { withTimeout, TimeoutError } from '../../lib/withTimeout';
 import { PERIOD_COPY, rangeLabel } from '../../lib/ownerPeriod';
 import { compareLine, groupLine } from '../../lib/ownerCompare';
 import { DETAIL_NEEDS_UPDATE, detailRequest, detailKey, readDetail, detailRange } from '../../lib/ownerDetail';
+import { detailBasis, detailTotals, basisCompare, salesLabel, salesHeading } from '../../lib/ownerBasis';
 import OwnerReports from './OwnerReports';
 import { money, toneColor, smallCaps, linkBtn } from './style';
 
@@ -35,12 +39,13 @@ const MONTH_REFRESH_MS = 600000;
  * @param {object} p
  * @param {{ kind: 'venue'|'group', id: string, currency: string|null, name: string, venues: number }} p.target
  * @param {string} p.period     the chip
+ * @param {string} p.basis      'net' | 'gross', the switch (16 Oct 2026)
  * @param {boolean} p.supported the snapshot's own function has the detail call
  * @param {number} p.tick       goes up when the refresh arrow is tapped
  * @param {() => void} p.onBack
  * @param {string} p.backLabel
  */
-export default function OwnerDetail({ target, period, supported, tick, onBack, backLabel }) {
+export default function OwnerDetail({ target, period, basis: basisAsked = 'net', supported, tick, onBack, backLabel }) {
   const key = detailKey(target, period);
   const [got, setGot] = useState(null);   // { key, state, detail }
   const [fail, setFail] = useState(null); // { key, message }
@@ -86,6 +91,7 @@ export default function OwnerDetail({ target, period, supported, tick, onBack, b
   const needsUpdate = !supported || mine?.state === 'needs_update';
   const detail = mine?.state === 'ok' ? mine.detail : null;
   const copy = PERIOD_COPY[period];
+  const basis = detailBasis(detail, basisAsked);
 
   return (
     <>
@@ -112,27 +118,29 @@ export default function OwnerDetail({ target, period, supported, tick, onBack, b
         </div>
       )}
 
-      {detail && <Summary detail={detail} target={target} period={period} />}
-      {detail && <OwnerReports detail={detail} period={period} range={detailRange(detail)} currency={detail.scope.currency || target.currency || 'GBP'} />}
+      {detail && <Summary detail={detail} target={target} period={period} basis={basis} />}
+      {detail && <OwnerReports detail={detail} period={period} basis={basis} range={detailRange(detail)} currency={detail.scope.currency || target.currency || 'GBP'} />}
     </>
   );
 }
 
-// The headline for the screen: the period's net sales and the comparison line, from the SAME
-// answer as the reports under it (never from the card that was tapped, which may be older).
-function Summary({ detail, target, period }) {
+// The headline for the screen: the period's sales (net or gross) and the comparison line, from
+// the SAME answer as the reports under it (never from the card that was tapped, which may be older).
+function Summary({ detail, target, period, basis }) {
   const cur = detail.scope.currency || target.currency || 'GBP';
-  const t = detail.totals || {};
+  const t = detailTotals(detail.totals, basis);
   const range = detailRange(detail);
   const others = detail.scope.other_currencies || [];
-  const g = target.kind === 'group' ? groupLine(detail.compare, range, period) : null;
-  const v = target.kind === 'group' ? null : compareLine(detail.compare, range, period);
+  const cmp = basisCompare(detail.compare, basis);
+  const g = target.kind === 'group' && cmp ? groupLine(cmp, range, period) : null;
+  const v = target.kind === 'group' || !cmp ? null : compareLine(cmp, range, period);
   return (
     <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '16px 18px', marginBottom: 12 }}>
-      <div style={smallCaps}>{PERIOD_COPY[period].sales}</div>
-      <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1, margin: '2px 0' }}>{money(t.net_sales, cur)}</div>
+      <div style={smallCaps}>{salesHeading(basis, period)}</div>
+      <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1, margin: '2px 0' }}>{money(t.sales, cur)}</div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginBottom: 4 }}>{salesLabel(basis, cur)}</div>
       <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>
-        {t.orders || 0} order{t.orders === 1 ? '' : 's'} · {money(t.avg_check, cur, 2)} average{t.tips > 0 ? ` · ${money(t.tips, cur)} tips` : ''}
+        {t.orders || 0} order{t.orders === 1 ? '' : 's'} · {money(t.avg, cur, 2)} average{t.tips > 0 ? ` · ${money(t.tips, cur)} tips` : ''}
       </div>
       {v && <div style={{ fontSize: 12.5, fontWeight: 700, color: toneColor(v.tone), marginTop: 10 }}>{v.text}</div>}
       {g && (
