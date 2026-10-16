@@ -208,3 +208,102 @@ export function actualWaitMin(entry) {
   if (!entry?.addedAt || !entry?.seatedAt) return null;
   return Math.max(0, Math.round((entry.seatedAt - entry.addedAt) / 60000));
 }
+
+// ── the board's shared helpers (16 Oct 2026, Peter: parties waiting 126 to 142
+// minutes still read "quoted 5m") ──────────────────────────────────────────────
+
+// The waiting list the estimator is fed, ONE way for every caller. QueueBoard
+// passed addedAt and AddPartyDrawer did not, so the drawer counted stale
+// parties the board had already dropped and the two quoted differently.
+export function waitingForEstimate(waitlist = [], now = Date.now()) {
+  return freshActives(waitlist, now).map((e) => ({ size: e.size, status: e.status, quoted: e.quoted, addedAt: e.addedAt }));
+}
+
+// The wait a party was PROMISED is the first quote (what the guest was told at
+// the door). `quoted` is the live estimate of what is still to wait, kept
+// fresh by the store every minute, so a party past its promise is re quoted as
+// elapsed + that estimate instead of reading "quoted 5m" for two hours.
+// tone: 'green' under, 'amber' within 5 minutes and for the first 10 minutes
+// over, 'red' after that.
+export const OVER_AMBER_MIN = 10;
+export function waitState({ addedAt = null, firstQuote = null, quoted = null } = {}, now = Date.now()) {
+  const elapsed = Number.isFinite(addedAt) ? Math.max(0, Math.floor((now - addedAt) / 60000)) : 0;
+  const promised = Number.isFinite(firstQuote) ? firstQuote : Number.isFinite(quoted) ? quoted : null;
+  if (promised == null) return { elapsed, promised: null, over: 0, left: null, tone: 'green', requote: null, more: null, text: null };
+  const over = elapsed - promised;
+  // over === 0 is the last minute of the quote ("Due now"), never "Over by 0 min".
+  if (over > 0) {
+    // more: the extra wait the host can say out loud now ("tell them ~10 more min").
+    // requote: the total wait from arrival, for anything stored.
+    const more = Number.isFinite(quoted) ? Math.max(0, quoted) : null;
+    return {
+      elapsed, promised, over, left: 0,
+      tone: over < OVER_AMBER_MIN ? 'amber' : 'red',
+      requote: more == null ? null : elapsed + more,
+      more,
+      text: `Over by ${over} min`,
+    };
+  }
+  const left = Math.max(0, -over) || 0;
+  const text = left === 0 ? 'Due now' : left <= 5 ? `~${left}m left` : null;
+  return { elapsed, promised, over: 0, left, tone: left <= 5 ? 'amber' : 'green', requote: null, more: null, text };
+}
+
+// 16 Oct 2026 (review): table ids a walk in must not be offered because a booking is due on them
+// before this party would be done. bookings: store shape (date 'YYYY-MM-DD', startTime 'HH:MM',
+// turnMinutes, tables, primaryTableId, status). A booking blocks when it is dated today (the
+// venue's), still to arrive (not dining, not over), starts before nowMin + the party's turn and
+// has not ended yet.
+const NOT_HOLDING = new Set(['dining', 'departed', 'cancelled', 'no_show', 'expired']);
+const hmToMin = (hm) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+export function tablesHeldByBookings(bookings = [], { today = null, nowMin = 0, turn = 60, defaultTurn = 90 } = {}) {
+  const held = new Set();
+  if (!today) return held;
+  const now = Number(nowMin) || 0;
+  const horizon = now + (Number(turn) || 60);
+  for (const b of bookings || []) {
+    if (!b || NOT_HOLDING.has(b.status) || b.date !== today) continue;
+    const start = hmToMin(b.startTime);
+    if (start == null) continue;
+    const end = start + (Number(b.turnMinutes) || defaultTurn);
+    if (start >= horizon || end <= now) continue;
+    for (const t of (b.tables && b.tables.length ? b.tables : [b.primaryTableId])) if (t) held.add(t);
+  }
+  return held;
+}
+
+// Free tables (store shape: status 'available', maxCovers, section, parentId)
+// that fit a party, best fit first: preferred section, then fewest spare seats.
+// blocked: an optional Set of table ids not to offer (a booking is due on them, tablesHeldByBookings).
+export function fittingFreeTables(tables = [], { size = 1, sectionPref = null, blocked = null } = {}) {
+  const n = Math.max(1, Math.round(Number(size) || 1));
+  return (tables || [])
+    .filter((t) => t && !t.parentId && t.status === 'available' && !t.session && (Number(t.maxCovers) || 0) >= n)
+    .filter((t) => !(blocked && blocked.has(t.id)))
+    .sort((a, b) => {
+      const ap = sectionPref ? (a.section === sectionPref ? 0 : 1) : 0;
+      const bp = sectionPref ? (b.section === sectionPref ? 0 : 1) : 0;
+      if (ap !== bp) return ap - bp;
+      return ((a.maxCovers || 0) - n) - ((b.maxCovers || 0) - n);
+    });
+}
+
+// "Seat on T8": the queue in order, each party offered the best free table
+// that fits and that no party ahead of it was offered. { [entryId]: table }.
+// blockedFor(size): optional, the Set of table ids a party of that size must not be offered.
+export function seatSuggestions(queue = [], tables = [], { blockedFor = null } = {}) {
+  const taken = new Set();
+  const out = {};
+  for (const e of queue || []) {
+    if (!e || !isActive(e.status)) continue;
+    const blocked = typeof blockedFor === 'function' ? blockedFor(e.size) : null;
+    const t = fittingFreeTables(tables, { size: e.size, sectionPref: e.sectionPref, blocked }).find((x) => !taken.has(x.id));
+    if (!t) continue;
+    taken.add(t.id);
+    out[e.id] = t;
+  }
+  return out;
+}

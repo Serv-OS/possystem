@@ -3,8 +3,10 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { toMin } from '../lib/bookings/optimiser.js';
+import { bookingCreditFor } from '../lib/bookings/bookingCredit';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveServiceCharge } from '../lib/serviceCharge';
+import { computeCheckTotals } from '../lib/payments/checkTotals';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
 import { readCustomerByPhone } from '../../supabase/functions/_shared/customerPhoneRead.js';
@@ -432,7 +434,7 @@ export default function TablesSurface() {
   const compact = useCompact();
   const { tables, seatTable, openTableInPOS, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer,
     // v5.6.27: Table Bookings seams — "reserved" is derived from live bookings
-    bookings, upcomingBookingForTable, seatBooking, updateBooking, cancelBooking, packages } = useStore();
+    bookings, upcomingBookingForTable, seatBooking, cancelBooking, packages } = useStore();
   const [selected, setSelected]   = useState(null);
   const [showSeat, setShowSeat]   = useState(false);
   const [showReservation, setShowReservation] = useState(false);
@@ -818,9 +820,11 @@ export default function TablesSurface() {
                 bookings/FloorScreen. Active = live booking inside its
                 [start−15, start+turn) window, which covers dining/seated too. */}
             {(() => {
-              const now = new Date();
-              const nowMin = now.getHours() * 60 + now.getMinutes();
-              const today = now.toLocaleDateString('en-CA');
+              // 16 Oct 2026 review: the venue's clock and date, never the device's (a till in
+              // California for a UK venue drew the outline 8 hours off).
+              const vctx = buildScheduleCtx(useStore.getState().locationConfig?.timezone);
+              const nowMin = vctx.nowMinutes;
+              const today = vctx.ymd;
               return (bookings || []).filter(b => {
                 if ((b.tables || []).length < 2) return false;
                 if (b.date && b.date !== today) return false;
@@ -925,6 +929,32 @@ export default function TablesSurface() {
                           } catch {}
                           const scAmt = sub * scRate;
                           const totalWithSC = sub + scAmt;
+                          // 16 Oct 2026 (bookings audit item 2): booking money is a payment from
+                          // seating, shown with the balance only (lib/bookings/bookingCredit.js).
+                          // The bill it comes off is the order screen's own figure: the same engine
+                          // and inputs as getPOSTotals (discounts, auto discounts, service, added
+                          // tax), so the card's To pay matches the order screen and the Pay button.
+                          // Only worked out when there is booking money; any failure keeps the old figure.
+                          let billTotal = totalWithSC;
+                          if (session.booking) {
+                            try {
+                              const st = useStore.getState();
+                              const t = computeCheckTotals({
+                                items: session.items || [],
+                                checkDiscounts: session.discounts || [],
+                                covers: session.covers || 1,
+                                serviceChargeWaived: !!session.serviceChargeWaived,
+                                orderType: 'dine-in',
+                                deviceConfig,
+                                discountRules: st.discountRules,
+                                timezone: st.locationConfig?.timezone,
+                                taxRates: st.taxRates,
+                                taxCtx: st.getTaxContext?.(),
+                              });
+                              if (Number.isFinite(Number(t?.total))) billTotal = Number(t.total);
+                            } catch { /* keep the running total with service */ }
+                          }
+                          const credit = bookingCreditFor(session, billTotal);
                           return (
                             <>
                               <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:700 }}>
@@ -936,6 +966,24 @@ export default function TablesSurface() {
                                   <span>inc. service ({deviceConfig?.serviceCharge?.rate ?? 12.5}%)</span>
                                   <span style={{ fontFamily:'DM Mono,monospace' }}>{money(totalWithSC)}</span>
                                 </div>
+                              )}
+                              {credit.hasCredit && (
+                                <>
+                                  {/* 16 Oct 2026 review: the bill the booking money comes off (discounts and
+                                      added tax included), so Total, booking and To pay add up on the card. */}
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, marginTop:5 }}>
+                                    <span style={{ color:'var(--t2)' }}>Total</span>
+                                    <span style={{ fontFamily:'DM Mono,monospace' }}>{money(billTotal)}</span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, color:'var(--grn)', marginTop:3 }}>
+                                    <span>✓ {credit.label}{credit.surplusMinor > 0 && <span style={{ color:'var(--t3)', fontWeight:500 }}> ({money(credit.surplusMinor/100)} stays on the booking)</span>}</span>
+                                    <span style={{ fontFamily:'DM Mono,monospace' }}>−{money(credit.appliedMinor/100)}</span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:800, marginTop:3 }}>
+                                    <span style={{ color:'var(--t2)' }}>To pay</span>
+                                    <span style={{ color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(credit.balanceMinor/100)}</span>
+                                  </div>
+                                </>
                               )}
                             </>
                           );
@@ -1048,8 +1096,9 @@ export default function TablesSurface() {
                     const primary = tables.find(t => t.id === selectedBk.primaryTableId);
                     const r = await seatBooking(selectedBk.id);
                     if (r?.ok) showToast(`${primary?.label || selectedTable.label} seated — ${selectedBk.covers} covers`, 'success');
-                    // seatBooking already said why in words for these two; do not add the raw code.
-                    else if (r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error || 'Could not seat the booking', 'error');
+                    // seatBooking already said why in words (table_open, table_seated_empty, and any
+                    // refusal that returns text); never put its raw code on screen.
+                    else if (!r?.text && r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error === 'unknown booking' ? 'This booking is not on the diary any more.' : 'Could not seat the booking', 'error');
                     setSelected(null);
                   }} style={{ height:44, fontSize:14 }}>Seat guests →</button>
                   <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}>✏ Edit reservation</button>
@@ -1176,10 +1225,12 @@ export default function TablesSurface() {
           onCancel={()=>setShowReservation(false)}
         />
       )}
-      {/* v5.6.27: EDIT mode — prefilled from the claiming booking; confirms via
-          updateBooking (partySize→covers, time→startTime, notes→note; the
-          booking's tables + date stay as booked). Distinct path so
-          setReservation stays create-only. */}
+      {/* v5.6.27: EDIT mode, prefilled from the claiming booking. 16 Oct 2026 (bookings audit
+          item 10): confirms through the store's editBooking (the guarded edit_booking write:
+          the time and covers are checked against every other booking on the table under the
+          venue lock), never a plain row update. The booking's tables and date stay as booked.
+          A refusal keeps the sheet open and says why. Distinct path so setReservation stays
+          create-only. */}
       {editBooking && selectedTable && (
         <ReservationModal
           table={selectedTable}
@@ -1191,13 +1242,23 @@ export default function TablesSurface() {
             notes:     editBooking.note || '',
             customer:  editBooking.customer || null,
           }}
-          onConfirm={(res)=>{
+          onConfirm={async (res)=>{
             const customer = res.customer
               ? { ...res.customer, name: res.customer.name || res.name, phone: res.customer.phone || res.phone }
               : { ...(editBooking.customer || {}), name: res.name, phone: res.phone || null };
-            updateBooking(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer });
+            const edit = useStore.getState().editBooking;
+            const out = edit
+              ? await edit(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer },
+                  // 16 Oct 2026 review: the stamp the sheet opened with, so a change made on another
+                  // device meanwhile (an allergen, an email) is refused, never written back over.
+                  { editedBy: useStore.getState().staff?.name || null, expectedEditedAt: editBooking.customer?.edited_at || null })
+              : { ok: false, error: 'Bookings are not loaded on this till.' };
+            if (!out?.ok) {
+              showToast(`Booking NOT changed: ${out?.error || 'the change was refused'}`, 'error');
+              return;
+            }
             setEditBooking(null);
-            showToast(`Booking updated — ${res.name} at ${res.time}`, 'success');
+            showToast(`Booking updated: ${res.name} at ${res.time}`, 'success');
           }}
           onCancel={()=>setEditBooking(null)}
         />

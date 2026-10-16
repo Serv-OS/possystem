@@ -386,3 +386,40 @@ export const fmtClock = (tz) => (d) => {
   }
 };
 export const venueToday = (tz) => buildScheduleCtx(tz || undefined).ymd;
+
+// 16 Oct 2026: the same tables (and primary) before and after an edit, order kept.
+export function sameTables(before = {}, after = {}) {
+  return (before?.tables || []).join(',') === (after?.tables || []).join(',')
+    && (before?.primaryTableId || null) === (after?.primaryTableId || null);
+}
+
+// 16 Oct 2026: does an edit move the booking's window? A new date, a new time, new tables, or
+// more covers. A note, phone, guest or smaller party edit does not, so it skips the diary
+// conflict check and keeps the booking's turn (the till's Edit reservation on a table with an
+// open tab is not refused for a phone number).
+export function editChangesWindow(before = {}, next = {}) {
+  if (!before || !next) return true;
+  if (String(before.date || '') !== String(next.date || '')) return true;
+  if (String(before.startTime || '').slice(0, 5) !== String(next.startTime || '').slice(0, 5)) return true;
+  if (!sameTables(before, next)) return true;
+  return Math.round(num(next.covers)) > Math.round(num(before.covers));
+}
+
+// 16 Oct 2026 (bookings audit items 10 and 21): the database's refusal codes (create_booking,
+// move_booking, edit_booking) in the words the stand and the till show. tableLabel is the
+// table's name when the refusal names one. Unknown codes pass through as they are.
+export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null } = {}) {
+  const t = tableLabel || 'That table';
+  switch (error) {
+    case 'table_taken': return `${t} was just taken by another booking. Nothing was changed.`;
+    case 'unknown_table': return `${t} is not on this venue's floor plan any more. Reload the floor and pick again.`;
+    case 'too_many_covers': return `The tables seat ${Number(seats) || 0}, fewer than the party. Add a table or pick a bigger one.`;
+    case 'awaiting_payment': return 'This booking is still being paid online, so its covers cannot change until the payment lands.';
+    case 'not_editable': return EDIT_REFUSALS[status] || 'This booking can no longer be changed.';
+    case 'unknown booking': return 'This booking is not on the diary any more. Reload and try again.';
+    case 'booking is closed': return 'This booking is finished, so it cannot be moved.';
+    case 'no tables supplied': return 'Pick at least one table.';
+    case 'no access': return 'This device is not allowed to change bookings at this venue. Pair it again or sign in, then try again.';
+    default: return error ? String(error) : 'The database refused the change.';
+  }
+}

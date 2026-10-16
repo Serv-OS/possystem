@@ -10,9 +10,11 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, useNowMin, money,
-  bookingName, todayISO, isLive, useNarrowStand,
+  mono, tintBg, tintBd, rulesOf, displayStatus, money,
+  bookingName, isLive, useNarrowStand,
 } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
+import { nextQuarterMin } from '../../lib/bookings/venueClock.js';
 import { sessionTotal } from '../../lib/bookings/sessionTotal.js';
 
 // The POS's exact table colours (TablesSurface.jsx STATUS map) — one visual
@@ -60,8 +62,10 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const bookingRules = useStore((s) => s.bookingRules);
   const bookingsDate = useStore((s) => s.bookingsDate);
   const rules = rulesOf(bookingRules);
-  const isToday = !bookingsDate || bookingsDate === todayISO();
-  const nowMin = useNowMin();
+  // 16 Oct 2026: the venue clock, never the iPad's (audit item 8).
+  const clock = useVenueClock();
+  const isToday = !bookingsDate || bookingsDate === clock.ymd;
+  const nowMin = clock.nowMin;
   const statusNow = isToday ? nowMin : null;
 
   const narrow = useNarrowStand();
@@ -138,8 +142,11 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
     return statusNow >= s - 15 && statusNow < s + (b.turnMinutes || 90);
   }), [bookings, statusNow]);
 
+  // 16 Oct 2026 (audit item 15): isLive and not dining, the same test as
+  // upcomingCount below. Only 'confirmed' counted before, so a prepaid or
+  // awaiting payment booking left its table green while the till said reserved.
   const nextFor = (tableId) => bookings
-    .filter((b) => isLive(b) && b.status === 'confirmed' && (b.tables || []).includes(tableId)
+    .filter((b) => isLive(b) && b.status !== 'dining' && (b.tables || []).includes(tableId)
       && (!Number.isFinite(statusNow) || toMin(b.startTime) > statusNow))
     .sort((a, b) => toMin(a.startTime) - toMin(b.startTime))[0] || null;
 
@@ -150,16 +157,17 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
     && (!Number.isFinite(statusNow) || toMin(b.startTime) > statusNow)).length;
 
   // ── walk-in suggestion at the next quarter hour ─────────────────────────────
-  const nextQ = toHM(Math.ceil((nowMin + 1) / 15) * 15);
+  const nextQ = toHM(nextQuarterMin(nowMin));
   const suggest = useStore((s) => s.suggestBookingTables);
   const sug = useMemo(() => {
-    if (!suggest) return null;
+    // 16 Oct 2026 (audit item 16): walk ins are today's business only.
+    if (!suggest || !isToday) return null;
     return (suggest({ party: walk, time: nextQ, limit: 1 }) || [])[0] || null;
-  }, [suggest, walk, nextQ, bookings, tables, bookingRules]);
+  }, [suggest, walk, nextQ, bookings, tables, bookingRules, isToday]);
   const sugSet = new Set(sug?.set || []);
 
   const seatWalkIn = async () => {
-    if (!sug || seating) return;
+    if (!sug || seating || !isToday) return;
     setSeating(true); setMsg('');
     const { createBooking } = useStore.getState();
     const name = walkName.trim();
@@ -170,7 +178,7 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
     // be rung in against the table), no guard against seating onto a table that
     // already had a live check, and no guest or server on the session.
     const res = createBooking ? await createBooking({
-      covers: walk, time: nextQ, tables: sug.set, primaryTableId: sug.set[0],
+      covers: walk, date: clock.ymd, time: nextQ, tables: sug.set, primaryTableId: sug.set[0],
       source: 'walk_in', status: 'confirmed',
       customer: (name || phone) ? { name: name || 'Walk-in', phone: phone || null } : null,
     }) : { ok: false, error: 'Bookings store not wired' };
@@ -372,7 +380,15 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
       </div>
 
       {/* ── right panel ── */}
-      {showWalkIn && (
+      {showWalkIn && !isToday && (
+      <div style={stacked
+        ? { flexShrink: 0, background: 'var(--bg1)', borderTop: '1px solid var(--bdr)', padding: 12 }
+        : { width: narrow ? 262 : 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', padding: narrow ? 12 : 16 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 9 }}>Seat a walk-in</div>
+        <div style={{ fontSize: 13, color: 'var(--t3)', lineHeight: 1.5 }}>Walk ins are seated on today&rsquo;s diary. Tap Today to seat one.</div>
+      </div>
+      )}
+      {showWalkIn && isToday && (
       <div style={stacked
         ? { flexShrink: 0, maxHeight: '38%', background: 'var(--bg1)', borderTop: '1px solid var(--bdr)', overflowY: 'auto', padding: 12 }
         : { width: narrow ? 262 : 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto', padding: narrow ? 12 : 16 }}>
@@ -413,8 +429,8 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
         ) : (
           <div style={{ padding: '14px 14px', borderRadius: 13, border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
             {(rules.joinGroups || []).length === 0
-              ? 'No join groups authored yet — author join groups in Back Office → Floor plan to get suggestions here.'
-              : `No table fits a party of ${walk} at ${nextQ} — check the diary for the next free window.`}
+              ? `No single table fits a party of ${walk} at ${nextQ}. Tables only join inside a join group: set them in Back Office, Floor plan.`
+              : `No table fits a party of ${walk} at ${nextQ}. Check the diary for the next free window.`}
           </div>
         )}
         {msg && <div style={{ fontSize: 11, color: 'var(--t2)', marginBottom: 12, ...mono }}>{msg}</div>}

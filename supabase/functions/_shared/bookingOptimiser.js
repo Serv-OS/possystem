@@ -19,6 +19,12 @@
 // A combination is only legal within a join group — an ORDERED run of
 // physically adjacent tables, authored per venue in FloorPlanBuilder and stored
 // on booking_rules.join_groups. Only consecutive members may combine.
+//
+// 16 Oct 2026 (bookings audit item 7): a table that is in NO join group is still
+// a table. It used to be offered nowhere (Provo T3, and every slot greyed on the
+// Leeds, Huddersfield and Birmingham widgets, which have no groups at all). Every
+// table outside a group is now a single table candidate with the same scoring;
+// joins still only form inside a group.
 
 // ── scoring weights — THE tuning surface. An operator complaint of "it keeps
 //    suggesting the wrong table" is almost always a conversation about these. ──
@@ -75,6 +81,24 @@ export function paceAt(t, bookings = []) {
     .reduce((s, b) => s + (b.covers || 0), 0);
 }
 
+// 16 Oct 2026 (bookings audit item 14): is a slot full for THIS party? The party
+// being added counts: cap 12 with 10 booked takes a party of 2, never a party of
+// 8. A cap of 0 or less means no cap.
+export function paceFull(load, party, cap) {
+  const c = Number(cap);
+  if (!Number.isFinite(c) || c <= 0) return false;
+  return (Number(load) || 0) + Math.max(0, Number(party) || 0) > c;
+}
+
+// 16 Oct 2026: the biggest party the online page may offer. A party bigger than the pacing cap
+// can never be booked online (paceFull is true on an empty day), so the picker stops at the cap
+// and the slots and book actions clamp to the same ceiling. No cap set: the ceiling (12).
+export function maxPartyForCap(cap, ceiling = 12) {
+  const c = Number(cap);
+  const top = Math.max(1, Math.round(Number(ceiling) || 12));
+  return (Number.isFinite(c) && c > 0) ? Math.max(1, Math.min(top, Math.floor(c))) : top;
+}
+
 // ── the optimiser ─────────────────────────────────────────────────────────────
 // tables:     [{ id, label, covers, section }]
 // joinGroups: [{ id, label, tableIds: [...], kind }] — ordered = adjacent;
@@ -106,52 +130,62 @@ export function suggestTables({
   const free = (id) => isTableFree(id, start, end, bookings, { skipId: skipBookingId });
 
   const candidates = [];
+  const consider = (set, kind = null) => {
+    const n = set.length;
+    if (!set.every(free)) return;
+    const cap = set.reduce((s, id) => s + (byId.get(id).covers || 0), 0);
+    if (cap < n0) return;
+    const waste = cap - n0;
+    if (waste > tol) return;
+
+    let score = waste * WEIGHTS.WASTE + (n - 1) * WEIGHTS.JOIN;
+    const reasons = [];
+    reasons.push(waste === 0
+      ? 'Exact fit — no seat left empty'
+      : `${waste} seat${waste > 1 ? 's' : ''} spare, inside the ${tol}-seat tolerance`);
+    if (n > 1) {
+      reasons.push(`Joins ${set.map((id) => byId.get(id).label || id).join(' + ')} — same run, one server section`);
+    }
+    if (protect && n === 1 && (byId.get(set[0]).covers || 0) >= 6 && n0 <= 4) {
+      score += WEIGHTS.PROTECT;
+      reasons.push(`Burns a ${cap}-top on a party of ${n0} — held back unless nothing else fits`);
+    }
+    if (kind === 'bar' && n0 > 1) {
+      score += WEIGHTS.BAR;
+      reasons.push('Bar stools — no table service');
+    }
+    // Downstream cost — what this choice leaves for walk-ins. This is what
+    // makes the ranking legible to the operator; never reduce it away.
+    const rest = tables.filter((t) => !set.includes(t.id) && free(t.id));
+    const twos = rest.filter((t) => (t.covers || 0) <= 2).length;
+    reasons.push(`Leaves ${rest.length} table${rest.length === 1 ? '' : 's'} free at ${toHM(start)}, ${twos} of them two-tops for walk-ins`);
+
+    candidates.push({
+      id: set.join('+'),
+      set,
+      label: set.map((id) => byId.get(id).label || id).join(' + '),
+      cap,
+      waste,
+      score,
+      n,
+      section: byId.get(set[0]).section || null,
+      reasons,
+    });
+  };
+  const grouped = new Set();
   for (const group of joinGroups || []) {
     const ids = (group.tableIds || []).filter((id) => byId.has(id));
+    for (const id of ids) grouped.add(id);
     for (let i = 0; i < ids.length; i++) {
       for (let n = 1; n <= Math.min(maxJoin, ids.length - i); n++) {
-        const set = ids.slice(i, i + n);
-        if (!set.every(free)) continue;
-        const cap = set.reduce((s, id) => s + (byId.get(id).covers || 0), 0);
-        if (cap < n0) continue;
-        const waste = cap - n0;
-        if (waste > tol) continue;
-
-        let score = waste * WEIGHTS.WASTE + (n - 1) * WEIGHTS.JOIN;
-        const reasons = [];
-        reasons.push(waste === 0
-          ? 'Exact fit — no seat left empty'
-          : `${waste} seat${waste > 1 ? 's' : ''} spare, inside the ${tol}-seat tolerance`);
-        if (n > 1) {
-          reasons.push(`Joins ${set.map((id) => byId.get(id).label || id).join(' + ')} — same run, one server section`);
-        }
-        if (protect && n === 1 && (byId.get(set[0]).covers || 0) >= 6 && n0 <= 4) {
-          score += WEIGHTS.PROTECT;
-          reasons.push(`Burns a ${cap}-top on a party of ${n0} — held back unless nothing else fits`);
-        }
-        if (group.kind === 'bar' && n0 > 1) {
-          score += WEIGHTS.BAR;
-          reasons.push('Bar stools — no table service');
-        }
-        // Downstream cost — what this choice leaves for walk-ins. This is what
-        // makes the ranking legible to the operator; never reduce it away.
-        const rest = tables.filter((t) => !set.includes(t.id) && free(t.id));
-        const twos = rest.filter((t) => (t.covers || 0) <= 2).length;
-        reasons.push(`Leaves ${rest.length} table${rest.length === 1 ? '' : 's'} free at ${toHM(start)}, ${twos} of them two-tops for walk-ins`);
-
-        candidates.push({
-          id: set.join('+'),
-          set,
-          label: set.map((id) => byId.get(id).label || id).join(' + '),
-          cap,
-          waste,
-          score,
-          n,
-          section: byId.get(set[0]).section || null,
-          reasons,
-        });
+        consider(ids.slice(i, i + n), group.kind || null);
       }
     }
+  }
+  // 16 Oct 2026: every table outside any join group, on its own, same scoring. A Bar section
+  // seat keeps the bar penalty its group would have given it, so a real table wins.
+  for (const t of tables) {
+    if (!grouped.has(t.id)) consider([t.id], String(t.section || '').toLowerCase() === 'bar' ? 'bar' : null);
   }
   candidates.sort((a, b) => a.score - b.score);
   return candidates.slice(0, Math.max(1, limit));

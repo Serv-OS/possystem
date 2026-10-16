@@ -38,8 +38,8 @@ const CRM_MAP = [
   ['Name', 'matched on phone before a new guest profile is made'],
   ['Mobile', 'the match key across POS, bookings and marketing'],
   ['Email', 'stored with consent timestamp and source'],
-  ['Dietary & allergens', 'surfaces on the POS check and the kitchen ticket'],
-  ['Occasion', 'becomes the booking note — printed at the host stand and on the KDS'],
+  ['Dietary & allergens', 'a returning guest\'s saved allergens ride the booking onto the POS check'],
+  ['Allergies or occasion', 'the free text box becomes the booking note, shown at the host stand'],
   ['Marketing consent', 'the only field that unlocks campaigns'],
 ];
 

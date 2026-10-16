@@ -13,8 +13,10 @@ import { useStore } from '../../store';
 import { toMin } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, displayStatus, statusMeta, isLive,
-  useNowMin, bookingName, todayISO, preorderStateFor, useNarrowStand,
+  bookingName, preorderStateFor, useNarrowStand,
 } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
+import { shiftYmd, ymdLabel } from '../../lib/bookings/venueClock.js';
 import FloorScreen from './FloorScreen.jsx';
 import { Inspector } from './DiaryScreen.jsx';
 
@@ -26,9 +28,10 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   const bookingsDate = useStore((s) => s.bookingsDate);
   const setBookingsDate = useStore((s) => s.setBookingsDate);
 
-  const isToday = !bookingsDate || bookingsDate === todayISO();
-  const tick = useNowMin();
-  const nowMin = isToday ? tick : null;
+  // 16 Oct 2026: the venue clock, never the iPad's (audit item 8).
+  const clock = useVenueClock();
+  const isToday = !bookingsDate || bookingsDate === clock.ymd;
+  const nowMin = isToday ? clock.nowMin : null;
 
   const topTables = useMemo(() => tables.filter((t) => !t.parentId), [tables]);
 
@@ -44,12 +47,7 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   const coversBooked = live.reduce((s, b) => s + (b.covers || 0), 0);
   const coversSeated = seated.reduce((s, b) => s + (b.covers || 0), 0);
 
-  const shiftDay = (delta) => {
-    const base = bookingsDate || todayISO();
-    const d = new Date(`${base}T12:00:00`);
-    d.setDate(d.getDate() + delta);
-    setBookingsDate?.(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-  };
+  const shiftDay = (delta) => setBookingsDate?.(shiftYmd(bookingsDate || clock.ymd, delta));
 
   const selected = bookings.find((b) => b.id === sel) || null;
 
@@ -63,10 +61,10 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
             {/* v5.9.62: tap the date to pick one; Today brings you back. */}
-            <input type="date" value={bookingsDate || todayISO()} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
+            <input type="date" value={bookingsDate || clock.ymd} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }}
               aria-label="Service date"
               style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '3px 8px', fontFamily: 'inherit', ...mono }} />
-            {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
+            {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(clock.ymd)} style={{ fontWeight: 700 }}>Today</button>}
             <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ ...mono }}>›</button>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -89,7 +87,7 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
           </div>
 
           {doneCount > 0 && (
-            <div style={{ fontSize: 10.5, color: 'var(--t4)', margin: '12px 2px 0' }}>{doneCount} finished or no-show today</div>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', margin: '12px 2px 0' }}>{doneCount} finished or no-show {isToday ? 'today' : `on ${ymdLabel(bookingsDate, { long: true })}`}</div>
           )}
         </div>
 

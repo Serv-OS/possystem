@@ -4,17 +4,19 @@
 // (loadBookingsRange) + the store's live diary. The range fetch runs on mount
 // and again when the location resolves; the store's `bookings` (today's diary,
 // realtime-updated) is merged over the fetched rows by id, so "this week"
-// keeps moving as bookings land without a re-fetch. Money figures are labelled
-// "committed" — card capture is not live yet, so deposits/prepay are what the
-// packages SAY is owed, not what a processor has taken.
+// keeps moving as bookings land without a re-fetch. 16 Oct 2026 (audit item
+// 22): money is what was actually TAKEN (captured booking_payments for the
+// week's bookings), never package prices; the days are the VENUE's days.
 //
 // Table capacities come from the store's floor plan (maxCovers), exactly like
 // the diary's KPI strip — split-check children (parentId) are excluded.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { loadBookingsRange } from '../../lib/bookings/bookingsData';
-import { mono, tintBg, money, todayISO, EmptyNote } from './bits.jsx';
+import { loadBookingsRange, loadCapturedMinorByBooking } from '../../lib/bookings/bookingsData';
+import { mono, tintBg, money, EmptyNote } from './bits.jsx';
+import { useVenueClock } from './useVenueClock.js';
+import { daysEnding } from '../../lib/bookings/venueClock.js';
 
 const CHART_H = 150;   // bar area inside the ~170px chart body
 
@@ -27,22 +29,6 @@ const SOURCES = [
   ['pos', 'POS'],
 ];
 
-const isoOf = (d) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-// The 7 service days ending today, oldest first.
-const weekDays = () => {
-  const out = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    out.push({ iso: isoOf(d), label: d.toLocaleDateString('en-GB', { weekday: 'short' }) });
-  }
-  return out;
-};
-
-const prepayValue = (pkg, covers) =>
-  String(pkg.priceUnit || '').includes('cover') ? (pkg.price || 0) * (covers || 0) : (pkg.price || 0);
 
 const label = { fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--t3)' };
 const panel = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: '16px 18px' };
@@ -51,9 +37,10 @@ export default function ReportsScreen() {
   const currentLocationId = useStore((s) => s.currentLocationId);
   const storeBookings = useStore((s) => s.bookings) || [];
   const tables = useStore((s) => s.tables) || [];
-  const packages = useStore((s) => s.packages) || [];
+  const { ymd: venueYmd } = useVenueClock();
 
-  const days = weekDays();                       // cheap; today rolls over correctly on a stand left on
+  // The 7 VENUE days ending today, oldest first (rolls over on a stand left on).
+  const days = daysEnding(venueYmd, 7);
   const fromISO = days[0].iso;
   const toISO = days[6].iso;                     // today
 
@@ -72,7 +59,7 @@ export default function ReportsScreen() {
     return () => { alive = false; };
   }, [currentLocationId, fromISO, toISO]);
 
-  // ── merge: fetched range + the live diary (store wins — realtime-fresh) ─────
+  // ── merge: fetched range + the live diary (store wins, realtime fresh) ─────
   const rows = useMemo(() => {
     const inRange = (b) => b?.date >= fromISO && b?.date <= toISO;
     const map = new Map();
@@ -80,6 +67,26 @@ export default function ReportsScreen() {
     for (const b of storeBookings) if (inRange(b)) map.set(b.id, b);
     return [...map.values()];
   }, [fetched, storeBookings, fromISO, toISO]);
+
+  // ── money actually taken: captured booking_payments for the week's bookings ──
+  // null = still reading, 'failed' = the ledger could not be read (said so).
+  // 16 Oct 2026 (review): keyed on the MERGED rows, not the boot fetch. The screen stays mounted,
+  // so a booking that arrived by realtime after the stand opened (the prepaid brunch) counted its
+  // covers but none of its money. The previous figures stay on screen while a new read runs.
+  const [paid, setPaid] = useState(null);
+  // id and status: a booking whose payment lands later (pending payment to prepaid) reads again.
+  const rowKey = useMemo(() => rows.map((b) => `${b.id}|${b.status}`).sort().join(','), [rows]);
+  useEffect(() => {
+    if (fetched === null) return undefined;
+    let alive = true;
+    const ids = rowKey ? rowKey.split(',').map((k) => k.split('|')[0]) : [];
+    loadCapturedMinorByBooking(ids)
+      .then((m) => { if (alive) setPaid(m === null ? 'failed' : m); })
+      .catch(() => { if (alive) setPaid('failed'); });
+    return () => { alive = false; };
+    // fetched only gates the first read; rowKey carries every change that matters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetched === null, rowKey]);
 
   // ── the maths ───────────────────────────────────────────────────────────────
   const stats = useMemo(() => {
@@ -89,17 +96,20 @@ export default function ReportsScreen() {
     const noShows = rows.filter((b) => b.status === 'no_show').length;
     const noShowPct = rows.length ? (noShows / rows.length) * 100 : 0;
 
-    let committed = 0, prepay = 0;
-    for (const b of alive) {
-      const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-      if (!pkg) continue;
-      if (pkg.paymentModel === 'prepay') {
-        const v = prepayValue(pkg, b.covers);
-        committed += v; prepay += v;
-      } else if (pkg.paymentModel === 'deposit') {
-        committed += (pkg.depositPerCover || 0) * (b.covers || 0);
-      }
+    // Money TAKEN, in minor units: the ledger read above, over every booking on
+    // screen. While a new read is in flight, a booking it has not covered yet uses
+    // the figure loadBookings summed for it (paidMinor), if the diary reloaded it.
+    // Cancelled bookings still count: the money was taken.
+    let takenMinor = 0, prepayMinor = 0;
+    const ledger = paid instanceof Map ? paid : null;
+    for (const b of rows) {
+      const fromLedger = ledger?.get(b.id) || null;
+      const total = fromLedger ? fromLedger.total : (b.paidMinor || 0);
+      const pre = fromLedger ? fromLedger.prepay : (b.paidPrepayMinor || 0);
+      takenMinor += total; prepayMinor += pre;
     }
+    const committed = takenMinor / 100;
+    const prepay = prepayMinor / 100;
 
     const floor = tables.filter((t) => !t.parentId);
     const capMap = new Map(floor.map((t) => [t.id, t.maxCovers || 0]));
@@ -119,7 +129,7 @@ export default function ReportsScreen() {
     return { covers, noShows, noShowPct, committed, prepay, capacity, utilisation, waste, byDay, srcCounts, total: rows.length };
     // days is rebuilt per render with identical content; fromISO pins the identity that matters
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, packages, tables, fromISO]);
+  }, [rows, tables, fromISO, paid]);
 
   const maxDay = Math.max(...stats.byDay, 1);
 
@@ -155,8 +165,8 @@ export default function ReportsScreen() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
         <Kpi k="Covers this week" v={stats.covers} s="non-cancelled bookings" />
         <Kpi k="No-show rate" v={`${stats.noShowPct.toFixed(1)}%`} s={`${stats.noShows} of ${stats.total} bookings`} col={stats.noShowPct > 5 ? 'var(--red)' : undefined} />
-        <Kpi k="Deposits & prepay" v={money(stats.committed)} s="committed — card capture not live yet" col="var(--grn)" />
-        <Kpi k="Package revenue" v={money(stats.prepay)} s="prepaid packages, posts to POS" col="var(--grn)" />
+        <Kpi k="Deposits & prepay" v={paid === 'failed' ? 'Not visible' : money(stats.committed, 2)} s={paid === 'failed' ? 'card payments could not be read here' : paid === null ? 'reading card payments…' : 'taken by card at booking'} col="var(--grn)" />
+        <Kpi k="Package revenue" v={paid === 'failed' ? 'Not visible' : money(stats.prepay, 2)} s="prepaid packages, taken by card" col="var(--grn)" />
         <Kpi k="Seat utilisation" v={stats.utilisation == null ? '—' : `${Math.round(stats.utilisation)}%`} s={stats.utilisation == null ? 'no floor plan yet' : 'booked covers ÷ seats × 7 days'} />
         <Kpi k="Wasted seats / booking" v={stats.waste == null ? '—' : stats.waste.toFixed(1)} s="avg empty seats after joins" />
       </div>
@@ -168,7 +178,7 @@ export default function ReportsScreen() {
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, height: CHART_H + 20 }}>
             {days.map((d, i) => {
               const c = stats.byDay[i];
-              const isToday = d.iso === todayISO();
+              const isToday = d.iso === venueYmd;
               const h = c > 0 ? Math.max(4, Math.round((c / maxDay) * CHART_H)) : 2;
               return (
                 <div key={d.iso} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
@@ -202,7 +212,7 @@ export default function ReportsScreen() {
             );
           })}
           <div style={{ fontSize: 11, color: 'var(--t3)', lineHeight: 1.6, marginTop: 14 }}>
-            Every source writes one guest record. The POS check carries the same guest, so spend, allergens and no-shows sit on one profile.
+            A guest found or added at booking is the same guest on the POS check, so spend, allergens and no-shows sit on one profile.
           </div>
         </div>
       </div>

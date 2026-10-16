@@ -9,7 +9,8 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync, ensureAuthToken, isBackOfficeMode } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken, isBackOfficeMode, isHostStandMode } from '../lib/supabase';
+import { startBookingsCatchUp } from '../lib/bookings/bookingsCatchUp.js';
 import { ratesAfterRead, readMayReplace, clientTrustsEmpty } from '../lib/venueTaxRates';
 import { readLocalSessions, tagSession, stampLocalSessionsFor } from '../lib/localSessions';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
@@ -138,6 +139,8 @@ function persistShared(patch) {
 // keyed on locationId so a genuine location switch still gets a full boot, and
 // released again if the boot it guards fails so an offline start-up is retried.
 let _bootedFor = null;
+// 16 Oct 2026 (bookings audit item 9): one midnight watcher per page (see the bookings load below).
+let _bookingsRolloverStop = null;
 
 function getSharedState() {
   const s = useStore.getState();
@@ -733,6 +736,15 @@ export default function SyncBridge({ onSyncPulse }) {
           // After the floor plan for the same reason as reservations; idempotent —
           // the data layer is table-absent-safe.
           try { await useStore.getState().loadBookingsFromDB?.(); } catch { /* best-effort */ }
+          // 16 Oct 2026 (bookings audit item 9): a till left on overnight loaded today's bookings
+          // once and never again, so the next day no table read Booked. Follow the VENUE's midnight
+          // (a 30 second date check, one read a day; no timer reloads on a till). A host stand runs
+          // its own fuller catch up (BookingsSurface), so it is not started there.
+          try {
+            if (!_bookingsRolloverStop && !isHostStandMode()) {
+              _bookingsRolloverStop = startBookingsCatchUp({ store: useStore, win: null, doc: null, everyMs: 0 });
+            }
+          } catch { /* best-effort */ }
 
         } catch(e) {
           // Boot did not complete — drop the latch so a later mount retries it.

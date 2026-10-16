@@ -11,6 +11,7 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { variantFromPrice } from '../lib/menuPricing';
 import { missingInstructionGroups } from '../lib/bookings/preorderChoices';
+import { bookingCreditFor } from '../lib/bookings/bookingCredit';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
@@ -477,6 +478,10 @@ export default function POSSurface() {
   // taxCtx stays subscribed so a tax setup change re-renders the till.
   const taxCtx = useStore(s => s.getTaxContext());
   const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null, tax: billTax = null } = getPOSTotals();
+  // 16 Oct 2026 (bookings audit item 2, Peter): a seated booking's prepay or deposit is a PAYMENT
+  // from seating, shown as a line under the total with the balance to pay. Display only: checkout
+  // still applies it as the booking_prepaid / booking_deposit tender (lib/bookings/bookingCredit.js).
+  const bookingCredit = bookingCreditFor(activeTableId ? session : null, total);
   const footerTaxBreakdown = items.length ? billTax : null;
   // v5.5.646: auto-fetch an Uber Direct delivery quote when a delivery order has an
   // address + items, so the surcharge is on the bill BEFORE checkout. Debounced; the
@@ -1472,15 +1477,9 @@ export default function POSSurface() {
                 {/* v5.7.21 — the seated booking's money, visible from seating.
                     Prepay: the package is PAID and posts as a tender leg at
                     close. Deposit: the captured deposit applies at close. */}
-                {(session?.booking?.prepaidMinor > 0 || session?.booking?.depositMinor > 0) && (
+                {bookingCredit.hasCredit && (
                   <div style={{fontSize:10.5,fontWeight:700,color:'var(--grn)',marginTop:2}}>
-                    {session.booking.prepaidMinor > 0 && (
-                      <span>✓ {session.booking.packageName ? `${session.booking.packageName} ` : 'Package '}{money(session.booking.prepaidMinor/100)} PAID · comes off the bill at close</span>
-                    )}
-                    {session.booking.prepaidMinor > 0 && session.booking.depositMinor > 0 && ' · '}
-                    {session.booking.depositMinor > 0 && (
-                      <span>✓ Deposit {money(session.booking.depositMinor/100)} applied at close</span>
-                    )}
+                    ✓ {bookingCredit.label} {money(bookingCredit.creditMinor/100)}
                   </div>
                 )}
                 {/* v5.7.23 - a prepay booking with NO captured credit seats at
@@ -1709,10 +1708,31 @@ export default function POSSurface() {
                     </div>
                   );
                 })}
+                {/* 16 Oct 2026 (review): with nothing rung in yet there is nothing to take the credit
+                    off, so only the Total row shows (never "−£0.00"). */}
+                {bookingCredit.hasCredit && items.length > 0 ? (
+                  <>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,color:'var(--t2)',marginTop:8,paddingTop:8,borderTop:'1px solid var(--bdr)'}}>
+                      <span>Total</span>
+                      <span style={{fontFamily:'var(--font-mono)'}}>{money(total)}</span>
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,color:'var(--grn)',marginTop:3}}>
+                      <span>✓ {bookingCredit.label}{bookingCredit.surplusMinor > 0 && (
+                        <span style={{color:'var(--t3)',fontWeight:500}}> (of {money(bookingCredit.creditMinor/100)} paid, the rest stays on the booking)</span>
+                      )}</span>
+                      <span style={{fontFamily:'var(--font-mono)'}}>−{money(bookingCredit.appliedMinor/100)}</span>
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:22,fontWeight:800,marginTop:6}}>
+                      <span>To pay</span>
+                      <span style={{color:'var(--acc)',fontFamily:'var(--font-mono)',letterSpacing:'-.01em'}}>{money(bookingCredit.balanceMinor/100)}</span>
+                    </div>
+                  </>
+                ) : (
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:22,fontWeight:800,marginTop:8,paddingTop:8,borderTop:'1px solid var(--bdr)'}}>
                   <span>Total</span>
                   <span style={{color:'var(--acc)',fontFamily:'var(--font-mono)',letterSpacing:'-.01em'}}>{money(total)}</span>
                 </div>
+                )}
               </div>
 
               {/* Check discounts */}
@@ -1789,7 +1809,9 @@ export default function POSSurface() {
               }
               openCheckout();   // 30 Sep 2026: flag number (when the profile asks), allergen gate, checkout
             }}>
-              {items.length>0?`Pay ${money(total)}`:'Pay'}
+              {items.length>0
+                ? (bookingCredit.hasCredit && bookingCredit.balanceMinor === 0 ? 'Close check' : `Pay ${money(bookingCredit.hasCredit ? bookingCredit.balanceMinor/100 : total)}`)
+                : 'Pay'}
             </button>
           </div>
         </div>

@@ -28,6 +28,7 @@ import { declineLine } from '../lib/declineMessage';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
+import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
 import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
@@ -38,6 +39,7 @@ import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
 import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
+import { bookingCreditFor } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1587,8 +1589,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       return (b && ((b.prepaidMinor || 0) + (b.depositMinor || 0)) > 0) ? b : null;
     } catch { return null; }
   });
-  const bookingCreditMajor = bookingInfo
-    ? ((bookingInfo.prepaidMinor || 0) + (bookingInfo.depositMinor || 0)) / 100 : 0;
+  // 16 Oct 2026 (bookings audit item 2): the credit and its words come from the ONE helper the
+  // order screen and the table card read (lib/bookings/bookingCredit.js), so the three agree.
+  // The figure is the same sum as before; the tender legs below are unchanged.
+  const bookingCreditInfo = bookingCreditFor(bookingInfo ? { booking: bookingInfo } : null);
+  const bookingCreditMajor = bookingCreditInfo.creditMinor / 100;
   // v5.7.23: SplitModal divides the GROSS bill and knows nothing about the booking credit, so splitting would re-charge money the booking already paid.
   const splitWithBookingCredit = !!bookingInfo;
 
@@ -1977,12 +1982,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // consumed them). Best-effort and NOT awaited: the money maths above already
     // honoured the credit; this is the ledger's bookkeeping. Server-side
     // idempotent — only captured, un-applied rows update, so a retry no-ops.
+    // 16 Oct 2026 (bookings audit item 3): with the amount this check USED, so a bill smaller
+    // than the prepayment leaves the rest on the ledger as money to give back
+    // (lib/bookings/applyBookingPayment.js; falls back to the old call before migration 20261016b).
     if (bookingRecord?.bookingId && supabase && !isMock && !isTrainingMode()) {
-      supabase.rpc('apply_booking_payment', {
-        p_booking_id: bookingRecord.bookingId,
-        p_closed_check_id: checkId,
-      }).then(({ error }) => {
-        if (error) console.warn('[checkout] apply_booking_payment failed (credit still honoured on the check):', error.message);
+      applyBookingPayment(supabase.rpc.bind(supabase), {
+        bookingId: bookingRecord.bookingId,
+        checkId,
+        appliedMinor: bookingRecord.appliedMinor,
+      }).then((r) => {
+        if (!r.ok) console.warn('[checkout] apply_booking_payment failed (credit still honoured on the check):', r.error);
+        else if (r.fallback) console.warn('[checkout] apply_booking_payment: the amount used was not stored (migration 20261016b not run yet); every captured row was stamped applied, as before.');
       }).catch(() => {});
     }
   };
@@ -2654,11 +2664,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
                       {String.fromCodePoint(0x2713)}{' '}
-                      {bookingInfo?.prepaidMinor > 0 && bookingInfo?.depositMinor > 0
-                        ? 'Booking payments'
-                        : bookingInfo?.prepaidMinor > 0
-                          ? `${bookingInfo?.packageName || 'Package'} prepaid`
-                          : 'Booking deposit'}
+                      {bookingCreditInfo.label || 'Booking payments'}
                       {bookingCreditMajor > bookingApplied + 0.004 && (
                         <span style={{ color:'var(--t3)', fontWeight:500 }}> (of {money(bookingCreditMajor)} paid, the rest stays on the booking)</span>
                       )}

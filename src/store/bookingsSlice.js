@@ -17,17 +17,23 @@
 // write, so a training till cannot pollute a live diary.
 
 import {
-  suggestTables, paceAt, turnFor, toMin, toHM, toOptimiserBooking,
+  suggestTables, paceAt, paceFull, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
-  upsertPackageRow, deletePackageRow, moveBookingTables,
+  upsertPackageRow, deletePackageRow, moveBookingTables, editBookingAtomic,
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit, loadBookingRow,
+  departBookingIfDining,
 } from '../lib/bookings/bookingsData.js';
+import { venueToday, venueNow } from '../lib/bookings/venueClock.js';
+import { dayRefreshAction, REFRESH_RETRY_MS } from '../lib/bookings/bookingsCatchUp.js';
+import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
+import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING } from '../lib/bookings/editRules.js';
+import { optimiserTables } from '../lib/bookings/optimiserTables.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
@@ -44,10 +50,10 @@ async function resolveLocationId() {
   return isRealLoc(resolved) ? resolved : null;
 }
 
-const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+// 16 Oct 2026 (audit item 8): the diary's "today" is the VENUE's day, never
+// the device's. A stand in California for a UK venue used to open on the
+// wrong date after 16:00 Pacific. Callers inside the slice pass get().
+const todayISO = (get) => venueToday(get ? get().locationConfig?.timezone : null);
 
 // v5.7.23 - epoch ms → minute-of-day on the VENUE's wall clock. Passed into
 // sessionsToBlocks so a session's seatedAt converts in the venue timezone
@@ -75,6 +81,8 @@ const pendingBookingTables = new Map(); // booking_id -> { ids: Set, at: epochMs
 // 16 Oct 2026: one settling read of booking_tables per edited booking (resyncBookingTables).
 const RESYNC_DELAY_MS = 1500;
 const pendingResync = new Map(); // booking_id -> timer
+// 16 Oct 2026: the "server check not switched on yet" note shows once per page load.
+let _warnedNoEditGuard = false;
 
 function bufferBookingTable(bookingId, tableId) {
   const now = Date.now();
@@ -100,31 +108,46 @@ function mergeBookingTables(primaryTableId, ...lists) {
   return out;
 }
 
-// Store tables → optimiser tables. Excludes merged split-check children
-// (parentId) exactly like the waitlist's tablesView.
-const optimiserTables = (tables = []) =>
-  (tables || []).filter((t) => !t.parentId).map((t) => ({
-    id: t.id, label: t.label || t.id, covers: t.maxCovers || 2, section: t.section || null,
-  }));
+// Store tables → optimiser tables: lib/bookings/optimiserTables.js (16 Oct 2026, tested).
 
 // ── the slice ─────────────────────────────────────────────────────────────────
 export function bookingsSlice(set, get) {
   return {
     // state
     bookings: [],                 // the loaded service day, camelCase
-    bookingsDate: todayISO(),     // 'YYYY-MM-DD' the diary is showing
+    bookingsDate: todayISO(),     // 'YYYY-MM-DD' the diary is showing (venue day; London until the venue clock loads)
+    // 16 Oct 2026: true once someone picks a day that is not today. A boot or a
+    // reload with no date then opens on the VENUE's today rather than a date
+    // minted before the venue's timezone was known.
+    bookingsDatePinned: false,
+    // 16 Oct 2026 (audit item 9): the bookings realtime channel's last status
+    // ('SUBSCRIBED', 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED', null = not yet),
+    // read by the stand's POS linked pill, and when the diary last loaded.
+    bookingsChannelStatus: null,
+    bookingsRefreshedAt: null,
+    setBookingsChannelStatus: (status) => {
+      if (get().bookingsChannelStatus !== status) set({ bookingsChannelStatus: status || null });
+    },
     bookingRules: null,           // camelCase rules incl. turnBands + joinGroups (null until loaded)
     packages: [],
     // 16 Oct 2026: who is logged in at the host stand (PIN login). The stand has no
     // POS staff record, so edits are stamped from here. { id, name, role } or null.
     bookingsOperator: null,
-    setBookingsOperator: (op) => set({ bookingsOperator: op || null }),
+    // 16 Oct 2026 (audit item 19): on a host stand the PIN login IS the staff
+    // member, so store.staff carries the name too. created_by on a new booking,
+    // the server on a seated table and the pacing approval all read staff.name,
+    // and were empty or "Manager". Switch user clears it. A till or Back Office
+    // keeps its own staff (they sign in through their own screens).
+    setBookingsOperator: (op) => {
+      const who = op ? { id: op.id ?? null, name: op.name || null, role: op.role || null } : null;
+      set(isHostStandMode() ? { bookingsOperator: who, staff: who } : { bookingsOperator: who });
+    },
 
     // ── boot / day switch ─────────────────────────────────────────────────────
     loadBookingsFromDB: async (locationId, dateISO) => {
       const locId = isRealLoc(locationId) ? locationId : await resolveLocationId();
       if (!locId) return;
-      const date = dateISO || get().bookingsDate || todayISO();
+      const date = dateISO || (get().bookingsDatePinned && get().bookingsDate) || todayISO(get);
       const [{ data: bookings }, { data: rules }, { data: packages }] = await Promise.all([
         loadBookings(locId, date),
         loadBookingRules(locId),
@@ -133,18 +156,43 @@ export function bookingsSlice(set, get) {
       set({
         bookings: bookings || [],
         bookingsDate: date,
+        bookingsRefreshedAt: Date.now(),
         ...(rules ? { bookingRules: rules } : {}),
         ...(packages?.length ? { packages } : {}),
       });
     },
 
     setBookingsDate: async (dateISO) => {
-      set({ bookingsDate: dateISO });
+      set({ bookingsDate: dateISO, bookingsDatePinned: !!dateISO && dateISO !== todayISO(get) });
       const locId = await resolveLocationId();
       if (!locId) return;
       const { data } = await loadBookings(locId, dateISO);
       // Only apply if the operator hasn't switched days again mid-flight.
-      if (get().bookingsDate === dateISO) set({ bookings: data || [] });
+      if (get().bookingsDate === dateISO) set({ bookings: data || [], bookingsRefreshedAt: Date.now() });
+    },
+
+    // 16 Oct 2026 (audit item 9): reload the day the diary is showing. Called by
+    // the stand's catch up (wake, network back, 60 second timer) and by realtime
+    // on every (re)subscribe, so events missed while asleep or offline are not
+    // lost. A failed read ({ error }) keeps what is on screen.
+    // A read that started before a local or realtime change is never applied over it
+    // (dayRefreshAction): it reads again once, 1.5 seconds later.
+    refreshBookingsDay: async (_reason, { retried = false } = {}) => {
+      const locId = await resolveLocationId();
+      if (!locId) return;
+      const date = get().bookingsDate || todayISO(get);
+      const before = get().bookings;
+      const { data, error } = await loadBookings(locId, date);
+      const action = dayRefreshAction({
+        error, data, dateAtStart: date, dateNow: get().bookingsDate || todayISO(get),
+        before, after: get().bookings, retried,
+      });
+      if (action === 'retry') {
+        setTimeout(() => { get().refreshBookingsDay?.('retry', { retried: true }); }, REFRESH_RETRY_MS);
+        return;
+      }
+      if (action !== 'apply') return;
+      set({ bookings: data, bookingsRefreshedAt: Date.now() });
     },
 
     // ── the optimiser bridge (pure module ↔ live store data) ──────────────────
@@ -179,10 +227,12 @@ export function bookingsSlice(set, get) {
     },
 
     // Covers arriving within ±7 min of 'HH:MM' vs the pacing cap.
-    bookingPaceAt: (time) => {
+    // 16 Oct 2026 (bookings audit item 14): the party being added counts. Full means this party
+    // would take the slot OVER the cap (cap 12, 10 booked: a 2 fits, an 8 needs a manager).
+    bookingPaceAt: (time, party = 0) => {
       const cap = get().bookingRules?.pacingCap ?? DEFAULT_RULES.pacingCap;
       const load = paceAt(toMin(time), (get().bookings || []).map(toOptimiserBooking));
-      return { load, cap, full: load >= cap };
+      return { load, cap, full: paceFull(load, party, cap) };
     },
 
     // ── create (atomic, never optimistic) ─────────────────────────────────────
@@ -196,7 +246,7 @@ export function bookingsSlice(set, get) {
       const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
       const booking = {
         id: b.id || mintBookingId(),
-        date: b.date || get().bookingsDate || todayISO(),
+        date: b.date || get().bookingsDate || todayISO(get),
         startTime: b.time || b.startTime,
         turnMinutes: pkg?.turnMinutes || b.turnMinutes || turnFor(b.covers, rules?.turnBands || DEFAULT_TURN_BANDS),
         covers: b.covers,
@@ -224,9 +274,15 @@ export function bookingsSlice(set, get) {
 
       const res = await createBookingAtomic(booking, locId);
       if (!res.ok) {
-        return { ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null };
+        // 16 Oct 2026: the code stays in error (BookScreen offers alternatives on table_taken);
+        // message is the same refusal in words.
+        const label = res.tableId ? ((get().tables || []).find((t) => t.id === res.tableId)?.label || null) : null;
+        return {
+          ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null,
+          message: bookingRefusalWords({ error: res.error, tableLabel: label }),
+        };
       }
-      if (booking.date === (get().bookingsDate || todayISO())) {
+      if (booking.date === (get().bookingsDate || todayISO(get))) {
         set((s) => ({ bookings: [...(s.bookings || []).filter((x) => x.id !== booking.id), booking] }));
       }
       return { ok: true, booking };
@@ -308,6 +364,11 @@ export function bookingsSlice(set, get) {
       if (!cached) return refuse(notHere);
       const rules = get().bookingRules || {};
       const tz = get().locationConfig?.timezone;
+      const staleWords = (editedAt, editedBy) => {
+        const at = editedAt ? toHM(minutesInTz(editedAt, tz) ?? 0) : null;
+        const who = editedBy ? ` by ${editedBy}` : '';
+        return `This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`;
+      };
       const pkg = cached.packageId ? (get().packages || []).find((p) => p.id === cached.packageId) : null;
       const ctx = buildScheduleCtx(tz);
       const storeTables = (get().tables || []).filter((t) => !t.parentId);
@@ -331,7 +392,7 @@ export function bookingsSlice(set, get) {
             // shows the other device's change instead of refusing again.
             set((s) => {
               const list = s.bookings || [];
-              if (fresh.date !== (s.bookingsDate || todayISO())) return { bookings: list.filter((x) => x.id !== id) };
+              if (fresh.date !== (s.bookingsDate || todayISO(get))) return { bookings: list.filter((x) => x.id !== id) };
               return {
                 bookings: list.map((x) => (x.id === id ? {
                   ...x, status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
@@ -340,19 +401,21 @@ export function bookingsSlice(set, get) {
               };
             });
             if (fresh.primaryTableId !== cached.primaryTableId) get().resyncBookingTables?.(id);
-            const at = fresh.customer?.edited_at ? toHM(minutesInTz(fresh.customer.edited_at, tz) ?? 0) : null;
-            const who = fresh.customer?.edited_by ? ` by ${fresh.customer.edited_by}` : '';
-            return refuse(`This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`, { stale: true });
+            return refuse(staleWords(fresh.customer?.edited_at, fresh.customer?.edited_by), { stale: true });
           }
           entry = {
             ...cached,
             status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
             turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
           };
-          if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) {
-            const ids = await loadBookingTables(id);
-            entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: ids && ids.length ? mergeBookingTables(fresh.primaryTableId, ids) : [fresh.primaryTableId] };
-          }
+          // 16 Oct 2026 review: the tables are ALWAYS re read. Another stand may have joined
+          // or moved a table without touching the edit stamp, and this device's copy (Back
+          // Office has no bookings realtime) would otherwise be the list the edit is checked
+          // against. edit_booking also keeps the live tables when none are sent (below).
+          const primary = fresh.primaryTableId || entry.primaryTableId;
+          const ids = await loadBookingTables(id);
+          if (ids && ids.length) entry = { ...entry, primaryTableId: primary, tables: mergeBookingTables(primary, ids) };
+          else if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: [fresh.primaryTableId] };
         }
       }
 
@@ -384,14 +447,19 @@ export function bookingsSlice(set, get) {
         // is why every slot change ALSO goes through move_booking below.
         let others = (get().bookings || []);
         if (live) {
-          const { data } = await loadBookings(locId, next.date);
-          if (Array.isArray(data)) others = data;
-        } else if (next.date !== (get().bookingsDate || todayISO())) {
+          const { data, error } = await loadBookings(locId, next.date);
+          if (!error && Array.isArray(data)) others = data;
+        } else if (next.date !== (get().bookingsDate || todayISO(get))) {
           others = [];
         }
-        // Open till tabs block their tables like a seated party, today only.
+        // Open till tabs block their tables like a seated party, today only,
+        // except a tab on this booking's own current tables (the party itself,
+        // or a walk in the host is already working around), so the till's Edit
+        // reservation can move the time on a table with an open tab.
+        const ownTables = new Set(entry.tables || []);
         const blocks = next.date === ctx.ymd
           ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(tz))
+            .filter((blk) => !(blk.tables || []).some((t) => ownTables.has(t)))
           : [];
         const conflicts = conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules, nonBlocking: MOVE_NON_BLOCKING });
         if (conflicts.length) {
@@ -409,7 +477,7 @@ export function bookingsSlice(set, get) {
         note: next.note, customer: next.customer, tables: next.tables, primaryTableId: next.primaryTableId,
       };
       const apply = () => set((s) => {
-        const viewing = s.bookingsDate || todayISO();
+        const viewing = s.bookingsDate || todayISO(get);
         const list = s.bookings || [];
         // A booking moved to another day leaves this day's diary.
         if (next.date !== viewing) return { bookings: list.filter((x) => x.id !== id) };
@@ -429,6 +497,57 @@ export function bookingsSlice(set, get) {
 
       if (isTrainingMode()) { apply(); return { ok: true, booking: next, payment, training: true }; }
       if (!locId) return refuse('No venue resolved, so the booking cannot be saved.');
+
+      // 16 Oct 2026 (bookings audit item 10): ONE guarded write when the
+      // database has it. edit_booking re checks the window, the seats, the
+      // floor plan and an online payment still landing under the venue lock,
+      // and writes the row and the tables in one transaction, so one call
+      // covers the slot and the tables. Unchanged date, time, turn and covers go
+      // as this device just read them from the database (entry is the fresh row),
+      // the tables only when this edit names them and the note only when it
+      // changed (null keeps what is there, read under the lock), and the stamp
+      // is checked again under the lock, so nothing is written back over. Before migration 20261016b the
+      // function is missing: the writes below (only the changed fields, then
+      // move_booking for any slot change) run instead, and the stand says once
+      // that only this device checked the diary.
+      const noteChanged = next.note !== (entry.note || '');
+      // Tables only when this edit names them; null keeps the booking's tables as the database
+      // holds them under the lock, so a note or guest fix never writes back an old table list.
+      const tablesNamed = patch.tables !== undefined || patch.primaryTableId !== undefined;
+      const atomic = await editBookingAtomic(id, {
+        date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes, covers: next.covers,
+        tables: tablesNamed ? next.tables : null, primaryTableId: tablesNamed ? next.primaryTableId : null,
+        note: noteChanged ? next.note : null,
+        customer: stamped,
+        // The stamp the caller opened with, checked again under the lock ('' = never edited).
+        expectedEditedAt: expectedEditedAt === undefined ? null : (expectedEditedAt || ''),
+      }, locId);
+      if (atomic.ok) {
+        apply();
+        logEdit();
+        return { ok: true, booking: next, payment, serverGuard: true };
+      }
+      if (!atomic.missing) {
+        // A dropped connection can hide an edit that DID land. The function is
+        // one transaction and the stamp is this edit's own, so the row carrying
+        // it means everything landed. Look before saying it failed.
+        if (!atomic.refused) {
+          const after = await loadBookingRow(id, locId);
+          if (after && (after.customer?.edited_at || null) === stamped.edited_at) {
+            apply();
+            logEdit();
+            return { ok: true, booking: next, payment, serverGuard: true };
+          }
+        }
+        const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
+        let msg;
+        if (atomic.error === 'stale') return refuse(staleWords(atomic.editedAt, atomic.editedBy), { stale: true });
+        if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
+        else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
+        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
+        else msg = `Booking NOT saved: ${atomic.error || 'the database refused the change'}.`;
+        return refuse(msg);
+      }
 
       // Only what changed, plus the guest snapshot with the stamp.
       const rowPatch = { customer: stamped };
@@ -459,12 +578,12 @@ export function bookingsSlice(set, get) {
             const now = await loadBookingTables(id);
             if (now && now.join(',') === (next.tables || []).join(',')) {
               apply(); logEdit();
-              return { ok: true, booking: next, payment };
+              return { ok: true, booking: next, payment, serverGuard: false };
             }
           }
           const back = await updateBookingRow(id, undo, locId);
           if (!back.ok) {
-            get().setBookingsDate?.(get().bookingsDate || todayISO());
+            get().setBookingsDate?.(get().bookingsDate || todayISO(get));
             return refuse('The time was saved but the table was NOT moved, and it could not be put back. Reload the diary and check this booking.');
           }
           const msg = r2.error === 'table_taken'
@@ -473,9 +592,13 @@ export function bookingsSlice(set, get) {
           return refuse(msg);
         }
       }
+      if (!_warnedNoEditGuard) {
+        _warnedNoEditGuard = true;
+        get().showToast?.('Booking saved. The server double booking check is not switched on yet, so only this device checked the diary.', 'info');
+      }
       apply();
       logEdit();
-      return { ok: true, booking: next, payment };
+      return { ok: true, booking: next, payment, serverGuard: false };
     },
 
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──
@@ -542,6 +665,25 @@ export function bookingsSlice(set, get) {
     seatBooking: async (id) => {
       const b = (get().bookings || []).find((x) => x.id === id);
       if (!b) return { ok: false, error: 'unknown booking' };
+      // 16 Oct 2026 (audit item 16): only a booking for the VENUE's today can be
+      // seated. One dated another day was marked dining with no till tab (the
+      // floor and the till then disagreed for a whole day).
+      const vNow = venueNow(get().locationConfig?.timezone);
+      const otherDay = seatRefusal({ booking: b, today: vNow.ymd, nowMin: vNow.nowMin });
+      if (otherDay) {
+        get().showToast?.(otherDay, 'error');
+        return { ok: false, error: 'other_day', text: otherDay };
+      }
+      // 16 Oct 2026 review: the booking money is read alongside the server sessions read and
+      // settled BEFORE the till's own copy is checked below, so nothing slow is awaited between
+      // the open tab decision and seatTable (a till could open a check in that gap). At most
+      // 8 seconds; a slow or failed read is 0, exactly as a failed read always was.
+      const creditP = isTrainingMode()
+        ? Promise.resolve(null)
+        : Promise.race([
+          loadBookingCredit(b.id).catch(() => null),
+          new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+        ]);
       // An open POS tab on any of the booking's tables means no one can be
       // seated there yet — refuse loudly instead of silently overwriting the
       // live session (which is real money on a real check).
@@ -573,6 +715,7 @@ export function bookingsSlice(set, get) {
           if (isHostStandMode() && merged !== get().tables) set({ tables: merged });
         }
       }
+      const creditRead = await creditP;
       // The till's own copy is read AFTER the server read: a check opened or a line rung in on
       // this till while the read was in flight must still refuse the seat.
       const local = get().tables || [];
@@ -615,10 +758,11 @@ export function bookingsSlice(set, get) {
         // / "Deposit applied at close") and auto-applied by CheckoutModal as a
         // tender leg. Training tills carry the label but never real credit.
         const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
-        let credit = { prepayMinor: 0, depositMinor: 0 };
-        if (b.packageId && !isTrainingMode()) {
-          try { credit = await loadBookingCredit(b.id); } catch { /* stays 0 — honest fallback */ }
-        }
+        // 16 Oct 2026: every booking, not only package ones, so a rule based deposit is on the
+        // session too and the till takes off what the reader and PAX take off (they read the
+        // same ledger). No captured money: 0, exactly as before. Read above (creditP), before
+        // the open tab check, so only a settled value is used here.
+        const credit = creditRead || { prepayMinor: 0, depositMinor: 0 };
         // v5.7.23 - free food is EARNED: the prepay 0.00 pricing only applies
         // when captured, un-applied prepay money is actually on the ledger. An
         // unpaid prepay booking (pending_payment, expired, legacy unpaid
@@ -691,14 +835,83 @@ export function bookingsSlice(set, get) {
       } catch (e) {
         console.warn('[bookings] seatTable failed:', e?.message || e);
       }
-      const ref = get().tables?.find((t) => t.id === b.primaryTableId)?.session?.id || null;
-      return get().updateBooking(id, { status: 'dining', seatedAt: Date.now(), seatedSessionRef: ref });
+      // 16 Oct 2026 (audit item 16): dining only when the tab really opened. A
+      // seat that threw, or a primary table missing from this floor, used to mark
+      // the booking dining with no session, so the floor said Dining and the till
+      // had nothing to ring in against.
+      const seatedSession = get().tables?.find((t) => t.id === b.primaryTableId)?.session || null;
+      if (!seatedSession) {
+        get().showToast?.('The tab did not open, so the booking was not seated. Try Seat now again.', 'error');
+        return { ok: false, error: 'seat_failed', text: 'The tab did not open, so the booking was not seated. Try Seat now again.' };
+      }
+      return get().updateBooking(id, { status: 'dining', seatedAt: Date.now(), seatedSessionRef: seatedSession.id || null });
     },
 
-    markBookingNoShow: async (id) => {
+    // 16 Oct 2026 (audit item 4): a closed check departs its booking. Called by
+    // the closing device (recordClosedCheck) with the session it just closed, and
+    // by the closed_checks realtime handler on every other device. The rule is
+    // bookingIdsToDepart (departOnClose.js, tested); the write is conditional on
+    // the row still being dining, so many devices sending it is harmless.
+    // Never throws: a cash off must never fail because of a booking.
+    departBookingsForClose: (check, session = null, { tableIsChild = false } = {}) => {
+      try {
+        const ids = bookingIdsToDepart({ check, session, tableIsChild, bookings: get().bookings || [] });
+        if (!ids.length) return [];
+        const at = Number(check?.closedAt) || Date.now();
+        const mine = new Set(ids);
+        set((s2) => ({
+          bookings: (s2.bookings || []).map((x) => (mine.has(x.id) && x.status === 'dining' ? { ...x, status: 'departed', departedAt: at } : x)),
+        }));
+        if (isTrainingMode()) return ids;
+        (async () => {
+          const locId = await resolveLocationId();
+          if (!locId) return;
+          for (const id of ids) {
+            const r = await departBookingIfDining(id, locId, at);
+            if (!r.ok) console.warn('[bookings] depart on close not written:', id, r.error);
+          }
+        })().catch(() => {});
+        return ids;
+      } catch (e) {
+        console.warn('[bookings] departBookingsForClose failed:', e?.message || e);
+        return [];
+      }
+    },
+
+    // 16 Oct 2026 (audit item 17): Undo cancel, offered for 30 seconds after a
+    // cancel on the stand. The status goes back first (undoCancelStatus, tested),
+    // then move_booking re checks the SAME tables under the venue lock. If
+    // another booking took them in the meantime, it goes back to cancelled and
+    // says which table. Returns { ok, error? }.
+    undoCancelBooking: async (id, { before, payments = null } = {}) => {
+      const b = (get().bookings || []).find((x) => x.id === id);
+      if (!b) return { ok: false, error: 'This booking is not on the diary any more.' };
+      if (b.status !== 'cancelled') return { ok: true };
+      const to = undoCancelStatus({ before, booking: b, payments });
+      if (!to) return { ok: false, error: 'This booking cannot be put back from here. Book it again.' };
+      const back = await get().updateBooking(id, { status: to, cancelledAt: null, cancelReason: null });
+      if (!back?.ok) return { ok: false, error: 'Booking NOT put back. Try again.' };
+      const tableIds = (b.tables?.length ? b.tables : [b.primaryTableId]).filter(Boolean);
+      if (!tableIds.length) return { ok: true };
+      const moved = await get().moveBooking(id, tableIds, b.primaryTableId || tableIds[0]);
+      if (moved?.ok) return { ok: true };
+      await get().updateBooking(id, { status: 'cancelled', cancelledAt: b.cancelledAt || Date.now(), cancelReason: b.cancelReason || null });
+      const label = (get().tables || []).find((t) => t.id === moved?.tableId)?.label || 'Its table';
+      if (moved?.error !== 'table_taken') console.warn('[bookings] undo cancel: move_booking said', moved?.error || 'no answer');
+      return {
+        ok: false,
+        error: moved?.error === 'table_taken'
+          ? `${label} was booked again in the meantime, so it stays cancelled.`
+          : 'Could not check the table just now, so it stays cancelled. Book it again if the guest still wants it.',
+      };
+    },
+
+    // 16 Oct 2026 (audit item 17): the confirm sheet passes a reason, kept in
+    // cancel_reason (the booking's one reason column).
+    markBookingNoShow: async (id, { reason = '' } = {}) => {
       const b = (get().bookings || []).find((x) => x.id === id);
       if (!b) return { ok: false, error: 'unknown booking' };
-      const res = await get().updateBooking(id, { status: 'no_show' });
+      const res = await get().updateBooking(id, reason ? { status: 'no_show', cancelReason: reason } : { status: 'no_show' });
       // Lifetime no-show count on the unified CRM record — drives the
       // card-hold prompt at the next booking. Best-effort, never blocks.
       if (res.ok && b.customerId && !isMock && supabase && !isTrainingMode()) {
@@ -764,7 +977,7 @@ export function bookingsSlice(set, get) {
     // ── realtime (wired in realtime.js; location guard lives in the caller) ───
     applyBookingsRealtime: (payload) => {
       if (!payload) return;
-      const date = get().bookingsDate || todayISO();
+      const date = get().bookingsDate || todayISO(get);
       if (payload.eventType === 'DELETE') {
         const id = payload.old?.id;
         if (id) set((s) => ({ bookings: (s.bookings || []).filter((b) => b.id !== id) }));

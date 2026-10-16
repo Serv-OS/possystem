@@ -461,6 +461,17 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         ...closedCheckRefundFields(check),
       };
       const current = store.getState().closedChecks || [];
+      // 16 Oct 2026 (bookings audit item 4): a check closed on another device departs the booking
+      // still dining on that table (idempotent: the write only lands while the row is dining).
+      // Read the table's session BEFORE the clear below takes it off the floor.
+      try {
+        const st = store.getState();
+        const t = (st.tables || []).find(x => x.id === normalised.tableId);
+        // Only the occupation this check closed (same seatedAt, the isSessionClosed key). A QR pay
+        // now round mid meal has no seated_at, so it never departs the party still eating.
+        const sess = t?.session && normalised.seatedAt && Number(t.session.seatedAt) === Number(normalised.seatedAt) ? t.session : null;
+        st.departBookingsForClose?.({ ...normalised, source: check.source || null }, sess, { tableIsChild: !!t?.parentId });
+      } catch { /* never block the closed check on a booking */ }
       if (!current.find(c => c.id === normalised.id)) {
         const update = { closedChecks: capClosedChecks([normalised, ...current]) };
         // Also clear the table from the floor — this is belt-and-suspenders
@@ -685,6 +696,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     .subscribe();
 
   // ── Table Bookings — live diary across devices (v5.6.25) ────────────────────
+  let bookingsSubscribedOnce = false;
   const bookingsChannel = supabase
     .channel(`bookings:${locationId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings', filter: `location_id=eq.${locationId}` }, (payload) => {
@@ -695,7 +707,28 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       store.getState().applyBookingTablesRealtime?.(payload);
     })
-    .subscribe();
+    // 16 Oct 2026 (bookings audit item 9): the channel's real state drives the stand's POS linked
+    // pill, and every (re)subscribe reloads the viewed day so events missed while the socket was
+    // down are not lost. Both store calls are optional and never throw into the socket.
+    .subscribe((status) => {
+      try {
+        store.getState().setBookingsChannelStatus?.(status);
+        if (status === 'SUBSCRIBED') {
+          // 16 Oct 2026 (review): not every device, every time. The first SUBSCRIBED repeats the
+          // boot load, so only a host stand takes it (it shows the diary). A RE subscribe reloads
+          // on a host stand or a till with a floor plan, spread over 0 to 3 s so a reconnect at
+          // every venue at once does not land on the Ops instance in the same second.
+          const first = !bookingsSubscribedOnce;
+          bookingsSubscribedOnce = true;
+          const stand = isHostStandMode();
+          const showsBookings = stand || (store.getState().tables || []).length > 0;
+          if (showsBookings && (!first || stand)) {
+            const wait = first ? 0 : Math.floor(Math.random() * 3000);
+            setTimeout(() => { try { store.getState().refreshBookingsDay?.('subscribed'); } catch { /* next catch up */ } }, wait);
+          }
+        }
+      } catch { /* the stand's own catch up timer still runs */ }
+    });
 
   channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel, bookingsChannel];
 

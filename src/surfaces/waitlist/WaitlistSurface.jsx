@@ -28,6 +28,9 @@ import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
 import { currentAverageWait, freshActives } from '../../lib/waitlist/waitlist';
+import { getLocationConfig } from '../../lib/locationTime';
+import { venueToday, ymdLabel } from '../../lib/bookings/venueClock.js';
+import { pinPadState, venuePinLength, pinLengthKey, PIN_MIN, PIN_MAX } from '../../lib/bookings/standRules.js';
 import { Icon } from '../../components/ServOSIcons';
 import AddPartyDrawer from './AddPartyDrawer';
 import SeatModal from './SeatModal';
@@ -112,6 +115,16 @@ export default function WaitlistSurface() {
     // Seed the resolver + current location from the claimed device location.
     setResolvedLocationId(loc);
     useStore.getState().setCurrentLocation?.(loc);
+    // 16 Oct 2026 (bookings audit item 8): the stand shows the VENUE's date, so load
+    // the paired venue's timezone (a stand that booted before pairing had London).
+    let cfgLive = true;
+    // 16 Oct 2026 (review): today's bookings too, once the venue's date is known, so "Seat on T8"
+    // and the Seat modal never offer a table with a booking due on it. Realtime (bookings channel,
+    // started below) keeps them current.
+    getLocationConfig(loc)
+      .then((cfg) => { if (cfgLive && cfg) useStore.setState({ locationConfig: cfg }); })
+      .catch(() => {})
+      .finally(() => { if (cfgLive) useStore.getState().loadBookingsFromDB?.(loc)?.catch?.(() => {}); });
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
     // The host stand renders WITHOUT SyncBridge, so hydrate the board + floor here and
@@ -133,7 +146,7 @@ export default function WaitlistSurface() {
     const stopStandSync = supabase
       ? startStandSessionSync({ store: useStore, client: supabase, locationId: loc, isClosed: isSessionClosed, storage })
       : () => {};
-    return () => { clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); stopStandSync(); try { stopRT(); } catch {} stopRealtime(); };
+    return () => { cfgLive = false; clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); stopStandSync(); try { stopRT(); } catch {} stopRealtime(); };
   }, [stage, loc, loadFromDB, loadFloor, recompute]);
 
   if (stage === 'boot') return <Screen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></Screen>;
@@ -187,6 +200,7 @@ function Screen({ children }) {
 function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLogout, onAdd, children }) {
   const waitlist = useStore(s => s.waitlist) || [];
   const tables = useStore(s => s.tables) || [];
+  const venueTz = useStore(s => s.locationConfig?.timezone);
 
   // "Avg wait now" is the ACTUAL elapsed wait (v5.6.24), so it must tick with
   // the clock, not just with store changes — 30s granularity for a minutes stat.
@@ -205,7 +219,7 @@ function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLo
         <button onClick={onLogout} title="Tap to switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
           <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{venueName || 'Tables Ready'}</div>
           <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
-            {operator?.name ? operator.name : 'Host stand'} · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()}
+            {operator?.name ? operator.name : 'Host stand'} · {ymdLabel(venueToday(venueTz), { long: true }).toUpperCase()}
           </div>
         </button>
         <button
@@ -265,7 +279,7 @@ function PairScreen({ code }) {
     <Screen>
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 360 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this host stand</div>
-        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
+        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '········'}</div>
         <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>
           In Back Office → Channels → Tables Ready, enter this code to pair this tablet. This screen links automatically once it's attached to a venue.
         </div>
@@ -275,33 +289,54 @@ function PairScreen({ code }) {
 }
 
 // ── staff PIN ─────────────────────────────────────────────────────────────────
+// 16 Oct 2026 (review): the same pad rule as the Bookings stand (standRules.js), so a venue with
+// 6 digit PINs can sign in here too. The learnt length is shared with the Bookings stand on this
+// tablet (same key); until a login has taught it, only the OK key submits.
+function readPinLength(loc) {
+  try { return venuePinLength(window.localStorage.getItem(pinLengthKey(loc))); } catch { return null; }
+}
 function PinScreen({ loc, venueName, onOk }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pinLen, setPinLen] = useState(() => readPinLength(loc));
   const submit = async (p) => {
+    if (busy) return;
+    setBusy(true);
     const data = await waitlistPinLogin(loc, p);
+    setBusy(false);
     if (!data?.ok) { setErr('PIN not recognised'); setPin(''); return; }
+    try { window.localStorage.setItem(pinLengthKey(loc), String(p.length)); } catch { /* private mode */ }
+    setPinLen(venuePinLength(p.length));
     onOk({ id: data.id, name: data.name, role: data.role });
   };
-  const tap = (d) => { setErr(''); const next = (pin + d).slice(0, 6); setPin(next); if (next.length === 4) submit(next); };
+  const tap = (d) => {
+    if (busy) return;
+    setErr('');
+    const next = (pin + d).slice(0, PIN_MAX);
+    setPin(next);
+    if (pinPadState(next, pinLen).auto) submit(next);
+  };
+  const canOk = pinPadState(pin, pinLen).ok && !busy;
   return (
     <Screen>
       <div style={{ textAlign: 'center', width: 280 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{venueName || 'Tables Ready'}</div>
         <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px' }}>Enter your PIN</div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18 }}>
-          {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
+          {Array.from({ length: Math.max(pinLen || PIN_MIN, pin.length) }, (_, i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
         </div>
         {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => <PinKey key={n} onClick={() => tap(String(n))}>{n}</PinKey>)}
-          <div /><PinKey onClick={() => tap('0')}>0</PinKey>
           <PinKey onClick={() => setPin(pin.slice(0, -1))}>⌫</PinKey>
+          <PinKey onClick={() => tap('0')}>0</PinKey>
+          <PinKey onClick={() => { if (canOk) submit(pin); }} disabled={!canOk}>OK</PinKey>
         </div>
       </div>
     </Screen>
   );
 }
-const PinKey = ({ children, onClick }) => (
-  <button onClick={onClick} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
+const PinKey = ({ children, onClick, disabled = false }) => (
+  <button onClick={onClick} disabled={disabled} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: disabled ? 'var(--t4)' : 'var(--t1)', cursor: disabled ? 'default' : 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
 );

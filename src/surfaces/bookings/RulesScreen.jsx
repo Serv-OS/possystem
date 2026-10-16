@@ -86,20 +86,14 @@ export default function RulesScreen() {
             />
             <Stepper
               label="Card hold per cover"
-              sub="Above zero, online guests save a card. This amount is not held or charged. No-show charges are not available yet."
+              sub="Above zero, online guests save a card when they book. Nothing is taken from the card."
               value={rules.holdPerCover}
               onChange={(v) => patch({ holdPerCover: v })}
               step={5} min={0} max={50}
               fmt={(v) => money(v)}
             />
-            <Stepper
-              label="Cancellation window"
-              sub="This setting is not used yet. Write your cancellation policy in the booking terms in Back Office."
-              value={rules.cancellationWindowHours}
-              onChange={(v) => patch({ cancellationWindowHours: v })}
-              step={2} min={0} max={72}
-              fmt={(v) => `${v} h`}
-            />
+            {/* 16 Oct 2026: the Cancellation window stepper is hidden until a guest can cancel
+                online (it drives nothing yet). The policy goes in the booking terms. */}
             <ToggleRow
               label="Pacing override needs a manager"
               sub="Booking into a full slot at the host stand requires manager approval."
@@ -115,7 +109,7 @@ export default function RulesScreen() {
           }}>
             <span style={{ fontWeight: 700 }}>Per-location.</span>{' '}
             <span style={{ color: 'var(--t2)' }}>
-              These rules belong to this venue and travel with the floor plan pulled from the POS. A group can set them at company level and let a site override the pacing cap only.
+              These rules belong to this venue and travel with the floor plan pulled from the POS. Change them here or in Back Office, both update at once.
             </span>
           </div>
           {!bookingRules && (

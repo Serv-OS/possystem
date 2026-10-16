@@ -146,11 +146,12 @@ test('dueForCharge: a stored card hold of 0 on a prepay package is REFUSED (the 
   assert.deepEqual(dueForCharge({ stored: { kind: 'hold', amountMinor: 0, currency: 'GBP' }, recomputed }), { ok: false, due: null, reason: 'due_mismatch' });
 });
 
-test('dueForCharge: the largest money figure wins, never a smaller one written anywhere', () => {
+test('dueForCharge: never less than owed, never more than shown, largest only without a stored due', () => {
   const prepay = paymentDue({ covers: 2, pkg: PROVO_PREORDER, rules: PROVO_RULES });
-  // Stored prepay 1p, package says £240: charge £240.
+  // Stored prepay 1p, package says £240: refused (16 Oct 2026: it used to charge £240,
+  // more than the stored figure; it never charges the 1p either).
   assert.deepEqual(dueForCharge({ stored: { kind: 'prepay', amountMinor: 1, currency: 'GBP' }, recomputed: [prepay] }),
-    { ok: true, due: { kind: 'prepay', amountMinor: 24000, currency: 'GBP' } });
+    { ok: false, due: null, reason: 'due_mismatch' });
   // Before the migration: package_id nulled on the booking (hold recompute) but the audit row still names the prepay package.
   const holdFromNull = paymentDue({ covers: 2, pkg: null, rules: PROVO_RULES });
   assert.deepEqual(dueForCharge({ stored: null, recomputed: [holdFromNull, prepay] }),
@@ -237,4 +238,21 @@ test('bookingOwesPayment and bookingUnpaid', () => {
   assert.equal(bookingUnpaid({ booking: { status: 'confirmed' }, pkg, payments: [{ kind: 'deposit', status: 'captured' }] }), false);
   assert.equal(bookingUnpaid({ booking: { status: 'confirmed', source: 'host' }, pkg: null, payments: [] }), false);
   assert.equal(bookingUnpaid({ booking: null }), false);
+});
+
+// 16 Oct 2026 (bookings audit item 20): booking_pay charges what the guest was shown.
+test('dueForCharge: a stored deposit is charged EXACTLY; a raised package price is refused, not charged', () => {
+  const stored = { kind: 'deposit', amountMinor: 4000, currency: 'gbp' };
+  // Package unchanged: £10 x 4 = £40, charge £40.
+  assert.deepEqual(dueForCharge({ stored, recomputed: [{ kind: 'deposit', amountMinor: 4000 }] }),
+    { ok: true, due: { kind: 'deposit', amountMinor: 4000, currency: 'GBP' } });
+  // The audit case: owner raises the deposit to £15 while the guest is on the pay screen showing £40.
+  assert.deepEqual(dueForCharge({ stored, recomputed: [{ kind: 'deposit', amountMinor: 6000 }] }),
+    { ok: false, due: null, reason: 'due_mismatch' });
+  // Package price LOWERED after booking: still the £40 the guest agreed to, never a silent change.
+  assert.equal(dueForCharge({ stored, recomputed: [{ kind: 'deposit', amountMinor: 2000 }] }).due.amountMinor, 4000);
+  // A hold recompute (package switched off) never moves a stored deposit.
+  assert.equal(dueForCharge({ stored, recomputed: [{ kind: 'hold', amountMinor: 8000 }] }).due.amountMinor, 4000);
+  // A stored hold still takes the largest hold figure (a hold takes no money).
+  assert.equal(dueForCharge({ stored: { kind: 'hold', amountMinor: 2000 }, recomputed: [{ kind: 'hold', amountMinor: 4000 }] }).due.amountMinor, 4000);
 });

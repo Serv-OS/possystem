@@ -82,16 +82,25 @@ function joinOr(list) {
   return `${a.slice(0, -1).join(', ')} or ${a[a.length - 1]}`;
 }
 
-// ── package money (POUNDS — the fn pre-computes `total`; per_cover = price × party)
-function fmtGBP(n) {
+// ── package money (major units: the fn pre-computes `total`; per_cover = price × party)
+function fmtPounds(n) {
   const v = Math.round((Number(n) || 0) * 100) / 100;
   return Number.isInteger(v) ? `£${v}` : `£${v.toFixed(2)}`;
 }
+// 16 Oct 2026 (audit item 22): the page's money is in the VENUE's currency. The
+// booking-widget config now says which (a US venue's $38 brunch read £38);
+// until it answers, and for an older fn that does not send it, pounds.
+let pageCurrency = 'GBP';
+function setPageCurrency(code) {
+  const c = String(code || '').toUpperCase();
+  if (/^[A-Z]{3}$/.test(c)) pageCurrency = c;
+}
+const fmtGBP = (n) => fmtMoney(n, pageCurrency);
 // The card amount in the venue's currency (8 Sep 2026: a US venue's deposit
 // is USD). GBP keeps the exact £ shape used everywhere else on the page.
 function fmtMoney(n, currency = 'GBP') {
   const cur = String(currency || 'GBP').toUpperCase();
-  if (cur === 'GBP') return fmtGBP(n);
+  if (cur === 'GBP') return fmtPounds(n);
   const v = Math.round((Number(n) || 0) * 100) / 100;
   try {
     return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, minimumFractionDigits: Number.isInteger(v) ? 0 : 2 }).format(v);
@@ -699,6 +708,13 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
             actions.reject();
             return;
           }
+          // 16 Oct 2026 (bookings audit item 20): the server charges exactly what was shown and
+          // refuses when the price went up meanwhile. Nothing was taken.
+          if (r?.error === 'due_mismatch') {
+            setPayErr('The price for this booking changed while you were paying, so nothing was taken. Please start the booking again.');
+            actions.reject();
+            return;
+          }
           if (r?.error === 'payment_record_failed') {
             // An older server: the bank may still say yes. Wait and check.
             setPhase('confirming');
@@ -1237,7 +1253,7 @@ export default function BookingWidget({ location }) {
   // Submit lifecycle
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState('');
-  const [result, setResult] = useState(null); // { status:'confirmed'|'pending', ... }
+  const [result, setResult] = useState(null); // { status:'confirmed'|'prepaid'|'pending_payment', ... }
 
   // Terms acknowledgement under the Book button — no checkbox (UK norm: the
   // "By booking you agree…" line is the acknowledgement). Which disclosure is
@@ -1255,6 +1271,7 @@ export default function BookingWidget({ location }) {
       if (off) return;
       if (!c?.ok) { setBoot(c?.error === 'offline' ? 'off' : 'error'); return; }
       if (c.widgetEnabled === false) { setBoot('off'); return; }
+      setPageCurrency(c.currency);
       setCfg(c);
       // Anchor the calendar on the VENUE's today (config.today), never the
       // browser's — a guest in another timezone would otherwise default to a
@@ -1362,11 +1379,28 @@ export default function BookingWidget({ location }) {
   const termsText = termsOpen === 'booking' ? bookingTerms
     : termsOpen === 'package' ? pkgTerms : '';
   const phoneOk = (() => { const n = normalisePhone(phone); return !!n && n.length >= 7; })();
+  // 16 Oct 2026 (bookings audit items 7 and 13): why a slot is greyed, for the package the guest
+  // has picked. The fn answers per package turn in fullFor (a 150 minute tasting menu needs a
+  // longer free gap than a table for 90), and gives the reason: 'past', 'kitchen' (the pacing
+  // cap) or 'tables' (no table free). An older fn sends only full.
+  const slotWhy = (s) => {
+    if (!s) return null;
+    const pid = selectedPkg ? String(selectedPkg.id) : null;
+    if (pid && s.fullFor && Object.prototype.hasOwnProperty.call(s.fullFor, pid)) return s.fullFor[pid] || null;
+    if (s.reason !== undefined) return s.reason || null;
+    return s.full ? 'full' : null;
+  };
+  const timeBlocked = !!time && slots.some((s) => s.time === time && !!slotWhy(s));
+  const greyReasons = new Set(slots.map(slotWhy).filter((r) => r && r !== 'past'));
   const canSubmit = !!name.trim() && phoneOk && !!time && !submitting && choicesComplete;
 
   // ── book ────────────────────────────────────────────────────────────────────
   const submit = async () => {
     if (!canSubmit) return;
+    if (timeBlocked) {
+      setSubmitErr(selectedPkg ? 'That time is full for this menu, please pick another.' : 'That time is full, please pick another.');
+      return;
+    }
     setSubmitting(true);
     setSubmitErr('');
     // In-window package: one row per guest per course group (seat = guest
@@ -1401,9 +1435,17 @@ export default function BookingWidget({ location }) {
     });
     setSubmitting(false);
     // status is the REAL row status from v5.7.21: 'pending_payment' means the
-    // next screen takes the card; 'prepaid' books a nothing-due prepay package;
-    // legacy 'pending' = availability vanished mid-flight.
-    if (r?.ok && ['confirmed', 'prepaid', 'pending_payment', 'pending'].includes(r.status)) { setResult(r); return; }
+    // next screen takes the card; 'prepaid' books a nothing-due prepay package.
+    // 16 Oct 2026 (bookings audit item 12): a time that went between quote and write is
+    // slot_gone (an older fn said status 'pending' and "the venue will confirm", which nobody
+    // ever saw). Either way: say so, refresh the times, keep everything else the guest typed.
+    if ((r?.ok && r.status === 'pending') || r?.error === 'slot_gone') {
+      setSubmitErr('That time has just gone, please pick another');
+      setTime(null);
+      setSlotsNonce((n) => n + 1);
+      return;
+    }
+    if (r?.ok && ['confirmed', 'prepaid', 'pending_payment'].includes(r.status)) { setResult(r); return; }
     if (r?.error === 'preorders_required') {
       // Defensive: the fn wants choices the page didn't collect (offer drift).
       // Reveal the section from ITS choiceGroups and walk the guest there.
@@ -1575,7 +1617,7 @@ export default function BookingWidget({ location }) {
             {result.paid && result.paymentDue && (
               <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 4 }}>
                 {PAID_LINE[result.paymentDue.kind]
-                  ? PAID_LINE[result.paymentDue.kind](fmtGBP((Number(result.paymentDue.amountMinor) || 0) / 100))
+                  ? PAID_LINE[result.paymentDue.kind](fmtMoney((Number(result.paymentDue.amountMinor) || 0) / 100, result.adyen?.currency || result.paymentDue.currency || pageCurrency))
                   : 'Payment received'} ✓
               </div>
             )}
@@ -1633,18 +1675,6 @@ export default function BookingWidget({ location }) {
         )}
         <div style={S.sub}>
           We’ve saved your details. Just give your name when you arrive.
-        </div>
-      </div>
-    </Shell>;
-  }
-
-  if (result?.status === 'pending') {
-    return <Shell {...shell}>
-      <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>🕐</div>
-        <div style={S.h1}>Almost there</div>
-        <div style={S.sub}>
-          {result.message || 'The venue will confirm your booking shortly.'}
         </div>
       </div>
     </Shell>;
@@ -1747,24 +1777,30 @@ export default function BookingWidget({ location }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
           {slots.map((s) => {
             const on = time === s.time;
+            const full = !!slotWhy(s);
             return (
-              <button key={s.time} type="button" disabled={s.full} aria-pressed={on}
+              <button key={s.time} type="button" disabled={full && !on} aria-pressed={on}
                 onClick={() => { setTime(s.time); setSubmitErr(''); }}
                 style={{
                   padding: '12px 2px', borderRadius: 10, textAlign: 'center',
                   fontSize: 13, fontWeight: 700, fontFamily: MONO,
-                  cursor: s.full ? 'default' : 'pointer',
-                  border: on ? `1.5px solid ${brand}` : '1px solid var(--line)',
-                  background: on ? `${brand}1f` : (s.full ? 'transparent' : 'var(--card)'),
-                  color: on ? brand : (s.full ? 'var(--muted)' : 'var(--ink)'),
-                  opacity: s.full ? 0.55 : 1,
+                  cursor: full ? 'default' : 'pointer',
+                  border: on ? `1.5px solid ${full ? 'var(--line)' : brand}` : '1px solid var(--line)',
+                  background: on && !full ? `${brand}1f` : (full ? 'transparent' : 'var(--card)'),
+                  color: on && !full ? brand : (full ? 'var(--muted)' : 'var(--ink)'),
+                  opacity: full ? 0.55 : 1,
                 }}>{s.time}</button>
             );
           })}
         </div>
       )}
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20 }}>
-        Greyed times are at the kitchen’s capacity, not closed.
+      {/* 16 Oct 2026 (bookings audit item 7): the two reasons a time is greyed, said apart. It
+          used to blame the kitchen for every grey slot, even when no table was free. */}
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20, lineHeight: 1.5 }}>
+        {greyReasons.has('kitchen') && <div>Some times are greyed because the kitchen is full then.</div>}
+        {greyReasons.has('tables') && <div>Some times are greyed because no table for {party} is free then.</div>}
+        {greyReasons.has('full') && <div>Greyed times are fully booked.</div>}
+        {timeBlocked && <div style={{ color: 'var(--ink)' }}>{selectedPkg ? 'The time you picked is full for this menu. Pick another time.' : 'The time you picked is now full. Pick another time.'}</div>}
       </div>
 
       {/* Package upsell — the offers the fn returned for THIS date+party.

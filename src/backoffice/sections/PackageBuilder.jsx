@@ -18,6 +18,7 @@ import { selectOnFocus } from '../../lib/selectOnFocus';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
+import { venueToday } from '../../lib/bookings/venueClock.js';
 import { packagePaymentNeed } from '../../lib/bookings/bookingPayment.js';
 import { courseColor } from '../../surfaces/bookings/bits.jsx';
 
@@ -155,7 +156,7 @@ export default function PackageBuilder() {
     if (!draft) return;
     if (!draft.id) { setDraft(null); setSelId(null); return; }
     let upcoming = 0;
-    try { upcoming = await countUpcomingBookingsForPackage(draft.id); } catch { /* best-effort */ }
+    try { upcoming = await countUpcomingBookingsForPackage(draft.id, venueToday(useStore.getState().locationConfig?.timezone)); } catch { /* best-effort */ }
     const extra = upcoming > 0
       ? ` ${upcoming} upcoming booking${upcoming === 1 ? '' : 's'} reference${upcoming === 1 ? 's' : ''} it — they keep their table but lose the package.`
       : '';

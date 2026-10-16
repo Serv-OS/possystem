@@ -9,26 +9,28 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { bandFor } from '../../lib/waitlist/waitlist';
+import { bandFor, fittingFreeTables, tablesHeldByBookings, DEFAULT_BANDS } from '../../lib/waitlist/waitlist';
+import { venueNow } from '../../lib/bookings/venueClock.js';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
-const isFree = (t) => t.status === 'available';
 
 export default function SeatModal({ entry, operator, onClose }) {
   const tables = (useStore(s => s.tables) || []).filter(t => !t.parentId);
   const seatParty = useStore(s => s.seatWaitlistParty);
 
-  // open tables that fit, best-fit ordered, section pref first
+  // open tables that fit, best-fit ordered, section pref first (one helper,
+  // shared with the queue card's "Seat on T8", lib/waitlist/waitlist.js)
+  // 16 Oct 2026 (review): a table with a booking due before this party would be done is not offered.
+  const bookings = useStore(s => s.bookings);
+  const tz = useStore(s => s.locationConfig?.timezone);
+  const cfgBands = useStore(s => s.waitlistConfig?.bands);
   const fits = useMemo(() => {
-    const cap = tables.filter(t => isFree(t) && t.maxCovers >= entry.size);
-    return cap.sort((a, b) => {
-      const aPref = entry.sectionPref ? (a.section === entry.sectionPref ? 0 : 1) : 0;
-      const bPref = entry.sectionPref ? (b.section === entry.sectionPref ? 0 : 1) : 0;
-      if (aPref !== bPref) return aPref - bPref;
-      return (a.maxCovers - entry.size) - (b.maxCovers - entry.size);
-    });
-  }, [tables, entry.size, entry.sectionPref]);
+    const { ymd, nowMin } = venueNow(tz);
+    const bands = cfgBands?.length ? cfgBands : DEFAULT_BANDS;
+    const blocked = tablesHeldByBookings(bookings || [], { today: ymd, nowMin, turn: bandFor(entry.size, bands).turn });
+    return fittingFreeTables(tables, { size: entry.size, sectionPref: entry.sectionPref, blocked });
+  }, [tables, entry.size, entry.sectionPref, bookings, tz, cfgBands]);
 
   const seat = async (tableId) => { onClose?.(); await seatParty?.(entry.id, tableId); };
 

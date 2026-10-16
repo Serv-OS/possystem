@@ -15,13 +15,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { STATUS } from '../../lib/waitlist/waitlist';
+import { STATUS, waitState } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
 
-// elapsed minutes since added
-const minsSince = (ms) => (ms ? Math.max(0, Math.floor((Date.now() - ms) / 60000)) : 0);
 const mmss = (ms) => {
   if (!ms) return '0:00';
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -58,7 +56,7 @@ const NEXT = {
   ready:    { to: 'seat',          label: 'Seat', icon: 'dinein' },
 };
 
-export default function QueueCard({ entry, onSeat }) {
+export default function QueueCard({ entry, onSeat, seatOn = null, onSeatOn = null }) {
   const setStatus = useStore(s => s.setWaitlistStatus);
   const cancelParty = useStore(s => s.cancelWaitlistParty);
   const sendSMS = useStore(s => s.sendWaitlistSMS);
@@ -76,21 +74,17 @@ export default function QueueCard({ entry, onSeat }) {
     return () => document.removeEventListener('pointerdown', h);
   }, [menu]);
 
-  const elapsed = minsSince(entry.addedAt);
-  const quoted = Number.isFinite(entry.quoted) ? entry.quoted : null;
-  // timer colour: green well under quote, amber within 5 min, red over
-  let timerCol = 'var(--grn)';
-  if (quoted != null) {
-    if (elapsed >= quoted) timerCol = 'var(--red)';
-    else if (elapsed >= quoted - 5) timerCol = 'var(--amber, var(--orn))';
-  }
-  // accessibility: don't rely on timer colour alone — derive a tiny text cue too.
-  // amber "approaching" → "~Xm left", red "over" → "Xm over", green → none.
-  let timerCue = null;
-  if (quoted != null) {
-    if (elapsed >= quoted) timerCue = { text: `${elapsed - quoted}m over`, icon: 'warn', col: 'var(--red)' };
-    else if (elapsed >= quoted - 5) timerCue = { text: `~${quoted - elapsed}m left`, icon: 'bell', col: 'var(--amber, var(--orn))' };
-  }
+  // 16 Oct 2026 (Peter: parties waiting 126 to 142 min still read "quoted 5m"):
+  // the timer runs against what the guest was PROMISED (the first quote), and a
+  // party past it reads "Over by N min", amber for the first 10 minutes then
+  // red, with the extra wait to tell the guest (lib/waitlist, tested).
+  // Elapsed time is wall clock arithmetic, the same on any device in any zone.
+  const ws = waitState(entry);
+  const promised = ws.promised;
+  const TONE = { green: 'var(--grn)', amber: 'var(--amber, var(--orn))', red: 'var(--red)' };
+  const timerCol = TONE[ws.tone] || TONE.green;
+  // accessibility: don't rely on timer colour alone, a text cue too.
+  const timerCue = ws.text ? { text: ws.text, icon: ws.over > 0 || ws.left === 0 ? 'warn' : 'bell', col: timerCol } : null;
   const pill = PILL[entry.status] || PILL.waiting;
   const next = NEXT[entry.status] || NEXT.waiting;
   const returning = !!entry.customerId || !!entry.returning;
@@ -144,8 +138,12 @@ export default function QueueCard({ entry, onSeat }) {
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, color: timerCol, lineHeight: 1 }}>{mmss(entry.addedAt)}</div>
           <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, ...mono }}>
-            {quoted != null ? `quoted ${quoted}m` : 'no quote'}
+            {promised != null ? `quoted ${promised}m` : 'no quote'}
           </div>
+          {/* what the host can say now: the extra wait, not the total since arrival */}
+          {ws.more != null && (
+            <div style={{ fontSize: 10, color: 'var(--t2)', marginTop: 2, fontWeight: 700, ...mono }}>tell them ~{ws.more} more min</div>
+          )}
           {timerCue && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginTop: 4, fontSize: 9.5, fontWeight: 700, color: timerCue.col, ...mono }}>
               <Icon name={timerCue.icon} size={10} /> {timerCue.text}
@@ -155,12 +153,17 @@ export default function QueueCard({ entry, onSeat }) {
       </div>
 
       {/* footer: status pill + one-tap action + kebab */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+      {/* wraps on a phone: the pill, Seat on T8, the main action and the menu do not fit one 326 px line.
+          "Over by N min" shows once, under the timer. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, rowGap: 8, flexWrap: 'wrap', marginTop: 12 }}>
         <span style={{ fontSize: 10.5, fontWeight: 700, padding: '5px 11px', borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.bd}`, textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{pill.label}</span>
-        {quoted != null && elapsed >= quoted && (
-          <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700, ...mono }}>{elapsed - quoted}m over</span>
-        )}
         <div style={{ flex: 1 }} />
+        {/* 16 Oct 2026: a fitting table is free and this party is next for it: one tap seats them there. */}
+        {seatOn && onSeatOn && (
+          <button onClick={() => onSeatOn(seatOn)} className="btn btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', fontSize: 13, fontWeight: 800, borderRadius: 999, borderColor: 'var(--grn-b)', color: 'var(--grn)' }}>
+            <Icon name="dinein" size={15} /> Seat on {seatOn.label || seatOn.id}
+          </button>
+        )}
         <button onClick={doNext} className="btn btn-acc" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', fontSize: 13, fontWeight: 800, borderRadius: 999 }}>
           <Icon name={next.icon} size={15} /> {next.label}
         </button>
