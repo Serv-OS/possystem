@@ -441,7 +441,7 @@ export default function WaitlistConfig({ setSection }) {
         <div style={S.cardSub}>A tablet at the door runs the live board and takes walk-ins.</div>
         <ol style={{ margin: '0 0 14px', paddingLeft: 18, color: 'var(--t2)', fontSize: 13, lineHeight: 1.7 }}>
           <li>On the tablet, open <code style={{ background: 'var(--bg2)', padding: '1px 6px', borderRadius: 6, color: 'var(--t1)', fontFamily: "'JetBrains Mono', var(--font-mono, ui-monospace), monospace" }}>{hostUrl}</code> (or tap <b>Tables Ready</b> on the mode picker).</li>
-          <li>It shows a <b>6-character pairing code</b>. Type that code below and pair.</li>
+          <li>It shows an <b>8 character pairing code</b>. Type that code below and pair.</li>
           <li>The stand then asks for a staff PIN — and you're on the live board.</li>
         </ol>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>

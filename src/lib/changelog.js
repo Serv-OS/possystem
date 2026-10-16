@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.69',
+    date: '16 Oct 2026',
+    items: [
+      "Till: a seated booking's prepayment or deposit now shows as a payment from the moment the party sits down. The order screen, the table card and checkout all read the same figure: the bill, a green line such as 'Bottomless Brunch prepaid -£76.00', and 'To pay £9.50'. The Pay button shows what is left to take. Checkout still posts the money the same way as before.",
+      "Till and host stand: cashing off a booked table now marks its booking departed, on the till that closed it and on every other device that hears the closed check, so the host floor frees the table straight away and walk ins can sit there. A booking already departed, undone or re seated is never touched, and a split check closing never departs the party.",
+      "Host stand: every time and date is the venue's, never the tablet's. A stand in California for a UK venue now shows UK times: Late, Due, the now line on the Timeline, the walk in time, Today, the live clock, the Reports week and the Tables Ready date. The stand loads the venue's own timezone once it is paired.",
+      "Host stand: the diary keeps itself up to date. It reloads the day on screen when the tablet wakes, when the network comes back, every minute, and whenever the live link reconnects, and at the venue's midnight it moves on to the new day if it was showing today. Tills follow the venue's midnight too, so a till left on overnight shows the new day's bookings. The POS linked pill now shows the real link: Connecting, POS linked, or Offline with the time the diary last loaded.",
+      "Host stand floor: a prepaid booking, or one waiting for payment, now colours its table as booked, the same as the till. Before, only plain confirmed bookings did.",
+      "Host stand: a booking for another day cannot be seated; Seat now is greyed with 'Bookings for another day can be seated on the day'. A booking is only marked dining once its tab has really opened. The walk in panel only shows when the diary is on today, and books on today's date.",
+      "Host stand: Cancel and No-show ask first, with a reason, and when money was taken the sheet says plainly '£76.00 is held on this booking and is not refunded automatically'. A cancel can be undone for 30 seconds; Undo checks the table again on the server and says so if another booking has taken it.",
+      "Tables Ready: the timer runs against the wait the guest was told. A party past it reads 'Over by 6 min' in amber, then red after ten minutes, with a new quote beside it, instead of 'quoted 5m' for two hours. When a table that fits is free, the next party for it shows 'Seat on T8' as a one tap action. The Add party sheet quotes from the same list as the board.",
+      "Host stand: the name of whoever logs in with their PIN now goes on new bookings, on the tables they seat and on pacing approvals (it read Manager). The PIN pad has an OK key and learns the venue's PIN length, so a venue with 6 digit PINs can log in.",
+      "Timeline: a booking on a table that is not on the floor plan no longer disappears. It sits in an Off plan row at the bottom; tapping it opens the booking with Move to a table.",
+      "Words: pairing screens say 8 characters (the codes are 8). Reports counts the money actually taken by card instead of package prices, and no longer says card capture is not live. 'Today' and 'tab open' only show when true. An expired booking reads 'Payment not taken, booking released'. The booking page prices packages in the venue's currency (needs the booking-widget function deployed). The Cancellation window setting is hidden until guests can cancel online, and the card hold setting says plainly that nothing is taken.",
+    ],
+  },
+  {
     v: '5.11.68',
     date: '16 Oct 2026',
     items: [

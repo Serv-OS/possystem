@@ -519,6 +519,8 @@ Deno.serve(async (req) => {
         // a date the venue has already finished).
         today: venueToday(cfgTz),
         timezone: cfgTz,
+        // 16 Oct 2026: the venue's currency, so the page prices packages in it ($ for a US venue).
+        currency: String((venue.loc as { currency?: string }).currency || 'GBP').toUpperCase(),
         widgetEnabled: rules.widgetEnabled,
         serviceStart: rules.serviceStart,
         serviceEnd: rules.serviceEnd,

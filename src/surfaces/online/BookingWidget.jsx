@@ -82,16 +82,25 @@ function joinOr(list) {
   return `${a.slice(0, -1).join(', ')} or ${a[a.length - 1]}`;
 }
 
-// ── package money (POUNDS — the fn pre-computes `total`; per_cover = price × party)
-function fmtGBP(n) {
+// ── package money (major units: the fn pre-computes `total`; per_cover = price × party)
+function fmtPounds(n) {
   const v = Math.round((Number(n) || 0) * 100) / 100;
   return Number.isInteger(v) ? `£${v}` : `£${v.toFixed(2)}`;
 }
+// 16 Oct 2026 (audit item 22): the page's money is in the VENUE's currency. The
+// booking-widget config now says which (a US venue's $38 brunch read £38);
+// until it answers, and for an older fn that does not send it, pounds.
+let pageCurrency = 'GBP';
+function setPageCurrency(code) {
+  const c = String(code || '').toUpperCase();
+  if (/^[A-Z]{3}$/.test(c)) pageCurrency = c;
+}
+const fmtGBP = (n) => fmtMoney(n, pageCurrency);
 // The card amount in the venue's currency (8 Sep 2026: a US venue's deposit
 // is USD). GBP keeps the exact £ shape used everywhere else on the page.
 function fmtMoney(n, currency = 'GBP') {
   const cur = String(currency || 'GBP').toUpperCase();
-  if (cur === 'GBP') return fmtGBP(n);
+  if (cur === 'GBP') return fmtPounds(n);
   const v = Math.round((Number(n) || 0) * 100) / 100;
   try {
     return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, minimumFractionDigits: Number.isInteger(v) ? 0 : 2 }).format(v);
@@ -1255,6 +1264,7 @@ export default function BookingWidget({ location }) {
       if (off) return;
       if (!c?.ok) { setBoot(c?.error === 'offline' ? 'off' : 'error'); return; }
       if (c.widgetEnabled === false) { setBoot('off'); return; }
+      setPageCurrency(c.currency);
       setCfg(c);
       // Anchor the calendar on the VENUE's today (config.today), never the
       // browser's — a guest in another timezone would otherwise default to a
@@ -1575,7 +1585,7 @@ export default function BookingWidget({ location }) {
             {result.paid && result.paymentDue && (
               <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 4 }}>
                 {PAID_LINE[result.paymentDue.kind]
-                  ? PAID_LINE[result.paymentDue.kind](fmtGBP((Number(result.paymentDue.amountMinor) || 0) / 100))
+                  ? PAID_LINE[result.paymentDue.kind](fmtMoney((Number(result.paymentDue.amountMinor) || 0) / 100, result.adyen?.currency || result.paymentDue.currency || pageCurrency))
                   : 'Payment received'} ✓
               </div>
             )}

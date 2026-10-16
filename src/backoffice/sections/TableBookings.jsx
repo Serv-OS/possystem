@@ -126,7 +126,8 @@ export default function TableBookings({ userName = null }) {
   const [pairBusy, setPairBusy] = useState(false);
   const pairStand = async () => {
     const cc = pairCode.trim().toUpperCase();
-    if (cc.length < 4) { showToast?.('Enter the code shown on the host stand', 'error'); return; }
+    // 16 Oct 2026: host stand codes are 8 characters (waitlist_devices claim code).
+    if (cc.length < 8) { showToast?.('Enter the 8 character code shown on the host stand', 'error'); return; }
     setPairBusy(true);
     try {
       const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -179,13 +180,11 @@ export default function TableBookings({ userName = null }) {
             value={rules.pacingCap} onChange={v => patch({ pacingCap: v })}
             step={2} min={2} max={30} fmt={v => `${v} cvr`} />
           <BoStepper label="Card hold per cover"
-            sub="Above zero, online guests save a card. This amount is not held or charged. No-show charges are not available yet."
+            sub="Above zero, online guests save a card when they book. Nothing is taken from the card."
             value={rules.holdPerCover} onChange={v => patch({ holdPerCover: v })}
             step={5} min={0} max={50} fmt={v => money(v)} />
-          <BoStepper label="Cancellation window"
-            sub="This setting is not used yet. Write your cancellation policy in Booking terms below."
-            value={rules.cancellationWindowHours} onChange={v => patch({ cancellationWindowHours: v })}
-            step={2} min={0} max={72} fmt={v => `${v} h`} />
+          {/* 16 Oct 2026: the Cancellation window stepper is hidden until a guest can cancel
+              online (it drives nothing yet). Write the policy in Booking terms below. */}
           <BoToggle label="Pacing override needs a manager"
             sub="Booking into a full slot at the host stand requires manager approval (PIN)."
             on={rules.pacingOverrideRequiresPin}
@@ -341,7 +340,7 @@ export default function TableBookings({ userName = null }) {
         <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.7, margin: '6px 0 12px' }}>
           A tablet at the door runs the bookings diary, the floor and pre-orders.
           On the tablet open the ServOS Bookings app (or ?mode=bookings in a browser).
-          It shows a 6 character pairing code. Type it here. One pairing covers
+          It shows an 8 character pairing code. Type it here. One pairing covers
           Bookings and Tables Ready on the same tablet.
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
