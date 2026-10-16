@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { moneyMinor } from '../../lib/currency';
 import { loadBookingMoney, refundBookingPayment } from '../../lib/bookings/hostData.js';
 
-const KIND = { prepay: 'prepaid', deposit: 'deposit', no_show_charge: 'no-show charge' };
+const KIND = { prepay: 'prepaid', deposit: 'deposit' };
 const inp = {
   background: 'var(--bg3)', border: '1px solid var(--bdr2)', borderRadius: 9, color: 'var(--t1)',
   padding: '8px 10px', fontSize: 14, fontFamily: 'inherit', height: 40, boxSizing: 'border-box', width: '100%',
@@ -41,7 +41,8 @@ export default function RefundPanel({ b, backOffice = false, by = null, onChange
 
   const res = state.id === b.id ? state.res : null;
   const rows = res?.ok ? (res.rows || []) : [];
-  const money = rows.filter((r) => r.kind !== 'refund' && r.kind !== 'hold');
+  // A no show charge sits on its own check (NoShowCharge shows it); its refund is that check's.
+  const money = rows.filter((r) => r.kind !== 'refund' && r.kind !== 'hold' && r.kind !== 'no_show_charge');
 
   // Before the database update only a full refund is allowed, so the box offers what is left.
   const openBox = useCallback((r, partial) => {

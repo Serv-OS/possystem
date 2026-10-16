@@ -18,6 +18,9 @@
 // PURE: no Supabase, no React. Runs under node --test.
 
 import { NO_SHOW_KIND } from './noShowCharge.js';
+// v5.11.70 release: the needs refund test and what is left of a payment after refunds are the
+// ONE shared rule (bookingPayment.js), the same the guest page, refunds and the till use.
+import { isNeedsRefundRow, paymentNetMinor, refundedMinorFor } from './bookingPayment.js';
 
 export const NOT_A_BOOKING = new Set(['expired', 'pending_payment']);
 const SEATED = new Set(['dining', 'departed']);
@@ -29,8 +32,10 @@ const num = (v) => {
 };
 const minorOf = (amount) => Math.round(num(amount) * 100);
 const upper = (v) => String(v || '').trim().toUpperCase() || null;
-const isNeedsRefund = (p) => !!p
-  && (p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || '')));
+const isNeedsRefund = isNeedsRefundRow;
+// A card hold's figure: hold_minor since 20261016d (the row's amount is 0, a hold takes nothing),
+// the amount before it.
+const holdFigureMinor = (p) => (num(p?.hold_minor) > 0 ? Math.round(num(p.hold_minor)) : minorOf(p?.amount));
 
 export const SOURCE_NAMES = {
   host: 'Host stand', phone: 'Phone', widget: 'Online', online: 'Online', walk_in: 'Walk in',
@@ -87,7 +92,8 @@ export function moneyByBooking(payments) {
     const cur = upper(p.currency) || 'GBP';
     const b = (out[p.booking_id] ||= {});
     const m = (b[cur] ||= { prepay: 0, deposit: 0, noShow: 0 });
-    m[kind] += minorOf(p.amount);
+    // net of any refund made since (a part refund keeps the row captured)
+    m[kind] += paymentNetMinor(p, payments);
   }
   return out;
 }
@@ -194,10 +200,10 @@ export const PAY_STATUS_NAMES = {
   cancelled: 'Cancelled', refunded: 'Refunded', needs_refund: 'Owed back',
 };
 
-/** What is owed back to the guest on one row, in minor units. */
-export function owedBackMinor(p) {
+/** What is owed back to the guest on one row, in minor units (net of refunds already made). */
+export function owedBackMinor(p, rows = []) {
   if (!p) return 0;
-  if (isNeedsRefund(p) && p.kind !== 'hold') return minorOf(p.amount);
+  if (isNeedsRefund(p) && p.kind !== 'hold') return paymentNetMinor(p, rows);
   if (p.status === 'captured' && num(p.refund_due_minor) > 0) return Math.round(num(p.refund_due_minor));
   return 0;
 }
@@ -253,12 +259,16 @@ export function paymentLines({ payments = [], bookingsById = new Map(), tableLab
       currency: cur,
       // A hold's figure is what the hold covers, never money: shown apart, never summed.
       amountMinor: isHold ? 0 : minorOf(p.amount),
-      holdMinor: isHold ? minorOf(p.amount) : 0,
+      holdMinor: isHold ? holdFigureMinor(p) : 0,
+      // given back on this payment (refund rows and amount_refunded_minor); a refund row itself 0
+      refundedMinor: isHold || p.kind === 'refund' ? 0
+        : p.status === 'refunded' ? Math.max(minorOf(p.amount), refundedMinorFor(p, payments))
+        : refundedMinorFor(p, payments),
       taken: isMoneyTaken(p),
       appliedToCheck: !!p.applied_to_check,
       appliedCheckId: p.applied_check_id || null,
       appliedMinor: p.applied_minor == null ? null : Math.round(num(p.applied_minor)),
-      owedBackMinor: owedBackMinor(p),
+      owedBackMinor: owedBackMinor(p, payments),
       note: p.status === 'failed' ? String(p.refusal_reason || '') : (p.refund_reason || (isNeedsRefund(p) ? String(p.refusal_reason || '') : '')),
     };
   });
@@ -278,7 +288,8 @@ export function paymentTotals(lines) {
       if (!l.appliedToCheck) t.notOnCheck += 1;
     }
     t.owedBack += l.owedBackMinor;
-    if (l.status === 'refunded') t.refunded += l.amountMinor;
+    // refunds are counted on the payment they give back (never twice through the refund row)
+    t.refunded += l.refundedMinor ?? (l.status === 'refunded' && l.kind !== 'refund' ? l.amountMinor : 0);
     if (l.status === 'failed') t.failed += 1;
     if (l.kind === 'hold' && l.status === 'authorised') t.cardsSaved += 1;
   }

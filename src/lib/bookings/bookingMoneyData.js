@@ -15,6 +15,11 @@ import { rowToBooking } from './bookingsData.js';
 
 const PAY_BASE = 'id, location_id, booking_id, kind, amount, currency, status, card_last4, card_brand, refusal_reason, applied_to_check, applied_check_id, authorised_at, captured_at, released_at, created_at';
 const PAY_NEW = 'applied_minor, refund_due_minor, refund_reason';
+// 20261016d (host tools, v5.11.70): refunds made on a payment, the refund row's payment, and a
+// card hold's figure (a hold's amount is 0 from then on). Read without them before it runs.
+const PAY_HOST = 'amount_refunded_minor, refund_of, hold_minor';
+// Widest first: each step drops the columns a database that has not run that migration lacks.
+const PAY_TIERS = [`${PAY_BASE}, ${PAY_NEW}, ${PAY_HOST}`, `${PAY_BASE}, ${PAY_NEW}`, PAY_BASE];
 const CHUNK = 150;
 
 const refusedColumn = (e) => {
@@ -35,8 +40,8 @@ export async function loadBookingPaymentsRange(locationId, fromIso, toIso, opts 
     .eq('location_id', locationId)
     .gte('created_at', fromIso).lte('created_at', toIso)
     .order('created_at').order('id'), opts);
-  let res = await read(`${PAY_BASE}, ${PAY_NEW}`);
-  if (res.error && refusedColumn(res.error)) res = await read(PAY_BASE);
+  let res = await read(PAY_TIERS[0]);
+  for (let t = 1; t < PAY_TIERS.length && res.error && refusedColumn(res.error); t += 1) res = await read(PAY_TIERS[t]);
   if (res.error) {
     if (absentTable(res.error)) return { data: [] };
     return { data: [], error: res.error, tooMany: !!res.tooMany };
@@ -49,13 +54,13 @@ export async function loadPaymentsForBookings(bookingIds = []) {
   const ids = [...new Set((bookingIds || []).filter(Boolean))];
   if (isMock || !supabase || !ids.length) return { data: [] };
   const out = [];
-  let cols = `${PAY_BASE}, ${PAY_NEW}`;
+  let tier = 0;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const part = ids.slice(i, i + CHUNK);
-    let { data, error } = await supabase.from('booking_payments').select(cols).in('booking_id', part);
-    if (error && refusedColumn(error) && cols !== PAY_BASE) {
-      cols = PAY_BASE;
-      ({ data, error } = await supabase.from('booking_payments').select(cols).in('booking_id', part));
+    let { data, error } = await supabase.from('booking_payments').select(PAY_TIERS[tier]).in('booking_id', part);
+    while (error && refusedColumn(error) && tier < PAY_TIERS.length - 1) {
+      tier += 1;
+      ({ data, error } = await supabase.from('booking_payments').select(PAY_TIERS[tier]).in('booking_id', part));
     }
     if (error) return absentTable(error) ? { data: [] } : { data: [], error };
     out.push(...(data || []));

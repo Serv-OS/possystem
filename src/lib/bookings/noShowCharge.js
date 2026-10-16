@@ -133,7 +133,7 @@ export function lateCancel({ bookingDate, startTime, cancelledAtMs, tz, windowHo
  * The fee for a no show or a late cancel: the card hold the guest agreed to when they booked.
  * In order:
  *   1. what the booking widget stored as due for the hold (payment_kind hold, payment_due_minor)
- *   2. the hold row's figure (booking_pay stores the hold amount on the row; Adyen was sent 0)
+ *   2. the hold row's figure (hold_minor since 20261016d; the amount before it; Adyen was sent 0)
  *   3. the venue's hold per cover times the covers, as the rules say today
  * { amountMinor, perCoverMinor, covers, source: 'booking' | 'hold' | 'rules' | null }
  */
@@ -145,7 +145,10 @@ export function noShowFee({ booking, holdRow = null, rules = null } = {}) {
   if (booking?.payment_kind === 'hold' && num(booking?.payment_due_minor) > 0) {
     return out(Math.round(num(booking.payment_due_minor)), 'booking');
   }
-  if (holdRow && minorOf(holdRow.amount) > 0) return out(minorOf(holdRow.amount), 'hold');
+  // Since 20261016d a hold row's amount is 0 (a hold takes nothing) and hold_minor keeps the
+  // figure the guest agreed to; before it the amount carried the figure.
+  const holdFigure = holdRow ? (num(holdRow.hold_minor) > 0 ? Math.round(num(holdRow.hold_minor)) : minorOf(holdRow.amount)) : 0;
+  if (holdFigure > 0) return out(holdFigure, 'hold');
   const perCover = minorOf(rules?.hold_per_cover);
   if (perCover > 0) return out(perCover * covers, 'rules');
   return out(0, null);

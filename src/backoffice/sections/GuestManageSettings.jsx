@@ -73,7 +73,7 @@ export default function GuestManageSettings({ rules, patch, ui, showToast }) {
         onToggle={async () => { if (!ready) return; const v = !extra.manage; if (await save('guest_manage_enabled', v, v ? 'Online changes on' : 'Online changes off')) setExtra({ ...extra, manage: v }); }} />
       <Stepper label="Cancellation window"
         sub={windowHours > 0
-          ? `Online changes close ${windowHours} ${windowHours === 1 ? 'hour' : 'hours'} before the booking. After that the guest is asked to call you. Money paid is never refunded by itself: a cancel in time is flagged for you to refund.`
+          ? `Online changes close ${windowHours} ${windowHours === 1 ? 'hour' : 'hours'} before the booking. After that the guest is asked to call you. A cancellation this close to the booking can be charged the card hold. Money paid is never refunded by itself: a cancel in time is flagged for you to refund.`
           : 'Guests can change or cancel online right up to the booking time. Money paid is never refunded by itself: a cancel is flagged for you to refund.'}
         value={windowHours} onChange={(v) => patch({ cancellationWindowHours: v })}
         step={2} min={0} max={72} fmt={(v) => (v ? `${v} h` : 'none')} />

@@ -12,6 +12,10 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
+import { noticeWords } from '../../lib/bookings/optimiser.js';
+
+// edit_booking's and the function's service period refusals (v5.11.70): the times are read again.
+const TIME_REFUSED = new Set(['slot_gone', 'slot_full', 'outside_service', 'closed_day', 'blocked', 'too_soon', 'past', 'too_far_ahead']);
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -93,7 +97,7 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
     (async () => {
       const r = await callManage({ action: 'manage_slots', token, date, party });
       if (off) return;
-      setSlotsRes({ key, slots: r?.ok && Array.isArray(r.slots) ? r.slots : [], message: r?.ok ? (r.message || '') : (r?.message || 'We could not load times. Please try again.') });
+      setSlotsRes({ key, slots: r?.ok && Array.isArray(r.slots) ? r.slots : [], noticeMinutes: r?.ok ? Number(r.noticeMinutes) || 0 : 0, message: r?.ok ? (r.message || '') : (r?.message || 'We could not load times. Please try again.') });
     })();
     return () => { off = true; };
   }, [mode, token, date, party, slotsNonce]);
@@ -149,7 +153,7 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
     setBusy(false);
     if (!r?.ok) {
       setErr(r?.message || 'We could not change your booking. Please try again.');
-      if (r?.error === 'slot_gone' || r?.error === 'slot_full') { setPTime(null); setSlotsNonce((n) => n + 1); }
+      if (TIME_REFUSED.has(r?.error)) { setPTime(null); setSlotsNonce((n) => n + 1); }
       return;
     }
     setOverride(r);
@@ -304,6 +308,11 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
           )}
           {slots.some((s) => s.current) && (
             <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8 }}>The dashed time is your booking now.</div>
+          )}
+          {slotsRes?.noticeMinutes > 0 && slots.some((s) => s.reason === 'notice') && (
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8, lineHeight: 1.5 }}>
+              Some times are greyed because online changes need {noticeWords(slotsRes.noticeMinutes)} notice. Call the venue for a sooner table.
+            </div>
           )}
 
           <button type="button" disabled={!time || busy} onClick={saveChange}

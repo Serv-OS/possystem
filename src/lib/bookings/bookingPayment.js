@@ -326,3 +326,50 @@ export function bookingUnpaid({ booking, pkg = null, payments = null } = {}) {
   if (payments.some(isPaidRow)) return false;
   return bookingOwesPayment(booking, pkg);
 }
+
+// ── money left on a payment (16 Oct 2026, v5.11.70) ──────────────────────────
+// ONE rule for every screen that asks "how much of this payment is still the guest's money":
+// the guest's change and cancel page (bookingGuest.js), host refunds (bookingHost.js), the till
+// credit (bookingsData.loadBookingCredit) and the Back Office booking reports
+// (bookingReports.js). Three tracks each had their own copy; they now read this one.
+//
+// A refund is its own booking_payments row (kind 'refund'), linked to the payment it gives back
+// by refund_of (migration 20261016d) or by its merchant reference bkrf-<payment uuid>-<n>
+// (always). The payment also carries amount_refunded_minor after 20261016d.
+const REFUND_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const REFUND_REF = new RegExp(`^bkrf-(${REFUND_UUID})-(\\d{1,4})$`, 'i');
+
+export function parseRefundReference(ref) {
+  const m = REFUND_REF.exec(String(ref || ''));
+  return m ? { parentId: m[1].toLowerCase(), n: Number(m[2]) } : null;
+}
+
+export const amountMinorOf = (row) => Math.round(num(row?.amount) * 100);
+
+// The refund rows that give back THIS payment.
+export function refundRowsFor(parent, rows = []) {
+  const id = String(parent?.id || '').toLowerCase();
+  if (!id) return [];
+  return (rows || []).filter((r) => r && r.kind === 'refund' && (
+    String(r.refund_of || '').toLowerCase() === id
+    || parseRefundReference(r.merchant_reference)?.parentId === id));
+}
+
+// Money already given back on a payment, or on its way (a pending refund counts, so two taps,
+// or a refund and a guest cancel, can never give the same pound back twice). A failed refund
+// does not. The larger of the refund rows and the stored column.
+export function refundedMinorFor(parent, rows = []) {
+  const fromRows = refundRowsFor(parent, rows)
+    .filter((r) => r.status === 'pending' || r.status === 'refunded')
+    .reduce((s, r) => s + amountMinorOf(r), 0);
+  const fromColumn = Math.max(0, Math.round(num(pick(parent, 'amount_refunded_minor', 'amountRefundedMinor'))));
+  return Math.max(fromRows, fromColumn);
+}
+
+// What a payment row still holds, in minor units: its amount less what was refunded on it.
+//   rows  the booking's other payment rows (refund rows are looked up in them); without them
+//         only amount_refunded_minor is taken off, as _booking_credit_for_session does
+export function paymentNetMinor(p, rows = []) {
+  if (!p) return 0;
+  return Math.max(0, amountMinorOf(p) - refundedMinorFor(p, rows));
+}

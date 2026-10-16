@@ -95,7 +95,7 @@ alter table public.closed_checks add constraint closed_checks_source_check
                              'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr', 'booking'])) not valid;
 
 comment on column public.booking_payments.kind is
-  'hold = card saved, nothing taken (amount is the hold figure, never money); deposit, prepay = money taken online, credit on the bill; no_show_charge = the saved card charged for a no show or a late cancellation by booking-charge (16 Oct 2026; merchant_reference bkpay-<booking>-noshow-a<N> or -latecancel-a<N>; posted to closed check bkns-<booking>-a<N>, applied_check_id); refund = money given back.';
+  'hold = card saved, nothing taken (amount 0 since 20261016d, hold_minor keeps the rule figure, never money); deposit, prepay = money taken online, credit on the bill; no_show_charge = the saved card charged for a no show or a late cancellation by booking-charge (16 Oct 2026; merchant_reference bkpay-<booking>-noshow-a<N> or -latecancel-a<N>; posted to closed check bkns-<booking>-a<N>, applied_check_id); refund = money given back.';
 
 commit;
 

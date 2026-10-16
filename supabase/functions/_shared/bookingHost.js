@@ -8,6 +8,8 @@
 // (src/lib/bookings/bookingHost.test.js), and the edge functions import the
 // same file, so the screens and the servers can never disagree.
 
+import { parseRefundReference, amountMinorOf, refundRowsFor, refundedMinorFor, paymentNetMinor } from './bookingPayment.js';
+
 const num = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -66,40 +68,19 @@ export function guestChips({ tags = [], visits = null, noShows = 0 } = {}) {
 //                                       and adyen-modify's 60 character key rule)
 // A hold took no money (amount 0 since 16 Oct 2026, the rule figure before), so
 // it is never refundable whatever its amount says.
-const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const REFUND_REF = new RegExp(`^bkrf-(${UUID})-(\\d{1,4})$`, 'i');
-export const REFUNDABLE_KINDS = ['prepay', 'deposit', 'no_show_charge'];
+// 16 Oct 2026 (v5.11.70 release): a no show charge is NOT refunded from here. It is posted to
+// its own closed check (booking-charge, NS-XXXXX), so a refund must come off that check (History
+// on the till, or Transactions in Back Office) or the sale would stay in reports, VAT and Xero.
+export const REFUNDABLE_KINDS = ['prepay', 'deposit'];
 
 export function refundReference(parentId, n) {
   return `bkrf-${String(parentId)}-${Math.max(1, Math.round(num(n)) || 1)}`;
 }
 
-export function parseRefundReference(ref) {
-  const m = REFUND_REF.exec(String(ref || ''));
-  return m ? { parentId: m[1].toLowerCase(), n: Number(m[2]) } : null;
-}
-
-export const amountMinorOf = (row) => Math.round(num(row?.amount) * 100);
-
-// The refund rows that give back THIS payment: linked by refund_of (after the
-// migration) or by the merchant reference (always).
-export function refundRowsFor(parent, rows = []) {
-  const id = String(parent?.id || '').toLowerCase();
-  if (!id) return [];
-  return (rows || []).filter((r) => r && r.kind === 'refund' && (
-    String(r.refund_of || '').toLowerCase() === id
-    || parseRefundReference(r.merchant_reference)?.parentId === id));
-}
-
-// Money already given back, or on its way (a pending refund counts, so two
-// taps can never refund the same pound twice). A refund that failed does not.
-export function refundedMinorFor(parent, rows = []) {
-  const fromRows = refundRowsFor(parent, rows)
-    .filter((r) => r.status === 'pending' || r.status === 'refunded')
-    .reduce((s, r) => s + amountMinorOf(r), 0);
-  const fromColumn = Math.max(0, Math.round(num(parent?.amount_refunded_minor)));
-  return Math.max(fromRows, fromColumn);
-}
+// parseRefundReference, amountMinorOf, refundRowsFor and refundedMinorFor are the shared rule in
+// bookingPayment.js (one copy for the guest page, refunds, the till credit and the reports),
+// re exported here so every caller of this file keeps working.
+export { parseRefundReference, amountMinorOf, refundRowsFor, refundedMinorFor };
 
 export function isRefundableRow(row) {
   if (!row || !REFUNDABLE_KINDS.includes(row.kind)) return false;
@@ -154,6 +135,9 @@ export function refundCheck({ parent, rows = [], amountMinor, partialAllowed = t
   if (!parent) return { ok: false, error: 'That payment could not be found.' };
   if (parent.kind === 'hold') return { ok: false, error: 'A saved card took no money, so there is nothing to refund.' };
   if (parent.kind === 'refund') return { ok: false, error: 'This row is a refund already.' };
+  if (parent.kind === 'no_show_charge') {
+    return { ok: false, error: 'A no show charge is on its own check. Refund that check in History on the till, or Transactions in Back Office, so the sale comes off the reports too.' };
+  }
   if (!isRefundableRow(parent)) {
     if (parent.status === 'refunded') return { ok: false, error: 'This payment has been refunded in full already.' };
     return { ok: false, error: 'Only money that was taken can be refunded.' };
@@ -180,9 +164,9 @@ export function parentAfterRefund(parent, refundedMinor) {
   return { status: back >= total && total > 0 ? 'refunded' : parent?.status || 'captured', refundedMinor: Math.min(back, total) };
 }
 
-// The credit a captured, unapplied payment still carries onto the bill.
-export function creditMinorOf(row) {
-  return Math.max(0, amountMinorOf(row) - Math.max(0, Math.round(num(row?.amount_refunded_minor))));
+// The credit a captured, unapplied payment still carries onto the bill (the shared rule).
+export function creditMinorOf(row, rows = []) {
+  return paymentNetMinor(row, rows);
 }
 
 // ── large parties and the requests inbox (plan item 5) ───────────────────────

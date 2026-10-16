@@ -40,6 +40,8 @@ const cors = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+// create_booking's service period refusals (20261016e): the same for every table, carry words.
+const TIME_REFUSALS = new Set(['outside_service', 'closed_day', 'blocked', 'too_soon', 'past', 'too_far_ahead']);
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -289,6 +291,7 @@ Deno.serve(async (req) => {
 
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
+      let timeRefusal: string | null = null;
       try {
         // The guest on the company's guest book (only fill blanks, the same as the booking page).
         const name = String(p.name || 'Guest').slice(0, 80);
@@ -322,6 +325,9 @@ Deno.serve(async (req) => {
             p_status: 'confirmed', p_source: 'host', p_package_id: null, p_note: note, p_created_by: by || 'request',
           });
           if (res?.ok) { bookedId = id; tableLabel = c.label; break; }
+          // 16 Oct 2026 (v5.11.70, service periods 20261016e): a time outside service, on a closed
+          // day or in a block is refused for every table, so say why instead of "taken".
+          if (res && !res.ok && res.message && TIME_REFUSALS.has(String(res.error))) { timeRefusal = String(res.message); break; }
         }
       } catch (e) {
         await release();
@@ -329,6 +335,7 @@ Deno.serve(async (req) => {
       }
       if (!bookedId) {
         await release();
+        if (timeRefusal) return json({ ok: false, error: timeRefusal });
         return json({ ok: false, error: `Those tables were just taken. Try again, or book ${party} by hand on the Book screen.` });
       }
       const { error: linkErr } = await admin.from('booking_requests').update({ booking_id: bookedId }).eq('id', requestId);

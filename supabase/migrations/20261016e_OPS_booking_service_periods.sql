@@ -457,11 +457,17 @@ declare
   end if;
 
 $chk$;
+  n int;
 begin
+  -- Found by name, never by a written argument list: live has the final 11 argument form
+  -- (p_expected_edited_at, 5.11.69); an earlier draft had 10. There must be exactly one.
+  select count(*) into n from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking';
+  if n <> 1 then
+    raise exception 'There are % edit_booking functions, expected 1. Nothing was changed. Send this message to Claude.', n;
+  end if;
   select pg_get_functiondef(p.oid) into v_def
     from pg_proc p
-   where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
-     and pg_get_function_identity_arguments(p.oid) = 'p_id text, p_location_id uuid, p_booking_date date, p_start_time time without time zone, p_turn_minutes integer, p_covers integer, p_table_ids text[], p_primary_table_id text, p_note text, p_customer jsonb';
+   where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking';
   if v_def is null then
     raise exception 'edit_booking (the 20261016b version) is not on this database. Nothing was changed. Send this message to Claude.';
   end if;
@@ -478,12 +484,23 @@ begin
 end
 $patch$;
 
-revoke all on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb) from public;
-grant execute on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb)
-  to anon, authenticated, service_role;
-
-comment on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb) is
-  '16 Oct 2026 (bookings audit items 10 and section 3 item 6): edit a booking''s date, time, turn, covers, note, guest and tables in one transaction under the venue lock, with the same free check as create_booking and move_booking, the floor plan check, the seats check, and the service period check when the date or time moves.';
+-- The grants edit_booking had (20261016b, re issued by 20261016c), and its comment, named by the
+-- function's own id so this works whatever its argument list is.
+do $grants$
+declare
+  r record;
+begin
+  for r in
+    select p.oid::regprocedure as sig from pg_proc p
+     where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
+  loop
+    execute format('revoke all on function %s from public', r.sig);
+    execute format('grant execute on function %s to anon, authenticated, service_role', r.sig);
+    execute format('comment on function %s is %L', r.sig,
+      '16 Oct 2026 (bookings audit items 10 and section 3 item 6): edit a booking''s date, time, turn, covers, note, guest and tables in one transaction under the venue lock, with the same free check as create_booking and move_booking, the floor plan check, the seats check, the edit stamp check, and the service period check when the date or time moves. The booking-widget function (service role) may call it for a guest''s own change (20261016c).');
+  end loop;
+end
+$grants$;
 
 commit;
 
@@ -493,6 +510,7 @@ notify pgrst, 'reload schema';
 --   rules_new_columns 4, helpers 6, helper_not_public 1, create_has_rules 1, create_has_floor_check 1,
 --   edit_has_rules 1, edit_has_fence 1, edit_keeps_guest_fence 1 (0 means 20261016c has not run
 --   yet: run it next, it still works after this file), create_anon_grant 1, edit_auth_grant 1,
+--   edit_keeps_stamp_check 1 (the 11 argument edit_booking of 5.11.69 is the one patched),
 --   venues_with_periods = venues that set service periods (0 until someone does),
 --   sample_christmas_block Christmas, sample_bad_date_is_null true, sample_hm_810 810,
 --   sample_no_reason_words empty, sample_reason_words ' (Christmas)'
@@ -514,7 +532,10 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
      and pg_get_functiondef(p.oid) like '%service_role%') as edit_keeps_guest_fence,
   (select case when has_function_privilege('anon', 'public.create_booking(text, uuid, date, time without time zone, integer, integer, text[], text, uuid, jsonb, text, text, text, text, text, text)', 'execute') then 1 else 0 end) as create_anon_grant,
-  (select case when has_function_privilege('authenticated', 'public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb)', 'execute') then 1 else 0 end) as edit_auth_grant,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
+     and has_function_privilege('authenticated', p.oid, 'execute')) as edit_auth_grant,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
+     and pg_get_functiondef(p.oid) like '%p_expected_edited_at%') as edit_keeps_stamp_check,
   (select count(*) from booking_rules where jsonb_array_length(service_periods) > 0) as venues_with_periods,
   (select public._booking_day_block('[{"from":"2026-12-25","to":"2026-12-26","label":"Christmas"}]'::jsonb, '[]'::jsonb, date '2026-12-26', false)) as sample_christmas_block,
   (select public._iso_date('2026-13-45') is null) as sample_bad_date_is_null,

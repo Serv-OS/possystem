@@ -25,11 +25,15 @@
 //     bill uses it (the till's close works out the final figure). More guests on a paid booking
 //     needs a top up, which cannot be paid online yet: the page refuses and gives the phone.
 //   - A booking still being paid online (pending_payment) can be cancelled, never changed.
+//   - A new date or time follows the venue's service periods, closed days, date blocks and online
+//     notice (20261016e), the same pure rules as the booking page (serviceSlots and
+//     bookingTimeRefusal, online). edit_booking checks them again; its refusal is said in words.
 //   - The guest is told by text and email (booking-reminders notify), the team by the activity
 //     feed, and the booking's edit stamp reads "Guest online".
 
 import {
   suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks, maxPartyForCap,
+  serviceSlots, bookingTimeRefusal, guestTimeWords, guestClosedDayWords,
 } from '../_shared/bookingOptimiser.js';
 import {
   manageState, moneyOnBooking, owedBackOnBooking, cancelMoney, changeMoney, packageOnDate, calendarLinks,
@@ -57,6 +61,9 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 const NOT_READY = 'Online changes are not switched on for this venue yet. Please call the venue.';
+// edit_booking's service period refusals (20261016e). Each carries message (venue words); a
+// block's own reason is the venue's business, so a guest reads guestTimeWords instead.
+const TIME_REFUSALS = new Set(['outside_service', 'closed_day', 'blocked', 'too_soon', 'past', 'too_far_ahead']);
 const callLine = (phone: string) => (phone ? ` Please call the venue on ${phone}.` : ' Please call the venue.');
 
 export async function handleManage(action: string, body: Row, d: Deps): Promise<Response> {
@@ -211,19 +218,29 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     const bad = checkInputs(date, party);
     if (bad) return d.json({ ok: true, date, party, slots: [], message: bad });
     const ctx = await dayContext(date, party);
-    const start = toMin(rules.serviceStart || '17:00'), end = toMin(rules.serviceEnd || '23:00');
-    const step = Number(rules.slotMinutes) || 15;
-    const nowGuard = date === today ? d.venueNowMin(tz) : -1;
-    const slots: Row[] = [];
-    for (let t = start; t < end; t += step) {
-      const time = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
-      const reason = t <= nowGuard ? 'past' : ctx.kitchenFull(time) ? 'kitchen' : ctx.candidates(time).length === 0 ? 'tables' : null;
-      slots.push({
-        time, full: reason !== null, reason,
-        current: date === String(bk.booking_date) && time === hm(bk.start_time) && party === Number(bk.covers),
-      });
+    // 16 Oct 2026 (v5.11.70): the day's times come from the service periods (lunch and dinner,
+    // last seating, closed days, date blocks), the grid the booking page sells. With no periods
+    // set it is the old single window. The booking's own time on its own date always shows, so
+    // a guest can change only the party on a booking made before the periods were set.
+    const sameDay = date === String(bk.booking_date);
+    const ownTime = hm(bk.start_time);
+    const grid: string[] = serviceSlots(rules, date, { online: true });
+    if (sameDay && ownTime && !grid.includes(ownTime)) grid.push(ownTime);
+    grid.sort((a, b) => toMin(a) - toMin(b));
+    if (!grid.length) {
+      return d.json({ ok: true, date, party, slots: [], message: guestClosedDayWords(rules, date) || 'No times on this date. Try another day.' });
     }
-    return d.json({ ok: true, date, party, slots });
+    const nowCtx = { ymd: today, nowMinutes: d.venueNowMin(tz) };
+    const slots: Row[] = [];
+    for (const time of grid) {
+      const kept = sameDay && time === ownTime;
+      // gone ('past'), or inside the venue's online notice ('notice', which the page explains)
+      const why = kept ? null : bookingTimeRefusal(rules, date, time, { online: true, now: nowCtx });
+      const greyed = why ? (why.code === 'too_soon' ? 'notice' : 'past') : null;
+      const reason = greyed ?? (ctx.kitchenFull(time) ? 'kitchen' : ctx.candidates(time).length === 0 ? 'tables' : null);
+      slots.push({ time, full: reason !== null, reason, current: kept && party === Number(bk.covers) });
+    }
+    return d.json({ ok: true, date, party, slots, noticeMinutes: Number(rules.minNoticeMinutes) || 0 });
   }
 
   if (action === 'manage_change') {
@@ -251,9 +268,15 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
       return say('needs_top_up', `Adding guests to this booking needs ${moneyWords(m.diffMinor, m.currency || currency)} more, which cannot be paid online yet.${callLine(contact.phone)} The team can add them for you.`);
     }
     const tMin = toMin(time);
-    const startMin = toMin(rules.serviceStart || '17:00'), endMin = toMin(rules.serviceEnd || '23:00');
-    const timeKept = time === hm(bk.start_time);
-    if (!timeKept && (tMin < startMin || tMin >= endMin)) return say('bad_input', 'That time is outside the venue\'s booking hours. Pick another.');
+    // 16 Oct 2026 (v5.11.70): a new date or time must be one the booking page would sell: inside
+    // a service period, before its last seating, not on a closed day or in a block, with the
+    // venue's online notice, on the slot grid. edit_booking checks the same when it moves.
+    const moved = date !== String(bk.booking_date) || time !== hm(bk.start_time);
+    if (moved) {
+      const why = bookingTimeRefusal(rules, date, time, { online: true, now: { ymd: today, nowMinutes: d.venueNowMin(tz) } });
+      if (why) return say(why.code, guestTimeWords(why, date));
+      if (!serviceSlots(rules, date, { online: true }).includes(time)) return say('outside_service', 'Pick one of the times shown.');
+    }
     if (date === today && tMin <= d.venueNowMin(tz)) return say('bad_input', 'That time has gone. Pick a later one.');
     const ctx = await dayContext(date, party);
     if (ctx.kitchenFull(time)) return say('slot_full', 'That time is fully booked. Please pick another.');
@@ -303,6 +326,10 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
       if (last === 'table_taken') continue;   // someone booked it between the quote and now
       if (last === 'no access') return say('not_ready', NOT_READY);   // migration 20261016c not run yet
       if (last === 'not_editable' || last === 'awaiting_payment') return say('not_changeable', 'This booking can no longer be changed online.');
+      // The database's own service period check (20261016e): the same for every table, in words.
+      if (TIME_REFUSALS.has(last)) {
+        return say(last, last === 'blocked' ? guestTimeWords({ code: 'blocked' }, date) : String(data?.message || guestTimeWords(null, date)));
+      }
       break;
     }
     if (!done) {

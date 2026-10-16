@@ -122,7 +122,14 @@ async function loadState(locationId: string, bookingId: string) {
   const booking = bkRes.data as Row | null;
   if (!booking) return { booking: null } as const;
   const [payRes, rulesRes, locRes, custRes] = await Promise.all([
-    db.from('booking_payments').select(PAY_COLS).eq('booking_id', bookingId).order('created_at', { ascending: true }),
+    // hold_minor (20261016d): the hold figure once a hold row's amount is 0. Read without it before.
+    (async () => {
+      const r = await db.from('booking_payments').select(`${PAY_COLS}, hold_minor`).eq('booking_id', bookingId).order('created_at', { ascending: true });
+      if (r.error && /hold_minor|does not exist|schema cache/i.test(errText(r.error))) {
+        return await db.from('booking_payments').select(PAY_COLS).eq('booking_id', bookingId).order('created_at', { ascending: true });
+      }
+      return r;
+    })(),
     db.from('booking_rules').select('hold_per_cover, cancellation_window_hours').eq('location_id', locationId).maybeSingle(),
     db.from('locations').select('timezone, currency').eq('id', locationId).maybeSingle(),
     booking.customer_id

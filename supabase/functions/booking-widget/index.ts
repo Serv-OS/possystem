@@ -603,6 +603,16 @@ Deno.serve(async (req) => {
       const reqParty = Math.max(1, Math.min(200, Math.round(Number(body.party) || 0)));
       const reqTime = /^\d{2}:\d{2}$/.test(String(body.time || '')) ? String(body.time) : null;
       if (!name || !phone) return json({ ok: false, error: 'name and a valid mobile are required' }, 400);
+      // 16 Oct 2026 (v5.11.70 release): a request for a closed day, a blocked date or a time
+      // outside service is refused here in words (create_booking would refuse the Accept anyway,
+      // 20261016e). Notice is not applied: a sooner large party is the host's call.
+      const reqNow = { ymd: today, nowMinutes: venueNowMin(tz) };
+      const reqWhy = reqTime ? bookingTimeRefusal(rules, date, reqTime, { online: true, now: reqNow }) : null;
+      if (reqWhy && reqWhy.code !== 'too_soon') return json({ ok: false, error: 'outside_hours', message: guestTimeWords(reqWhy, date) });
+      if (!reqTime && serviceSlots(rules, date, { online: true }).length === 0) {
+        const closedWords = guestClosedDayWords(rules, date);
+        if (closedWords) return json({ ok: false, error: 'outside_hours', message: closedWords });
+      }
       // A public door: a burst cap per venue and a cool down per number.
       const tenMin = new Date(Date.now() - 10 * 60000).toISOString();
       const { count: burst } = await db.from('booking_requests').select('id', { count: 'exact', head: true })

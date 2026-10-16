@@ -16,6 +16,7 @@ import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 import { isMissingFunction } from './applyBookingPayment.js';
+import { paymentNetMinor } from './bookingPayment.js';
 // 16 Oct 2026: the guest's confirmation goes the moment the stand, the till or Back Office books.
 import { nudgeConfirmation } from './guestMessages.js';
 import { serviceRulesFromRow, SERVICE_RULE_COLUMNS, SERVICE_RULES_MISSING, touchesServiceRules } from './serviceRulesRow.js';
@@ -570,7 +571,7 @@ export async function loadBookingCredit(bookingId) {
       // 16 Oct 2026: a row flagged NEEDS REFUND is owed back, never credit on the bill (the
       // reader's _booking_credit_for_session leaves it out too, so the till and reader agree).
       if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
-      const minor = Math.max(0, Math.round((Number(r.amount) || 0) * 100) - Math.max(0, Math.round(Number(r.amount_refunded_minor) || 0)));
+      const minor = paymentNetMinor(r);
       if (r.kind === 'prepay') prepayMinor += minor;
       else if (r.kind === 'deposit') depositMinor += minor;
     }

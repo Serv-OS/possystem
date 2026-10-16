@@ -188,11 +188,11 @@ export default function TableBookings({ userName = null }) {
             value={rules.pacingCap} onChange={v => patch({ pacingCap: v })}
             step={2} min={2} max={30} fmt={v => `${v} cvr`} />
           <BoStepper label="Card hold per cover"
-            sub="Above zero, online guests save a card when they book. Nothing is taken from the card."
+            sub="Above zero, online guests save a card when they book. Nothing is taken unless they do not show, or cancel inside the cancellation window; then the host can charge this amount per guest."
             value={rules.holdPerCover} onChange={v => patch({ holdPerCover: v })}
             step={5} min={0} max={50} fmt={v => money(v)} />
-          {/* 16 Oct 2026: the Cancellation window stepper is hidden until a guest can cancel
-              online (it drives nothing yet). Write the policy in Booking terms below. */}
+          {/* v5.11.70: the Cancellation window lives in "Guest messages and online changes" below:
+              online changes close then, and a cancellation inside it can be charged the card hold. */}
           <BoToggle label="Pacing override needs a manager"
             sub="Booking into a full slot at the host stand requires manager approval (PIN)."
             on={rules.pacingOverrideRequiresPin}

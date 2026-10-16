@@ -49,7 +49,10 @@ export function LargePartyRequest({ opsId, venueName, minParty = 13, date, today
     const r = await callWidget({ action: 'request', location_id: opsId, date: day, time, party, name: name.trim(), phone, email: email.trim() || undefined, note: note.trim() || undefined });
     setBusy(false);
     if (r?.ok) { setDone(true); return; }
-    setErr(r?.error === 'too_many_requests' ? 'Lots of requests right now. Please try again in a few minutes, or call the venue.' : 'The request did not send. Please try again, or call the venue.');
+    setErr(r?.error === 'too_many_requests' ? 'Lots of requests right now. Please try again in a few minutes, or call the venue.'
+      // v5.11.70: a closed day, a blocked date or a time outside service, said by the server
+      : r?.error === 'outside_hours' && r?.message ? r.message
+      : 'The request did not send. Please try again, or call the venue.');
   };
 
   const box = { marginTop: 4, padding: '14px 16px', borderRadius: 12, border: '1px solid var(--line)', background: 'var(--card)' };

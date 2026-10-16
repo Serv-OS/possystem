@@ -21,7 +21,7 @@
 // import from src/). bookingGuestParity.test.js fails the suite when they drift. Edit one, copy
 // it over the other.
 
-import { paymentDue } from './bookingPayment.js';
+import { paymentDue, paymentNetMinor, isNeedsRefundRow } from './bookingPayment.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const hm = (s) => String(s || '').slice(0, 5);
@@ -137,15 +137,12 @@ export function manageState({ booking, rules = {}, tz, now = Date.now() } = {}) 
 
 // ── money already paid ────────────────────────────────────────────────────────
 
-const needsRefund = (p) => p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || ''));
+const needsRefund = isNeedsRefundRow;
 
-// What a payment row still holds, in minor units: its amount less anything already refunded
-// on it (amount_refunded_minor, migration 20261016d: a part refund keeps the row 'captured').
-export function paymentNetMinor(p) {
-  if (!p) return 0;
-  const refunded = Math.max(0, Math.round(num(p.amount_refunded_minor ?? p.amountRefundedMinor)));
-  return Math.max(0, Math.round(num(p.amount) * 100) - refunded);
-}
+// What a payment row still holds, in minor units: its amount less anything refunded or being
+// refunded on it (refund rows and amount_refunded_minor, 20261016d). The ONE shared rule lives in
+// bookingPayment.js (v5.11.70 release: the guest, host and reports tracks each had a copy).
+export { paymentNetMinor };
 
 // Captured prepay and deposit money that has not been used on a bill and is not already
 // flagged to go back, net of any part refund. A saved card (hold) took nothing, so it is
@@ -153,8 +150,8 @@ export function paymentNetMinor(p) {
 export function moneyOnBooking(payments = []) {
   const rows = (payments || []).filter((p) => p && p.status === 'captured'
     && (p.kind === 'prepay' || p.kind === 'deposit') && !p.applied_to_check && !needsRefund(p)
-    && paymentNetMinor(p) > 0);
-  const list = rows.map((p) => ({ id: p.id, kind: p.kind, amountMinor: paymentNetMinor(p) }));
+    && paymentNetMinor(p, payments) > 0);
+  const list = rows.map((p) => ({ id: p.id, kind: p.kind, amountMinor: paymentNetMinor(p, payments) }));
   const currency = String(rows[0]?.currency || '').toUpperCase() || null;
   return { capturedMinor: list.reduce((s, r) => s + r.amountMinor, 0), rows: list, currency };
 }
@@ -163,7 +160,7 @@ export function moneyOnBooking(payments = []) {
 export function owedBackOnBooking(payments = []) {
   const rows = (payments || []).filter((p) => p && (p.kind === 'prepay' || p.kind === 'deposit') && needsRefund(p));
   const currency = String(rows[0]?.currency || '').toUpperCase() || null;
-  return { owedBackMinor: rows.reduce((s, p) => s + paymentNetMinor(p), 0), currency };
+  return { owedBackMinor: rows.reduce((s, p) => s + paymentNetMinor(p, payments), 0), currency };
 }
 
 // A cancel in time: every captured row is owed back to the guest. The venue refunds it (the

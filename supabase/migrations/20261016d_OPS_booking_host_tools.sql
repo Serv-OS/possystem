@@ -280,7 +280,9 @@ begin
     v_minor := greatest(round(coalesce(v_row.amount, 0) * 100)::bigint - v_row.refunded, 0);
     v_take  := least(v_minor, v_left);
     v_left  := v_left - v_take;
-    v_cur   := case upper(coalesce(v_row.currency, 'gbp')) when 'GBP' then '£' when 'USD' then '$' when 'EUR' then '€'
+    -- chr(163) is the pound sign and chr(8364) the euro sign: written as codes so a paste that
+    -- changes the text encoding cannot garble them (live read a stray sign before the pound on 16 Oct).
+    v_cur   := case upper(coalesce(v_row.currency, 'gbp')) when 'GBP' then chr(163) when 'USD' then '$' when 'EUR' then chr(8364)
                  else upper(v_row.currency) || ' ' end;
     update booking_payments
        set applied_to_check = true,
@@ -313,7 +315,8 @@ notify pgrst, 'reload schema';
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   payments_new_columns 3, payments_columns_readable 3, rules_new_columns 4, bookings_new_columns 2,
 --   holds_with_money 0, credit_takes_refunds 1, apply_takes_refunds 1, helper_not_public 1,
---   refund_ref_unique 1, sweep_skips_pay_links 1 (0 only where pg_cron is not installed).
+--   refund_ref_unique 1, sweep_skips_pay_links 1 (0 only where pg_cron is not installed),
+--   apply_pound_sign_ok 1 (live had a stray character before the pound sign in the give back words).
 select
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'booking_payments'
@@ -333,4 +336,6 @@ select
      and p.pronargs = 3 and pg_get_functiondef(p.oid) like '%amount_refunded_minor%') as apply_takes_refunds,
   (select case when has_function_privilege('anon', 'public._booking_credit_for_session(uuid, jsonb, bigint)', 'execute') then 0 else 1 end) as helper_not_public,
   (select count(*) from pg_indexes where schemaname = 'public' and indexname = 'booking_payments_refund_ref_uidx') as refund_ref_unique,
-  (select count(*) from cron.job where jobname = 'bookings-expire-unpaid' and command like '%pay_link_until%') as sweep_skips_pay_links;
+  (select count(*) from cron.job where jobname = 'bookings-expire-unpaid' and command like '%pay_link_until%') as sweep_skips_pay_links,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'apply_booking_payment'
+     and position(chr(172) in pg_get_functiondef(p.oid)) = 0) as apply_pound_sign_ok;

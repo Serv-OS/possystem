@@ -50,11 +50,13 @@ export async function manageTokenFor(db: Db, booking: { id: unknown; location_id
   }
 }
 
-const PAY_COLS = 'id, kind, status, amount, currency, applied_to_check, refusal_reason, created_at';
+// merchant_reference links a refund row to its payment (bkrf-<id>-<n>), so a refund still on its
+// way is never counted as money on the booking (paymentNetMinor, bookingPayment.js).
+const PAY_COLS = 'id, kind, status, amount, currency, applied_to_check, refusal_reason, merchant_reference, created_at';
 export async function readBookingPayments(db: Db, bookingId: string): Promise<Row[]> {
   const read = (cols: string) => db.from('booking_payments').select(cols).eq('booking_id', bookingId)
     .order('created_at', { ascending: true }).order('id', { ascending: true });
-  let { data, error } = await read(`${PAY_COLS}, amount_refunded_minor`);
+  let { data, error } = await read(`${PAY_COLS}, amount_refunded_minor, refund_of`);
   if (error && isMissingColumnError(error)) ({ data, error } = await read(PAY_COLS));
   if (error) console.error('[bookingGuestDb] payments read failed:', error.message);
   return (data || []) as Row[];
