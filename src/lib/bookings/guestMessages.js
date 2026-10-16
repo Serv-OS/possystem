@@ -6,6 +6,8 @@
 //                       a phone or an email, ask booking-reminders to send the confirmation now.
 //                       Fire and forget: the function's ledger sends each channel once, and the
 //                       5 minute sweep sends it anyway if this call is lost.
+//   sendConfirmation    the Inspector's Send confirmation button: the same call, awaited, so the
+//                       host is told what really went (17 Oct 2026, v5.11.72)
 //   loadGuestMessages   the ledger rows for one booking, for the Inspector's Messages list
 //   loadManageToken     the guest's change and cancel code (migration 20261016c)
 //   messageLine, failureWords   the words the Inspector shows for each row (pure, tested)
@@ -13,7 +15,7 @@
 import { supabase, isMock } from '../supabase';
 import { shouldNudge } from './guestMessageWords.js';
 
-export { shouldNudge, KIND_WORDS, failureWords, messageLine } from './guestMessageWords.js';
+export { shouldNudge, hasGuestContact, confirmResultWords, KIND_WORDS, failureWords, messageLine } from './guestMessageWords.js';
 
 export function nudgeConfirmation(b) {
   if (isMock || !supabase || !shouldNudge(b)) return;
@@ -21,6 +23,25 @@ export function nudgeConfirmation(b) {
     supabase.functions.invoke('booking-reminders', { body: { action: 'confirm', booking_id: b.id } })
       .catch(() => { /* the sweep sends it within 5 minutes */ });
   } catch { /* never let a message get in the way of a booking */ }
+}
+
+// booking-reminders' own answer to confirm, or { ok:false, error } in plain words. Never throws.
+// The function reads the guest's CRM record for a phone or email the booking does not carry, so
+// a booking linked to a guest record is sent to as well (withCrmContact).
+export async function sendConfirmation(b) {
+  if (isMock || !supabase) return { ok: false, error: 'not connected here' };
+  if (!shouldNudge(b)) return { ok: true, sent: [], results: {} };
+  try {
+    const { data, error } = await supabase.functions.invoke('booking-reminders', { body: { action: 'confirm', booking_id: b.id } });
+    if (error) {
+      let ctx = null;
+      try { ctx = await error.context?.json?.(); } catch { /* no body */ }
+      return { ok: false, error: ctx?.error || error.message || 'the server did not answer' };
+    }
+    return data || { ok: false, error: 'the server sent nothing back' };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'the server could not be reached' };
+  }
 }
 
 const missingColumn = (e) => {

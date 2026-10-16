@@ -18,7 +18,11 @@
 //             results. Called by the Diary Inspector's "Send pre-order link" button and the
 //             booking page. Resendable: a 60s per-channel throttle stops accidental double-taps.
 //   send_due , the sweep, run by pg_cron every 5 minutes (migration 20261016c; it was every 15)
-//             with NO host stand open:
+//             with NO host stand open. 17 Oct 2026 (v5.11.72): behind a cron key. Only the
+//             service role, or the cron job's x-cron-key header (a random key kept only in the
+//             database vault, checked by public.booking_reminders_cron_ok, migration 20261017a),
+//             may start it; until that migration runs it stays open as before
+//             (_shared/cronKey.js). The host stand no longer starts it.
 //               1. the pre-order nag (choices outstanding once the deadline window opens)
 //               2. 16 Oct 2026: visit reminders, the day before (10:00 to 21:00 venue time) and
 //                  2 hours before; the confirmation backstop for a booking made in the last 2
@@ -53,6 +57,7 @@ import {
   venueContact, moneyWords, zonedToEpoch, owedBackOnBooking,
 } from '../_shared/bookingGuest.js';
 import { manageTokenFor, readBookingPayments, healGuestCancel, GUEST_CANCEL_REASON } from '../_shared/bookingGuestDb.ts';
+import { CRON_KEY_HEADER, CRON_KEY_CHECK, isServiceRoleBearer, sweepAccess } from '../_shared/cronKey.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -757,6 +762,17 @@ Deno.serve(async (req) => {
     }
 
     if (action !== 'send_due') return json({ error: 'unknown action' }, 400);
+
+    // 17 Oct 2026 (v5.11.72): the sweep is the cron job's (or the service role's), nobody else's.
+    // The key is checked by the database, so it is never copied anywhere else (_shared/cronKey.js).
+    const service = isServiceRoleBearer(req.headers.get('Authorization'), SERVICE_ROLE);
+    const key = String(req.headers.get(CRON_KEY_HEADER) || '').trim();
+    const access = sweepAccess({ service, key, check: service ? null : await db.rpc(CRON_KEY_CHECK, { p_key: key }) });
+    if (!access.ok) {
+      console.warn('[booking-reminders] send_due refused:', access.reason);
+      return json({ ok: false, error: 'send_due runs only from the scheduled job', reason: access.reason }, 403);
+    }
+    if (access.by === 'before_migration') console.warn('[booking-reminders] send_due is open until migration 20261017a runs');
 
     const v2 = await ledgerIsV2();
     const sent: Row[] = [];

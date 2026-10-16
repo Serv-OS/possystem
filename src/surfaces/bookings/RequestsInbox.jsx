@@ -7,13 +7,17 @@
 // has Accept (booked on the server through create_booking, the guest gets the
 // confirmation), Call (the guest's number) and Decline (a short text to the
 // guest). It checks every 45 seconds and raises a message on the stand when a
-// new one arrives, while the Diary is open (it is mounted in the Diary header;
-// moving the check to the whole stand is a follow up).
+// new one arrives.
+// 17 Oct 2026 (v5.11.72, PR 295 follow up): it sits in the stand's TOP BAR
+// (BookingsSurface, prop bar), so the count, the button and the alert are on
+// every screen, not only the Timeline. A new request stays marked New on the
+// button until the inbox is opened (lib/bookings/requestAlerts.js, tested).
 // Data: booking-host (requests, request_accept, request_decline).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { loadRequests, acceptRequest, declineRequest } from '../../lib/bookings/hostData.js';
+import { requestAlert } from '../../lib/bookings/requestAlerts.js';
 import { DECLINE_DEFAULT } from '../../../supabase/functions/_shared/bookingHost.js';
 
 const POLL_MS = 45000;
@@ -22,7 +26,7 @@ const sayDate = (d) => {
   try { return new Date(`${d}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); } catch { return d; }
 };
 
-export default function RequestsInbox() {
+export default function RequestsInbox({ bar = false }) {
   const showToast = useStore((s) => s.showToast);
   const operator = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
   const venueName = useStore((s) => s.locationConfig?.name || '');
@@ -32,22 +36,27 @@ export default function RequestsInbox() {
   const [decline, setDecline] = useState(null); // { id, text }
   const [note, setNote] = useState(null);       // { id, ok, text }
   const seen = useRef(null);                    // request ids already known, null before the first load
+  const unseenRef = useRef(new Set());          // arrived since the inbox was last opened
+  const [unseen, setUnseen] = useState(() => new Set());
 
   const refresh = useCallback(async () => {
     const r = await loadRequests();
     setRes(r);
-    if (!r?.ok) return;
-    const ids = new Set((r.rows || []).map((x) => x.id));
-    if (seen.current) {
-      const fresh = (r.rows || []).filter((x) => !seen.current.has(x.id));
-      if (fresh.length) {
-        const f = fresh[0];
-        showToast?.(fresh.length > 1 ? `${fresh.length} new booking requests` : `New booking request: ${f.name}, party of ${f.party}`, 'warning', 6000);
-        try { navigator.vibrate?.([30, 60, 30]); } catch { /* no haptics */ }
-      }
+    const next = requestAlert({ seen: seen.current, unseen: unseenRef.current, res: r });
+    seen.current = next.seen;
+    unseenRef.current = next.unseen;
+    setUnseen(next.unseen);
+    if (next.toast) {
+      showToast?.(next.toast, 'warning', 6000);
+      try { navigator.vibrate?.([30, 60, 30]); } catch { /* no haptics */ }
     }
-    seen.current = ids;
   }, [showToast]);
+
+  const openInbox = () => {
+    setOpen(true);
+    unseenRef.current = new Set();
+    setUnseen(new Set());
+  };
 
   useEffect(() => {
     let alive = true;
@@ -93,13 +102,21 @@ export default function RequestsInbox() {
   };
 
   const count = rows.length;
+  const fresh = [...unseen].filter((id) => rows.some((x) => x.id === id)).length;
   return (
     <>
-      <button className="btn btn-ghost btn-xs" onClick={() => setOpen(true)}
-        style={{ fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: count ? 'var(--orn)' : undefined, borderColor: count ? 'var(--orn)' : undefined }}>
+      <button className={`btn btn-ghost${bar ? '' : ' btn-xs'}`} onClick={openInbox}
+        aria-label={fresh ? `Booking requests, ${fresh} new` : `Booking requests, ${count} waiting`}
+        style={{
+          fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
+          ...(bar ? { height: 40, borderRadius: 11, padding: '0 14px' } : {}),
+          color: count ? 'var(--orn)' : undefined, borderColor: count ? 'var(--orn)' : undefined,
+          background: fresh ? 'color-mix(in srgb, var(--orn) 14%, transparent)' : undefined,
+        }}>
         Requests
         <span style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 999, display: 'inline-grid', placeItems: 'center', fontSize: 10.5, fontWeight: 800,
           background: count ? 'var(--orn)' : 'var(--bg3)', color: count ? 'var(--bg)' : 'var(--t3)' }}>{count}</span>
+        {fresh > 0 && <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase' }}>New</span>}
       </button>
       {open && (
         <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 100001, background: 'rgba(8,9,12,0.5)', display: 'flex', justifyContent: 'flex-end' }}>

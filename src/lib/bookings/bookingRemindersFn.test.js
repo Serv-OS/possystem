@@ -33,12 +33,16 @@ const ENV = {
 };
 
 // ── a small fake PostgREST ────────────────────────────────────────────────────
-const state = { ops: null, platform: null, v1: false, sms: [], emails: [], smsReply: () => ({ status: 200, body: { ok: true } }) };
+const state = { ops: null, platform: null, v1: false, sms: [], emails: [], smsReply: () => ({ status: 200, body: { ok: true } }), rpc: null, rpcCalls: [] };
 function fakeDb(tables, { name }) {
   const uniques = { booking_reminders: ['booking_id', 'kind', 'channel'] };
   return {
     tables,
-    rpc: async () => ({ data: null, error: { code: 'PGRST202', message: 'no function' } }),
+    // 17 Oct 2026: a test can answer an rpc (the cron key check); by default no rpc exists.
+    rpc: async (fn, args) => {
+      if (name === 'ops') state.rpcCalls.push({ fn, args });
+      return state.rpc ? state.rpc(fn, args) : { data: null, error: { code: 'PGRST202', message: 'no function' } };
+    },
     from(table) {
       const st = { op: 'select', cols: '', filters: [], patch: null, rows: null, single: false, limitN: null, range: null, conflict: null, wantRows: false };
       const run = () => {
@@ -116,6 +120,7 @@ before(async () => {
 const fill = (target, src) => { for (const k of Object.keys(target)) delete target[k]; Object.assign(target, src); };
 function seed({ bookings = [], reminders = [], rules = {}, v1 = false, customers = [], payments = [] } = {}) {
   state.v1 = v1; state.sms = []; state.emails = []; state.smsReply = () => ({ status: 200, body: { ok: true } });
+  state.rpc = null; state.rpcCalls = [];
   fill(state.ops, {
     // The guest's code lives in booking_manage_tokens (migration 20261016c), never on bookings.
     bookings: bookings.map((b) => { const row = { ...b }; delete row.manage_token; return row; }),
@@ -132,10 +137,10 @@ function seed({ bookings = [], reminders = [], rules = {}, v1 = false, customers
   });
 }
 // booking-widget calls with the service role; notify refuses anything else.
-const call = async (body, { anon = false } = {}) => {
-  const headers = anon ? {} : { Authorization: `Bearer ${ENV.SUPABASE_SERVICE_ROLE_KEY}` };
+const call = async (body, { anon = false, headers: extra = null, raw = false } = {}) => {
+  const headers = extra || (anon ? {} : { Authorization: `Bearer ${ENV.SUPABASE_SERVICE_ROLE_KEY}` });
   const res = await handler(new Request('http://fn.test', { method: 'POST', headers, body: JSON.stringify(body) }));
-  return res.json();
+  return raw ? { status: res.status, body: await res.json() } : res.json();
 };
 const bk = (over = {}) => ({
   id: 'bk-1', location_id: LOC, booking_date: '2026-10-17', start_time: '19:00:00', turn_minutes: 90, covers: 2,
@@ -404,3 +409,81 @@ test('a reminder sent for the old date goes again after the booking moves', asyn
   await call({ action: 'send_due' });
   assert.equal(state.sms.length, before);
 });
+
+// ── 17 Oct 2026 (v5.11.72, PR 295 follow up): send_due behind a cron key ─────────────────────
+const KEY = 'k'.repeat(64);
+const keyCheck = (fn, args) => (fn === 'booking_reminders_cron_ok'
+  ? { data: String(args?.p_key || '') === KEY, error: null }
+  : { data: null, error: { code: 'PGRST202', message: 'no function' } });
+
+test('cron key: before migration 20261017a the sweep stays open, exactly as before', async () => {
+  at('2026-10-16T11:00:00Z');
+  seed({ bookings: [bk()] });
+  const r = await call({ action: 'send_due' }, { anon: true, raw: true });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ledger, 'v2');
+  assert.equal(state.sms.length, 1, 'the reminder still goes');
+  assert.deepEqual(state.rpcCalls.map((c) => c.fn), ['booking_reminders_cron_ok']);
+});
+
+test('cron key: after the migration, no key or a wrong key is refused and nothing is sent', async () => {
+  at('2026-10-16T11:00:00Z');
+  seed({ bookings: [bk()] });
+  state.rpc = keyCheck;
+  const none = await call({ action: 'send_due' }, { anon: true, raw: true });
+  assert.equal(none.status, 403);
+  assert.equal(none.body.reason, 'no_cron_key');
+  // An empty body defaults to send_due: refused the same.
+  const empty = await call({}, { headers: {}, raw: true });
+  assert.equal(empty.status, 403);
+  const wrong = await call({ action: 'send_due' }, { headers: { 'x-cron-key': 'guess' }, raw: true });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.body.reason, 'wrong_cron_key');
+  // The public key as a bearer is not the service role.
+  const pub = await call({ action: 'send_due' }, { headers: { Authorization: 'Bearer public-anon-key' }, raw: true });
+  assert.equal(pub.status, 403);
+  assert.equal(state.sms.length, 0);
+  assert.equal(ledger().length, 0, 'nothing claimed on the ledger');
+  assert.doesNotMatch(JSON.stringify(wrong.body), /bk-1/, 'no booking ids to a stranger');
+});
+
+test('cron key: the job with the right key runs the sweep; a failed check refuses', async () => {
+  at('2026-10-16T11:00:00Z');
+  seed({ bookings: [bk()] });
+  state.rpc = keyCheck;
+  const ok = await call({ action: 'send_due' }, { headers: { 'Content-Type': 'application/json', 'x-cron-key': KEY }, raw: true });
+  assert.equal(ok.status, 200);
+  assert.equal(state.sms.length, 1);
+  assert.deepEqual(state.rpcCalls[0].args, { p_key: KEY });
+  // The database could not answer: refuse (fail closed), the next run in 5 minutes tries again.
+  state.rpc = () => ({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } });
+  const down = await call({ action: 'send_due' }, { headers: { 'x-cron-key': KEY }, raw: true });
+  assert.equal(down.status, 403);
+  assert.equal(down.body.reason, 'cron_key_check_failed');
+});
+
+test('cron key: the service role runs the sweep without asking the database; confirm is unchanged', async () => {
+  at('2026-10-16T11:00:00Z');
+  seed({ bookings: [bk()] });
+  state.rpc = keyCheck;
+  const r = await call({ action: 'send_due' });
+  assert.equal(r.ledger, 'v2');
+  assert.equal(state.sms.length, 1);
+  assert.equal(state.rpcCalls.length, 0);
+  // The booking page's confirm needs no key (the ledger sends each channel once).
+  seed({ bookings: [bk({ id: 'bk-2', created_at: '2026-10-16T10:59:00Z' })] });
+  state.rpc = keyCheck;
+  const c = await call({ action: 'confirm', booking_id: 'bk-2' }, { anon: true, raw: true });
+  assert.equal(c.status, 200);
+  assert.deepEqual(c.body.sent, ['sms']);
+});
+
+test('cron key: the host stand no longer starts the sweep', async () => {
+  const { readFileSync } = await import('node:fs');
+  const shell = readFileSync(new URL('../../surfaces/bookings/BookingsSurface.jsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(shell, /action: 'send_due'/);
+  const fn = readFileSync(new URL('../../../supabase/functions/booking-reminders/index.ts', import.meta.url), 'utf8');
+  const gate = fn.indexOf("sweepAccess({");
+  assert.ok(gate > 0 && gate < fn.indexOf('const v2 = await ledgerIsV2();\n    const sent: Row[] = [];'), 'the gate runs before the sweep reads anything');
+});
+

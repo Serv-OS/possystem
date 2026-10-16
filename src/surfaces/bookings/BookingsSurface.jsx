@@ -50,6 +50,9 @@ import RulesScreen from './RulesScreen.jsx';
 import EventsScreen from './EventsScreen.jsx';
 import ReportsScreen from './ReportsScreen.jsx';
 import WidgetScreen from './WidgetScreen.jsx';
+// 17 Oct 2026 (v5.11.72, PR 295 follow up): the booking requests inbox lives in the top bar, so
+// its count, its button and its alert are on every screen (it was in the Timeline header only).
+import RequestsInbox from './RequestsInbox.jsx';
 
 const NAV = [
   { k: 'service',  label: 'Service',  icon: 'home' },
@@ -182,14 +185,10 @@ export default function BookingsSurface() {
     })();
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
-    // Pre-order reminders: no scheduler runs on this project yet, so the host
-    // stand is the clock — send_due is ledger-idempotent, safe to fire on boot
-    // and hourly (a stand is open all service). Swap to a real cron when
-    // scheduling lands.
-    const remind = () => { if (supabase) supabase.functions.invoke('booking-reminders', { body: { action: 'send_due' } }).catch(() => {}); };
-    remind();
-    const rem = setInterval(remind, 60 * 60 * 1000);
-    return () => { live = false; stopStandSync?.(); stopCatchUp(); clearInterval(hb); clearInterval(rem); };
+    // 17 Oct 2026 (v5.11.72, PR 295 follow up): the stand no longer starts the reminders sweep.
+    // pg_cron runs booking-reminders send_due every 5 minutes (stand or no stand) with its own key
+    // (migration 20261017a), and the sweep refuses anyone else once that runs.
+    return () => { live = false; stopStandSync?.(); stopCatchUp(); clearInterval(hb); };
   }, [stage, loc]);
 
   const locations = useStore((s) => s.locations) || [];
@@ -265,6 +264,7 @@ export default function BookingsSurface() {
           </button>
           <LinkPill />
           <div style={{ flex: 1 }} />
+          <RequestsInbox bar />
           <LiveClock />
           <button className="btn btn-acc" onClick={goBook} style={{ height: 40, borderRadius: 11, padding: '0 18px', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
             <Icon name="plus" size={16} /> New booking

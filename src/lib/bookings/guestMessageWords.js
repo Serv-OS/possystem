@@ -5,13 +5,55 @@
 
 const LIVE = ['confirmed', 'prepaid'];
 
+// A guest's CRM record id (customers.id is a uuid). A booking linked to one can be reached through
+// the record's phone or email even when the booking itself has neither: booking-reminders reads
+// them from the record (withCrmContact) and says per channel what it sent.
+const CRM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const hasCrmRecord = (b) => CRM_ID.test(String(b?.customerId || b?.customer_id || ''));
+
+// Can this booking's guest be reached at all: a phone or email on the booking, or a guest record.
+export function hasGuestContact(b) {
+  const c = b?.customer || {};
+  return !!(String(c.phone || '').trim() || String(c.email || '').trim() || hasCrmRecord(b));
+}
+
 // Is this new booking one the guest should hear about? A party seated at the door is not.
+// 17 Oct 2026 (v5.11.72, PR 295 follow up): a booking whose phone or email lives only on the
+// guest's CRM record counts too. It used to be skipped here, so the stand's Send confirmation
+// button showed, said "Asked to send", and sent nothing.
 export function shouldNudge(b) {
   if (!b || !b.id) return false;
   if ((b.source || 'host') === 'walk_in') return false;
   if (!LIVE.includes(b.status || 'confirmed')) return false;
-  const c = b.customer || {};
-  return !!(String(c.phone || '').trim() || String(c.email || '').trim());
+  return hasGuestContact(b);
+}
+
+const CHANNEL_WORDS = { sms: 'text', email: 'email' };
+
+// What a Send confirmation tap did, in words, from booking-reminders' confirm answer:
+//   { ok: true, sent: ['sms', 'email'], results: { sms: { sent, reason }, email: { sent, reason } } }
+//   { ok: false, error }   (the booking is closed, waiting for payment, a walk in, or the call failed)
+// Returns { tone: 'success' | 'info' | 'error', text }.
+export function confirmResultWords(res) {
+  if (!res || res.ok !== true) {
+    const e = String(res?.error || '');
+    if (/pending_payment/.test(e)) return { tone: 'info', text: 'Not sent: this booking is waiting for payment. The confirmation goes when it is paid.' };
+    if (/walk_in/.test(e)) return { tone: 'info', text: 'Not sent: a walk in is not sent a booking confirmation.' };
+    if (/unknown_or_closed/.test(e)) return { tone: 'info', text: 'Not sent: this booking is closed.' };
+    return { tone: 'error', text: `Confirmation NOT sent${e ? ` (${e})` : ''}. Try again.` };
+  }
+  const results = res.results || {};
+  const sent = (Array.isArray(res.sent) ? res.sent : []).filter((ch) => CHANNEL_WORDS[ch]);
+  const already = Object.keys(CHANNEL_WORDS).filter((ch) => /already_sent|already_sending/.test(String(results[ch]?.reason || '')));
+  const failed = Object.keys(CHANNEL_WORDS).filter((ch) => results[ch] && !results[ch].sent
+    && !/already_sent|already_sending|no_phone_on_booking|no_email_on_booking/.test(String(results[ch].reason || '')));
+  const list = (chs) => chs.map((ch) => CHANNEL_WORDS[ch]).join(' and ');
+  const parts = [];
+  if (sent.length) parts.push(`Confirmation sent by ${list(sent)}.`);
+  if (already.length) parts.push(`Already sent by ${list(already)}, not sent twice.`);
+  for (const ch of failed) parts.push(`The ${CHANNEL_WORDS[ch]} did not go: ${failureWords(results[ch].reason)}.`);
+  if (!parts.length) return { tone: 'info', text: 'Not sent: no phone or email on the booking or the guest record.' };
+  return { tone: failed.length && !sent.length ? 'error' : sent.length ? 'success' : 'info', text: parts.join(' ') };
 }
 
 export const KIND_WORDS = {

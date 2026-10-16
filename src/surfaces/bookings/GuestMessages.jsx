@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
-import { loadGuestMessages, loadManageToken, messageLine, nudgeConfirmation } from '../../lib/bookings/guestMessages.js';
+import { loadGuestMessages, loadManageToken, messageLine, sendConfirmation, confirmResultWords, hasGuestContact } from '../../lib/bookings/guestMessages.js';
 
 const TONE = { ok: 'var(--grn)', bad: 'var(--red)', wait: 'var(--orn)' };
 
@@ -37,9 +37,9 @@ export default function GuestMessages({ b, sec }) {
 
   const ready = state.id === b.id;
   const rows = ready ? state.rows : undefined;
-  // A guest record (customerId) may carry the email the booking itself does not: the messages
-  // use it, so it counts as a way to reach the guest.
-  const hasContact = !!(String(b.customer?.phone || '').trim() || String(b.customer?.email || '').trim() || b.customerId);
+  // A guest record (customerId) may carry the phone or email the booking itself does not: the
+  // messages use it, so it counts as a way to reach the guest (one rule, guestMessageWords.js).
+  const hasContact = hasGuestContact(b);
   const live = ['confirmed', 'prepaid'].includes(b.status);
   const upcoming = !!b.date && b.date >= venueToday(venueTz);
   const link = ready && state.token && state.base ? `${state.base}/book?manage=${state.token}` : null;
@@ -66,12 +66,17 @@ export default function GuestMessages({ b, sec }) {
     );
   };
 
+  // 17 Oct 2026 (v5.11.72): waits for the answer and says what really went, by text and by email.
+  // It used to fire and say "Asked to send" whatever happened, and sent nothing at all when the
+  // phone or email was only on the guest's record.
   const resend = async () => {
     if (busy) return;
     setBusy(true);
-    nudgeConfirmation({ ...b, status: b.status || 'confirmed' });
-    showToast?.('Asked to send the confirmation. A guest who already has it is not sent it twice.', 'info');
-    setTimeout(() => { setBusy(false); setNonce((x) => x + 1); }, 2500);
+    const res = await sendConfirmation({ ...b, status: b.status || 'confirmed' });
+    const said = confirmResultWords(res);
+    showToast?.(said.text, said.tone);
+    setBusy(false);
+    setNonce((x) => x + 1);
   };
 
   return (

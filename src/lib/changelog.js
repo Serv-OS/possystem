@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.72',
+    date: '17 Oct 2026',
+    items: [
+      "Till: a guest's VIP and Regular tags now show on the check header, under the name, when the guest has a record. Display only, the two tags and nothing else, and nothing at all if the guest has none. Nothing else on the till changes.",
+      "Bookings host stand: the booking requests inbox moved to the top bar, so its count, its button and the alert for a new request are on every screen, not only the Timeline. A request that arrives stays marked New on the button until someone opens the inbox.",
+      "Bookings, late cancellation charge: the cancellation window is now measured in real hours. On the weekend the clocks change (UK clocks go back on Sunday 25 October) it was an hour out, so a guest who cancelled 24 and a half hours before a 24 hour window could have been charged. It now agrees to the minute with the guest's own page, which closes online changes at the same moment.",
+      "Bookings, Send confirmation: works when the phone or email is only on the guest's record and not on the booking. It used to say Asked to send and send nothing. It now waits and says what really went, by text and by email, or why not.",
+      "Bookings, reminders: the 5 minute sweep that sends confirmations and reminders now proves itself with a key kept only in the database, so nobody else can start it, and the host stand no longer starts it. Reminders go whether a stand is open or not. Needs the database update 20261017a.",
+      "Bookings: a booking can no longer be made with the bare public key, only by a paired device, Back Office or the booking page's own server. Needs the database update 20261017b.",
+    ],
+  },
+  {
     v: '5.11.71',
     date: '16 Oct 2026',
     items: [

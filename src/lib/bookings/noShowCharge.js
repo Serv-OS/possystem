@@ -15,6 +15,11 @@
 //
 // Money is in MINOR units (pence or cents) unless a name says otherwise. Rows arrive as the
 // database has them (snake_case). No I/O, no globals. The clock is passed in.
+//
+// The one import is the venue clock rule the guest's page uses (bookingGuest.js sits beside this
+// file in both places, byte identical too: bookingGuestParity.test.js).
+
+import { zonedToEpoch } from './bookingGuest.js';
 
 export const NO_SHOW_KIND = 'no_show_charge';
 
@@ -69,9 +74,12 @@ export function everCharged(rows) {
   return list.length ? list[list.length - 1] : null;
 }
 
-/** "3 hours before", "1 hour before", or "after the booking time" (a cancel made after the start). */
+/**
+ * "3 hours before", "1 hour before", or "after the booking time" (a cancel made after the start).
+ * Whole hours rounded down, so 23.5 hours inside a 24 hour window says 23, never 24.
+ */
 export function hoursText(h) {
-  const n = Math.round(num(h));
+  const n = Math.floor(num(h));
   if (num(h) < 0) return 'after the booking time';
   return `${n} hour${n === 1 ? '' : 's'} before`;
 }
@@ -81,50 +89,34 @@ export const STALE_IN_FLIGHT_MS = 10 * 60 * 1000;
 
 // ── the venue clock ─────────────────────────────────────────────────────────────────────────
 
-// The venue wall clock of an instant, as minutes since 1970 read as if the wall clock were UTC.
-// Two wall clocks can then be subtracted. A change of the clocks (BST) can move the answer by
-// one hour on two nights a year; the window is a whole number of hours, so that is accepted.
-function wallMinutes(epochMs, tz) {
-  let parts;
-  try {
-    parts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: tz || 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(new Date(epochMs));
-  } catch {
-    return null;
-  }
-  const get = (t) => Number(parts.find((p) => p.type === t)?.value);
-  const h = get('hour') === 24 ? 0 : get('hour');
-  const ms = Date.UTC(get('year'), get('month') - 1, get('day'), h, get('minute'));
-  return Number.isFinite(ms) ? ms / 60000 : null;
-}
-
-function bookingWallMinutes(bookingDate, startTime) {
-  const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(bookingDate || ''));
-  const t = /^(\d{1,2}):(\d{2})/.exec(String(startTime || ''));
-  if (!d || !t) return null;
-  return Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3]), Number(t[1]), Number(t[2])) / 60000;
-}
-
 /**
- * Was a cancellation inside the venue's cancellation window? On the VENUE clock, never the
- * device's (Peter is in California, the venues are in the UK).
+ * Was a cancellation inside the venue's cancellation window? The booking time is the VENUE's
+ * wall clock (never the device's: Peter is in California, the venues are in the UK), turned
+ * into a real instant, and the window is measured in REAL hours from the cancel to that instant.
  *   { late: true | false | null, hoursBefore }
  * late null = cannot tell (no cancel time on record, or no booking time). A window of 0 (or
  * none) means no late cancellations at all. A cancel after the booking time is late.
+ *
+ * 17 Oct 2026 (v5.11.72, PR 295 follow up): it used to subtract two wall clocks, so on the two
+ * clock change weekends a year it was an hour out. UK clocks go back on 25 Oct 2026: a guest who
+ * cancelled a Sunday 19:00 booking at 19:30 on the Saturday had cancelled 24.5 real hours before,
+ * outside a 24 hour window, but the wall clocks said 23.5 and the card could be charged. The
+ * instant comes from zonedToEpoch, the same rule the guest's own page uses to close online
+ * changes (guestWindow), so the page and the charge can never disagree about "in time".
  */
 export function lateCancel({ bookingDate, startTime, cancelledAtMs, tz, windowHours } = {}) {
   const hours = Math.max(0, Math.round(num(windowHours)));
-  const start = bookingWallMinutes(bookingDate, startTime);
+  const okDate = /^\d{4}-\d{2}-\d{2}/.test(String(bookingDate || ''));
+  const okTime = /^\d{1,2}:\d{2}/.test(String(startTime || ''));
+  const start = okDate && okTime ? zonedToEpoch(String(bookingDate).slice(0, 10), String(startTime), tz) : NaN;
   const ms = cancelledAtMs == null || cancelledAtMs === '' ? NaN
     : (typeof cancelledAtMs === 'number' ? cancelledAtMs : Date.parse(cancelledAtMs));
-  if (start == null || !Number.isFinite(ms)) return { late: null, hoursBefore: null };
-  const at = wallMinutes(ms, tz);
-  if (at == null) return { late: null, hoursBefore: null };
-  const hoursBefore = Math.round(((start - at) / 60) * 10) / 10;
+  if (!Number.isFinite(start) || !Number.isFinite(ms)) return { late: null, hoursBefore: null };
+  // Rounded DOWN to a tenth of an hour, in whole minutes (no float drift), so a cancel inside
+  // the window never reads as the window itself: 23 hours 58 minutes is 23.9, not 24.
+  const hoursBefore = Math.floor(Math.floor((start - ms) / 60000) / 6) / 10;
   if (!(hours > 0)) return { late: false, hoursBefore };
-  return { late: hoursBefore < hours, hoursBefore };
+  return { late: start - ms < hours * 3600000, hoursBefore };
 }
 
 // ── how much ────────────────────────────────────────────────────────────────────────────────
