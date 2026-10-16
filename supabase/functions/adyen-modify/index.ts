@@ -25,6 +25,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, effectiveMerchantAccount } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck, isOvercaptureRefusal } from '../_shared/tip_capture.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { refundCheck, refundRowsFor, refundReference, isManagerRole } from '../_shared/bookingHost.js';
+import { recomputeRefunded } from '../_shared/bookingRefund.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -60,8 +62,11 @@ Deno.serve(async (req) => {
   // needs no psp_reference either.
   const isTipCapture = action === 'tip_capture';
   const isCaptureStatus = action === 'capture_status';
-  if (!locationId || !['capture', 'cancel', 'refund', 'adjust', 'tip_capture', 'capture_status'].includes(action) || (!isTipCapture && !isCaptureStatus && !psp)) {
-    return json({ error: "action ('capture'|'cancel'|'refund'|'adjust'|'tip_capture'|'capture_status'), psp_reference and location_id required" }, 400);
+  // 16 Oct 2026 (v5.11.70 host tools): 'booking_refund' identifies a table booking's payment by
+  // its booking_payments row id, never by a psp the caller sends (see the block below the fence).
+  const isBookingRefund = action === 'booking_refund';
+  if (!locationId || !['capture', 'cancel', 'refund', 'adjust', 'tip_capture', 'capture_status', 'booking_refund'].includes(action) || (!isTipCapture && !isCaptureStatus && !isBookingRefund && !psp)) {
+    return json({ error: "action ('capture'|'cancel'|'refund'|'adjust'|'tip_capture'|'capture_status'|'booking_refund'), psp_reference and location_id required" }, 400);
   }
 
   // Resolve venue + merchant account (either id space).
@@ -85,17 +90,26 @@ Deno.serve(async (req) => {
   // `devices`, never in `user_locations`, so every POS refund of an Adyen sale
   // was a guaranteed 403. Back Office refunds were already inside the old fence
   // and are unaffected.
+  // 16 Oct 2026 (host tools): a booking refund may also come from the bookings HOST STAND, a
+  // waitlist_devices row. That arm is checked for booking_refund ONLY, so a host stand can never
+  // reach a till refund, a capture or a cancel. A device (till or stand) must also send a
+  // manager's PIN; a Back Office login is a manager already.
+  let callerIsBoUser = isServiceRole;
   if (!isServiceRole) {
     const { data: u } = await opsAdmin.auth.getUser(token);
     const uid = u?.user?.id;
     if (!uid) return json({ error: 'unauthorized' }, 401);
-    const [{ data: ul }, { data: dev }] = await Promise.all([
+    const [{ data: ul }, { data: dev }, { data: stand }] = await Promise.all([
       opsAdmin.from('user_locations')
         .select('user_id').eq('user_id', uid).eq('location_id', opsLocationId).maybeSingle(),
       opsAdmin.from('devices')
         .select('id').eq('device_uid', uid).eq('location_id', opsLocationId).maybeSingle(),
+      isBookingRefund
+        ? opsAdmin.from('waitlist_devices').select('id').eq('device_uid', uid).eq('location_id', opsLocationId).eq('active', true).limit(1).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
-    if (!ul && !dev) return json({ error: 'no access to this location' }, 403);
+    if (!ul && !dev && !stand) return json({ error: 'no access to this location' }, 403);
+    callerIsBoUser = !!ul;
   }
 
   // ── v5.7.8 READ action 'capture_status' ────────────────────────────────────
@@ -129,6 +143,19 @@ Deno.serve(async (req) => {
     cfg = adyenConfig(target);
   } catch (e) { return json({ error: (e as Error).message }, 500); }
   if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
+
+  // ── 16 Oct 2026 (v5.11.70 host tools): action 'booking_refund' ─────────────
+  // Gives back money a guest paid for a table booking (a prepay, a deposit, or the part a bill
+  // did not use). Identified by booking_payments.id, bound to THIS venue; the psp and merchant
+  // account come from that row, never from the caller. Rules in _shared/bookingHost.js (tested):
+  // a card hold took nothing and is never refunded, never more than is left, a part refund only
+  // once migration 20261016d is in (before it the till still counts the whole payment as credit),
+  // and not while the party is seated with the money still to come off their bill.
+  // The refund is its own row (kind refund, status pending, reference bkrf-<payment id>-<n>);
+  // the REFUND webhook settles it (adyen-webhook, _shared/bookingRefund.ts).
+  if (isBookingRefund) {
+    return await bookingRefund({ body, opsLocationId, ploc, cfg, callerIsBoUser });
+  }
 
   // ── v5.7.5 TIP ON PRINTED RECEIPT: action 'tip_capture' ────────────────────
   // Applies the tip a guest wrote on the merchant slip to an uncaptured
@@ -472,3 +499,97 @@ Deno.serve(async (req) => {
   }
   return json({ ok: true, status: res.data?.status ?? 'received', modification_psp: res.data?.pspReference ?? null, reference });
 });
+
+// ── 16 Oct 2026 (v5.11.70 host tools): one table booking refund ─────────────
+// See the block that calls this (after the auth fence and the venue's Adyen config).
+const MONEY_SYMBOL: Record<string, string> = { GBP: '£', USD: '$', EUR: '€' };
+const isMissingCol = (e: any) => !!e && (String(e.code ?? '') === '42703' || String(e.code ?? '') === 'PGRST204'
+  || /does not exist|schema cache|could not find the '/i.test(String(e.message ?? '')));
+
+async function bookingRefund({ body, opsLocationId, ploc, cfg, callerIsBoUser }: { body: any; opsLocationId: string; ploc: any; cfg: any; callerIsBoUser: boolean }) {
+  const payId = String(body.booking_payment_id ?? '');
+  if (!UUID_RE.test(payId)) return json({ ok: false, error: 'booking_payment_id required' }, 400);
+  const amountMinor = Number(body.amount_minor);
+
+  // Who approves it. A device (the host stand or a till) needs a manager's PIN, checked here
+  // against the venue's staff; a Back Office login with access is a manager already.
+  let approvedBy: string | null = null;
+  if (callerIsBoUser) {
+    approvedBy = String(body.by ?? '').slice(0, 60) || 'Back Office';
+  } else {
+    const pin = String(body.manager_pin ?? '').trim();
+    if (!/^\d{3,8}$/.test(pin)) return json({ ok: false, error: 'A manager PIN is needed to refund.' });
+    const { data: staff } = await opsAdmin.from('staff_members').select('id, name, role, active')
+      .eq('location_id', opsLocationId).eq('pin', pin).limit(5);
+    const live = (staff ?? []).filter((s: any) => s.active !== false);
+    const mgr = live.find((s: any) => isManagerRole(s.role));
+    if (!mgr) return json({ ok: false, error: live.length ? 'That PIN is not a manager. Ask a manager to refund.' : 'PIN not recognised.' });
+    approvedBy = String(mgr.name || 'Manager');
+  }
+
+  // The payment, read with the service role and bound to THIS venue. Before migration 20261016d
+  // there is no amount_refunded_minor: only a full refund is allowed then.
+  const COLS = 'id, booking_id, location_id, kind, status, amount, currency, psp_reference, merchant_account, applied_to_check, refusal_reason';
+  let partialAllowed = true;
+  let pr: any = await opsAdmin.from('booking_payments').select(`${COLS}, amount_refunded_minor`).eq('id', payId).maybeSingle();
+  if (pr.error && isMissingCol(pr.error)) {
+    partialAllowed = false;
+    pr = await opsAdmin.from('booking_payments').select(COLS).eq('id', payId).maybeSingle();
+  }
+  if (pr.error) return json({ ok: false, error: pr.error.message }, 500);
+  const parent = pr.data;
+  if (!parent) return json({ ok: false, error: 'That payment could not be found.' }, 404);
+  if (String(parent.location_id) !== String(opsLocationId)) return json({ ok: false, error: 'That payment belongs to a different venue.' }, 403);
+
+  let sib: any = await opsAdmin.from('booking_payments').select('id, kind, status, amount, merchant_reference, refund_of').eq('booking_id', parent.booking_id);
+  if (sib.error && isMissingCol(sib.error)) sib = await opsAdmin.from('booking_payments').select('id, kind, status, amount, merchant_reference').eq('booking_id', parent.booking_id);
+  if (sib.error) return json({ ok: false, error: sib.error.message }, 500);
+  const siblings = sib.data ?? [];
+
+  const { data: bk } = await opsAdmin.from('bookings').select('status').eq('id', parent.booking_id).maybeSingle();
+  if (bk?.status === 'dining' && !parent.applied_to_check) {
+    return json({ ok: false, error: 'This party is seated, so this money comes off their bill. Refund anything left over once the bill is closed.' });
+  }
+
+  const cur = String(parent.currency || 'gbp').toUpperCase();
+  const fmt = (m: number) => `${MONEY_SYMBOL[cur] ?? `${cur} `}${(m / 100).toFixed(2)}`;
+  const check = refundCheck({ parent, rows: siblings, amountMinor, partialAllowed, fmt });
+  if (!check.ok) return json({ ok: false, error: check.error });
+  if (!parent.psp_reference) return json({ ok: false, error: 'This payment has no Adyen reference. Refund it in Adyen, then tell the guest.' });
+
+  let merchant = effectiveMerchantAccount(cfg, parent.merchant_account) || null;
+  if (!merchant) {
+    const { data: maa0 } = await platformAdmin.from('merchant_adyen_accounts').select('merchant_account').eq('location_id', ploc.id).maybeSingle();
+    merchant = effectiveMerchantAccount(cfg, maa0?.merchant_account) || null;
+  }
+  if (!merchant) return json({ ok: false, error: 'This venue has no Adyen account.' }, 409);
+
+  // The refund row FIRST (pending): it holds the money back from a second tap, and the
+  // payment's credit drops at once, before Adyen answers.
+  const reference = refundReference(parent.id, refundRowsFor(parent, siblings).length + 1);
+  const row: any = {
+    location_id: parent.location_id, booking_id: parent.booking_id, kind: 'refund', status: 'pending',
+    amount: (check.amountMinor as number) / 100, currency: parent.currency || 'gbp',
+    merchant_reference: reference, merchant_account: merchant,
+    refusal_reason: `Refund approved by ${approvedBy}`.slice(0, 300),
+    ...(partialAllowed ? { refund_of: parent.id } : {}),
+  };
+  const { data: ins, error: insErr } = await opsAdmin.from('booking_payments').insert(row).select('id').maybeSingle();
+  if (insErr || !ins?.id) return json({ ok: false, error: `Refund NOT started: ${insErr?.message || 'it could not be recorded'}.` }, 500);
+  await recomputeRefunded(opsAdmin, parent.id);
+
+  const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(parent.psp_reference)}/refunds`,
+    { merchantAccount: merchant, amount: { value: check.amountMinor, currency: cur }, reference },
+    { cfg, idempotencyKey: `mod:${reference}` });
+  if (!res.ok) {
+    await opsAdmin.from('booking_payments').update({ status: 'failed', refusal_reason: `Adyen did not accept the refund (${res.status})` }).eq('id', ins.id);
+    await recomputeRefunded(opsAdmin, parent.id);
+    return json({ ok: false, error: `Adyen did not accept the refund (${res.status}). Nothing was refunded.`, detail: res.data }, res.status >= 500 ? 502 : 200);
+  }
+  const modPsp = res.data?.pspReference ?? null;
+  if (modPsp) await opsAdmin.from('booking_payments').update({ psp_reference: modPsp }).eq('id', ins.id);
+  return json({
+    ok: true, status: res.data?.status ?? 'received', refund_row_id: ins.id, reference,
+    amount_minor: check.amountMinor, left_minor: check.leftAfterMinor, approved_by: approvedBy, partial_allowed: partialAllowed,
+  });
+}
