@@ -208,3 +208,67 @@ export function actualWaitMin(entry) {
   if (!entry?.addedAt || !entry?.seatedAt) return null;
   return Math.max(0, Math.round((entry.seatedAt - entry.addedAt) / 60000));
 }
+
+// ── the board's shared helpers (16 Oct 2026, Peter: parties waiting 126 to 142
+// minutes still read "quoted 5m") ──────────────────────────────────────────────
+
+// The waiting list the estimator is fed, ONE way for every caller. QueueBoard
+// passed addedAt and AddPartyDrawer did not, so the drawer counted stale
+// parties the board had already dropped and the two quoted differently.
+export function waitingForEstimate(waitlist = [], now = Date.now()) {
+  return freshActives(waitlist, now).map((e) => ({ size: e.size, status: e.status, quoted: e.quoted, addedAt: e.addedAt }));
+}
+
+// The wait a party was PROMISED is the first quote (what the guest was told at
+// the door). `quoted` is the live estimate of what is still to wait, kept
+// fresh by the store every minute, so a party past its promise is re quoted as
+// elapsed + that estimate instead of reading "quoted 5m" for two hours.
+// tone: 'green' under, 'amber' within 5 minutes and for the first 10 minutes
+// over, 'red' after that.
+export const OVER_AMBER_MIN = 10;
+export function waitState({ addedAt = null, firstQuote = null, quoted = null } = {}, now = Date.now()) {
+  const elapsed = Number.isFinite(addedAt) ? Math.max(0, Math.floor((now - addedAt) / 60000)) : 0;
+  const promised = Number.isFinite(firstQuote) ? firstQuote : Number.isFinite(quoted) ? quoted : null;
+  if (promised == null) return { elapsed, promised: null, over: 0, left: null, tone: 'green', requote: null, text: null };
+  const over = elapsed - promised;
+  if (over >= 0) {
+    const more = Number.isFinite(quoted) ? Math.max(0, quoted) : null;
+    return {
+      elapsed, promised, over, left: 0,
+      tone: over < OVER_AMBER_MIN ? 'amber' : 'red',
+      requote: more == null ? null : elapsed + more,
+      text: `Over by ${over} min`,
+    };
+  }
+  const left = -over;
+  return { elapsed, promised, over: 0, left, tone: left <= 5 ? 'amber' : 'green', requote: null, text: left <= 5 ? `~${left}m left` : null };
+}
+
+// Free tables (store shape: status 'available', maxCovers, section, parentId)
+// that fit a party, best fit first: preferred section, then fewest spare seats.
+export function fittingFreeTables(tables = [], { size = 1, sectionPref = null } = {}) {
+  const n = Math.max(1, Math.round(Number(size) || 1));
+  return (tables || [])
+    .filter((t) => t && !t.parentId && t.status === 'available' && !t.session && (Number(t.maxCovers) || 0) >= n)
+    .sort((a, b) => {
+      const ap = sectionPref ? (a.section === sectionPref ? 0 : 1) : 0;
+      const bp = sectionPref ? (b.section === sectionPref ? 0 : 1) : 0;
+      if (ap !== bp) return ap - bp;
+      return ((a.maxCovers || 0) - n) - ((b.maxCovers || 0) - n);
+    });
+}
+
+// "Seat on T8": the queue in order, each party offered the best free table
+// that fits and that no party ahead of it was offered. { [entryId]: table }.
+export function seatSuggestions(queue = [], tables = []) {
+  const taken = new Set();
+  const out = {};
+  for (const e of queue || []) {
+    if (!e || !isActive(e.status)) continue;
+    const t = fittingFreeTables(tables, { size: e.size, sectionPref: e.sectionPref }).find((x) => !taken.has(x.id));
+    if (!t) continue;
+    taken.add(t.id);
+    out[e.id] = t;
+  }
+  return out;
+}
