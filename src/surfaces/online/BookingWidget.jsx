@@ -1281,7 +1281,8 @@ export default function BookingWidget({ location }) {
     (async () => {
       const r = await callWidget({ action: 'slots', location_id: opsId, date, party });
       if (off) return;
-      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true }); setTime(null); return; }
+      // 16 Oct 2026: a closed day (service periods) says why in the venue's words (message).
+      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true, blockedText: r.message || null }); setTime(null); return; }
       if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
       // Offers ride the same response — valid for exactly this date+party.
@@ -1460,6 +1461,14 @@ export default function BookingWidget({ location }) {
       // drop it, re-quote the day, keep the table flow alive.
       setSubmitErr('That menu just sold out for this date. You can still book the table.');
       setPkgPick({ id: null });
+      setSlotsNonce((n) => n + 1);
+      return;
+    }
+    if (r?.error === 'outside_hours') {
+      // 16 Oct 2026 (service periods): the time is outside service, inside the notice, or on a
+      // closed day or block. The fn says why; refresh the times, keep what the guest typed.
+      setSubmitErr(r.message || 'That time cannot be booked online. Please pick another.');
+      setTime(null);
       setSlotsNonce((n) => n + 1);
       return;
     }
@@ -1757,7 +1766,7 @@ export default function BookingWidget({ location }) {
         </div>
       ) : (slotsRes?.blocked || (cfg?.blockedDates || []).includes(date)) ? (
         <div style={{ padding: '18px 4px', fontSize: 13.5, color: 'var(--t2, #555)', lineHeight: 1.5 }}>
-          The venue isn't taking online bookings for this date. Pick another day, or call the venue directly.
+          {slotsRes?.blockedText || "The venue isn't taking online bookings for this date. Pick another day, or call the venue directly."}
         </div>
       ) : slots.length === 0 ? (
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>
