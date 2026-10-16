@@ -38,6 +38,9 @@
 //     `detail` in the answer, and for 'compare' in `features`, before it shows either, and
 //     say "needs a ServOS update" when they are missing.
 //
+// 16 Oct 2026, the Net / Gross switch: every sales figure also comes including VAT, beside the
+// net one it always sent ('gross' in `features`); see _shared/ownerSnapshot.js "NET AND GROSS".
+//
 // The reads and the sums live in _shared/ownerSnapshot.js (run by `npm test` against a stand
 // in database); the date rules in _shared/ownerPeriod.js.
 

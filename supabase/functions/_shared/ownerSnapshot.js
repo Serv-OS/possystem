@@ -19,6 +19,15 @@
 //                                 share for the change in points (_shared/salesMix.js)
 // Live orders and open tables are always "now".
 //
+// NET AND GROSS. 16 Oct 2026, Peter: "the owner app needs a switch to show net or gross sales".
+// Every sales figure the app shows now comes both ways, from the same check parts
+// (snapshotSales.js, tradingSales.checkSalesParts): gross is what the customer paid for the
+// goods, VAT in, after discounts and comps, tips and service charge out, less refunds made on
+// the day; net is gross less the VAT RECORDED on each sale and refund. The old net fields are
+// unchanged; each gains a gross twin beside it (gross_sales, avg_check_gross, cmp_gross_sales,
+// pct_gross, vs_cmp_pct_gross, wtd_gross, hours[].gross, week[].gross, order_types[].gross ...)
+// and OWNER_FEATURES says 'gross'. Forecast % and labour % stay on net sales, as Daily trading.
+//
 // A DAY IS THE VENUE'S BUSINESS DAY. 5 Oct 2026, Peter's decision on the Owner app day: "the
 // BUSINESS day, same as Back Office, Daily trading and Xero." Until now a day here was midnight
 // to midnight, so a late venue's 00:40 sale sat on a different day in the app and in Back Office.
@@ -75,7 +84,9 @@ import { makeMixResolver, categoriesOfSite, newMix, addCheckToMix, mixView, mixR
 export const MAX_READS = 8;
 /** What this function can answer. An app checks for a name here before it shows the screen for it. */
 export const OWNER_API = 2;
-export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix'];
+// 16 Oct 2026: 'gross' = every sales figure the app shows also comes including VAT (the Net /
+// Gross switch). An app looks for it before it offers Gross, and shows net with a word if not.
+export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix', 'gross'];
 // 8 Oct 2026, Sales mix: the periods whose comparison span is read WITH items, for each group's
 // change in share ("Food +3 pts"). Today adds a day of the heavy column, a week up to seven, a
 // month up to 31 per venue. The coordinator may drop 'month' after a live timing: a period left
@@ -95,7 +106,11 @@ const REFUND_LOOKBACK_DAYS = 400;
 const TOP_N = 20;
 
 export function emptyRollup() {
-  return { locations: 0, net_sales: 0, forecast: 0, orders: 0, tips: 0, labour: 0, live_orders: 0, open_tables: 0, wtd_net: 0, wtd_last_week: 0 };
+  return {
+    locations: 0, net_sales: 0, forecast: 0, orders: 0, tips: 0, labour: 0, live_orders: 0, open_tables: 0, wtd_net: 0, wtd_last_week: 0,
+    // 16 Oct 2026, the Net / Gross switch: the same figures including VAT.
+    gross_sales: 0, vat: 0, wtd_gross: 0, wtd_last_week_gross: 0,
+  };
 }
 
 /**
@@ -469,15 +484,19 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const locations = opsIds.map((id) => {
     const d = plan[id], dd = byDay[id], range = d.range;
     const t = dd[d.today] || emptySales();
-    const lwT = dd[d.lwToday] || { net: 0 };
+    const lwT = dd[d.lwToday] || { net: 0, gross: 0 };
     const forecast = fc[id]?.[d.today] ?? 0;
     const labour = labourToday[id] ?? 0;
     const first = firstDay[id];
     const periodSales = sumDays(id, range.from, range.to);
-    const compare = compareOf({ net: periodSales.net, cmpNet: cmpSales(id, range, d.cut).net, firstSaleDay: first, cmpFrom: range.cmpFrom });
+    // 16 Oct 2026: gross (including VAT) rides beside net through every comparison, from the
+    // same days and the same cut, so the Net / Gross switch never works a figure out itself.
+    const cmpP = cmpSales(id, range, d.cut);
+    const compare = compareOf({ net: periodSales.net, cmpNet: cmpP.net, gross: periodSales.gross, cmpGross: cmpP.gross, firstSaleDay: first, cmpFrom: range.cmpFrom });
     // The week to date an older app shows under Today: the same sum as the week's own compare.
+    const wkNow = period === 'week' ? null : sumDays(id, d.week.from, d.week.to), wkThen = period === 'week' ? null : cmpSales(id, d.week, d.weekCut);
     const week = period === 'week' ? compare
-      : compareOf({ net: sumDays(id, d.week.from, d.week.to).net, cmpNet: cmpSales(id, d.week, d.weekCut).net, firstSaleDay: first, cmpFrom: d.week.cmpFrom });
+      : compareOf({ net: wkNow.net, cmpNet: wkThen.net, gross: wkNow.gross, cmpGross: wkThen.gross, firstSaleDay: first, cmpFrom: d.week.cmpFrom });
     let periodForecast = 0;
     for (const [k, v] of Object.entries(fc[id] || {})) if (inDays(k, range.from, range.to)) periodForecast += v;
     return {
@@ -490,15 +509,22 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
         last_week_sales: r2(lwT.net),
         // The same weekday last week up to the same time as now (last_week_sales is the whole day).
         last_week_sales_by_now: r2(cuts[id].get(d.lwToday)?.sales.net ?? lwT.net),
+        // 16 Oct 2026, the Net / Gross switch: the same three including VAT.
+        avg_check_gross: t.orders ? r2(t.gross / t.orders) : 0,
+        last_week_gross_sales: r2(lwT.gross || 0),
+        last_week_gross_sales_by_now: r2(cuts[id].get(d.lwToday)?.sales.gross ?? (lwT.gross || 0)),
         // 8 Oct 2026: refunds made today (off net_sales and vat above) and sales with no VAT recorded, named.
         ...(t.refunds || t.vat_missing ? { refunds: r2(t.refunds || 0), refund_vat: r2(t.refund_vat || 0), vat_missing: t.vat_missing || 0, vat_missing_refs: t.vat_missing_refs || [] } : {}),
       },
-      wtd: { net_sales: week.net_sales, last_week_net_sales: week.cmp_net_sales, vs_last_week_pct: week.pct },
+      wtd: {
+        net_sales: week.net_sales, last_week_net_sales: week.cmp_net_sales, vs_last_week_pct: week.pct,
+        gross_sales: week.gross_sales, last_week_gross_sales: week.cmp_gross_sales, vs_last_week_pct_gross: week.pct_gross,
+      },
       live: { orders: liveOrders[id] || 0, tables: openTables[id] || 0 },
       top_items: topItems(todayItems[id]),
       range: rangeOut(range, d.cut),
       period_totals: periodTotals({
-        sales: periodSales, cmpNet: compare.cmp_net_sales, forecast: periodForecast, labour: labourPeriod[id] ?? 0, reason: compare.reason,
+        sales: periodSales, cmpNet: compare.cmp_net_sales, cmpGross: compare.cmp_gross_sales, forecast: periodForecast, labour: labourPeriod[id] ?? 0, reason: compare.reason,
       }),
       period_top_items: topItems(periodItems[id]),
       // 8 Oct 2026, Sales mix (D4a): item sales by sales group for the period, with the
@@ -540,6 +566,10 @@ function rollupOf(locations) {
     open_tables: acc.open_tables + l.live.tables,
     wtd_net: r2(acc.wtd_net + l.wtd.net_sales),
     wtd_last_week: r2(acc.wtd_last_week + l.wtd.last_week_net_sales),
+    gross_sales: r2(acc.gross_sales + (l.today.gross_sales || 0)),
+    vat: r2(acc.vat + (l.today.vat || 0)),
+    wtd_gross: r2(acc.wtd_gross + (l.wtd.gross_sales || 0)),
+    wtd_last_week_gross: r2(acc.wtd_last_week_gross + (l.wtd.last_week_gross_sales || 0)),
   }), emptyRollup());
   rollup.forecast_pct = rollup.forecast > 0 ? Math.round(rollup.net_sales / rollup.forecast * 100) : null;
   rollup.labour_pct = rollup.net_sales > 0 ? r2(rollup.labour / rollup.net_sales * 100) : null;
@@ -547,6 +577,7 @@ function rollupOf(locations) {
   // 2 Oct like for like fix missed. A venue that was not trading then is left out on both sides.
   const week = groupCompare(locations.map((l) => l.week_compare));
   rollup.wtd_vs_last_week_pct = week.pct;
+  rollup.wtd_vs_last_week_pct_gross = week.pct_gross ?? null;
   const compares = locations.map((l) => l.compare);
   rollup.period_totals = rollupTotals(locations.map((l) => l.period_totals), compares);
   rollup.compare = groupCompare(compares);
@@ -673,11 +704,14 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
 
   // Running totals for every venue in the scope together; the comparison alone is per venue
   // (each has its own reason word).
-  const hours = Array.from({ length: 24 }, () => ({ net: 0, orders: 0, cmp_net: 0 }));
-  const week = Array.from({ length: 7 }, () => ({ net: 0, orders: 0, last_net: 0, last_orders: 0 }));
+  // 16 Oct 2026, the Net / Gross switch: every sales figure here also runs including VAT
+  // (gross beside net, from the same check parts), so the app never works a figure out itself.
+  const hours = Array.from({ length: 24 }, () => ({ net: 0, gross: 0, orders: 0, cmp_net: 0, cmp_gross: 0 }));
+  const week = Array.from({ length: 7 }, () => ({ net: 0, gross: 0, orders: 0, last_net: 0, last_gross: 0, last_orders: 0 }));
   const sales = emptySales();
-  const per = Object.fromEntries(ids.map((id) => [id, { net: 0, cmpNet: 0 }]));
+  const per = Object.fromEntries(ids.map((id) => [id, { net: 0, cmpNet: 0, gross: 0, cmpGross: 0 }]));
   const payments = new Map(), types = new Map(), channels = new Map(), items = new Map();
+  const typesGross = new Map(), channelsGross = new Map();
   const ex = { discounts: emptyExceptions(), voids: emptyExceptions(), refunds: emptyExceptions() };
   const seenRefund = new Set();
   // 8 Oct 2026, Sales mix: the scope's item sales by group, this period and the comparison span.
@@ -702,12 +736,12 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
   // Every check that is not voided, from either read: the hour, the week and the comparison.
   const addSale = (id, c, ms, d) => {
     const p = plan[id], parts = checkSalesParts(c), h = hourOf[id](ms);
-    if (inDays(d, p.wkStart, p.today)) { const w = week[dayCount(p.wkStart, d) - 1]; w.net += parts.net; w.orders += 1; }
-    else if (inDays(d, p.lwStart, addDays(p.wkStart, -1))) { const w = week[dayCount(p.lwStart, d) - 1]; w.last_net += parts.net; w.last_orders += 1; }
-    if (inDays(d, p.range.from, p.range.to)) { hours[h].net += parts.net; hours[h].orders += 1; per[id].net += parts.net; }
+    if (inDays(d, p.wkStart, p.today)) { const w = week[dayCount(p.wkStart, d) - 1]; w.net += parts.net; w.gross += parts.gross; w.orders += 1; }
+    else if (inDays(d, p.lwStart, addDays(p.wkStart, -1))) { const w = week[dayCount(p.lwStart, d) - 1]; w.last_net += parts.net; w.last_gross += parts.gross; w.last_orders += 1; }
+    if (inDays(d, p.range.from, p.range.to)) { hours[h].net += parts.net; hours[h].gross += parts.gross; hours[h].orders += 1; per[id].net += parts.net; per[id].gross += parts.gross; }
     else if (inDays(d, p.range.cmpFrom, p.range.cmpTo)) {
-      hours[h].cmp_net += parts.net;
-      if (!p.cut || d !== p.cut.day || ms < p.cut.untilMs) per[id].cmpNet += parts.net;
+      hours[h].cmp_net += parts.net; hours[h].cmp_gross += parts.gross;
+      if (!p.cut || d !== p.cut.day || ms < p.cut.untilMs) { per[id].cmpNet += parts.net; per[id].cmpGross += parts.gross; }
     }
     return parts;
   };
@@ -726,12 +760,12 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       const r = refundSalesParts(e, c);
       if (r.skipped || r.atMs == null) return;
       const d = p.dayOf(r.atMs), h = hourOf[id](r.atMs);
-      if (inDays(d, p.wkStart, p.today)) { const w = week[dayCount(p.wkStart, d) - 1]; w.net -= r.net; }
-      else if (inDays(d, p.lwStart, addDays(p.wkStart, -1))) { const w = week[dayCount(p.lwStart, d) - 1]; w.last_net -= r.net; }
-      if (inDays(d, p.range.from, p.range.to)) { hours[h].net -= r.net; per[id].net -= r.net; addRefundSales(sales, e, c); }
+      if (inDays(d, p.wkStart, p.today)) { const w = week[dayCount(p.wkStart, d) - 1]; w.net -= r.net; w.gross -= r.gross; }
+      else if (inDays(d, p.lwStart, addDays(p.wkStart, -1))) { const w = week[dayCount(p.lwStart, d) - 1]; w.last_net -= r.net; w.last_gross -= r.gross; }
+      if (inDays(d, p.range.from, p.range.to)) { hours[h].net -= r.net; hours[h].gross -= r.gross; per[id].net -= r.net; per[id].gross -= r.gross; addRefundSales(sales, e, c); }
       else if (inDays(d, p.range.cmpFrom, p.range.cmpTo)) {
-        hours[h].cmp_net -= r.net;
-        if (!p.cut || d !== p.cut.day || r.atMs < p.cut.untilMs) per[id].cmpNet -= r.net;
+        hours[h].cmp_net -= r.net; hours[h].cmp_gross -= r.gross;
+        if (!p.cut || d !== p.cut.day || r.atMs < p.cut.untilMs) { per[id].cmpNet -= r.net; per[id].cmpGross -= r.gross; }
       }
       if (!inDays(d, p.range.from, p.range.to)) return;
       const amount = Math.max(0, Number(e?.amount) || 0);
@@ -775,6 +809,8 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       const type = String(c.order_type || 'dine-in').toLowerCase();
       bump(types, type, parts.net);
       bump(channels, channelOf(c), parts.net);
+      bump(typesGross, type, parts.gross);
+      bump(channelsGross, channelOf(c), parts.gross);
       // What each kind of tender took for goods. A check that charged nothing has no takings,
       // whatever its tenders say (a 100% comp once recorded a cash tender for money never taken).
       if (!chargedNothing(c)) {
@@ -841,17 +877,17 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
   const targetRow = scope.kind === 'venue' ? vs.find((v) => v.location_id === ids[0]) : null;
   const targetPct = targetRow && Number(targetRow.labour_target_pct) > 0 ? r2(Number(targetRow.labour_target_pct) * 100) : null;
 
-  const compares = ids.map((id, i) => compareOf({ net: per[id].net, cmpNet: per[id].cmpNet, firstSaleDay: firstDays[i], cmpFrom: plan[id].range.cmpFrom }));
+  const compares = ids.map((id, i) => compareOf({ net: per[id].net, cmpNet: per[id].cmpNet, gross: per[id].gross, cmpGross: per[id].cmpGross, firstSaleDay: firstDays[i], cmpFrom: plan[id].range.cmpFrom }));
   const first = plan[ids[0]];
   const sameDates = ids.every((id) => plan[id].range.from === first.range.from && plan[id].range.to === first.range.to);
   const sameWeek = ids.every((id) => plan[id].wkStart === first.wkStart);
   // The hours in the order the day runs: a 06:30 day starts at 6, a late bar's ends after midnight.
   const startHour = Math.floor(dayStartMinutes(first.dayStart) / 60);
   const hourRows = Array.from({ length: 24 }, (_, i) => (startHour + i) % 24)
-    .map((h) => ({ hour: h, net: r2(hours[h].net), orders: hours[h].orders, cmp_net: r2(hours[h].cmp_net) }));
+    .map((h) => ({ hour: h, net: r2(hours[h].net), orders: hours[h].orders, cmp_net: r2(hours[h].cmp_net), gross: r2(hours[h].gross), cmp_gross: r2(hours[h].cmp_gross) }));
   const used = hourRows.map((h, i) => (h.orders || h.cmp_net ? i : -1)).filter((i) => i >= 0);
-  const mixRows = (map, label) => [...map.entries()].sort((a, b) => b[1].amount - a[1].amount)
-    .map(([k, v]) => ({ [label]: k, net: r2(v.amount), orders: v.count }));
+  const mixRows = (map, label, grossMap) => [...map.entries()].sort((a, b) => b[1].amount - a[1].amount)
+    .map(([k, v]) => ({ [label]: k, net: r2(v.amount), orders: v.count, gross: r2(grossMap.get(k)?.amount || 0) }));
   const exOut = (e, withReasons = true) => ({
     count: e.count, amount: r2(e.amount),
     reasons: withReasons ? topOf(e.reasons, 'reason') : null,
@@ -871,6 +907,7 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       totals: {
         net_sales: r2(sales.net), vat: r2(sales.vat), gross_sales: r2(sales.gross), orders: sales.orders, tips: r2(sales.tips),
         avg_check: sales.orders ? r2(sales.net / sales.orders) : 0,
+        avg_check_gross: sales.orders ? r2(sales.gross / sales.orders) : 0,
         // 8 Oct 2026: refunds made in the period (already off the figures above), and sales with no VAT recorded, named.
         refunds: r2(sales.refunds || 0), refund_vat: r2(sales.refund_vat || 0), vat_missing: sales.vat_missing || 0, vat_missing_refs: sales.vat_missing_refs || [],
       },
@@ -883,12 +920,13 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
           // A day that has not come yet has no figure, which is not the same as a day of £0.
           net: sameWeek && date > first.today ? null : r2(w.net), orders: sameWeek && date > first.today ? null : w.orders,
           last_net: r2(w.last_net), last_orders: w.last_orders,
+          gross: sameWeek && date > first.today ? null : r2(w.gross), last_gross: r2(w.last_gross),
         };
       }),
       payments: [...payments.entries()].sort((a, b) => b[1].amount - a[1].amount)
         .map(([k, v]) => ({ kind: k, amount: r2(v.amount), checks: v.count, money: MONEY_KINDS.has(k) })),
-      order_types: mixRows(types, 'type'),
-      channels: mixRows(channels, 'channel'),
+      order_types: mixRows(types, 'type', typesGross),
+      channels: mixRows(channels, 'channel', channelsGross),
       exceptions: { discounts: exOut(ex.discounts), voids: exOut(ex.voids, false), refunds: exOut(ex.refunds) },
       items: rankItems(items, TOP_N),
       // 8 Oct 2026, Sales mix (D4a): each group's money, share, comparison share and points, and

@@ -495,3 +495,41 @@ test('the Owner screen: three chips, labels from the answer, the update line, th
   // Storage that throws on sight (private browsing) is not a crash.
   assert.ok(src.includes('const phoneStorage = () => { try { return window.localStorage; } catch { return null; } };'));
 });
+
+// ── 16 Oct 2026: the Net / Gross switch, gross beside net ───────────────────
+
+test('16 Oct 2026: a comparison carries gross beside net only when gross is handed in, with the net reason word', () => {
+  const at = { cmpFrom: '2026-09-28' };
+  // Without gross: exactly the old answer (an app before the switch reads the same keys).
+  assert.deepEqual(Object.keys(compareOf({ net: 120, cmpNet: 100, firstSaleDay: '2026-06-01', ...at })), ['reason', 'pct', 'net_sales', 'cmp_net_sales', 'first_sale_date']);
+  // With gross: the gross percent is worked out on gross, the reason stays the net one.
+  const c = compareOf({ net: 100, cmpNet: 80, gross: 115, cmpGross: 96, firstSaleDay: '2026-06-01', ...at });
+  assert.deepEqual([c.reason, c.pct, c.gross_sales, c.cmp_gross_sales, c.pct_gross], ['ok', 25, 115, 96, 20]);
+  // A reason with no percent has no gross percent either.
+  assert.equal(compareOf({ net: 0, cmpNet: 80, gross: 0, cmpGross: 96, firstSaleDay: '2026-06-01', ...at }).pct_gross, null);
+  assert.equal(compareOf({ net: 50, cmpNet: 80, gross: 60, cmpGross: 96, firstSaleDay: '2026-09-30', ...at }).pct_gross, null);
+});
+
+test('16 Oct 2026: the group comparison adds gross like for like, on the same venues as net', () => {
+  const at = { cmpFrom: '2026-09-28' };
+  const ok = compareOf({ net: 110, cmpNet: 100, gross: 132, cmpGross: 120, firstSaleDay: '2026-01-01', ...at });
+  const fresh = compareOf({ net: 900, cmpNet: 40, gross: 1080, cmpGross: 48, firstSaleDay: '2026-09-30', ...at });
+  const g = groupCompare([ok, fresh]);
+  assert.deepEqual([g.gross_sales, g.like_gross_sales, g.cmp_gross_sales, g.pct_gross, g.pct], [1212, 132, 120, 10, 10]);
+  // A list with no gross (an older shape) sends no gross keys at all.
+  assert.equal('pct_gross' in groupCompare([compareOf({ net: 1, cmpNet: 1, firstSaleDay: '2026-01-01', ...at })]), false);
+});
+
+test('16 Oct 2026: period totals and the group totals carry gross, VAT and the gross average; forecast and labour stay on net', () => {
+  const a = periodTotals({ sales: { net: 1000, vat: 200, gross: 1200, orders: 250, tips: 10 }, cmpNet: 800, cmpGross: 960, forecast: 1000, labour: 300 });
+  assert.deepEqual([a.avg_check, a.avg_check_gross, a.cmp_gross_sales, a.vs_cmp_pct_gross, a.forecast_pct, a.labour_pct], [4, 4.8, 960, 25, 100, 30]);
+  // A zero rated venue: gross and net are the same, never a flat 20% off.
+  const b = periodTotals({ sales: { net: 600, vat: 0, gross: 600, orders: 100, tips: 5 }, cmpNet: 700, cmpGross: 700, forecast: 1000, labour: 100 });
+  assert.deepEqual([b.avg_check, b.avg_check_gross, b.vs_cmp_pct_gross, b.vs_cmp_pct], [6, 6, -14, -14]);
+  const g = rollupTotals([a, b]);
+  assert.deepEqual([g.gross_sales, g.vat, g.cmp_gross_sales, g.like_gross_sales, g.avg_check, g.avg_check_gross, g.vs_cmp_pct_gross], [1800, 200, 1660, 1800, 4.57, 5.14, 8]);
+  // The net figures are untouched.
+  assert.deepEqual([g.net_sales, g.cmp_net_sales, g.vs_cmp_pct, g.forecast_pct, g.labour_pct], [1600, 1500, 7, 80, 25]);
+  // Without gross handed in, periodTotals answers the old keys only.
+  assert.equal('avg_check_gross' in periodTotals({ sales: { net: 1, vat: 0, gross: 1, orders: 1, tips: 0 } }), false);
+});

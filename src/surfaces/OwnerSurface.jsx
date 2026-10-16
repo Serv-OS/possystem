@@ -32,6 +32,12 @@
 // Drinks, Other, with each group's share and its change in points), from the function's own
 // `mix` blocks through src/lib/ownerMix.js (src/surfaces/owner/MixBar.jsx draws it). Only when
 // the function says it has the mix (canMix); a function from before it shows no bar at all.
+//
+// 16 Oct 2026, Peter: "the owner app needs a switch to show net or gross sales". A Net / Gross
+// switch under the period chips, remembered on the phone, Net by default (what every figure
+// showed before). Every sales figure, comparison, average and chart follows it, each with a small
+// "Including VAT" or "Excluding VAT" line under it. The figures are the function's (gross beside
+// net from the same check parts); the picking and the words are src/lib/ownerBasis.js.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
@@ -48,6 +54,9 @@ import {
 import { compareBlock, groupCompareBlock, compareLine, groupLine, sharedCompareRange } from '../lib/ownerCompare';
 import { canDetail, canMix, groupTarget, venueTarget } from '../lib/ownerDetail';
 import { cardBar, allOtherByCurrency } from '../lib/ownerMix';
+import {
+  BASIS_CHIPS, GROSS_NEEDS_UPDATE, readStoredBasis, storeBasis, shownBasis, basisCompare, basisNote, salesHeading, venueSales, rollupSales,
+} from '../lib/ownerBasis';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
@@ -249,6 +258,9 @@ function Dashboard({ theme, onToggleTheme }) {
   // answer itself (shownPeriod), so numbers and labels can never be for different periods.
   const [period, setPeriod] = useState(() => readStoredPeriod(phoneStorage()));
   const [needsUpdate, setNeedsUpdate] = useState(false);
+  // 16 Oct 2026: the Net / Gross switch. Both are in every answer, so a tap redraws and never reloads.
+  const [basisAsked, setBasisAsked] = useState(() => readStoredBasis(phoneStorage()));
+  const pickBasis = useCallback((id) => { storeBasis(phoneStorage(), id); setBasisAsked(id); }, []);
   // Chips can be tapped faster than answers come back: only the latest request is shown.
   const seq = useRef(0);
 
@@ -338,6 +350,9 @@ function Dashboard({ theme, onToggleTheme }) {
   // a This month call that failed left Today's figures at full brightness under a lit
   // This month chip, with only the red line to say they were not the month's.
   const waiting = !!data && shown !== period;
+  // What the figures are: Gross only from a function that sends it (otherwise net, under net words).
+  const sb = shownBasis(data, basisAsked);
+  const basis = sb.basis;
 
   return (
     <>
@@ -366,6 +381,18 @@ function Dashboard({ theme, onToggleTheme }) {
       </div>
       {needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-4px 0 12px' }}>{NEEDS_UPDATE}</div>}
 
+      {/* ── Net or gross sales (16 Oct 2026): every sales figure below follows it ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '-4px 0 14px' }}>
+        <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>Sales shown</span>
+        <div role="group" aria-label="Net or gross sales" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 76px)', gap: 6 }}>
+          {BASIS_CHIPS.map((c) => (
+            <button key={c.id} onClick={() => pickBasis(c.id)} aria-pressed={basisAsked === c.id}
+              style={{ ...periodChip, padding: '7px 6px', fontSize: 12.5, ...(basisAsked === c.id ? periodChipOn : null) }}>{c.label}</button>
+          ))}
+        </div>
+      </div>
+      {sb.needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-6px 0 12px' }}>{GROSS_NEEDS_UPDATE}</div>}
+
       {loading && !data && <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '60px 0' }}>Loading your business…</div>}
       {err && <div style={{ color: 'var(--red)', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>{err}</div>}
 
@@ -374,20 +401,20 @@ function Dashboard({ theme, onToggleTheme }) {
       )}
 
       {open && (
-        <OwnerDetail target={open} period={period} supported={canDetail(data)} tick={tick} onBack={closeDetail} backLabel="Back" />
+        <OwnerDetail target={open} period={period} basis={basis} supported={canDetail(data)} tick={tick} onBack={closeDetail} backLabel="Back" />
       )}
 
       {!open && (
         <div style={{ opacity: waiting ? 0.5 : 1, transition: 'opacity .15s' }}>
           {/* ── Rollup (all venues of one currency, the period shown) ── */}
           {groups.map((g) => (
-            <GroupCard key={g.currency} g={g} shown={shown} multi={multi} mixed={groups.length > 1}
+            <GroupCard key={g.currency} g={g} shown={shown} basis={basis} multi={multi} mixed={groups.length > 1}
               bar={mixOn ? cardBar(g.rollup.mix, { hint: true }) : null}
               onOpen={() => openDetail(groupTarget(groups.length > 1 ? g.currency : (r.currency || null), g.rollup.locations))} />
           ))}
 
           {/* ── Per-venue cards ── */}
-          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} showDates={shown !== 'today' && !dates}
+          {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} basis={basis} showDates={shown !== 'today' && !dates}
             bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null} onOpen={() => openDetail(venueTarget(l))} />)}
         </div>
       )}
@@ -402,15 +429,17 @@ const tapProps = (onOpen, label) => ({
 });
 const MoreHint = () => <span style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, flexShrink: 0 }}>Reports ›</span>;
 
-function GroupCard({ g, shown, multi, mixed, onOpen, bar }) {
+function GroupCard({ g, shown, basis, multi, mixed, onOpen, bar }) {
   const r = g.rollup;
   const cur = g.currency;
   const copy = PERIOD_COPY[shown];
   const rv = rollupView(r, shown);
+  // 16 Oct 2026: the sales, the old line's figure and its percent, net or gross.
+  const rs = rollupSales(r, rv, basis);
   const dates = sharedRange(g.locations);
   const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates)].filter(Boolean).join(' · ');
   // The function's own comparison for the period shown; null from a function before the reason word.
-  const cmp = groupCompareBlock(r, rv.period);
+  const cmp = basisCompare(groupCompareBlock(r, rv.period), basis);
   const line = cmp ? groupLine(cmp, sharedCompareRange(g.locations), rv.period) : null;
   return (
     <div {...tapProps(onOpen, `Reports for ${mixed ? `${cur} venues` : 'all venues'}`)}
@@ -419,7 +448,8 @@ function GroupCard({ g, shown, multi, mixed, onOpen, bar }) {
         <div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{heading}</div>
         <MoreHint />
       </div>
-      <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rv.net_sales, cur)}</div>
+      <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rs.sales, cur)}</div>
+      <BasisLine basis={basis} currency={cur} forecast={rv.forecast > 0} labour />
       {rv.forecast > 0 && (
         <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
           {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
@@ -443,10 +473,10 @@ function GroupCard({ g, shown, multi, mixed, onOpen, bar }) {
         </div>
       )}
       {/* A function from before the reason word: the line it has always had. */}
-      {!line && rv.vs_pct != null && (
+      {!line && rs.vs_pct != null && (
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12 }}>
-          {rv.period === 'today' ? 'Week to date' : copy.before} {money(rv.before, cur)} ·{' '}
-          <span style={{ color: rv.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rv.vs_pct)}</span>{rv.period === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
+          {rv.period === 'today' ? 'Week to date' : copy.before} {money(rs.before, cur)} ·{' '}
+          <span style={{ color: rs.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)', fontWeight: 700 }}>{signedPct(rs.vs_pct)}</span>{rv.period === 'today' ? ' vs last week' : likeForLikeNote(rv, r.locations)}
         </div>
       )}
     </div>
@@ -462,12 +492,14 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
+function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
   const t = venueView(l, period);
   const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
+  // 16 Oct 2026: the sales, the average check and the old chip's percent, net or gross.
+  const vs = venueSales(l, t, basis);
   // The function's own comparison for the period shown; null from a function before the reason word.
-  const cmp = compareBlock(l, t.period);
+  const cmp = basisCompare(compareBlock(l, t.period), basis);
   const line = cmp ? compareLine(cmp, l.range, t.period) : null;
   return (
     <div {...tapProps(onOpen, `Reports for ${l.name}`)}
@@ -478,8 +510,9 @@ function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{copy.sales}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
-          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(t.net_sales, l.currency)}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{salesHeading(basis, t.period)}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
+          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(vs.sales, l.currency)}</div>
+          <BasisLine basis={basis} currency={l.currency} forecast={t.forecast > 0} labour />
         </div>
         <div style={{ textAlign: 'right' }}>
           {t.forecast > 0
@@ -499,7 +532,7 @@ function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 14 }}>
         <Stat label="Orders" value={t.orders} />
-        <Stat label="Avg check" value={money(t.avg_check, l.currency, 2)} />
+        <Stat label="Avg check" value={money(vs.avg, l.currency, 2)} />
         <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '-'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
       </div>
 
@@ -508,14 +541,14 @@ function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
         <Chip>▢ {l.live.tables} on floor</Chip>
         {t.tips > 0 && <Chip>{money(t.tips, l.currency)} tips</Chip>}
         {/* A function from before the reason word: the chip it has always had. */}
-        {!line && t.vs_pct != null && <Chip tone={t.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(t.vs_pct)} vs last wk` : `${signedPct(t.vs_pct)} ${copy.versus}`}</Chip>}
+        {!line && vs.vs_pct != null && <Chip tone={vs.vs_pct >= 0 ? 'var(--grn)' : 'var(--red)'}>{t.period === 'today' ? `WTD ${signedPct(vs.vs_pct)} vs last wk` : `${signedPct(vs.vs_pct)} ${copy.versus}`}</Chip>}
       </div>
       {/* The comparison line is ALWAYS drawn: a percent with what it is against, or the reason in grey. */}
       {line && <div style={{ fontSize: 12.5, fontWeight: 700, color: toneColor(line.tone), marginTop: 10 }}>{line.text}</div>}
 
       {t.top_items.length > 0 && (
         <div style={{ marginTop: 14, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}<span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}> · till prices</span></div>
           {t.top_items.map((it, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', color: 'var(--t2)' }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.qty}× {it.name}</span>
@@ -526,6 +559,11 @@ function VenueCard({ l, showName, period, showDates, onOpen, bar }) {
       )}
     </div>
   );
+}
+
+// 16 Oct 2026: the small line under a sales figure, so a screenshot is never ambiguous.
+function BasisLine({ basis, currency, forecast, labour }) {
+  return <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginTop: 3 }}>{basisNote(basis, currency, { forecast, labour })}</div>;
 }
 
 function Stat({ label, value, tone }) {

@@ -196,16 +196,17 @@ test('an old function: the cards read exactly the fields they always read', () =
 test('the Owner screen draws the line always, and keeps the old line for an old function', () => {
   const src = read('../surfaces/OwnerSurface.jsx');
   // Venue card: the function's block for the period of the numbers, then the words.
-  assert.ok(src.includes('const cmp = compareBlock(l, t.period);'));
+  // 16 Oct 2026: through the Net / Gross switch (src/lib/ownerBasis.js basisCompare).
+  assert.ok(src.includes('const cmp = basisCompare(compareBlock(l, t.period), basis);'));
   assert.ok(src.includes('const line = cmp ? compareLine(cmp, l.range, t.period) : null;'));
   assert.ok(src.includes('{line && <div style={{ fontSize: 12.5, fontWeight: 700, color: toneColor(line.tone), marginTop: 10 }}>{line.text}</div>}'),
     'the line is drawn whenever there is a block, whatever its reason');
-  assert.ok(src.includes('{!line && t.vs_pct != null && <Chip'), 'the old chip only when the function sent no block');
+  assert.ok(src.includes('{!line && vs.vs_pct != null && <Chip'), 'the old chip only when the function sent no block');
   // Group card: the same, and the pounds are the comparison's.
-  assert.ok(src.includes('const cmp = groupCompareBlock(r, rv.period);'));
+  assert.ok(src.includes('const cmp = basisCompare(groupCompareBlock(r, rv.period), basis);'));
   assert.ok(src.includes('const line = cmp ? groupLine(cmp, sharedCompareRange(g.locations), rv.period) : null;'));
   assert.ok(src.includes('{line.label} {money(line.amount, cur)}'));
-  assert.ok(src.includes('{!line && rv.vs_pct != null && ('));
+  assert.ok(src.includes('{!line && rs.vs_pct != null && ('));
   // One group card per currency.
   assert.ok(src.includes('const groups = groupCards(data);') && src.includes('{groups.map((g) => ('));
   // 8 Oct 2026: the sales mix bars draw only from a function that sends the mix, the venue cards
