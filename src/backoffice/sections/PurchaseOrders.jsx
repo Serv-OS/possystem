@@ -9,6 +9,7 @@ import { getActiveLocationSync, getLocationId, supabase } from '../../lib/supaba
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
+import { areasReady, fetchAreas } from '../../lib/stock/areas';
 import { reportSave } from '../../lib/saveHealth';
 import { fmtYmd } from '../../lib/venueDate';
 import NumberField from '../../components/NumberField';
@@ -41,12 +42,20 @@ export default function PurchaseOrders() {
   // null = closed; otherwise { [lineId]: { qtyPacks, unitPrice } } seeded from the order.
   const [receiving, setReceiving] = useState(null);
   const [poInvoices, setPoInvoices] = useState([]);
+  // 16 Oct 2026 (stock areas): the venue's areas and where this delivery lands. '' = the
+  // database decides (the receiving area, else each item's own area). Empty before the migration.
+  const [areas, setAreas] = useState([]);
+  const [landArea, setLandArea] = useState('');
 
   const reload = useCallback(async (keepId) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: p }, { data: s }, { data: it }] = await Promise.all([fetchPurchaseOrders(loc), fetchSuppliers(loc), fetchInventoryItems(loc)]);
-    setPos(p || []); setSuppliers(s || []); setItems(it || []); setLoading(false);
+    const areasOn = await areasReady(loc);
+    const [{ data: p }, { data: s }, { data: it }, areaRes] = await Promise.all([
+      fetchPurchaseOrders(loc), fetchSuppliers(loc), fetchInventoryItems(loc),
+      areasOn ? fetchAreas(loc) : Promise.resolve({ data: [] }),
+    ]);
+    setPos(p || []); setSuppliers(s || []); setItems(it || []); setAreas(areaRes.data || []); setLoading(false);
     if (keepId) { const f = (p || []).find(x => x.id === keepId); if (f) { setDraft(structuredClone(f)); setSelId(keepId); } }
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
@@ -145,6 +154,7 @@ export default function PurchaseOrders() {
     // delivery is nothing. Prices pre-filled from the PO so variance is one edit away.
     const seed = {};
     (draft.lines || []).forEach(l => { seed[l.id] = { qtyPacks: String(l.qtyPacks), unitPrice: String(l.unitPrice) }; });
+    setLandArea(areas.find(a => a.isReceiving)?.id || '');
     setReceiving(seed);
   };
   const acceptIntoStock = async () => {
@@ -155,7 +165,7 @@ export default function PurchaseOrders() {
       unitPrice: receiving[l.id]?.unitPrice ?? l.unitPrice,
     }));
     setBusy(true);
-    const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts);
+    const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts, { areaId: landArea || null });
     setBusy(false);
     reportSave('goods receipt', error);
     if (error) { showToast?.(error.message, 'error'); return; }
@@ -314,6 +324,15 @@ export default function PurchaseOrders() {
                   Check off against the delivery note — correct any quantity that differs and any price that changed.
                   Shorted lines automatically move to a balance order. Each line can only be received once.
                 </div>
+                {areas.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)' }}>Lands in</span>
+                    <select value={landArea} onChange={e => setLandArea(e.target.value)} style={{ ...field, width: 'auto', minWidth: 180 }} title="The stock area this delivery goes into. Move it on with a transfer.">
+                      {!areas.some(a => a.isReceiving) && <option value="">Each item's own area</option>}
+                      {areas.map(a => <option key={a.id} value={a.id}>{a.name}{a.isReceiving ? ' (receiving)' : ''}</option>)}
+                    </select>
+                  </div>
+                )}
                 {(draft.lines || []).map(l => {
                   const r = receiving[l.id] || {};
                   const short = Number(r.qtyPacks) < Number(l.qtyPacks);

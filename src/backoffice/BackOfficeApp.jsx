@@ -1078,7 +1078,7 @@ export default function BackOfficeApp() {
           {section === 'stock-reports' && <StockReports />}
           {section === 'stock-counts' && <StockCounts orgCtx={orgCtx} />}
           {section === 'stock-areas' && <StockAreas orgCtx={orgCtx} />}
-          {section === 'stock-transfers' && <StockTransfers />}
+          {section === 'stock-transfers' && <StockTransfers orgCtx={orgCtx} />}
           {section === 'wastage'    && <Wastage />}
           {section === 'stock-items' && <StockItems orgCtx={orgCtx} />}
           {section === 'recipes'    && <Recipes />}
